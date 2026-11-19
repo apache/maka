@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { cleanup, signal, Text, View, Scroll, inputAction } from 'nsh';
+import { cleanup, platform, signal, Text, View, Scroll, inputAction, windowSize } from 'nsh';
 import { Button } from 'nsh/base';
 import type {
   AgentScheduledDetail,
@@ -25,6 +25,7 @@ import type {
   IntervalCadence,
   ModelSelection,
   ThinkingLevel,
+  SettingsModelChoice,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Host } from './host';
 import { currentLocale, tr, type MessageKey } from './locale';
@@ -36,17 +37,23 @@ import {
   type DiscoveryToolSelection,
   discoveryCadence,
   discoveryInput,
+  discoveryIntervalError,
   discoveryTasks,
   discoveryWorkerTools,
   type DiscoveryApproval,
   type DiscoveryWorkerTools,
 } from './discoveryCore';
-import { DiscoveryToolPicker, discoverySelectionLabel } from './DiscoveryToolPicker';
+import {
+  DiscoveryToolPicker,
+  discoverySelectionLabel,
+  discoveryExternalToolNotice,
+} from './DiscoveryToolPicker';
 import { Icon } from './Icon';
-import { SettingsField } from './SettingsField';
-import { SettingsButton, SettingsSegmented, SettingsSelect } from './SettingsPage';
+import { SettingsEditor } from './SettingsField';
+import { SettingsButton, SettingsInlineInput, SettingsSelect } from './SettingsPage';
 import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
 import { LoadingIndicator } from './Loading';
+import { readSettingsModels, settingsModelKey } from './settings';
 import { accessLabel } from './SessionPermissionsSelect';
 import { C, bodyTextStyle, captionTextStyle, toolbarControlStyle, textTooltip } from './ui';
 import { sameValue } from '../../../../plugins/shared/value';
@@ -59,6 +66,95 @@ type Props = {
   openWorker(id: string): void;
   chooseModel(): void;
 };
+
+const formRow = {
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 12,
+} as const;
+const formDivider = () => ({ borderTopWidth: 1, borderTopColor: C.line, paddingTop: 14, gap: 8 });
+const formLabel = () => ({ ...bodyTextStyle, color: C.text, flexShrink: 1 });
+
+function DiscoveryModelField(props: {
+  host: Host;
+  model: ModelSelection | null;
+  verified: SettingsModelChoice | null;
+  disabled: boolean;
+  change(choice: SettingsModelChoice): void;
+  configure(): void;
+}) {
+  const choices = signal<SettingsModelChoice[]>([]);
+  const loading = signal(true),
+    failure = signal('');
+  let alive = true;
+  cleanup(() => {
+    alive = false;
+  });
+  const load = async () => {
+    loading.set(true);
+    failure.set('');
+    try {
+      const result = await readSettingsModels(props.host, () => alive);
+      if (alive && result) choices.set(result.choices);
+    } catch (reason) {
+      if (alive) failure.set(renderText(errorText(reason, 'Could not load models.')));
+    } finally {
+      if (alive) loading.set(false);
+    }
+  };
+  void load();
+  const key = () => (props.model ? settingsModelKey(props.model) : null);
+  const current = () =>
+    props.verified && settingsModelKey(props.verified.selection) === key()
+      ? props.verified
+      : choices().find((choice) => settingsModelKey(choice.selection) === key());
+  return (
+    <View style={{ gap: 2 }}>
+      <SettingsSelect
+        flush
+        label={tr('Discovery model')}
+        value={key()}
+        choices={choices().map((choice) => ({
+          value: settingsModelKey(choice.selection),
+          title: choice.label,
+          group: choice.connectionName,
+        }))}
+        placeholder={
+          current()?.label ??
+          (loading()
+            ? tr('Loading…')
+            : props.model
+              ? tr('{model} · Unavailable', { model: props.model.modelId })
+              : tr('Choose a model'))
+        }
+        change={(value) => {
+          const choice = choices().find((item) => settingsModelKey(item.selection) === value);
+          if (choice) props.change(choice);
+        }}
+        disabled={props.disabled || !choices().length}
+      />
+      <If when={current()}>
+        {(choice) => (
+          <Text style={{ ...captionTextStyle, color: C.muted, textAlign: 'right' }}>
+            {choice().connectionName}
+          </Text>
+        )}
+      </If>
+      <If when={failure()}>
+        <Text style={{ ...captionTextStyle, color: C.danger }}>{failure()}</Text>
+        <SettingsButton label={tr('Retry')} tone="quiet" onPress={() => void load()} />
+      </If>
+      <If when={!loading() && !failure() && !choices().length}>
+        <SettingsButton
+          label={tr('Change discovery model')}
+          tone="quiet"
+          onPress={props.configure}
+        />
+      </If>
+    </View>
+  );
+}
 
 export function DiscoveryPanel(props: Props) {
   const open = signal(false);
@@ -112,8 +208,14 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
   const cadence = signal<IntervalCadence>(discoveryCadence());
   const workerTools = signal<DiscoveryWorkerTools>('read_only');
   const toolPreview = signal<DiscoveryToolPreview | null>(null);
+  const formModel = signal<Pick<DiscoveryApproval, 'model' | 'thinkingLevel'> | null>(null);
+  const formTarget = signal<DiscoveryApproval['target'] | null>(null);
+  const formChoice = signal<SettingsModelChoice | null>(null);
+  const intervalError = () =>
+    discoveryIntervalError(Number(minutes()), editingPlan()?.task.schedule);
   const selectedTools = signal<DiscoveryToolSelection>({});
   let initialToolSelection: DiscoveryToolSelection | undefined;
+  let openedToolPreview = false;
   // Keep explicit choices even while their group is absent from the active preset.
   const draftGroups = new Map<DiscoveryToolGroup, ReadonlySet<string>>();
   const reapproving = signal(false);
@@ -122,8 +224,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     !!plan && !plan.approved && plan.task.lastError === 'scheduler_authorization_changed';
   const wasApproved = (plan: AgentScheduledDetail | null) =>
     !!plan?.approved || needsRenewedApproval(plan);
-  const resolvedWorkerTools = () =>
-    editing() ? workerTools() : discoveryWorkerTools(detail()?.task.effect);
+  const resolvedWorkerTools = () => discoveryWorkerTools(detail()?.task.effect);
   const error = createText();
   const watchError = createText();
   const planSelection = (plan = detail()) => {
@@ -156,21 +257,26 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     generation++;
     void stream?.close().catch(() => {});
   });
-  const capture = async (): Promise<DiscoveryApproval> => {
-    const chosen = await props.selection();
-    if (!chosen) throw new UiError('Choose a model before sending.');
+  const capture = async (ticket = formGeneration): Promise<DiscoveryApproval> => {
     const { session } = await props.host.query('agent', 'observe', { sessionId: props.sessionId });
-    await describeModel(chosen.model);
-    return {
-      target: {
-        sessionId: session.id,
-        workspace: session.workspace,
-        permissions: session.permissions,
-        boundaryRevision: session.boundaryRevision,
-        binding: session.binding,
-      },
-      ...chosen,
+    const target = {
+      sessionId: session.id,
+      workspace: session.workspace,
+      permissions: session.permissions,
+      boundaryRevision: session.boundaryRevision,
+      binding: session.binding,
     };
+    if (alive && editing() && ticket === formGeneration) formTarget.set(target);
+    const chosen = formModel() ?? (await props.selection());
+    if (!chosen) throw new UiError('Choose a model before sending.');
+    const resolved = await props.host.query('settings', 'resolveModel', chosen.model);
+    if (alive && ticket === formGeneration)
+      formChoice.set(resolved.kind === 'ready' ? resolved.choice : null);
+    if (resolved.kind !== 'ready')
+      throw new UiError('Model unavailable: {model}. Choose another model.', {
+        model: chosen.model.modelId,
+      });
+    return { target, ...chosen };
   };
   const readDetail = async (id: string) => {
     const ticket = ++generation;
@@ -204,7 +310,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     captured: DiscoveryApproval,
     profile: DiscoveryWorkerTools,
     ticket: number,
-    mode: 'open' | 'preset' | 'refresh',
+    mode: 'draft' | 'refresh',
   ) => {
     toolPreview.set(null);
     try {
@@ -215,7 +321,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       });
       if (!alive || ticket !== formGeneration) return;
       if (result.kind !== 'discovery_tools') throw new UiError('Discovery plan changed');
-      if (mode === 'open' && result.approvedNames != null) {
+      if (!openedToolPreview && result.approvedNames != null) {
         initialToolSelection = selectedDiscoveryTools(
           result,
           planSelection(editingPlan()),
@@ -227,6 +333,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
           ? selectedDiscoveryTools(result, selectedTools())
           : selectedDiscoveryTools(result, initialToolSelection, undefined, draftGroups),
       );
+      openedToolPreview = true;
       toolPreview.set(result);
     } catch (reason) {
       if (alive && ticket === formGeneration)
@@ -245,14 +352,40 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     const captured = basis();
     if (captured) {
       error.set('');
-      void previewTools(captured, profile, ++formGeneration, 'preset');
+      void previewTools(captured, profile, ++formGeneration, 'draft');
     }
+  };
+  const refreshDraftModel = async (ticket: number) => {
+    basis.set(null);
+    toolPreview.set(null);
+    error.set('');
+    try {
+      const captured = await capture(ticket);
+      if (!alive || ticket !== formGeneration) return;
+      basis.set(captured);
+      await previewTools(captured, workerTools(), ticket, 'draft');
+    } catch (reason) {
+      if (alive && ticket === formGeneration)
+        error.set(errorText(reason, 'Could not load the discovery plan.'));
+    }
+  };
+  const changeDraftModel = (choice: SettingsModelChoice) => {
+    if (busy()) return;
+    const from = formModel() ?? basis();
+    const level = from?.thinkingLevel;
+    formModel.set({
+      model: choice.selection,
+      thinkingLevel:
+        level && (choice.thinkingLevels as readonly ThinkingLevel[]).includes(level) ? level : null,
+    });
+    void refreshDraftModel(++formGeneration);
   };
   const edit = async (fresh: boolean, approve = false) => {
     const plan = fresh ? null : detail();
     if (busy() || (!fresh && !plan)) return;
     const ticket = ++formGeneration;
     draftGroups.clear();
+    openedToolPreview = false;
     editingPlan.set(plan);
     reapproving.set(approve);
     deleting.set(false);
@@ -269,17 +402,14 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     minutes.set(schedule?.kind === 'interval' ? String(schedule.everySeconds / 60) : '30');
     cadence.set(discoveryCadence(schedule));
     editing.set(true);
-    basis.set(null);
-    error.set('');
-    try {
-      const captured = await capture();
-      if (alive && ticket === formGeneration) {
-        basis.set(captured);
-        await previewTools(captured, profile, ticket, 'open');
-      }
-    } catch (reason) {
-      if (alive) error.set(errorText(reason, 'Could not load the discovery plan.'));
-    }
+    formChoice.set(null);
+    formTarget.set(effect?.kind === 'discovery' ? effect.target : null);
+    formModel.set(
+      effect?.kind === 'discovery'
+        ? { model: effect.model, thinkingLevel: effect.thinkingLevel ?? null }
+        : null,
+    );
+    await refreshDraftModel(ticket);
   };
   const selectDefault = async () => {
     const visible = visibleTasks();
@@ -492,7 +622,6 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     return current.task.status === 'active' ? 'Discovery active' : 'Discovery paused';
   };
   const snapshot = () => {
-    if (editing()) return basis();
     const effect = detail()?.task.effect;
     return effect?.kind === 'discovery' ? effect : null;
   };
@@ -542,7 +671,15 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     />
   );
   return (
-    <ModalDialog size="form" onCancel={cancel}>
+    <ModalDialog
+      size="form"
+      onCancel={cancel}
+      style={
+        editing() && platform.idiom !== 'terminal'
+          ? { maxWidth: 552, paddingHorizontal: 24, paddingVertical: 20, gap: 16 }
+          : {}
+      }
+    >
       <View
         style={{
           flexDirection: 'row',
@@ -551,15 +688,19 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
           gap: 8,
         }}
       >
-        <DialogHeader
-          title={tr(
-            editing()
-              ? editingPlan()
-                ? 'Edit discovery plan'
-                : 'New discovery plan'
-              : 'Proactive discovery',
-          )}
-        />
+        <If when={editing()} else={<DialogHeader title={tr('Proactive discovery')} />}>
+          <Text
+            role="header"
+            style={{
+              color: C.text,
+              fontSize: platform.idiom === 'terminal' ? 14 : 20,
+              lineHeight: platform.idiom === 'terminal' ? 16 : 28,
+              fontWeight: '600',
+            }}
+          >
+            {tr(editingPlan() ? 'Edit discovery plan title' : 'New discovery plan title')}
+          </Text>
+        </If>
         <If when={!editing() && tasks().length > 0}>
           <SettingsButton
             label={tr('New discovery plan')}
@@ -631,7 +772,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
             </View>
           </View>
         </If>
-        <If when={snapshot() !== null}>
+        <If when={!editing() && snapshot() !== null}>
           <View style={{ gap: 4 }}>
             <Text style={{ ...captionTextStyle, color: C.secondary, userSelect: 'text' }}>
               {tr('Discovery workspace')}: {snapshot()!.target.workspace.path}
@@ -644,7 +785,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
                   accessLabel(snapshot()!.target.permissions.access)
                 : tr('Use read-only investigation tools')}
             </Text>
-            <If when={!editing() && planSelection() != null}>
+            <If when={planSelection() != null}>
               <Text style={{ ...captionTextStyle, color: C.secondary }}>
                 {discoverySelectionLabel(planSelection()!)}
               </Text>
@@ -657,61 +798,147 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
           </View>
         </If>
         <If when={editing()}>
-          {action('Change discovery model', () => {
-            props.close();
-            props.chooseModel();
-          })}
-          <If
-            when={!editingPlan() || editingPlan()!.task.schedule.kind === 'interval'}
-            else={
-              <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                {tr('Discovery existing schedule')}
+          <View style={{ gap: 12 }}>
+            <View style={{ gap: 6 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Text style={formLabel()}>{tr('Discovery direction')}</Text>
+                <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Optional')}</Text>
+              </View>
+              <View style={{ height: platform.idiom === 'terminal' ? 40 : 56 }}>
+                <SettingsEditor
+                  label={tr('Discovery instructions')}
+                  placeholder={tr('Discovery broad placeholder')}
+                  value={intent()}
+                  change={intent.set}
+                  disabled={busy()}
+                />
+              </View>
+            </View>
+            <If
+              when={!editingPlan() || editingPlan()!.task.schedule.kind === 'interval'}
+              else={
+                <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                  {tr('Discovery existing schedule')}
+                </Text>
+              }
+            >
+              <SettingsSelect
+                flush
+                label={tr('Discovery schedule')}
+                value={cadence()}
+                choices={[
+                  { value: 'after_completion', title: tr('Discovery after completion') },
+                  { value: 'fixed', title: tr('Discovery fixed interval') },
+                ]}
+                change={(value) => cadence.set(value === 'fixed' ? 'fixed' : 'after_completion')}
+                disabled={busy()}
+                trailing={
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <View style={{ width: 64, height: platform.idiom === 'terminal' ? 16 : 28 }}>
+                      <SettingsInlineInput
+                        label={tr('Discovery interval (minutes)')}
+                        value={minutes()}
+                        change={minutes.set}
+                        disabled={busy()}
+                      />
+                    </View>
+                    <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                      {tr('Discovery minutes')}
+                    </Text>
+                  </View>
+                }
+              />
+              <If when={intervalError()}>
+                {(reason) => (
+                  <Text style={{ ...captionTextStyle, color: C.danger }}>
+                    {tr(
+                      reason() === 'too_long'
+                        ? 'Discovery interval too long'
+                        : 'Discovery invalid settings',
+                    )}
+                  </Text>
+                )}
+              </If>
+            </If>
+          </View>
+          <View style={formDivider()}>
+            <View style={formRow}>
+              <Text style={formLabel()}>{tr('Workspace')}</Text>
+              <Text
+                style={{
+                  ...captionTextStyle,
+                  flexShrink: 1,
+                  textAlign: 'right',
+                  color: C.secondary,
+                  userSelect: 'text',
+                }}
+              >
+                {formTarget()?.workspace.path ?? '—'}
               </Text>
-            }
-          >
-            <SettingsSegmented
-              label={tr('Discovery cadence')}
-              value={cadence()}
-              choices={[
-                { value: 'after_completion', title: tr('Discovery after completion') },
-                { value: 'fixed', title: tr('Discovery fixed interval') },
-              ]}
-              change={(value) => cadence.set(value === 'fixed' ? 'fixed' : 'after_completion')}
+            </View>
+            <DiscoveryModelField
+              host={props.host}
+              model={formModel()?.model ?? basis()?.model ?? null}
+              verified={formChoice()}
               disabled={busy()}
+              change={changeDraftModel}
+              configure={() => {
+                props.close();
+                props.chooseModel();
+              }}
             />
-            <SettingsField
-              label={tr('Discovery interval (minutes)')}
-              value={minutes()}
-              change={minutes.set}
-              disabled={busy()}
-            />
-          </If>
-          <SettingsField
-            label={tr('Discovery instructions')}
-            placeholder={tr('Discovery broad placeholder')}
-            value={intent()}
-            change={intent.set}
-            multiline
-            disabled={busy()}
-          />
-          <SettingsSegmented
-            label={tr('Discovery tools')}
-            value={workerTools()}
-            choices={[
-              { value: 'session', title: tr('Use standard Session tools') },
-              { value: 'read_only', title: tr('Use read-only investigation tools') },
-            ]}
-            change={changeWorkerTools}
-            disabled={busy() || !basis()}
-          />
-          <If when={toolPreview() !== null}>
-            <DiscoveryToolPicker
-              preview={toolPreview()!}
-              selection={selectedTools()}
-              change={changeToolGroup}
-              disabled={busy()}
-            />
-          </If>
+          </View>
+          <View style={formDivider()}>
+            <View style={{ ...formRow, flexWrap: 'wrap' }}>
+              <Text style={formLabel()}>{tr('Discovery permissions')}</Text>
+              <View
+                style={{
+                  flexDirection: 'row',
+                  gap: 2,
+                  padding: 2,
+                  backgroundColor: C.background,
+                  borderRadius: 8,
+                }}
+              >
+                <Each of={['read_only', 'session'] as const}>
+                  {(profile) => (
+                    <SettingsButton
+                      label={tr(
+                        profile() === 'read_only'
+                          ? 'Use read-only investigation tools'
+                          : 'Use standard Session tools',
+                      )}
+                      selected={workerTools() === profile()}
+                      tone={workerTools() === profile() ? undefined : 'quiet'}
+                      disabled={busy() || !basis()}
+                      onPress={() => changeWorkerTools(profile())}
+                    />
+                  )}
+                </Each>
+              </View>
+            </View>
+            <If when={toolPreview() !== null}>
+              <DiscoveryToolPicker
+                preview={toolPreview()!}
+                selection={selectedTools()}
+                change={changeToolGroup}
+                disabled={busy()}
+              />
+            </If>
+            <If when={workerTools() === 'session' && formTarget()}>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>
+                {tr('Discovery workspace scope', {
+                  access: accessLabel(formTarget()!.permissions.access),
+                })}
+                {' ' + discoveryExternalToolNotice(selectedTools())}
+              </Text>
+            </If>
+            <If when={toolPreview() && Object.values(selectedTools()).includes('read_files')}>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>
+                {tr('Discovery Read scope')}
+              </Text>
+            </If>
+          </View>
           <If when={unavailableEditTarget()}>
             <Text style={{ ...captionTextStyle, color: C.danger }}>
               {tr('Discovery plan changed')}
@@ -719,16 +946,13 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
             {action('New discovery plan', () => void edit(true))}
           </If>
         </If>
-        <If when={editing() || (detail()?.task.status === 'paused' && !detail()?.approved)}>
+        <If when={!editing() && detail()?.task.status === 'paused' && !detail()?.approved}>
           <Text style={{ ...captionTextStyle, color: C.muted }}>
             {tr(
               resolvedWorkerTools() === 'session'
                 ? 'Discovery permission notice'
                 : 'Discovery read-only notice',
             )}
-            {editing() && toolPreview() && Object.values(selectedTools()).includes('read_files')
-              ? ' ' + tr('Discovery Read scope')
-              : ''}
           </Text>
         </If>
       </Scroll>
@@ -738,7 +962,22 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       <If when={watchError()}>
         <Text style={{ ...captionTextStyle, color: C.danger }}>{renderText(watchError())}</Text>
       </If>
+      <If when={editing() && platform.idiom !== 'terminal'}>
+        <View style={{ height: 1, marginHorizontal: -24, backgroundColor: C.line }} />
+      </If>
       <DialogFooter>
+        <If when={editing() && !deleting()}>
+          <Text
+            style={{
+              ...captionTextStyle,
+              color: C.muted,
+              flexGrow: 1,
+              flexBasis: windowSize().width < 440 ? '100%' : 0,
+            }}
+          >
+            {tr('Discovery model cost')}
+          </Text>
+        </If>
         <If when={deleting()}>
           <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Delete discovery plan?')}</Text>
           <SettingsButton
@@ -775,6 +1014,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
                 busy() ||
                 loading() ||
                 !basis() ||
+                !!intervalError() ||
                 !toolPreview() ||
                 (!!editingPlan() && !!detail()?.pendingFire) ||
                 unavailableEditTarget()

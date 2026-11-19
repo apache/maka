@@ -130,17 +130,13 @@ mod tests {
         app.press("role:button[Proactive discovery]").unwrap();
         app.wait_for("text:/sample-command-code/").unwrap();
         app.wait_for("text:/isolated.sample/").unwrap();
-        app.wait_for("text:/Investigation permissions.*Read-only tools/")
-            .unwrap();
+        app.wait_for("label:File reading: On").unwrap();
+        assert!(!app.screen().matches("label:Terminal tools: On").unwrap());
         app.press("role:button[Standard Session tools]").unwrap();
-        app.wait_for("role:button[Choose tool groups]").unwrap();
-        app.press("role:button[Choose tool groups]").unwrap();
         app.press("label:Terminal tools: On").unwrap();
         app.press("label:Conversations and memory: On").unwrap();
-        app.press("role:button[Hide tool groups]").unwrap();
         app.wait_for("text:/Read and its aliases can also open existing references/")
             .unwrap();
-        app.press("role:button[Choose tool groups]").unwrap();
         app.press("label:File reading: On").unwrap();
         app.wait_for("label:File reading: Off").unwrap();
         assert!(
@@ -163,25 +159,34 @@ mod tests {
         app.press_key("mod+shift+r").unwrap();
         app.wait_for("text:Needs renewed approval").unwrap();
         app.press("role:button[Review permissions]").unwrap();
-        app.wait_for("role:button[Choose tool groups]").unwrap();
-        app.press("role:button[Choose tool groups]").unwrap();
         app.wait_for("label:Terminal tools: Off").unwrap();
         app.press("role:button[Approve and resume]").unwrap();
         app.wait_for("role:button[Pause]").unwrap();
         app.wait_for("role:button[Edit plan]").unwrap();
         app.press("role:button[Edit plan]").unwrap();
-        app.wait_for("role:button[Choose tool groups]").unwrap();
         app.press("role:button[Read-only tools]").unwrap();
-        app.wait_for("text:/^File reading$/").unwrap();
+        app.wait_for("label:File reading: On").unwrap();
         app.press("role:button[Standard Session tools]").unwrap();
-        app.wait_for("text:File reading · File editing · Web tools")
+        app.wait_for("text:3 of 5 groups selected").unwrap();
+        app.type_text(
+            "label:Investigation direction (optional)",
+            "Review the release",
+        )
+        .unwrap();
+        app.clear("label:Interval (minutes)").unwrap();
+        app.wait_for("text:Enter a positive whole number of minutes.")
             .unwrap();
-        app.press("role:button[Fixed interval]").unwrap();
+        app.type_text("label:Interval (minutes)", "45").unwrap();
+        app.press("role:combobox[Check schedule]").unwrap();
+        app.press("role:option[Fixed interval]").unwrap();
+        app.press("role:combobox[Investigation model]").unwrap();
+        app.press("role:option[Replacement model]").unwrap();
+        app.wait_for("text:3 of 5 groups selected").unwrap();
         app.wait_for("role:button[Approve and save]").unwrap();
         app.press("role:button[Approve and save]").unwrap();
         app.wait_for("role:button[Close]").unwrap();
         app.press("role:button[Close]").unwrap();
-        app.wait_for("text:Action update fixed 1800").unwrap();
+        app.wait_for("text:Action update fixed 2700 replacement Review the release DiscoveryComplete · Read · WebFetch · Write").unwrap();
         app.press("role:button[Proactive discovery]").unwrap();
         app.wait_for("role:button[Edit plan]").unwrap();
         app.press("role:button[Edit plan]").unwrap();
@@ -224,32 +229,22 @@ mod tests {
         );
         app.wait_for("role:button[Proactive discovery]").unwrap();
         app.press("role:button[Proactive discovery]").unwrap();
-        app.wait_for("role:button[Choose tool groups]").unwrap();
-        app.press("role:button[Choose tool groups]").unwrap();
         app.press("label:Conversations and memory: On").unwrap();
-        app.press("role:button[Hide tool groups]").unwrap();
         app.press("role:button[Standard Session tools]").unwrap();
-        app.wait_for("role:button[Choose tool groups]").unwrap();
-        app.press("role:button[Choose tool groups]").unwrap();
         app.wait_for("label:Terminal tools: On").unwrap();
         app.press("label:File reading: On").unwrap();
-        app.press("role:button[Hide tool groups]").unwrap();
         app.press("role:button[Read-only tools]").unwrap();
-        app.wait_for("role:button[Choose tool groups]").unwrap();
         app.press("role:button[Approve and enable]").unwrap();
 
         app.wait_for("role:button[Edit plan]").unwrap();
         app.press("role:button[Edit plan]").unwrap();
-        app.wait_for("role:button[Choose tool groups]").unwrap();
-        app.press("role:button[Choose tool groups]").unwrap();
         app.press("role:button[Show selected tools]").unwrap();
         app.wait_for("text:/^DiscoveryComplete$/").unwrap();
 
         app.press("role:button[Cancel]").unwrap();
         app.wait_for("role:button[New plan]").unwrap();
         app.press("role:button[New plan]").unwrap();
-        app.wait_for("text:File reading · Conversations and memory")
-            .unwrap();
+        app.wait_for("text:2 of 2 groups selected").unwrap();
     }
 
     #[test]
@@ -288,20 +283,9 @@ mod tests {
         app.wait_for("role:button[Resume]").unwrap();
         app.press_key("mod+shift+m").unwrap();
         app.press("role:button[Resume]").unwrap();
-        app.wait_for("role:button[Change model]").unwrap();
-        app.press("role:button[Change model]").unwrap();
-        app.wait_for("text:Opened models").unwrap();
-        app.press("role:button[Proactive discovery]").unwrap();
-        app.wait_for("role:button[View background follow-ups]")
-            .unwrap();
-        app.press("role:button[View background follow-ups]")
-            .unwrap();
-        app.wait_for("role:button[Resume]").unwrap();
-        app.press("role:button[Resume]").unwrap();
-        app.wait_for("role:button[Approve and resume]").unwrap();
-        app.wait_for("text:/File reading: Partially enabled/")
-            .unwrap();
-        app.press("role:button[Choose tool groups]").unwrap();
+        app.wait_for("role:combobox[Investigation model]").unwrap();
+        app.press("role:combobox[Investigation model]").unwrap();
+        app.press("role:option[Replacement model]").unwrap();
         app.wait_for("label:File reading: Partially enabled (1/2)")
             .unwrap();
         app.press("role:button[Approve and resume]").unwrap();
@@ -321,7 +305,6 @@ mod tests {
         app.wait_for("text:Submit investigation results only")
             .unwrap();
         app.press("role:button[Standard Session tools]").unwrap();
-        app.press("role:button[Choose tool groups]").unwrap();
         app.wait_for("label:File reading: Off").unwrap();
         app.press("label:File reading: Off").unwrap();
         app.press("role:button[Approve and resume]").unwrap();

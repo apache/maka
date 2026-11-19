@@ -16,10 +16,12 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { signal, Text, View } from 'nsh';
-import { SettingsButton, SettingsRow, SettingsSwitch } from './SettingsPage';
+import { platform, signal, Text, View, windowSize } from 'nsh';
+import { Checkbox } from 'nsh/base';
+import { ChoiceIndicator } from './ChoiceIndicator';
+import { SettingsButton } from './SettingsPage';
 import { tr, type MessageKey } from './locale';
-import { C, captionTextStyle } from './ui';
+import { C, bodyTextStyle, captionTextStyle, controlFocusStyle, controlDisabledStyle } from './ui';
 import {
   approvedDiscoveryNames,
   type DiscoveryToolPreview,
@@ -28,8 +30,8 @@ import {
 
 const labels = {
   read_files: 'Discovery file reading tools',
-  modify_files: 'Discovery file editing tools',
   history: 'Discovery history tools',
+  modify_files: 'Discovery file editing tools',
   commands: 'Discovery terminal tools',
   web: 'Discovery web tools',
   sessions: 'Discovery session tools',
@@ -51,21 +53,26 @@ function partialStatus(names: string[], selection: DiscoveryToolSelection) {
     : undefined;
 }
 
-export function discoverySelectionLabel(
-  selection: DiscoveryToolSelection,
-  preview?: DiscoveryToolPreview,
-) {
+export function discoverySelectionLabel(selection: DiscoveryToolSelection) {
   const enabled = new Set(Object.values(selection));
   return (
     categories
       .filter((group) => enabled.has(group))
-      .map((group) => {
-        const label = tr(labels[group]);
-        const status = preview && partialStatus(namesIn(preview, group), selection);
-        return status ? tr('{label}: {state}', { label, state: status }) : label;
-      })
+      .map((group) => tr(labels[group]))
       .join(' · ') || tr('Only investigation completion')
   );
+}
+
+export function discoveryExternalToolNotice(selection: DiscoveryToolSelection) {
+  const enabled = new Set(Object.values(selection));
+  const groups = (['commands', 'desktop', 'other'] as const)
+    .filter((group) => enabled.has(group))
+    .map((group) => tr(labels[group]));
+  return groups.length
+    ? tr('Discovery external tool scope', {
+        tools: groups.join(tr('Discovery list separator')),
+      })
+    : '';
 }
 
 export function DiscoveryToolPicker(props: {
@@ -74,7 +81,8 @@ export function DiscoveryToolPicker(props: {
   change(group: Group, selection: DiscoveryToolSelection): void;
   disabled: boolean;
 }) {
-  const expanded = signal(false);
+  const groups = () => categories.filter((group) => namesIn(props.preview, group).length > 0);
+  const enabledCount = () => new Set(Object.values(props.selection)).size;
   const details = signal(false);
   const checked = (name: string) => Object.hasOwn(props.selection, name);
   const toggle = (group: Group) => {
@@ -87,55 +95,88 @@ export function DiscoveryToolPicker(props: {
   };
   return (
     <View style={{ gap: 4 }}>
-      <Text style={{ ...captionTextStyle, color: C.secondary }}>
-        {discoverySelectionLabel(props.selection, props.preview)}
-      </Text>
-      <SettingsButton
-        label={tr(expanded() ? 'Hide discovery tool groups' : 'Choose discovery tool groups')}
-        tone="quiet"
-        disabled={props.disabled}
-        onPress={() => expanded.set(!expanded())}
-      />
-      <If when={expanded()}>
-        <Each of={categories.filter((group) => namesIn(props.preview, group).length > 0)}>
+      <View
+        style={{
+          flexDirection: 'row',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          rowGap: 2,
+        }}
+      >
+        <Each of={groups()} key={(group) => group}>
           {(group) => {
             const names = () => namesIn(props.preview, group());
+            const all = () => names().every(checked);
+            const partial = () => partialStatus(names(), props.selection);
             const label = () => tr(labels[group()]);
             return (
-              <If
-                when={partialStatus(names(), props.selection)}
-                else={
-                  <SettingsSwitch
-                    label={label()}
-                    checked={names().every(checked)}
+              <Checkbox
+                accessibilityLabel={tr('{label}: {state}', {
+                  label: label(),
+                  state: partial() ?? tr(all() ? 'On' : 'Off'),
+                })}
+                checked={all()}
+                indeterminate={!!partial()}
+                indicator={
+                  <ChoiceIndicator
+                    kind="checkbox"
+                    checked={all()}
+                    mixed={!!partial()}
                     disabled={props.disabled}
-                    onPress={() => toggle(group())}
                   />
                 }
+                disabled={props.disabled}
+                onChange={() => toggle(group())}
+                style={{
+                  width: windowSize().width < 480 || platform.idiom === 'terminal' ? '100%' : '49%',
+                  minHeight: platform.idiom === 'terminal' ? 16 : 32,
+                  paddingHorizontal: 4,
+                  paddingVertical: 2,
+                  borderRadius: 6,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 8,
+                }}
+                hoverStyle={{ backgroundColor: C.raised }}
+                focusStyle={controlFocusStyle()}
+                disabledStyle={controlDisabledStyle}
               >
-                {(status) => (
-                  <SettingsRow
-                    label={label()}
-                    status={status()}
-                    accessibilityLabel={tr('{label}: {state}', { label: label(), state: status() })}
-                    disabled={props.disabled}
-                    onPress={() => toggle(group())}
-                  />
-                )}
-              </If>
+                <View style={{ minWidth: 0, flexShrink: 1 }}>
+                  <Text style={{ ...bodyTextStyle, color: C.text }}>{label()}</Text>
+                  <If when={partial()}>
+                    {(status) => (
+                      <Text style={{ ...captionTextStyle, color: C.secondary }}>{status()}</Text>
+                    )}
+                  </If>
+                </View>
+              </Checkbox>
             );
           }}
         </Each>
+      </View>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+        }}
+      >
+        <Text style={{ ...captionTextStyle, color: C.muted, flexShrink: 1 }}>
+          {enabledCount()
+            ? tr('Discovery selected groups', { selected: enabledCount(), total: groups().length })
+            : tr('Only investigation completion')}
+        </Text>
         <SettingsButton
           label={tr(details() ? 'Hide approved tool names' : 'Show approved tool names')}
           tone="quiet"
           onPress={() => details.set(!details())}
         />
-        <If when={details()}>
-          <Text style={{ ...captionTextStyle, color: C.secondary, userSelect: 'text' }}>
-            {approvedDiscoveryNames(props.preview, props.selection).join(' · ')}
-          </Text>
-        </If>
+      </View>
+      <If when={details()}>
+        <Text style={{ ...captionTextStyle, color: C.secondary, userSelect: 'text' }}>
+          {approvedDiscoveryNames(props.preview, props.selection).join(' · ')}
+        </Text>
       </If>
     </View>
   );

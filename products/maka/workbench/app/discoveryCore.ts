@@ -80,6 +80,16 @@ export function discoveryCadence(schedule?: Schedule): IntervalCadence {
   return schedule?.kind === 'interval' ? (schedule.cadence ?? 'fixed') : 'after_completion';
 }
 
+export function discoveryIntervalError(minutes: number, original?: Schedule) {
+  if (original && original.kind !== 'interval') return null;
+  const previous = original?.everySeconds;
+  const keepSeconds = previous !== undefined && minutes === previous / 60;
+  if (!keepSeconds && !Number.isSafeInteger(minutes)) return 'invalid';
+  const seconds = keepSeconds ? previous : minutes * 60;
+  if (seconds < 1) return 'invalid';
+  return seconds > 0xffffffff ? 'too_long' : null;
+}
+
 export function discoveryInput(
   approval: DiscoveryApproval,
   title: string,
@@ -100,13 +110,7 @@ export function discoveryInput(
   const preserve = original && (!originalInterval || (sameMinutes && cadence === originalCadence));
   const interval = sameMinutes ? originalInterval.everySeconds : minutes * 60;
   const start = now + interval * 1000;
-  if (
-    !preserve &&
-    ((!sameMinutes && !Number.isSafeInteger(minutes)) ||
-      interval < 1 ||
-      interval > 0xffffffff ||
-      !Number.isSafeInteger(start))
-  )
+  if (!preserve && (discoveryIntervalError(minutes, original) || !Number.isSafeInteger(start)))
     throw new Error('invalid_discovery_settings');
   return {
     task: {

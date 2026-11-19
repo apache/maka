@@ -47,7 +47,7 @@ mount(() => {
     binding: { revision: 1 },
   };
   const model = { connectionId: 'sample-command-code', modelId: 'deepseek' };
-  let selectedModel = model;
+
   const replacement = { connectionId: 'replacement', modelId: 'available' };
   const page = () => ({
     kind: 'page',
@@ -65,11 +65,27 @@ mount(() => {
   const host = {
     async query(_endpoint: string, method: string, input: any) {
       if (method === 'observe') return { session };
-      if (method === 'resolveModel')
+      const choice = (selection: typeof model) => ({
+        selection,
+        label: selection === model ? 'DeepSeek' : 'Replacement model',
+        connectionName: selection.connectionId,
+        thinkingLevels: [],
+        defaultThinkingLevel: null,
+      });
+      if (method === 'models')
         return {
           kind: 'ready',
-          choice: { label: 'DeepSeek', connectionName: 'sample-command-code' },
+          revision: 1,
+          choices: (disabledModel ? [replacement] : [model, replacement]).map(choice),
+          defaultModel: { kind: 'none' },
+          next: null,
         };
+      if (method === 'resolveModel') {
+        const available = (disabledModel ? [replacement] : [model, replacement]).find(
+          (item) => item.connectionId === input.connectionId && item.modelId === input.modelId,
+        );
+        return available ? { kind: 'ready', choice: choice(available) } : { kind: 'unavailable' };
+      }
       if (input.kind === 'preview_discovery')
         return {
           kind: 'discovery_tools',
@@ -197,7 +213,14 @@ mount(() => {
           intent: { kind: 'text', body: input.input.task.intentBody },
         };
         calls.set(
-          'update ' + detail.task.schedule.cadence + ' ' + detail.task.schedule.everySeconds,
+          [
+            'update',
+            detail.task.schedule.cadence,
+            detail.task.schedule.everySeconds,
+            detail.task.effect.model.connectionId,
+            detail.task.intent.body,
+            detail.approvedTools.join(' · '),
+          ].join(' '),
         );
       }
       if (input.kind === 'pause') detail.task.status = 'paused';
@@ -286,14 +309,9 @@ mount(() => {
         host={host}
         sessionId="bot"
         control={control}
-        selection={async () =>
-          disabledModel && selectedModel === model
-            ? null
-            : { model: selectedModel, thinkingLevel: null }
-        }
+        selection={async () => (disabledModel ? null : { model, thinkingLevel: null })}
         openWorker={opened.set}
         chooseModel={() => {
-          selectedModel = replacement;
           opened.set('models');
         }}
       />

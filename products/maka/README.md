@@ -38,7 +38,7 @@
 
 Open **Proactive discovery** in the Bot header. Leave the direction blank for broad exploration, or enter a topic for focused checks. New interval plans wait 30 minutes after each run finishes. The editor also offers a fixed interval, manual checks, and pause or resume controls.
 
-Choose **Read-only tools** or **Standard Session tools**, then open **Choose tool groups** to select the tools the investigation may call. **Show selected tools** lists their exact names. The terminal, desktop and extension tools you approve operate under the existing workspace and network permissions.
+Choose **Read-only tools** or **Standard Session tools**, then select the tool groups shown below the preset. You can change the investigation model in the same form. **Show selected tools** lists their exact names. The terminal, desktop and extension tools you approve operate under the existing workspace and network permissions.
 
 Use **View investigation** to open the original worker conversation. Select and quote text from a Bot reply to attach feedback to its investigation.
 
