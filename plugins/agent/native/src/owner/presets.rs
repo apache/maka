@@ -194,7 +194,7 @@ impl Write {
     }
 }
 impl Owner {
-    async fn preset_model_availability(
+    pub(super) async fn model_availability(
         &self,
         model: &ModelSelection,
         thinking: Option<maka_agent_facts::execution::ThinkingLevel>,
@@ -309,7 +309,7 @@ impl Owner {
             return Ok(None);
         };
         let availability = if preset.enabled {
-            self.preset_model_availability(&preset.model, preset.thinking_level)
+            self.model_availability(&preset.model, preset.thinking_level)
                 .await?
         } else {
             PresetAvailability::Disabled
@@ -372,7 +372,7 @@ impl Owner {
         if model_changed {
             return Ok(
                 match self
-                    .preset_model_availability(&preset.model, preset.thinking_level)
+                    .model_availability(&preset.model, preset.thinking_level)
                     .await?
                 {
                     PresetAvailability::Available => None,

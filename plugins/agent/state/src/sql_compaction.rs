@@ -139,7 +139,7 @@ fn extends_summary(
     }
     let summary_context: RequestContextEvidence = original(c, producer, &summary.provenance)?;
     let main_context: RequestContextEvidence = original(c, run, &main.provenance)?;
-    if summary_context.previous_checkpoint_id != main_context.previous_checkpoint_id {
+    if !summary_context.same_compaction_input(&main_context) {
         return Ok(false);
     }
     if producer != run {

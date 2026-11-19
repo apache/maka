@@ -988,6 +988,81 @@ impl Store {
         self.data.write(Rebuild(run)).await
     }
 }
+/// Close the checkpoint's source and admit its successor in the same Root transaction.
+struct Handoff {
+    close: Append,
+    next: Admit,
+}
+impl Statement for Handoff {
+    type Value = ();
+    type Output = ();
+    fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {
+        let mut held = self.close.retain();
+        held.extend(self.next.retain());
+        held
+    }
+    fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+        let closed = self.close.execute(c)?;
+        let admitted = self.next.execute(c)?;
+        Ok(Prepared {
+            value: (),
+            changed: true,
+            notification: closed.notification.combine(admitted.notification),
+        })
+    }
+    fn committed(_: ()) {}
+    fn isolated_rejection(error: &StoreError) -> bool {
+        Admit::isolated_rejection(error)
+    }
+}
+impl Store {
+    pub fn checkpoint_handoff(
+        &self,
+        claim: &DriverClaim,
+        head: Head,
+        baseline: ContentBlob,
+        next: Admission,
+    ) -> Result<impl Statement<Output = ()> + use<>, StoreError> {
+        if !Arc::ptr_eq(&self.domain.inner, &claim.ticket.domain)
+            || next.spec.trigger
+                != (Trigger::CheckpointHandoff {
+                    source: claim.run(),
+                })
+        {
+            return Err(invalid(
+                "checkpoint handoff source differs from driver claim",
+            ));
+        }
+        let at = next.at;
+        Ok(Handoff {
+            close: Append {
+                run: claim.run(),
+                expected: Some(head),
+                changes: vec![
+                    Change::new(
+                        Fact::ContextCompacted {
+                            baseline: baseline.reference().clone(),
+                        },
+                        at,
+                    ),
+                    Change::new(
+                        Fact::RunTerminated {
+                            terminal: Terminal::Completed,
+                            diagnostic: None,
+                        },
+                        at,
+                    ),
+                ],
+                contents: vec![baseline],
+                steering: None,
+                mode: Mode::Driver(claim.clone()),
+                artifacts: Default::default(),
+            },
+            next: Admit(next),
+        })
+    }
+}
+
 struct Admit(Admission);
 impl Statement for Admit {
     fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {

@@ -144,13 +144,16 @@ impl Availability {
         }
     }
 
-    pub fn direct_only(&self) -> ToolCatalog {
-        self.catalog.direct_only()
+    pub fn direct_only(&self) -> Self {
+        self.with_subset(self.catalog.direct_only())
     }
     pub fn digest(&self) -> String {
         self.catalog.digest()
     }
     pub async fn snapshot(&self) -> Result<ToolCatalog, ToolError> {
+        if !self.enabled() {
+            return Ok(self.catalog.clone());
+        }
         let active = self.loaded.snapshot().await?;
         Ok(self.select(&active))
     }

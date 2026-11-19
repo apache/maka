@@ -740,7 +740,10 @@ impl Engine {
                             Action::Compact(attempt) => (SummaryOrigin { run, attempt }, None),
                             _ => unreachable!(),
                         };
-                        let material = match self.compaction_checkpoint(&view, origin).await {
+                        let (material, target) = match self
+                            .compaction_checkpoint(&view, origin)
+                            .await
+                        {
                             Ok(Some(material)) => material,
                             Ok(None) => return Ok::<_, RunError>(true),
                             Err(RunError::CompactionFailed(diagnostic)) => {
@@ -760,6 +763,43 @@ impl Engine {
                             }
                         };
                         let baseline = ContentBlob::json(&material)?;
+                        if let Some(target) = target {
+                            match ports
+                                .handoff_checkpoint(&view, baseline.clone(), target)
+                                .await
+                            {
+                                Ok(()) => (),
+                                Err(
+                                    error @ (RunError::ModelUnavailable
+                                    | RunError::AuthenticationRequired
+                                    | RunError::InvalidInput(_)),
+                                ) => {
+                                    let mut facts = vec![Fact::ContextCompacted {
+                                        baseline: baseline.reference().clone(),
+                                    }];
+                                    facts.extend(termination_facts(
+                                        &view,
+                                        Terminal::Failed,
+                                        Some(format!(
+                                            "Could not switch to the requested model: {error}"
+                                        )),
+                                    ));
+                                    self.publish(Some(&claim), &view, facts, vec![baseline], now)
+                                        .await?;
+                                }
+                                Err(RunError::Store(error))
+                                    if matches!(
+                                        error.underlying(),
+                                        StoreError::RevisionConflict { .. }
+                                            | StoreError::SessionRevisionConflict { .. }
+                                    ) =>
+                                {
+                                    ()
+                                }
+                                Err(error) => return Err(error),
+                            }
+                            return Ok(true);
+                        }
                         let fact = Fact::ContextCompacted {
                             baseline: baseline.reference().clone(),
                         };

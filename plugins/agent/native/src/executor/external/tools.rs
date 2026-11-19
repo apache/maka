@@ -92,9 +92,13 @@ impl Tools {
                 )
                 .await
                 .map_err(|error| Error::Provider(error.to_string()))?;
+            let catalog = bound.all();
+            let mut definitions =
+                maka_tools::CodeCells::cell_definitions_for(&bound, tools.code_language);
+            definitions.extend(catalog.direct_only().definitions().cloned());
             Some(BoundTools {
-                catalog: bound.all(),
-                definitions: maka_tools::CodeCells::definitions_for(&bound, tools.code_language),
+                catalog,
+                definitions,
                 effects: tools.effects,
             })
         } else {

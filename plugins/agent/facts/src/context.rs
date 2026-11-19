@@ -160,7 +160,12 @@ pub fn resolve_model_purpose(
     purpose: ModelPurpose,
 ) -> Result<ModelPurpose, &'static str> {
     match (opening, purpose) {
-        (RunInput::Message { .. } | RunInput::Continuation { .. }, purpose) => Ok(purpose),
+        (
+            RunInput::Message { .. }
+            | RunInput::Continuation { .. }
+            | RunInput::CheckpointHandoff { .. },
+            purpose,
+        ) => Ok(purpose),
         (RunInput::ContextCompact { .. }, ModelPurpose::Summary) => Ok(ModelPurpose::Summary),
         (RunInput::ContextCompact { .. }, ModelPurpose::Main) => {
             Err("model purpose contradicts compact opening")

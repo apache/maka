@@ -346,7 +346,7 @@ async fn learning_a_nested_tool_preserves_the_code_mode_definitions() {
             .reader(SESSION.into(), tokio::runtime::Handle::current()),
     );
     let available = Availability::new(catalog, loaded);
-    let initial = fixture.cells.definitions(&available);
+    let initial = fixture.cells.cell_definitions(&available);
     assert!(
         initial[0].description.contains(
             "Deferred tools callable via tools.<name>(input) (inspect schemas in ALL_TOOLS): Lookup"
@@ -383,7 +383,7 @@ async fn learning_a_nested_tool_preserves_the_code_mode_definitions() {
         .await;
 
     assert_eq!(available.snapshot().await.unwrap().names(), ["Lookup"]);
-    assert_eq!(fixture.cells.definitions(&available), initial);
+    assert_eq!(fixture.cells.cell_definitions(&available), initial);
     fixture.close().await;
 }
 

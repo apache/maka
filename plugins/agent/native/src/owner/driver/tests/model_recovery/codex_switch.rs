@@ -73,7 +73,25 @@ fn response(request: &Value) -> (u16, Vec<Value>) {
             ],
         );
     }
-    let item = if compact {
+    let handoff = request["input"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.pointer("/content/0/text").and_then(Value::as_str))
+        .find_map(|text| text.strip_prefix("fixture-handoff/"));
+    let item = if let Some(connection) = handoff
+        && !body.contains("handoff-call")
+    {
+        json!({"type":"function_call","id":"handoff-item","call_id":"handoff-call","name":"CompactContext","arguments":json!({"resumeModel":{"connectionId":connection,"modelId":"llama3.1"}}).to_string(),"status":"completed"})
+    } else if !compact && body.contains("handoff-call") {
+        json!({"type":"message","id":"summary","role":"assistant","content":[{"type":"output_text","text":"Portable checkpoint for the new model."}]})
+    } else if !compact
+        && body.contains("native-focus-fixture")
+        && !body.contains("focus-call")
+        && !body.contains("converted-state")
+    {
+        json!({"type":"function_call","id":"focus-item","call_id":"focus-call","name":"CompactContext","arguments":json!({"prompt":"Retain the checksum."}).to_string(),"status":"completed"})
+    } else if compact {
         json!({"type":"compaction","id":"switch-cp","encrypted_content":format!("{}-{}", if large {"converted-second"} else if body.contains("converted-state") {"reconverted-state"} else {"converted-state"}, request["model"].as_str().unwrap())})
     } else {
         json!({"type":"message","id":"answer","role":"assistant","content":[{"type":"output_text","text":"done"}]})
@@ -193,6 +211,31 @@ async fn switching_compacts_with_previous_model_before_target_input() {
             let models = call(client, "agent", "models", json!({"kind":"start"})).await?;
             selections.push(models["choices"].as_array().ok_or("models missing")?.iter().find(|choice| choice["selection"]["connectionId"] == connection["connection"]["connectionId"]).ok_or("selection missing")?["selection"].clone());
         }
+        let created = call(client, "agent", "create", json!({"title":"Focus native checkpoint","automaticTitle":false,"labels":[],"workspace":{"kind":"directory","path":base.join("workspace")}})).await?;
+        let session = created["session"]["id"].as_str().ok_or("session missing")?;
+        let sent = call(client, "agent", "send", json!({"sessionId":session,"message":"native-focus-fixture","backend":selections[0]})).await?;
+        let _main = received.recv().await.ok_or("main missing")?;
+        let native = received.recv().await.ok_or("native summary missing")?;
+        let input = native["input"].as_array().unwrap();
+        assert_eq!(input.last().unwrap()["type"], "compaction_trigger", "{native}");
+        let focus = &input[input.len()-2];
+        assert_eq!(focus["role"], "user");
+        assert!(focus["content"].to_string().contains("Retain the checksum."), "{focus}");
+        let next = received.recv().await.ok_or("native continuation missing")?;
+        assert!(next.to_string().contains("converted-state"));
+        quiescent_message(client, session, &sent["messageId"]).await?;
+        let created = call(client, "agent", "create", json!({"title":"Portable handoff","automaticTitle":false,"labels":[],"workspace":{"kind":"directory","path":base.join("workspace")}})).await?;
+        let session = created["session"]["id"].as_str().ok_or("session missing")?;
+        let sent = call(client, "agent", "send", json!({"sessionId":session,"message":format!("fixture-handoff/{}",selections[1]["connectionId"].as_str().unwrap()),"backend":selections[0]})).await?;
+        let _main = received.recv().await.ok_or("handoff main missing")?;
+        let portable = received.recv().await.ok_or("portable summary missing")?;
+        assert_eq!(portable["model"], "llama3.2");
+        assert!(portable.to_string().contains("handoff-call"));
+        assert!(!portable.to_string().contains("compaction_trigger"));
+        let next = received.recv().await.ok_or("target missing")?;
+        assert_eq!(next["model"], "llama3.1");
+        assert!(next.to_string().contains("Portable checkpoint for the new model."));
+        quiescent_message(client, session, &sent["messageId"]).await?;
         for scenario in ["direct", "second", "fallback", "fork", "checkpoint-fork", "stopped"] {
             eprintln!("scenario: {scenario}");
             let mut session = {

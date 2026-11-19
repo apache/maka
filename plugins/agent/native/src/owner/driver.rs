@@ -185,6 +185,44 @@ impl PreparedTool {
         cancellation: CancellationToken,
         semantics: ToolSemantics,
     ) -> Result<Self, ToolRejection> {
+        if name == super::compaction::TOOL
+            && let Some(target) = input.get("resumeModel")
+        {
+            catalog.validate(&name, &input)?;
+            if access.spec().budget_basis.is_some() {
+                return Err(ToolRejection::PolicyDenied {
+                    message: "This background Run is authorized for its assigned model.".into(),
+                });
+            }
+            let model = serde_json::from_value(target.clone()).map_err(|error| {
+                ToolRejection::PreparationFailed {
+                    message: error.to_string(),
+                }
+            })?;
+            let failed = |message| ToolRejection::PreparationFailed { message };
+            let configuration = access
+                .live_configuration()
+                .await
+                .map_err(|error| failed(error.to_string()))?;
+            let thinking = super::compaction::model_thinking_level(&configuration);
+            use maka_agent_api::preset::PresetAvailability;
+            match owner
+                .model_availability(&model, thinking)
+                .await
+                .map_err(failed)?
+            {
+                PresetAvailability::Available => {}
+                PresetAvailability::ThinkingLevelUnavailable => return Err(failed(
+                    "The requested resume model does not support this session's thinking level."
+                        .into(),
+                )),
+                _ => {
+                    return Err(failed(
+                        "The requested resume model is unavailable on this connection.".into(),
+                    ));
+                }
+            }
+        }
         if name == "Shell"
             && let Some(command) = input.get("command").and_then(serde_json::Value::as_str)
             && let Some(original) =
@@ -430,31 +468,31 @@ impl NativeDriver {
             .map_err(|error| RunError::Internal(error.to_string()))?
             .map_err(RunError::Tool)?;
         self.access.live_configuration().await?;
-        let definitions = match &self.backend {
+        let catalog = bound.all();
+        let (mut definitions, top_level) = match &self.backend {
             NativeBackend::Model {
                 cells: Some(cells), ..
-            } => cells.coordinator.definitions(&bound),
-            NativeBackend::Model { cells: None, .. } => {
-                let visible = if reset_loaded_tools {
-                    bound.select(&Default::default())
-                } else {
-                    bound.snapshot().await.map_err(RunError::Tool)?
-                };
-                let mut definitions: Vec<_> = visible.definitions().cloned().collect();
-                if let Some(search) = bound.definition() {
-                    definitions.push(search);
-                }
-                definitions
-            }
+            } => (
+                cells.coordinator.cell_definitions(&bound),
+                bound.direct_only(),
+            ),
+            NativeBackend::Model { cells: None, .. } => (Vec::new(), bound),
             NativeBackend::Executor(_) => {
                 return Err(RunError::InvalidInput(
                     "model tools requested for executor".into(),
                 ));
             }
         };
+        let visible = if reset_loaded_tools {
+            top_level.select(&Default::default())
+        } else {
+            top_level.snapshot().await?
+        };
+        definitions.extend(visible.definitions().cloned());
+        definitions.extend(top_level.definition());
         Ok(BoundStepTools {
             definitions,
-            catalog: bound.all(),
+            catalog,
         })
     }
 
@@ -502,16 +540,23 @@ impl NativeDriver {
             .await?;
         for original in &request.composition.tools {
             if code || original.name == maka_tools::availability::SEARCH {
-                let actual = bound
-                    .definitions
-                    .iter()
-                    .find(|tool| tool.name == original.name)
-                    .ok_or_else(|| {
-                        source_authority_changed(format!(
-                            "selected control {} is unavailable",
-                            original.name
-                        ))
-                    })?;
+                // Discovery affects the next request, not the original step's advertised tools.
+                let actual = match original.name.as_str() {
+                    "exec" | "wait" | maka_tools::availability::SEARCH => bound
+                        .definitions
+                        .iter()
+                        .find(|tool| tool.name == original.name),
+                    _ => bound
+                        .catalog
+                        .definitions()
+                        .find(|tool| tool.name == original.name),
+                }
+                .ok_or_else(|| {
+                    source_authority_changed(format!(
+                        "selected control {} is unavailable",
+                        original.name
+                    ))
+                })?;
                 if !same_tool_contract(original, actual) {
                     return Err(source_authority_changed(format!(
                         "selected control {} contract changed",
@@ -602,7 +647,7 @@ impl NativeDriver {
             && matches!(&self.backend, NativeBackend::Model { cells: Some(_), .. });
         let discovery = view.spec.tool_discovery
             && tool.call.name == maka_tools::availability::SEARCH
-            && matches!(&self.backend, NativeBackend::Model { cells: None, .. });
+            && matches!(&self.backend, NativeBackend::Model { .. });
         if !virtual_cell
             && !discovery
             && configuration
@@ -627,15 +672,16 @@ impl NativeDriver {
                     message: error.to_string(),
                 })?;
         if discovery {
-            return self
-                .availability(catalog)
-                .prepare_search(input)
-                .map(|effect| {
-                    PreparedDispatch::ordinary(PreparedTool::regular(
-                        effect,
-                        ToolSemantics::Parallel,
-                    ))
-                });
+            let available = self.availability(catalog);
+            let top_level = if matches!(&self.backend, NativeBackend::Model { cells: Some(_), .. })
+            {
+                available.direct_only()
+            } else {
+                available
+            };
+            return top_level.prepare_search(input).map(|effect| {
+                PreparedDispatch::ordinary(PreparedTool::regular(effect, ToolSemantics::Parallel))
+            });
         }
         if matches!(tool.call.name.as_str(), "exec" | "wait") {
             return match &self.backend {
@@ -818,6 +864,14 @@ impl NativeDriver {
 }
 
 impl DriverPorts for NativeDriver {
+    fn handoff_checkpoint<'a>(
+        &'a self,
+        view: &'a RunView,
+        baseline: ContentBlob,
+        target: maka_agent_facts::configuration::ModelSelection,
+    ) -> BoxFuture<'a, Result<(), RunError>> {
+        self.resume_after_checkpoint(view, baseline, target).boxed()
+    }
     fn external(&self) -> Option<Arc<dyn ExternalPorts>> {
         match &self.backend {
             NativeBackend::Executor(executor) => Some(executor.clone()),
@@ -1053,7 +1107,7 @@ impl DriverPorts for NativeDriver {
                 && matches!(&self.backend, NativeBackend::Model { cells: Some(_), .. });
             let discovery = view.spec.tool_discovery
                 && tool.call.name == maka_tools::availability::SEARCH
-                && matches!(&self.backend, NativeBackend::Model { cells: None, .. });
+                && matches!(&self.backend, NativeBackend::Model { .. });
             if !virtual_cell
                 && !discovery
                 && configuration

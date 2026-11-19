@@ -138,6 +138,12 @@ pub trait DriverPorts: Send + Sync {
     ) -> Result<serde_json::Value, RunError> {
         Ok(serde_json::json!({"request": request.request}))
     }
+    fn handoff_checkpoint<'a>(
+        &'a self,
+        view: &'a RunView,
+        baseline: ContentBlob,
+        target: maka_agent_facts::configuration::ModelSelection,
+    ) -> BoxFuture<'a, Result<(), RunError>>;
     fn external(&self) -> Option<Arc<dyn ExternalPorts>>;
     fn cells(&self) -> Option<Arc<dyn CellPorts>>;
     fn publication(&self) -> Option<Arc<dyn ExternalPublicationPorts>>;

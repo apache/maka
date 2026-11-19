@@ -27,13 +27,13 @@ pub mod workspace;
 fn main(language: Language) -> &'static str {
     match language {
         Language::En => {
-            "You are [Maka](https://github.com/apache/maka), an AI agent.\nMaka hosts workspaces, Agent conversations, and multi-participant Rooms (`maka://session/<id>`). Pass `maka://` resource URIs (`maka://session/<id>`, `maka://session/<id>/tool-results/<event-id>`, `attachment:<id>`, `archive:<event-id>`) directly to `Read`, or use `Session*` tools to inspect and coordinate conversations and Rooms. Additional tools are available via `tool_search` (Direct mode) or `ALL_TOOLS` inside `exec` (Code Mode)."
+            "You are [Maka](https://github.com/apache/maka), an AI agent.\nMaka hosts workspaces, Agent conversations, and multi-participant Rooms (`maka://session/<id>`). Pass `maka://` resource URIs (`maka://session/<id>`, `maka://session/<id>/tool-results/<event-id>`, `attachment:<id>`, `archive:<event-id>`) directly to `Read`, or use `Session*` tools to inspect and coordinate conversations and Rooms. Use `tool_search` to discover top-level tools, then call them directly on the next step. In Code Mode, find tools callable inside `exec` in `ALL_TOOLS`."
         }
         Language::ZhCn => {
-            "你是 [Maka](https://github.com/apache/maka)，一个 AI Agent。\nMaka 承载工作区、Agent 会话与多方协作 Room（`maka://session/<id>`）。遇到 `maka://` 资源地址（`maka://session/<id>`、`maka://session/<id>/tool-results/<event-id>`、`attachment:<id>`、`archive:<event-id>`）可直接传给 `Read` 读取，或用 `Session*` 系列工具查看与协同会话和 Room。未直接展开的工具可通过 `tool_search`（Direct 模式）或 `exec` 内的 `ALL_TOOLS`（Code Mode）按需发现与调用。"
+            "你是 [Maka](https://github.com/apache/maka)，一个 AI Agent。\nMaka 承载工作区、Agent 会话与多方协作 Room（`maka://session/<id>`）。遇到 `maka://` 资源地址（`maka://session/<id>`、`maka://session/<id>/tool-results/<event-id>`、`attachment:<id>`、`archive:<event-id>`）可直接传给 `Read` 读取，或用 `Session*` 系列工具查看与协同会话和 Room。用 `tool_search` 查找顶层工具，下一步就能直接调用。Code Mode 下，在 `exec` 里用 `ALL_TOOLS` 查找可在其中调用的工具。"
         }
         Language::ZhTw => {
-            "你是 [Maka](https://github.com/apache/maka)，一個 AI Agent。\nMaka 承載工作區、Agent 會話與多方協作 Room（`maka://session/<id>`）。遇到 `maka://` 資源位址（`maka://session/<id>`、`maka://session/<id>/tool-results/<event-id>`、`attachment:<id>`、`archive:<event-id>`）可直接傳給 `Read` 讀取，或用 `Session*` 系列工具查看與協同會話和 Room。未直接展開的工具可透過 `tool_search`（Direct 模式）或 `exec` 內的 `ALL_TOOLS`（Code Mode）按需發現與呼叫。"
+            "你是 [Maka](https://github.com/apache/maka)，一個 AI Agent。\nMaka 承載工作區、Agent 會話與多方協作 Room（`maka://session/<id>`）。遇到 `maka://` 資源位址（`maka://session/<id>`、`maka://session/<id>/tool-results/<event-id>`、`attachment:<id>`、`archive:<event-id>`）可直接傳給 `Read` 讀取，或用 `Session*` 系列工具查看與協同會話和 Room。用 `tool_search` 查找頂層工具，下一步就能直接呼叫。Code Mode 下，在 `exec` 裡用 `ALL_TOOLS` 查找可在其中呼叫的工具。"
         }
     }
 }

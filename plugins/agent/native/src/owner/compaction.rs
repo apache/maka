@@ -32,8 +32,20 @@ pub(super) fn tool() -> maka_agent_facts::tools::ToolRegistration {
     ToolRegistration {
         definition: ToolDefinition {
             name: TOOL.into(), provider: None, freeform: None, output_schema: None,
-            description: "Summarize earlier context and continue this Run. Use at a natural break when earlier work no longer needs its full detail. The checkpoint is applied after this batch of tools settles.".into(),
-            input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+            description: "Summarize earlier work at a natural break and continue from the checkpoint after the current tool batch settles.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "What this checkpoint should prioritize retaining. Applies only to this compaction."},
+                    "resumeModel": {
+                        "type": "object",
+                        "description": "Choose a connectionId and modelId from ModelList to take over after a successful checkpoint and handle later messages. Omit to keep the current model.",
+                        "properties": {"connectionId": {"type":"string","minLength":1}, "modelId":{"type":"string","minLength":1}},
+                        "required":["connectionId","modelId"], "additionalProperties":false
+                    }
+                },
+                "additionalProperties": false
+            }),
         },
         nesting: ToolNesting::DirectOnly,
         semantics: ToolSemantics::Parallel,
@@ -54,6 +66,15 @@ impl maka_agent_facts::tools::ToolExecutor for CompactContext {
         _: CancellationToken,
     ) -> maka_agent_facts::tools::ToolFuture {
         Box::pin(async { Ok(serde_json::json!({"status":"requested"})) })
+    }
+}
+
+pub(super) fn model_thinking_level(
+    configuration: &ResolvedConfiguration,
+) -> Option<maka_agent_facts::execution::ThinkingLevel> {
+    match &configuration.backend {
+        Some(BackendPreference::Model { thinking_level, .. }) => *thinking_level,
+        _ => None,
     }
 }
 
@@ -230,5 +251,113 @@ impl Owner {
             .session_run(session, run)
             .await?
             .is_some_and(|view| view.terminal.is_none()))
+    }
+}
+
+impl super::driver::NativeDriver {
+    pub(super) async fn resume_after_checkpoint(
+        &self,
+        view: &maka_agent_state::fold::RunView,
+        baseline: maka_agent_state::ContentBlob,
+        target: ModelSelection,
+    ) -> Result<(), maka_agent_engine::RunError> {
+        use maka_agent_engine::RunError;
+        use maka_agent_facts::durable::{BackendSpec, Trigger};
+        use maka_agent_state::{Admission, ContentBlob};
+
+        let session = &view.spec.session_id;
+        let owner = &self.owner;
+        let root = owner.store.owned_root()?;
+        let metadata = owner
+            .mutable_session(session)
+            .await
+            .map_err(RunError::InvalidInput)?;
+        let thinking = model_thinking_level(&metadata.configuration);
+        let source = crate::model::Source::select(
+            owner.configuration.clone(),
+            owner.catalog.clone(),
+            owner.credentials.clone(),
+            target.clone(),
+            thinking,
+            session.clone(),
+            owner.revision.clone(),
+        )
+        .await?;
+        let model = ContentBlob::json(&source.accepted)?;
+        let input = ContentBlob::json(&RunInput::CheckpointHandoff { source: view.run })?;
+        let (mcp, _) = self
+            .access
+            .current_model_tools(&metadata.configuration.workspace)?;
+        let mut selection: crate::tools::SelectionSnapshot = owner
+            .run_content(view.run, &view.spec.tool_selection)
+            .await?;
+        let target_tools = owner.select_catalog_tools(
+            &mcp.tools,
+            Some(session),
+            view.spec.allowed_tools.as_deref(),
+            source.accepted.editing_tools,
+        );
+        // Switch only the editing tools. Other bindings retain their original declarations.
+        let edit = |name: &str| owner.editing_tools.iter().any(|(tool, _)| tool == name);
+        selection.definitions.retain(|tool| !edit(&tool.name));
+        selection.direct_only.retain(|name| !edit(name));
+        selection.definitions.extend(
+            target_tools
+                .definitions()
+                .filter(|tool| edit(&tool.name))
+                .cloned(),
+        );
+        selection.direct_only.extend(
+            target_tools
+                .direct_only_names()
+                .into_iter()
+                .filter(|name| edit(name)),
+        );
+        selection.definitions.sort_by(|a, b| a.name.cmp(&b.name));
+        let tools = ContentBlob::json(&selection)?;
+        let mut spec = view.spec.clone();
+        spec.tool_selection = tools.reference().clone();
+        spec.trigger = Trigger::CheckpointHandoff { source: view.run };
+        spec.input = input.reference().clone();
+        spec.backend = BackendSpec::Model {
+            binding: source.accepted.binding,
+            descriptor: model.reference().clone(),
+        };
+        let admission = Admission::new(
+            spec,
+            UnixMillis(
+                now()
+                    .try_into()
+                    .map_err(|_| RunError::Internal("invalid clock".into()))?,
+            ),
+            vec![input, model, tools],
+        );
+        let statement =
+            self.state
+                .checkpoint_handoff(self.access.claim(), view.into(), baseline, admission)?;
+        let writer = self.access.data_writer().map_err(RunError::InvalidInput)?;
+        let _ordered = owner.runs.ordered(session).await;
+        if metadata.archived
+            || metadata.configuration.permission_basis() != view.spec.permission_basis
+        {
+            return Err(RunError::InvalidInput(
+                "Session workspace or availability changed before model handoff".into(),
+            ));
+        }
+        owner
+            .store
+            .write_session_metadata_with(
+                session,
+                metadata.revision,
+                move |settings: &mut StoredSessionConfiguration| {
+                    settings.backend = Some(BackendPreference::model(target, thinking));
+                    Ok(())
+                },
+                &writer,
+                statement,
+            )
+            .await?;
+        root.capability_source_changed();
+        Ok(())
     }
 }

@@ -129,6 +129,7 @@ pub enum Trigger {
     Schedule { schedule_id: String },
     Goal { goal_id: Uuid },
     Continuation { source: RunId },
+    CheckpointHandoff { source: RunId },
     ContextCompact,
     HistorySource,
 }
