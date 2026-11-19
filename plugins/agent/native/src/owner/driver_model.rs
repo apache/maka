@@ -2610,7 +2610,15 @@ impl DriverModel {
                 };
                 let terminal = match &received {
                     Ok(Err(error)) => {
-                        terminal_outcome(error).map(|outcome| (outcome, error.to_string()))
+                        terminal_outcome(error).map(|outcome| {
+                            (
+                                outcome,
+                                format_retry_diagnostic(
+                                    error,
+                                    maka_agent_facts::model::error::ProviderFailure::now_unix_ms(),
+                                ),
+                            )
+                        })
                     }
                     _ => None,
                 };
@@ -3766,6 +3774,19 @@ fn recovery_for_failure(
     if !failure.retryable() {
         return Ok(blocked());
     }
+    if failure.retry_at_unix_ms().is_some_and(|at| {
+        retry_wait_exceeded(
+            at,
+            maka_agent_facts::model::error::ProviderFailure::now_unix_ms(),
+        )
+    }) {
+        return Ok(RecoveryEvidence {
+            recovery: AttemptRecovery::Blocked {
+                diagnostic: "provider asked to retry after more than 15 minutes".into(),
+            },
+            contents: vec![],
+        });
+    }
     let not_before = failure
         .retry_at_unix_ms()
         .map(|time| i64::try_from(time).map(UnixMillis))
@@ -3828,4 +3849,104 @@ pub(crate) async fn append_continuation_cue(
             .await?;
     }
     Ok(())
+}
+
+/// The longest provider-requested wait a Run sleeps through before ending instead.
+const MAX_RETRY_WAIT_MS: u64 = 15 * 60 * 1_000;
+
+fn retry_wait_exceeded(retry_at_unix_ms: u64, now_unix_ms: u64) -> bool {
+    retry_at_unix_ms.saturating_sub(now_unix_ms) > MAX_RETRY_WAIT_MS
+}
+
+fn format_retry_diagnostic(error: &RunError, now_unix_ms: u64) -> String {
+    let base = error.to_string();
+    let RunError::Model(maka_model::ModelError::Provider(failure)) = error else {
+        return base;
+    };
+    let Some(at) = failure
+        .retry_at_unix_ms()
+        .filter(|at| retry_wait_exceeded(*at, now_unix_ms))
+    else {
+        return base;
+    };
+    match i64::try_from(at)
+        .ok()
+        .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
+    {
+        Some(ts) => format!("{base} (the service asks to retry after {ts})"),
+        None => format!("{base} (the service asks to retry after more than 15 minutes)"),
+    }
+}
+
+#[cfg(test)]
+mod retry_wait_cap_tests {
+    use super::*;
+    use maka_agent_facts::composition::SourceKind;
+    use maka_agent_facts::model::error::{ProviderFailure, ProviderFailureReason};
+
+    fn probe(retry_at: u64) -> Result<RecoveryEvidence, RunError> {
+        let failure = ProviderFailure::new(
+            ProviderFailureReason::RateLimit,
+            "slow down",
+            true,
+            Some(retry_at),
+        );
+        recovery_for_failure(
+            &RunError::Model(maka_model::ModelError::Provider(failure)),
+            RunId::new(),
+            ModelAttemptId::new(),
+            ContentBlob::json(&"req").unwrap().reference().clone(),
+            SourceRevision {
+                kind: SourceKind::ModelAdapter,
+                name: "maka-model".into(),
+                package_id: "maka-model".into(),
+                entry_id: "maka-model".into(),
+                activation: "act".into(),
+                revision: "1".into(),
+            },
+            &[],
+        )
+    }
+
+    #[test]
+    fn retry_after_wait_cap_blocks_over_fifteen_minutes_and_overflows() {
+        let now = ProviderFailure::now_unix_ms();
+        assert!(matches!(
+            probe(now + 60_000).unwrap().recovery,
+            AttemptRecovery::FrozenRetrySafe {
+                not_before: Some(_)
+            }
+        ));
+        assert!(!retry_wait_exceeded(now + MAX_RETRY_WAIT_MS, now));
+        assert!(retry_wait_exceeded(now + MAX_RETRY_WAIT_MS + 1, now));
+        for huge in [now + 16 * 60_000, 1_796_795_144_326_640, u64::MAX] {
+            assert!(
+                matches!(
+                    probe(huge).unwrap().recovery,
+                    AttemptRecovery::Blocked { .. }
+                ),
+                "expected blocked for retry_at={huge}"
+            );
+        }
+        let iso = format_retry_diagnostic(
+            &RunError::Model(maka_model::ModelError::Provider(ProviderFailure::new(
+                ProviderFailureReason::RateLimit,
+                "slow down",
+                true,
+                Some(now + 16 * 60_000),
+            ))),
+            now,
+        );
+        assert!(iso.contains("the service asks to retry after 20"), "{iso}");
+        let overflow = format_retry_diagnostic(
+            &RunError::Model(maka_model::ModelError::Provider(ProviderFailure::new(
+                ProviderFailureReason::RateLimit,
+                "slow down",
+                true,
+                Some(u64::MAX),
+            ))),
+            now,
+        );
+        assert!(overflow.contains("more than 15 minutes"), "{overflow}");
+    }
 }
