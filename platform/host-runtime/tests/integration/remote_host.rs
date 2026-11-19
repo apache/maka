@@ -24,10 +24,7 @@ use maka_event_log::{
 };
 use maka_host_runtime::{
     application::{
-        host::{
-            Channel, Client, Configuration, Host, WebSocketStreamOpener,
-            websocket::WebSocketListener,
-        },
+        host::{Channel, Client, Configuration, Host, OpenChannel, websocket::WebSocketListener},
         logs,
         transport::GATEWAY,
     },
@@ -124,9 +121,9 @@ async fn remote_host_opens_independent_websocket_channels() {
         let stop = stop.clone();
         async move { host.serve(local, Some(websocket), stop).await }
     });
-    // Stand in for one peer endpoint: each call returns a fresh byte stream.
+    // Each call returns a fresh transport stream.
     let opened = Arc::new(AtomicUsize::new(0));
-    let opener: WebSocketStreamOpener = Arc::new({
+    let opener: OpenChannel = Arc::new({
         let opened = opened.clone();
         move || {
             opened.fetch_add(1, Ordering::Relaxed);

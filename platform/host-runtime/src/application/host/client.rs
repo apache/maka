@@ -46,16 +46,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ChannelIo for S 
 
 pub type Channel = Box<dyn ChannelIo>;
 pub type LocalCall = Call<ReadHalf<BufReader<Channel>>, WriteHalf<BufReader<Channel>>>;
-pub type WebSocketStreamOpener =
+pub type OpenChannel =
     Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, Result<Channel>> + Send + Sync>;
 
 #[derive(Clone)]
 enum Target {
     Local(PathBuf),
-    WebSocket {
-        open_stream: WebSocketStreamOpener,
-        bearer: Arc<str>,
-        client_instance: Arc<str>,
+    Supplied {
+        open: OpenChannel,
+        client_instance: Option<Arc<str>>,
     },
 }
 impl Target {
@@ -64,30 +63,34 @@ impl Target {
             Self::Local(address) => Ok(Box::new(
                 ipc::connect(address).await.map_err(|e| e.to_string())?,
             )),
-            Self::WebSocket {
-                open_stream,
-                bearer,
-                ..
-            } => Ok(Box::new(
-                connect_on_stream(open_stream().await?, bearer).await?,
-            )),
+            Self::Supplied { open, .. } => open().await,
         }
     }
     fn client_instance(&self) -> Option<String> {
         match self {
             Self::Local(_) => None,
-            Self::WebSocket {
+            Self::Supplied {
                 client_instance, ..
-            } => Some(client_instance.to_string()),
+            } => client_instance.as_deref().map(str::to_owned),
         }
     }
-    fn local_address(&self) -> Result<&Path> {
-        match self {
-            Self::Local(path) => Ok(path),
-            Self::WebSocket { .. } => Err("Host control requires the local owner".into()),
+    fn is_remote(&self) -> bool {
+        matches!(
+            self,
+            Self::Supplied {
+                client_instance: Some(_),
+                ..
+            }
+        )
+    }
+    async fn owner_control(&self, epoch: Uuid, request: Request) -> Result<Response> {
+        if self.is_remote() {
+            return Err("Host control requires the local owner".into());
         }
+        control_stream(self.open().await?, Some(epoch), request).await
     }
 }
+
 #[derive(PartialEq)]
 enum Phase {
     Ready,
@@ -146,18 +149,35 @@ impl Client {
         )
         .await
     }
+    /// Open independent Host channels over a supplied byte stream. The server
+    /// derives authority from its ingress; this does not grant local ownership.
+    pub async fn connect_on(open: OpenChannel, epoch: Option<Uuid>) -> Result<Self> {
+        let target = Target::Supplied {
+            open,
+            client_instance: None,
+        };
+        let anchor = target.open().await?;
+        Self::open(target, epoch, anchor, Request::Connect).await
+    }
+
     /// Each invocation of the opener must return a fresh, authenticated transport
     /// stream to the same Host. The Host separately authenticates the Bearer.
     pub async fn connect_websocket(
-        open_stream: WebSocketStreamOpener,
+        open_stream: OpenChannel,
         bearer: Arc<str>,
         client_instance: Arc<str>,
         epoch: Uuid,
     ) -> Result<Self> {
-        let target = Target::WebSocket {
-            open_stream,
-            bearer,
-            client_instance,
+        let open: OpenChannel = Arc::new(move || {
+            let stream = open_stream();
+            let bearer = bearer.clone();
+            Box::pin(async move {
+                Ok(Box::new(connect_on_stream(stream.await?, &bearer).await?) as Channel)
+            })
+        });
+        let target = Target::Supplied {
+            open,
+            client_instance: Some(client_instance),
         };
         let mut pairing = target.open().await?;
         wire::write(
@@ -516,22 +536,23 @@ impl Client {
     }
 
     async fn request_quit(&mut self, ephemeral_only: bool) -> Result<()> {
-        if matches!(self.target, Target::WebSocket { .. }) {
+        if self.target.is_remote() {
             return self.close().await;
         }
         if self.phase == Phase::Closed {
             return Ok(());
         }
         self.phase = Phase::Lost;
-        match control(
-            self.target.local_address()?,
-            Some(self.connected.epoch),
-            Request::Quit {
-                session: self.connected.session,
-                ephemeral_only,
-            },
-        )
-        .await?
+        match self
+            .target
+            .owner_control(
+                self.connected.epoch,
+                Request::Quit {
+                    session: self.connected.session,
+                    ephemeral_only,
+                },
+            )
+            .await?
         {
             Response::Closed => {
                 self.phase = Phase::Closed;
@@ -545,12 +566,10 @@ impl Client {
         if self.phase != Phase::Ready || self.peer.is_some() {
             return Err("Host publication requires a ready local owner session".into());
         }
-        match control(
-            self.target.local_address()?,
-            Some(self.connected.epoch),
-            Request::Publication,
-        )
-        .await?
+        match self
+            .target
+            .owner_control(self.connected.epoch, Request::Publication)
+            .await?
         {
             Response::Publication(result) => result,
             _ => Err("Host publication response mismatch".into()),
@@ -569,16 +588,17 @@ impl Client {
         if self.phase != Phase::Ready || self.peer.is_some() {
             return Err("Host configuration requires a ready local owner session".into());
         }
-        match control(
-            self.target.local_address()?,
-            Some(self.connected.epoch),
-            Request::Configure {
-                source,
-                previous,
-                configuration,
-            },
-        )
-        .await?
+        match self
+            .target
+            .owner_control(
+                self.connected.epoch,
+                Request::Configure {
+                    source,
+                    previous,
+                    configuration,
+                },
+            )
+            .await?
         {
             Response::Configured(result) => result,
             _ => Err("Host configuration response mismatch".into()),
@@ -675,7 +695,7 @@ async fn control(address: &Path, epoch: Option<Uuid>, request: Request) -> Resul
     control_stream(stream, epoch, request).await
 }
 async fn control_stream(
-    mut stream: LocalStream,
+    mut stream: impl AsyncRead + AsyncWrite + Unpin,
     epoch: Option<Uuid>,
     request: Request,
 ) -> Result<Response> {
