@@ -1556,7 +1556,13 @@ pub(crate) fn append(
         record(c, &recorded)?;
         match &recorded.fact {
             Fact::StopRequested { diagnostic } => {
-                crate::queue::stop_completions(c, &view.spec.session_id, run, recorded.at)?;
+                crate::queue::stop_completions(
+                    c,
+                    &view.spec.session_id,
+                    run,
+                    diagnostic,
+                    recorded.at,
+                )?;
                 if diagnostic == crate::queue::GOAL_CONTROL_STOP {
                     crate::queue::release_steering(c, &view.spec.session_id, run, recorded.at)?;
                 }

@@ -47,6 +47,10 @@ pub(crate) enum Event {
     CallerStopped {
         caller: RunId,
     },
+    /// A user Stop keeps these delegated results as plain follow-ups.
+    CompletionsReleased {
+        requests: Vec<RequestId>,
+    },
     SteeringReleased {
         run: RunId,
     },
@@ -855,6 +859,9 @@ fn project(
         Event::CallerStopped { caller } => {
             retract_completions(c, session, *caller)?;
         }
+        Event::CompletionsReleased { requests } => {
+            release_completions(c, session, requests)?;
+        }
         Event::SteeringReleased { run } => {
             move_steering_to_followup(c, session, *run)?;
         }
@@ -943,12 +950,85 @@ fn retract_completions(c: &Connection, session: &str, caller: RunId) -> Result<u
     )?)
 }
 
+/// Results other Sessions reported back to `caller`, not the caller's own
+/// continuation of its turn.
+fn delegated_results(
+    c: &Connection,
+    session: &str,
+    caller: RunId,
+) -> Result<Vec<RequestId>, StoreError> {
+    let entries = c
+        .prepare_cached(
+            "SELECT entry_json FROM agent_queue_items
+             WHERE session=?1 AND state='pending' AND lane='followup'
+               AND json_extract(entry_json,'$.placement.kind')='completion'
+               AND json_extract(entry_json,'$.placement.caller')=?2
+             ORDER BY position,request",
+        )?
+        .query_map(params![session, caller.to_string()], |row| {
+            row.get::<_, String>(0)
+        })?
+        .map(|row| Ok(serde_json::from_str::<QueueEntry>(&row?)?))
+        .collect::<Result<Vec<_>, StoreError>>()?;
+    let mut requests = Vec::new();
+    for entry in entries {
+        if matches!(
+            source(c, &entry.request)?.message.origin,
+            Some(maka_agent_facts::message::MessageOrigin::SessionCompletion { .. })
+        ) {
+            requests.push(entry.request.id);
+        }
+    }
+    Ok(requests)
+}
+
+fn release_completions(
+    c: &Connection,
+    session: &str,
+    requests: &[RequestId],
+) -> Result<(), StoreError> {
+    let followup = serde_json::to_string(&Placement::Followup)?;
+    for request in requests {
+        let changed = c.execute(
+            "UPDATE agent_queue_items
+             SET target_run=NULL, entry_json=json_set(entry_json,'$.placement',json(?3))
+             WHERE session=?1 AND request=?2 AND state='pending'
+               AND json_extract(entry_json,'$.placement.kind')='completion'",
+            params![session, request.0, followup],
+        )?;
+        if changed != 1 {
+            return Err(invalid("released completion is not pending"));
+        }
+    }
+    Ok(())
+}
+
+/// A completion follows the Run that asked for it. After a user Stop, what
+/// other Sessions report back still belongs to this Session: it waits like any
+/// other message someone else sent. The stopped turn's own continuation and,
+/// after any other Stop, every completion are taken back.
 pub(crate) fn stop_completions(
     c: &Connection,
     session: &str,
     caller: RunId,
+    diagnostic: &str,
     at: UnixMillis,
 ) -> Result<(), StoreError> {
+    if diagnostic == USER_STOP {
+        let requests = delegated_results(c, session, caller)?;
+        if !requests.is_empty() {
+            release_completions(c, session, &requests)?;
+            let next = cas(c, session, revision(c, session)?)?;
+            record(
+                c,
+                session,
+                next,
+                FactId::new(),
+                at,
+                &Event::CompletionsReleased { requests },
+            )?;
+        }
+    }
     if retract_completions(c, session, caller)? == 0 {
         return Ok(());
     }

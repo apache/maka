@@ -387,6 +387,9 @@ impl QueueStore {
     pub async fn next_followup(&self, session: String) -> Result<NextFollowup, StoreError> {
         self.data.query(ReadNextFollowup(session)).await
     }
+    pub async fn stopped_by_user(&self, run: RunId) -> Result<bool, StoreError> {
+        self.data.query(StoppedByUser(run)).await
+    }
     pub async fn steering(&self, session: String, run: RunId) -> Result<Queue, StoreError> {
         self.data.query(Steering(session, run)).await
     }
@@ -626,6 +629,13 @@ impl Query for ReadContent {
     type Output = Vec<u8>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::owned_content(c, &self.0, &self.1, &self.2)
+    }
+}
+struct StoppedByUser(RunId);
+impl Query for StoppedByUser {
+    type Output = bool;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::stopped_by_user(c, self.0)
     }
 }
 struct ReadNextFollowup(String);

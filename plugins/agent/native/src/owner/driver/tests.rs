@@ -6206,7 +6206,7 @@ mod goals;
 mod permission_boundary;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_cancels_an_unconsumed_completion_notice() {
+async fn a_user_stop_keeps_a_completion_notice_and_cancels_the_turn_continuation() {
     let mut rig = Rig::new().unwrap();
     let result: TestResult<()> = async {
         let session = rig.start().await?;
@@ -6248,17 +6248,21 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
             vec![],
         )
         .await?;
-        let message = notice.request.message_id.clone();
-        assert_eq!(
-            queue
-                .resolve_message(session.clone(), message.clone())
-                .await?,
-            maka_agent_state::queue::MessageResolution::Cancelled
-        );
-        queue.rebuild(session.clone()).await?;
-        for id in [message, recovery.message_id] {
+        // The delegated result waits as a plain follow-up; the stopped turn's
+        // own continuation is taken back.
+        let kept = vec![maka_agent_state::queue::QueueEntry {
+            request: notice.request.clone(),
+            placement: maka_agent_state::queue::Placement::Followup,
+        }];
+        for rebuilt in [false, true] {
+            if rebuilt {
+                queue.rebuild(session.clone()).await?;
+            }
+            assert_eq!(queue.read(session.clone()).await?.entries, kept);
             assert_eq!(
-                queue.resolve_message(session.clone(), id).await?,
+                queue
+                    .resolve_message(session.clone(), recovery.message_id.clone())
+                    .await?,
                 maka_agent_state::queue::MessageResolution::Cancelled
             );
         }

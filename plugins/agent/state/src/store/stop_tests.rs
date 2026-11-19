@@ -126,6 +126,16 @@ pub(super) async fn enqueue(
     message: &str,
     origin: Option<MessageOrigin>,
 ) -> PreparedRequest {
+    enqueue_placed(store, basis, message, origin, Placement::Followup).await
+}
+
+async fn enqueue_placed(
+    store: &Store,
+    basis: &RunSpec,
+    message: &str,
+    origin: Option<MessageOrigin>,
+    placement: Placement,
+) -> PreparedRequest {
     let (request, contents) = prepare_message(basis, message, origin);
     let queue = store.queue().read(basis.session_id.clone()).await.unwrap();
     store
@@ -138,7 +148,7 @@ pub(super) async fn enqueue(
                 expected_revision: queue.revision,
                 edit: QueueEdit::Enqueue {
                     request: Box::new(request.clone()),
-                    placement: Placement::Followup,
+                    placement,
                 },
             },
             contents,
@@ -1145,6 +1155,69 @@ async fn a_session_stop_takes_back_only_what_that_session_sent() {
             .map(|entry| entry.request.message_id),
         Some("typed-by-user".into())
     );
+    drop(store);
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_user_stop_keeps_the_results_its_run_waited_for() {
+    use crate::queue::Stopper;
+
+    let directory = tempfile::tempdir().unwrap();
+    let (root, store) = open(directory.path(), true).await;
+    let (spec, contents) = spec();
+    let session = spec.session_id.clone();
+    let caller = Admission::new(spec.clone(), UnixMillis(1), contents);
+    store.admit(caller.clone()).await.unwrap();
+    enqueue_placed(
+        &store,
+        &spec,
+        "task-completed",
+        Some(MessageOrigin::SessionCompletion {
+            session_id: "worker".into(),
+            message_id: "delegated".into(),
+        }),
+        Placement::Completion {
+            caller: caller.run(),
+        },
+    )
+    .await;
+    store
+        .data
+        .write(store.stop_run_statement(caller.run(), FactId::new(), UnixMillis(2), Stopper::User))
+        .await
+        .unwrap();
+    assert_eq!(
+        resolution(&store, "task-completed").await,
+        MessageResolution::Pending
+    );
+    terminate(&store, caller.run(), 3).await;
+
+    let queue = store.queue();
+    assert_eq!(
+        queue.next_followup(session.clone()).await.unwrap().entry,
+        None
+    );
+    let user = enqueue(&store, &spec, "user-after-stop", None).await;
+    let next = queue.next_followup(session.clone()).await.unwrap();
+    let fresh = Admission::new(user.spec, UnixMillis(4), vec![]).with_queue(Consume {
+        session: session.clone(),
+        requests: vec![user.id],
+        expected_revision: next.revision,
+    });
+    store.admit(fresh.clone()).await.unwrap();
+    let carried: Vec<_> = queue
+        .steering(session.clone(), fresh.run())
+        .await
+        .unwrap()
+        .entries
+        .into_iter()
+        .map(|entry| entry.request.message_id)
+        .collect();
+    assert_eq!(carried, ["task-completed"]);
+    let delivered = queue.read(session.clone()).await.unwrap();
+    queue.rebuild(session.clone()).await.unwrap();
+    assert_eq!(queue.read(session).await.unwrap(), delivered);
     drop(store);
     root.close().await.unwrap();
 }
