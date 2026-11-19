@@ -4081,7 +4081,11 @@ async fn desktop_system_permission_guidance_uses_native_actions_without_paths() 
 }
 
 async fn desktop_composer_toolbar_customizes_layout_and_context_usage() {
-    let mut fixture = Fixture::open().await;
+    let mut fixture = Fixture::configured(Options {
+        usage_limits: true,
+        ..Options::default()
+    })
+    .await;
     let desktop = Desktop::open_config(
         &fixture,
         &fixture.address,
@@ -4109,7 +4113,7 @@ async fn desktop_composer_toolbar_customizes_layout_and_context_usage() {
         sandbox_before.left() < model_before.left(),
         "default layout places sandbox left of model: sandbox={sandbox_before:?}, model={model_before:?}"
     );
-    desktop.artifact("after-conversation");
+    desktop.artifact("composer-toolbar-conversation");
 
     desktop.press("Open settings").await;
     desktop.control("Close settings").await;
@@ -4117,8 +4121,10 @@ async fn desktop_composer_toolbar_customizes_layout_and_context_usage() {
     desktop.control("Language").await;
     desktop.control("70%+").await;
     desktop.control("Model").await;
-    desktop.artifact("after-settings");
+    desktop.artifact("composer-toolbar-settings");
 
+    desktop.press("Usage limits: Off").await;
+    desktop.control("Usage limits: On").await;
     desktop.press("Model").await;
     desktop.control("Move left").await;
     for _ in 0..4 {
@@ -4126,17 +4132,26 @@ async fn desktop_composer_toolbar_customizes_layout_and_context_usage() {
     }
     desktop.control("Reset").await;
     desktop.press("Close settings").await;
+    let usage_indicator = desktop
+        .control("NSH fixture · API key spending limit · 72% remaining")
+        .await;
     let model_after = desktop.control("Choose model and effort").await;
     let sandbox_after = desktop.control("Sandbox and approvals").await;
     assert!(
         model_after.left() < model_before.left(),
         "moving model across the spacer should shift it left: before={model_before:?}, after={model_after:?}, sandbox={sandbox_after:?}"
     );
-    desktop.artifact("after-reordered");
+    assert!(
+        usage_indicator.left() > model_after.left(),
+        "usage limits indicator should render on the right side after moving model left: usage={usage_indicator:?}, model={model_after:?}"
+    );
+    desktop.artifact("composer-toolbar-reordered");
 
     desktop.press("Open settings").await;
     desktop.press("Settings section General").await;
     desktop.press("Off").await;
+    desktop.press("Usage limits: On").await;
+    desktop.control("Usage limits: Off").await;
     desktop.press("Reset").await;
     desktop.press("Close settings").await;
     let model_reset = desktop.control("Choose model and effort").await;

@@ -26,12 +26,10 @@ import type {
   UiEmbeddedViewProps,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { Composer } from './Composer';
-import { createHost, HostProvider } from '../../../../products/maka/workbench/app/host';
 import { currentLocale } from '../../../../products/maka/workbench/app/locale';
 import { initializeComposerToolbar } from '../../../../products/maka/workbench/app/composerToolbar';
 
 export function activate(context: UiContext): UiActivation<JSX.Element> {
-  const host = createHost(context.application);
   initializeComposerToolbar();
   effect(() => currentLocale.set(context.locale()));
   return {
@@ -40,11 +38,7 @@ export function activate(context: UiContext): UiActivation<JSX.Element> {
         kind: 'view',
         contract: 'maka.composer',
         render(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX.Element>) {
-          return (
-            <HostProvider value={host}>
-              <Composer {...props.input} />
-            </HostProvider>
-          );
+          return <Composer {...props.input} />;
         },
       },
     },

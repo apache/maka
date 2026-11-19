@@ -160,14 +160,16 @@ test('independent UI bundles share toolbar state, compact context, and keep live
   assert.equal(saved.get('composer-usage-limits'), '1');
 });
 
-test('drag reorder pairs pointer move and early release with async measure and ignores cancel', async (t) => {
+test('drag reorder pairs pointer move and early release with async measure, cancels outside track', async (t) => {
   const { root } = await setupToolbar(t, {
     getItem: async () => null,
     setItem: async () => {},
   });
   const track = {
     left: 0,
+    top: 100,
     width: 360,
+    height: 30,
     slots: [
       { left: 0, width: 60 },
       { left: 60, width: 60 },
@@ -180,18 +182,21 @@ test('drag reorder pairs pointer move and early release with async measure and i
   };
 
   const commits = [];
+  const previews = [];
   const controller = root.createToolbarDragController({
-    onPreview() {},
+    onPreview(preview) {
+      previews.push(preview);
+    },
     onCommit(widget, index) {
       commits.push([widget, index]);
     },
   });
 
-  // Release arrives before measure resolves: must commit at release pageX once measure settles.
+  // Release arrives before measure resolves: must commit at release point once measure settles.
   const m1 = deferred();
-  controller.start('model', 5, 320, m1.promise);
-  controller.move(10);
-  controller.release(10);
+  controller.start('model', 5, { pageX: 320, pageY: 115 }, m1.promise);
+  controller.move({ pageX: 10, pageY: 115 });
+  controller.release({ pageX: 10, pageY: 115 });
   assert.deepEqual(commits, []);
   m1.resolve(track);
   await setImmediate();
@@ -199,8 +204,8 @@ test('drag reorder pairs pointer move and early release with async measure and i
 
   // Move arrives before measure resolves, release arrives after: must preserve latest move.
   const m2 = deferred();
-  controller.start('model', 5, 320, m2.promise);
-  controller.move(15);
+  controller.start('model', 5, { pageX: 320, pageY: 115 }, m2.promise);
+  controller.move({ pageX: 15, pageY: 115 });
   m2.resolve(track);
   await setImmediate();
   controller.release();
@@ -211,10 +216,28 @@ test('drag reorder pairs pointer move and early release with async measure and i
 
   // Cancel before measure resolves: must never commit.
   const m3 = deferred();
-  controller.start('model', 5, 320, m3.promise);
-  controller.move(15);
+  controller.start('model', 5, { pageX: 320, pageY: 115 }, m3.promise);
+  controller.move({ pageX: 15, pageY: 115 });
   controller.cancel();
   m3.resolve(track);
+  await setImmediate();
+  assert.equal(commits.length, 2);
+
+  // Dragging outside the track clears preview and skips commit on release.
+  const m4 = deferred();
+  controller.start('model', 5, { pageX: 320, pageY: 115 }, m4.promise);
+  m4.resolve(track);
+  await setImmediate();
+  controller.move({ pageX: 15, pageY: 320 });
+  assert.equal(previews.at(-1), null);
+  controller.release({ pageX: 15, pageY: 320 });
+  assert.equal(commits.length, 2);
+
+  // Early release outside track before measure resolves also skips commit.
+  const m5 = deferred();
+  controller.start('model', 5, { pageX: 320, pageY: 115 }, m5.promise);
+  controller.release({ pageX: 15, pageY: 320 });
+  m5.resolve(track);
   await setImmediate();
   assert.equal(commits.length, 2);
 });
@@ -266,7 +289,7 @@ test('watchComposerUsage guards ABA races, invalidates superseded failures, and 
   assert.equal(observations.at(-1)?.sourceName, 'Current Account');
   assert.equal(pending.length, 0);
 
-  // 2. Superseded followed by failed retry clears stale ready reading; ordinary failure preserves it.
+  // 2. Superseded followed by failed retry clears stale ready reading, and recovery uses the renamed connection name.
   const replies = [
     detail('B', 1, 'Old Name'),
     ready(40),
@@ -274,6 +297,7 @@ test('watchComposerUsage guards ABA races, invalidates superseded failures, and 
     { kind: 'superseded' },
     detail('B', 2, 'New Name'),
     { kind: 'unavailable' },
+    ready(15),
   ];
   const supObs = [];
   const supHost = {
@@ -300,6 +324,11 @@ test('watchComposerUsage guards ABA races, invalidates superseded failures, and 
   t.mock.timers.tick(60_000);
   await setImmediate();
   assert.equal(supObs.at(-1)?.reading.result.kind, 'superseded');
+
+  t.mock.timers.tick(60_000);
+  await setImmediate();
+  assert.equal(supObs.at(-1)?.reading.result.kind, 'ready');
+  assert.equal(supObs.at(-1)?.sourceName, 'New Name');
 
   // 3. Temporarily disabled connection recovers on next scheduled poll after re-enabling.
   let enabled = false;

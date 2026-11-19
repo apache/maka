@@ -149,7 +149,7 @@ export function watchComposerUsage(
   previous: ComposerUsageObservation | null,
 ): () => void {
   let stopped = false;
-  let cachedBasis: ConnectionVersionBasis | null = null;
+  let cachedConnection: { basis: ConnectionVersionBasis; name: string } | null = null;
   let committedSource =
     target.kind === 'external'
       ? EXTERNAL_USAGE_RUNTIME_NAMES[target.runtime]
@@ -166,14 +166,17 @@ export function watchComposerUsage(
       return detail.actual === null ? { kind: 'missing' } : { kind: 'stale' };
     }
     if (!detail.enabled) {
-      cachedBasis = null;
+      cachedConnection = null;
       return { kind: 'disabled' };
     }
-    cachedBasis = {
-      connectionId: detail.target.connectionId,
-      revision: detail.target.revision,
+    cachedConnection = {
+      basis: {
+        connectionId: detail.target.connectionId,
+        revision: detail.target.revision,
+      },
+      name: detail.name,
     };
-    return { kind: 'ready', basis: cachedBasis, name: detail.name };
+    return { kind: 'ready', ...cachedConnection };
   };
 
   const query = async (): Promise<UsageResult> => {
@@ -183,25 +186,23 @@ export function watchComposerUsage(
       return host.query('agent', 'externalUsageLimits', { runtime: target.runtime });
     }
 
-    let basis = cachedBasis;
-    let source = committedSource;
-    if (!basis) {
+    let connection = cachedConnection;
+    if (!connection) {
       const resolved = await resolveBasis(target.connectionId);
       if (stopped) return { kind: 'unavailable' };
       if (resolved.kind === 'missing') return { kind: 'unsupported' };
       if (resolved.kind !== 'ready') return { kind: 'superseded' };
-      basis = resolved.basis;
-      source = resolved.name;
+      connection = resolved;
     }
 
-    const first = await host.query('settings', 'connectionUsageLimits', basis);
+    const first = await host.query('settings', 'connectionUsageLimits', connection.basis);
     if (stopped) return { kind: 'unavailable' };
     if (first.kind !== 'superseded') {
-      pendingSource = source;
+      pendingSource = connection.name;
       return first;
     }
 
-    cachedBasis = null;
+    cachedConnection = null;
     let resolved: BasisResolution;
     try {
       resolved = await resolveBasis(target.connectionId);

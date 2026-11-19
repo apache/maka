@@ -121,9 +121,13 @@ export function isDefaultComposerToolbarLayout(layout: readonly ComposerToolbarS
 
 export type SlotBounds = { left: number; width: number };
 
+export type ToolbarDragPoint = { pageX: number; pageY: number };
+
 export type MeasuredToolbarTrack = {
   left: number;
+  top: number;
   width: number;
+  height: number;
   slots: SlotBounds[];
   spacer: SlotBounds | null;
 };
@@ -134,6 +138,18 @@ export type ToolbarDragPreview = {
   indicatorX: number;
   overSpacer: boolean;
 };
+
+const DROP_TRACK_SLOP_X = 16;
+const DROP_TRACK_SLOP_Y = 24;
+
+function isInsideDropTrack(point: ToolbarDragPoint, track: MeasuredToolbarTrack): boolean {
+  return (
+    point.pageX >= track.left - DROP_TRACK_SLOP_X &&
+    point.pageX <= track.left + track.width + DROP_TRACK_SLOP_X &&
+    point.pageY >= track.top - DROP_TRACK_SLOP_Y &&
+    point.pageY <= track.top + track.height + DROP_TRACK_SLOP_Y
+  );
+}
 
 export function computeDropSlot(
   clientX: number,
@@ -164,39 +180,50 @@ export function createToolbarDragController(callbacks: {
   let active: {
     id: number;
     widget: ComposerToolbarWidget;
-    latestPageX: number;
+    latestPoint: ToolbarDragPoint;
     released: boolean;
     measured: MeasuredToolbarTrack | null;
   } | null = null;
 
-  const project = (widget: ComposerToolbarWidget, pageX: number, track: MeasuredToolbarTrack) => {
-    const { index, indicatorX } = computeDropSlot(pageX, track.left, track.width, track.slots);
+  const project = (
+    widget: ComposerToolbarWidget,
+    point: ToolbarDragPoint,
+    track: MeasuredToolbarTrack,
+  ): ToolbarDragPreview | null => {
+    if (!isInsideDropTrack(point, track)) return null;
+    const { index, indicatorX } = computeDropSlot(
+      point.pageX,
+      track.left,
+      track.width,
+      track.slots,
+    );
     const overSpacer =
       track.spacer !== null &&
-      pageX >= track.spacer.left - 6 &&
-      pageX <= track.spacer.left + track.spacer.width + 6;
+      point.pageX >= track.spacer.left - 6 &&
+      point.pageX <= track.spacer.left + track.spacer.width + 6;
     return { widget, targetIndex: index, indicatorX, overSpacer };
   };
 
   const commitIfReady = () => {
     if (!active || !active.released || !active.measured) return;
-    const { widget, latestPageX, measured } = active;
+    const { widget, latestPoint, measured } = active;
     active = null;
     callbacks.onPreview(null);
     if (!measured.slots.length) return;
-    const { targetIndex } = project(widget, latestPageX, measured);
-    callbacks.onCommit(widget, targetIndex);
+    const preview = project(widget, latestPoint, measured);
+    if (!preview) return;
+    callbacks.onCommit(widget, preview.targetIndex);
   };
 
   return {
     start(
       widget: ComposerToolbarWidget,
       initialIndex: number,
-      pageX: number,
+      point: ToolbarDragPoint,
       measure: Promise<MeasuredToolbarTrack | null>,
     ) {
       const id = ++generation;
-      active = { id, widget, latestPageX: pageX, released: false, measured: null };
+      active = { id, widget, latestPoint: point, released: false, measured: null };
       callbacks.onPreview({
         widget,
         targetIndex: initialIndex,
@@ -215,7 +242,7 @@ export function createToolbarDragController(callbacks: {
           if (active.released) {
             commitIfReady();
           } else {
-            callbacks.onPreview(project(active.widget, active.latestPageX, track));
+            callbacks.onPreview(project(active.widget, active.latestPoint, track));
           }
         })
         .catch(() => {
@@ -225,16 +252,16 @@ export function createToolbarDragController(callbacks: {
           }
         });
     },
-    move(pageX: number) {
+    move(point: ToolbarDragPoint) {
       if (!active || active.released) return;
-      active.latestPageX = pageX;
+      active.latestPoint = point;
       if (active.measured) {
-        callbacks.onPreview(project(active.widget, pageX, active.measured));
+        callbacks.onPreview(project(active.widget, point, active.measured));
       }
     },
-    release(pageX?: number) {
+    release(point?: ToolbarDragPoint) {
       if (!active) return;
-      if (typeof pageX === 'number') active.latestPageX = pageX;
+      if (point) active.latestPoint = point;
       active.released = true;
       if (active.measured) {
         commitIfReady();

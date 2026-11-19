@@ -30,7 +30,7 @@ import {
   type ComposerUsageSummary,
   type ComposerUsageTarget,
 } from './composerUsageSummary';
-import { useOptionalHost } from './host';
+import { useHost } from './host';
 import { tr } from './locale';
 import {
   C,
@@ -218,7 +218,7 @@ function ComposerUsagePopover(props: {
 }
 
 export function ComposerUsageLimits(props: { backend: () => ComposerBackend }) {
-  const host = useOptionalHost();
+  const host = useHost();
   const observation = signal<ComposerUsageObservation | null>(null);
 
   let activeKey: string | null = null;
@@ -233,7 +233,7 @@ export function ComposerUsageLimits(props: { backend: () => ComposerBackend }) {
     const id = ++watchId;
     stop?.();
     stop = undefined;
-    if (!host || platform.idiom === 'terminal' || !composerToolbar.usageLimits()) {
+    if (platform.idiom === 'terminal' || !composerToolbar.usageLimits()) {
       activeKey = null;
       observation.set(null);
       return;

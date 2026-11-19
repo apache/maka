@@ -55,7 +55,6 @@ import {
 import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { ContextGauge } from '../../../../products/maka/workbench/app/ContextGauge';
-import { ComposerUsageLimits } from '../../../../products/maka/workbench/app/ComposerUsageLimits';
 import {
   composerToolbar,
   NARROW_COMPOSER_TOOLBAR_WIDTH,
@@ -242,8 +241,6 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     platform.idiom !== 'terminal' &&
     toolbarWidth() > 0 &&
     toolbarWidth() < NARROW_COMPOSER_TOOLBAR_WIDTH;
-  const activeBackend = (): ComposerBackend =>
-    props.session()?.backend() ?? pending()?.backend() ?? null;
   const toggleAttachments = () => {
     const owner = props.session();
     if (owner && owner.editable())
@@ -1031,8 +1028,13 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     }
                     if (slot === 'usage') {
                       return (
-                        <If when={props.session() !== null || pending() !== null}>
-                          <ComposerUsageLimits backend={activeBackend} />
+                        <If
+                          when={
+                            props.usageLimits !== undefined &&
+                            (props.session() !== null || pending() !== null)
+                          }
+                        >
+                          {props.usageLimits}
                         </If>
                       );
                     }

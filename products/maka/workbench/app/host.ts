@@ -301,9 +301,6 @@ export async function searchSessions(host: Host, kind: AgentSessionKind, query: 
 
 const hostContext = context<Host | null>(null);
 export const HostProvider = hostContext.Provider;
-export function useOptionalHost(): Host | null {
-  return hostContext();
-}
 export function useHost(): Host {
   const host = hostContext();
   if (host === null) throw new Error('A bound application Host must be provided.');

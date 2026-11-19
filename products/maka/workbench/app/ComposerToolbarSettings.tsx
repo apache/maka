@@ -27,6 +27,7 @@ import {
   type ContextUsageDisplay,
   type MeasuredToolbarTrack,
   type SlotBounds,
+  type ToolbarDragPoint,
   type ToolbarDragPreview,
 } from './composerToolbar';
 import { Icon } from './Icon';
@@ -59,7 +60,7 @@ function GripDots(props: { color: string }) {
   return (
     <Canvas
       accessibilityElementsHidden
-      style={[{ width: 10, height: 14 }, { pointerEvents: 'none' }]}
+      style={[{ width: 10, height: 14, flexShrink: 0 }, { pointerEvents: 'none' }]}
       draw={(cx) => {
         cx.fillStyle = props.color;
         for (const x of [3, 7]) {
@@ -112,17 +113,19 @@ export function ComposerToolbarSettings() {
       }
       return {
         left: trackBox.pagePosition.x,
+        top: trackBox.pagePosition.y,
         width: trackBox.bounds.size.width,
+        height: trackBox.bounds.size.height,
         slots,
         spacer,
       };
     });
   };
 
-  const beginDrag = (widget: ComposerToolbarWidget, pageX: number) => {
+  const beginDrag = (widget: ComposerToolbarWidget, point: ToolbarDragPoint) => {
     const layout = composerToolbar.layout();
     selected.set(widget);
-    dragController.start(widget, layout.indexOf(widget), pageX, measureTrack(layout));
+    dragController.start(widget, layout.indexOf(widget), point, measureTrack(layout));
   };
 
   const selectedIndex = () => {
@@ -240,6 +243,7 @@ export function ComposerToolbarSettings() {
                         alignItems: 'center',
                         justifyContent: 'center',
                         paddingHorizontal: 4,
+                        overflow: 'hidden',
                       }}
                     >
                       <Text
@@ -248,6 +252,8 @@ export function ComposerToolbarSettings() {
                             fontSize: 11,
                             lineHeight: 14,
                             color: drag()?.overSpacer ? C.accent : C.muted,
+                            flexShrink: 1,
+                            minWidth: 0,
                           },
                           { numberOfLines: 1 },
                         ]}
@@ -272,14 +278,14 @@ export function ComposerToolbarSettings() {
                     }
                     onResponderTerminationRequest={() => false}
                     onResponderGrant={(event) => {
-                      beginDrag(widget, event.pageX);
+                      beginDrag(widget, { pageX: event.pageX, pageY: event.pageY });
                       return true;
                     }}
                     onResponderMove={(event) => {
-                      dragController.move(event.pageX);
+                      dragController.move({ pageX: event.pageX, pageY: event.pageY });
                     }}
                     onResponderRelease={(event) => {
-                      dragController.release(event.pageX);
+                      dragController.release({ pageX: event.pageX, pageY: event.pageY });
                     }}
                     onResponderTerminate={() => {
                       dragController.cancel();
@@ -296,9 +302,10 @@ export function ComposerToolbarSettings() {
                       flexDirection: 'row',
                       alignItems: 'center',
                       gap: 4,
-                      flexShrink: 0,
+                      flexShrink: 1,
+                      minWidth: 0,
                       cursor: drag()?.widget === widget ? 'grabbing' : 'grab',
-                      opacity: drag()?.widget === widget ? 0.35 : isOff(widget) ? 0.5 : 1,
+                      opacity: drag()?.widget === widget ? 0.35 : 1,
                     }}
                     hoverStyle={{ backgroundColor: C.raised }}
                     focusStyle={{ borderColor: C.accent, backgroundColor: C.raised }}
@@ -306,7 +313,14 @@ export function ComposerToolbarSettings() {
                     <GripDots color={C.muted} />
                     <Text
                       style={[
-                        { fontSize: 12, lineHeight: 16, fontWeight: '500', color: C.text },
+                        {
+                          fontSize: 12,
+                          lineHeight: 16,
+                          fontWeight: '500',
+                          color: isOff(widget) ? C.muted : C.text,
+                          flexShrink: 1,
+                          minWidth: 0,
+                        },
                         { numberOfLines: 1 },
                       ]}
                     >
