@@ -264,6 +264,106 @@ fn apply_display(call: &mut wire::ToolCall, display: &ToolDisplay) {
         .map(|title| Box::new(maka_agent_facts::display::Text::plain(title.clone())));
     call.presentation = display.presentation.as_deref().map(Into::into);
 }
+
+fn web_search_name(name: &str) -> bool {
+    // Providers and gateways may qualify a tool, change its casing, or append a release date.
+    let name = name.to_ascii_lowercase();
+    let mut segments = name.rsplit(['.', ':', '/']).filter(|s| !s.is_empty());
+    let leaf = segments.next().unwrap_or_default();
+    let namespace = segments.next();
+    if matches!(
+        (namespace, leaf),
+        (Some("web"), "run" | "search") | (Some("browser" | "google" | "bing"), "search")
+    ) {
+        return true;
+    }
+    let compact: String = leaf.chars().filter(|c| !matches!(c, '_' | '-')).collect();
+    let stem = compact.trim_end_matches(|c: char| c.is_ascii_digit());
+    if !matches!(compact.len() - stem.len(), 0 | 8) {
+        return false;
+    }
+    matches!(
+        stem,
+        "websearch"
+            | "websearchcall"
+            | "websearchpreview"
+            | "webrun"
+            | "browsersearch"
+            | "deepseekwebsearch"
+            | "searchweb"
+            | "searchtheweb"
+            | "internetsearch"
+            | "searchinternet"
+            | "googlesearchretrieval"
+            | "googlesearch"
+            | "bingsearch"
+    )
+}
+
+fn first_search_query(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(s) if !s.trim().is_empty() => Some(s.trim()),
+        Value::Array(entries) => entries.iter().find_map(first_search_query),
+        Value::Object(fields) => [
+            "queries",
+            "query",
+            "q",
+            "search_query",
+            "searchQuery",
+            "search_queries",
+            "searchQueries",
+            "search_terms",
+            "searchTerms",
+            "keywords",
+        ]
+        .iter()
+        .filter_map(|k| fields.get(*k))
+        .find_map(first_search_query),
+        _ => None,
+    }
+}
+
+fn apply_provider_search(call: &mut wire::ToolCall, state: &maka_agent_state::fold::Tool) {
+    let recorded = &state.call;
+    if !recorded.provider_executed
+        || recorded
+            .provider_options
+            .as_ref()
+            .and_then(|v| v.pointer("/anthropic/serverName"))
+            .is_some()
+    {
+        return;
+    }
+    let result = state.provider_result.as_ref();
+    let replay = result
+        .and_then(|r| r.provider_options.as_ref())
+        .and_then(|v| v.pointer("/openai/responsesReplay/fields/type"))
+        .and_then(Value::as_str);
+    let is_search = match replay {
+        Some(kind) => kind == "web_search_call",
+        None => web_search_name(&recorded.name),
+    };
+    if !is_search {
+        return;
+    }
+    call.presentation = Some("provider.web_search".into());
+    let action = result.map(|result| &result.output["action"]);
+    let query = recorded
+        .input
+        .as_json()
+        .filter(|input| input.is_object())
+        .and_then(first_search_query)
+        .or_else(|| action.and_then(first_search_query))
+        .or_else(|| {
+            result
+                .filter(|r| r.output.is_object())
+                .and_then(|r| first_search_query(&r.output))
+        });
+    call.title = query
+        .and_then(maka_agent_facts::display::Text::single_line)
+        .map(Box::new);
+}
+
 fn tool(row: &mut Row, id: String, name: Option<String>, is_error: Option<bool>) {
     row.chunk.tool = Some(wire::Tool {
         tool_use_id: id,
@@ -592,6 +692,8 @@ pub(super) async fn project(
                     call.dispatched = state.admitted;
                     if let Some(display) = state.decision.as_ref().map(ToolDecision::display) {
                         apply_display(call, display);
+                    } else {
+                        apply_provider_search(call, state);
                     }
                 }
             }

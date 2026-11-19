@@ -51,11 +51,15 @@ export function answerSource(
       title: citation.filename ? `${citation.title} (${citation.filename})` : citation.title,
     };
   }
-  const title = citation.title || citation.url;
-  const url = URL.parse(citation.url);
+  return urlSource(citation.url, citation.title);
+}
+
+export function urlSource(target: string, label?: string | null): AnswerSource {
+  const title = label || target;
+  const url = URL.parse(target);
   return url?.protocol === 'https:' || url?.protocol === 'http:'
-    ? { key: citation.url, title, url: citation.url, site: url.hostname.replace(/^www\./i, '') }
-    : { key: citation.url, title };
+    ? { key: target, title, url: target, site: url.hostname.replace(/^www\./i, '') }
+    : { key: target, title };
 }
 
 /** Provider ranges count Unicode scalars. TextView anchors count original UTF-8 bytes. */

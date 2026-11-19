@@ -47,6 +47,7 @@ import {
 import {
   cardFamily,
   processFamily,
+  providerSearchKey,
   processResourceRef,
   toolArguments,
   toolResult,
@@ -60,6 +61,7 @@ import {
   activityTitle,
 } from './toolActivityPresentation';
 import { ToolReader } from './ToolReader';
+import { ProviderSearchCard } from './ProviderSearchCard';
 import {
   C,
   captionTextStyle,
@@ -486,6 +488,7 @@ export function ToolCard(props: {
   maxHeight(): number;
   reading?(): void;
   expand(action: { sessionId: string; key: string; value: boolean }): void;
+  openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   showOriginal(action: { sessionId: string; key: string; value: boolean }): void;
   inspect?(key: string): void;
   previewImage(image: ImagePreview): void;
@@ -510,6 +513,7 @@ export function ToolCard(props: {
   };
   const title = () => {
     const call = tool()?.call;
+    if (call?.presentation === providerSearchKey && props.expanded()) return tr('Search the web');
     return progress() === 'preparing' && !call?.presentation && !call?.title
       ? tr('Preparing tool')
       : activityTitle(call);
@@ -527,7 +531,7 @@ export function ToolCard(props: {
   const progressLabel = () =>
     progress() === 'preparing' ? tr('Preparing tool') : tr('Running tool');
   const references = () =>
-    tool()
+    tool() && !searchFields().length
       ? (['result', 'arguments'] as const).flatMap((field) => {
           const value = reference(tool()!, field);
           const result = tool()!.result;
@@ -560,6 +564,13 @@ export function ToolCard(props: {
         })
       : [];
   const result = () => (tool() ? reference(tool()!, 'result') : null);
+  const searchFields = computed(() => {
+    const value = tool();
+    if (value?.call?.presentation !== providerSearchKey) return [];
+    const args = reference(value, 'arguments')!;
+    const output = reference(value, 'result');
+    return [{ args, output, key: JSON.stringify([args.key, output?.key]) }];
+  });
   const writeFields = computed(() => {
     const call = tool();
     if (
@@ -750,6 +761,19 @@ export function ToolCard(props: {
                 />
               )}
             </Each>
+            <Each of={searchFields()} key={(fields) => fields.key}>
+              {(fields) => (
+                <ProviderSearchCard
+                  args={fields().args}
+                  output={fields().output}
+                  sessionId={props.sessionId}
+                  through={props.row().metadataThrough ?? props.through()}
+                  original={props.original}
+                  openLink={props.openLink}
+                  isError={!!tool()?.result?.isError}
+                />
+              )}
+            </Each>
             <If
               when={writeFields().length > 0}
               else={
@@ -788,7 +812,7 @@ export function ToolCard(props: {
                 )}
               </Each>
             </If>
-            <If when={!references().length && images().length === 0}>
+            <If when={!searchFields().length && !references().length && images().length === 0}>
               <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}>
                 {presentation()
                   ? result()
