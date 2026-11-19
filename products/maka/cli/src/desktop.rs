@@ -73,13 +73,20 @@ impl Args {
             let data = maka_sandbox::account_home()?
                 .join(".maka")
                 .join("wsl-desktop");
-            let status = Command::new(std::env::current_exe()?.with_file_name(SHELL))
+            let mut child = Command::new(std::env::current_exe()?.with_file_name(SHELL))
                 .env("MAKA_DESKTOP_WSL_DISTRO", distro)
                 .env("MAKA_DESKTOP_WSL_MAKA", maka)
                 .env("MAKA_DESKTOP_WSL_ROOT", root)
                 .env("MAKA_DESKTOP_WSL_CLIENT_DIR", data)
-                .status()
-                .await?;
+                .kill_on_drop(true)
+                .spawn()?;
+            let status = tokio::select! {
+                status = child.wait() => status?,
+                _ = stop.cancelled() => {
+                    child.kill().await?;
+                    return Ok(ExitCode::SUCCESS);
+                }
+            };
             std::process::exit(status.code().unwrap_or(1));
         }
         let root = crate::application::root_path(self.root)?;

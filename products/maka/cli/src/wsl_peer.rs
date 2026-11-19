@@ -18,7 +18,7 @@
  */
 
 use clap::Args;
-use maka_event_log::root::{self, RootNamespaces};
+use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_host_runtime::{
     HostError,
     application::host::{Client, Host, discovery},
@@ -27,8 +27,9 @@ use maka_peer::{Endpoint, PeerId};
 use serde::{Deserialize, Serialize};
 use std::{
     io,
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 use tokio::{
@@ -64,33 +65,56 @@ impl Connect {
         if !path.is_absolute() {
             return Err("WSL Host Root must be an absolute Linux path".into());
         }
-        if let Some(ready) = live(path, self.peer_id).await? {
-            println!("{}", serde_json::to_string(&ready)?);
-            return Ok(());
-        }
-        let executable = std::env::current_exe()?;
-        let peer = self.peer_id.to_string();
-        let mut child = maka_process::detached::spawn(
-            &executable,
-            &[
-                "host",
-                "serve",
-                "--root",
-                path.to_str().ok_or("WSL Root must be UTF-8")?,
-                "--wsl-peer",
-                &peer,
-            ],
-            None,
-        )
-        .await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        let (_launch, root_id) =
+            tokio::time::timeout_at(deadline, crate::deployment::acquire_launch(path))
+                .await
+                .map_err(|_| "timed out waiting for the Root launcher")??;
+        let mut child: Option<maka_process::detached::Child> = None;
         loop {
             if let Some(ready) = live(path, self.peer_id).await? {
+                if ready.root_id != root_id {
+                    return Err("WSL Root changed during launch".into());
+                }
                 println!("{}", serde_json::to_string(&ready)?);
                 return Ok(());
             }
-            if let Some(status) = child.try_wait()? {
-                return Err(format!("WSL Host exited before publishing its peer address ({status}); check Host diagnostics").into());
+            if let Some(child) = &mut child {
+                if let Some(status) = child.try_wait()? {
+                    return Err(format!("WSL Host exited before publishing its peer address ({status}); check Host diagnostics").into());
+                }
+            } else {
+                let path = path.clone();
+                let root = tokio::task::spawn_blocking(move || {
+                    RootOwner::open(&path, &RootNamespaces::for_current_account()?)
+                })
+                .await?;
+                match root {
+                    Ok(owner) => {
+                        if owner.root_id() != root_id {
+                            return Err("WSL Root changed before launch".into());
+                        }
+                        let canonical = owner.canonical_path().to_owned();
+                        drop(owner);
+                        child = Some(
+                            maka_process::detached::spawn(
+                                &std::env::current_exe()?,
+                                &[
+                                    "host",
+                                    "serve",
+                                    "--root",
+                                    canonical.to_str().ok_or("WSL Root must be UTF-8")?,
+                                    "--wsl-peer",
+                                    &self.peer_id.to_string(),
+                                ],
+                                None,
+                            )
+                            .await?,
+                        );
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(error) => return Err(error.into()),
+                }
             }
             if tokio::time::Instant::now() >= deadline {
                 return Err(
@@ -143,17 +167,67 @@ async fn live(path: &Path, expected: PeerId) -> Result<Option<Ready>, HostError>
     Ok(Some(ready))
 }
 
+async fn command_output(program: &str, args: &[&str]) -> Result<Vec<u8>, HostError> {
+    let output = tokio::process::Command::new(program)
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| format!("cannot run {program}: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{program} exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    Ok(output.stdout)
+}
+
+async fn peer_listen_ip() -> Result<Ipv4Addr, HostError> {
+    let mode = command_output("wslinfo", &["--networking-mode"]).await?;
+    match std::str::from_utf8(&mode)?.trim() {
+        "mirrored" => Ok(Ipv4Addr::LOCALHOST),
+        "nat" => {
+            #[derive(Deserialize)]
+            struct Route {
+                gateway: Option<Ipv4Addr>,
+                #[serde(default)]
+                metric: u32,
+            }
+            let routes: Vec<Route> = serde_json::from_slice(
+                &command_output("ip", &["-j", "-4", "route", "show", "default"]).await?,
+            )?;
+            let gateway = routes
+                .iter()
+                .min_by_key(|route| route.metric)
+                .and_then(|route| route.gateway)
+                .ok_or("WSL NAT has no default IPv4 gateway")?;
+            // UDP connect selects the guest source address without sending a packet.
+            let socket = tokio::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+            socket.connect((gateway, 9)).await?;
+            match socket.local_addr()? {
+                SocketAddr::V4(addr) if !addr.ip().is_loopback() && !addr.ip().is_unspecified() => {
+                    Ok(*addr.ip())
+                }
+                addr => Err(format!("no WSL NAT guest IPv4 route to {gateway}: {addr}").into()),
+            }
+        }
+        mode => Err(format!("unsupported WSL networking mode: {mode}").into()),
+    }
+}
+
 pub(crate) struct Listener {
     endpoint: Endpoint,
     expected: PeerId,
     record: PathBuf,
-    credential: std::sync::Arc<str>,
+    host: Arc<Host>,
     address: SocketAddr,
 }
 
 impl Listener {
     pub(crate) async fn new(
-        host: &Host,
+        host: Arc<Host>,
         expected: PeerId,
         address: SocketAddr,
     ) -> Result<Self, HostError> {
@@ -162,13 +236,9 @@ impl Listener {
             .join(host.root_id());
         let endpoint = Endpoint::start(
             dir.join("wsl-peer.key"),
-            Some("/ip4/127.0.0.1/tcp/0".parse()?),
+            Some(format!("/ip4/{}/tcp/0", peer_listen_ip().await?).parse()?),
         )
         .await?;
-        let credential = host
-            .prepare_access(format!("wsl:{expected}"))
-            .await?
-            .credential;
         let ready = Ready {
             root_id: host.root_id().into(),
             host_epoch: host.epoch(),
@@ -187,13 +257,15 @@ impl Listener {
             endpoint,
             expected,
             record,
-            credential: credential.into(),
+            host,
             address,
         })
     }
 
     pub(crate) async fn run(mut self, stop: CancellationToken) -> Result<(), HostError> {
         let mut tasks = JoinSet::new();
+        let credential = Arc::new(tokio::sync::OnceCell::new());
+        let expected = self.expected;
         let result = loop {
             tokio::select! {
                 biased;
@@ -209,13 +281,18 @@ impl Listener {
                         Err(error) => break Err(error.into()),
                     };
                     let address = self.address;
-                    let credential = self.credential.clone();
+                    let credential = credential.clone();
+                    let host = self.host.clone();
                     tasks.spawn(async move {
                         let kind = tokio::time::timeout(Duration::from_secs(5), stream.read_u8()).await??;
                         match kind {
                             // The paired Desktop receives this only on a pinned, authenticated stream.
                             1 => {
-                                stream.write_all(credential.as_bytes()).await?;
+                                let bearer = credential.get_or_try_init(|| async {
+                                    host.pair_authenticated_client(format!("wsl:{expected}"), expected.to_string())
+                                        .await.map_err(io::Error::other)
+                                }).await?;
+                                stream.write_all(bearer.as_bytes()).await?;
                                 stream.shutdown().await
                             }
                             2 => {

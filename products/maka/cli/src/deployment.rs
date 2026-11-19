@@ -48,6 +48,8 @@ pub(super) use activation::Activate;
 pub(super) use connect::Connect;
 pub(super) use control::{Control, ControlAction};
 pub(super) use entry::ServiceRun;
+#[cfg(target_os = "linux")]
+pub(crate) use local::acquire_launch;
 pub(super) use local::{connect as connect_local, connect_application};
 pub(super) use logs::Logs;
 pub(super) use policy::{

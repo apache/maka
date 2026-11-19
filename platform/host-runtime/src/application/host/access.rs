@@ -154,6 +154,19 @@ impl Host {
             credential: secret,
         })
     }
+    /// Bind the grant before handing it to an already authenticated transport peer.
+    pub async fn pair_authenticated_client(
+        &self,
+        principal: String,
+        client: String,
+    ) -> Result<String> {
+        let pairing = self.prepare_access(principal).await?;
+        let authority = Authority::Remote {
+            hash: hex::encode(Sha256::digest(pairing.credential.as_bytes())),
+        };
+        self.finalize_access(&authority, Some(client)).await?;
+        Ok(pairing.credential)
+    }
     pub async fn revoke_access(&self, credential: String) -> Result<bool> {
         let _gate = self.access_gate.lock().await;
         let changed = self

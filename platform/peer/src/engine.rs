@@ -58,6 +58,7 @@ mod relay_discovery;
 use address::{address_with_expected_peer, address_with_peer, is_relayed_address};
 pub(crate) use address::{coordination_relay_peer_id, transit_relay_peer_id};
 use identity_store::load_or_create_key;
+pub(crate) use peer_stream::CHUNK_BYTES;
 use peer_stream::spawn_stream;
 pub use peer_stream::{DirectTransport, PeerConnectionPath, PeerStream, StreamCommand};
 use relay_anchor_store::RelayAnchorHistory;

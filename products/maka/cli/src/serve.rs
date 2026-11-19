@@ -67,17 +67,18 @@ pub(super) async fn run(
     if expected_root.is_some() && deployment.is_none() {
         return Err("service State Root must have a supervised deployment".into());
     }
+    let websocket = deployment.as_ref().map(|d| d.websocket).or(websocket);
     #[cfg(target_os = "linux")]
     let websocket = if wsl_peer.is_some() {
-        Some("127.0.0.1:0".parse()?)
+        let address = websocket.unwrap_or(std::net::SocketAddr::from(([127, 0, 0, 1], 0)));
+        if !address.ip().is_loopback() {
+            return Err("WSL Host WebSocket must listen on loopback".into());
+        }
+        Some(address)
     } else {
         websocket
     };
-    let websocket = match deployment
-        .as_ref()
-        .map(|deployment| deployment.websocket)
-        .or(websocket)
-    {
+    let websocket = match websocket {
         Some(address) => Some(WebSocketListener::bind(address, Vec::new()).await?),
         None => None,
     };
@@ -120,7 +121,7 @@ async fn serve_product(
     #[cfg(target_os = "linux")]
     let peer = match wsl_peer {
         Some(id) => Some(crate::wsl_peer::Listener::new(
-            host, id, websocket.as_ref().ok_or("WSL Host needs WebSocket")?.local_addr()?
+            host.clone(), id, websocket.as_ref().ok_or("WSL Host needs WebSocket")?.local_addr()?
         ).await?),
         None => None,
     };

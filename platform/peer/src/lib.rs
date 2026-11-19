@@ -22,4 +22,4 @@ mod webrtc_direct;
 pub use libp2p::{Multiaddr, PeerId};
 
 mod endpoint;
-pub use endpoint::Endpoint;
+pub use endpoint::{Endpoint, Stream};

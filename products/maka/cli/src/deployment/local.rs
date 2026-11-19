@@ -74,6 +74,34 @@ pub async fn connect_application(
     .await
 }
 
+pub(crate) async fn acquire_launch(
+    path: &std::path::Path,
+) -> Result<(FileLease, String), HostError> {
+    loop {
+        let root_path = path.to_owned();
+        let result = tokio::task::spawn_blocking(move || {
+            let namespaces = RootNamespaces::for_current_account()?;
+            let canonical = root::prepare_directory(&root_path)?;
+            let key = hex::encode(Sha256::digest(canonical.as_os_str().as_encoded_bytes()));
+            root::private_directory(&namespaces.ownership)?;
+            // Before initialization there is no Root ID. Serialize launchers
+            // for this path through Ready, including partial marker/database
+            // publication; the Root writer lease remains the sole authority.
+            let launch =
+                FileLease::acquire(&namespaces.ownership.join(format!("tui-launch-{key}.lock")))?;
+            let id = root::initialize(&root_path, &namespaces)?;
+            launch.validate()?;
+            Ok::<_, io::Error>((launch, id))
+        })
+        .await?;
+        match result {
+            Ok(initialized) => return Ok(initialized),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => pause().await,
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 async fn connect_inner(
     path: PathBuf,
     selection: Option<&maka_host_runtime::application::host::startup::Request>,
@@ -85,30 +113,7 @@ async fn connect_inner(
         ..Default::default()
     };
     let result: Result<Connection, HostError> = async {
-        let (_launch, root_id) = loop {
-            let root_path = path.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                let namespaces = RootNamespaces::for_current_account()?;
-                let canonical = root::prepare_directory(&root_path)?;
-                let key = hex::encode(Sha256::digest(canonical.as_os_str().as_encoded_bytes()));
-                root::private_directory(&namespaces.ownership)?;
-                // Before initialization there is no Root ID. Serialize launchers
-                // for this path through Ready, including partial marker/database
-                // publication; the Root writer lease remains the sole authority.
-                let launch = FileLease::acquire(
-                    &namespaces.ownership.join(format!("tui-launch-{key}.lock")),
-                )?;
-                let id = root::initialize(&root_path, &namespaces)?;
-                launch.validate()?;
-                Ok::<_, io::Error>((launch, id))
-            })
-            .await?;
-            match result {
-                Ok(initialized) => break initialized,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => pause().await,
-                Err(error) => return Err(error.into()),
-            }
-        };
+        let (_launch, root_id) = acquire_launch(&path).await?;
         if selection
             .and_then(|selection| selection.state_domain.as_ref())
             .is_some_and(|expected| *expected != root_id)
