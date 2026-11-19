@@ -123,6 +123,12 @@ impl DataWriter {
         Weak::ptr_eq(&self.owner, &other.owner) && self.owner.strong_count() != 0
     }
     pub(in crate::root_store) fn scoped(&self) -> Result<EventLog, StoreError> {
+        self.scoped_inner(true)
+    }
+    fn scoped_enqueued(&self) -> Result<EventLog, StoreError> {
+        self.scoped_inner(false)
+    }
+    fn scoped_inner(&self, validate_root: bool) -> Result<EventLog, StoreError> {
         match &self.ingress {
             Ingress::Prepared(owner) => Ok(owner.scoped(owner.clone())),
             Ingress::Fresh { closed, gates } => {
@@ -130,7 +136,9 @@ impl DataWriter {
                     return Err(StoreError::ConnectionClosed);
                 }
                 let owner = self.log.upgrade().ok_or(StoreError::ConnectionClosed)?;
-                owner.validate_root()?;
+                if validate_root {
+                    owner.validate_root()?;
+                }
                 gates.start_work()?;
                 let work = Arc::new(Work {
                     _owner: owner.clone(),
@@ -140,7 +148,9 @@ impl DataWriter {
             }
             Ingress::Accepted(selected) => {
                 let owner = selected.owner()?;
-                owner.validate_root()?;
+                if validate_root {
+                    owner.validate_root()?;
+                }
                 let pins = selected.work.as_ref().ok_or_else(|| {
                     StoreError::InvalidTransition(
                         "selected data ingress has no accepted work".into(),
@@ -160,7 +170,7 @@ impl DataWriter {
     /// Use the Root's bounded read lanes. Once enqueued, the actual SQL job owns
     /// its Root work pin even if this observing future disappears.
     pub async fn query<Q: Query>(&self, query: Q) -> Result<Q::Output, StoreError> {
-        self.scoped()?
+        self.scoped_enqueued()?
             .connection
             .read(move |connection| {
                 let snapshot = connection.unchecked_transaction()?;
@@ -172,7 +182,7 @@ impl DataWriter {
     }
     /// Observe after previously accepted jobs settle on this original writer FIFO.
     pub async fn query_barrier<Q: Query>(&self, query: Q) -> Result<Q::Output, StoreError> {
-        self.scoped()?
+        self.scoped_enqueued()?
             .connection
             .run(move |connection| {
                 let snapshot = connection.unchecked_transaction()?;
@@ -185,7 +195,7 @@ impl DataWriter {
     /// Join the existing bounded writer FIFO and its IMMEDIATE/FULL commit.
     /// Only the committed output escapes; no script or callback is replayed.
     pub async fn write<S: Statement>(&self, statement: S) -> Result<S::Output, StoreError> {
-        let log = self.scoped()?;
+        let log = self.scoped_enqueued()?;
         log.connection.write(statement, log.commits.notice()).await
     }
 }
