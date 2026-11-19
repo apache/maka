@@ -17,15 +17,17 @@
  * under the License.
  */
 
-import { Canvas, signal, Text, View, type ViewRef } from 'nsh';
+import { Canvas, cleanup, signal, Text, View, type ViewRef } from 'nsh';
 import {
   composerToolbar,
-  computeDropSlot,
+  createToolbarDragController,
   isDefaultComposerToolbarLayout,
   type ComposerToolbarSlot,
   type ComposerToolbarWidget,
   type ContextUsageDisplay,
+  type MeasuredToolbarTrack,
   type SlotBounds,
+  type ToolbarDragPreview,
 } from './composerToolbar';
 import { Icon } from './Icon';
 import { tr } from './locale';
@@ -37,20 +39,6 @@ import {
   settingsInset,
 } from './SettingsPage';
 import { C } from './ui';
-
-type MeasuredTrack = {
-  left: number;
-  width: number;
-  slots: SlotBounds[];
-  spacer: SlotBounds | null;
-};
-
-type DragState = {
-  widget: ComposerToolbarWidget;
-  targetIndex: number;
-  indicatorX: number;
-  overSpacer: boolean;
-};
 
 function widgetLabel(widget: ComposerToolbarWidget): string {
   switch (widget) {
@@ -88,56 +76,30 @@ function GripDots(props: { color: string }) {
 
 export function ComposerToolbarSettings() {
   const selected = signal<ComposerToolbarWidget | null>(null);
-  const drag = signal<DragState | null>(null);
+  const drag = signal<ToolbarDragPreview | null>(null);
   const slotRefs = new Map<ComposerToolbarSlot, ViewRef>();
   let trackRef: ViewRef | null = null;
-  let measured: MeasuredTrack | null = null;
-  let dragGeneration = 0;
 
   const isOff = (widget: ComposerToolbarWidget) =>
     (widget === 'context' && composerToolbar.contextUsage() === 'off') ||
     (widget === 'usage' && !composerToolbar.usageLimits());
 
-  const updateDragPosition = (pageX: number) => {
-    const active = drag();
-    if (!active || !measured || !measured.slots.length) return;
-    const { index, indicatorX } = computeDropSlot(
-      pageX,
-      measured.left,
-      measured.width,
-      measured.slots,
-    );
-    const overSpacer =
-      measured.spacer !== null &&
-      pageX >= measured.spacer.left - 6 &&
-      pageX <= measured.spacer.left + measured.spacer.width + 6;
-    drag.set({
-      widget: active.widget,
-      targetIndex: index,
-      indicatorX,
-      overSpacer,
-    });
-  };
+  const dragController = createToolbarDragController({
+    onPreview: (preview) => drag.set(preview),
+    onCommit: (widget, targetIndex) => composerToolbar.moveWidget(widget, targetIndex),
+  });
+  cleanup(() => dragController.cancel());
 
-  const beginDrag = (widget: ComposerToolbarWidget, pageX: number) => {
-    const generation = ++dragGeneration;
-    const layout = composerToolbar.layout();
-    const initialIndex = layout.indexOf(widget);
-    selected.set(widget);
-    measured = null;
-    drag.set({
-      widget,
-      targetIndex: initialIndex,
-      indicatorX: 0,
-      overSpacer: false,
-    });
+  const measureTrack = (
+    layout: readonly ComposerToolbarSlot[],
+  ): Promise<MeasuredToolbarTrack | null> => {
     const track = trackRef;
-    if (!track) return;
-    void Promise.all([
+    if (!track) return Promise.resolve(null);
+    return Promise.all([
       track.measure(),
       ...layout.map((slot) => slotRefs.get(slot)?.measure() ?? Promise.resolve(null)),
     ]).then(([trackBox, ...slotBoxes]) => {
-      if (generation !== dragGeneration || !drag() || !trackBox) return;
+      if (!trackBox) return null;
       const slots: SlotBounds[] = [];
       let spacer: SlotBounds | null = null;
       for (let i = 0; i < layout.length; i++) {
@@ -148,24 +110,19 @@ export function ComposerToolbarSettings() {
         slots.push(bounds);
         if (layout[i] === 'spacer') spacer = bounds;
       }
-      measured = {
+      return {
         left: trackBox.pagePosition.x,
         width: trackBox.bounds.size.width,
         slots,
         spacer,
       };
-      updateDragPosition(pageX);
     });
   };
 
-  const finishDrag = (commit: boolean) => {
-    dragGeneration++;
-    const active = drag();
-    drag.set(null);
-    measured = null;
-    if (commit && active) {
-      composerToolbar.moveWidget(active.widget, active.targetIndex);
-    }
+  const beginDrag = (widget: ComposerToolbarWidget, pageX: number) => {
+    const layout = composerToolbar.layout();
+    selected.set(widget);
+    dragController.start(widget, layout.indexOf(widget), pageX, measureTrack(layout));
   };
 
   const selectedIndex = () => {
@@ -319,13 +276,13 @@ export function ComposerToolbarSettings() {
                       return true;
                     }}
                     onResponderMove={(event) => {
-                      updateDragPosition(event.pageX);
+                      dragController.move(event.pageX);
                     }}
-                    onResponderRelease={() => {
-                      finishDrag(true);
+                    onResponderRelease={(event) => {
+                      dragController.release(event.pageX);
                     }}
                     onResponderTerminate={() => {
-                      finishDrag(false);
+                      dragController.cancel();
                     }}
                     style={{
                       height: 30,

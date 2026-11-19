@@ -4136,7 +4136,17 @@ async fn desktop_composer_toolbar_customizes_layout_and_context_usage() {
 
     desktop.press("Open settings").await;
     desktop.press("Settings section General").await;
+    desktop.press("Off").await;
     desktop.press("Reset").await;
+    desktop.press("Close settings").await;
+    let model_reset = desktop.control("Choose model and effort").await;
+    assert!(
+        model_reset.left() >= model_before.left() - px(2.0),
+        "reset should restore model to the right side: before={model_before:?}, reset={model_reset:?}"
+    );
+    desktop.press("Open settings").await;
+    desktop.press("Settings section General").await;
+    desktop.press("Always").await;
     desktop.close().await;
     fixture.finish().await;
 }

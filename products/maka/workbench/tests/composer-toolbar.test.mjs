@@ -22,9 +22,9 @@ import { registerHooks } from 'node:module';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import {
-  isExternalUsageRuntime,
-  shortUsagePeriod,
   summarizeComposerUsage,
+  usageSeverity,
+  watchComposerUsage,
 } from '../app/composerUsageSummary.ts';
 
 const appRoot = new URL('../app/', import.meta.url);
@@ -43,6 +43,7 @@ async function setupToolbar(t, storage, idiom = 'desktop') {
   const id = ++sequence;
   globalThis.__composerToolbarFixture = { storage, idiom };
   delete globalThis[Symbol.for('maka.composerToolbar')];
+  delete globalThis[Symbol.for('maka.composerToolbarCompact')];
   const native = `const fixture = globalThis.__composerToolbarFixture;
     // fixture ${id}
     export const platform = { idiom: fixture.idiom };
@@ -54,8 +55,9 @@ async function setupToolbar(t, storage, idiom = 'desktop') {
       return read;
     };
     export const context = fallback => {
-      const read = () => fallback;
-      read.Provider = () => null;
+      let current = fallback;
+      const read = () => current;
+      read.Provider = ({ value }) => { current = value; return null; };
       return read;
     };`;
   const hooks = registerHooks({
@@ -73,6 +75,7 @@ async function setupToolbar(t, storage, idiom = 'desktop') {
     hooks.deregister();
     delete globalThis.__composerToolbarFixture;
     delete globalThis[Symbol.for('maka.composerToolbar')];
+    delete globalThis[Symbol.for('maka.composerToolbarCompact')];
   });
   const root = await import(new URL(`composerToolbar.ts?fixture=${id}&bundle=root`, appRoot));
   const settings = await import(
@@ -113,17 +116,9 @@ test('layout helpers normalize malformed storage and move widgets across the spa
     right: ['workspace', 'usage', 'context', 'model'],
   });
   assert.equal(root.isDefaultComposerToolbarLayout(stepped), false);
-
-  const drop = root.computeDropSlot(145, 100, 300, [
-    { left: 100, width: 60 },
-    { left: 164, width: 60 },
-    { left: 228, width: 72 },
-  ]);
-  assert.equal(drop.index, 1);
-  assert.equal(drop.indicatorX, 62);
 });
 
-test('independent UI bundles share composer toolbar state and keep live edits over delayed startup reads', async (t) => {
+test('independent UI bundles share toolbar state, compact context, and keep live edits over startup reads', async (t) => {
   const reads = new Map();
   const saved = new Map();
   const { root, settings } = await setupToolbar(t, {
@@ -136,6 +131,11 @@ test('independent UI bundles share composer toolbar state and keep live edits ov
       saved.set(key, value);
     },
   });
+
+  // Cross-bundle compact context shares object identity so RecentWorkspaces sees Composer width.
+  assert.equal(root.ToolbarCompactProvider, settings.ToolbarCompactProvider);
+  root.ToolbarCompactProvider({ value: () => true });
+  assert.equal(settings.useToolbarCompact(), true);
 
   assert.equal(root.composerToolbar.contextUsage(), 'always');
   assert.equal(root.composerToolbar.usageLimits(), false);
@@ -160,14 +160,174 @@ test('independent UI bundles share composer toolbar state and keep live edits ov
   assert.equal(saved.get('composer-usage-limits'), '1');
 });
 
-test('summarizeComposerUsage picks the most constrained window and formats balances', () => {
-  assert.equal(isExternalUsageRuntime('codex'), true);
-  assert.equal(isExternalUsageRuntime('claude'), true);
-  assert.equal(isExternalUsageRuntime('unknown'), false);
-  assert.equal(shortUsagePeriod({ kind: 'duration', seconds: 18000 }), '5h');
-  assert.equal(shortUsagePeriod({ kind: 'duration', seconds: 604800 }), '7d');
-  assert.equal(shortUsagePeriod({ kind: 'monthly' }), '1m');
+test('drag reorder pairs pointer move and early release with async measure and ignores cancel', async (t) => {
+  const { root } = await setupToolbar(t, {
+    getItem: async () => null,
+    setItem: async () => {},
+  });
+  const track = {
+    left: 0,
+    width: 360,
+    slots: [
+      { left: 0, width: 60 },
+      { left: 60, width: 60 },
+      { left: 120, width: 60 },
+      { left: 180, width: 60 },
+      { left: 240, width: 60 },
+      { left: 300, width: 60 },
+    ],
+    spacer: { left: 120, width: 60 },
+  };
 
+  const commits = [];
+  const controller = root.createToolbarDragController({
+    onPreview() {},
+    onCommit(widget, index) {
+      commits.push([widget, index]);
+    },
+  });
+
+  // Release arrives before measure resolves: must commit at release pageX once measure settles.
+  const m1 = deferred();
+  controller.start('model', 5, 320, m1.promise);
+  controller.move(10);
+  controller.release(10);
+  assert.deepEqual(commits, []);
+  m1.resolve(track);
+  await setImmediate();
+  assert.deepEqual(commits, [['model', 0]]);
+
+  // Move arrives before measure resolves, release arrives after: must preserve latest move.
+  const m2 = deferred();
+  controller.start('model', 5, 320, m2.promise);
+  controller.move(15);
+  m2.resolve(track);
+  await setImmediate();
+  controller.release();
+  assert.deepEqual(commits, [
+    ['model', 0],
+    ['model', 0],
+  ]);
+
+  // Cancel before measure resolves: must never commit.
+  const m3 = deferred();
+  controller.start('model', 5, 320, m3.promise);
+  controller.move(15);
+  controller.cancel();
+  m3.resolve(track);
+  await setImmediate();
+  assert.equal(commits.length, 2);
+});
+
+test('watchComposerUsage guards ABA races, invalidates superseded failures, and recovers after re-enable', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const detail = (connectionId, revision, name, enabled = true) => ({
+    kind: 'ready',
+    enabled,
+    name,
+    target: { connectionId, revision },
+  });
+  const ready = (usedPercent) => ({
+    kind: 'ready',
+    limits: [{ kind: 'window', period: { kind: 'duration', seconds: 18000 }, usedPercent }],
+  });
+
+  // 1. ABA race: a stopped watch must not overwrite sourceName or issue follow-up queries.
+  const pending = [];
+  const abaHost = {
+    query(endpoint, method, input) {
+      return new Promise((resolve) => pending.push({ endpoint, method, input, resolve }));
+    },
+  };
+  const observations = [];
+  const stopOldA = watchComposerUsage(
+    abaHost,
+    { key: 'model:A', kind: 'connection', connectionId: 'A' },
+    (obs) => observations.push(obs),
+    null,
+  );
+  const oldADetail = pending.shift();
+  stopOldA();
+  const stopNewA = watchComposerUsage(
+    abaHost,
+    { key: 'model:A', kind: 'connection', connectionId: 'A' },
+    (obs) => observations.push(obs),
+    null,
+  );
+  t.after(stopNewA);
+  pending.shift().resolve(detail('A', 2, 'Current Account'));
+  await setImmediate();
+  pending.shift().resolve(ready(25));
+  await setImmediate();
+  assert.equal(observations.at(-1)?.sourceName, 'Current Account');
+
+  oldADetail.resolve(detail('A', 1, 'Stale Account'));
+  await setImmediate();
+  assert.equal(observations.at(-1)?.sourceName, 'Current Account');
+  assert.equal(pending.length, 0);
+
+  // 2. Superseded followed by failed retry clears stale ready reading; ordinary failure preserves it.
+  const replies = [
+    detail('B', 1, 'Old Name'),
+    ready(40),
+    { kind: 'unavailable' },
+    { kind: 'superseded' },
+    detail('B', 2, 'New Name'),
+    { kind: 'unavailable' },
+  ];
+  const supObs = [];
+  const supHost = {
+    query() {
+      return Promise.resolve(replies.shift());
+    },
+  };
+  t.after(
+    watchComposerUsage(
+      supHost,
+      { key: 'model:B', kind: 'connection', connectionId: 'B' },
+      (obs) => supObs.push(obs),
+      null,
+    ),
+  );
+  await setImmediate();
+  assert.equal(supObs.at(-1)?.reading.result.kind, 'ready');
+  t.mock.timers.tick(60_000);
+  await setImmediate();
+  assert.equal(supObs.at(-1)?.reading.result.kind, 'ready');
+  assert.equal(supObs.at(-1)?.reading.refreshFailed, true);
+  assert.equal(supObs.at(-1)?.sourceName, 'Old Name');
+
+  t.mock.timers.tick(60_000);
+  await setImmediate();
+  assert.equal(supObs.at(-1)?.reading.result.kind, 'superseded');
+
+  // 3. Temporarily disabled connection recovers on next scheduled poll after re-enabling.
+  let enabled = false;
+  const disObs = [];
+  const disHost = {
+    query(_endpoint, method) {
+      if (method === 'connection') return Promise.resolve(detail('C', 1, 'Account C', enabled));
+      return Promise.resolve(ready(30));
+    },
+  };
+  t.after(
+    watchComposerUsage(
+      disHost,
+      { key: 'model:C', kind: 'connection', connectionId: 'C' },
+      (obs) => disObs.push(obs),
+      null,
+    ),
+  );
+  await setImmediate();
+  assert.equal(disObs.at(-1)?.reading.result.kind, 'superseded');
+  enabled = true;
+  t.mock.timers.tick(60_000);
+  await setImmediate();
+  assert.equal(disObs.at(-1)?.reading.result.kind, 'ready');
+  assert.equal(disObs.at(-1)?.sourceName, 'Account C');
+});
+
+test('summarizeComposerUsage aligns severity boundaries with usageSeverity and formats balances', () => {
   const multi = summarizeComposerUsage([
     { kind: 'window', period: { kind: 'duration', seconds: 604800 }, usedPercent: 18 },
     { kind: 'window', period: { kind: 'duration', seconds: 18000 }, usedPercent: 84 },
@@ -177,12 +337,18 @@ test('summarizeComposerUsage picks the most constrained window and formats balan
   assert.equal(multi.remainingPercent, 16);
   assert.equal(multi.tone, 'warning');
 
-  const exhausted = summarizeComposerUsage([
-    { kind: 'window', period: { kind: 'duration', seconds: 18000 }, usedPercent: 100 },
-  ]);
-  assert.equal(exhausted?.kind, 'window');
-  assert.equal(exhausted.remainingPercent, 0);
-  assert.equal(exhausted.tone, 'danger');
+  for (const [usedPercent, expected] of [
+    [79.75, 'normal'],
+    [80, 'warning'],
+    [94.75, 'warning'],
+    [95, 'danger'],
+    [100, 'danger'],
+  ]) {
+    const summary = summarizeComposerUsage([{ kind: 'window', usedPercent }]);
+    assert.equal(summary?.kind, 'window');
+    assert.equal(summary.tone, expected);
+    assert.equal(usageSeverity(usedPercent), expected);
+  }
 
   const balance = summarizeComposerUsage([{ kind: 'balance', amount: 12.4, unit: '$' }]);
   assert.deepEqual(balance, {

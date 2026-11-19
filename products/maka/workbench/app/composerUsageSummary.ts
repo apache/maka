@@ -19,8 +19,11 @@
 
 import type {
   AgentNativeRuntime,
+  ConnectionVersionBasis,
   ServiceMethods,
+  SettingsConnectionDetail,
 } from '../../../../packages/plugin-sdk/src/index.js';
+import { watchUsageLimits, type UsageReading, type UsageResult } from './usageLimitsReading.ts';
 
 type UsageLimitsOutput = ServiceMethods['settings']['connectionUsageLimits']['output'];
 export type UsageLimitEntry = Extract<UsageLimitsOutput, { kind: 'ready' }>['limits'][number];
@@ -41,12 +44,49 @@ export type ComposerUsageSummary =
       text: string;
     };
 
+export type ComposerUsageTarget =
+  | { key: string; kind: 'connection'; connectionId: string }
+  | { key: string; kind: 'external'; runtime: AgentNativeRuntime };
+
+export type ComposerUsageObservation = {
+  reading: UsageReading;
+  sourceName: string;
+};
+
+export interface ComposerUsageHost {
+  query(
+    endpoint: 'settings',
+    method: 'connection',
+    input: { connectionId: string; includeEditingFacts?: boolean },
+  ): Promise<SettingsConnectionDetail>;
+  query(
+    endpoint: 'settings',
+    method: 'connectionUsageLimits',
+    input: ConnectionVersionBasis,
+  ): Promise<UsageResult>;
+  query(
+    endpoint: 'agent',
+    method: 'externalUsageLimits',
+    input: { runtime: AgentNativeRuntime },
+  ): Promise<UsageResult>;
+}
+
 const EXTERNAL_USAGE_RUNTIMES = new Set<string>(['antigravity', 'codex', 'claude']);
+
+export const EXTERNAL_USAGE_RUNTIME_NAMES: Record<AgentNativeRuntime, string> = {
+  antigravity: 'Antigravity',
+  codex: 'Codex',
+  claude: 'Claude Code',
+};
 
 export function isExternalUsageRuntime(
   runtime: string | null | undefined,
 ): runtime is AgentNativeRuntime {
   return typeof runtime === 'string' && EXTERNAL_USAGE_RUNTIMES.has(runtime);
+}
+
+export function usageSeverity(usedPercent: number): UsageTone {
+  return usedPercent >= 95 ? 'danger' : usedPercent >= 80 ? 'warning' : 'normal';
 }
 
 export function shortUsagePeriod(period: UsageLimitPeriod | undefined): string {
@@ -73,14 +113,12 @@ export function summarizeComposerUsage(
       if (windows[i]!.usedPercent > hottest.usedPercent) hottest = windows[i]!;
     }
     const remainingPercent = Math.max(0, Math.min(100, Math.round(100 - hottest.usedPercent)));
-    const tone: UsageTone =
-      remainingPercent <= 5 ? 'danger' : remainingPercent <= 20 ? 'warning' : 'normal';
     return {
       kind: 'window',
       limit: hottest,
       shortWindow: shortUsagePeriod(hottest.period),
       remainingPercent,
-      tone,
+      tone: usageSeverity(hottest.usedPercent),
     };
   }
   const balance = limits.find(
@@ -96,4 +134,108 @@ export function summarizeComposerUsage(
     return { kind: 'balance', limit: balance, text };
   }
   return null;
+}
+
+type BasisResolution =
+  | { kind: 'ready'; basis: ConnectionVersionBasis; name: string }
+  | { kind: 'disabled' }
+  | { kind: 'missing' }
+  | { kind: 'stale' };
+
+export function watchComposerUsage(
+  host: ComposerUsageHost,
+  target: ComposerUsageTarget,
+  publish: (observation: ComposerUsageObservation) => void,
+  previous: ComposerUsageObservation | null,
+): () => void {
+  let stopped = false;
+  let cachedBasis: ConnectionVersionBasis | null = null;
+  let committedSource =
+    target.kind === 'external'
+      ? EXTERNAL_USAGE_RUNTIME_NAMES[target.runtime]
+      : (previous?.sourceName ?? '');
+  let pendingSource = committedSource;
+
+  const resolveBasis = async (connectionId: string): Promise<BasisResolution> => {
+    const detail = await host.query('settings', 'connection', {
+      connectionId,
+      includeEditingFacts: false,
+    });
+    if (stopped) return { kind: 'stale' };
+    if (detail.kind !== 'ready') {
+      return detail.actual === null ? { kind: 'missing' } : { kind: 'stale' };
+    }
+    if (!detail.enabled) {
+      cachedBasis = null;
+      return { kind: 'disabled' };
+    }
+    cachedBasis = {
+      connectionId: detail.target.connectionId,
+      revision: detail.target.revision,
+    };
+    return { kind: 'ready', basis: cachedBasis, name: detail.name };
+  };
+
+  const query = async (): Promise<UsageResult> => {
+    if (stopped) return { kind: 'unavailable' };
+    if (target.kind === 'external') {
+      pendingSource = EXTERNAL_USAGE_RUNTIME_NAMES[target.runtime];
+      return host.query('agent', 'externalUsageLimits', { runtime: target.runtime });
+    }
+
+    let basis = cachedBasis;
+    let source = committedSource;
+    if (!basis) {
+      const resolved = await resolveBasis(target.connectionId);
+      if (stopped) return { kind: 'unavailable' };
+      if (resolved.kind === 'missing') return { kind: 'unsupported' };
+      if (resolved.kind !== 'ready') return { kind: 'superseded' };
+      basis = resolved.basis;
+      source = resolved.name;
+    }
+
+    const first = await host.query('settings', 'connectionUsageLimits', basis);
+    if (stopped) return { kind: 'unavailable' };
+    if (first.kind !== 'superseded') {
+      pendingSource = source;
+      return first;
+    }
+
+    cachedBasis = null;
+    let resolved: BasisResolution;
+    try {
+      resolved = await resolveBasis(target.connectionId);
+    } catch {
+      return { kind: 'superseded' };
+    }
+    if (stopped) return { kind: 'unavailable' };
+    if (resolved.kind === 'missing') return { kind: 'unsupported' };
+    if (resolved.kind !== 'ready') return { kind: 'superseded' };
+
+    let retried: UsageResult;
+    try {
+      retried = await host.query('settings', 'connectionUsageLimits', resolved.basis);
+    } catch {
+      return { kind: 'superseded' };
+    }
+    if (stopped) return { kind: 'unavailable' };
+    if (retried.kind === 'unavailable') return { kind: 'superseded' };
+    pendingSource = resolved.name;
+    return retried;
+  };
+
+  const stopWatcher = watchUsageLimits(
+    query,
+    (reading) => {
+      if (stopped) return;
+      if (!reading.refreshFailed) committedSource = pendingSource;
+      publish({ reading, sourceName: committedSource });
+    },
+    previous?.reading ?? null,
+  );
+
+  return () => {
+    stopped = true;
+    stopWatcher();
+  };
 }

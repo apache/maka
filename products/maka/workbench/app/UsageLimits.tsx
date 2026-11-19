@@ -18,6 +18,7 @@
  */
 
 import { cleanup, effect, lifecycle, platform, signal, Text, untracked, View } from 'nsh';
+import { usageSeverity } from './composerUsageSummary';
 import { currentLocale, tr } from './locale';
 import { watchUsageLimits, type UsageReading, type UsageResult } from './usageLimitsReading';
 import { C, captionTextStyle } from './ui';
@@ -155,8 +156,8 @@ export function UsageLimitsList(props: { limits: () => UsageLimit[]; showRemaini
             return usageValue(limit);
           };
           const barColor = () => {
-            const value = used() ?? 0;
-            return value >= 95 ? C.danger : value >= 80 ? C.warning : C.accent;
+            const tone = usageSeverity(used() ?? 0);
+            return tone === 'danger' ? C.danger : tone === 'warning' ? C.warning : C.accent;
           };
           return (
             <View style={{ gap: terminal ? 0 : 3 }}>

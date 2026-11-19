@@ -121,6 +121,20 @@ export function isDefaultComposerToolbarLayout(layout: readonly ComposerToolbarS
 
 export type SlotBounds = { left: number; width: number };
 
+export type MeasuredToolbarTrack = {
+  left: number;
+  width: number;
+  slots: SlotBounds[];
+  spacer: SlotBounds | null;
+};
+
+export type ToolbarDragPreview = {
+  widget: ComposerToolbarWidget;
+  targetIndex: number;
+  indicatorX: number;
+  overSpacer: boolean;
+};
+
 export function computeDropSlot(
   clientX: number,
   trackLeft: number,
@@ -140,6 +154,100 @@ export function computeDropSlot(
     indicatorX = Math.min(Math.max(0, trackWidth - 2), item.left + item.width - trackLeft + 1);
   }
   return { index, indicatorX };
+}
+
+export function createToolbarDragController(callbacks: {
+  onPreview(preview: ToolbarDragPreview | null): void;
+  onCommit(widget: ComposerToolbarWidget, targetIndex: number): void;
+}) {
+  let generation = 0;
+  let active: {
+    id: number;
+    widget: ComposerToolbarWidget;
+    latestPageX: number;
+    released: boolean;
+    measured: MeasuredToolbarTrack | null;
+  } | null = null;
+
+  const project = (widget: ComposerToolbarWidget, pageX: number, track: MeasuredToolbarTrack) => {
+    const { index, indicatorX } = computeDropSlot(pageX, track.left, track.width, track.slots);
+    const overSpacer =
+      track.spacer !== null &&
+      pageX >= track.spacer.left - 6 &&
+      pageX <= track.spacer.left + track.spacer.width + 6;
+    return { widget, targetIndex: index, indicatorX, overSpacer };
+  };
+
+  const commitIfReady = () => {
+    if (!active || !active.released || !active.measured) return;
+    const { widget, latestPageX, measured } = active;
+    active = null;
+    callbacks.onPreview(null);
+    if (!measured.slots.length) return;
+    const { targetIndex } = project(widget, latestPageX, measured);
+    callbacks.onCommit(widget, targetIndex);
+  };
+
+  return {
+    start(
+      widget: ComposerToolbarWidget,
+      initialIndex: number,
+      pageX: number,
+      measure: Promise<MeasuredToolbarTrack | null>,
+    ) {
+      const id = ++generation;
+      active = { id, widget, latestPageX: pageX, released: false, measured: null };
+      callbacks.onPreview({
+        widget,
+        targetIndex: initialIndex,
+        indicatorX: 0,
+        overSpacer: false,
+      });
+      void measure
+        .then((track) => {
+          if (!active || active.id !== id) return;
+          if (!track || !track.slots.length) {
+            active = null;
+            callbacks.onPreview(null);
+            return;
+          }
+          active.measured = track;
+          if (active.released) {
+            commitIfReady();
+          } else {
+            callbacks.onPreview(project(active.widget, active.latestPageX, track));
+          }
+        })
+        .catch(() => {
+          if (active && active.id === id) {
+            active = null;
+            callbacks.onPreview(null);
+          }
+        });
+    },
+    move(pageX: number) {
+      if (!active || active.released) return;
+      active.latestPageX = pageX;
+      if (active.measured) {
+        callbacks.onPreview(project(active.widget, pageX, active.measured));
+      }
+    },
+    release(pageX?: number) {
+      if (!active) return;
+      if (typeof pageX === 'number') active.latestPageX = pageX;
+      active.released = true;
+      if (active.measured) {
+        commitIfReady();
+      } else {
+        callbacks.onPreview(null);
+      }
+    },
+    cancel() {
+      generation++;
+      active = null;
+      callbacks.onPreview(null);
+    },
+  };
 }
 
 const LAYOUT_KEY = 'composer-toolbar-layout';
@@ -273,7 +381,13 @@ const shared = globalThis as { [OWNER]?: ReturnType<typeof createComposerToolbar
 export const composerToolbar = (shared[OWNER] ??= createComposerToolbarOwner());
 export const initializeComposerToolbar = composerToolbar.initialize;
 
-const toolbarCompactContext = context<() => boolean>(() => false);
+const COMPACT_CONTEXT = Symbol.for('maka.composerToolbarCompact');
+const sharedCompact = globalThis as {
+  [COMPACT_CONTEXT]?: ReturnType<typeof context<() => boolean>>;
+};
+const toolbarCompactContext = (sharedCompact[COMPACT_CONTEXT] ??= context<() => boolean>(
+  () => false,
+));
 export const ToolbarCompactProvider = toolbarCompactContext.Provider;
 export function useToolbarCompact(): boolean {
   return toolbarCompactContext()();
