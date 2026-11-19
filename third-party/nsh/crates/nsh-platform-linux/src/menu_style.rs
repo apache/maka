@@ -34,7 +34,8 @@ use nsh_core::{Hsla, Rgba, element::Tokens};
 
 /// The default theme's colors (`nsh-base`'s, neutral): `(token, light,
 /// dark)`.
-const DEFAULTS: [(&str, u32, u32); 6] = [
+const DEFAULTS: [(&str, u32, u32); 7] = [
+    ("background", 0xffffff, 0x0a0a0a),
     ("popover", 0xffffff, 0x0a0a0a),
     ("popover-foreground", 0x0a0a0a, 0xfafafa),
     ("accent", 0xf5f5f5, 0x262626),
@@ -43,11 +44,12 @@ const DEFAULTS: [(&str, u32, u32); 6] = [
     ("border", 0xe5e5e5, 0x262626),
 ];
 
-/// The menus' style sheet for `tokens`.
+/// The menus' and root surfaces' style sheet for `tokens`.
 pub(crate) fn css(tokens: &Tokens) -> String {
     let mut out = String::from(SHAPE);
     for dark in [false, true] {
         let scope = if dark { ".nsh-dark " } else { "" };
+        let root_class = if dark { ".nsh-dark" } else { ".nsh-light" };
         let color = |name: &str| {
             let (_, light, night) = DEFAULTS.iter().find(|(n, ..)| *n == name).unwrap();
             let fallback = if dark { *night } else { *light };
@@ -56,16 +58,20 @@ pub(crate) fn css(tokens: &Tokens) -> String {
                 .map(|c| css_color(if dark { c.dark } else { c.light }))
                 .unwrap_or_else(|| format!("#{fallback:06x}"))
         };
+        let background = color("background");
         let (popover, foreground) = (color("popover"), color("popover-foreground"));
         let (accent, accent_foreground) = (color("accent"), color("accent-foreground"));
         let (muted, border) = (color("muted-foreground"), color("border"));
         out.push_str(&format!(
             "
-{scope}popover.menu > contents {{ background-color: {popover}; color: {foreground}; border-color: {border}; }}
-{scope}popover.menu modelbutton {{ color: {foreground}; }}
+{root_class} {{ background-color: {background}; }}
+{scope}popover.menu > contents, {root_class} text popover > contents, {root_class} textview popover > contents {{ background-color: {popover}; color: {foreground}; border-color: {border}; }}
+{root_class} text popover > arrow, {root_class} textview popover > arrow {{ background-color: {popover}; border-color: {border}; }}
+{scope}popover.menu modelbutton, {root_class} text popover modelbutton, {root_class} textview popover modelbutton {{ color: {foreground}; }}
 {scope}popover.menu modelbutton:hover, {scope}popover.menu modelbutton:selected {{ background-color: {accent}; color: {accent_foreground}; }}
-{scope}popover.menu modelbutton accelerator, {scope}popover.menu modelbutton:disabled {{ color: {muted}; }}
-{scope}popover.menu separator {{ background-color: {border}; }}
+{root_class} text popover modelbutton:hover, {root_class} text popover modelbutton:selected, {root_class} textview popover modelbutton:hover, {root_class} textview popover modelbutton:selected {{ background-color: {accent}; color: {accent_foreground}; }}
+{scope}popover.menu modelbutton accelerator, {scope}popover.menu modelbutton:disabled, {root_class} text popover modelbutton accelerator, {root_class} text popover modelbutton:disabled, {root_class} textview popover modelbutton accelerator, {root_class} textview popover modelbutton:disabled {{ color: {muted}; }}
+{scope}popover.menu separator, {root_class} text popover separator, {root_class} textview popover separator {{ background-color: {border}; }}
 "
         ));
     }
@@ -74,19 +80,20 @@ pub(crate) fn css(tokens: &Tokens) -> String {
 
 /// What does not depend on the colors.
 const SHAPE: &str = "
-popover.menu { padding: 0; }
-popover.menu > contents {
+popover.menu, .nsh-light text popover.background, .nsh-dark text popover.background, .nsh-light textview popover.background, .nsh-dark textview popover.background { padding: 0; }
+popover.menu > contents, .nsh-light text popover.background > contents, .nsh-dark text popover.background > contents, .nsh-light textview popover.background > contents, .nsh-dark textview popover.background > contents {
   padding: 4px; border-radius: 8px; border: 1px solid; background-image: none;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12), 0 1px 3px rgba(0, 0, 0, 0.08);
   font-size: 13px;
 }
-popover.menu modelbutton {
+popover.menu modelbutton, .nsh-light text popover modelbutton, .nsh-dark text popover modelbutton, .nsh-light textview popover modelbutton, .nsh-dark textview popover modelbutton {
   min-height: 28px; padding: 0 8px; border-radius: 6px;
   background-image: none; background-color: transparent; box-shadow: none; outline: none;
 }
-popover.menu modelbutton:disabled { filter: none; opacity: 1; }
-popover.menu modelbutton accelerator { margin-left: 24px; }
-popover.menu separator { min-height: 1px; margin: 4px -4px; }
+popover.menu modelbutton:disabled, .nsh-light text popover modelbutton:disabled, .nsh-dark text popover modelbutton:disabled, .nsh-light textview popover modelbutton:disabled, .nsh-dark textview popover modelbutton:disabled { filter: none; opacity: 1; }
+popover.menu modelbutton accelerator, .nsh-light text popover modelbutton accelerator, .nsh-dark text popover modelbutton accelerator, .nsh-light textview popover modelbutton accelerator, .nsh-dark textview popover modelbutton accelerator { margin-left: 24px; }
+popover.menu separator { min-height: 1px; min-width: 8px; margin: 4px -4px; }
+.nsh-light text popover separator, .nsh-dark text popover separator, .nsh-light textview popover separator, .nsh-dark textview popover separator { min-height: 1px; min-width: 1px; margin: 4px 0; }
 popover.menu > contents > scrolledwindow > scrollbar.vertical > range > trough > slider { min-height: 16px; }
 popover.menu modelbutton check, popover.menu modelbutton radio, popover.menu modelbutton arrow {
   -gtk-icon-source: none; background-image: none; background-color: transparent;
@@ -236,6 +243,155 @@ mod tests {
         });
     }
 
+    #[test]
+    fn root_surface_and_text_edit_popovers_follow_tokens_and_parse() {
+        let mut tokens = Tokens::default();
+        tokens.set_color("background", AdaptiveColor::rgb(0xf8fafc, 0x101318));
+        tokens.set_color("popover", AdaptiveColor::rgb(0xf1f5f9, 0x181c24));
+        tokens.set_color("popover-foreground", AdaptiveColor::rgb(0x0f172a, 0xe2e8f0));
+        tokens.set_color("accent", AdaptiveColor::rgb(0xe2e8f0, 0x263042));
+        tokens.set_color("accent-foreground", AdaptiveColor::rgb(0x020617, 0xf8fafc));
+        tokens.set_color("border", AdaptiveColor::rgb(0xcbd5e1, 0x303946));
+        let sheet = css(&tokens);
+        assert!(sheet.contains(".nsh-light { background-color: rgba(248, 250, 252, 1); }"));
+        assert!(sheet.contains(".nsh-dark { background-color: rgba(16, 19, 24, 1); }"));
+        assert!(sheet.contains(
+            ".nsh-light text popover > contents, .nsh-light textview popover > contents { \
+             background-color: rgba(241, 245, 249, 1);"
+        ));
+        assert!(sheet.contains(
+            ".nsh-dark text popover modelbutton:hover, .nsh-dark text popover modelbutton:selected, \
+             .nsh-dark textview popover modelbutton:hover, .nsh-dark textview popover modelbutton:selected { \
+             background-color: rgba(38, 48, 66, 1);"
+        ));
+        crate::gtk_test::run(move || {
+            let provider = gtk::CssProvider::new();
+            let errors = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let seen = errors.clone();
+            provider.connect_parsing_error(move |_, section, error| {
+                seen.borrow_mut()
+                    .push(format!("{}: {error}", section.to_str()));
+            });
+            provider.load_from_string(&sheet);
+            assert!(errors.borrow().is_empty(), "{:?}", errors.borrow());
+        });
+    }
+
+    /// Separators reserve enough `min-width` to offset their negative `-4px`
+    /// horizontal margins so GTK 4.22+ does not report a negative minimum
+    /// width when measuring them.
+    #[test]
+    fn separator_reports_non_negative_min_width() {
+        let sheet = css(&Tokens::default());
+        assert!(sheet.contains(
+            "popover.menu separator { min-height: 1px; min-width: 8px; margin: 4px -4px; }"
+        ));
+        crate::gtk_test::run(|| {
+            static INIT: std::sync::Once = std::sync::Once::new();
+            static CAPTURE: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            static WARNINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+            INIT.call_once(|| {
+                glib::log_set_writer_func(|level, fields| {
+                    if CAPTURE.load(std::sync::atomic::Ordering::Acquire)
+                        && level == glib::LogLevel::Warning
+                    {
+                        let domain = fields
+                            .iter()
+                            .find(|f| f.key() == "GLIB_DOMAIN")
+                            .and_then(|f| f.value_str());
+                        let message = fields
+                            .iter()
+                            .find(|f| f.key() == "MESSAGE")
+                            .and_then(|f| f.value_str())
+                            .unwrap_or("");
+                        if domain == Some("Gtk") {
+                            WARNINGS.lock().unwrap().push(message.to_string());
+                        }
+                    }
+                    glib::log_writer_default(level, fields)
+                });
+            });
+            struct Guard;
+            impl Drop for Guard {
+                fn drop(&mut self) {
+                    CAPTURE.store(false, std::sync::atomic::Ordering::Release);
+                }
+            }
+            WARNINGS.lock().unwrap().clear();
+            CAPTURE.store(true, std::sync::atomic::Ordering::Release);
+            let _guard = Guard;
+            let display = gdk::Display::default().expect("a display");
+            let provider = gtk::CssProvider::new();
+            provider.load_from_string(&css(&Tokens::default()));
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+            let actions = gio::SimpleActionGroup::new();
+            actions.add_action(&gio::SimpleAction::new("cut", None));
+            actions.add_action(&gio::SimpleAction::new("paste", None));
+            let first = gio::Menu::new();
+            first.append(Some("Cut"), Some("t.cut"));
+            let second = gio::Menu::new();
+            second.append(Some("Paste"), Some("t.paste"));
+            let model = gio::Menu::new();
+            model.append_section(None, &first);
+            model.append_section(None, &second);
+            let window = gtk::Window::new();
+            let menu = gtk::PopoverMenu::from_model(Some(&model));
+            menu.insert_action_group("t", Some(&actions));
+            menu.set_parent(&window);
+            window.present();
+            menu.popup();
+            assert!(
+                crate::gtk_test::wait_until(|| has_separator(menu.upcast_ref())),
+                "expected a menu separator widget"
+            );
+            let mut separators = Vec::new();
+            collect_separators(menu.upcast_ref(), &mut separators);
+            menu.popdown();
+            menu.unparent();
+            window.destroy();
+            gtk::style_context_remove_provider_for_display(&display, &provider);
+            drop(_guard);
+            let warnings = std::mem::take(&mut *WARNINGS.lock().unwrap());
+            assert!(warnings.is_empty(), "unexpected Gtk warnings: {warnings:?}");
+            assert!(!separators.is_empty(), "expected a menu separator widget");
+            for (min_w, min_h) in separators {
+                assert!(min_w >= 0, "separator min width was {min_w}");
+                assert!(min_h >= 1, "separator min height was {min_h}");
+            }
+        });
+    }
+
+    fn has_separator(widget: &gtk::Widget) -> bool {
+        if widget.css_name() == "separator" {
+            return true;
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            if has_separator(&widget) {
+                return true;
+            }
+            child = widget.next_sibling();
+        }
+        false
+    }
+
+    fn collect_separators(widget: &gtk::Widget, out: &mut Vec<(i32, i32)>) {
+        if widget.css_name() == "separator" {
+            let (min_w, ..) = widget.measure(gtk::Orientation::Horizontal, -1);
+            let (min_h, ..) = widget.measure(gtk::Orientation::Vertical, -1);
+            out.push((min_w, min_h));
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            collect_separators(&widget, out);
+            child = widget.next_sibling();
+        }
+    }
     /// Each indicator's name, whether it is set, and its width and height.
     fn collect(widget: &gtk::Widget, out: &mut Vec<(String, bool, i32, i32)>) {
         let name = widget.css_name();

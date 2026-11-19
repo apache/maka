@@ -419,6 +419,9 @@ pub struct ScreenConfig {
     pub header_transparent: bool,
     /// The hairline under the header (iOS).
     pub header_shadow_visible: bool,
+    /// A transparent header shows its background once the content scrolls
+    /// under it (iOS).
+    pub header_background_on_scroll: bool,
     /// The system tab bar leaves while this page is on top.
     pub hides_bottom_bar_when_pushed: bool,
     /// Color of the back button and bar buttons.
@@ -481,6 +484,7 @@ impl Default for ScreenConfig {
             large_title: false,
             header_transparent: false,
             header_shadow_visible: true,
+            header_background_on_scroll: false,
             hides_bottom_bar_when_pushed: false,
             tint_color: None,
             background_color: None,

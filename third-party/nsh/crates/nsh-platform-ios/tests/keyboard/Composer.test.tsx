@@ -27,3 +27,21 @@ test("a menu beside a typing input opens on the first tap", async () => {
   await app.press("text:Photo");
   await app.waitFor("text:picked:1");
 });
+
+test("an input keeps the focus across two typed characters", async () => {
+  // The focus engine reports no next focused view when a text field's own
+  // field editor takes the focus (the editor is not a focus item), and
+  // `adopt_focus` used to resign the field on that report: the field lost
+  // the focus after the first character. Typing two characters in one go is
+  // what a person does; the second must land without a second tap.
+  //
+  // The value is checked case-insensitively: the simulator's keyboard
+  // capitalizes the first letter of a sentence, which is not what this test
+  // is about.
+  const app = await open("./Composer.tsx");
+  await app.type("id:message", "hi");
+  await app.waitFor("text:focus:message");
+  expect(app.shows("text:focus:message")).toBe(true);
+  const value = app.shows("text:value:hi") || app.shows("text:value:Hi");
+  expect(value).toBe(true);
+});

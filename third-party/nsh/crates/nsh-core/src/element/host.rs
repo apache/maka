@@ -1013,6 +1013,17 @@ impl Screen {
         })
     }
 
+    /// With [`Self::header_transparent`], the header stays clear while the
+    /// content rests at its top and shows its background (UIKit's default,
+    /// or [`Self::header_style_with`]'s color) once the content scrolls
+    /// under it, as UIKit's own bars do (iOS; off by default; TS:
+    /// `headerBackgroundOnScroll`).
+    pub fn header_background_on_scroll(self, on: impl IntoReactive<bool>) -> Self {
+        self.bind_prop(on, |v| {
+            Prop::Screen(ScreenProp::HeaderBackgroundOnScroll(v))
+        })
+    }
+
     /// The header's colors: `backgroundColor`, `color` (the title's) and
     /// `tintColor` (the buttons'), as [`super::Style::from_decls`] makes
     /// them (TS: `headerStyle`); a style of typed styles applies as

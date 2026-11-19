@@ -795,6 +795,65 @@ test("Tab stops are the pressables and the focusable views, pressable or not", (
   delete globalThis.document;
 });
 
+test("a view laid out at no size, as in a display none subtree, is no Tab stop, nor is its field", () => {
+  const { player } = fakePlayer();
+  player.updateAria = () => {};
+  player.placeFrame = () => {};
+  player.readingChanged = () => {};
+  player.caretMoved = () => {};
+  globalThis.document = { activeElement: null };
+  try {
+    const classes = () => ({ toggle() {}, remove() {} });
+    const stop = (el) => (el.hasAttribute("tabindex") ? el.tabIndex : null);
+    const button = Object.assign(focusView(true, {}), { classList: classes() });
+    const field = Object.assign(focusView(false, {}), { classList: classes(), style: {} });
+    const input = Object.assign(focusView(false, {}), { classList: classes(), _field: field });
+    const views = new Map([[2, button], [4, input]]);
+    player.view = (id) => views.get(id);
+    // Its props come before its first frame: a stop until the frame says.
+    player.updateFocusable(button);
+    assert.equal(stop(button), 0);
+    player.op_f([0, 2, 0, 0, 120, 32]);
+    assert.equal(stop(button), 0, "shown");
+    player.op_f([0, 4, 0, 40, 120, 32]);
+    player.op_ic([0, 4, 8, 4, 104, 24]);
+    assert.equal(stop(field), null, "a shown field keeps the browser's Tab stop");
+    // Hidden with the focus on it: no stop, and it gives the focus up.
+    document.activeElement = button;
+    player.op_f([0, 2, 0, 0, 0, 0]);
+    assert.equal(stop(button), null, "hidden");
+    assert.equal(button.blurred, true);
+    document.activeElement = field;
+    player.op_f([0, 4, 0, 0, 0, 0]);
+    player.op_ic([0, 4, 0, 0, 0, 0]);
+    assert.equal(stop(field), -1, "a hidden field");
+    assert.equal(field.blurred, true);
+    // Shown again: stops again.
+    player.op_f([0, 2, 0, 0, 120, 32]);
+    assert.equal(stop(button), 0);
+    player.op_f([0, 4, 0, 40, 120, 32]);
+    player.op_ic([0, 4, 8, 4, 104, 24]);
+    assert.equal(stop(field), null);
+    // A link is a stop without a `tabindex`: hidden, it gets -1 instead.
+    const link = Object.assign(focusView(true, {}), { classList: classes(), tagName: "A", matches: () => true });
+    views.set(6, link);
+    player.updateFocusable(link);
+    player.op_f([0, 6, 0, 0, 120, 32]);
+    assert.equal(stop(link), 0);
+    player.op_f([0, 6, 0, 0, 0, 0]);
+    assert.equal(stop(link), -1, "a hidden link");
+    player.op_f([0, 6, 0, 0, 120, 32]);
+    assert.equal(stop(link), 0);
+    // A field whose view is mounted hidden, before any content box.
+    const late = Object.assign(focusView(false, {}), { classList: classes(), _frame: [0, 0, 0, 0] });
+    late._field = field;
+    player.fieldStop(late);
+    assert.equal(stop(field), -1);
+  } finally {
+    delete globalThis.document;
+  }
+});
+
 test("setAccessibilityFocus leaves the keyboard focus in a field the user is typing in", async () => {
   const { player } = fakePlayer();
   player.live = { textContent: "" };

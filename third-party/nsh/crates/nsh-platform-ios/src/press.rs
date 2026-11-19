@@ -104,6 +104,9 @@ define_class!(
             if link.is_none() && !ivars.own.get() {
                 return self.set_state(UIGestureRecognizerState::Failed);
             }
+            // The press may play a haptic (a switch, a send, a confirmation):
+            // ready the generators before the release.
+            ivars.target.haptics().prepare();
             let deeper_long = self.long_deeper(&touch, &view);
             let long_press = deeper_long.is_none()
                 && match link {

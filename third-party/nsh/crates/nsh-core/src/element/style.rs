@@ -3671,6 +3671,17 @@ pub trait Styled: Sized {
         self
     }
 
+    /// The color a system control shows its state in (`accentColor`, CSS's
+    /// `accent-color`, Tailwind's `accent-*`): the track of
+    /// a system switch when on. Set on the control itself; it is
+    /// not inherited.
+    fn accent_color(mut self, color: impl IntoReactive<AdaptiveColor>) -> Self {
+        self.style().bind_value(color, |s, color: AdaptiveColor| {
+            s.color(&[StyleKey::AccentColor], color);
+        });
+        self
+    }
+
     /// What the shapes the element draws are filled with (`fill`,
     /// Tailwind's `fill-<color>`; the elements inside inherit it, as in
     /// CSS): the areas of `nsh_base::plot`.

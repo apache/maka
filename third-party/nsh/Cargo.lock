@@ -6833,6 +6833,7 @@ dependencies = [
  "nsh-base",
  "nsh-core",
  "nsh-engine",
+ "nsh-platform-android",
  "nsh-platform-linux",
  "nsh-platform-macos",
  "nsh-platform-windows",

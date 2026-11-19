@@ -3,6 +3,7 @@
 //! later), its motion, haptics and VoiceOver. The app places it and owns the
 //! value; the component reports the switch's own size for what the style
 //! leaves open and the user's flip as `change` with the value it asks for.
+//! It is on in the style's `accentColor`, else the theme's `tint`.
 
 use std::{ptr::NonNull, rc::Rc};
 
@@ -18,8 +19,8 @@ use objc2_ui_kit::{UIAction, UIColor, UIControlEvents, UISwitch, UIView};
 
 use crate::component::{ComponentContext, ComponentFactory, NativeComponent};
 
-/// The color of a `tint` prop (`"#rrggbb"` or `"#rrggbbaa"`); `None` for
-/// none, which keeps the system's.
+/// The color of a `tint` or `accentColor` prop (`"#rrggbb"` or
+/// `"#rrggbbaa"`); `None` for none.
 fn parse_tint(value: Option<&JsonValue>) -> Option<nsh_core::Color> {
     let hex = value?.as_str()?;
     nsh_core::Hsla::parse_hex(hex)
@@ -31,6 +32,10 @@ struct SystemSwitch {
     switch: Retained<UISwitch>,
     /// The app's value, which a `revision` shows again.
     on: bool,
+    /// The theme's color (`tint`).
+    tint: Option<nsh_core::Color>,
+    /// The style's `accentColor`, over `tint`.
+    accent: Option<nsh_core::Color>,
 }
 
 impl SystemSwitch {
@@ -41,6 +46,15 @@ impl SystemSwitch {
             let shown = self.switch.window().is_some();
             self.switch.setOn_animated(self.on, shown);
         }
+    }
+
+    /// Its color when on: the accent, else the tint, else the system's green.
+    fn paint(&self) {
+        let color = self.accent.or(self.tint).map(|c| {
+            let (r, g, b, a) = c.to_f64();
+            UIColor::colorWithRed_green_blue_alpha(r, g, b, a)
+        });
+        self.switch.setOnTintColor(color.as_deref());
     }
 }
 
@@ -69,12 +83,12 @@ impl NativeComponent for SystemSwitch {
                     unsafe { msg_send![&*self.switch, setAccessibilityLabel: label.as_deref()] };
             }
             "tint" => {
-                let tint = parse_tint(value).map(|c| {
-                    let (r, g, b, a) = c.to_f64();
-                    UIColor::colorWithRed_green_blue_alpha(r, g, b, a)
-                });
-                // `None` restores the system's green.
-                self.switch.setOnTintColor(tint.as_deref());
+                self.tint = parse_tint(value);
+                self.paint();
+            }
+            "accentColor" => {
+                self.accent = parse_tint(value);
+                self.paint();
             }
             _ => {}
         }
@@ -105,7 +119,12 @@ pub(crate) fn factory() -> ComponentFactory {
         // system's, which no prop changes.
         let size = switch.sizeThatFits(CGSize::new(0.0, 0.0));
         context.set_size(size.width as f32, size.height as f32);
-        Box::new(SystemSwitch { switch, on: false }) as Box<dyn NativeComponent>
+        Box::new(SystemSwitch {
+            switch,
+            on: false,
+            tint: None,
+            accent: None,
+        }) as Box<dyn NativeComponent>
     })
 }
 

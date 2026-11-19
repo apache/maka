@@ -230,7 +230,7 @@ Pages stay mounted while their route is in the stack: going back shows the previ
 
 A page (`nav_page()` in Rust, `NavPage` in TSX) wraps a page's content and carries its header. iOS and Android show their system header, set up by the title and the header options. The desktops and the web show the page's header slot (`.header(..)`, TSX `header`), your own views, at the top of the page: as wide as the page, as tall as it lays out, with the content below it. Give a page both, as the example above does, and it looks at home everywhere. All options are reactive: change a signal and the header follows.
 
-In Rust, each prop below is a method of `nav_page()` in snake case: `.title(..)`, `.header(..)`, `.header_visible(..)`, `.header_transparent(..)`, `.header_shadow_visible(..)`, `.header_style_with(..)`, `.header_style(..)`, `.header_back_visible(..)`, `.header_left(..)`, `.header_right(..)`, `.header_title(..)`, `.header_large_title(..)`, `.header_back_title(..)`, `.header_right_items(..)`, `.animation(ScreenAnimation::Fade)`, `.status_bar(..)`, `.pop_on_swipe(..)`, `.pop_on_back(..)`, `.on_back_press(..)`, `.on_dismiss(..)`; its children are its content.
+In Rust, each prop below is a method of `nav_page()` in snake case: `.title(..)`, `.header(..)`, `.header_visible(..)`, `.header_transparent(..)`, `.header_shadow_visible(..)`, `.header_background_on_scroll(..)`, `.header_style_with(..)`, `.header_style(..)`, `.header_back_visible(..)`, `.header_left(..)`, `.header_right(..)`, `.header_title(..)`, `.header_large_title(..)`, `.header_back_title(..)`, `.header_right_items(..)`, `.animation(ScreenAnimation::Fade)`, `.status_bar(..)`, `.pop_on_swipe(..)`, `.pop_on_back(..)`, `.on_back_press(..)`, `.on_dismiss(..)`; its children are its content.
 
 | Prop | Type | Default | Description |
 |---|---|---|---|
@@ -239,6 +239,7 @@ In Rust, each prop below is a method of `nav_page()` in snake case: `.title(..)`
 | `headerVisible` | `boolean` | `true` | iOS and Android: the system header shows. |
 | `headerTransparent` | `boolean` | `false` | iOS and Android: the content extends under the header. |
 | `headerShadowVisible` | `boolean` | `true` | iOS: the hairline under the header. Set it to `false` for a bar without a line, as iOS 26's own. Android's header has none. |
+| `headerBackgroundOnScroll` | `boolean` | `false` | iOS: with `headerTransparent`, the header stays clear while the content rests at its top and shows its background once the content scrolls under it, as UIKit's own bars. It follows the largest visible scroll view that starts at the top of the page. Ignored elsewhere. |
 | `headerStyle` | `{ backgroundColor?, color?, tintColor? }` | | iOS and Android: the header's background, the title's color (`color`) and the buttons' (`tintColor`). |
 | `headerClass` | `string` | | The same as classes: `bg-*`, `text-*` for the title, `tint-*` for the buttons; `headerStyle` wins over them. |
 | `headerBackVisible` | `boolean` | `true` | iOS and Android: the back button shows. |

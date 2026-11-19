@@ -302,7 +302,8 @@ pub enum SwitchEvent {
 /// (`checked`), hears the user's flip (`onChange`), names it for screen
 /// readers (`accessibilityLabel`) and places it with its `class` and
 /// `style`; its size is the system's where the style leaves it open. It
-/// is on in the theme's `primary` (the system's color without one). The
+/// is on in its style's `accentColor` (`accent-*`), else in the theme's
+/// `primary` (the system's color without either). The
 /// desktops and the web have no such control: there it takes no room and
 /// shows nothing, and the app shows the setting with `nsh/base`'s
 /// `Switch`.

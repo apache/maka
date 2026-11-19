@@ -91,7 +91,8 @@
   `command`), Java `NshView.registerComponent(name, factory)` (`NshComponent`), Rust `AppView::register_component`
   (`NativeComponent`) — one registry per view, no globals. An app's own crate (`nsh.json` `"rust"`) registers into
   the hosts and runners nsh generates for it with `#[native_components(<platform>)]` (Windows, macOS, Linux, iOS:
-  the platform's `set_components`, which every `AppView` calls on its registry when it is made, so a name registered
+  the platform's `set_components`, which every `AppView` calls on its registry when it is made; Android:
+  `nsh::components!`, which `NshView` queries before host code registers its own, so a name registered
   on the view afterwards replaces the crate's; a process-wide function as `set_ui_sets`' sets are, which only the
   generated hosts and runners set, so an embedding app's registries stay its views'; `docs/dev/tooling.md`). Names under `nsh/` are NSH's own
   (`nsh_core::platform::is_reserved_component`): each backend registers them itself (`nsh/tab-bar`, `nsh/mobile`'s

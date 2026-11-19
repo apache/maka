@@ -11,6 +11,8 @@ use nsh_core::element::__private::no_native_components as __nsh_native_component
 use nsh_core::element::__private::no_native_components as __nsh_native_components_linux;
 #[cfg(target_os = "macos")]
 use nsh_core::element::__private::no_native_components as __nsh_native_components_macos;
+#[cfg(target_os = "android")]
+use nsh_core::element::__private::no_native_components as __nsh_native_components_android;
 
 /// A crate without `#[native_components]`.
 mod without {}
@@ -24,6 +26,8 @@ macro_rules! register {
         __nsh_native_components_linux($components);
         #[cfg(target_os = "macos")]
         __nsh_native_components_macos($components);
+        #[cfg(target_os = "android")]
+        __nsh_native_components_android($components);
     };
 }
 

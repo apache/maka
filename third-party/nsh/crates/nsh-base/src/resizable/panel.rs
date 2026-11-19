@@ -85,7 +85,8 @@ pub enum ResizablePanelGroupEvent {
 /// moves the space between the panels in the core, frame by frame, with
 /// no round trip to JS, as far as the panels' `minSize` / `maxSize` let it
 /// (growing a panel takes from the panels after the handle, nearest first;
-/// shrinking it below its minimum takes from the panels before it), then
+/// shrinking it gives to them, nearest first, up to their `maxSize`, and
+/// below its minimum takes from the panels before it), then
 /// reports the new sizes with `onResize`. The group's own size never
 /// changes what a panel wants: while the group is too small for the
 /// panels' sizes they shrink (`fixed` ones do not), and they come back to
@@ -927,6 +928,56 @@ mod tests {
             Bounds::new(point(px(200.0), px(0.0)), size(px(400.0), px(100.0))),
         );
         m
+    }
+
+    /// A group 900 wide: a panel taking the rest, then a fixed one of 300
+    /// (220 to 480), as an inspector on the right.
+    fn inspector() -> Model {
+        let mut m = Model {
+            axis: Axis::Horizontal,
+            ..Model::default()
+        };
+        m.set_container(Bounds::new(
+            point(px(0.0), px(0.0)),
+            size(px(900.0), px(100.0)),
+        ));
+        let props = |size, min, max, fixed| PanelProps {
+            size,
+            min,
+            max,
+            fixed,
+            visible: true,
+        };
+        m.register(0, props(None, px(320.0), None, false), Rc::new(|_| {}));
+        m.register(
+            1,
+            props(Some(px(300.0)), px(220.0), Some(px(480.0)), true),
+            Rc::new(|_| {}),
+        );
+        m.set_frame(
+            0,
+            Bounds::new(point(px(0.0), px(0.0)), size(px(600.0), px(100.0))),
+        );
+        m.set_frame(
+            1,
+            Bounds::new(point(px(600.0), px(0.0)), size(px(300.0), px(100.0))),
+        );
+        m
+    }
+
+    #[test]
+    fn the_handle_stops_where_the_panel_after_it_reaches_its_maximum() {
+        let mut m = inspector();
+        let at = |m: &Model| m.handles()[0].at + HANDLE_PADDING;
+        assert_eq!(at(&m), px(600.0));
+        m.start_drag(0);
+        // 400 to the left: the inspector stops at 480, and so does the
+        // handle, at 900 - 480, not under the pointer at 200.
+        m.drag(px(-400.0));
+        assert_eq!(m.flex(1).basis, Some(px(480.0)));
+        assert_eq!(at(&m), px(420.0));
+        let (sizes, _) = m.end_drag().expect("the drag resized");
+        assert_eq!(sizes, [px(420.0), px(480.0)]);
     }
 
     #[test]

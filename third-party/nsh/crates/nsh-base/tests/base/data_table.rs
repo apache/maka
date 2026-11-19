@@ -564,3 +564,55 @@ fn unstyled_fixed_edge_mounts_no_separator_views_until_styled() {
     app.press("text:Toggle edge").unwrap();
     assert_eq!(app.screen().layout_nodes().len(), without_edge);
 }
+
+/// Wide columns between one fixed at each side.
+#[component]
+fn WideFixed() -> impl IntoElement {
+    let mut columns = Vec::new();
+    for (key, fixed) in [
+        ("a", nsh_base::data_table::ColumnFixed::Left),
+        ("b", nsh_base::data_table::ColumnFixed::None),
+        ("c", nsh_base::data_table::ColumnFixed::None),
+        ("d", nsh_base::data_table::ColumnFixed::None),
+        ("e", nsh_base::data_table::ColumnFixed::Right),
+    ] {
+        let mut c = column(key);
+        c.width = Some(px(if key == "a" || key == "e" {
+            100.0
+        } else {
+            300.0
+        }));
+        c.fixed = fixed;
+        columns.push(c);
+    }
+    data_table()
+        .h(px(200.0))
+        .row_count(Some(2))
+        .columns(columns)
+}
+
+/// The desktops' bar lies under the columns it moves, not under the fixed
+/// ones beside them.
+#[test]
+fn the_horizontal_bar_spans_the_scrolling_columns_only() {
+    let viewport = Size::new(px(600.0), px(300.0));
+    let config = EngineConfig {
+        viewport,
+        environment: Environment {
+            os: Os::MacOs,
+            idiom: Idiom::Desktop,
+            window: viewport,
+            ..Default::default()
+        },
+        ..EngineConfig::new(Root::of::<WideFixed>())
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.first_render().unwrap();
+    let nodes = app.screen().layout_nodes();
+    let bar = nodes
+        .iter()
+        .find(|n| n.test_id.as_deref() == Some("data-table-scrollbar"))
+        .expect("the bar");
+    assert_eq!(bar.bounds.origin.x.0, 100.0);
+    assert_eq!(bar.bounds.size.width.0, 400.0);
+}

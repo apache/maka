@@ -12,9 +12,11 @@
 //! tap clears, and the edit menu (`UIEditMenuInteraction` from iOS 16,
 //! `UIMenuController` before) offers Copy and Select All, which the
 //! responder answers as the first responder (so do ⌘C and ⌘A on hardware
-//! keyboards). Pointers (Mac Catalyst's mouse, iPad trackpads) select as
-//! on the desktops: a press and drag, double and triple clicks, Shift
-//! extends; no handles then.
+//! keyboards). As in UIKit's text views, touch selection plays a selection
+//! haptic when the long press selects and each time a drag moves an end.
+//! Pointers (Mac Catalyst's mouse, iPad trackpads) select as on the
+//! desktops: a press and drag, double and triple clicks, Shift extends; no
+//! handles or haptics then.
 //!
 //! The texts are the area's `TextView`s in document order (subviews depth
 //! first; texts with `selectable={false}` stay out), listed again whenever
@@ -50,7 +52,8 @@ use objc2_foundation::{NSArray, NSNumber, NSObject, NSString};
 use objc2_ui_kit::{
     UIGestureRecognizer, UIGestureRecognizerDelegate, UIGestureRecognizerState,
     UILongPressGestureRecognizer, UIMenu, UIMenuElement, UIPanGestureRecognizer, UIResponder,
-    UIScrollView, UITapGestureRecognizer, UITouch, UITraitEnvironment, UIView,
+    UIScrollView, UISelectionFeedbackGenerator, UITapGestureRecognizer, UITouch,
+    UITraitEnvironment, UIView,
 };
 
 use crate::{native_view::NshView, text_view::TextView};
@@ -301,6 +304,8 @@ pub(crate) struct AreaIvars {
     edit_menu: RefCell<Option<Retained<AnyObject>>>,
     /// The interaction's menu shows (its delegate hears).
     menu_shown: Cell<bool>,
+    /// The haptic of touch selection, made on first use.
+    feedback: RefCell<Option<Retained<UISelectionFeedbackGenerator>>>,
     /// The area's node id.
     id: Cell<NodeId>,
     /// JS listens to the area's `onSelectionChange`.
@@ -380,13 +385,17 @@ define_class!(
                 self.hide_menu();
                 self.refresh_texts();
                 self.ivars().touch.set(true);
-                let changed = {
+                let (changed, selected) = {
                     let texts = self.ivars().texts.borrow();
-                    self.ivars().model.borrow_mut().select_word_at(&*texts, at)
+                    let mut model = self.ivars().model.borrow_mut();
+                    (model.select_word_at(&*texts, at), !model.is_empty())
                 };
                 self.becomeFirstResponder();
                 if changed {
                     self.redraw();
+                }
+                if selected {
+                    self.selection_haptic();
                 }
             } else if state == UIGestureRecognizerState::Changed {
                 let changed = {
@@ -395,6 +404,7 @@ define_class!(
                 };
                 if changed {
                     self.redraw();
+                    self.selection_haptic();
                 }
             } else if state == UIGestureRecognizerState::Ended {
                 self.show_menu();
@@ -476,6 +486,7 @@ define_class!(
                     })
                 };
                 let Some(caret) = caret else { return };
+                self.prepare_haptic();
                 let mid = CGPoint::new(
                     caret.origin.x + caret.size.width / 2.0,
                     caret.origin.y + caret.size.height / 2.0,
@@ -513,6 +524,7 @@ define_class!(
                 }
                 if changed {
                     self.redraw();
+                    self.selection_haptic();
                 }
             } else if state == UIGestureRecognizerState::Ended
                 || state == UIGestureRecognizerState::Cancelled
@@ -594,9 +606,18 @@ define_class!(
                     .iter()
                     .any(|(h, _)| v.isDescendantOfView(h))
             });
-            let ours = self.ivars().recognizers.borrow().iter().any(|r| {
-                std::ptr::eq::<UIGestureRecognizer>(&**r, recognizer)
-            });
+            let (ours, long_press) = {
+                let recognizers = self.ivars().recognizers.borrow();
+                let is = |r: &Retained<UIGestureRecognizer>| {
+                    std::ptr::eq::<UIGestureRecognizer>(&**r, recognizer)
+                };
+                (recognizers.iter().any(is), recognizers.first().is_some_and(is))
+            };
+            if long_press && !on_handle {
+                // A finger down that may become a selection: ready the
+                // haptic before the long press selects.
+                self.prepare_haptic();
+            }
             !(ours && on_handle)
         }
     }
@@ -827,6 +848,32 @@ impl AreaResponder {
         if changed || !self.ivars().highlighted.borrow().is_empty() {
             self.redraw();
         }
+    }
+
+    /// The haptic of touch selection, made on first use.
+    // `init` is deprecated from iOS 17.5 for `feedbackGeneratorForView:`,
+    // which iOS 15 lacks.
+    #[allow(deprecated)]
+    fn feedback(&self) -> Retained<UISelectionFeedbackGenerator> {
+        self.ivars()
+            .feedback
+            .borrow_mut()
+            .get_or_insert_with(|| UISelectionFeedbackGenerator::new(self.mtm()))
+            .clone()
+    }
+
+    /// Readies the Taptic Engine for [`Self::selection_haptic`]; UIKit
+    /// keeps it ready for a few seconds.
+    fn prepare_haptic(&self) {
+        self.feedback().prepare();
+    }
+
+    /// Touch selection changed: the tick UIKit's text views play.
+    fn selection_haptic(&self) {
+        let feedback = self.feedback();
+        feedback.selectionChanged();
+        // Ready for the next tick of the same drag.
+        feedback.prepare();
     }
 
     /// Whether every text is selected whole.

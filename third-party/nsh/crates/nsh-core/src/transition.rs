@@ -32,7 +32,8 @@ use std::sync::Arc;
 
 use crate::{
     AttributedText, Bounds, BoxShadow, Color, Corners, Edges, Filter, KeyframeAnimation, Keyframes,
-    LayoutCurve, LayoutProperty, LayoutTransition, Points, Transform, TransitionProps, ViewStyle,
+    LayoutCurve, LayoutProperty, LayoutTransition, Points, Transform, Transition, TransitionProps,
+    ViewStyle,
     geometry::{Percentage, Point, Radians, Size, deg},
 };
 

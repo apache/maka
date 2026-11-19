@@ -228,6 +228,10 @@
   `Painter::*_from_view`, `canvas.md`), kept per node in `Style::paint` (`PaintStyle`) and resolved by the core when
   it sends the drawing (`Core::resolved_paint`); views draw nothing with them. `fill-inherit` / `stroke-inherit` set
   nothing (they inherit already).
+- **Accent** (`accentColor`, Tailwind's `accent-*`): CSS's `accent-color`, the color a system control shows its state in.
+  The core passes a native component's own `accentColor` to it as its `accentColor` prop (`Core::sync_accent`), and
+  the control prefers it over the theme color it is otherwise given. Set on the control, not inherited. `nsh/mobile`'s
+  `Switch` reads it (its track when on); the system's segmented control and tab bar could later.
 - **Text style inheritance** (CSS-like): a view's text properties (color, font, size, alignment, ...) pass to the texts and inputs
   inside it, so `class="text-white"` on a button styles its label. So do its `whitespace-*` / `text-wrap` / `text-nowrap`
   (and `truncate`'s no wrapping) and `select-*` classes, as CSS's `white-space` and `user-select: auto` (`Core::inherited_text_props`:

@@ -20,7 +20,7 @@
 # Native Shell (NSH)
 
 This directory contains NSH from [`longbridge/nsh`](https://github.com/longbridge/nsh),
-synchronized through revision `6da2ea4c209851bd46e42435ee47c92edf9c7727`
+synchronized through revision `fabe44b2b6f562da127dc4a0074d921b9777f02c`
 (version 0.6.0). The original import came from `M4n5ter/nsh`, branch
 `tui/terminal-backend`, at `de176695240d550f2b303643b8019146c7989e7f`.
 

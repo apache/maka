@@ -266,6 +266,22 @@ impl ResolvedTextStyle {
         }
     }
 
+    /// The line height [`ApproxTextEngine`] and offscreen estimates give
+    /// this style: its explicit `line_height`, `line_height_multiple` of
+    /// `font_size` (clamped to at least 1 pt), or `1.2 × font_size`.
+    #[doc(hidden)]
+    #[inline]
+    pub fn approx_line_height(&self) -> Points {
+        let font = self.font_size.max(px(1.0));
+        if self.line_height > Points::ZERO {
+            self.line_height
+        } else if self.line_height_multiple > 0.0 {
+            font * self.line_height_multiple
+        } else {
+            font * 1.2
+        }
+    }
+
     /// True if both styles produce the same glyph metrics (colors and
     /// decorations ignored).
     #[inline]
@@ -654,6 +670,25 @@ impl AttributedText {
     /// Whether a span has a background ([`TextBackground`]).
     pub fn has_backgrounds(&self) -> bool {
         self.spans.iter().any(|s| s.style.background.is_some())
+    }
+
+    /// The largest clamped font size across spans (`14 pt` when empty) and
+    /// the tallest [`ResolvedTextStyle::approx_line_height`] across spans,
+    /// shared by [`ApproxTextEngine`] and offscreen text estimates.
+    pub(crate) fn approx_metrics(&self) -> (Points, Points) {
+        if self.spans.is_empty() {
+            let font = px(14.0);
+            return (font, font * 1.2);
+        }
+        self.spans
+            .iter()
+            .fold((Points::ZERO, Points::ZERO), |(font, line), span| {
+                let s = &span.style;
+                (
+                    font.max(s.font_size.max(px(1.0))),
+                    line.max(s.approx_line_height()),
+                )
+            })
     }
 
     /// The color every character is drawn in, decoration lines included,
@@ -1413,28 +1448,57 @@ mod estimate {
     }
 }
 
+/// Prepared typesetting state for [`ApproxTextEngine`].
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ApproxPrepared {
+    chars: usize,
+    font: Points,
+    line: Points,
+    max_lines: u32,
+    attachments: Vec<TextAttachment>,
+    astral: Vec<u32>,
+    breaks: Vec<usize>,
+}
+
+impl ApproxPrepared {
+    /// Characters this preparation covers.
+    #[doc(hidden)]
+    pub fn chars(&self) -> usize {
+        self.chars
+    }
+}
+
+impl Default for ApproxPrepared {
+    fn default() -> Self {
+        let font = px(14.0);
+        Self {
+            chars: 0,
+            font,
+            line: font * 1.2,
+            max_lines: 0,
+            attachments: Vec::new(),
+            astral: Vec::new(),
+            breaks: Vec::new(),
+        }
+    }
+}
+
 /// A deterministic, platform-free [`TextEngine`] for headless runs and
-/// tests: every character is `0.55 × font size` wide and lines are
-/// `1.2 × font size` tall; a text with line breaks measures as wide as its
-/// widest line and as tall as its lines (each wrapped on its own), their baseline at the bottom (the font's ascent
-/// is the line, its descent 0, its x height `0.5 × font size`), where
-/// attachments are placed by [`TextAttachment::ascent`] on the line their
-/// character wraps to (its lines, carets and hits are those of one line).
+/// tests: every character is `0.55 × font size` wide (in the largest span's
+/// font) and lines are as tall as the spans' `lineHeight` (or `1.2 × font size`
+/// by default); a text with line breaks measures as wide as its widest line and
+/// as tall as its lines (each wrapped on its own), their baseline placed with
+/// half-leading around the natural `1.2 × font size` ascent (its descent 0 when
+/// unspaced, its x height `0.5 × font size`), where attachments are placed by
+/// [`TextAttachment::ascent`] on the line their character wraps to (its lines,
+/// carets and hits are those of one line).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ApproxTextEngine;
 
 impl TextEngine for ApproxTextEngine {
-    /// `(character count, font size, max lines, attachments, the indices of
-    /// the characters two UTF-16 units long, each line's character count
-    /// when the text has line breaks)`.
-    type Prepared = (
-        usize,
-        Points,
-        u32,
-        Vec<TextAttachment>,
-        Vec<u32>,
-        Vec<usize>,
-    );
+    type Prepared = ApproxPrepared;
 
     fn prepare(&self, text: &AttributedText) -> Self::Prepared {
         self.prepare_aligned(text, &AttachmentAlignments::default())
@@ -1445,7 +1509,7 @@ impl TextEngine for ApproxTextEngine {
         text: &AttributedText,
         alignments: &AttachmentAlignments,
     ) -> Self::Prepared {
-        let size = text.spans.first().map_or(px(14.0), |s| s.style.font_size);
+        let (font, line) = text.approx_metrics();
         // Empty (no allocation) for text in the Basic Multilingual Plane.
         let astral = text
             .text
@@ -1455,99 +1519,104 @@ impl TextEngine for ApproxTextEngine {
             .filter_map(|(i, _)| u32::try_from(i).ok())
             .collect();
         // Empty (no allocation) for a text of one line.
-        let lines = match text.text.contains('\n') {
+        let breaks = match text.text.contains('\n') {
             true => text.text.split('\n').map(|l| l.chars().count()).collect(),
             false => Vec::new(),
         };
-        (
-            text.text.chars().count(),
-            size,
-            text.max_lines,
-            text.attachments
+        let metrics = FontExtent::new(font * 1.2, Points::ZERO, font * 0.5);
+        ApproxPrepared {
+            chars: text.text.chars().count(),
+            font,
+            line,
+            max_lines: text.max_lines,
+            attachments: text
+                .attachments
                 .iter()
-                .map(|a| {
-                    let metrics = FontExtent::new(size * 1.2, Points::ZERO, size * 0.5);
-                    TextAttachment {
-                        height: alignments.ascent(a, metrics),
-                        ..*a
-                    }
+                .map(|a| TextAttachment {
+                    height: alignments.ascent(a, metrics),
+                    ..*a
                 })
                 .collect(),
             astral,
-            lines,
-        )
+            breaks,
+        }
     }
 
-    /// The bottom of the first line: the font's ascent is the line.
-    fn first_baseline(&self, &(_, font, ..): &Self::Prepared, _: Points) -> Option<Points> {
-        Some(font * 1.2)
+    /// The first line's baseline from the top of the box (natural ascent plus
+    /// half-leading).
+    fn first_baseline(&self, prepared: &Self::Prepared, _: Points) -> Option<Points> {
+        let natural = prepared.font * 1.2;
+        Some(natural + (prepared.line - natural) * 0.5)
     }
 
-    fn measure(
-        &self,
-        &(chars, font, max_lines, _, _, ref breaks): &Self::Prepared,
-        max_width: Option<Points>,
-    ) -> Size<Points> {
+    fn measure(&self, prepared: &Self::Prepared, max_width: Option<Points>) -> Size<Points> {
         // The order of the products is kept: it decides the last bit.
         let wrap = |chars: usize| {
-            let width = Points(chars as f32 * font.0 * 0.55);
+            let width = Points(chars as f32 * prepared.font.0 * 0.55);
             match max_width {
                 Some(max) if width > max && max > Points::ZERO => (max, (width / max).ceil()),
                 _ => (width, 1.0),
             }
         };
-        let line = font * 1.2;
-        let (width, mut lines) = match breaks.is_empty() {
-            true => wrap(chars),
-            false => breaks.iter().fold((Points::ZERO, 0.0), |(w, n), &c| {
-                let (lw, ln) = wrap(c);
-                (w.max(lw), n + ln)
-            }),
+        let (width, mut lines) = match prepared.breaks.is_empty() {
+            true => wrap(prepared.chars),
+            false => prepared
+                .breaks
+                .iter()
+                .fold((Points::ZERO, 0.0), |(w, n), &c| {
+                    let (lw, ln) = wrap(c);
+                    (w.max(lw), n + ln)
+                }),
         };
-        if max_lines > 0 {
-            lines = lines.min(max_lines as f32);
+        if prepared.max_lines > 0 {
+            lines = lines.min(prepared.max_lines as f32);
         }
-        size(width, line * lines)
+        size(width, prepared.line * lines)
     }
 
     fn layout(&self, prepared: &Self::Prepared, size: Size<Points>) -> TextLayout {
         // Each character as wide as the others, reported as one line.
-        let (chars, font, max_lines, attachments, astral, breaks) = prepared;
-        let line = *font * 1.2;
-        let advance = *font * 0.55;
-        // Baseline at the bottom of the line: the ascent is the line and
-        // the descent is 0, the same extent attachments are placed against.
-        let units = chars.saturating_add(astral.len());
+        let line = prepared.line;
+        let font = prepared.font;
+        let natural = font * 1.2;
+        let baseline = natural + (line - natural) * 0.5;
+        let advance = font * 0.55;
+        let units = prepared.chars.saturating_add(prepared.astral.len());
         let mut layout = ApproxLayout {
             attachments: Vec::new(),
             line: TextLine {
                 end: u32::try_from(units).unwrap_or(u32::MAX),
                 width: size.width,
                 height: line,
-                ascender: line,
-                x_height: *font * 0.5,
+                ascender: baseline,
+                descender: (line - baseline).max(Points::ZERO),
+                x_height: font * 0.5,
                 ..TextLine::default()
             },
             advance,
-            chars: u32::try_from(*chars).unwrap_or(u32::MAX),
-            astral: astral.clone(),
+            chars: u32::try_from(prepared.chars).unwrap_or(u32::MAX),
+            astral: prepared.astral.clone(),
         };
         // An attachment sits on the line its character wraps to, as
         // `measure` wraps the text in a box this wide.
-        layout.attachments = attachments
+        layout.attachments = prepared
+            .attachments
             .iter()
             .map(|a| {
                 let (row, x) = approx_place(
                     layout.char_at(a.index) as usize,
-                    *chars,
-                    *font,
-                    breaks,
+                    prepared.chars,
+                    font,
+                    &prepared.breaks,
                     size.width,
                 );
-                if *max_lines > 0 && row >= *max_lines as f32 {
+                if prepared.max_lines > 0 && row >= prepared.max_lines as f32 {
                     return None;
                 }
-                Some(point(x, line * row + (line - a.height).max(Points::ZERO)))
+                Some(point(
+                    x,
+                    line * row + (baseline - a.height).max(Points::ZERO),
+                ))
             })
             .collect();
         TextLayout(Arc::new(layout))
@@ -2115,6 +2184,103 @@ mod tests {
             );
         }
         assert_eq!(engine.first_baseline(&prepared, px(20.0)), Some(px(12.0)));
+    }
+
+    #[test]
+    fn approx_engine_honors_line_height_and_multiple() {
+        let engine = ApproxTextEngine;
+        let mut explicit = AttributedText::default();
+        explicit.push(
+            "ab\ncd",
+            ResolvedTextStyle {
+                font_size: px(10.0),
+                line_height: px(24.0),
+                ..ResolvedTextStyle::default()
+            },
+        );
+        let prepared = engine.prepare(&explicit);
+        let measured = engine.measure(&prepared, None);
+        assert_eq!(measured, size(px(11.0), px(48.0)));
+        let laid = engine.layout(&prepared, measured);
+        let line = engine.lines(&laid).remove(0);
+        // Natural ascent = 12, line = 24, half-leading = 6 => ascender 18, descender 6.
+        assert_eq!(line.height, px(24.0));
+        assert_eq!(line.ascender, px(18.0));
+        assert_eq!(line.descender, px(6.0));
+        assert_eq!(engine.first_baseline(&prepared, px(50.0)), Some(px(18.0)));
+        assert_eq!(
+            engine.first_baseline(&prepared, px(50.0)),
+            Some(line.y + line.ascender)
+        );
+
+        let mut multiple = AttributedText::default();
+        multiple.push(
+            "ab",
+            ResolvedTextStyle {
+                font_size: px(10.0),
+                line_height_multiple: 2.0,
+                ..ResolvedTextStyle::default()
+            },
+        );
+        let mp = engine.prepare(&multiple);
+        assert_eq!(engine.measure(&mp, None), size(px(11.0), px(20.0)));
+
+        // Mixed spans take the tallest resolved line height.
+        let mut mixed = AttributedText::default();
+        mixed.push(
+            "a",
+            ResolvedTextStyle {
+                font_size: px(10.0),
+                line_height: px(16.0),
+                ..ResolvedTextStyle::default()
+            },
+        );
+        mixed.push(
+            "b",
+            ResolvedTextStyle {
+                font_size: px(12.0),
+                line_height: px(30.0),
+                ..ResolvedTextStyle::default()
+            },
+        );
+        let mp_mixed = engine.prepare(&mixed);
+        assert_eq!(engine.measure(&mp_mixed, None).height, px(30.0));
+
+        // Unspaced mixed font sizes resolve both advance and natural ascent
+        // from the largest span, matching offscreen estimates.
+        let mut mixed_fonts = AttributedText::default();
+        mixed_fonts.push(
+            "a",
+            ResolvedTextStyle {
+                font_size: px(10.0),
+                ..ResolvedTextStyle::default()
+            },
+        );
+        mixed_fonts.push(
+            "b",
+            ResolvedTextStyle {
+                font_size: px(20.0),
+                ..ResolvedTextStyle::default()
+            },
+        );
+        let mp_fonts = engine.prepare(&mixed_fonts);
+        assert_eq!(engine.measure(&mp_fonts, None), size(px(22.0), px(24.0)));
+        assert_eq!(engine.first_baseline(&mp_fonts, px(50.0)), Some(px(24.0)));
+
+        // Default prepared state matches an empty `AttributedText`, and zero
+        // font sizes clamp to at least 1 pt.
+        assert_eq!(
+            engine.measure(&ApproxPrepared::default(), None),
+            engine.measure(&engine.prepare(&AttributedText::default()), None)
+        );
+        assert_eq!(
+            ResolvedTextStyle {
+                font_size: Points::ZERO,
+                ..ResolvedTextStyle::default()
+            }
+            .approx_line_height(),
+            px(1.2)
+        );
     }
 
     #[test]

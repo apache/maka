@@ -2,7 +2,7 @@
 // `nsh/base`, a press target with no look of its own: presses
 // (`onPress`, and `onPressDown` / `onPressUp` as the platform reports
 // them), its role and states as screen readers get them (`role`,
-// `accessibilityLabel`, `selected`, `disabled`), the app's look (`style`,
+// `accessibilityLabel`, `selected`, `disabled`, `busy`), the app's look (`style`,
 // `class`, `selectedStyle` while selected, `disabledStyle` while
 // disabled), how far outside it presses count (`hitSlop`, a number for
 // every side or some sides), all following signals, and the mouse over
@@ -21,6 +21,8 @@ function App() {
   const blocked = signal(0);
   const wide = signal(false);
   const mouse = signal("none");
+  const saving = signal(false);
+  const saves = signal(0);
   return (
     <View style={{ flex: 1, paddingTop: 20, gap: 4 }}>
       <Button
@@ -82,6 +84,17 @@ function App() {
         <Text>Hover me</Text>
       </Button>
       <Text>{`Mouse: ${mouse()}`}</Text>
+      <Button
+        testID="save"
+        busy={saving()}
+        onPress={() => {
+          saves.set(saves() + 1);
+          saving.set(!saving());
+        }}
+      >
+        <Text>{saving() ? "Saving…" : "Save"}</Text>
+      </Button>
+      <Text>{`Saves: ${saves()}`}</Text>
     </View>
   );
 }

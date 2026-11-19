@@ -9,17 +9,21 @@ function App() {
   const presses = signal(0);
   const picked = signal(0);
   const focus = signal("none");
+  const typed = signal("");
   return (
     <View style={{ flex: 1, paddingTop: 64, paddingBottom: "env(keyboard-inset-height)", backgroundColor: "#ffffff" }}>
       <Text>{keyboardFrame().height > 0 ? "keyboard:up" : "keyboard:down"}</Text>
       <Text>{`focus:${focus()}`}</Text>
       <Text>{`presses:${presses()}`}</Text>
       <Text>{`picked:${picked()}`}</Text>
+      <Text>{`value:${typed()}`}</Text>
       <View style={{ flex: 1 }} />
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8, padding: 8 }}>
         <Input
           testID="message"
           placeholder="Message"
+          value={typed()}
+          onChange={({ value }) => typed.set(value)}
           onFocus={() => focus.set("message")}
           onBlur={() => focus.set("none")}
           style={{ flex: 1, height: 40 }}

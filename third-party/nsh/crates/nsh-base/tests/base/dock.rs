@@ -1,7 +1,8 @@
 //! `DockArea`: a layout renders as splits of tab groups and docks; a press
 //! on a tab selects it, a drag of a tab moves it (into a group, beside
 //! it, into a tab bar), a split's handle resizes it, and the ref's methods
-//! close panels, toggle docks and zoom; a locked area moves nothing, and
+//! close panels, toggle docks and zoom; a bar's tabs that do not fit
+//! scroll and the displayed one comes into view; a locked area moves nothing, and
 //! at compact width the center shows one group with every panel's tab.
 //! The app controls the layout: what it shows is what the area reported.
 
@@ -10,7 +11,7 @@ use nsh_base::dock::{
     DockPlacement, DockRegion, DockTab, PanelId, dock_area,
 };
 use nsh_core::{
-    Size,
+    Size, ViewKind,
     element::Root,
     geometry::{Axis, point},
     platform::{Idiom, Os},
@@ -775,4 +776,95 @@ fn a_compact_bottom_dock_lifted_by_the_keyboard_stays_below_the_status_bar() {
         label.bottom() <= px(844.0 - 336.0),
         "the drawer's content above the keyboard: {label:?}"
     );
+}
+
+/// Eight panels in one group, their tabs 80 wide, in an area 300 wide: the
+/// tabs do not fit. A press on `show-h` displays the last panel.
+#[component]
+fn Strip() -> impl IntoElement {
+    let area = component_ref::<DockArea>();
+    let mut tabs = DockLayout::tabs();
+    for panel in ["a", "b", "c", "d", "e", "f", "g", "h"] {
+        tabs = tabs.panel(panel);
+    }
+    view()
+        .child(
+            view()
+                .test_id("show-h")
+                .w(px(20.0))
+                .h(px(20.0))
+                .on_press(move || {
+                    if let Some(api) = area.api::<DockAreaApi>() {
+                        api.select_panel("h".into());
+                    }
+                }),
+        )
+        .child(
+            view().w(px(300.0)).h(px(200.0)).child(
+                dock_area()
+                    .default_layout(DockAreaLayout::new(tabs))
+                    .compact(false)
+                    .tab_bar_class("flex-row h-6")
+                    .render_tab(|tab: &DockTab| {
+                        view()
+                            .test_id(&format!("tab-{}", tab.panel))
+                            .w(px(80.0))
+                            .h(px(24.0))
+                            .child(text(format!("Tab {}", tab.panel)))
+                    })
+                    .component_ref(&area)
+                    .size_full(),
+            ),
+        )
+}
+
+/// The frame of the view of test id `id`, as it is on screen.
+fn frame_of(app: &Headless, id: &str) -> nsh_core::Bounds<Points> {
+    app.screen()
+        .layout_nodes()
+        .into_iter()
+        .find(|node| node.test_id.as_deref() == Some(id))
+        .expect("the view")
+        .bounds
+}
+
+#[test]
+fn tabs_that_do_not_fit_scroll_in_their_bar_and_the_displayed_one_comes_into_view() {
+    let mut config = EngineConfig {
+        viewport: Size::new(px(1000.0), px(900.0)),
+        ..EngineConfig::new(Root::of::<Strip>())
+    };
+    config.environment.os = Os::MacOs;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.wait_for("Tab a").unwrap();
+
+    // A scroll view as wide as the bar holds the tabs, at their own width:
+    // the last one is past the bar's end, in the scroll view.
+    let strips: Vec<_> = app
+        .screen()
+        .layout_nodes()
+        .into_iter()
+        .filter(|node| node.kind == ViewKind::Scroll)
+        .map(|node| node.bounds)
+        .collect();
+    assert_eq!(strips.len(), 1);
+    assert_eq!(strips[0].size.width, px(300.0));
+    assert_eq!(frame_of(&app, "tab-a").size.width, px(80.0));
+    assert_eq!(frame_of(&app, "tab-h").origin.x, px(560.0));
+    // The panel the ref displays: its tab comes into view, by as little as
+    // shows it (its end at the bar's).
+    app.press("id:show-h").unwrap();
+    app.wait_until(
+        "the displayed tab in view",
+        std::time::Duration::from_secs(5),
+        |screen| {
+            screen
+                .layout_nodes()
+                .iter()
+                .find(|node| node.test_id.as_deref() == Some("tab-h"))
+                .is_some_and(|tab| tab.bounds.origin.x == px(220.0))
+        },
+    )
+    .unwrap();
 }

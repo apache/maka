@@ -440,6 +440,20 @@ fn an_input_that_asks_for_the_focus_has_it_once_it_mounts() {
 }
 
 #[test]
+fn escape_reaches_a_dialog_over_a_focused_field() {
+    let run = TestRun {
+        ui_sets: vec![nsh_base::registry()],
+        compile: compiler(vec![nsh_base::registry()]),
+        ..test_run(None)
+    };
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testing/dialog-escape");
+    let results = run_file(&run, &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
+    let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
+    assert!(failed.is_empty(), "{failed:#?}");
+    assert_eq!(results.len(), 12);
+}
+
+#[test]
 fn animations_that_loop_forever_hold_no_step() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testing/loops");
     let results = run_file(&test_run(None), &dir.join("App.test.tsx"), &mut |_| {}).unwrap();

@@ -288,7 +288,9 @@ pub struct DockAreaProps {
     /// The style of each tab group's frame.
     #[prop(default)]
     pub group_style: Prop<Style>,
-    /// The classes of each tab bar (`flex-row` for a row).
+    /// The classes of each tab bar: its height, surface and border. Its
+    /// tabs are a row in a horizontal scroll view inside it, so tabs that
+    /// do not fit scroll; space them with `tab_class`.
     pub tab_bar_class: Prop<Option<SharedString>>,
     /// The style of each tab bar.
     #[prop(default)]

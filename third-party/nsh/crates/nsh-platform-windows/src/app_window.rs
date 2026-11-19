@@ -824,6 +824,8 @@ pub(crate) fn handle(
             }
             Some(Some(LRESULT(0)))
         }
+        // The window's own handling: its mouse leave tracking.
+        WM_TIMER if wparam.0 == crate::chrome::RECHECK_TIMER => None,
         WM_TIMER => {
             if let Some(window) = &window {
                 match wparam.0 {

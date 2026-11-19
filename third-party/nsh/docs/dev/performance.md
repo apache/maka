@@ -33,6 +33,24 @@ as test drivers have it, every block's view is made):
 `rows_mounted_at_once_are_placed_without_a_search_for_each` keeps the siblings and overlays looked at in step with
 the rows (four times the rows: about four times the work, sixteen before).
 
+Many components whose root is not a plain view mounted at once (2026-11-18, Linux x86_64, Intel Core Ultra 7 270K
+Plus, release, against `0713ce96d`): a tooltip's hint overlay or a text as a component's root takes its kind when
+the component renders, and each such root went through all the mount items of the batch, so a document with a
+tooltip in every code block grew with the square of its blocks. It now grows with them within a round of renders (a
+batch that makes such roots over several rounds, as rows scroll into sight, still goes over its items once a round).
+`cargo test --release -p
+nsh-core --lib bench_component_roots_mount -- --ignored --nocapture`, ms from `mount_root` to the first
+`MountBatch` (`FakeEngine`), the least of three rounds; the mount items are the same before and after:
+
+| Rows of an `each`, a tooltip in each | 1,000 | 10,000 | 20,000 |
+|---|---:|---:|---:|
+| In a view | 20.4 → 6.7 | 1,745.8 → 198.5 | 6,786.7 → 339.5 |
+| In a scroll view (the rows out of sight culled) | 8.9 → 8.6 | 156.2 → 142.5 | 427.9 → 323.8 |
+
+`component_roots_mounted_at_once_take_their_kind_without_a_pass_for_each` keeps the mount items looked at in step
+with the rows: for 400 and 1,600 rows in a view, 4,814 and 19,214 items looked at (1,606,400 and 25,625,600
+before, sixteen times).
+
 Words fading into a long paragraph (`text_view` with a Markdown plugin, 2026-11-18, Linux x86_64, Ryzen 9 7950X,
 release, one CPU): a streamed paragraph whose newest words are spans, hidden until their turn and then fading in
 by their text color, about 30 frames a second, two words arriving a frame; a word done fading joins the plain text

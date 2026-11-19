@@ -18,6 +18,7 @@ import BaseDialogBackdrop from "./base-dialog-backdrop";
 import BaseDataTable from "./base-data-table";
 import BaseDiff from "./base-diff";
 import BaseDock from "./base-dock";
+import BaseDockTabScroll from "./base-dock-tab-scroll";
 import BaseSplitView from "./base-split-view";
 import BaseEditor from "./base-editor";
 import BaseHoverCard from "./base-hover-card";
@@ -79,6 +80,7 @@ const cases: Record<string, () => JSX.Element> = {
   "base-data-table": BaseDataTable,
   "base-diff": BaseDiff,
   "base-dock": BaseDock,
+  "base-dock-tab-scroll": BaseDockTabScroll,
   "base-split-view": BaseSplitView,
   "base-editor": BaseEditor,
   "base-hover-card": BaseHoverCard,

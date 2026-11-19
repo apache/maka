@@ -54,8 +54,11 @@ works and its runner only needs GTK.
   image, canvas), the children (clipped to the rounded bounds with `overflow: hidden`), the border, then hosted GTK
   widgets (`ViewState::natives`: text editors, videos, web views).
 - **One hop per commit.** The engine runs on its own thread (`nsh_engine::Engine`); its sink queues each commit and wakes
-  the main loop once (`MainContext::invoke`), and the main thread applies every queued batch in order (`surface.rs`,
-  `mount.rs`). `invoke` closures must be `Send`, so they find their surface by key in a thread-local map; no globals
+  the main loop once (`MainContext::invoke_with_priority`), and the main thread applies every queued batch in order
+  (`surface.rs`, `mount.rs`). The wake-up runs at `G_PRIORITY_HIGH_IDLE` (`DRAIN_PRIORITY`): after input, before the
+  frame clock lays out and paints. At the idle priority of a plain `invoke` it waits for a loop with nothing else to
+  do, and while frames cost more than a refresh the next paint is always due first, so the app would get no commit
+  and no frame. `invoke` closures must be `Send`, so they find their surface by key in a thread-local map; no globals
   are shared between surfaces.
 - **Text is typeset on the engine thread** with a Pango font map of the engine's own (Pango objects are not
   thread-safe, and GTK's font map belongs to the main thread). App fonts are loaded into a fresh Fontconfig
@@ -163,7 +166,9 @@ bubble back up. What NSH adds:
 - **Focus**: Tab / Shift+Tab is GTK's, in screen order (GTK sorts a container's children by position); hidden screens
   are not child visible, and the views under the newest dialog cannot take the focus. A removed view takes the focus
   inside it away at once (`input::removed`), as a removed DOM element does, instead of GTK handing it to the next
-  field. Alerts (`system.rs`) move it between their own buttons.
+  field. Alerts (`system.rs`) move it between their own buttons. Return and Space press the focused stop on
+  key-down, once per press: their auto-repeats in the same window are consumed until the release, even when the
+  press moved the focus.
 
 `onKeyPress` reports what UIKit's does: the typed text (`"Enter"` for a line break), `"Backspace"` for a deletion (in
 an empty input too), and `"Escape"`, as on macOS. Pasted and undone text, and the deletion of a selection typed over,
@@ -177,8 +182,9 @@ An app-rendered view can observe the source's logical key, its physical code, re
 `KeyCapture` rule so GTK can consume a key without waiting for the engine. Omitting the rule on a retained view
 restores `KeyCapture::None`.
 
-The logical key is GDK's actual keyval, so Shift's case (`"K"`) and a non-US layout's character are reported as the
-source gives them, and common named keys use the DOM's spelling (`"Enter"`, `"ArrowLeft"`). `KeyEvent::code` is the
+The logical key comes from GDK's keyval, so Shift's case (`"K"`) and a non-US layout's character are reported as the
+source gives them. Enter, arrows and common media, volume and browser keys use UI Events spellings
+(`"Enter"`, `"ArrowLeft"`, `"MediaPlayPause"`, `"AudioVolumeUp"`, `"BrowserBack"`). `KeyEvent::code` is the
 DOM `KeyboardEvent.code` of GDK's hardware keycode: the key's physical place by the XKB keycode (the X11 keycode,
 the evdev code plus 8 on Wayland), so the A key is `"KeyA"` on an AZERTY or Cyrillic layout even though it types `q`
 or `ф` there, keypad keys keep `"Numpad1"` / `"NumpadEnter"`, and the sides are `"ShiftLeft"` / `"ShiftRight"` and

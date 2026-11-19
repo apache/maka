@@ -3662,8 +3662,8 @@ mod tests {
         ))
     }
 
-    /// The approximate engine's line: characters 0.55 em wide, the line
-    /// 1.2 em with its baseline at the bottom, so the ascent is the line
+    /// The approximate engine's unspaced line: characters 0.55 em wide, the
+    /// line 1.2 em with its baseline at the bottom, so the ascent is the line
     /// and the descent is 0.
     #[test]
     fn text_metrics_are_the_engines_line() {

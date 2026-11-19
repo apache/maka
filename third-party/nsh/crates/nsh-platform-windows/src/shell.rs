@@ -437,14 +437,8 @@ pub(crate) struct Shell {
     /// (`HT*`, 0 for none), the one pressed.
     pub(crate) hover: Cell<u32>,
     pub(crate) pressed: Cell<u32>,
-    /// The mouse is tracked for `WM_NCMOUSELEAVE`.
-    pub(crate) nc_tracking: Cell<bool>,
     /// The window is inactive (its caption buttons dim).
     pub(crate) inactive: Cell<bool>,
-    /// The mouse is over a view of the app's title bar that is not the
-    /// client area (`windowControl`, `windowDrag`): the views hear it move
-    /// there.
-    pub(crate) view_hover: Cell<bool>,
     /// Inside the system's move or resize loop.
     pub(crate) sizing: Cell<bool>,
     /// Alt+F4 was pressed, for the `WM_CLOSE` it makes.
@@ -475,9 +469,7 @@ impl Shell {
             disabled_owner: Cell::new(None),
             hover: Cell::new(0),
             pressed: Cell::new(0),
-            nc_tracking: Cell::new(false),
             inactive: Cell::new(false),
-            view_hover: Cell::new(false),
             sizing: Cell::new(false),
             close_key: Cell::new(false),
             close_command: Cell::new(None),

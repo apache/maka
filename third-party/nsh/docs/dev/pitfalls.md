@@ -859,6 +859,31 @@ Things that were found the hard way. Read the section of the area you change bef
   are written early: registered components' animated props (`set_animated_number`, `set_animated_color`) still reach
   them after the batches (`native::component_animated`), so a component that draws in its view
   (`NativeComponent::draw`) draws such a frame without the values its batch set.
+- **The client and the non-client area are tracked for leaves apart** (`TrackMouseEvent`'s `TME_LEAVE` without and
+  with `TME_NONCLIENT`), and a view marked `windowDrag`, `windowControl` or `windowResize` is non-client area inside
+  the app's content (`HTCAPTION`, `HTCLOSE`, `HTLEFT`, ...): moving between one and an ordinary view posts the leave
+  of the area left, which arrives after the other area's move. Taken as leaving the window, it cleared the hover that
+  move had just set. A leave message therefore only looks where the pointer is now (`GetCursorPos`, `WindowFromPoint`,
+  the window's own answer to `WM_NCHITTEST`, and the client rectangle, since the system's title bar answers
+  `HTCAPTION` as a drag region does), and the views hear a move there or a leave; the decisions are
+  `chrome::Tracking::step`'s, over plain data. A leave message never arms tracking: `TrackMouseEvent` posts a leave at
+  once when the system does not have the pointer in the area yet (it has not taken the moves still queued, although
+  `GetCursorPos` has), and posted messages are retrieved before input, so leaves would follow one another ahead of
+  every input message. A leave that keeps the hover with neither area tracked (the pointer came back before the moves
+  were dispatched) starts a one-shot timer instead: `WM_TIMER` comes only once no input is queued, and it arms the
+  area the pointer is in or ends the hover. A non-client move arms its tracking again at another hit test code, which
+  may end it. A look that finds the pointer in the area the views are hovered in already tells them nothing (the move
+  there did), so a recheck whose tracking the system ends at once stays quiet. The system's move or size loop
+  (`WM_ENTERSIZEMOVE` to `WM_EXITSIZEMOVE`) ends whatever tracking is armed at once: a leave that reported a move
+  there and asked for a recheck, whose tracking the loop ended again, made a loop of NSH's own that told the views a
+  move with the button held at the recheck timer's rate, for a press they never heard. While the loop runs, and as a
+  precaution while a press on a `windowDrag` view holds the capture (`chrome::hold_press`; it counts only while the
+  primary button is down or input is queued, so a press whose release went to another window after a lost
+  foreground is let go), leaves and rechecks neither report nor arm tracking. The hold's end (`WM_EXITSIZEMOVE`, the
+  press released, cancelled or lost, or `WM_ACTIVATE` deactivating the window) asks for one recheck, which tells the
+  views where the pointer is even in the area they hovered (the hover may have moved to another view there), without
+  the buttons of the press they never heard, unless a move came first. A border's hit test code counts as the app's
+  content only where a view answers it (`windowResize`), not where the window's frame does.
 
 ## Web, browsers
 

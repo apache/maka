@@ -217,6 +217,9 @@ shortcuts use `on_key` / `on_key_with`; text editing uses `Input`, and terminal 
 | `repeat` | An auto-repeat of a held key. |
 | `defaultPrevented` | The mounted `captureKeys` policy decided this transition: the platform runs no native default and types no text. It is this transition's decision, observable as the DOM's `defaultPrevented` is, not a veto a listener casts. |
 
+On Linux, common media, volume and browser keys use UI Events names such as `"MediaPlayPause"`, `"AudioVolumeUp"` and
+`"BrowserBack"`.
+
 Both listeners return nothing. One platform event on the focused view bubbles to the enabled listening ancestors
 within the same native window, once each, for `onKeyDown` and `onKeyUp` alike. A real release the source reports
 reaches the focused view even when its press went elsewhere, as the DOM's does; losing the window's focus clears

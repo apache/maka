@@ -1176,7 +1176,7 @@ mod word_fade {
         }
 
         fn measure(&self, prepared: &Self::Prepared, max_width: Option<Points>) -> Size<Points> {
-            TYPESET.set(TYPESET.get() + prepared.0);
+            TYPESET.set(TYPESET.get() + prepared.chars());
             ApproxTextEngine.measure(prepared, max_width)
         }
 
@@ -1189,7 +1189,7 @@ mod word_fade {
         }
 
         fn layout(&self, prepared: &Self::Prepared, size: Size<Points>) -> TextLayout {
-            TYPESET.set(TYPESET.get() + prepared.0);
+            TYPESET.set(TYPESET.get() + prepared.chars());
             ApproxTextEngine.layout(prepared, size)
         }
 

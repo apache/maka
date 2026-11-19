@@ -99,8 +99,6 @@ const FADE_IN: f64 = 150.0;
 const FADE_OUT: f64 = 120.0;
 
 const CSS: &str = "
-.nsh-light { background-color: #ffffff; }
-.nsh-dark { background-color: #0a0a0a; }
 window.nsh-transparent, window.nsh-transparent .nsh-light, window.nsh-transparent .nsh-dark { background: none; }
 window.nsh-no-shadow, window.nsh-no-shadow.csd { box-shadow: none; }
 .nsh-dialog-backdrop { background-color: rgba(0, 0, 0, 0.4); }
@@ -142,6 +140,37 @@ button.nsh-dialog-button.destructive:hover { background-color: #dc2626; }
 .nsh-dialog-card.sheet button.nsh-dialog-button.destructive { color: #ef4444; }
 .nsh-dark .nsh-dialog-card.sheet button.nsh-dialog-button.destructive { color: #f87171; }
 .nsh-dialog-card.sheet button.nsh-dialog-button.cancel { font-weight: 600; }
+";
+
+/// Supplemental rules applied only while the display has no compositor (such as
+/// uncomposited X11 / Xvnc), dropping ARGB popup shadow/corner regions that X11
+/// paints solid black and replacing `.solid-csd` bezels with a 1 px border on
+/// NSH windows.
+const UNCOMPOSITED_CSS: &str = "
+.nsh-light popover, .nsh-dark popover {
+  margin: 0; padding: 0; border-radius: 0; box-shadow: none; background: none;
+}
+.nsh-light popover > arrow, .nsh-dark popover > arrow {
+  min-width: 0; min-height: 0; margin: 0; padding: 0;
+  border: none; background: none; box-shadow: none;
+}
+.nsh-light popover > contents, .nsh-dark popover > contents {
+  margin: 0; border-radius: 0; box-shadow: none;
+}
+tooltip, tooltip.background, tooltip.csd {
+  margin: 0; border-radius: 0; box-shadow: none;
+}
+window.nsh-window.csd, window.nsh-window.solid-csd {
+  margin: 0; padding: 0; border-radius: 0; box-shadow: none;
+  border: 1px solid alpha(currentColor, 0.16);
+}
+window.nsh-window.csd.maximized, window.nsh-window.solid-csd.maximized,
+window.nsh-window.csd.fullscreen, window.nsh-window.solid-csd.fullscreen,
+window.nsh-window.csd.tiled, window.nsh-window.solid-csd.tiled,
+window.nsh-window.nsh-no-shadow.csd, window.nsh-window.nsh-no-shadow.solid-csd,
+window.nsh-window.nsh-transparent.csd, window.nsh-window.nsh-transparent.solid-csd {
+  border: none;
+}
 ";
 
 /// What the system's settings say, for every surface.
@@ -194,6 +223,9 @@ struct System {
     overlays: Vec<Overlay>,
     /// The menus' style sheet, in the app's colors ([`crate::menu_style`]).
     menu_style: Option<gtk::CssProvider>,
+    /// Supplemental style sheet attached only while `!display.is_composited()`.
+    uncomposited_style: Option<gtk::CssProvider>,
+    uncomposited_active: bool,
 }
 
 thread_local! {
@@ -285,7 +317,15 @@ fn install() {
         &menus,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
-    SYSTEM.with(|s| s.borrow_mut().menu_style = Some(menus));
+    let uncomposited = gtk::CssProvider::new();
+    uncomposited.load_from_string(UNCOMPOSITED_CSS);
+    SYSTEM.with(|s| {
+        let mut s = s.borrow_mut();
+        s.menu_style = Some(menus);
+        s.uncomposited_style = Some(uncomposited);
+    });
+    sync_composited(&display);
+    display.connect_composited_notify(sync_composited);
     let settings = gtk::Settings::for_display(&display);
     let initial_dark = interface_scheme(&settings)
         .map_or(settings.is_gtk_application_prefer_dark_theme(), |s| {
@@ -479,6 +519,32 @@ pub(crate) fn environment_applied(surface: &Surface) {
         && let Some(value) = class.to_value_by_nick(want)
     {
         settings.set_property_from_value(INTERFACE_SCHEME, &value);
+    }
+}
+
+/// Attaches [`UNCOMPOSITED_CSS`] only while `display` lacks a compositor, and
+/// removes it if compositing starts later.
+fn sync_composited(display: &gdk::Display) {
+    let want = !display.is_composited();
+    let toggle = SYSTEM.with(|s| {
+        let mut s = s.borrow_mut();
+        let provider = s.uncomposited_style.clone()?;
+        if want == s.uncomposited_active {
+            return None;
+        }
+        s.uncomposited_active = want;
+        Some(provider)
+    });
+    if let Some(provider) = toggle {
+        if want {
+            gtk::style_context_add_provider_for_display(
+                display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+            );
+        } else {
+            gtk::style_context_remove_provider_for_display(display, &provider);
+        }
     }
 }
 
@@ -1854,5 +1920,26 @@ mod tests {
         assert_eq!(font_scale(-1), 1.0);
         assert_eq!(font_scale(96 * 1024), 1.0);
         assert_eq!(font_scale(120 * 1024), 1.25);
+    }
+
+    #[test]
+    fn uncomposited_stylesheet_parses_and_scopes_to_nsh_surfaces() {
+        assert!(UNCOMPOSITED_CSS.contains("window.nsh-window.csd, window.nsh-window.solid-csd"));
+        assert!(
+            UNCOMPOSITED_CSS
+                .contains(".nsh-light popover > contents, .nsh-dark popover > contents")
+        );
+        assert!(UNCOMPOSITED_CSS.contains("tooltip, tooltip.background, tooltip.csd"));
+        crate::gtk_test::run(|| {
+            let provider = gtk::CssProvider::new();
+            let errors = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let seen = errors.clone();
+            provider.connect_parsing_error(move |_, section, error| {
+                seen.borrow_mut()
+                    .push(format!("{}: {error}", section.to_str()));
+            });
+            provider.load_from_string(UNCOMPOSITED_CSS);
+            assert!(errors.borrow().is_empty(), "{:?}", errors.borrow());
+        });
     }
 }

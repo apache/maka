@@ -807,6 +807,7 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
             .default_width(size.0.max(1))
             .default_height(size.1.max(1))
             .build();
+        window.add_css_class("nsh-window");
         let view = AppView::new(options.clone());
         view.standalone.set(true);
         window.set_child(Some(&view.widget()));

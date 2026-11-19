@@ -593,7 +593,7 @@ pub(crate) fn reset(surface: &Surface) {
     crate::file_drop::reset(surface);
     crate::keyboard::reset(surface);
     let input = &surface.input;
-    input.window_press.borrow_mut().take();
+    crate::chrome::reset_hover(surface);
     input.pointers.borrow_mut().clear();
     input.two.borrow_mut().take();
     input.zoom.borrow_mut().take();

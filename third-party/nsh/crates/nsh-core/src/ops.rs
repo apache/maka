@@ -1991,6 +1991,12 @@ pub enum ScreenProp {
     /// iOS 26's own bars.
     #[prop(js = "headerShadowVisible", default = true, on = SCREEN)]
     HeaderShadowVisible(bool),
+    /// `headerBackgroundOnScroll` (iOS: the system header; ignored
+    /// elsewhere): with `headerTransparent`, the header stays clear while
+    /// the content rests at its top and shows its background once the
+    /// content scrolls under it, as UIKit's own bars do.
+    #[prop(js = "headerBackgroundOnScroll", on = SCREEN)]
+    HeaderBackgroundOnScroll(bool),
     /// `headerBackTitle` (iOS: the system header; ignored elsewhere): the
     /// label of the back button leading back to this page.
     #[prop(js = "headerBackTitle", on = SCREEN)]

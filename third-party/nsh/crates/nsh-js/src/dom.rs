@@ -3650,8 +3650,8 @@ unsafe extern "C" fn unmount(
 /// `setup(tailwind, theme, appearance, statusBar, app)`: the app's Tailwind
 /// theme and the theme of the Rust components (JSON strings, or null), its
 /// appearance (`"light"` / `"dark"`, or null), the status bar's default
-/// (`nsh.json` `"statusBar"` as JSON, or null) and what `appInfo()` reports
-/// (JSON, or null), before anything renders.
+/// (`nsh.json` `"statusBar"` as a JSON string, or null) and what `appInfo()`
+/// reports (JSON, or null), before anything renders.
 unsafe extern "C" fn setup(
     cx: *mut JsContext,
     _this: JsValue,
@@ -3685,7 +3685,11 @@ unsafe extern "C" fn setup(
         crate::env::take_theme(cx, &json);
     }
     // What this runtime cannot read (a newer NSH's) is left out.
-    let status_bar = string_arg(cx, arg(argc, argv, 3))
+    let status_bar = arg(argc, argv, 3);
+    // SAFETY: an inline tag check.
+    let status_bar = (unsafe { qjs::JS_IsString(status_bar) })
+        .then(|| string_arg(cx, status_bar))
+        .flatten()
         .and_then(|json| serde_json::from_str(&json).ok())
         .map(|v| nsh_core::StatusBarSetting::from_json(&v));
     if let Some(setting) = status_bar
@@ -4241,7 +4245,9 @@ unsafe extern "C" fn font(
 
 #[cfg(test)]
 mod tests {
-    use nsh_core::{EventKind, EventPayload, NodeId, Op};
+    use nsh_core::{
+        Command, EventKind, EventPayload, NodeId, Op, ROOT_ID, StatusBarSetting, StatusBarStyle,
+    };
 
     use crate::Host;
 
@@ -4263,6 +4269,39 @@ mod tests {
         "#,
             )
             .unwrap();
+    }
+
+    #[test]
+    fn setup_only_sets_the_status_bar_from_a_json_string() {
+        let host = Host::new().unwrap();
+        host.eval_source(
+            r#"
+            import { setup } from "nsh:rt";
+            setup(null, null, null, null, '{"name":"Status bar test"}');
+            setup(null, null, null, '{"foreground":"light","hidden":true}');
+            "#,
+        )
+        .unwrap();
+
+        let mut ops = Vec::new();
+        host.take_ops(&mut ops);
+        let settings: Vec<_> = ops
+            .into_iter()
+            .filter_map(|op| match op {
+                Op::Command {
+                    id,
+                    command: Command::SetStatusBar(setting),
+                } => Some((id, setting)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            settings,
+            [(
+                ROOT_ID,
+                StatusBarSetting::from(StatusBarStyle::Light).hidden(true)
+            )]
+        );
     }
 
     /// The ops since the last call, one line each (`Release` and the root's

@@ -1900,8 +1900,9 @@ panic = \"abort\"
             &ws.join("android/lib.rs"),
             &format!(
                 "//! The app's `libnsh.so`: the Android runtime with `nsh/base` and the\n//! app's Rust components.\n\n\
-                 {android}nsh::ui_sets!({sets});\n{root}{}",
-                self.app_sets(android)
+                 {android}nsh::ui_sets!({sets});\n{android}nsh::components!(app_components);\n{root}{}{}",
+                self.app_sets(android),
+                self.app_components(android, "nsh", "android"),
             ),
         )?;
         self.unify_features(ws);
@@ -2159,11 +2160,12 @@ panic = \"abort\"
             &format!(
                 "//! The Rust app's `libnsh.so`: its root, which `AppActivity` runs, with\n\
                  //! `nsh/base` and the app's components; no JS runtime.\n\n\
-                 {android}nsh::ui_sets!({sets});\n{android}nsh::main!(app_root());\n\n\
+                 {android}nsh::ui_sets!({sets});\n{android}nsh::components!(app_components);\n{android}nsh::main!(app_root());\n\n\
                  // Off Android it is empty, as nsh-platform-android is.\n\
                  #[cfg(not(target_os = \"android\"))]\nuse nsh_core as _;\n\
-                 #[cfg(not(target_os = \"android\"))]\nuse nsh_base as _;\n{}{}",
+                 #[cfg(not(target_os = \"android\"))]\nuse nsh_base as _;\n{}{}{}",
                 self.app_sets(android),
+                self.app_components(android, "nsh", "android"),
                 self.root_fn(android, root),
             ),
         )?;
@@ -5259,7 +5261,34 @@ panic = \"abort\"
                         "{dir}"
                     );
                 }
-                None => assert!(!code.contains("set_components"), "{dir}: {code}"),
+                None if dir == "android" || dir == "rust-android" => {
+                    assert!(
+                        code.contains("nsh::components!(app_components);"),
+                        "{dir}: {code}"
+                    );
+                    assert!(
+                        code.contains("fn app_components(__nsh_components: &nsh::Components) {\n"),
+                        "{dir}: {code}"
+                    );
+                    for (name, package) in
+                        [("app_charts", "charts"), ("app_app_storage", "app-storage")]
+                    {
+                        let call = format!(
+                            "    {{\n        #[allow(unused_imports)]\n        use {name}::*;\n        __nsh_native_components_android(__nsh_components); // the crate {package} (nsh.json \"rust\")\n    }}\n"
+                        );
+                        assert!(code.contains(&call), "{dir}: no {call:?} in\n{code}");
+                    }
+                    assert_eq!(
+                        code.matches("no_native_components as __nsh_native_components_android;")
+                            .count(),
+                        1,
+                        "{dir}"
+                    );
+                }
+                None => assert!(
+                    !code.contains("set_components") && !code.contains("components!("),
+                    "{dir}: {code}"
+                ),
             }
         }
         for (dir, key) in [

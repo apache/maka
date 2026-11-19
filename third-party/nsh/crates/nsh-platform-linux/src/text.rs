@@ -462,20 +462,108 @@ fn natural_line_heights(
     layout.set_attributes(Some(attrs));
 }
 
-/// Font options both threads use: unhinted metrics, so advances do not
-/// depend on the pixel grid.
-fn font_options(hint: pangocairo::cairo::HintStyle) -> Option<pangocairo::cairo::FontOptions> {
+/// How glyphs are rasterized and measured: NSH's defaults, or the
+/// desktop's choices when it asks for manual font rendering, as GTK's own
+/// text does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FontRendering {
+    /// The hint style drawn glyphs use.
+    pub(crate) hint_style: pangocairo::cairo::HintStyle,
+    pub(crate) antialias: pangocairo::cairo::Antialias,
+    /// Hinted metrics with whole-pixel glyph positions (in layout too).
+    pub(crate) hint_metrics: bool,
+}
+
+impl Default for FontRendering {
+    /// Slight hinting, gray antialiasing and unhinted metrics, so advances
+    /// do not depend on the pixel grid.
+    fn default() -> Self {
+        FontRendering {
+            hint_style: pangocairo::cairo::HintStyle::Slight,
+            antialias: pangocairo::cairo::Antialias::Gray,
+            hint_metrics: false,
+        }
+    }
+}
+
+static FONT_RENDERING: Mutex<Option<FontRendering>> = Mutex::new(None);
+
+fn font_rendering() -> FontRendering {
+    FONT_RENDERING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_default()
+}
+
+/// Reads the desktop's font rendering settings, on the main thread,
+/// before an engine starts. With `gtk-font-rendering=manual` GTK draws
+/// its text with `gtk-xft-hintstyle`, `gtk-xft-antialias` and
+/// `gtk-hint-font-metrics`, and so does NSH; otherwise (automatic) NSH
+/// keeps its defaults.
+pub(crate) fn read_font_rendering() {
+    let rendering = gtk::Settings::default()
+        .map(|s| font_rendering_from(&s))
+        .unwrap_or_default();
+    *FONT_RENDERING.lock().unwrap_or_else(|e| e.into_inner()) = Some(rendering);
+}
+
+fn font_rendering_from(settings: &gtk::Settings) -> FontRendering {
+    use gtk::prelude::ObjectExt;
+    use pangocairo::cairo::{Antialias, HintStyle};
+    let mut rendering = FontRendering::default();
+    let manual = settings.find_property("gtk-font-rendering").is_some()
+        && gtk::glib::EnumValue::from_value(&settings.property_value("gtk-font-rendering"))
+            .is_some_and(|(_, v)| v.nick() == "manual");
+    if !manual {
+        return rendering;
+    }
+    if settings.property::<i32>("gtk-xft-hinting") == 0 {
+        rendering.hint_style = HintStyle::None;
+    } else if let Some(style) = settings.property::<Option<String>>("gtk-xft-hintstyle") {
+        rendering.hint_style = match style.as_str() {
+            "hintnone" => HintStyle::None,
+            "hintslight" => HintStyle::Slight,
+            "hintmedium" => HintStyle::Medium,
+            "hintfull" => HintStyle::Full,
+            _ => rendering.hint_style,
+        };
+    }
+    // GSK draws grayscale coverage only: subpixel stays gray, as in GTK.
+    if settings.property::<i32>("gtk-xft-antialias") == 0 {
+        rendering.antialias = Antialias::None;
+    }
+    if settings.find_property("gtk-hint-font-metrics").is_some() {
+        rendering.hint_metrics = settings.property::<bool>("gtk-hint-font-metrics");
+    }
+    rendering
+}
+
+/// Font options of a context. Layout (`draw` false) is unhinted unless
+/// metrics are hinted, so measuring stays resolution-independent by default.
+fn font_options(rendering: FontRendering, draw: bool) -> Option<pangocairo::cairo::FontOptions> {
+    use pangocairo::cairo::{HintMetrics, HintStyle};
     let mut options = pangocairo::cairo::FontOptions::new().ok()?;
-    options.set_hint_metrics(pangocairo::cairo::HintMetrics::Off);
-    options.set_hint_style(hint);
-    options.set_antialias(pangocairo::cairo::Antialias::Gray);
+    options.set_hint_metrics(if rendering.hint_metrics {
+        HintMetrics::On
+    } else {
+        HintMetrics::Off
+    });
+    options.set_hint_style(if draw || rendering.hint_metrics {
+        rendering.hint_style
+    } else {
+        HintStyle::None
+    });
+    options.set_antialias(rendering.antialias);
     Some(options)
 }
 
-fn context(font_map: &pango::FontMap, hint: pangocairo::cairo::HintStyle) -> pango::Context {
+fn context(font_map: &pango::FontMap, rendering: FontRendering, draw: bool) -> pango::Context {
     let context = font_map.create_context();
-    pangocairo::functions::context_set_font_options(&context, font_options(hint).as_ref());
-    context.set_round_glyph_positions(false);
+    pangocairo::functions::context_set_font_options(
+        &context,
+        font_options(rendering, draw).as_ref(),
+    );
+    context.set_round_glyph_positions(rendering.hint_metrics);
     context
 }
 
@@ -531,9 +619,10 @@ impl PangoTextEngine {
         {
             log::warn!("cannot load app fonts: {err}");
         }
-        let ltr = context(&font_map, pangocairo::cairo::HintStyle::None);
+        let rendering = font_rendering();
+        let ltr = context(&font_map, rendering, false);
         ltr.set_base_dir(pango::Direction::Ltr);
-        let rtl = context(&font_map, pangocairo::cairo::HintStyle::None);
+        let rtl = context(&font_map, rendering, false);
         rtl.set_base_dir(pango::Direction::Rtl);
         PangoTextEngine {
             font_map,
@@ -1194,10 +1283,7 @@ thread_local! {
 fn main_font(desc: &Arc<str>) -> Option<pango::Font> {
     MAIN_FONTS.with_borrow_mut(|fonts| {
         let fonts = fonts.get_or_insert_with(|| MainFonts {
-            context: context(
-                &pangocairo::FontMap::default(),
-                pangocairo::cairo::HintStyle::Slight,
-            ),
+            context: context(&pangocairo::FontMap::default(), font_rendering(), true),
             fonts: FxHashMap::default(),
             files: 0,
         });
@@ -3099,5 +3185,37 @@ mod fallback_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod font_rendering_tests {
+    use super::*;
+    use pangocairo::cairo::{HintMetrics, HintStyle};
+
+    /// By default layout is unhinted and drawing slightly hinted; hinted
+    /// metrics (manual font rendering) hint and round layout too.
+    #[test]
+    fn layout_follows_hint_metrics() {
+        let default = FontRendering::default();
+        let layout = font_options(default, false).unwrap();
+        assert_eq!(layout.hint_style(), HintStyle::None);
+        assert_eq!(layout.hint_metrics(), HintMetrics::Off);
+        assert_eq!(
+            font_options(default, true).unwrap().hint_style(),
+            HintStyle::Slight
+        );
+
+        let manual = FontRendering {
+            hint_style: HintStyle::Full,
+            hint_metrics: true,
+            ..default
+        };
+        let layout = font_options(manual, false).unwrap();
+        assert_eq!(layout.hint_style(), HintStyle::Full);
+        assert_eq!(layout.hint_metrics(), HintMetrics::On);
+        let font_map = pangocairo::FontMap::new();
+        assert!(context(&font_map, manual, false).is_round_glyph_positions());
+        assert!(!context(&font_map, default, false).is_round_glyph_positions());
     }
 }

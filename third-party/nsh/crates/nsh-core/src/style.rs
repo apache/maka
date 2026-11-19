@@ -721,6 +721,9 @@ pub struct ViewStyle {
     pub transform: Transform,
     /// `tintColor`: recolors an image's opaque pixels.
     pub tint_color: Option<Color>,
+    /// `accentColor`: the color a system control shows its state in (a
+    /// switch's track when on); the control's own when `None`.
+    pub accent_color: Option<Color>,
     /// Android's material shadow: the node's `android={{ elevation }}` prop,
     /// not a style.
     pub elevation: Points,
@@ -1066,6 +1069,7 @@ impl ViewStyle {
         overflow_hidden: false,
         transform: Transform::IDENTITY,
         tint_color: None,
+        accent_color: None,
         elevation: Points::ZERO,
         transform_origin: TransformOrigin::CENTER,
         object_position: ObjectPosition::CENTER,
@@ -1906,6 +1910,7 @@ style_keys! {
     BorderStyle = "borderStyle": View "\"solid\" | \"dashed\" | \"dotted\" | \"none\" | \"hidden\"" "`none` and `hidden`: no border whatever the widths (they take no space).",
     BorderCurve = "borderCurve": View "\"circular\" | \"continuous\"" "`continuous`: corners whose curvature eases into the edges (iOS app icons).",
     TintColor = "tintColor": Image "ColorValue" "Recolors a template image.",
+    AccentColor = "accentColor": View "ColorValue" "CSS's `accent-color`: the color a system control shows its state in (`accent-*`), a switch's track when on; the control's own color when unset. Set on the control itself (not inherited).",
     ObjectFit = "objectFit": View "\"fill\" | \"contain\" | \"cover\" | \"none\" | \"scale-down\"" "CSS's `object-fit`: how an image or a video fits its box. Images cover it by default, videos are contained in it.",
     ObjectPosition = "objectPosition": Image "string" "Where the image sits in its box once `objectFit` has sized it, as CSS's `object-position`: keywords, percentages and lengths (`\"top\"`, `\"left bottom\"`, `\"25% 75%\"`, `\"right 10px bottom 20%\"`). A covering image is cropped around it. Default the center.",
     BackfaceVisibility = "backfaceVisibility": View "\"visible\" | \"hidden\"" "`\"hidden\"`: invisible while turned away (3D rotations).",
@@ -3182,6 +3187,7 @@ impl StyleKey {
             | K::BorderBottomColor
             | K::BorderLeftColor
             | K::TintColor
+            | K::AccentColor
             | K::GlassTintColor
             | K::OutlineColor
             | K::Color
@@ -3990,6 +3996,7 @@ impl Style {
             }
             (K::BorderCurve, V::Bool(v)) => self.view.continuous_corners = *v,
             (K::TintColor, V::Color(c)) => self.view.tint_color = *c,
+            (K::AccentColor, V::Color(c)) => self.view.accent_color = *c,
             (K::GlassTintColor, V::Color(c)) => self.view.glass_tint_color = *c,
             (K::ObjectFit, V::ObjectFit(v)) => self.pending.object_fit = *v,
             (K::ObjectPosition, V::ObjectPosition(v)) => self.view.object_position = *v,

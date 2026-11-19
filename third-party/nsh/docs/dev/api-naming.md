@@ -472,6 +472,7 @@ and `Input`'s React Native names follow the rules as well.
 | `placeholderTextColor` | style key `placeholderColor`, class `placeholder:text-*` | *guides* `value` vs `presentation`; CSS `::placeholder` | |
 | `selectionColor` (Input, Text) | style key `selectionColor` (the highlight), class `selection:text-*` | CSS `::selection` | |
 | `cursorColor` (Input) | style key `caretColor`, class `caret-*` | CSS `caret-color` | |
+| Switch `trackColor` (on) (`nsh/mobile`'s system switch) | style key `accentColor`, class `accent-*` | CSS `accent-color` | A color of a part is a style key. Set on the control (not inherited); the system's segmented control and tab bar could read it later |
 | `editable` | `readonly` (`editable={false}` = `readonly`) | *guides* "readonly"; `gpui-component` `Input::readonly` | `disabled` (no focus, `disabled:` classes) stays separate |
 | `onChangeText(text)` | `onChange({ value })` (was `onChange(text)` until 2026-10-27) | `InputEvent::Change`; `on_change` observes (*guides*) | |
 | `onSubmitEditing` | `onSubmit` | `InputEvent::PressEnter` (not followed) | The return key, whatever `returnKeyType` shows: on a phone it says Done / Search / Go, not Enter; HTML's `submit` |

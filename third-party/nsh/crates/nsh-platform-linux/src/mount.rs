@@ -207,6 +207,7 @@ impl Mounter {
                 crate::input::style_changed(view);
                 crate::transition::style_changed(surface, view, &old);
                 crate::access::style_changed(view, &old);
+                crate::key_focus::changed(view);
                 view.moved();
             }
             MountItem::Text {
@@ -337,6 +338,7 @@ impl Mounter {
                 crate::input::props_changed(surface, view);
                 crate::selectable_view::props_changed(surface, view);
                 crate::access::props_changed(surface, view);
+                crate::key_focus::changed(view);
             }
             MountItem::LayoutAnimation(a) => self.layout_animation = Some(*a),
             MountItem::Input { id, config } => {

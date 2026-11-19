@@ -152,7 +152,7 @@ Notes:
 - Desktop means macOS, Windows, Linux, and browsers in the desktop idiom. Mobile means iOS, Android, Mac Catalyst and browsers in the phone or tablet idiom.
 - Gate layout and input on `platform.desktop`. Gate windows and `Menu` calls on `isAvailable` from `nsh/desktop`, which is false in browsers.
 - Mac Catalyst reports `"ios"` and takes `ios={{…}}` props.
-- Web has no registered native components. On the desktops, `#[native_components]` is one function per platform, each registering the same names, with `nsh-platform-*` per-target dependencies.
+- Web has no registered native components. On the desktops, iOS and Android, `#[native_components]` is one function per platform, each registering the same names, with `nsh-platform-*` per-target dependencies.
 
 ```tsx
 import { platform, Text } from "nsh";

@@ -120,6 +120,7 @@ final class KeyCaptures {
             case 56: return (int) '.';
             case 61: return TAB;
             case 62: return (int) ' ';
+            case 23:
             case 66:
             case 160: return ENTER;
             case 67: return BACKSPACE;

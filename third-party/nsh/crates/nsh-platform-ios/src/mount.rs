@@ -726,6 +726,10 @@ pub(crate) struct Mounter {
     orientations_waiting: bool,
     /// Screens whose header changed in the current batch.
     dirty_headers: Vec<NodeId>,
+    /// Screens whose header follows the scroll view under it
+    /// (`headerBackgroundOnScroll`): checked after every batch, which may
+    /// add, move or remove that scroll view.
+    following_scroll: Vec<NodeId>,
     /// Modals to present or dismiss at the end of the current batch.
     dirty_modals: Vec<NodeId>,
     /// Where `asset:/` URIs of videos resolve.
@@ -868,6 +872,7 @@ impl Mounter {
             orientations: None,
             orientations_waiting: false,
             dirty_headers: Vec::new(),
+            following_scroll: Vec::new(),
             dirty_modals: Vec::new(),
             asset_base: asset_base.clone(),
             sticky: Default::default(),
@@ -1633,7 +1638,28 @@ impl Mounter {
                     inset.left += new.left - old.left;
                     inset.bottom += new.bottom - old.bottom;
                     inset.right += new.right - old.right;
+                    // UIKit keeps the offset when the inset changes: content
+                    // resting at its start would end up under the new inset
+                    // (a page's first rows under a header it scrolls under),
+                    // or short of it. It rests at the new start instead.
+                    let horizontal = s.horizontal;
+                    let start = |scroll: &UIScrollView| {
+                        let inset = scroll.adjustedContentInset();
+                        if horizontal { -inset.left } else { -inset.top }
+                    };
+                    let along = |offset: CGPoint| if horizontal { offset.x } else { offset.y };
+                    let at_start =
+                        !scroll.isDragging() && along(scroll.contentOffset()) <= start(scroll);
                     scroll.setContentInset(inset);
+                    if at_start && along(scroll.contentOffset()) != start(scroll) {
+                        let mut offset = scroll.contentOffset();
+                        if horizontal {
+                            offset.x = start(scroll);
+                        } else {
+                            offset.y = start(scroll);
+                        }
+                        scroll.setContentOffset(offset);
+                    }
                     // The indicators' insets by the same change, keeping the
                     // keyboard's room (`set_bottom_inset`) in the bottom one.
                     let old = ui_insets(
@@ -2136,7 +2162,7 @@ impl Mounter {
             }
             (Command::ClearJsResponder, _) => self.clear_js_responder(),
             (Command::Announce(text), _) => crate::system::announce(&text),
-            (Command::Haptic(haptic), _) => crate::system::haptic(haptic),
+            (Command::Haptic(haptic), _) => self.target.haptics().play(haptic, self.mtm),
             (Command::Orientations(bits), _) if id == nsh_core::ROOT_ID => {
                 self.orientations = Some(bits);
             }
@@ -4030,6 +4056,7 @@ impl Mounter {
         let mut headers = std::mem::take(&mut self.dirty_headers);
         headers.sort_unstable();
         headers.dedup();
+        let mut follows = Vec::new();
         for id in headers {
             let Some(Slot {
                 native: Native::Screen(screen),
@@ -4046,6 +4073,10 @@ impl Mounter {
                 },
                 press,
             );
+            follows.push((
+                id,
+                screen.config.header_transparent && screen.config.header_background_on_scroll,
+            ));
             if screen.config.large_title {
                 // Large titles collapse as the content scrolls under them.
                 if let Some(scroll) = first_scroll_view(&screen.view)
@@ -4067,6 +4098,12 @@ impl Mounter {
                         scroll.setContentOffset(offset);
                     }
                 }
+            }
+        }
+        for (id, follows) in follows {
+            self.following_scroll.retain(|&other| other != id);
+            if follows {
+                self.following_scroll.push(id);
             }
         }
         let modals = std::mem::take(&mut self.dirty_modals);
@@ -4100,6 +4137,19 @@ impl Mounter {
                 });
             }
         }
+        let views = &self.views;
+        self.following_scroll.retain(
+            |&id| match views.get(id as usize).and_then(Option::as_ref) {
+                Some(Slot {
+                    native: Native::Screen(screen),
+                    ..
+                }) => {
+                    screen.controller.follow_content_scroll();
+                    true
+                }
+                _ => false,
+            },
+        );
         // What no change used goes, but for stacks whose change waits for
         // UIKit's transition to end.
         let deferred = &self.deferred_stacks;

@@ -2688,6 +2688,57 @@ fn native_components_get_their_name_props_and_size() {
 }
 
 #[test]
+fn a_native_component_gets_its_accent_color_as_a_prop() {
+    // `accentColor` (or `accent-*`) on a native component reaches it as its
+    // `accentColor` prop, `#RRGGBBAA`; a style it no longer has removes it.
+    let mut c = core();
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 2,
+                tag: Tag::Native,
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Component("com.example.switch".into()),
+            },
+            style_op(2, &[("accentColor", StyleValue::Str("#34c759"))]),
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 2,
+                before: None,
+            },
+        ],
+    );
+    let accent = |c: &mut Core<FakeEngine>| {
+        let batch = c.commit().unwrap();
+        batch
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                MountItem::ComponentProps { id: 2, props } => {
+                    props.iter().find(|(k, _)| &**k == "accentColor").cloned()
+                }
+                _ => None,
+            })
+            .map(|(_, v)| v)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(accent(&mut c), [Some(serde_json::json!("#34C759FF"))]);
+    // The class, once the style no longer sets it.
+    c.apply(class_op(2, "accent-[#ff0000]")).unwrap();
+    c.apply(style_op(2, &[])).unwrap();
+    assert_eq!(accent(&mut c), [Some(serde_json::json!("#FF0000FF"))]);
+    // Unchanged: not sent again.
+    c.apply(style_op(2, &[("opacity", StyleValue::Number(0.5))]))
+        .unwrap();
+    assert_eq!(accent(&mut c), Vec::<Option<serde_json::Value>>::new());
+    c.apply(class_op(2, "")).unwrap();
+    assert_eq!(accent(&mut c), [None]);
+}
+
+#[test]
 fn scroll_reports_content_size() {
     let mut c = core();
     let mut ops = vec![
@@ -10793,6 +10844,63 @@ fn text_shrinks_to_fit_its_lines() {
 }
 
 #[test]
+fn approx_engine_and_offscreen_text_estimate_agree_on_line_height() {
+    let mut text = crate::AttributedText::default();
+    text.push(
+        "hello",
+        crate::ResolvedTextStyle {
+            font_size: px(14.0),
+            line_height: px(28.0),
+            ..Default::default()
+        },
+    );
+    let estimated = super::estimate_text(&text, None);
+    assert_eq!(estimated.height, px(28.0));
+
+    let mut c = Core::new(crate::text::ApproxTextEngine, size_pt(320.0, 480.0));
+    for op in [
+        Op::Create {
+            id: 2,
+            tag: Tag::Text,
+        },
+        Op::SetStyle {
+            id: 2,
+            style: style(&[
+                ("fontSize", StyleValue::Number(14.0)),
+                ("lineHeight", StyleValue::Number(28.0)),
+            ]),
+            patch: Default::default(),
+        },
+        Op::CreateText {
+            id: 3,
+            text: "hello\nworld".into(),
+        },
+        Op::Insert {
+            parent: 2,
+            child: 3,
+            before: None,
+        },
+        Op::Insert {
+            parent: ROOT_ID,
+            child: 2,
+            before: None,
+        },
+    ] {
+        c.apply(op).unwrap();
+    }
+    let batch = c.commit().unwrap();
+    let frame = batch
+        .items
+        .iter()
+        .find_map(|i| match i {
+            MountItem::Frame { id: 2, frame } => Some(*frame),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(frame.size.height, px(56.0));
+}
+
+#[test]
 fn styles_clamp_cut_and_select_texts_and_say_which_views_take_touches() {
     let mut c = Core::new(crate::text::ApproxTextEngine, size_pt(320.0, 480.0));
     let insert = |parent, child| Op::Insert {
@@ -16329,9 +16437,9 @@ mod components {
     /// spare cells included (which keep showing their last row).
     fn rows_shown_twice(c: &Core<FakeEngine>) -> Vec<String> {
         let mut shown = std::collections::HashMap::<&str, u32>::new();
-        for (_, node) in c.nodes.iter() {
-            if node.kind == Kind::RawText && !node.text.is_empty() {
-                *shown.entry(node.text.as_str()).or_default() += 1;
+        for text in texts_shown(c) {
+            if !text.is_empty() {
+                *shown.entry(text).or_default() += 1;
             }
         }
         let mut twice: Vec<String> = shown
@@ -16341,6 +16449,22 @@ mod components {
             .collect();
         twice.sort();
         twice
+    }
+
+    /// The raw texts in the tree: those with a node, and those a text block
+    /// shows without one (its only run).
+    fn texts_shown(c: &Core<FakeEngine>) -> Vec<&str> {
+        c.nodes
+            .iter()
+            .filter(|(_, n)| n.kind == Kind::RawText)
+            .map(|(_, n)| n.text.as_str())
+            .chain(
+                c.runs
+                    .values()
+                    .filter(|r| r.block != NO_KEY)
+                    .map(|r| r.text.as_str()),
+            )
+            .collect()
     }
 
     /// A row that goes leaves its cell spare, and the rows after it move up
@@ -16448,20 +16572,9 @@ mod components {
                 failures.push(format!("{name}: {made} views made"));
             }
             // Back at the start, the rows in the viewport show, once each.
-            let shown: Vec<String> = c
-                .nodes
-                .iter()
-                .filter(|(_, n)| n.kind == Kind::RawText)
-                .map(|(_, n)| n.text.clone())
-                .chain(
-                    c.runs
-                        .values()
-                        .filter(|r| r.block != NO_KEY)
-                        .map(|r| r.text.clone()),
-                )
-                .collect();
+            let shown = texts_shown(&c);
             for row in rows.iter().take(11) {
-                if !shown.contains(row) {
+                if !shown.contains(&row.as_str()) {
                     failures.push(format!("{name}: {row} does not show"));
                 }
             }
@@ -16655,16 +16768,9 @@ mod components {
                 let _ = c.commit();
             }
         }
-        let mut shown: Vec<_> = c
-            .nodes
-            .iter()
-            .filter_map(|(_, node)| {
-                let LeafContext::Text(block) = c.layout.get_node_context(node.layout?)? else {
-                    return None;
-                };
-                let text = block.text.visible_text();
-                (!text.is_empty()).then_some(text)
-            })
+        let mut shown: Vec<&str> = texts_shown(&c)
+            .into_iter()
+            .filter(|t| !t.is_empty())
             .collect();
         shown.sort();
         CHANGING_ROWS.set(100);
@@ -24041,12 +24147,69 @@ mod views {
         };
         let first = config(&c.commit().unwrap()).expect("a screen");
         assert!(first.header_shadow_visible);
+        let shadow = SHADOW.with(Cell::get).expect("mounted");
         {
             let _entered = c.components.runtime.enter();
-            SHADOW.with(Cell::get).expect("mounted").set(false);
+            shadow.set(false);
         }
         let hidden = config(&c.commit().unwrap()).expect("updated");
         assert!(!hidden.header_shadow_visible);
+    }
+
+    /// A transparent screen whose header background on scroll follows
+    /// `ON_SCROLL`.
+    #[derive(Default)]
+    struct OnScrollPage;
+
+    #[derive(Clone, PartialEq, Props)]
+    struct OnScrollPageProps {}
+
+    thread_local! {
+        static ON_SCROLL: Cell<Option<Signal<bool>>> = const { Cell::new(None) };
+    }
+
+    impl Component for OnScrollPage {
+        type Props = OnScrollPageProps;
+        type Event = NoEvent;
+
+        // The core's own stack and screen: `nsh_base`'s wrap them.
+        #[allow(deprecated)]
+        fn view(_: OnScrollPageProps, _: Scope<NoEvent>) -> impl IntoElement {
+            let on = signal(false);
+            ON_SCROLL.with(|s| s.set(Some(on)));
+            stack().flex_1().child(
+                screen()
+                    .title("Page")
+                    .header_transparent(true)
+                    .header_background_on_scroll(move || on.get())
+                    .child(view().flex_1()),
+            )
+        }
+    }
+
+    /// The header background on scroll is off by default and follows its
+    /// signal.
+    #[test]
+    fn the_header_background_on_scroll_reaches_the_screens_config() {
+        assert!(!crate::ScreenConfig::default().header_background_on_scroll);
+        let mut c = core();
+        c.mount_root(&Root::new::<OnScrollPage>(|| OnScrollPageProps {}));
+        let config = |batch: &MountBatch| {
+            batch.items.iter().find_map(|i| match i {
+                MountItem::ScreenConfig { config, .. } => Some((**config).clone()),
+                _ => None,
+            })
+        };
+        let first = config(&c.commit().unwrap()).expect("a screen");
+        assert!(first.header_transparent);
+        assert!(!first.header_background_on_scroll);
+        let on = ON_SCROLL.with(Cell::get).expect("mounted");
+        {
+            let _entered = c.components.runtime.enter();
+            on.set(true);
+        }
+        let updated = config(&c.commit().unwrap()).expect("updated");
+        assert!(updated.header_background_on_scroll);
     }
 
     /// A screen whose trailing header button is UIKit's own.
@@ -38475,6 +38638,27 @@ mod built_in_scrollbars {
             "{:?}",
             batch.items
         );
+        // Moved down at the same size: nothing in the bar is laid out
+        // again, the bar still follows.
+        apply(
+            &mut c,
+            vec![Op::SetProp {
+                id: 2,
+                prop: Prop::Scroll(ScrollProp::ScrollbarInset(EdgeInsets {
+                    top: px(30.0),
+                    right: px(6.0),
+                    bottom: px(40.0),
+                    left: px(0.0),
+                })),
+            }],
+        );
+        let batch = c.commit().unwrap();
+        assert_eq!(
+            frame_of(&batch, bar),
+            Some(rect(0.0, 30.0, 294.0, 130.0)),
+            "{:?}",
+            batch.items
+        );
         // Back to the whole viewport.
         apply(
             &mut c,
@@ -46602,6 +46786,28 @@ mod each_updates {
         /// Each row of [`MountRows`] with a hint, as a document's links
         /// have their addresses: an overlay each.
         static HINTED: Cell<bool> = const { Cell::new(false) };
+        /// Each row of [`MountRows`] with a [`Tip`], as a toolbar has its
+        /// tooltips: a component whose root is an overlay each.
+        static TIPPED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// A component whose root is a hint overlay, as a tooltip is: its
+    /// host is made a view, then takes the overlay's kind.
+    #[derive(Default)]
+    struct Tip;
+
+    #[derive(Clone, PartialEq, Props)]
+    struct TipProps {}
+
+    impl Component for Tip {
+        type Props = TipProps;
+        type Event = NoEvent;
+
+        fn view(_: TipProps, _: Scope<NoEvent>) -> impl IntoElement {
+            overlay()
+                .hint(Duration::from_millis(500))
+                .child(text("tip"))
+        }
     }
 
     /// `ROWS` rows of an `each` as `TextView` has a document's blocks: a
@@ -46615,6 +46821,7 @@ mod each_updates {
                 .collect::<Vec<_>>(),
         );
         let hinted = HINTED.with(Cell::get);
+        let tipped = TIPPED.with(Cell::get);
         let rows = view()
             .flex_col()
             .child(text("before"))
@@ -46632,6 +46839,7 @@ mod each_updates {
                                 .hint(Duration::from_millis(500))
                                 .child(text("https://example.com"))
                         }))
+                        .child(tipped.then(|| Tip::element(TipProps {})))
                 },
             ))
             .child(view().h(px(4.0)));
@@ -46727,6 +46935,281 @@ mod each_updates {
             assert!(c.nodes[children[301] as usize].text.is_empty());
         }
         SCROLLED.with(|s| s.set(false));
+    }
+
+    /// Rows mounted at once, each with a component whose root is an
+    /// overlay (a tooltip), give the components' hosts their roots' kind
+    /// without a pass over the batch's mount items for each: the items
+    /// looked at grow with the rows, not with their square.
+    #[test]
+    fn component_roots_mounted_at_once_take_their_kind_without_a_pass_for_each() {
+        TIPPED.with(|t| t.set(true));
+        let mut grew = Vec::new();
+        for scrolled in [false, true] {
+            SCROLLED.with(|s| s.set(scrolled));
+            let work = |rows| {
+                let (c, _) = rows_mounted(rows, 0);
+                c.components.retag_work.get()
+            };
+            let (few, many) = (work(400), work(1_600));
+            eprintln!("scrolled {scrolled}: {few} items for 400 rows, {many} for 1,600");
+            // Four times the rows: about four times the work (it was
+            // about sixteen times, with a pass for each component).
+            if many > 5 * few {
+                grew.push(format!(
+                    "scrolled {scrolled}: {few} for 400 rows, {many} for 1,600"
+                ));
+            }
+        }
+        SCROLLED.with(|s| s.set(false));
+        TIPPED.with(|t| t.set(false));
+        assert!(grew.is_empty(), "{grew:#?}");
+    }
+
+    /// Hosts that take their component root's kind in the batch they are
+    /// made in are made once, with that kind, before they are inserted.
+    #[test]
+    fn component_roots_mounted_at_once_are_made_once() {
+        TIPPED.with(|t| t.set(true));
+        ROWS.with(|r| r.set(50));
+        let mut c = core();
+        c.mount_root(&Root::new::<MountRows>(|| ()));
+        let batch = c.commit().expect("a batch");
+        TIPPED.with(|t| t.set(false));
+        let mut made = std::collections::HashSet::new();
+        for item in &batch.items {
+            match item {
+                MountItem::Create { id, .. } => {
+                    assert!(made.insert(*id), "{id:?} made twice: {:?}", batch.items);
+                }
+                MountItem::Insert { child, .. } => {
+                    assert!(made.contains(child), "{child:?} inserted before it is made");
+                }
+                _ => {}
+            }
+        }
+        let tips = c
+            .overlays
+            .iter()
+            .filter(|&&key| c.nodes[key as usize].kind == Kind::Overlay)
+            .count();
+        assert_eq!(tips, 50);
+    }
+
+    /// `batch`, a first batch: every view in it is made once, before it is
+    /// inserted, and is still in the tree (none removed in the batch left
+    /// its `Create` or `Insert`).
+    fn made_once_before_inserted(c: &Core<FakeEngine>, batch: &MountBatch) {
+        let mut made = std::collections::HashSet::new();
+        for item in &batch.items {
+            let id = match item {
+                MountItem::Create { id, .. } => {
+                    assert!(made.insert(*id), "{id:?} made twice: {:?}", batch.items);
+                    *id
+                }
+                MountItem::Insert { child, .. } => {
+                    assert!(
+                        made.contains(child),
+                        "{child:?} inserted before it is made: {:?}",
+                        batch.items
+                    );
+                    *child
+                }
+                _ => continue,
+            };
+            assert!(c.key(id).is_ok(), "{id:?} is gone: {:?}", batch.items);
+        }
+    }
+
+    /// The views of `kind` made in `batch`.
+    fn made_as(batch: &MountBatch, kind: ViewKind) -> Vec<NodeId> {
+        batch
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MountItem::Create { id, kind: k } if *k == kind => Some(*id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A component whose root is a list in its parent's viewport: its host
+    /// is made a view, takes the list's kind, then the list's `viewport`
+    /// changes the kind of its `Create`.
+    #[component]
+    fn ParentList() -> impl IntoElement {
+        virtual_list(|| 3usize, |_| view().h(px(20.0)).child(text("row")))
+            .viewport(ListViewport::Parent)
+    }
+
+    /// Tips and lists in their parent's viewport, all components' roots
+    /// taking their kind in one round of renders.
+    #[component]
+    fn ParentLists() -> impl IntoElement {
+        scroll().size_full().child(
+            view()
+                .flex_col()
+                .child(Tip::element(TipProps {}))
+                .child(ParentList::element(()))
+                .child(Tip::element(TipProps {}))
+                .child(ParentList::element(()))
+                .child(Tip::element(TipProps {})),
+        )
+    }
+
+    /// A list that is a component's root and set in its parent's viewport
+    /// in the round its host takes the list's kind is made once, as a
+    /// plain view: the viewport changes its one `Create`, not the one its
+    /// host had as a view.
+    #[test]
+    fn a_component_root_list_in_its_parents_viewport_is_made_once() {
+        let mut c = core();
+        c.mount_root(&Root::new::<ParentLists>(|| ()));
+        let batch = c.commit().expect("a batch");
+        made_once_before_inserted(&c, &batch);
+        let lists: Vec<_> = c
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.kind == Kind::List)
+            .map(|(_, n)| n.id)
+            .collect();
+        assert_eq!(lists.len(), 2);
+        let views = made_as(&batch, ViewKind::View);
+        for id in &lists {
+            assert!(
+                views.contains(id),
+                "{id:?} not made a view: {:?}",
+                batch.items
+            );
+        }
+        assert!(
+            made_as(&batch, ViewKind::Scroll).len() == 1,
+            "{:?}",
+            batch.items
+        );
+        let tips = (c.overlays.iter())
+            .filter(|&&key| c.nodes[key as usize].kind == Kind::Overlay)
+            .count();
+        assert_eq!(tips, 3);
+    }
+
+    thread_local! {
+        /// Whether [`Vanishing`] shows its [`GoneTip`].
+        static SHOWN: Cell<Option<Signal<bool>>> = const { Cell::new(None) };
+    }
+
+    /// A tip that, as it renders, has the view holding it drop it: its
+    /// host takes the overlay's kind and goes in the same round.
+    #[component]
+    fn GoneTip() -> impl IntoElement {
+        if let Some(shown) = SHOWN.with(Cell::get) {
+            shown.set(false);
+        }
+        overlay()
+            .hint(Duration::from_millis(500))
+            .child(text("gone"))
+    }
+
+    /// Tips around a [`GoneTip`].
+    #[component]
+    fn Vanishing() -> impl IntoElement {
+        let shown = signal(true);
+        SHOWN.with(|s| s.set(Some(shown)));
+        view()
+            .flex_col()
+            .child(Tip::element(TipProps {}))
+            .child(dynamic(move || shown.get().then(|| GoneTip::element(()))))
+            .child(Tip::element(TipProps {}))
+    }
+
+    /// A host that takes its component root's kind and is removed in the
+    /// same round leaves neither its `Create` nor its `Insert`; the tips
+    /// around it are made once.
+    #[test]
+    fn a_component_root_that_takes_its_kind_and_goes_in_one_round_leaves_nothing() {
+        let mut c = core();
+        c.mount_root(&Root::new::<Vanishing>(|| ()));
+        let batch = c.commit().expect("a batch");
+        SHOWN.with(|s| s.set(None));
+        made_once_before_inserted(&c, &batch);
+        let tips = (c.overlays.iter())
+            .filter(|&&key| c.nodes[key as usize].kind == Kind::Overlay)
+            .count();
+        assert_eq!(tips, 2);
+    }
+
+    /// A tip, then a list whose rows (made in a later round, once the
+    /// layout gives the list its viewport) hold a tip each.
+    #[component]
+    fn TippedList() -> impl IntoElement {
+        view()
+            .size_full()
+            .flex_col()
+            .child(Tip::element(TipProps {}))
+            .child(
+                virtual_list(
+                    || 40usize,
+                    |_| view().h(px(30.0)).child(Tip::element(TipProps {})),
+                )
+                .flex_1(),
+            )
+    }
+
+    /// Hosts taking their component root's kind in several rounds of one
+    /// batch are each made once, before they are inserted.
+    #[test]
+    fn component_roots_taking_their_kind_in_later_rounds_are_made_once() {
+        let mut c = core();
+        c.mount_root(&Root::new::<TippedList>(|| ()));
+        let batch = c.commit().expect("a batch");
+        assert!(
+            c.components.retag_rounds.get() >= 2,
+            "the rows' tips took their kind in the first round"
+        );
+        made_once_before_inserted(&c, &batch);
+        let tips = (c.overlays.iter())
+            .filter(|&&key| c.nodes[key as usize].kind == Kind::Overlay)
+            .count();
+        assert!(tips > 1, "no row's tip: {:?}", batch.items);
+    }
+
+    /// `cargo test --release -p nsh-core --lib bench_component_roots_mount -- --ignored --nocapture`:
+    /// [`MountRows`] with a [`Tip`] in each row, mounted at once; the
+    /// numbers are in `docs/dev/performance.md`.
+    #[test]
+    #[ignore]
+    fn bench_component_roots_mount() {
+        println!("ms a first mount: the root's pass + the commit | mount items");
+        TIPPED.with(|t| t.set(true));
+        for scrolled in [false, true] {
+            SCROLLED.with(|s| s.set(scrolled));
+            for rows in [1_000, 10_000, 20_000] {
+                ROWS.with(|r| r.set(rows));
+                let mut best = (Duration::from_secs(3600), Duration::ZERO, 0);
+                for _ in 0..3 {
+                    let mut c = core();
+                    let start = Instant::now();
+                    c.mount_root(&Root::new::<MountRows>(|| ()));
+                    let mid = Instant::now();
+                    let batch = c.commit();
+                    let first = mid.elapsed();
+                    if mid - start + first < best.0 + best.1 {
+                        best = (mid - start, first, batch.map_or(0, |b| b.items.len()));
+                    }
+                }
+                let ms = |d: Duration| d.as_secs_f64() * 1e3;
+                println!(
+                    "{:<9} {rows:>6} rows | {:>8.1} + {:>8.1} = {:>8.1} | {:>6}",
+                    if scrolled { "scrolled" } else { "plain" },
+                    ms(best.0),
+                    ms(best.1),
+                    ms(best.0 + best.1),
+                    best.2
+                );
+            }
+        }
+        SCROLLED.with(|s| s.set(false));
+        TIPPED.with(|t| t.set(false));
     }
 
     /// `cargo test --release -p nsh-core --lib bench_each_mount -- --ignored --nocapture`:

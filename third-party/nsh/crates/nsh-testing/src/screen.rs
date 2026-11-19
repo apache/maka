@@ -3038,19 +3038,20 @@ impl Screen {
 
     /// Input `id`'s caret at the end of its text, in the view, as
     /// [`nsh_core::ApproxTextEngine`] lays the text out: characters `0.55 ×`
-    /// the font size wide, lines `1.2 ×` it tall, wrapped at the content
-    /// box's width when multiline; a single line is centered in the box and
-    /// keeps the caret inside it. A multiline input taller in text than its
-    /// box scrolls it to keep the caret's line in view, as the platforms'
-    /// do while the user edits: the line at the bottom of the box.
+    /// the font size wide, lines as tall as the style's `lineHeight` (or
+    /// `1.2 ×` font size by default), wrapped at the content box's width when
+    /// multiline; a single line is centered in the box and keeps the caret
+    /// inside it. A multiline input taller in text than its box scrolls it to
+    /// keep the caret's line in view, as the platforms' do while the user
+    /// edits: the line at the bottom of the box.
     pub(crate) fn input_caret(&self, id: NodeId) -> Option<Bounds<Points>> {
         let view = self.nodes.get(&id)?;
         let input = view.input.as_ref()?;
         let content = input
             .content
             .unwrap_or_else(|| Bounds::new(Point::default(), view.frame.size));
-        let font = input.config.style.font_size.0;
-        let (advance, line) = (font * 0.55, font * 1.2);
+        let font = input.config.style.font_size.0.max(1.0);
+        let (advance, line) = (font * 0.55, input.config.style.approx_line_height().0);
         let (column, row) = if input.config.multiline {
             let per_line = ((content.size.width.0 / advance).floor() as usize).max(1);
             let mut row = 0;
@@ -3683,6 +3684,17 @@ mod tests {
         // A line break starts a line.
         screen.input_mut(2).unwrap().text = "ab\nc".into();
         assert_eq!(caret(&screen), (4.0 + 5.5, 18.0, 12.0));
+
+        // Explicit `lineHeight` moves subsequent lines and sizes the caret to it.
+        let mut spaced = nsh_core::InputConfig::default();
+        spaced.style.font_size = Points(10.0);
+        spaced.style.line_height = Points(24.0);
+        spaced.multiline = true;
+        screen.apply(&batch(vec![MountItem::Input {
+            id: 2,
+            config: Box::new(spaced),
+        }]));
+        assert_eq!(caret(&screen), (4.0 + 5.5, 6.0 + 24.0, 24.0));
     }
 
     #[test]

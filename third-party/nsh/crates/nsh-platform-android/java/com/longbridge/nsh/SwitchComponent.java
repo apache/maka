@@ -41,6 +41,8 @@ final class SwitchComponent implements NshComponent {
     private final Thumb thumb = new Thumb();
     /** The theme's {@code primary} (null: none, the system's colors). */
     private Integer tint;
+    /** The style's {@code accentColor}, over {@code tint} (null: none). */
+    private Integer accent;
     /** Material 3's colors in the appearance shown. */
     private int primary, onPrimary, outline, container;
     /** The app's value ({@code checked}), which a {@code revision} shows again. */
@@ -103,6 +105,12 @@ final class SwitchComponent implements NshComponent {
                 tint = color;
                 paint();
                 break;
+            case "accentColor":
+                Integer accentColor = value instanceof String ? argb((String) value) : null;
+                if (java.util.Objects.equals(accentColor, accent)) return;
+                accent = accentColor;
+                paint();
+                break;
             default:
                 break;
         }
@@ -129,13 +137,14 @@ final class SwitchComponent implements NshComponent {
         return (int) ((rgba >>> 8) | ((rgba & 0xff) << 24));
     }
 
-    /** Material 3's colors in the appearance shown, with the app's {@code primary} over the system's. */
+    /** Material 3's colors in the appearance shown, with the style's {@code accentColor}, else the theme's {@code primary}, over the system's. */
     private void paint() {
         boolean dark = night.getAsBoolean();
-        if (tint != null) {
-            primary = tint;
+        Integer on = accent != null ? accent : tint;
+        if (on != null) {
+            primary = on;
             // The thumb on it: light on a dark color, dark on a light one.
-            onPrimary = Color.luminance(tint) > 0.5f ? 0xff1d1b20 : 0xffffffff;
+            onPrimary = Color.luminance(on) > 0.5f ? 0xff1d1b20 : 0xffffffff;
         } else {
             primary = color(dark ? 0xffd0bcff : 0xff6750a4,
                     dark ? android.R.color.system_accent1_200 : android.R.color.system_accent1_600);

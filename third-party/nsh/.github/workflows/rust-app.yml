@@ -23,6 +23,7 @@ on:
       - "crates/nsh-package/**"
       - "crates/nsh-updater/**"
       - "crates/nsh-platform-linux/**"
+      - "crates/nsh-platform-android/**"
       - "crates/nsh-platform-apple/**"
       - "crates/nsh-platform-ios/**"
       - "crates/nsh-platform-macos/**"
@@ -239,7 +240,7 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           ./target/debug/nsh test examples/counter --target web
-          for file in device dock form gestures hover links navigation network photos resizable shortcuts storage timers; do
+          for file in device dock form gestures hidden-focus hover links navigation network photos resizable shortcuts storage timers; do
             ./target/debug/nsh test "examples/gallery/tests/$file.test.tsx" --target web
           done
           # This host drives a desktop mouse, not the file's held-finger case.

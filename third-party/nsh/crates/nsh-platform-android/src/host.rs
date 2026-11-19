@@ -100,6 +100,8 @@ pub(crate) struct Host {
     /// The embedding app's channel with the apps (`nsh/host`; Java
     /// `NshView.setParams`, `send`, `handle`).
     host: nsh_engine::HostChannel,
+    /// Per-surface Rust native components (`#[native_components(android)]`).
+    pub(crate) components: Mutex<crate::component::HostComponents>,
     /// The app's keyboard shortcuts, and the keys consumed by them or by
     /// a capture rule, matched on the UI thread.
     pub(crate) keymap: Mutex<crate::keymap::KeymapState>,
@@ -125,7 +127,7 @@ impl Host {
         self.ui.lock().is_ok_and(|ui| ui.finishing())
     }
 
-    fn control(&self) -> Option<EngineControl> {
+    pub(crate) fn control(&self) -> Option<EngineControl> {
         self.engine.lock().ok()?.as_ref().map(Engine::control)
     }
 
@@ -222,6 +224,10 @@ impl Host {
             .unwrap_or_else(|e| e.into_inner())
             .clear();
         self.ui.lock().expect("ui").reset();
+        self.components
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear_app_state();
         let mut cache = self.cache.lock().expect("cache options").clone();
         if cache.location == nsh_engine::CacheLocation::System {
             cache.location = match &self.system_cache_dir {
@@ -277,7 +283,13 @@ impl Host {
         let tokens = self.host_tokens.lock().expect("tokens").clone();
         let links = std::mem::take(&mut *self.url_schemes.lock().expect("links"));
         let fonts = self.fonts.lock().expect("fonts").clone();
+        let components_host = Arc::clone(self);
         let setup = move |control: &EngineControl| {
+            components_host
+                .components
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_control(control.clone());
             if tokens.is_some() {
                 control.set_tokens(tokens);
             }
@@ -465,7 +477,7 @@ fn register_inline_images(host: &Host, batch: &MountBatch) {
 struct Sink(Arc<Host>, u64);
 
 impl MountSink for Sink {
-    fn submit(&self, batch: MountBatch) {
+    fn submit(&self, mut batch: MountBatch) {
         let host = &self.0;
         #[cfg(feature = "dev")]
         if let Some(model) = &*host.test_model.lock().unwrap_or_else(|e| e.into_inner()) {
@@ -473,6 +485,8 @@ impl MountSink for Sink {
         }
         answer_clipboard_reads(host, &batch);
         register_inline_images(host, &batch);
+        let seq = host.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        crate::component::extract_batch_steps(host, seq, &mut batch);
         let mut encoded = encode::encode(batch, self.1);
         if let Some(keymap) = encoded.keymap.take() {
             host.keymap
@@ -480,7 +494,6 @@ impl MountSink for Sink {
                 .unwrap_or_else(|e| e.into_inner())
                 .set(keymap);
         }
-        let seq = host.seq.fetch_add(1, Ordering::Relaxed) + 1;
         if !encoded.animation.is_empty() {
             host.animation_queue
                 .lock()
@@ -737,6 +750,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_create(
         system_cache_dir: cache_dir,
         image_cache: Mutex::new(None),
         host: nsh_engine::HostChannel::new(),
+        components: Mutex::new(crate::component::HostComponents::new()),
         keymap: Mutex::default(),
         #[cfg(feature = "dev")]
         dev: Mutex::new(None),
@@ -1172,7 +1186,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_imageBytes<'local>(
 
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_destroy(
-    _: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
 ) {
@@ -1185,6 +1199,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_destroy(
     drop(host.dev.lock().expect("dev").take());
     *host.answers.lock().expect("answers") = None;
     drop(host.engine.lock().expect("engine").take());
+    crate::component::destroy_surface(&mut env, &host);
 }
 
 #[unsafe(no_mangle)]
@@ -2045,11 +2060,36 @@ extern "system" fn Java_com_longbridge_nsh_Native_eventMap(
     }
 }
 
+/// Finishes animations, dispatches animated slots for live Rust components,
+/// and returns any remaining float outputs for Java.
+fn finish_outputs(
+    env: &mut JNIEnv<'_>,
+    host: &Host,
+    mut ui: std::sync::MutexGuard<'_, UiAnimation>,
+) -> jfloatArray {
+    finish(host, &mut ui);
+    let mut anim_updates = Vec::new();
+    let out = {
+        let comps = host.components.lock().unwrap_or_else(|e| e.into_inner());
+        ui.outputs(|id, slot, value| {
+            if comps.has_instance(id) {
+                anim_updates.push((id, slot, value));
+                true
+            } else {
+                false
+            }
+        })
+    };
+    drop(ui);
+    crate::component::apply_animated_slots(env, host, &anim_updates);
+    floats(env, &out)
+}
+
 /// Applies the animation items of batches up to `seq` (already applied by
 /// Java) and returns the bound values.
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_afterBatch(
-    env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
     seq: jlong,
@@ -2063,14 +2103,28 @@ extern "system" fn Java_com_longbridge_nsh_Native_afterBatch(
             items.extend(queue.pop_front().expect("front").1);
         }
     }
-    let mut ui = host.ui.lock().expect("ui");
-    for item in items {
-        ui.apply(item);
-    }
-    finish(host, &mut ui);
-    let unavailable = ui.shaders.take_unavailable();
-    let outputs = floats(&env, &ui.outputs());
-    drop(ui);
+    let mut anim_updates = Vec::new();
+    let (unavailable, outputs_vec) = {
+        let mut ui = host.ui.lock().expect("ui");
+        for item in items {
+            ui.apply(item);
+        }
+        finish(host, &mut ui);
+        let unavailable = ui.shaders.take_unavailable();
+        let comps = host.components.lock().unwrap_or_else(|e| e.into_inner());
+        let out = ui.outputs(|id, slot, value| {
+            if comps.has_instance(id) {
+                anim_updates.push((id, slot, value));
+                true
+            } else {
+                false
+            }
+        });
+        (unavailable, out)
+    };
+    crate::component::apply_animated_slots(&mut env, host, &anim_updates);
+    crate::component::clear_through(host, seq as u64);
+    let outputs = floats(&env, &outputs_vec);
     // No GPU for the shader views just mounted: the app hears it
     // (`shadersAvailable()`).
     if unavailable && let Some(control) = host.control() {
@@ -2103,24 +2157,37 @@ extern "system" fn Java_com_longbridge_nsh_Native_runMainThreadTasks(
 /// A `Choreographer` frame (nanoseconds).
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_tick(
-    env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
     _frame_nanos: jlong,
 ) -> jfloatArray {
     // SAFETY: Java passes its live handle.
     let host = unsafe { host(handle) };
-    let mut ui = host.ui.lock().expect("ui");
-    let changed = ui.tick(host.epoch.elapsed().as_secs_f64());
-    finish(host, &mut ui);
-    // A frame only shader views asked for: no bound value moved.
-    let mut out = if changed || ui.animating() {
-        ui.outputs()
-    } else {
-        vec![0.0]
+    let mut anim_updates = Vec::new();
+    let out = {
+        let mut ui = host.ui.lock().expect("ui");
+        let changed = ui.tick(host.epoch.elapsed().as_secs_f64());
+        finish(host, &mut ui);
+        // A frame only shader views asked for: no bound value moved.
+        let mut out = if changed || ui.animating() {
+            let comps = host.components.lock().unwrap_or_else(|e| e.into_inner());
+            ui.outputs(|id, slot, value| {
+                if comps.has_instance(id) {
+                    anim_updates.push((id, slot, value));
+                    true
+                } else {
+                    false
+                }
+            })
+        } else {
+            vec![0.0]
+        };
+        let shading = ui.shaders.render(host.view.as_obj());
+        out[0] = if ui.animating() || shading { 1.0 } else { 0.0 };
+        out
     };
-    let shading = ui.shaders.render(host.view.as_obj());
-    out[0] = if ui.animating() || shading { 1.0 } else { 0.0 };
+    crate::component::apply_animated_slots(&mut env, host, &anim_updates);
     floats(&env, &out)
 }
 
@@ -2297,7 +2364,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_navTransitionEnd(
 /// offset. Returns bound values when a scroll value changed, else null.
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_scroll(
-    env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
     id: jint,
@@ -2314,8 +2381,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_scroll(
     if !ui.scrolled(id as u32, x, y) {
         return std::ptr::null_mut();
     }
-    finish(host, &mut ui);
-    floats(&env, &ui.outputs())
+    finish_outputs(&mut env, host, ui)
 }
 
 /// A multiline input's text scrolled, or its text or size changed, while a
@@ -2349,7 +2415,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_inputScroll(
 /// pull value learns it. Returns bound values when one changed, else null.
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_pull(
-    env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
     id: jint,
@@ -2361,15 +2427,14 @@ extern "system" fn Java_com_longbridge_nsh_Native_pull(
     if !ui.pulled(id as u32, distance) {
         return std::ptr::null_mut();
     }
-    finish(host, &mut ui);
-    floats(&env, &ui.outputs())
+    finish_outputs(&mut env, host, ui)
 }
 
 /// A scroll view came to rest: the snapping values that follow its scroll
 /// value settle. Returns bound values when one starts moving, else null.
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_scrollEnded(
-    env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
     id: jint,
@@ -2380,8 +2445,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_scrollEnded(
     if !ui.scroll_ended(id as u32) {
         return std::ptr::null_mut();
     }
-    finish(host, &mut ui);
-    floats(&env, &ui.outputs())
+    finish_outputs(&mut env, host, ui)
 }
 
 /// A zoomable scroll view's zoom scale changed (before its offset report).
@@ -2417,7 +2481,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_hasPan(
 /// translation and velocity in points (per second).
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_pan(
-    env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
     id: jint,
@@ -2460,8 +2524,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_pan(
         (1, _) | (_, None) => {}
         (_, Some(c)) => c.dispatch_event(id as NodeId, EventKind::PanEnd, payload),
     }
-    finish(host, &mut ui);
-    floats(&env, &ui.outputs())
+    finish_outputs(&mut env, host, ui)
 }
 
 /// A pinch (`rotation` false, `amount` the scale) or two-finger rotation
@@ -2469,7 +2532,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_pan(
 /// 3 cancelled.
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_transformGesture(
-    env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
     id: jint,
@@ -2507,8 +2570,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_transformGesture(
             }
         }
     }
-    finish(host, &mut ui);
-    floats(&env, &ui.outputs())
+    finish_outputs(&mut env, host, ui)
 }
 
 /// The platform shows root `id` (a modal) at `width` x `height` dp, with

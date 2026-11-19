@@ -71,6 +71,7 @@ pub mod dev;
 #[cfg(feature = "embed")]
 pub mod embed;
 mod fps;
+mod haptics;
 mod image;
 mod input;
 mod interaction;

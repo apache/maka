@@ -46,6 +46,7 @@ nsh-js = { version = "0.6.0", path = "crates/nsh-js", default-features = false }
 nsh-engine = { version = "0.6.0", path = "crates/nsh-engine", default-features = false }
 nsh-bundler = { version = "0.6.0", path = "crates/nsh-bundler", default-features = false }
 nsh-platform-ios = { version = "0.6.0", path = "crates/nsh-platform-ios", default-features = false }
+nsh-platform-android = { version = "0.6.0", path = "crates/nsh-platform-android", default-features = false }
 nsh-platform-linux = { version = "0.6.0", path = "crates/nsh-platform-linux", default-features = false }
 nsh-platform-apple = { version = "0.6.0", path = "crates/nsh-platform-apple" }
 nsh-platform-macos = { version = "0.6.0", path = "crates/nsh-platform-macos", default-features = false }

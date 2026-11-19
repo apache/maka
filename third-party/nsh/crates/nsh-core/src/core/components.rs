@@ -645,6 +645,14 @@ pub(super) struct Components {
     /// ([`Core::preceding`], `native_before_at`, `first_overlay_in`).
     #[cfg(test)]
     pub(super) placing_work: std::cell::Cell<usize>,
+    /// Mount items looked at when views take the kind of their
+    /// component's root ([`Core::retag`]).
+    #[cfg(test)]
+    pub(super) retag_work: std::cell::Cell<usize>,
+    /// Rounds of renders in which views took the kind of their
+    /// component's root ([`Core::end_retags`]).
+    #[cfg(test)]
+    pub(super) retag_rounds: std::cell::Cell<usize>,
     /// Slot nodes (`componentSlot`) -> their slot's name.
     slot_names: FxHashMap<NodeId, Arc<str>>,
     /// Slot nodes in a host -> the host.
@@ -840,6 +848,10 @@ impl Default for Components {
             cleanup_work: Default::default(),
             #[cfg(test)]
             placing_work: Default::default(),
+            #[cfg(test)]
+            retag_work: Default::default(),
+            #[cfg(test)]
+            retag_rounds: Default::default(),
             slot_names: FxHashMap::default(),
             slot_hosts: FxHashMap::default(),
             slot_targets: FxHashMap::default(),
@@ -2199,6 +2211,7 @@ impl<M: TextEngine> Core<M> {
             }
         }
         self.flush_renders();
+        self.end_retags();
     }
 
     /// Node `id` goes: what the views' renders and the app's classes knew
@@ -4428,6 +4441,18 @@ impl<M: TextEngine> Core<M> {
     #[cfg(not(test))]
     #[inline(always)]
     pub(super) fn placing(&self, _n: usize) {}
+
+    /// `n` more mount items looked at for views taking the kind of their
+    /// component's root ([`Components::retag_work`]).
+    #[cfg(test)]
+    pub(super) fn retagging(&self, n: usize) {
+        let work = &self.components.retag_work;
+        work.set(work.get() + n);
+    }
+
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(super) fn retagging(&self, _n: usize) {}
 
     /// Slot node `node` as element `el` of `host`'s view: its styles, props
     /// and handlers (its children are the app's JSX). Its bound parts are

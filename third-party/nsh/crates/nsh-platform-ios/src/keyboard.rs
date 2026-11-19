@@ -891,8 +891,15 @@ pub(crate) fn adopt_focus(context: &UIFocusUpdateContext) {
     let next = context.nextFocusedView();
     let previous = context.previouslyFocusedView();
     let Some(next) = next else {
+        // UIKit reports no next view when a text field's own editor takes the
+        // focus (the field editor is not a focus item), and when the focus
+        // engine merely re-evaluates. Resigning here dismissed the keyboard
+        // after the first keystroke. A field that is still the first
+        // responder keeps it; only a view that is no longer in a window gives
+        // it up.
         if let Some(previous) = previous.as_deref()
             && is_ours(previous)
+            && previous.window().is_none()
         {
             let _ = previous.resignFirstResponder();
         }

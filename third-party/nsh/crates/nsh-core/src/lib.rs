@@ -90,6 +90,8 @@ extern crate self as nsh_core;
 /// The values registered native components take and emit (props, events,
 /// command arguments): JSON.
 pub use serde_json::Value as JsonValue;
+#[doc(hidden)]
+pub use text::ApproxPrepared;
 
 pub use crate::{
     color::{Hsla, Rgba},

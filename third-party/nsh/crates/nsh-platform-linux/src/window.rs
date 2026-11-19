@@ -498,6 +498,7 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
     }
     let options = &open.options;
     let window = gtk::Window::new();
+    window.add_css_class("nsh-window");
     let main = main_window(surface);
     if let Some(app) = main.as_ref().and_then(|w| w.application()) {
         window.set_application(Some(&app));

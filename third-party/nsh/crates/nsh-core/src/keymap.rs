@@ -218,7 +218,7 @@ impl Key {
     }
 
     /// The key of Android key code `code` (`KeyEvent.KEYCODE_*`); the
-    /// keypad's digits and Enter too.
+    /// keypad's digits and Enter, and the D-pad's center (Enter), too.
     pub fn from_android_keycode(code: i32) -> Option<Key> {
         Some(match code {
             7..=16 => Key::Char(char::from(b'0' + (code - 7) as u8)),
@@ -229,7 +229,7 @@ impl Key {
             22 => Key::Right,
             61 => Key::Tab,
             62 => Key::Char(' '),
-            66 | 160 => Key::Enter,
+            23 | 66 | 160 => Key::Enter,
             67 => Key::Backspace,
             92 => Key::PageUp,
             93 => Key::PageDown,
@@ -1176,8 +1176,9 @@ mod tests {
         assert_eq!(Key::from_android_keycode(20), Some(Key::Down));
         assert_eq!(Key::from_android_keycode(76), Some(Key::Char('/')));
         assert_eq!(Key::from_android_keycode(160), Some(Key::Enter));
+        assert_eq!(Key::from_android_keycode(23), Some(Key::Enter));
         assert_eq!(Key::from_android_keycode(59), None);
-        for code in (0..=300).filter(|c| *c != 160 && !(144..=153).contains(c)) {
+        for code in (0..=300).filter(|c| *c != 23 && *c != 160 && !(144..=153).contains(c)) {
             if let Some(key) = Key::from_android_keycode(code) {
                 assert_eq!(key.android_keycode(), Some(code), "{key:?}");
             }

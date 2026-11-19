@@ -558,7 +558,11 @@ final class Mounter {
                     Dynamic d = statics.get(id);
                     if (v != null && d != null) applyDynamic(v, d);
                     // Its props bound again are handed over again.
-                    if (v instanceof ComponentBox) ((ComponentBox) v).forgetAnimated();
+                    if (v instanceof ComponentBox) {
+                        NshComponent c = ((ComponentBox) v).component;
+                        if (c instanceof RustComponent) ((RustComponent) c).step(seq);
+                        else ((ComponentBox) v).forgetAnimated();
+                    }
                     break;
                 }
                 case GESTURES: {
@@ -630,7 +634,7 @@ final class Mounter {
                     if (v instanceof InputBox) ((InputBox) v).setContent(px(x), px(y), px(x + w) - px(x), px(y + h) - px(y));
                     break;
                 }
-                case COMMAND: command(b, objects); break;
+                case COMMAND: command(b, objects, seq); break;
                 case COMPONENT: {
                     int id = b.getInt();
                     component(id, string(objects, b.getInt()));
@@ -667,17 +671,25 @@ final class Mounter {
                     View v = views.get(b.getInt());
                     String[] names = new String[b.getInt()];
                     for (int i = 0; i < names.length; i++) names[i] = string(objects, b.getInt());
-                    if (v instanceof ComponentBox) ((ComponentBox) v).slots = names;
+                    if (v instanceof ComponentBox) {
+                        NshComponent c = ((ComponentBox) v).component;
+                        if (c instanceof RustComponent) ((RustComponent) c).step(seq);
+                        else ((ComponentBox) v).slots = names;
+                    }
                     break;
                 }
                 case COMPONENT_PROPS: {
                     View v = views.get(b.getInt());
                     int count = b.getInt();
                     NshComponent c = v instanceof ComponentBox ? ((ComponentBox) v).component : null;
-                    for (int i = 0; i < count; i++) {
-                        String name = string(objects, b.getInt());
-                        String json = string(objects, b.getInt());
-                        if (c != null) c.setProp(name, Json.parse(json));
+                    if (c instanceof RustComponent) {
+                        ((RustComponent) c).step(seq);
+                    } else if (c != null) {
+                        for (int i = 0; i < count; i++) {
+                            String name = string(objects, b.getInt());
+                            String json = string(objects, b.getInt());
+                            c.setProp(name, Json.parse(json));
+                        }
                     }
                     break;
                 }
@@ -2389,7 +2401,7 @@ final class Mounter {
         view.performHapticFeedback(feedback);
     }
 
-    private void command(ByteBuffer b, Object[] objects) {
+    private void command(ByteBuffer b, Object[] objects, long seq) {
         int id = b.getInt(), kind = b.getInt();
         View v = views.get(id);
         switch (kind) {
@@ -2564,8 +2576,10 @@ final class Mounter {
             case 21: {
                 String name = string(objects, b.getInt());
                 String json = string(objects, b.getInt());
-                if (v instanceof ComponentBox && ((ComponentBox) v).component != null) {
-                    ((ComponentBox) v).component.command(name, Json.parse(json));
+                if (v instanceof ComponentBox) {
+                    NshComponent c = ((ComponentBox) v).component;
+                    if (c instanceof RustComponent) ((RustComponent) c).step(seq);
+                    else if (c != null) c.command(name, Json.parse(json));
                 }
                 break;
             }
@@ -3553,7 +3567,9 @@ final class Mounter {
     }
 
     void scroll(int id, float x, float y, int applied) {
-        outputs(Native.scroll(handle(), id, x, y, applied));
+        long handle = handle();
+        if (handle == 0) return;
+        outputs(Native.scroll(handle, id, x, y, applied));
     }
 
     void inputScroll(int id, float y, float contentWidth, float contentHeight, float width, float height) {
@@ -3566,7 +3582,9 @@ final class Mounter {
 
     /** Scroll view {@code id} came to rest: snapping animated values settle. */
     void scrollEnded(int id) {
-        outputs(Native.scrollEnded(handle(), id));
+        long handle = handle();
+        if (handle == 0) return;
+        outputs(Native.scrollEnded(handle, id));
     }
 
     void pan(int id, int state, float tx, float ty, float vx, float vy) {
