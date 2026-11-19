@@ -215,9 +215,19 @@ impl Owner {
                 if !sessions.insert(session.clone()) || self.runs.state().await.busy(&session) {
                     continue;
                 }
+                let Some(next) = self
+                    .durable
+                    .queue()
+                    .next_followup(session.clone())
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .entry
+                else {
+                    continue;
+                };
                 let (ordered, goal) = match self.queue_admission(
                     &session,
-                    matches!(ready.entry.request.spec.trigger, Trigger::Goal { .. }),
+                    matches!(next.request.spec.trigger, Trigger::Goal { .. }),
                 ) {
                     Ok(guards) => guards,
                     Err(wait) => {
@@ -227,7 +237,7 @@ impl Owner {
                 };
                 let owner = self.clone();
                 self.workers.spawn(async move {
-                    if let Err(error) = owner.admit_queued(&session, ready.entry.request.id, ordered, goal).await {
+                    if let Err(error) = owner.admit_queued(&session, next.request.id, ordered, goal).await {
                         tracing::error!(%session, %error, "Original queued admission requires reconciliation");
                     }
                 });
@@ -312,14 +322,10 @@ impl Owner {
         let queue = self
             .durable
             .queue()
-            .read(session.into())
+            .next_followup(session.into())
             .await
             .map_err(|e| e.to_string())?;
-        let Some(entry) = queue
-            .entries
-            .iter()
-            .find(|entry| entry.placement.is_followup())
-        else {
+        let Some(entry) = &queue.entry else {
             return Ok(());
         };
         if entry.request.id != request {

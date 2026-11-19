@@ -796,6 +796,24 @@ impl RunSpec {
         }
     }
 
+    /// A message frozen under `request` may be read inside this Run only when
+    /// the Run can do nothing the message's own Run could not.
+    pub fn accepts_steering_from(&self, request: &RunSpec) -> Result<bool, maka_sandbox::Error> {
+        Ok(self.permission_basis == request.permission_basis
+            && self.workspace == request.workspace
+            && request
+                .permission_ceiling
+                .sandbox
+                .contains(&self.permission_ceiling.sandbox)?
+            && request
+                .approval_ceiling()
+                .contains(&self.approval_ceiling())?
+            && self
+                .permission_ceiling
+                .approval
+                .is_subset_of(request.permission_ceiling.approval))
+    }
+
     pub fn content_refs(&self) -> Vec<&ContentRef> {
         let mut refs = vec![&self.system_prompt, &self.tool_selection, &self.input];
         match &self.backend {

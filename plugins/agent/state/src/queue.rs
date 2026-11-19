@@ -33,8 +33,8 @@ use std::{collections::BTreeSet, sync::Arc};
 
 mod sql;
 pub(crate) use sql::{
-    DeliveryTarget, Event, consume, consume_external_steering, consume_steering, release_steering,
-    retract_sent_by, stop_completions,
+    DeliveryTarget, Event, consume, consume_external_steering, consume_steering, deliver_held,
+    release_steering, retract_sent_by, stop_completions, stopped_by_user,
 };
 
 pub const GOAL_CONTROL_STOP: &str = "goal_control";
@@ -54,6 +54,13 @@ impl Stopper {
             Self::Session(_) => SESSION_STOP,
         }
     }
+}
+
+/// The first follow-up a new Run may consume now, read at `revision`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NextFollowup {
+    pub revision: u64,
+    pub entry: Option<QueueEntry>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -375,6 +382,11 @@ impl QueueStore {
             .query(ReadHandoff(view.spec.session_id.clone(), view.run, message))
             .await
     }
+    /// After the user stops a Session, what others queued for it waits for
+    /// the user's next message instead of starting a Run of its own.
+    pub async fn next_followup(&self, session: String) -> Result<NextFollowup, StoreError> {
+        self.data.query(ReadNextFollowup(session)).await
+    }
     pub async fn steering(&self, session: String, run: RunId) -> Result<Queue, StoreError> {
         self.data.query(Steering(session, run)).await
     }
@@ -614,6 +626,13 @@ impl Query for ReadContent {
     type Output = Vec<u8>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::owned_content(c, &self.0, &self.1, &self.2)
+    }
+}
+struct ReadNextFollowup(String);
+impl Query for ReadNextFollowup {
+    type Output = NextFollowup;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::next_followup(c, &self.0)
     }
 }
 struct Ready(RunOwner, Option<ReadyCursor>, u32);

@@ -439,24 +439,10 @@ impl Owner {
                 && let Some(view) = self.session_run(session, control.execution.run_id).await?
                 && !view.stopped
                 && view.terminal.is_none()
-                && view.spec.permission_basis == request.spec.permission_basis
-                && view.spec.workspace == request.spec.workspace
-                && request
-                    .spec
-                    .permission_ceiling
-                    .sandbox
-                    .contains(&view.spec.permission_ceiling.sandbox)
-                    .map_err(|error| error.to_string())?
-                && request
-                    .spec
-                    .approval_ceiling()
-                    .contains(&view.spec.approval_ceiling())
-                    .map_err(|error| error.to_string())?
                 && view
                     .spec
-                    .permission_ceiling
-                    .approval
-                    .is_subset_of(request.spec.permission_ceiling.approval)
+                    .accepts_steering_from(&request.spec)
+                    .map_err(|error| error.to_string())?
             {
                 placement = QueuePlacement::Steering {
                     run: view.run,

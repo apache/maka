@@ -222,6 +222,97 @@ fn sent_by(stopper: &Stopper, source: &RootSourceMessage) -> bool {
         _ => false,
     }
 }
+/// What waits after a user Stop: messages others sent that a Stop would
+/// otherwise have taken back.
+fn held(request: &PreparedRequest, source: &RootSourceMessage) -> bool {
+    is_interactive(request, source) && !sent_by(&Stopper::User, source)
+}
+pub(crate) fn stopped_by_user(c: &Connection, run: RunId) -> Result<bool, StoreError> {
+    Ok(c.prepare_cached(
+        "SELECT EXISTS(SELECT 1 FROM agent_runs r
+         JOIN agent_facts f ON f.id=r.stop_request AND f.run=r.run
+         JOIN contents b ON b.id=f.body_content_id
+         WHERE r.run=?1 AND json_extract(b.payload,'$.fact.diagnostic')=?2)",
+    )?
+    .query_row(params![run.to_string(), USER_STOP], |row| row.get(0))?)
+}
+fn latest_stopped_by_user(c: &Connection, session: &str) -> Result<bool, StoreError> {
+    match crate::sql::latest(c, session.to_owned())? {
+        Some(run) => stopped_by_user(c, run),
+        None => Ok(false),
+    }
+}
+pub(super) fn next_followup(c: &Connection, session: &str) -> Result<NextFollowup, StoreError> {
+    let queue = read(c, session, None)?;
+    let hold = latest_stopped_by_user(c, session)?;
+    let mut entry = None;
+    for candidate in queue.entries {
+        if !candidate.placement.is_followup()
+            || (hold && held(&candidate.request, &source(c, &candidate.request)?))
+        {
+            continue;
+        }
+        entry = Some(candidate);
+        break;
+    }
+    Ok(NextFollowup {
+        revision: queue.revision,
+        entry,
+    })
+}
+/// Called inside the admission of the first Run after a user Stop, once the
+/// Run's row exists. What others queued meanwhile becomes this Run's steering,
+/// so the model reads it with the message that started the Run. A message the
+/// Run may not carry stays a follow-up and runs after it.
+pub(crate) fn deliver_held(
+    c: &Connection,
+    run: &crate::fold::RunView,
+    admission: FactId,
+    at: UnixMillis,
+) -> Result<(), StoreError> {
+    use sha2::{Digest, Sha256};
+
+    if !matches!(run.spec.backend, BackendSpec::Model { .. }) {
+        return Ok(());
+    }
+    let session = &run.spec.session_id;
+    let queue = read(c, session, None)?;
+    let mut expected_revision = queue.revision;
+    for entry in queue.entries {
+        // A policy this Run cannot compare keeps the message as a follow-up,
+        // where its own admission reports the error.
+        if !matches!(entry.placement, Placement::Followup)
+            || entry.request.spec.owner != run.spec.owner
+            || !held(&entry.request, &source(c, &entry.request)?)
+            || !matches!(
+                run.spec.accepts_steering_from(&entry.request.spec),
+                Ok(true)
+            )
+        {
+            continue;
+        }
+        let mut hash = Sha256::new();
+        hash.update(b"held-delivery");
+        hash.update(admission.as_uuid().as_bytes());
+        hash.update(entry.request.id.0.as_bytes());
+        let bytes = hash.finalize()[..16].try_into().expect("SHA256 prefix");
+        let command = QueueCommand {
+            id: FactId::try_from(uuid::Uuid::from_bytes(bytes)).expect("non-nil control identity"),
+            at,
+            expected_revision,
+            edit: QueueEdit::Promote {
+                request: entry.request.id,
+                target: SteeringTarget {
+                    run: run.run,
+                    expected_head: Head::from(run),
+                },
+            },
+        };
+        let (commit, _) = write(c, session, command, Vec::new(), None)?;
+        expected_revision = commit.revision;
+    }
+    Ok(())
+}
 fn run_head(c: &Connection, run: RunId) -> Result<(RunSpec, Head, bool, bool), StoreError> {
     let row: Option<(Vec<u8>,u32,i64,i64,bool,bool)> = c.query_row(
         "SELECT c.payload,r.schema_version,r.revision,r.control_version,r.stopped,r.terminal IS NOT NULL FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id JOIN agent_runs r ON r.run=s.run WHERE s.run=?",

@@ -1171,6 +1171,11 @@ pub(crate) fn admit(c: &Connection, admission: Admission) -> Result<(Commit, boo
             "native budget admission basis requires its live admission guard",
         ));
     }
+    let after_user_stop = matches!(view.spec.origin, RunOrigin::Local)
+        && match latest(c, view.spec.session_id.clone())? {
+            Some(prior) => crate::queue::stopped_by_user(c, prior)?,
+            None => false,
+        };
     if matches!(view.spec.origin, RunOrigin::Local) {
         // Late receipts and a successor admission share the same Root transaction.
         let prior: Option<String> = c.prepare_cached(
@@ -1218,6 +1223,9 @@ pub(crate) fn admit(c: &Connection, admission: Admission) -> Result<(Commit, boo
     index_derived(c, &view.spec, &recorded)?;
     persist(c, &view)?;
     index_usage(c, &view.spec, &recorded)?;
+    if after_user_stop {
+        crate::queue::deliver_held(c, &view, admission.id, admission.at)?;
+    }
     Ok((
         Commit {
             head: Head::from(&view),
