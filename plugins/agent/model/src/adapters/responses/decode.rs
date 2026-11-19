@@ -274,6 +274,9 @@ impl Decoder {
                 is_error,
                 provider_options: Some(item_options(metadata)),
             },
+            Event::HostedResult { id, name, items, is_error } => ModelEvent::ProviderToolResult {
+                id, name, output: Value::Array(items), is_error, provider_options: Some(json!({"openai":{"responsesHostedItems":true}})),
+            },
             Event::Citation(citation) => ModelEvent::Source { anchor: citation.anchor, source: ModelSource::Url {
                 id: citation.id,
                 url: citation.url,
@@ -311,7 +314,10 @@ impl Decoder {
 }
 
 fn item_options(metadata: ItemMetadata) -> Value {
-    let mut options = json!({"openai": {"itemId": metadata.id}});
+    let mut options = json!({"openai": {}});
+    if !metadata.id.is_empty() {
+        options["openai"]["itemId"] = json!(metadata.id);
+    }
     if let Some(replay) = metadata.replay {
         options["openai"]["responsesReplay"] = json!(replay);
     }

@@ -703,6 +703,7 @@ impl Builder<'_> {
                     input = json!({});
                     provider_name
                 }
+                _ if metadata["type"] == "server-tool-use" => &call.name,
                 _ => {
                     self.warn(format!(
                         "provider executed tool call for tool {} is not supported",

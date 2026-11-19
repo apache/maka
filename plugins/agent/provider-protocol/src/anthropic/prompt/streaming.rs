@@ -222,15 +222,17 @@ fn inspect_assistant(
                     if !metadata["serverName"].is_string() {
                         builder.warn("mcp tool use server name is required and must be a string");
                     }
-                } else if !matches!(
-                    builder.provider_name(&call.name),
-                    "code_execution"
-                        | "web_fetch"
-                        | "web_search"
-                        | "tool_search_tool_regex"
-                        | "tool_search_tool_bm25"
-                        | "advisor"
-                ) {
+                } else if metadata["type"] != "server-tool-use"
+                    && !matches!(
+                        builder.provider_name(&call.name),
+                        "code_execution"
+                            | "web_fetch"
+                            | "web_search"
+                            | "tool_search_tool_regex"
+                            | "tool_search_tool_bm25"
+                            | "advisor"
+                    )
+                {
                     builder.warn(format!(
                         "provider executed tool call for tool {} is not supported",
                         call.name
@@ -253,7 +255,9 @@ fn inspect_assistant(
 fn inspect_replay(builder: &mut Builder<'_>, result: &ToolResult, mcp_ids: &HashSet<String>) {
     let output = &result.output.value;
     let name = builder.provider_name(&result.name);
-    let unsupported = if mcp_ids.contains(&result.id) {
+    let unsupported = if mcp_ids.contains(&result.id)
+        || canonical(&result.extensions)["serverResultType"].is_string()
+    {
         !matches!(output, ToolValue::Json(_) | ToolValue::ErrorJson(_))
     } else if name == "code_execution" {
         match output {
