@@ -35,26 +35,27 @@
   background: transparent;
 }
 
-.maka-composer-astryx {
+.maka-composer-astryx,
+.maka-composer-feedback {
   width: min(var(--maka-reading-measure), 100%);
   max-width: var(--maka-reading-measure);
+}
+
+.maka-composer-astryx {
   container: maka-composer / inline-size;
 }
 
-/* A narrow conversation column cannot keep both text selectors and the
-   persistent footer actions readable at the floor. The context-usage action is
-   the control that yields — it stays reachable through the Workbar's tool
-   list — and returns as soon as the Composer card has room for it again.
-   Container sizing matters here because a desktop viewport can stay wide
-   while a right workbar squeezes this card.
+/* Agent readiness and picker errors belong to the task, above the input
+   card. They must never share the footer's horizontal space budget. */
+.maka-composer-feedback {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
 
-   The 400px literal is `--maka-conversation-min-width`: container queries
-   cannot read custom properties, so the value is repeated here and pinned to
-   the token by shell-layout-widths.test. */
-@container maka-composer (max-width: 400px) {
-  .maka-composer-astryx .maka-model-selection-controls .maka-context-usage-action {
-    display: none;
-  }
+.maka-composer-feedback:empty {
+  display: none;
 }
 
 .maka-composer-editor {
@@ -417,29 +418,49 @@
   flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
+  gap: inherit;
 }
-/* Selector's className belongs to the trigger INSIDE its Field. The Field
-   is the model group's flex item, so its automatic content minimum must be
-   released here for the label to yield space to usage, branch, and send. */
-.maka-composer-left-controls .maka-model-selection-controls .astryx-field:has(.maka-model-switcher-trigger, .maka-new-chat-model-selector) {
-  /* Hug the model label when space is available, but release that width
-     before the adjacent thinking and usage controls when the footer narrows. */
+.maka-composer-left-controls .maka-model-picker-root {
   flex: 0 1 auto;
-  min-width: 0;
-  width: max-content;
+  min-width: 64px;
   max-width: 220px;
 }
-/* Not every model trigger sits in a Selector Field: the executor selector and
-   the wheel presentation put `maka-model-switcher-trigger` on a bare control,
-   so the Field cap above cannot reach them. Keep the trigger's own cap too;
-   `100%` is what lets a Field narrowed under 220px pass that shrink through. */
-.maka-composer-left-controls .maka-model-switcher-trigger,
-.maka-composer-left-controls .maka-new-chat-model-selector {
-  min-width: 0;
-  max-width: min(220px, 28vw, 100%);
-  justify-content: flex-start;
-  text-align: left;
+
+/* Product-owned slots allocate the toolbar budget. Astryx Field and trigger
+   both receive that width through Selector's public width prop. */
+.maka-composer-selector-slot {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 64px;
+  max-width: 220px;
 }
+
+.maka-model-picker-root > .maka-composer-selector-slot {
+  min-width: 0;
+}
+
+.maka-composer-selector-slot[data-kind="thinking"] {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 112px;
+}
+
+.maka-composer-selector-slot[data-kind="mode"] {
+  max-width: 160px;
+}
+
+.maka-composer-selector,
+.maka-composer-selector [data-composer-selector-trigger] {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.maka-composer-selector [data-composer-selector-trigger] {
+  width: 100%;
+  overflow: hidden;
+}
+
+.maka-composer-selector-value,
 .maka-composer-model-label {
   display: block;
   min-width: 0;
@@ -449,37 +470,25 @@
   white-space: nowrap;
   text-align: left;
 }
-.maka-composer-left-controls .maka-model-selection-controls .astryx-field:has(.maka-thinking-level-selector) {
-  /* Keep the thinking control readable when Plan/Swarm marks consume the
-     toolbar. The model field is the compressible text control beside it. */
-  flex: 0 1 auto;
-  min-width: 0;
-  width: max-content;
-  max-width: min(180px, 100%);
+
+/* Busy feedback occupies the indicator slot rather than adding another
+   flex item. Loading must not change the trigger's intrinsic width. */
+.maka-composer-selector .astryx-spinner {
+  position: absolute;
+  inset-inline-end: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
 }
-.maka-composer-left-controls .maka-thinking-level-selector > button {
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
+
+.maka-composer-selector:has(.astryx-spinner) .astryx-selector-indicator-icon {
+  visibility: hidden;
 }
-/* Keep the model family and version visible in the closed Composer picker. */
-.maka-composer-left-controls .maka-model-switcher-trigger .modelPickerOptionLabel,
-.maka-composer-left-controls .maka-new-chat-model-selector .modelPickerOptionLabel {
-  direction: ltr;
+
+.maka-composer-selector-icon {
+  display: none;
+  pointer-events: none;
 }
-/* External model names share this row with an executor selector. Size the
-   trigger to its label and let the pair wrap instead of squeezing the model
-   into the native model + thinking pair's width budget. */
-.maka-composer-left-controls .maka-model-selection-controls:has(.maka-external-model-selector) {
-  max-width: 100%;
-  flex-wrap: wrap;
-}
-.maka-composer-left-controls .maka-external-model-selector {
-  width: max-content;
-  max-width: 100%;
-  flex: 0 1 auto;
-}
+
 /* The active transcript and docked card meet at one boundary. Keeping the
    outer composer's default top padding here exposes an extra strip of panel
    background after the transcript viewport has already ended. */
@@ -614,6 +623,113 @@
   display: flex;
   align-items: center;
   min-width: 0;
+}
+
+.maka-composer-left-controls .maka-composer-workspace {
+  flex: 0 1 auto;
+  min-width: 64px;
+  max-width: 180px;
+}
+
+.maka-composer-left-controls .maka-composer-workspace .maka-workspace-picker {
+  max-width: 100%;
+}
+
+.maka-composer-button-content,
+.maka-workspace-picker-end {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.maka-composer-button-content > svg,
+.maka-workspace-picker-end {
+  flex: 0 0 auto;
+}
+
+.maka-workspace-picker-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* One container-owned compact layout, independent of label lengths and
+   asynchronous state. Above 640px the bounded text slots share the remaining
+   width; below it the maximum built-in control set uses 28px slots. Popups
+   keep their normal sizing, and controls never wrap or remount on resize. */
+@container maka-composer (max-width: 640px) {
+  .maka-composer-left-controls .maka-model-picker-root,
+  .maka-composer-left-controls .maka-composer-selector-slot,
+  .maka-composer-left-controls .maka-composer-workspace {
+    flex: 0 0 28px;
+    min-width: 28px;
+    max-width: 28px;
+  }
+
+  .maka-composer-left-controls .maka-composer-selector {
+    display: grid;
+    grid-template: 100% / 100%;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    gap: 0;
+  }
+
+  .maka-composer-selector-icon,
+  .maka-composer-selector .astryx-spinner,
+  [data-composer-selector-trigger] {
+    grid-area: 1 / 1;
+  }
+
+  .maka-composer-selector-icon {
+    display: flex;
+  }
+
+  .maka-composer-selector-value {
+    display: none;
+  }
+
+  .maka-composer-selector .astryx-spinner {
+    position: static;
+    transform: none;
+  }
+
+  /* Keep the real button's hit area and focus. Opacity hides both the value
+     and the primitive's empty-selection placeholder; the startIcon and busy
+     spinner are sibling slots. The outer Selector paints focus-within. */
+  .maka-composer-selector [data-composer-selector-trigger] {
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+  }
+
+  .maka-composer-selector .astryx-selector-indicator-icon {
+    display: none;
+  }
+
+  .maka-composer-selector:has(.astryx-spinner) .maka-composer-selector-icon {
+    visibility: hidden;
+  }
+
+  .maka-composer-workspace .maka-workspace-picker,
+  .maka-composer-configure-models,
+  .maka-context-usage-action {
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+    padding: 0;
+    gap: 0;
+    justify-content: center;
+  }
+
+  .maka-composer-workspace :is(.maka-workspace-picker-label, .maka-workspace-picker-end),
+  .maka-composer-configure-models .maka-composer-configure-label,
+  .maka-context-usage-label {
+    display: none;
+  }
 }
 
 .maka-composer-workspace [role="menu"] {

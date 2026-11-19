@@ -30,6 +30,26 @@ import { installTranscriptDom } from './transcript-test-dom.js';
 import { deriveComposerModelSwitchAvailability } from '../composer-helpers.js';
 import { actions, catalog, choices, session } from './composer-model-picker-fixture.js';
 
+test('read-only model displays retain an accessible label without opening a picker', async () => {
+  const dom = installTranscriptDom();
+  let writes = 0;
+  try {
+    await dom.render(<LocaleProvider locale="en"><ComposerModelPicker label="GPT-6.1 Sol"
+      choices={choices} value="first:first:gpt-6.1-sol" isReadOnly
+      onNativeChange={() => { writes++; }}
+    /></LocaleProvider>);
+    const { click, trigger } = actions(dom);
+    const display = trigger();
+    assert.ok(display);
+    assert.ok(display.getAttribute('aria-label'));
+    assert.equal(display.getAttribute('aria-readonly'), 'true');
+    await click(display);
+    assert.equal(display.getAttribute('aria-expanded'), 'false');
+    assert.equal(dom.document.querySelector('[role="listbox"]'), null);
+    assert.equal(writes, 0);
+  } finally { await dom.cleanup(); }
+});
+
 test('new tasks can recover another Agent without changing their selection', async () => {
   const dom = installTranscriptDom();
   const setup: string[] = [];

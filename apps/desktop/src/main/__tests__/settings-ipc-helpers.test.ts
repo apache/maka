@@ -93,7 +93,15 @@ describe("settings IPC helpers", () => {
     }
   });
 
-  test("never reveals Tavily API key back to renderer, even on the save response", () => {
+  test("never reveals Tavily API key back to renderer, even on the save response", (t) => {
+    for (const key of ["TAVILY_API_KEY", "MAKA_TAVILY_API_KEY"]) {
+      const previous = process.env[key];
+      delete process.env[key];
+      t.after(() => {
+        if (previous === undefined) delete process.env[key];
+        else process.env[key] = previous;
+      });
+    }
     const settings = mergeSettings(createDefaultSettings(), {
       webSearch: { providers: { tavily: { apiKey: "tvly-new-secret" } } },
     });

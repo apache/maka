@@ -20,6 +20,7 @@
 import { useState, type CSSProperties } from 'react';
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, spyOn, userEvent, waitFor, within } from 'storybook/test';
+import { expectComposerToolbar } from './composer-layout-checks';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { BrowserState } from '@maka/core/browser';
 import type { SessionEvent } from '@maka/core/events';
@@ -1222,6 +1223,7 @@ function FocusedHostFlow(props: { tab: 'files' | 'browser'; realComposer?: boole
     <div className="mainColumn">{props.missingComposerHost ? null : <ChatSurfaceLayout composer={props.realComposer
       ? <Composer draftKey={SESSION_ID} streaming={props.streaming ?? true} onSend={noop} onStop={props.onStop ?? noop}
           activeSession={TOOL_PICKER_SOURCE_SESSION} activeModel="claude-sonnet-4-5" activeModelLabel="Sonnet 4.5"
+          activeThinkingLevels={['low', 'medium', 'high']} activeThinkingLevel="medium" onThinkingLevelChange={noop}
           onPickAttachments={noop} permissionMode="ask" onPermissionModeChange={noop}
           pendingAttachments={props.stagedFile ? [{ displayName: 'reference.md', kind: 'doc', size: 1024 }] : undefined}
           onRemoveAttachment={noop} />
@@ -2325,8 +2327,28 @@ export const FilesRecentVisualNarrowFrame: Story = {
       expect(box.height).toBeLessThanOrEqual(previousHeight + 1);
       previousWidth = box.width;
       previousHeight = box.height;
+      expectComposerToolbar(dock);
     }
+    const editor = dock.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]')!;
+    await userEvent.click(editor);
+    await userEvent.type(editor, 'Please explain how this configuration controls code review, which checks run before merging a change, and whether any settings need to be updated for the new release. Keep the explanation concise and include examples.');
+    // A populated draft wraps in the editor's flexible grid track. It must
+    // not become an intrinsic-width demand that hides the toolbar labels.
+    frame.style.width = '990px';
+    await waitFor(() => expect(dock.getBoundingClientRect().width).toBeLessThan(960));
+    frame.style.width = '1100px';
+    await waitFor(() => {
+      expect(dock.getBoundingClientRect().width).toBe(960);
+      for (const selector of ['.maka-model-switcher-trigger', '.maka-thinking-level-selector']) {
+        const trigger = dock.querySelector<HTMLElement>(selector)!;
+        expect(trigger.querySelector('button')).toBeVisible();
+      }
+    });
     frame.style.width = '600px';
+    await waitFor(() => {
+      expect(getComputedStyle(dock.firstElementChild!).display).toBe('flex');
+      expectComposerToolbar(dock);
+    });
   },
 };
 
