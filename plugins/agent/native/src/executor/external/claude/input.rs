@@ -190,7 +190,7 @@ pub(super) async fn submit(
     images: &[Value],
     bridge: &mcp::Bridge,
     start: &mut Start,
-) -> Result<String, Error> {
+) -> Result<Submitted, Error> {
     let mut mark = 0;
     let ready = async {
         loop {
@@ -226,6 +226,12 @@ pub(super) async fn submit(
     send(io, screen, prompt, images, start).await
 }
 
+/// What `send` put into the composer: the image markers, then the prompt.
+pub(super) struct Submitted {
+    pub markers: String,
+    pub prompt: String,
+    pub images: usize,
+}
 // Enter keeps Claude's native busy-input semantics; it is not the send-now shortcut.
 pub(super) async fn send(
     io: &mut (impl AsyncWrite + Unpin),
@@ -233,7 +239,7 @@ pub(super) async fn send(
     prompt: &str,
     images: &[Value],
     start: &mut Start,
-) -> Result<String, Error> {
+) -> Result<Submitted, Error> {
     let mut markers = Vec::with_capacity(images.len());
     for (index, image) in images.iter().enumerate() {
         let path = runtime::string(image, "/path")?;
@@ -258,19 +264,10 @@ pub(super) async fn send(
     }
     let mark = screen.borrow().end;
     paste(io, prompt).await?;
-    let visible = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
     let echoed = async {
         loop {
             let observation = screen.borrow().after(mark);
-            let text = composer(&observation);
-            // Claude replaces large pastes by a numbered placeholder, preserving the actual text.
-            if text.contains("[Pasted text")
-                || text
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .contains(&visible)
-            {
+            if shows(composer(&observation), prompt) {
                 return Ok::<_, Error>(());
             }
             changed(screen).await?;
@@ -283,9 +280,21 @@ pub(super) async fn send(
     *start = Start::Submitted;
     // Enter is sent only after every attachment and the text have been acknowledged.
     write(io, b"\r").await?;
-    Ok(format!("{}{prompt}", markers.join(" ")))
+    Ok(Submitted {
+        markers: markers.join(" "),
+        prompt: prompt.into(),
+        images: images.len(),
+    })
 }
 
+/// Whether the composer shows the pasted prompt. The terminal wraps a long line
+/// wherever it reaches the last column, which in text without spaces is inside a
+/// word, so only the characters that are not whitespace are compared.
+fn shows(composer: &str, prompt: &str) -> bool {
+    let visible = |text: &str| -> String { text.chars().filter(|c| !c.is_whitespace()).collect() };
+    // Claude replaces large pastes by a numbered placeholder, preserving the actual text.
+    composer.contains("[Pasted text") || visible(composer).contains(&visible(prompt))
+}
 fn image_marker(text: &str) -> Option<String> {
     // A complete AX prompt redraw supersedes any historical labels before it.
     let (_, after) = composer(text).rsplit_once("[Image #")?;
@@ -302,6 +311,17 @@ fn composer(text: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_prompt_wrapped_inside_text_without_spaces_is_acknowledged() {
+        let prompt = "第一行没有空格的长文本。\n\n第二行 with spaces";
+        // The composer as a 120 column terminal draws it: wrapped after a character.
+        assert!(shows(
+            "\u{a0} 第一行没有空格\n的长文本。\n\n第二行 with\nspaces",
+            prompt
+        ));
+        assert!(shows("\u{a0} [Pasted text #1 +4 lines]", prompt));
+        assert!(!shows("\u{a0} 第一行没有空格", prompt));
+    }
     #[test]
     fn latest_composer_image_labels_do_not_assume_a_counter_reset() {
         assert_eq!(

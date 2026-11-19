@@ -262,6 +262,7 @@ function Fixture() {
               maxHeight={() => 240}
               expand={() => {}}
               showOriginal={() => {}}
+              openLink={async () => {}}
               previewImage={() => {}}
               previewTerminal={(ref, restoreFocus) =>
                 void resources.openAgentTerminal({ sessionId, ref }, restoreFocus)
