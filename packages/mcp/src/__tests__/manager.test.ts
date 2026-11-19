@@ -402,6 +402,57 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       );
     });
 
+    test('keeps tool publication and the connected transition in one synchronous commit', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      let releaseOauthRead!: () => void;
+      const oauthReadGate = new Promise<void>((resolve) => {
+        releaseOauthRead = resolve;
+      });
+      let heldOauthReads = 0;
+      const manager = createManager({
+        oauthStorage: {
+          get: async () => {
+            // Only the manager's authenticated lookup runs after initial
+            // publication; hold that one open to freeze the exact window the
+            // single-commit invariant is about, and let the pre-discovery
+            // OAuth record read (openClient) pass straight through.
+            if (manager.toolSnapshot().tools.length > 0) {
+              heldOauthReads += 1;
+              await oauthReadGate;
+            }
+            return undefined;
+          },
+          set: async () => {},
+          delete: async () => {},
+        },
+      });
+
+      const syncPromise = manager.sync(remoteConfig(fixture.url));
+      try {
+        await waitFor(() => heldOauthReads > 0);
+        // Whatever toolSnapshot() advertises while the connection settles,
+        // callTool's connected precondition must already hold.
+        assert.deepEqual(
+          manager.toolSnapshot().tools.map(({ descriptor }) => descriptor.name),
+          ['echo', 'invalid-output'],
+        );
+        assert.equal(manager.status('remote')?.state, 'connected');
+      } finally {
+        releaseOauthRead();
+      }
+      await syncPromise;
+      assert.equal(manager.status('remote')?.state, 'connected');
+      // The deferred lookup still lands its final value after the commit.
+      assert.equal(manager.status('remote')?.authenticated, false);
+      assert.deepEqual(
+        await manager.callTool(bindingFor(manager, 'remote', 'echo'), { value: 'committed' }),
+        {
+          content: [{ type: 'text', text: 'committed' }],
+          structuredContent: undefined,
+        },
+      );
+    });
+
     test('joins an explicit refresh to initial discovery without queuing another list', async () => {
       const fixture = await createRemoteFixture('sse');
       const gate = fixture.holdNextToolList();
