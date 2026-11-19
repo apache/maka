@@ -195,6 +195,21 @@ pub struct Goal<A = Id> {
     pub authority_blocked: bool,
     #[serde(default)]
     pub dismissed: bool,
+    /// Consecutive failed iterations since the last completed one or a resume.
+    #[serde(default)]
+    pub failures: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<String>,
+}
+
+/// Failed iterations in a row after which the Goal waits for the user.
+pub const FAILURE_LIMIT: u32 = 2;
+
+pub struct IterationFailure {
+    pub diagnostic: Option<String>,
+    pub retry_at: Option<u64>,
+    /// Waiting cannot fix it, for example rejected credentials or an exhausted quota.
+    pub needs_user: bool,
 }
 impl<A> Goal<A> {
     pub fn keeps_host_awake(&self) -> bool {
@@ -215,6 +230,7 @@ impl<A> Goal<A> {
             {
                 self.status = Status::Active;
                 self.report = None;
+                self.failures = 0;
             }
             Control::Cancel if !self.status.terminal() || self.status == Status::Cancelled => {
                 self.status = Status::Cancelled;
@@ -248,14 +264,50 @@ impl<A> Goal<A> {
     ) -> Result<(), String> {
         let total = usage?;
         self.pending = None;
-        // Stop is a persistent user fence, not an invitation to schedule another Run.
-        if self.status == Status::Active
-            && matches!(outcome, maka_agent_facts::durable::Terminal::Cancelled)
-        {
-            self.status = Status::Paused;
+        match outcome {
+            // Stop is a persistent user fence, not an invitation to schedule another Run.
+            maka_agent_facts::durable::Terminal::Cancelled if self.status == Status::Active => {
+                self.status = Status::Paused;
+            }
+            maka_agent_facts::durable::Terminal::Completed => {
+                self.failures = 0;
+                self.last_failure = None;
+            }
+            _ => {}
         }
         self.meter(total);
         Ok(())
+    }
+    pub fn failed(&mut self, failure: IterationFailure) {
+        self.failures = self.failures.saturating_add(1);
+        let reason = failure.diagnostic.unwrap_or_else(|| {
+            match self.arm.language {
+                Language::En => "no reason was recorded",
+                Language::ZhCn => "没有记录原因",
+                Language::ZhTw => "沒有記錄原因",
+            }
+            .into()
+        });
+        if self.status == Status::Active && (failure.needs_user || self.failures >= FAILURE_LIMIT) {
+            self.status = Status::Paused;
+            self.note = match self.arm.language {
+                Language::En => format!(
+                    "Paused after {} failed iteration(s) in a row. Last failure: {reason}",
+                    self.failures
+                ),
+                Language::ZhCn => format!(
+                    "连续 {} 次迭代失败，已暂停。最近一次失败：{reason}",
+                    self.failures
+                ),
+                Language::ZhTw => format!(
+                    "連續 {} 次迭代失敗，已暫停。最近一次失敗：{reason}",
+                    self.failures
+                ),
+            };
+        } else if failure.retry_at.is_some() {
+            self.retry_at = failure.retry_at;
+        }
+        self.last_failure = Some(reason);
     }
     pub fn report(&mut self, report: Report) {
         self.note = report.note.clone();
@@ -291,6 +343,14 @@ impl<A> Goal<A> {
                 "繼續此已明確授權的目標（第 {} 次迭代）：\n{}\n\nGoalStatus 記錄迭代進度或改變目標狀態；一般回答不會將目標標記為完成。有限 token 預算限制後續派發，缺失用量不能視為零。上次檢查點：{}",
                 self.iterations, self.arm.objective, self.note
             ),
+        };
+        let content = match (&self.last_failure, self.arm.language) {
+            (None, _) => content,
+            (Some(reason), Language::En) => {
+                format!("{content}\n\nThe previous iteration failed: {reason}")
+            }
+            (Some(reason), Language::ZhCn) => format!("{content}\n\n上一次迭代失败：{reason}"),
+            (Some(reason), Language::ZhTw) => format!("{content}\n\n上一次迭代失敗：{reason}"),
         };
         self.pending = Some(Pending::Dispatch {
             request: Submit {
@@ -458,6 +518,8 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
             note: String::new(),
             authority_blocked: false,
             dismissed: false,
+            failures: 0,
+            last_failure: None,
         };
         index.update(&goal);
         let mutations = vec![
