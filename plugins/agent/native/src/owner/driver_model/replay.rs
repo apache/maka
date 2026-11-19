@@ -18,14 +18,14 @@
  */
 
 use super::{
-    DriverModel, FrozenCellKnowledge, HistorySource, extend_observation, flush_assistant,
-    merge_skill, recovered::RecordedInputs,
+    DriverModel, FrozenCellKnowledge, HistorySource, ReplayedTail, extend_observation,
+    flush_assistant, merge_skill, recovered::RecordedInputs,
 };
 use futures_util::future::BoxFuture;
 use maka_agent_engine::{RunError, preparation};
 use maka_agent_facts::{
     context::{CodexRequestProvenance, ModelPurpose},
-    durable::{Fact, ModelAttemptId, RecordedFact, ToolDecision, ToolKey},
+    durable::{AcceptedResult, Fact, ModelAttemptId, RecordedFact, ToolDecision, ToolKey},
     execution::SystemPrompt,
     interaction::{ClosureReason, InteractionOutcome},
     model::{ModelPart, ModelToolCall, prompt::Message, prompt_source::source::ReplayOrigin},
@@ -120,6 +120,7 @@ pub(super) struct TailReplay<'a, 'source> {
     assistant: AssistantBatch,
     current: Option<ModelAttemptId>,
     allowed_attempts: BTreeSet<ModelAttemptId>,
+    compaction_request: Option<ToolKey>,
 }
 
 impl<'a, 'source> TailReplay<'a, 'source> {
@@ -151,6 +152,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
             assistant: AssistantBatch::default(),
             current: None,
             allowed_attempts: BTreeSet::new(),
+            compaction_request: None,
         }
     }
 
@@ -178,6 +180,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
             assistant,
             current,
             allowed_attempts,
+            compaction_request,
         } = self;
         let driver = *driver;
         let target = *target;
@@ -354,13 +357,22 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                     Ok(())
                 })
             }
-            Fact::ToolResultAccepted { tool, result, .. } => Box::pin(async move {
+            Fact::ToolResultAccepted {
+                tool,
+                result,
+                outcome,
+            } => Box::pin(async move {
                 assistant
                     .flush(view, prefix_attempt, current, messages)
                     .await?;
                 let call = reader.tool_call(view.run, tool).await?;
                 if call.provider_executed {
                     return Ok(());
+                }
+                if call.name == crate::owner::compaction::TOOL
+                    && *outcome == AcceptedResult::Succeeded
+                {
+                    *compaction_request = Some(tool.clone());
                 }
                 let output = if let Some(output) = driver
                     .archived_tool_result(reader, view, fact.id, &fact.fact, &call)
@@ -405,7 +417,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
         Ok(Some(work))
     }
 
-    pub(super) async fn finish(mut self) -> Result<Vec<FrozenCellKnowledge>, RunError> {
+    pub(super) async fn finish(mut self) -> Result<ReplayedTail, RunError> {
         self.assistant
             .flush(
                 self.view,
@@ -414,7 +426,10 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 self.messages,
             )
             .await?;
-        Ok(self.recorded.cells.into_values().collect())
+        Ok(ReplayedTail {
+            cells: self.recorded.cells.into_values().collect(),
+            compaction_request: self.compaction_request,
+        })
     }
 }
 

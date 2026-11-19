@@ -225,10 +225,7 @@ fn proactive_summary(
                 .is_some_and(|closed| closed.outcome == Outcome::Unknown)
     } else {
         let evidence: RequestContextEvidence = original(c, view.run, &main.provenance)?;
-        evidence
-            .model_context
-            .and_then(|context| context.declared_window)
-            .is_some_and(|window| evidence.estimated_input_tokens >= window)
+        evidence.needs_compaction()
     };
     if !adopt
         || view

@@ -162,6 +162,14 @@ export function activityMessage(origin: MessageOrigin | null | undefined): boole
   return origin?.kind === 'automation' || senderSession(origin) !== null;
 }
 
+/** Expanded rows can come from a newer read than the surrounding window. */
+export function historyRowThrough(
+  row: Pick<Row, 'metadataThrough'>,
+  windowThrough: number,
+): number {
+  return Math.max(row.metadataThrough ?? 0, windowThrough);
+}
+
 export function historyFollowTail(
   rows: readonly Row[],
   view: 'chat' | 'conversation' = 'chat',

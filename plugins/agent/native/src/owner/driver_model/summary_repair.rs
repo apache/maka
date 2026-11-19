@@ -198,6 +198,7 @@ impl DriverModel {
                     Err(close) => preparation::preparation_cleanup_error(error, close),
                 });
             }
+            if !repair { return builder.finish().await; }
             preparation::prepare_prompt(
                 builder, &settings, &self.cancellation,
                 frozen.instructions.clone().map(Arc::new), ModelPurpose::Main, None,
@@ -237,6 +238,8 @@ impl DriverModel {
                         instruction,
                     )
                     .await?;
+                self.prepare_summary_input(&mut prompt, &model, frozen.language)
+                    .await?;
             }
             let settings = PromptSettings {
                 operation,
@@ -272,23 +275,6 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
-            if !repair && !native_compaction {
-                prompt = maka_agent_engine::context_input::fit_prepared_summary(
-                    &prompt,
-                    maka_agent_engine::context_input::summary_budget(context),
-                    frozen.language,
-                    &self.cancellation,
-                )
-                .await?;
-                preparation::prepare_wire(
-                    &settings,
-                    &mut prompt,
-                    &request.composition.tools,
-                    output,
-                    &self.cancellation,
-                )
-                .await?;
-            }
             let prepared = preparation::prepare_request(
                 &settings,
                 prompt.clone(),
