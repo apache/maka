@@ -90,6 +90,8 @@ static PENDING_COUNT_SQL: LazyLock<String> = LazyLock::new(|| {
         "{BASE} SELECT COUNT(*) FROM selected WHERE needs_you=1 AND ?11 IN(0,1) AND ?12 IN(0,1)"
     )
 });
+static SINGLE_RECORD_SQL: LazyLock<String> =
+    LazyLock::new(|| format!("{BASE} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id=?14"));
 static RECORD_BUCKET_SQL: LazyLock<[String; 4]> = LazyLock::new(|| {
     RECORD_BUCKETS.map(|bucket| {
         let slots = (1..=bucket)
@@ -268,7 +270,12 @@ impl Selection {
             return Ok(vec![]);
         }
         let mut values = self.values.clone();
-        let rows = if let Some(index) = RECORD_BUCKETS
+        let rows = if keys.len() == 1 {
+            values.push(keys[0].id.clone().into());
+            c.prepare_cached(&SINGLE_RECORD_SQL)?
+                .query_map(params_from_iter(values), Raw::read)?
+                .collect::<Result<Vec<_>, _>>()?
+        } else if let Some(index) = RECORD_BUCKETS
             .iter()
             .position(|&bucket| keys.len() <= bucket)
         {
@@ -744,6 +751,7 @@ mod tests {
         let stats = root.sqlite_resource_stats().await.unwrap();
         let reader_stats: Vec<_> = stats.readers.iter().flatten().collect();
         assert!(!reader_stats.is_empty());
+        let mut saw_single_record_query = false;
         for reader in &reader_stats {
             let record_queries = reader
                 .statements
@@ -758,7 +766,13 @@ mod tests {
                 record_queries <= 2,
                 "expected at most 2 bucketed IN queries for limits 1..=10, got {record_queries}"
             );
+            saw_single_record_query |= reader.statements.iter().any(|s| {
+                s.sql
+                    .as_deref()
+                    .is_some_and(|sql| sql.ends_with("AND id=?14") && sql.contains(COLUMNS))
+            });
         }
+        assert!(saw_single_record_query);
         root.close().await.unwrap();
     }
 }
