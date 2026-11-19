@@ -232,34 +232,22 @@ export function executor(
       : {}),
   });
 
-  async function buildRuntimeHelpers(id) {
+  const cargoScopeFor = (id) =>
+    worker.cargoScope && suites[id].workspace === worker.workspace
+      ? worker.cargoScope
+      : suites[id].cargoArgs;
+
+  function parseRuntimeHelpers(records) {
     const helperEnv = {};
     for (const artifact of taskHelperBinaries) {
-      const output = await cargo(
-        [
-          'build',
-          '--locked',
-          '-p',
-          artifact.package,
-          '--bin',
-          artifact.binary,
-          ...artifact.cargoArgs,
-          '--message-format=json-render-diagnostics',
-        ],
-        { env: suiteEnv(id), capture: true },
+      const candidates = records.filter(
+        (record) =>
+          record.reason === 'compiler-artifact' &&
+          record.target?.name === artifact.binary &&
+          record.target.kind?.includes('bin') &&
+          record.profile?.test === false &&
+          record.executable != null,
       );
-      const candidates = output
-        .split(/\r?\n/)
-        .filter((line) => line.trim())
-        .map((line) => JSON.parse(line))
-        .filter(
-          (record) =>
-            record.reason === 'compiler-artifact' &&
-            record.target?.name === artifact.binary &&
-            record.target.kind?.includes('bin') &&
-            record.profile?.test === false &&
-            record.executable != null,
-        );
       if (candidates.length !== 1)
         throw new Error(
           `Expected one Cargo runtime executable: ${artifact.package}/${artifact.binary}`,
@@ -274,6 +262,48 @@ export function executor(
     return helperEnv;
   }
 
+  async function buildRuntimeHelpers(id) {
+    if (worker.cargoScope && suites[id]?.workspace === worker.workspace) {
+      const output = await cargo(
+        [
+          'build',
+          ...worker.cargoScope,
+          ...taskHelperBinaries.flatMap((artifact) => ['--bin', artifact.binary]),
+          '--message-format=json-render-diagnostics',
+        ],
+        { env: suiteEnv(id), capture: true },
+      );
+      const records = output
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('{'))
+        .map((line) => JSON.parse(line));
+      return parseRuntimeHelpers(records);
+    }
+    const records = [];
+    for (const artifact of taskHelperBinaries) {
+      const output = await cargo(
+        [
+          'build',
+          '--locked',
+          '-p',
+          artifact.package,
+          '--bin',
+          artifact.binary,
+          ...artifact.cargoArgs,
+          '--message-format=json-render-diagnostics',
+        ],
+        { env: suiteEnv(id), capture: true },
+      );
+      records.push(
+        ...output
+          .split(/\r?\n/)
+          .filter((line) => line.startsWith('{'))
+          .map((line) => JSON.parse(line)),
+      );
+    }
+    return parseRuntimeHelpers(records);
+  }
+
   const nextest = async (id, noRun = false, filter = suites[id].filter ?? 'all()', extra = []) => {
     const environment = suiteEnv(id);
     if (!noRun && helperSuites.has(id) && !skipsHelperBuild(extra)) {
@@ -283,7 +313,7 @@ export function executor(
       [
         'nextest',
         'run',
-        ...suites[id].cargoArgs,
+        ...cargoScopeFor(id),
         ...(filter === 'all()' ? [] : ['-E', filter]),
         ...(noRun ? ['--no-run'] : ['--no-fail-fast']),
         ...extra,
@@ -393,7 +423,7 @@ export function executor(
       await run(join(target, 'debug/maka-desktop-shell'), ['--version']);
     } else if (id === 'contracts') {
       await cargo(['build', '--locked', '-p', 'maka-schema']);
-      await cargo(['build', '--locked', '-p', 'maka-workbench', '--example', 'ui_types']);
+      await cargo(['build', '--locked', '--workspace', '--example', 'ui_types']);
     } else if (id === 'product') {
       await cargo(['build', '--locked', '-p', 'maka-ui-build', '--bin', 'maka-ui-build']);
     } else if (id === 'termina') {
@@ -434,9 +464,33 @@ export function executor(
       });
     } else if (id === 'native') {
       if (process.platform === 'darwin') await nextest(id, true, filter, extra);
+      else if (worker.cacheRole === 'root')
+        await cargo(['check', '--locked', '--workspace', '--bin', 'maka']);
       else await cargo(['check', ...suites.native.cargoArgs]);
     } else if (!['tooling', 'windows-ci'].includes(id)) {
       throw new Error(`Unknown suite: ${id}`);
+    }
+  }
+
+  async function prepareWorker(selectedIds, plannedSuites) {
+    if (!worker.cargoScope) {
+      await runSuites(selectedIds, (id) => prepare(id, plannedSuites[id].filter));
+      return;
+    }
+    const scoped = selectedIds.filter(
+      (id) => suites[id].workspace === worker.workspace && suites[id].cargoArgs?.length,
+    );
+    const rest = selectedIds.filter((id) => !scoped.includes(id));
+    if (scoped.length) {
+      const envSuite = scoped.includes('windows-shell') ? 'windows-shell' : scoped[0];
+      await cargo(['nextest', 'run', ...worker.cargoScope, '--no-run'], {
+        env: { ...suiteEnv(envSuite), NEXTEST_PROFILE: 'default' },
+      });
+      const helperSuite = scoped.find((id) => helperSuites.has(id));
+      if (helperSuite) await buildRuntimeHelpers(helperSuite);
+    }
+    if (rest.length) {
+      await runSuites(rest, (id) => prepare(id, plannedSuites[id].filter));
     }
   }
 
@@ -530,6 +584,8 @@ export function executor(
         'nextest',
         'run',
         ...suites[id].cargoArgs,
+        '-E',
+        filter ?? suites[id].filter,
         '--no-tests=fail',
         '--no-fail-fast',
         '--run-ignored=all',
@@ -568,8 +624,7 @@ export function executor(
           'run',
           '--locked',
           '-q',
-          '-p',
-          'maka-workbench',
+          '--workspace',
           '--example',
           'ui_types',
           '--',
@@ -842,7 +897,7 @@ export function executor(
     return partitions;
   }
 
-  return { prepare, verify, check, archive, replay, run, target };
+  return { prepare, prepareWorker, verify, check, archive, replay, run, target };
 }
 
 const webTextArgs = [

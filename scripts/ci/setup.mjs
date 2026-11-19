@@ -23,6 +23,7 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -234,11 +235,37 @@ async function stageV8() {
       : `librusty_v8_simdutf_release_${target}.a.gz`;
   const url = `https://github.com/denoland/rusty_v8/releases/download/v${v8Version}/${assetName}`;
   const cachePath = join(cargoHome(), '.rusty_v8', url.replace(/[^0-9A-Za-z]/gu, '_'));
-  const libDir = join(TARGET_ROOT, 'debug', 'gn_out', 'obj');
-  const libPath = join(libDir, process.platform === 'win32' ? 'rusty_v8.lib' : 'librusty_v8.a');
-  const sumPath = join(libDir, process.platform === 'win32' ? 'rusty_v8.sum' : 'librusty_v8.sum');
-  if (existsSync(libPath) && existsSync(sumPath) && readFileSync(sumPath, 'utf8') === url) {
+  const libName = process.platform === 'win32' ? 'rusty_v8.lib' : 'librusty_v8.a';
+  const sumName = process.platform === 'win32' ? 'rusty_v8.sum' : 'librusty_v8.sum';
+  const libDirs = [
+    join(TARGET_ROOT, 'debug', 'gn_out', 'obj'),
+    join(TARGET_ROOT, 'debug', 'build', 'gn_out', 'obj'),
+  ];
+  const primaryLib = join(libDirs[0], libName);
+  const primarySum = join(libDirs[0], sumName);
+  const mirrorBuildDir = () => {
+    const secondaryLib = join(libDirs[1], libName);
+    const secondarySum = join(libDirs[1], sumName);
+    if (
+      existsSync(secondaryLib) &&
+      existsSync(secondarySum) &&
+      readFileSync(secondarySum, 'utf8') === url
+    ) {
+      return;
+    }
+    mkdirSync(libDirs[1], { recursive: true });
+    rmSync(secondaryLib, { force: true });
+    if (process.platform === 'win32') copyFileSync(primaryLib, secondaryLib);
+    else linkSync(primaryLib, secondaryLib);
+    writeAtomic(secondarySum, url);
+  };
+  if (
+    existsSync(primaryLib) &&
+    existsSync(primarySum) &&
+    readFileSync(primarySum, 'utf8') === url
+  ) {
     ensureCargoTargetTag();
+    mirrorBuildDir();
     return;
   }
   let archive;
@@ -262,9 +289,12 @@ async function stageV8() {
   ensureCargoTargetTag();
   // v8's build.rs skips writing `.sum` when reading `.cargo/.rusty_v8`, causing
   // parallel host/target build scripts to truncate the shared static library.
-  writeAtomic(libPath, archive);
-  writeAtomic(sumPath, url);
-  console.log(`Staged ${assetName} to ${libPath}`);
+  // Cargo 1.100+ places build script OUT_DIR under `target/debug/build/<pkg>/<hash>/out`,
+  // so v8's relative lookup resolves to `target/debug/build/gn_out/obj`.
+  writeAtomic(primaryLib, archive);
+  writeAtomic(primarySum, url);
+  mirrorBuildDir();
+  console.log(`Staged ${assetName} to ${primaryLib} and ${join(libDirs[1], libName)}`);
 }
 
 async function main(action) {

@@ -305,7 +305,10 @@ test('Windows process and account-guard regressions are selected from their actu
 
 test('Desktop regressions compile only the native-desktop CLI test target with default features', () => {
   const plan = full();
-  assert.equal(plan.suites.desktop.filter, 'test(terminal::desktop_new_session)');
+  assert.equal(
+    plan.suites.desktop.filter,
+    'binary_id(=maka-cli::native-desktop) & test(terminal::desktop_new_session)',
+  );
   assert.ok(!suites.desktop.cargoArgs.includes('--workspace'));
   assert.ok(!suites.desktop.cargoArgs.includes('--no-default-features'));
   assert.ok(suites.desktop.cargoArgs.includes('maka-cli'));
@@ -382,8 +385,13 @@ test('non-archived native regressions fail empty selections and GTK runs under X
       'nextest',
       'run',
       '--locked',
-      '-p',
+      '--workspace',
+      '--bin',
       'maka-desktop-shell',
+      '--test',
+      'open_directly',
+      '-E',
+      'package(=maka-desktop-shell)',
       '--no-tests=fail',
       '--no-fail-fast',
       '--run-ignored=all',
@@ -394,7 +402,19 @@ test('non-archived native regressions fail empty selections and GTK runs under X
   await exec.prepare('linux-desktop');
   assert.deepEqual(calls.at(-1), {
     exe: 'cargo',
-    args: ['nextest', 'run', '--locked', '-p', 'maka-desktop-shell', '--no-run'],
+    args: [
+      'nextest',
+      'run',
+      '--locked',
+      '--workspace',
+      '--bin',
+      'maka-desktop-shell',
+      '--test',
+      'open_directly',
+      '-E',
+      'package(=maka-desktop-shell)',
+      '--no-run',
+    ],
   });
   const beforeMac = calls.length;
   await exec.prepare('macos-nsh');
@@ -667,8 +687,19 @@ test('CI setup installs release tools and stages V8 archives via GitHub API with
       process.platform === 'win32' ? 'rusty_v8.sum' : 'librusty_v8.sum',
     );
     assert.deepEqual(readFileSync(expectedV8Path), v8Bytes);
+    const buildObjDir = join(targetDir, 'debug', 'build', 'gn_out', 'obj');
+    const buildLibPath = join(
+      buildObjDir,
+      process.platform === 'win32' ? 'rusty_v8.lib' : 'librusty_v8.a',
+    );
+    const buildSumPath = join(
+      buildObjDir,
+      process.platform === 'win32' ? 'rusty_v8.sum' : 'librusty_v8.sum',
+    );
     assert.deepEqual(readFileSync(expectedLibPath), v8Archive);
     assert.equal(readFileSync(expectedSumPath, 'utf8'), expectedV8Url);
+    assert.deepEqual(readFileSync(buildLibPath), v8Archive);
+    assert.equal(readFileSync(buildSumPath, 'utf8'), expectedV8Url);
     assert.match(
       readFileSync(join(targetDir, 'CACHEDIR.TAG'), 'utf8'),
       /^Signature: 8a477f597d28d172789f06886806bc55\n/u,
@@ -842,6 +873,61 @@ test('branch push with fullRoot keeps full root coverage while skipping untouche
   assert.ok(!plan.workers.some((w) => w.id === 'macos-nsh'));
   assert.ok(!plan.workers.some((w) => w.id === 'windows-nsh'));
   assert.ok(!plan.workers.some((w) => w.id === 'termina'));
+});
+
+test('scoped native workers compile once with one unified Cargo feature scope', async () => {
+  const plan = full();
+  const worker = plan.workers.find((entry) => entry.id === 'native-macos');
+  const helperDir = mkdtempSync(join(tmpdir(), 'maka-ci-scope-helpers-'));
+  try {
+    const makaBin = join(helperDir, 'maka');
+    const pyBin = join(helperDir, 'maka-python-worker');
+    writeFileSync(makaBin, '');
+    writeFileSync(pyBin, '');
+    const calls = [];
+    const exec = executor(root, worker, {
+      run: async (exe, args) => {
+        calls.push({ exe, args });
+        if (args[0] === 'build' && args.includes('--message-format=json-render-diagnostics')) {
+          return [
+            JSON.stringify({
+              reason: 'compiler-artifact',
+              target: { name: 'maka', kind: ['bin'] },
+              profile: { test: false },
+              executable: makaBin,
+            }),
+            JSON.stringify({
+              reason: 'compiler-artifact',
+              target: { name: 'maka-python-worker', kind: ['bin'] },
+              profile: { test: false },
+              executable: pyBin,
+            }),
+          ].join('\n');
+        }
+        return '';
+      },
+    });
+    await exec.prepareWorker(worker.suites, plan.suites);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0], {
+      exe: 'cargo',
+      args: ['nextest', 'run', ...worker.cargoScope, '--no-run'],
+    });
+    assert.deepEqual(calls[1], {
+      exe: 'cargo',
+      args: [
+        'build',
+        ...worker.cargoScope,
+        '--bin',
+        'maka',
+        '--bin',
+        'maka-python-worker',
+        '--message-format=json-render-diagnostics',
+      ],
+    });
+  } finally {
+    rmSync(helperDir, { recursive: true, force: true });
+  }
 });
 
 test('memory resolver prompt changes reach native and product consumers', () => {
