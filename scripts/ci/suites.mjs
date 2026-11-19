@@ -27,7 +27,7 @@ export const taskHelperConsumers = [
   'maka-eval',
 ];
 export const taskHelperBinaries = [
-  { package: 'maka-cli', binary: 'maka', cargoArgs: ['--no-default-features'] },
+  { package: 'maka-cli', binary: 'maka', cargoArgs: [] },
   { package: 'maka-python-runtime', binary: 'maka-python-worker', cargoArgs: [] },
 ];
 
@@ -68,13 +68,36 @@ const distributionInputs = [
   'scripts/rust/notices-sources.json',
   'scripts/rust/licenses',
 ];
-const embeddedInputs = [
-  'products/maka/cli/tests/support/external_codex_cli.mjs',
-  'products/maka/terminal-shell/tests/support/external-agent-cli.mjs',
+const bundledSkillInputs = ['skills/maka-generative-ui', 'skills/maka-plugin-authoring'];
+const skillInputs = [...bundledSkillInputs, 'platform/computer-use/skills'];
+const externalCodexFixture = 'products/maka/cli/tests/support/external_codex_cli.mjs';
+const externalAgentFixture = 'products/maka/terminal-shell/tests/support/external-agent-cli.mjs';
+const desktopInputs = [
   ...productInputs,
-  'skills/maka-generative-ui',
-  'skills/maka-plugin-authoring',
-  'platform/computer-use/skills',
+  ...skillInputs,
+  externalCodexFixture,
+  externalAgentFixture,
+];
+
+export const productConsumers = [
+  'maka-cli',
+  'maka-terminal-shell',
+  'maka-workbench',
+  'maka-desktop-shell',
+  'maka-ui-build',
+];
+const skillConsumers = [
+  'maka-skills-core',
+  'maka-skills-native',
+  'maka-cli',
+  'maka-terminal-shell',
+  'maka-computer-use',
+];
+const distributionConsumers = [
+  'maka-cli',
+  'maka-desktop-shell',
+  'maka-host-shell',
+  'maka-python-runtime',
 ];
 
 export const suites = {
@@ -84,7 +107,17 @@ export const suites = {
     packages: 'workspace',
     cargoArgs: ['--locked', '--workspace'],
     profile: 'ci',
-    extraInputs: [...embeddedInputs, ...distributionInputs, 'products/maka/workbench/tests/fonts'],
+    extraInputPackages: [
+      { inputs: productInputs, packages: productConsumers },
+      { inputs: skillInputs, packages: skillConsumers },
+      { inputs: distributionInputs, packages: distributionConsumers },
+      {
+        inputs: ['products/maka/workbench/tests/fonts'],
+        packages: ['maka-workbench', 'maka-terminal-shell', 'maka-cli'],
+      },
+      { inputs: [externalCodexFixture], packages: ['maka-cli'] },
+      { inputs: [externalAgentFixture], packages: ['maka-terminal-shell'] },
+    ],
     affectedFilter: true,
   },
   bridge: {
@@ -99,19 +132,32 @@ export const suites = {
       '--test',
       'integration',
     ],
-    extraInputs: embeddedInputs,
+    extraInputs: ['platform/computer-use/skills'],
   },
   desktop: {
     workspace: 'root',
     packages: ['maka-cli'],
-    cargoArgs: ['--locked', '--workspace', '--features', 'maka-cli/desktop-tests'],
+    cargoArgs: [
+      '--locked',
+      '-p',
+      'maka-cli',
+      '--features',
+      'desktop-tests',
+      '--test',
+      'native-desktop',
+    ],
     filter: 'test(terminal::desktop_new_session)',
-    extraInputs: embeddedInputs,
+    extraInputs: desktopInputs,
   },
   'native-build': {
     workspace: 'root',
     packages: ['maka-cli', 'maka-desktop-shell', 'maka-host-shell', 'maka-python-runtime'],
-    extraInputs: [...embeddedInputs, ...distributionInputs, 'scripts/rust/build-cli.mjs'],
+    extraInputs: [
+      ...productInputs,
+      ...skillInputs,
+      ...distributionInputs,
+      'scripts/rust/build-cli.mjs',
+    ],
   },
   contracts: {
     workspace: 'root',
@@ -202,7 +248,7 @@ export const suites = {
     workspace: 'root',
     packages: ['maka-terminal-shell'],
     cargoArgs: ['--locked', '-p', 'maka-terminal-shell', '--test', 'native-pixels'],
-    extraInputs: embeddedInputs,
+    extraInputs: [...productInputs, externalAgentFixture],
   },
   'linux-nsh': {
     workspace: 'nsh',
@@ -244,25 +290,25 @@ export const suites = {
     workspace: 'root',
     packages: ['maka-desktop-shell'],
     cargoArgs: ['--locked', '-p', 'maka-desktop-shell'],
-    extraInputs: embeddedInputs,
+    extraInputs: productInputs,
   },
   'macos-desktop': {
     workspace: 'root',
     packages: ['maka-desktop-shell'],
     cargoArgs: ['--locked', '-p', 'maka-desktop-shell'],
-    extraInputs: embeddedInputs,
+    extraInputs: productInputs,
   },
   'windows-desktop': {
     workspace: 'root',
     packages: ['maka-desktop-shell'],
     cargoArgs: ['--locked', '-p', 'maka-desktop-shell'],
-    extraInputs: embeddedInputs,
+    extraInputs: productInputs,
   },
   'windows-skills': {
     workspace: 'root',
     packages: ['maka-skills-native'],
     cargoArgs: ['--locked', '-p', 'maka-skills-native', '--lib'],
-    extraInputs: embeddedInputs,
+    extraInputs: bundledSkillInputs,
   },
   'windows-ci': {
     workspace: 'root',
@@ -288,10 +334,10 @@ export const suites = {
   'macos-host': {
     workspace: 'root',
     packages: ['maka-cli', 'maka-host-shell'],
-    cargoArgs: ['--locked', '-p', 'maka-cli', '--bin', 'maka', '--no-default-features'],
+    cargoArgs: ['--locked', '-p', 'maka-cli', '--bin', 'maka'],
     filter: 'test(deployment::host_identity::tests::)',
     extraInputs: [
-      ...embeddedInputs,
+      ...distributionInputs,
       'scripts/rust/build-cli.mjs',
       'scripts/rust/build-cli.test.mjs',
       'scripts/rust/pack-cli.mjs',
@@ -303,7 +349,21 @@ export const suites = {
   'macos-agent-execution': {
     workspace: 'root',
     packages: ['maka-cli'],
-    cargoArgs: ['--locked', '--workspace'],
+    cargoArgs: [
+      '--locked',
+      '-p',
+      'maka-cli',
+      '--test',
+      'mainline_reopen',
+      '--test',
+      'journal_recovery',
+      '--test',
+      'codemode_reopen',
+      '--test',
+      'external_jobs',
+      '--test',
+      'producer_reopen',
+    ],
     filter: [
       'binary_id(=maka-cli::mainline_reopen)',
       'binary_id(=maka-cli::journal_recovery)',
@@ -311,12 +371,20 @@ export const suites = {
       'binary_id(=maka-cli::external_jobs)',
       'binary_id(=maka-cli::producer_reopen)',
     ].join(' | '),
-    extraInputs: embeddedInputs,
+    extraInputs: [externalCodexFixture, ...skillInputs],
   },
   'windows-shell': {
     workspace: 'root',
-    packages: ['maka-process', 'maka-settings-native', 'maka-agent-native', 'maka-host-runtime'],
-    cargoArgs: ['--locked', '--workspace'],
+    packages: ['maka-process', 'maka-settings-native', 'maka-host-runtime'],
+    cargoArgs: [
+      '--locked',
+      '-p',
+      'maka-process',
+      '-p',
+      'maka-settings-native',
+      '-p',
+      'maka-host-runtime',
+    ],
     filter: [
       'test(git_bash)',
       'test(shell_setting_rejects_invalid_bash_and_persists_valid_host_choice)',
@@ -331,7 +399,6 @@ export const suites = {
     filter: [
       'test(macos::controller::tests::)',
       'test(macos::tcc::tests::)',
-      'test(windows_permission_subject::tests::)',
       'test(system_permission::process::tests::)',
       'test(desktop::worker::macos::tests::)',
     ].join(' | '),
@@ -340,31 +407,15 @@ export const suites = {
 
 export const workers = [
   {
-    id: 'bridge',
-    suites: ['bridge'],
+    id: 'linux-checks',
+    suites: ['contracts', 'product', 'native-build', 'native', 'linux-desktop', 'bridge'],
     runner: 'ubuntu-latest',
     workspace: 'root',
     dependencies: 'headless',
     javascript: true,
     compile: true,
-  },
-  {
-    id: 'packaging',
-    suites: ['native-build'],
-    runner: 'ubuntu-latest',
-    workspace: 'root',
-    dependencies: 'headless',
-    javascript: true,
-    compile: false,
-  },
-  {
-    id: 'product',
-    suites: ['contracts', 'product'],
-    runner: 'ubuntu-latest',
-    workspace: 'root',
-    dependencies: 'headless',
-    javascript: true,
-    compile: false,
+    cacheRole: 'root',
+    saveCache: false,
   },
   {
     id: 'termina',
@@ -377,7 +428,7 @@ export const workers = [
   },
   {
     id: 'nsh',
-    suites: ['nsh'],
+    suites: ['nsh', 'linux-nsh'],
     runner: 'ubuntu-latest',
     workspace: 'nsh',
     dependencies: 'headless',
@@ -385,44 +436,47 @@ export const workers = [
     compile: true,
   },
   {
-    id: 'linux-nsh',
-    suites: ['linux-nsh'],
-    runner: 'ubuntu-latest',
+    id: 'macos-nsh',
+    suites: ['macos-nsh', 'macos-surface'],
+    runner: 'macos-latest',
     workspace: 'nsh',
-    dependencies: 'headless',
+    dependencies: '',
     javascript: false,
     compile: true,
   },
-  ...['ubuntu', 'macos', 'windows'].map((os) => ({
-    id: `native-${os}`,
-    suites:
-      os === 'windows'
-        ? [
-            'native',
-            'windows-shell',
-            'windows-desktop',
-            'windows-skills',
-            'windows-nsh',
-            'windows-ci',
-            'desktop',
-            'pixels',
-          ]
-        : os === 'macos'
-          ? [
-              'native',
-              'macos-host',
-              'macos-agent-execution',
-              'macos-desktop',
-              'macos-nsh',
-              'macos-surface',
-              'desktop',
-              'pixels',
-            ]
-          : ['native', 'linux-desktop'],
-    runner: `${os}-latest`,
+  {
+    id: 'windows-nsh',
+    suites: ['windows-nsh'],
+    runner: 'windows-latest',
+    workspace: 'nsh',
+    dependencies: '',
+    javascript: false,
+    compile: true,
+  },
+  {
+    id: 'native-macos',
+    suites: ['native', 'macos-host', 'macos-agent-execution', 'macos-desktop', 'desktop', 'pixels'],
+    runner: 'macos-latest',
     workspace: 'root',
-    dependencies: os === 'ubuntu' ? 'headless' : '',
+    dependencies: '',
     javascript: true,
     compile: true,
-  })),
+  },
+  {
+    id: 'native-windows',
+    suites: [
+      'native',
+      'windows-shell',
+      'windows-desktop',
+      'windows-skills',
+      'windows-ci',
+      'desktop',
+      'pixels',
+    ],
+    runner: 'windows-latest',
+    workspace: 'root',
+    dependencies: '',
+    javascript: true,
+    compile: true,
+  },
 ];

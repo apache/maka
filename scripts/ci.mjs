@@ -63,7 +63,7 @@ export async function plan({ baseline = null, event = process.env.GITHUB_EVENT_N
   if (baseline !== null && ['push', 'pull_request'].includes(event)) {
     await command('git', ['fetch', '--no-tags', '--depth=1', 'origin', baseline], { cwd: root });
   }
-  let changes =
+  const changes =
     baseline === null
       ? null
       : (
@@ -75,8 +75,8 @@ export async function plan({ baseline = null, event = process.env.GITHUB_EVENT_N
         )
           .split('\0')
           .filter(Boolean);
-  // Branch pushes retain full coverage; only documentation-only pushes skip work.
-  if (event === 'push' && changes?.some((path) => !documentation(path))) changes = null;
+  // Branch pushes retain full root coverage; vendored workspaces run only when touched.
+  const fullRoot = event === 'push' && Boolean(changes?.some((path) => !documentation(path)));
   const metadata = {};
   if (changes && !changes.some(sharedInput) && changes.some((path) => !documentation(path))) {
     for (const [workspace, manifest] of Object.entries(manifests)) {
@@ -97,7 +97,7 @@ export async function plan({ baseline = null, event = process.env.GITHUB_EVENT_N
       );
     }
   }
-  return createPlan({ root, changes, metadata, revision, baseline });
+  return createPlan({ root, changes, metadata, revision, baseline, fullRoot });
 }
 
 async function main(args) {

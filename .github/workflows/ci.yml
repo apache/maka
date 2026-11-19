@@ -42,6 +42,8 @@ defaults:
 
 env:
   CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
   plan:
@@ -101,10 +103,7 @@ jobs:
       filter: ${{ steps.archive.outputs.filter }}
       native: ${{ steps.upload-native.outputs.artifact-id }}
       cli: ${{ steps.upload-cli.outputs.artifact-id }}
-      rest-1: ${{ steps.upload-rest-1.outputs.artifact-id }}
-      rest-2: ${{ steps.upload-rest-2.outputs.artifact-id }}
-      rest-3: ${{ steps.upload-rest-3.outputs.artifact-id }}
-      rest-4: ${{ steps.upload-rest-4.outputs.artifact-id }}
+      rest: ${{ steps.upload-rest.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -140,35 +139,11 @@ jobs:
           compression-level: 0
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v7
-        id: upload-rest-1
+        id: upload-rest
         if: steps.archive.outputs.has_tests == 'true'
         with:
-          name: root-tests-rest-1-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/root-tests-rest-1.tar.zst
-          compression-level: 0
-          if-no-files-found: ignore
-      - uses: actions/upload-artifact@v7
-        id: upload-rest-2
-        if: steps.archive.outputs.has_tests == 'true'
-        with:
-          name: root-tests-rest-2-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/root-tests-rest-2.tar.zst
-          compression-level: 0
-          if-no-files-found: ignore
-      - uses: actions/upload-artifact@v7
-        id: upload-rest-3
-        if: steps.archive.outputs.has_tests == 'true'
-        with:
-          name: root-tests-rest-3-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/root-tests-rest-3.tar.zst
-          compression-level: 0
-          if-no-files-found: ignore
-      - uses: actions/upload-artifact@v7
-        id: upload-rest-4
-        if: steps.archive.outputs.has_tests == 'true'
-        with:
-          name: root-tests-rest-4-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/root-tests-rest-4.tar.zst
+          name: root-tests-rest-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-rest.tar.zst
           compression-level: 0
           if-no-files-found: ignore
       - uses: ./.github/actions/ci-cache
@@ -198,8 +173,8 @@ jobs:
       - uses: ./.github/actions/ci-setup
         with:
           role: replay
-          dependencies: headless
-          javascript: "true"
+          dependencies: replay
+          javascript: "false"
           compile: "false"
           nextest: ${{ needs.root-build.outputs.nextest }}
       - uses: actions/download-artifact@v8
@@ -231,6 +206,7 @@ jobs:
         id: setup
         with:
           role: ${{ matrix.id }}
+          cache_role: ${{ matrix.cacheRole || matrix.id }}
           workspace: ${{ matrix.workspace }}
           dependencies: ${{ matrix.dependencies }}
           javascript: ${{ matrix.javascript }}
@@ -261,7 +237,7 @@ jobs:
             ${{ runner.temp }}/maka-ui-artifacts
           if-no-files-found: error
       - uses: ./.github/actions/ci-cache
-        if: ${{ !cancelled() && matrix.compile && steps.compile.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.compile && matrix.saveCache != false && steps.compile.outcome == 'success' }}
         env:
           MAKA_CI_ROLE: ${{ matrix.id }}
         with:

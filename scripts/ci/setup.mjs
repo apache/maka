@@ -41,23 +41,22 @@ import { manifests } from './suites.mjs';
 const hash = (input) => createHash('sha256').update(input).digest('hex');
 const cargoHome = () => process.env.CARGO_HOME || join(homedir(), '.cargo');
 const role = process.env.MAKA_CI_ROLE;
+const cacheRole = process.env.MAKA_CI_CACHE_ROLE || role;
 const workspace = process.env.MAKA_CI_WORKSPACE;
 const version = process.env.MAKA_CI_NEXTEST;
-const selectedManifests = ['native-windows', 'native-macos'].includes(role)
-  ? [manifests.root, manifests.nsh]
-  : [manifests[workspace]];
+const selectedManifests = [manifests[workspace]];
 const tools =
   role === 'tooling'
     ? ['cargo-deny']
     : [
           'root',
           'replay',
-          'bridge',
+          'linux-checks',
           'desktop',
           'termina',
           'nsh',
-          'linux-nsh',
-          'native-ubuntu',
+          'macos-nsh',
+          'windows-nsh',
           'native-windows',
           'native-macos',
         ].includes(role)
@@ -290,13 +289,13 @@ async function main(action) {
         readFileSync('.github/actions/ci-cache/action.yml'),
       ]),
     );
-    const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${role}-${configuration}`;
+    const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${cacheRole}-${configuration}`;
     output({
       compiled: `${compiled}-${lock}-${hash(readFileSync(new URL(import.meta.url)))}`,
       compiled_prefix: `${compiled}-`,
       downloads: `cargo-sources-${workspace}-${lock}`,
       downloads_prefix: `cargo-sources-${workspace}-`,
-      downloads_writer: role === 'tooling' || workspace !== 'root',
+      downloads_writer: role === 'root' || role === 'nsh' || role === 'termina',
     });
   } else if (action === 'prune') {
     if (existsSync(TARGET_ROOT)) ensureCargoTargetTag();
@@ -355,20 +354,39 @@ async function main(action) {
       'libvulkan1',
       'mesa-vulkan-drivers',
     ];
+    const replay = [
+      'bubblewrap',
+      'ripgrep',
+      'xvfb',
+      'libgtk-4-1',
+      'libgstreamer1.0-0',
+      'libgstreamer-plugins-base1.0-0',
+      'gstreamer1.0-plugins-base',
+      'gstreamer1.0-plugins-good',
+      'libxkbcommon0',
+      'libxkbcommon-x11-0',
+      'libwayland-client0',
+      'libxtst6',
+      'libxi6',
+      'libvulkan1',
+      'mesa-vulkan-drivers',
+    ];
     const packages =
-      dependencies === 'computer-use'
-        ? [
-            ...shared,
-            'libx11-dev',
-            'libxi-dev',
-            'libxtst-dev',
-            'libxext-dev',
-            'libxrandr-dev',
-            'libxfixes-dev',
-            'libxkbcommon-dev',
-            'libwayland-dev',
-          ]
-        : [...shared, ...headless];
+      dependencies === 'replay'
+        ? replay
+        : dependencies === 'computer-use'
+          ? [
+              ...shared,
+              'libx11-dev',
+              'libxi-dev',
+              'libxtst-dev',
+              'libxext-dev',
+              'libxrandr-dev',
+              'libxfixes-dev',
+              'libxkbcommon-dev',
+              'libwayland-dev',
+            ]
+          : [...shared, ...headless];
     await command('sudo', ['apt-get', '-o', 'APT::Update::Error-Mode=any', 'update']);
     await command('sudo', ['apt-get', 'install', '-y', ...packages]);
     if (dependencies !== 'computer-use')

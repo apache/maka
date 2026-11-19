@@ -30,7 +30,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { command } from './command.mjs';
 import { manifests, suites, taskHelperBinaries, taskHelperConsumers } from './suites.mjs';
@@ -45,96 +45,6 @@ export async function runSuites(ids, execute) {
     }
   }
   if (failures.length) throw new AggregateError(failures, 'CI suites failed');
-}
-
-const buildValues = new Set([
-  '-p',
-  '--package',
-  '--exclude',
-  '--bin',
-  '--example',
-  '--test',
-  '--bench',
-  '-F',
-  '--features',
-  '--build-jobs',
-  '--cargo-profile',
-  '--target',
-  '--target-dir',
-  '--manifest-path',
-  '--cargo-message-format',
-  '-Z',
-]);
-const buildFlags = new Set([
-  '--workspace',
-  '--all',
-  '--lib',
-  '--bins',
-  '--examples',
-  '--tests',
-  '--benches',
-  '--all-targets',
-  '--all-features',
-  '--no-default-features',
-  '-r',
-  '--release',
-  '--unit-graph',
-  '--timings',
-  '--frozen',
-  '--locked',
-  '--offline',
-  '--cargo-quiet',
-  '--cargo-verbose',
-  '--ignore-rust-version',
-  '--future-incompat-report',
-]);
-const sharedValues = new Set(['--color', '--config', '--user-config-file', '--tool-config-file']);
-const sharedFlags = new Set(['--no-pager', '-v', '--verbose', '--override-version-check']);
-const filterValues = new Set(['-E', '--filterset', '--filter-expr']);
-
-function rootArguments(extra) {
-  const build = [],
-    runtime = [],
-    filters = [];
-  let configFile, profile;
-  for (let index = 0; index < extra.length; index++) {
-    const argument = extra[index];
-    if (argument === '--') {
-      runtime.push(...extra.slice(index));
-      break;
-    }
-    const attached = /^-([pFZPE])(.+)$/.exec(argument);
-    const name = attached ? `-${attached[1]}` : argument.split('=', 1)[0];
-    let value = attached
-      ? attached[2].replace(/^=/, '')
-      : argument.includes('=')
-        ? argument.slice(argument.indexOf('=') + 1)
-        : undefined;
-    const values = [argument];
-    if (
-      (buildValues.has(name) ||
-        sharedValues.has(name) ||
-        filterValues.has(name) ||
-        ['--config-file', '--profile', '-P'].includes(name)) &&
-      value === undefined
-    ) {
-      value = extra[++index];
-      if (value === undefined) throw new Error(`Missing value for ${name}`);
-      values.push(value);
-    }
-    if (name === '--config-file') configFile = value;
-    if (name === '--profile' || name === '-P') profile = value;
-    if (
-      buildValues.has(name) ||
-      buildFlags.has(name) ||
-      sharedValues.has(name) ||
-      sharedFlags.has(name)
-    )
-      build.push(...values);
-    if (!buildValues.has(name) && !buildFlags.has(name)) runtime.push(...values);
-    if (filterValues.has(name)) filters.push(...values);
-  }
-  return { build, runtime, filters, configFile, profile };
 }
 
 function runtimeHelpers(listing, binaries) {
@@ -286,6 +196,15 @@ async function withArchiveResources(listing, resources, create) {
   return await create();
 }
 
+const helperSuites = new Set(['root', 'windows-shell', 'macos-agent-execution', 'desktop']);
+
+function skipsHelperBuild(extra) {
+  const separator = extra.indexOf('--');
+  return extra
+    .slice(0, separator < 0 ? extra.length : separator)
+    .some((arg) => ['--help', '-h', '--no-run'].includes(arg));
+}
+
 export function executor(
   root,
   worker = {},
@@ -293,13 +212,10 @@ export function executor(
 ) {
   const target = resolve(root, baseEnv.CARGO_TARGET_DIR ?? 'target');
   const env = { ...baseEnv, CARGO_TARGET_DIR: target };
-  if (worker.workspace === 'nsh' || worker.id?.startsWith('native-')) {
-    Object.assign(env, {
-      CARGO_BUILD_JOBS: '2',
-      CARGO_INCREMENTAL: '0',
-      CARGO_PROFILE_DEV_DEBUG: '0',
-    });
-    if (worker.workspace === 'nsh') env.CARGO_PROFILE_TEST_DEBUG = '0';
+  if (baseEnv.CI || worker.workspace === 'nsh' || worker.id?.startsWith('native-')) {
+    env.CARGO_INCREMENTAL ??= '0';
+    env.CARGO_PROFILE_DEV_DEBUG ??= '0';
+    env.CARGO_PROFILE_TEST_DEBUG ??= '0';
   }
   const programFiles = baseEnv.ProgramFiles ?? baseEnv.PROGRAMFILES;
   const run = (exe, args, options = {}) => runCommand(exe, args, { cwd: root, env, ...options });
@@ -315,46 +231,53 @@ export function executor(
         }
       : {}),
   });
+
+  async function buildRuntimeHelpers(id) {
+    const helperEnv = {};
+    for (const artifact of taskHelperBinaries) {
+      const output = await cargo(
+        [
+          'build',
+          '--locked',
+          '-p',
+          artifact.package,
+          '--bin',
+          artifact.binary,
+          ...artifact.cargoArgs,
+          '--message-format=json-render-diagnostics',
+        ],
+        { env: suiteEnv(id), capture: true },
+      );
+      const candidates = output
+        .split(/\r?\n/)
+        .filter((line) => line.trim())
+        .map((line) => JSON.parse(line))
+        .filter(
+          (record) =>
+            record.reason === 'compiler-artifact' &&
+            record.target?.name === artifact.binary &&
+            record.target.kind?.includes('bin') &&
+            record.profile?.test === false &&
+            record.executable != null,
+        );
+      if (candidates.length !== 1)
+        throw new Error(
+          `Expected one Cargo runtime executable: ${artifact.package}/${artifact.binary}`,
+        );
+      const [{ executable }] = candidates;
+      if (typeof executable !== 'string' || !isAbsolute(executable))
+        throw new Error(`Cargo runtime executable is not absolute: ${executable}`);
+      if (!statSync(executable).isFile())
+        throw new Error(`Cargo runtime executable is not a file: ${executable}`);
+      helperEnv[`CARGO_BIN_EXE_${artifact.binary}`] = executable;
+    }
+    return helperEnv;
+  }
+
   const nextest = async (id, noRun = false, filter = suites[id].filter ?? 'all()', extra = []) => {
     const environment = suiteEnv(id);
-    if (id === 'windows-shell') {
-      for (const artifact of taskHelperBinaries) {
-        const output = await cargo(
-          [
-            'build',
-            '--locked',
-            '-p',
-            artifact.package,
-            '--bin',
-            artifact.binary,
-            ...artifact.cargoArgs,
-            '--message-format=json-render-diagnostics',
-          ],
-          { env: suiteEnv(id), capture: true },
-        );
-        const candidates = output
-          .split(/\r?\n/)
-          .filter((line) => line.trim())
-          .map((line) => JSON.parse(line))
-          .filter(
-            (record) =>
-              record.reason === 'compiler-artifact' &&
-              record.target?.name === artifact.binary &&
-              record.target.kind?.includes('bin') &&
-              record.profile?.test === false &&
-              record.executable != null,
-          );
-        if (candidates.length !== 1)
-          throw new Error(
-            `Expected one Cargo runtime executable: ${artifact.package}/${artifact.binary}`,
-          );
-        const [{ executable }] = candidates;
-        if (typeof executable !== 'string' || !isAbsolute(executable))
-          throw new Error(`Cargo runtime executable is not absolute: ${executable}`);
-        if (!statSync(executable).isFile())
-          throw new Error(`Cargo runtime executable is not a file: ${executable}`);
-        environment[`CARGO_BIN_EXE_${artifact.binary}`] = executable;
-      }
+    if (!noRun && helperSuites.has(id) && !skipsHelperBuild(extra)) {
+      Object.assign(environment, await buildRuntimeHelpers(id));
     }
     return cargo(
       [
@@ -421,6 +344,9 @@ export function executor(
       ].includes(id)
     ) {
       await nextest(id, true, filter, extra);
+      if (['windows-shell', 'macos-agent-execution', 'desktop'].includes(id)) {
+        await buildRuntimeHelpers(id);
+      }
       if (id === 'windows-nsh') {
         await cargo([
           'check',
@@ -519,10 +445,13 @@ export function executor(
       for (const name of ['format', 'tooling-tests', 'licenses']) await check(name);
     } else if (id === 'windows-ci') {
       await node(['--test', 'scripts/ci.test.mjs']);
-    } else if (id === 'macos-agent-execution') {
-      await verifyRoot(filter ?? suites[id].filter, ['--test-threads', '1', ...extra], id);
-    } else if (id === 'desktop') {
-      await verifyRoot(filter ?? suites[id].filter, ['--test-threads', '1', ...extra], id);
+    } else if (id === 'macos-agent-execution' || id === 'desktop') {
+      await nextest(id, false, filter ?? suites[id].filter, [
+        '--no-tests=fail',
+        '--test-threads',
+        '1',
+        ...extra,
+      ]);
     } else if (id === 'macos-host') {
       await nextest(id);
       await node([
@@ -532,7 +461,7 @@ export function executor(
         'scripts/rust/run-cli.test.mjs',
       ]);
     } else if (id === 'root') {
-      await verifyRoot(filter ?? 'all()', extra);
+      await nextest('root', false, filter ?? 'all()', extra);
     } else if (id === 'windows-shell') {
       await nextest(id, false, filter, extra);
     } else if (id === 'bridge') {
@@ -583,7 +512,6 @@ export function executor(
       });
     } else if (
       [
-        'desktop',
         'pixels',
         'macos-desktop',
         'macos-surface',
@@ -713,17 +641,24 @@ export function executor(
       return found.length ? [] : [{ artifact, packageId }];
     });
     if (!missing.length) return;
-    // Non-test workers are not emitted by cargo test. Build the real programs
-    // with the consumer's workspace feature selection and retain Cargo evidence.
-    const output = await cargo(
-      ['build', ...args, '--bins', '--message-format=json-render-diagnostics'],
-      { capture: true },
-    );
-    const artifacts = output
-      .split('\n')
-      .filter((line) => line.startsWith('{'))
-      .map((line) => JSON.parse(line));
     for (const { artifact, packageId } of missing) {
+      const output = await cargo(
+        [
+          'build',
+          '--locked',
+          '-p',
+          artifact.package,
+          '--bin',
+          artifact.binary,
+          ...artifact.cargoArgs,
+          '--message-format=json-render-diagnostics',
+        ],
+        { capture: true },
+      );
+      const artifacts = output
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('{'))
+        .map((line) => JSON.parse(line));
       const candidates = artifacts.filter(
         (built) =>
           built.reason === 'compiler-artifact' &&
@@ -757,92 +692,6 @@ export function executor(
         'build-platform': 'target',
         path: path.replaceAll('\\', '/'),
       });
-    }
-  }
-
-  async function verifyRoot(filter, extra, id = 'root') {
-    const separator = extra.indexOf('--');
-    if (
-      extra
-        .slice(0, separator < 0 ? extra.length : separator)
-        .some((arg) => ['--help', '-h', '--no-run'].includes(arg))
-    ) {
-      await nextest(id, false, filter, extra);
-      return;
-    }
-    const {
-      build,
-      runtime,
-      filters,
-      configFile,
-      profile = suites[id].profile ?? suites.root.profile,
-    } = rootArguments(extra);
-    const temporary = mkdtempSync(join(tmpdir(), 'maka-ci-run-'));
-    try {
-      const listing = JSON.parse(
-        await cargo(
-          [
-            'nextest',
-            'list',
-            ...suites[id].cargoArgs,
-            ...build,
-            ...(filter === 'all()' ? [] : ['-E', filter]),
-            ...filters,
-            '--config-file',
-            resolve(root, configFile ?? '.config/nextest.toml'),
-            '--profile',
-            profile,
-            '--message-format',
-            'json',
-          ],
-          { capture: true },
-        ),
-      );
-      const binaries = Object.values(listing['rust-suites']).filter((suite) =>
-        Object.values(suite.testcases).some(
-          (entry) => !entry.ignored && entry['filter-match'].status === 'matches',
-        ),
-      );
-      if (!binaries.length)
-        throw new Error(`The planned ${id} test selection was unexpectedly empty: ${filter}`);
-      const archiveFilter = binaries
-        .map((suite) => `binary_id(=${suite['binary-id']})`)
-        .join(' | ');
-      const config = join(temporary, 'nextest.toml');
-      const archiveProfile = basename(temporary);
-      await prepareRuntimeHelpers(listing, binaries, [...suites[id].cargoArgs, ...build]);
-      const generated = archiveConfiguration(
-        readFileSync(resolve(root, configFile ?? '.config/nextest.toml'), 'utf8'),
-        listing,
-        binaries,
-        archiveProfile,
-        profile,
-      );
-      writeFileSync(config, generated.contents);
-      const archive = join(temporary, 'tests.tar.zst');
-      await withArchiveResources(listing, generated.resources, () =>
-        cargo([
-          'nextest',
-          'archive',
-          ...suites[id].cargoArgs,
-          ...build,
-          '-E',
-          archiveFilter,
-          '--profile',
-          archiveProfile,
-          '--config-file',
-          config,
-          '--archive-file',
-          archive,
-        ]),
-      );
-      const extraction = join(temporary, 'run');
-      await replay(archive, extraction, generated.helpers, [
-        ...(filter === 'all()' ? [] : ['-E', filter]),
-        ...runtime,
-      ]);
-    } finally {
-      rmSync(temporary, { recursive: true, force: true });
     }
   }
 
@@ -930,8 +779,8 @@ export function executor(
     const config = readFileSync(join(root, '.config/nextest.toml'), 'utf8');
     const groups = [];
     for (const [group, shards, name] of [
-      ['native', 8, 'maka-agent-native'],
-      ['cli', 6, 'maka-cli'],
+      ['native', 3, 'maka-agent-native'],
+      ['cli', 2, 'maka-cli'],
     ]) {
       groups.push({
         group,
@@ -939,33 +788,19 @@ export function executor(
         binaries: selected.filter((suite) => suite['package-name'] === name),
       });
     }
-    const remaining = selected
-      .filter((binary) => !['maka-agent-native', 'maka-cli'].includes(binary['package-name']))
-      .map((binary) => ({ binary, bytes: statSync(binary['binary-path']).size }))
-      .sort(
-        (a, b) => b.bytes - a.bytes || a.binary['binary-id'].localeCompare(b.binary['binary-id']),
-      );
-    const buckets = Array.from({ length: Math.min(4, remaining.length) }, () => ({
-      bytes: 0,
-      binaries: [],
-    }));
-    for (const entry of remaining) {
-      const bucket = buckets.reduce((a, b) => (a.bytes <= b.bytes ? a : b));
-      bucket.bytes += entry.bytes;
-      bucket.binaries.push(entry.binary);
-    }
-    groups.push(
-      ...buckets.map((bucket, index) => ({
-        group: `rest-${index + 1}`,
-        shards: 2,
-        binaries: bucket.binaries,
-      })),
+    const remaining = selected.filter(
+      (binary) => !['maka-agent-native', 'maka-cli'].includes(binary['package-name']),
     );
+    if (remaining.length) {
+      groups.push({
+        group: 'rest',
+        shards: 1,
+        binaries: remaining,
+      });
+    }
     const temporary = mkdtempSync(join(tmpdir(), 'maka-ci-archive-'));
     const partitions = [];
     try {
-      // Balance the binaries each machine must download
-      // and extract, instead of sending their entire archive to every shard.
       for (const { group, shards, binaries } of groups) {
         if (!binaries.length) continue;
         // Archives select binaries; the consumers retain the original test filter.

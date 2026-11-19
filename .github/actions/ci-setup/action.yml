@@ -21,6 +21,9 @@ inputs:
   role:
     description: Stable worker identity.
     required: true
+  cache_role:
+    description: Compiler cache key owner (defaults to role).
+    default: ""
   workspace:
     description: Owning Cargo workspace.
     default: root
@@ -86,6 +89,7 @@ runs:
       shell: bash
       env:
         MAKA_CI_ROLE: ${{ inputs.role }}
+        MAKA_CI_CACHE_ROLE: ${{ inputs.cache_role }}
         MAKA_CI_WORKSPACE: ${{ inputs.workspace }}
       run: node scripts/ci/setup.mjs keys
     - name: Cache shared Cargo downloads

@@ -101,6 +101,32 @@ function suitePackage(suite, key, packages, members) {
     : suite.packages.includes(pkg.name);
 }
 
+function matchesEntry(entry, path, owner) {
+  return contains(entry, path) && (!(owner && path.endsWith('.rs')) || entry === path);
+}
+
+function suiteExtraInput(suite, path, owner) {
+  return Boolean(suite.extraInputs?.some((entry) => matchesEntry(entry, path, owner)));
+}
+
+function suiteScopedPackages(suite, path, owner) {
+  if (!suite.extraInputPackages) return [];
+  const matched = [];
+  for (const rule of suite.extraInputPackages) {
+    if (rule.inputs.some((entry) => matchesEntry(entry, path, owner))) {
+      matched.push(...rule.packages);
+    }
+  }
+  return matched;
+}
+
+function isScopedNonRustInput(path, owner) {
+  return (
+    !path.endsWith('.rs') &&
+    Object.values(suites).some((suite) => suiteScopedPackages(suite, path, owner).length > 0)
+  );
+}
+
 export function createPlan({
   root,
   changes = null,
@@ -108,6 +134,7 @@ export function createPlan({
   revision,
   baseline = null,
   worker = null,
+  fullRoot = false,
 }) {
   if (worker !== null) {
     const target = workers.find((entry) => entry.id === worker);
@@ -141,11 +168,6 @@ export function createPlan({
     const owners = new Map(
       inputs.map((path) => [path, ownership.find(([, pkg]) => contains(pkg.path, path))?.[0]]),
     );
-    const extraInput = (suite, path) =>
-      suite.extraInputs?.some(
-        (entry) =>
-          contains(entry, path) && (!(owners.get(path) && path.endsWith('.rs')) || entry === path),
-      );
     const supported = new Set(
       [...packages.keys()].filter((key) =>
         Object.values(suites).some((suite) => suitePackage(suite, key, packages, members)),
@@ -154,8 +176,11 @@ export function createPlan({
     const seeds = new Set();
     for (const path of inputs) {
       const owner = owners.get(path);
-      if (owner) seeds.add(owner);
-      const extra = Object.values(suites).some((suite) => extraInput(suite, path));
+      if (owner && !isScopedNonRustInput(path, owner)) seeds.add(owner);
+      const extra = Object.values(suites).some(
+        (suite) =>
+          suiteExtraInput(suite, path, owner) || suiteScopedPackages(suite, path, owner).length > 0,
+      );
       if (!owner && !extra) fullReasons.push(`unmapped input: ${path}`);
       if (owner && !extra && ![...expanded([owner], reverse)].some((key) => supported.has(key)))
         fullReasons.push(`outside maintained suites: ${path}`);
@@ -164,11 +189,24 @@ export function createPlan({
     if (!full) {
       const reached = expanded(seeds, reverse);
       for (const [id, suite] of Object.entries(suites)) {
-        const extras = inputs.filter((path) => extraInput(suite, path));
-        const affected = [...reached]
-          .filter((key) => suitePackage(suite, key, packages, members))
-          .map((key) => packages.get(key).name)
-          .sort();
+        const extras = inputs.filter((path) => suiteExtraInput(suite, path, owners.get(path)));
+        const scopedPaths = [];
+        const scopedPackages = new Set();
+        for (const path of inputs) {
+          const matched = suiteScopedPackages(suite, path, owners.get(path));
+          if (matched.length) {
+            scopedPaths.push(path);
+            for (const pkg of matched) scopedPackages.add(pkg);
+          }
+        }
+        const affected = [
+          ...new Set([
+            ...[...reached]
+              .filter((key) => suitePackage(suite, key, packages, members))
+              .map((key) => packages.get(key).name),
+            ...scopedPackages,
+          ]),
+        ].sort();
         if (suite.always || extras.length || affected.length) {
           selected[id] = {
             filter:
@@ -179,7 +217,9 @@ export function createPlan({
               ? 'always checked'
               : extras.length
                 ? `runtime inputs: ${extras.join(', ')}`
-                : `affected packages: ${affected.join(', ')}`,
+                : scopedPaths.length
+                  ? `runtime inputs: ${scopedPaths.join(', ')}`
+                  : `affected packages: ${affected.join(', ')}`,
           };
         }
       }
@@ -188,8 +228,20 @@ export function createPlan({
   if (full) {
     for (const [id, suite] of Object.entries(suites))
       selected[id] = { filter: suite.filter ?? 'all()', reason: fullReasons.join(', ') };
-  } else if (inputs.length) {
-    selected.tooling = { filter: 'all()', reason: 'always checked' };
+  } else {
+    if (fullRoot && inputs.length) {
+      for (const [id, suite] of Object.entries(suites)) {
+        if (suite.always || suite.workspace === 'root') {
+          selected[id] = {
+            filter: suite.filter ?? 'all()',
+            reason: 'branch push root validation',
+          };
+        }
+      }
+    }
+    if (inputs.length) {
+      selected.tooling = { filter: 'all()', reason: 'always checked' };
+    }
   }
   const matrix = workers.flatMap((worker) => {
     const entries = worker.suites.filter((id) => selected[id]);
