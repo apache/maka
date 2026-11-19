@@ -17050,6 +17050,47 @@ describe('AiSdkBackend steering durability and identity', () => {
     assert.match(mixedPrompt, /Inspect current state/);
     assert.doesNotMatch(mixedPrompt, /touch marker.txt/);
 
+    // Explicit compaction must roll forward the prior checkpoint as well. It
+    // may fold acknowledged unknowns, but must keep the newer unknown call.
+    const compactInputs: Array<{ previous?: string; ids: string[] }> = [];
+    const compactResults: HistoryCompactCheckpoint[] = [];
+    const mixedCompact = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      contextBudget: { name: 'mixed-unknown-manual', charsPerToken: 1 },
+      loadHistoryCompactCheckpoint: () => olderCheckpoint,
+      summarizeHistoryCompact: async (input) => {
+        compactInputs.push({
+          previous: input.previousCheckpoint?.checkpointId,
+          ids: input.source.foldedRuntimeEvents.map((event) => event.id),
+        });
+        return structuredSummary('MIXED_UNKNOWN_ROLLFORWARD');
+      },
+      recordHistoryCompactCheckpoint: (checkpoint) => {
+        compactResults.push(checkpoint);
+      },
+    });
+    const newerUser: RuntimeEvent = {
+      ...newerIdentity,
+      id: 'newer-user',
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'New pending action' },
+    };
+    const compactOutcome = await mixedCompact.compactHistory({
+      turnId: 'manual-mixed',
+      runId: 'manual-mixed-run',
+      runtimeContext: [...priorEvents, newerEvents[0]!, newerUser, ...newerEvents.slice(1)],
+      runtimeContextInvocations: [priorInvocation, explicitAnswer, newerInvocation],
+    });
+    assert.equal(compactOutcome.outcome.kind, 'compacted');
+    assert.equal(compactInputs[0]?.previous, olderCheckpoint.checkpointId);
+    assert.ok(compactInputs[0]?.ids.includes('newer-user'));
+    assert.ok(!compactInputs[0]?.ids.includes('newer-call'));
+    assert.equal(compactResults[0]?.previousCheckpointId, olderCheckpoint.checkpointId);
+
     // An automated turn (Goal, WorkHub, schedule, activation) runs normally
     // once the explicit answer acknowledged the unknown.
     const automatedModel = textCompletionModel('automated turn answer');

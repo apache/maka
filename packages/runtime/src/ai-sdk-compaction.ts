@@ -95,6 +95,7 @@ import {
   collectToolActivityTurnIds,
   compatibleProviderReasoningReplayEventIds,
   type RuntimeEventModelReplayPlan,
+  appendPriorUnknownToolResponses,
   inspectPriorUnknownToolOutcomes,
   type PriorUnknownToolOutcomeProjection,
 } from './model-history.js';
@@ -379,15 +380,12 @@ export class AiSdkCompaction {
           ? { historyCompactRoute: this.input.historyCompactRoute }
           : {}),
       });
-      const unknownToolOutcomes = inspectPriorUnknownToolOutcomes(
-        input.runtimeContext,
-        input.runtimeContextInvocations,
+      const unknownToolOutcomes = acknowledgedUnknownOutcomes(
+        inspectPriorUnknownToolOutcomes(input.runtimeContext, input.runtimeContextInvocations),
       );
       const plan = await planHistoryCompaction({
         sessionId: this.sessionId,
-        ...(unknownToolOutcomes.kind === 'projected' && !unknownToolOutcomes.requiresUserAttention
-          ? { unknownToolOutcomes }
-          : {}),
+        ...(unknownToolOutcomes ? { unknownToolOutcomes } : {}),
         phase: 'standalone',
         orderedEvents: runtimeContext,
         ...(input.runtimeContextInvocations
@@ -808,12 +806,13 @@ export class AiSdkCompaction {
       resolveDeclaredContextWindow(this.input.connection, this.input.modelId) ??
         policy.historyCompact.midTurn.fallbackThresholdTokens,
     );
-    const unknownToolOutcomes = inspectPriorUnknownToolOutcomes(
+    const priorUnknownOutcomes = inspectPriorUnknownToolOutcomes(
       input.runtimeContext ?? [],
       input.runtimeContextInvocations,
     );
-    if (unknownToolOutcomes.kind === 'projected' && !unknownToolOutcomes.requiresUserAttention)
-      state.unknownToolOutcomes = unknownToolOutcomes;
+    state.unknownToolOutcomes = acknowledgedUnknownOutcomes(priorUnknownOutcomes);
+    if (priorUnknownOutcomes.kind === 'projected')
+      state.unknownOutcomesForReplay = priorUnknownOutcomes;
     // Seed the turn's FIRST request with the last request the provider
     // actually counted, so step 0 is judged by the same real number as every
     // later step. No anchor means no proactive fold on step 0; the provider
@@ -1162,7 +1161,12 @@ export class AiSdkCompaction {
     // check must never be persisted because it would poison every later
     // projection.
     const effectiveReplacement = await this.foldEffectiveModelHistory(plan.replacementEvents);
-    const replayPlan = buildRuntimeEventModelReplayPlan(effectiveReplacement, {
+    // Pending unknown calls remain in the raw tail. Reconstruct their synthetic
+    // results before validating and materializing the retry, not in the ledger.
+    const projectedReplacement = state.unknownOutcomesForReplay
+      ? appendPriorUnknownToolResponses(effectiveReplacement, state.unknownOutcomesForReplay)
+      : effectiveReplacement;
+    const replayPlan = buildRuntimeEventModelReplayPlan(projectedReplacement, {
       toolActivityTurnIds: collectToolActivityTurnIds(orderedEvents),
     });
     if (
@@ -1398,6 +1402,17 @@ function stableStringifyForSignature(value: unknown): string {
     .join(',')}}`;
 }
 
+/** Only acknowledged unknowns can be folded; newer unknowns must remain verbatim. */
+function acknowledgedUnknownOutcomes(
+  projection: PriorUnknownToolOutcomeProjection,
+): Extract<PriorUnknownToolOutcomeProjection, { kind: 'projected' }> | undefined {
+  if (projection.kind !== 'projected') return undefined;
+  const outcomes = projection.outcomes.filter((outcome) => !outcome.requiresUserAttention);
+  return outcomes.length > 0
+    ? { kind: 'projected', outcomes, requiresUserAttention: false }
+    : undefined;
+}
+
 /**
  * Per-send() state for the mid-turn capacity invariant. The coverage pool is
  * NOT mirrored here: every trigger reads the current turn's persisted
@@ -1408,6 +1423,10 @@ function stableStringifyForSignature(value: unknown): string {
 export class MidTurnCapacityCompactState {
   /** Validated prior unknowns eligible for paired summarization. */
   unknownToolOutcomes:
+    | Extract<PriorUnknownToolOutcomeProjection, { kind: 'projected' }>
+    | undefined;
+  /** All unknowns, including pending calls kept in the replay tail. */
+  unknownOutcomesForReplay:
     | Extract<PriorUnknownToolOutcomeProjection, { kind: 'projected' }>
     | undefined;
   /**

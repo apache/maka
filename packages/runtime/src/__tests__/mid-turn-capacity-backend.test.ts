@@ -66,6 +66,7 @@ import {
   testToolResultArchive,
 } from './execution-boundary-test-helpers.js';
 import { testInvocationOpening } from './invocation-fixture.js';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 
 const RAW_SPAN_ONE = 'RAW_SPAN_ONE_'.repeat(24);
 const RAW_SPAN_TWO = 'RAW_SPAN_TWO_'.repeat(160);
@@ -735,6 +736,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
 async function runFixtureTurn(
   fixture: MidTurnFixture,
   consumer: ConsumerMode = 'immediate',
+  allowPriorUnknownToolOutcomes = false,
 ): Promise<void> {
   for await (const event of fixture.backend.send({
     runId: 'run-1',
@@ -744,6 +746,7 @@ async function runFixtureTurn(
     context: [],
     runtimeContext: [...fixture.priorEvents],
     runtimeContextInvocations: [...fixture.priorInvocations],
+    allowPriorUnknownToolOutcomes,
   })) {
     if (consumer === 'slow') {
       // Scheduling perturbation: hold the durable write back across several
@@ -2285,6 +2288,122 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
       // is irrelevant to both.
       assert.equal(fixture.summarizerCalls, folds ? 1 : 0);
     }
+  });
+
+  test('recovers first-request overflow with mixed acknowledged and pending unknowns', async () => {
+    const makeUnknown = (name: string, when: number): RuntimeEvent[] => {
+      const id = {
+        sessionId: 'session-1',
+        invocationId: `${name}-run`,
+        runId: `${name}-run`,
+        turnId: `${name}-turn`,
+        ts: when,
+        partial: false,
+      } as const;
+      const args = { path: `${name}.txt` };
+      return [
+        {
+          ...id,
+          id: `${name}-protocol`,
+          role: 'system',
+          author: 'system',
+          actions: { runtimeProtocol: { toolBoundary: 't1_after_preflight_v1' } },
+        },
+        {
+          ...id,
+          id: `${name}-user`,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: `${name} user request` },
+        },
+        {
+          ...id,
+          id: `${name}-call`,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'function_call', id: `${name}-tool`, name: 'Read', args },
+          refs: { operationId: `${name}-op`, toolCallId: `${name}-tool` },
+        },
+        {
+          ...id,
+          id: `${name}-dispatch`,
+          role: 'system',
+          author: 'system',
+          actions: {
+            toolDispatch: {
+              protocol: 't1_after_preflight_v1',
+              operationId: `${name}-op`,
+              providerToolCallId: `${name}-tool`,
+              toolName: 'Read',
+              canonicalArgsHash: canonicalToolArgsHash('Read', args),
+              recoveryMode: 'never_auto_retry',
+            },
+          },
+          refs: { operationId: `${name}-op`, toolCallId: `${name}-tool` },
+        },
+      ];
+    };
+    const older = makeUnknown('older', 1);
+    const newer = makeUnknown('newer', 20);
+    const ack = testInvocationRecord({
+      sessionId: 'session-1',
+      runId: 'ack-run',
+      turnId: 'ack-turn',
+      openedAt: 10,
+      closedAt: 11,
+      outcome: 'completed',
+    });
+    const olderRun = testInvocationRecord({
+      sessionId: 'session-1',
+      runId: 'older-run',
+      turnId: 'older-turn',
+      openedAt: 1,
+      closedAt: 2,
+      outcome: 'failed',
+      failureClass: 'outcome_unknown',
+    });
+    const newerRun = testInvocationRecord({
+      sessionId: 'session-1',
+      runId: 'newer-run',
+      turnId: 'newer-turn',
+      openedAt: 20,
+      closedAt: 21,
+      outcome: 'failed',
+      failureClass: 'outcome_unknown',
+    });
+    const ackText: RuntimeEvent = {
+      ...runtimeTextEvent('ack-text', 'ack-turn', 'user', 'checked older'),
+      runId: 'ack-run',
+      invocationId: 'ack-run',
+      ts: 10,
+    };
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [older[1]!, older[2]!, ackText],
+      summary: sectionedSummary('OLD_ACKNOWLEDGED'),
+    });
+    const fixture = buildFixture({
+      withoutPriorTurns: true,
+      firstRequestContextOverflow: true,
+      finalAtSecondCall: false,
+      extraPriorEvents: [...older, ackText, ...newer],
+      priorInvocations: [olderRun, ack, newerRun],
+      loadCheckpoint: () => checkpoint,
+    });
+    await runFixtureTurn(fixture, 'immediate', true);
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    const replay = promptJson(fixture, 1);
+    assert.match(replay, /newer-tool/);
+    assert.match(replay, /outcome_unknown/);
+    assert.match(replay, /Inspect current state/);
+    // Rebuilding after the retry's tool step must preserve the same pair too.
+    const afterToolStep = promptJson(fixture, 2);
+    assert.match(afterToolStep, /newer-tool/);
+    assert.match(afterToolStep, /outcome_unknown/);
+    assert.match(afterToolStep, /Inspect current state/);
+    assert.equal(fixture.events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
   });
 
   test('keeps a useful output floor so a near-window request still recovers', async () => {
