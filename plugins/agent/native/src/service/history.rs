@@ -281,6 +281,12 @@ async fn window(
         &scope.cancellation,
     )
     .await
+    .inspect_err(|error| {
+        if !scope.cancellation.is_cancelled() {
+            tracing::warn!(session = %input.session_id, through = cut.through_sequence,
+                position = ?input.position, view = ?input.view, %error, "History page read failed");
+        }
+    })
 }
 pub async fn snapshot_page(
     snapshot: &maka_agent_state::session_history::snapshot::Snapshot,

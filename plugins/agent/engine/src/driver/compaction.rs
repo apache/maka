@@ -43,6 +43,9 @@ struct FrozenRouteEvidence {
 }
 
 fn compaction_timing(evidence: &RequestContextEvidence) -> (bool, bool) {
+    if evidence.compaction_request.is_some() {
+        return (true, true);
+    }
     let threshold = evidence
         .model_context
         .as_ref()
@@ -51,7 +54,7 @@ fn compaction_timing(evidence: &RequestContextEvidence) -> (bool, bool) {
     match threshold {
         Some(threshold) => (
             u128::from(evidence.estimated_input_tokens) * 100 >= u128::from(threshold) * 85,
-            evidence.estimated_input_tokens >= threshold,
+            evidence.needs_compaction(),
         ),
         None => (false, false),
     }

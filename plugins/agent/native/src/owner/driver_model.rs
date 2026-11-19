@@ -92,7 +92,12 @@ pub(super) struct DriverModel {
         tokio::sync::watch::Sender<Option<Arc<maka_agent_facts::model::assembly::AttemptCut>>>,
 }
 
-type ProjectedHistory = (Option<String>, Vec<FrozenCellKnowledge>);
+#[derive(Default)]
+struct ReplayedTail {
+    cells: Vec<FrozenCellKnowledge>,
+    compaction_request: Option<ToolKey>,
+}
+type ProjectedHistory = (Option<String>, ReplayedTail);
 
 struct ProjectedStepInput<'a> {
     system: Option<SystemPrompt>,
@@ -100,7 +105,7 @@ struct ProjectedStepInput<'a> {
     source_evidence: RequestSource,
     reader: HistorySource<'a>,
     previous_checkpoint_id: Option<String>,
-    recovered_cells: Vec<FrozenCellKnowledge>,
+    tail: ReplayedTail,
 }
 
 pub(super) struct PreparedContinuation {
@@ -282,6 +287,26 @@ struct ItemContinuation {
 }
 
 impl DriverModel {
+    async fn prepare_summary_input(
+        &self,
+        prompt: &mut maka_agent_engine::prepared_prompt::PreparedPrompt,
+        model: &maka_agent_engine::PreparedModel,
+        language: maka_agent_facts::language::Language,
+    ) -> Result<(), RunError> {
+        if model.provider.capabilities.native_compaction != Some(true) {
+            *prompt = maka_agent_engine::context_input::fit_prepared_summary(
+                prompt,
+                maka_agent_engine::context_input::summary_budget(model.context.as_ref()),
+                language,
+                &self.cancellation,
+            )
+            .await?;
+        }
+        prompt
+            .prepare_media(&model.provider, &self.cancellation)
+            .await
+    }
+
     pub(super) fn prepare_step<'a>(
         &'a self,
         view: &'a RunView,
@@ -407,7 +432,11 @@ impl DriverModel {
             source_evidence,
             reader,
             previous_checkpoint_id,
-            recovered_cells,
+            tail:
+                ReplayedTail {
+                    cells: recovered_cells,
+                    compaction_request,
+                },
         } = self
             .project_step_input(
                 view,
@@ -608,15 +637,19 @@ impl DriverModel {
             None
         };
         let rendered = Arc::new(rendered);
-        let mut prompt = Box::pin(preparation::prepare_prompt(
-            messages,
-            &settings,
-            &self.cancellation,
-            Some(rendered.clone()),
-            purpose,
-            None,
-        ))
-        .await?;
+        let mut prompt = if purpose == ModelPurpose::Summary {
+            Box::pin(messages.finish()).await?
+        } else {
+            Box::pin(preparation::prepare_prompt(
+                messages,
+                &settings,
+                &self.cancellation,
+                Some(rendered.clone()),
+                purpose,
+                None,
+            ))
+            .await?
+        };
         let continuation = match &input {
             RunInput::Continuation { claim, .. } if view.steps.is_empty() => Some(claim),
             _ => None,
@@ -627,11 +660,14 @@ impl DriverModel {
                 .filter(|claim| claim.replay.uses_logical_prompt())
                 .map(|_| maka_agent_engine::digest(&prompt.model().identity()))
                 .transpose()?;
-            let covered_prefix=if purpose==ModelPurpose::Summary{
-                let covered=CoveredPrefix::capture(&prompt).await?;
-                prompt.initialize_overlays(Some(rendered),true,instruction).await?;
+            let covered_prefix = if purpose == ModelPurpose::Summary {
+                let covered = CoveredPrefix::capture(&prompt).await?;
+                prompt.initialize_overlays(Some(rendered), true, instruction).await?;
+                self.prepare_summary_input(&mut prompt, model, view.spec.language).await?;
                 Some(covered)
-            }else{None};
+            } else {
+                None
+            };
             preparation::prepare_wire(
                 &settings,
                 &mut prompt,
@@ -640,23 +676,6 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
-            if purpose == ModelPurpose::Summary && !native_compaction {
-                prompt = maka_agent_engine::context_input::fit_prepared_summary(
-                    &prompt,
-                    maka_agent_engine::context_input::summary_budget(context),
-                    view.spec.language,
-                    &self.cancellation,
-                )
-                .await?;
-                preparation::prepare_wire(
-                    &settings,
-                    &mut prompt,
-                    &definitions,
-                    model.main_output_limit,
-                    &self.cancellation,
-                )
-                .await?;
-            }
             let calibration = if purpose==ModelPurpose::Main {
                 self.calibration(view,&source_evidence,model,previous_checkpoint_id.as_deref()).await?
             }else{None};
@@ -752,8 +771,12 @@ impl DriverModel {
                 Some(catalog) => driver.tool_contracts(catalog, &definitions)?,
                 None => std::collections::BTreeMap::new(),
             };
+            let compaction_request = compaction_request.filter(|key| !summary && matches!(mode,
+                Preparation::ToolContinuation { attempt } | Preparation::Notifications { attempt } | Preparation::Steering { attempt } if attempt == key.attempt
+            ));
             let provenance = ContentBlob::json(&json!({
                 "inputDigest": request.input_digest,
+                "compactionRequest": compaction_request,
                 "toolContracts": tool_contracts,
                 "routeIdentity": request.route_identity,
                 "modelInputPolicy": {"vision": model.supports_vision, "imageInput": model.provider.image_input},
@@ -931,7 +954,7 @@ impl DriverModel {
             )
             .await?;
             let previous_checkpoint_id;
-            let mut recovered_cells = Vec::new();
+            let mut tail = ReplayedTail::default();
             let mut has_main_attempt = false;
             if summary {
                 for attempt in view.attempts.values() {
@@ -990,7 +1013,7 @@ impl DriverModel {
                 source_evidence.current = before;
                 source_evidence.current_revision = 0;
             } else if view.baseline.is_some() {
-                (previous_checkpoint_id, recovered_cells) = self
+                (previous_checkpoint_id, tail) = self
                     .project_history(
                         target,
                         reader,
@@ -1008,7 +1031,7 @@ impl DriverModel {
                 system = baseline;
                 previous_checkpoint_id =
                     self.request_checkpoint(reader, view.run, &request).await?;
-                recovered_cells = self
+                tail = self
                     .semantic_tail(
                         target,
                         reader,
@@ -1054,7 +1077,7 @@ impl DriverModel {
                     &mut messages,
                 ))
                 .await?;
-                recovered_cells = self
+                tail = self
                     .semantic_tail(
                         target,
                         reader,
@@ -1073,7 +1096,7 @@ impl DriverModel {
                 source_evidence,
                 reader: captured,
                 previous_checkpoint_id,
-                recovered_cells,
+                tail,
             })
         })
     }
@@ -1728,7 +1751,7 @@ impl DriverModel {
                     Some(through) => self.covered_revisions(reader, through).await?,
                     None => Default::default(),
                 };
-                let mut recovered_cells = Vec::new();
+                let mut tail = ReplayedTail::default();
                 for (admission, (run, through)) in order {
                     let source = reader.run_source(run).await?;
                     if matches!(source.spec.backend, BackendSpec::Historical {}) {
@@ -1753,11 +1776,11 @@ impl DriverModel {
                         )
                         .await?;
                     if run == self.execution.run_id {
-                        recovered_cells = knowledge;
+                        tail = knowledge;
                     }
                 }
                 let Some(frame) = frames.pop() else {
-                    return Ok((previous_checkpoint_id, recovered_cells));
+                    return Ok((previous_checkpoint_id, tail));
                 };
                 current = frame.reader;
                 covered = Some(frame.covered);
@@ -1972,7 +1995,7 @@ impl DriverModel {
         system: &'a mut Option<SystemPrompt>,
         messages: &'a mut preparation::PromptBuilder,
         after_revision: u64,
-    ) -> BoxFuture<'a, Result<Vec<FrozenCellKnowledge>, RunError>> {
+    ) -> BoxFuture<'a, Result<ReplayedTail, RunError>> {
         Box::pin(async move {
             let recorded = self.recorded_inputs(reader, view, after_revision).await?;
             let mut replay = replay::TailReplay::new(

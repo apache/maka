@@ -20,11 +20,19 @@
 import { cleanup, computed, effect, signal } from 'nsh';
 import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import type { AgentHistoryRequestsOutput_AgentHistoryRequest as HistoryRequest } from '../../../../packages/plugin-sdk/src/generated/methods.js';
-import { historyTurnKey, type Row } from '../../../../products/maka/workbench/app/history';
+import {
+  historyRowThrough,
+  historyTurnKey,
+  type Row,
+} from '../../../../products/maka/workbench/app/history';
 import type { ScopedTrajectoryRequest } from '../../../../products/maka/workbench/app/trajectory';
 
 type Trace = { through: number; finished: boolean; requests: HistoryRequest[] };
-type Source = { turnKey: string; position: HistoryRowAddress };
+type Source = {
+  turnKey: string;
+  position: HistoryRowAddress;
+  metadataThrough: Row['metadataThrough'];
+};
 
 export function createTrajectoryRequests(props: {
   active(): boolean;
@@ -53,6 +61,7 @@ export function createTrajectoryRequests(props: {
         result.set(key, {
           turnKey,
           position: row.position,
+          metadataThrough: row.metadataThrough,
         });
     }
     return result;
@@ -68,18 +77,20 @@ export function createTrajectoryRequests(props: {
       failures.clear();
       return;
     }
-    const through = props.through();
-    if (!through) return;
+    const windowThrough = props.through();
+    if (!windowThrough) return;
     const loaded = sources();
     const cached = traces();
     if (loading) return;
-    const pending = [...loaded].findLast(([key]) => {
+    const pending = [...loaded].findLast(([key, source]) => {
+      const through = historyRowThrough(source, windowThrough);
       if (failures.get(key) === through) return false;
       const trace = cached.get(key);
       return !trace || (!trace.finished && trace.through !== through);
     });
     if (!pending) return;
     const [key, source] = pending;
+    const through = historyRowThrough(source, windowThrough);
     const prior = cached.get(key);
     const requests: HistoryRequest[] = [];
     // Re-read a failed attempt until its retry starts or is cancelled.

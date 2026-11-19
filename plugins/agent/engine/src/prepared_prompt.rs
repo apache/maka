@@ -148,6 +148,15 @@ impl PreparedPrompt {
     pub fn backed_wire_bytes() -> usize {
         wire::backed_resident_bytes()
     }
+    pub(crate) fn plan_directory(
+        &self,
+        bytes: usize,
+    ) -> std::io::Result<maka_model::DirectoryLease> {
+        self.preparation
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("summary source lacks its staging account"))?
+            .plan_directory(bytes)
+    }
     pub fn with_resident_bytes(mut self, bytes: usize) -> Self {
         self.resident_bytes = bytes;
         self
