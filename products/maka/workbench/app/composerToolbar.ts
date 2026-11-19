@@ -23,14 +23,6 @@ export type ComposerToolbarWidget = 'permissions' | 'workspace' | 'usage' | 'con
 export type ComposerToolbarSlot = ComposerToolbarWidget | 'spacer';
 export type ContextUsageDisplay = 'always' | 'high' | 'off';
 
-export const COMPOSER_TOOLBAR_WIDGETS: readonly ComposerToolbarWidget[] = [
-  'permissions',
-  'workspace',
-  'usage',
-  'context',
-  'model',
-];
-
 export const DEFAULT_COMPOSER_TOOLBAR_LAYOUT: readonly ComposerToolbarSlot[] = [
   'permissions',
   'workspace',
@@ -40,12 +32,10 @@ export const DEFAULT_COMPOSER_TOOLBAR_LAYOUT: readonly ComposerToolbarSlot[] = [
   'model',
 ];
 
-export const contextUsageDisplays: readonly ContextUsageDisplay[] = ['always', 'high', 'off'];
-
 export const NARROW_COMPOSER_TOOLBAR_WIDTH = 520;
 
 const VALID_SLOTS = new Set<string>(DEFAULT_COMPOSER_TOOLBAR_LAYOUT);
-const VALID_CONTEXT_MODES = new Set<string>(contextUsageDisplays);
+const VALID_CONTEXT_MODES = new Set<string>(['always', 'high', 'off']);
 
 export function normalizeComposerToolbarLayout(raw: unknown): ComposerToolbarSlot[] {
   if (!Array.isArray(raw)) return [...DEFAULT_COMPOSER_TOOLBAR_LAYOUT];
@@ -65,23 +55,6 @@ export function normalizeComposerToolbarLayout(raw: unknown): ComposerToolbarSlo
   return kept;
 }
 
-export function splitComposerToolbarLayout(layout: readonly ComposerToolbarSlot[]): {
-  left: ComposerToolbarWidget[];
-  right: ComposerToolbarWidget[];
-} {
-  const spacer = layout.indexOf('spacer');
-  if (spacer === -1) {
-    return {
-      left: layout.filter((slot): slot is ComposerToolbarWidget => slot !== 'spacer'),
-      right: [],
-    };
-  }
-  return {
-    left: layout.slice(0, spacer) as ComposerToolbarWidget[],
-    right: layout.slice(spacer + 1) as ComposerToolbarWidget[],
-  };
-}
-
 export function moveComposerToolbarSlot(
   layout: readonly ComposerToolbarSlot[],
   widget: ComposerToolbarWidget,
@@ -92,8 +65,7 @@ export function moveComposerToolbarSlot(
   const next = [...layout];
   next.splice(from, 1);
   const adjusted = targetIndex > from ? targetIndex - 1 : targetIndex;
-  const clamped = Math.max(0, Math.min(next.length, adjusted));
-  next.splice(clamped, 0, widget);
+  next.splice(Math.max(0, Math.min(next.length, adjusted)), 0, widget);
   return next;
 }
 
@@ -103,12 +75,10 @@ export function stepComposerToolbarSlot(
   delta: -1 | 1,
 ): ComposerToolbarSlot[] {
   const from = layout.indexOf(widget);
-  if (from === -1) return [...layout];
   const to = from + delta;
-  if (to < 0 || to >= layout.length) return [...layout];
+  if (from === -1 || to < 0 || to >= layout.length) return [...layout];
   const next = [...layout];
-  const [item] = next.splice(from, 1);
-  next.splice(to, 0, item!);
+  next.splice(to, 0, next.splice(from, 1)[0]!);
   return next;
 }
 
@@ -120,7 +90,6 @@ export function isDefaultComposerToolbarLayout(layout: readonly ComposerToolbarS
 }
 
 export type SlotBounds = { left: number; width: number };
-
 export type ToolbarDragPoint = { pageX: number; pageY: number };
 
 export type MeasuredToolbarTrack = {
@@ -161,11 +130,8 @@ export function computeDropSlot(
   let indicatorX = Math.max(0, trackWidth - 2);
   for (let i = 0; i < items.length; i++) {
     const item = items[i]!;
-    const midpoint = item.left + item.width / 2;
-    if (clientX < midpoint) {
-      index = i;
-      indicatorX = Math.max(0, item.left - trackLeft - 2);
-      break;
+    if (clientX < item.left + item.width / 2) {
+      return { index: i, indicatorX: Math.max(0, item.left - trackLeft - 2) };
     }
     indicatorX = Math.min(Math.max(0, trackWidth - 2), item.left + item.width - trackLeft + 1);
   }
@@ -211,8 +177,7 @@ export function createToolbarDragController(callbacks: {
     callbacks.onPreview(null);
     if (!measured.slots.length) return;
     const preview = project(widget, latestPoint, measured);
-    if (!preview) return;
-    callbacks.onCommit(widget, preview.targetIndex);
+    if (preview) callbacks.onCommit(widget, preview.targetIndex);
   };
 
   return {
@@ -224,12 +189,7 @@ export function createToolbarDragController(callbacks: {
     ) {
       const id = ++generation;
       active = { id, widget, latestPoint: point, released: false, measured: null };
-      callbacks.onPreview({
-        widget,
-        targetIndex: initialIndex,
-        indicatorX: 0,
-        overSpacer: false,
-      });
+      callbacks.onPreview({ widget, targetIndex: initialIndex, indicatorX: 0, overSpacer: false });
       void measure
         .then((track) => {
           if (!active || active.id !== id) return;
@@ -239,11 +199,8 @@ export function createToolbarDragController(callbacks: {
             return;
           }
           active.measured = track;
-          if (active.released) {
-            commitIfReady();
-          } else {
-            callbacks.onPreview(project(active.widget, active.latestPoint, track));
-          }
+          if (active.released) commitIfReady();
+          else callbacks.onPreview(project(active.widget, active.latestPoint, track));
         })
         .catch(() => {
           if (active && active.id === id) {
@@ -255,19 +212,14 @@ export function createToolbarDragController(callbacks: {
     move(point: ToolbarDragPoint) {
       if (!active || active.released) return;
       active.latestPoint = point;
-      if (active.measured) {
-        callbacks.onPreview(project(active.widget, point, active.measured));
-      }
+      if (active.measured) callbacks.onPreview(project(active.widget, point, active.measured));
     },
     release(point?: ToolbarDragPoint) {
       if (!active) return;
       if (point) active.latestPoint = point;
       active.released = true;
-      if (active.measured) {
-        commitIfReady();
-      } else {
-        callbacks.onPreview(null);
-      }
+      if (active.measured) commitIfReady();
+      else callbacks.onPreview(null);
     },
     cancel() {
       generation++;
@@ -277,18 +229,8 @@ export function createToolbarDragController(callbacks: {
   };
 }
 
-const LAYOUT_KEY = 'composer-toolbar-layout';
-const CONTEXT_USAGE_KEY = 'composer-context-usage';
-const USAGE_LIMITS_KEY = 'composer-usage-limits';
-type StorageKey = typeof LAYOUT_KEY | typeof CONTEXT_USAGE_KEY | typeof USAGE_LIMITS_KEY;
-
-type Initialization =
-  | { kind: 'uninitialized'; pending: Set<StorageKey> }
-  | { kind: 'loading'; pending: Set<StorageKey> }
-  | { kind: 'ready' };
-type Persistence =
-  | { kind: 'idle' }
-  | { kind: 'saving'; pending: Map<StorageKey, string>; completion: Promise<void> };
+const STORAGE_KEY = 'composer-toolbar';
+type Field = 'layout' | 'contextUsage' | 'usageLimits';
 
 function createComposerToolbarOwner() {
   const supported = platform.idiom !== 'terminal';
@@ -296,54 +238,41 @@ function createComposerToolbarOwner() {
   const contextUsage = signal<ContextUsageDisplay>('always');
   const usageLimits = signal(false);
 
-  let initialization: Initialization = {
-    kind: 'uninitialized',
-    pending: new Set([LAYOUT_KEY, CONTEXT_USAGE_KEY, USAGE_LIMITS_KEY]),
-  };
-  let persistence: Persistence = { kind: 'idle' };
+  const dirty = new Set<Field>();
+  let loading: Promise<void> | null = null;
+  let initialized = false;
+  let saving: Promise<void> | null = null;
+  let queued = false;
 
-  const selected = (key: StorageKey) => {
-    if (initialization.kind !== 'ready') initialization.pending.delete(key);
-  };
-
-  const persist = (key: StorageKey, value: string) => {
-    if (persistence.kind === 'saving') {
-      persistence.pending.set(key, value);
-      return;
-    }
-    const pending = new Map<StorageKey, string>([[key, value]]);
-    const completion = Promise.resolve().then(async () => {
-      for (;;) {
-        const next = pending.entries().next();
-        if (next.done) break;
-        const [entryKey, entryValue] = next.value;
-        pending.delete(entryKey);
-        try {
-          await Storage.setItem(entryKey, entryValue);
-        } catch {
-          continue;
+  const persist = () => {
+    queued = true;
+    if (saving) return;
+    saving = Promise.resolve().then(async () => {
+      try {
+        if (loading) await loading;
+        while (queued) {
+          queued = false;
+          const payload = JSON.stringify({
+            layout: layout(),
+            contextUsage: contextUsage(),
+            usageLimits: usageLimits(),
+          });
+          try {
+            await Storage.setItem(STORAGE_KEY, payload);
+          } catch {
+            continue;
+          }
         }
+      } finally {
+        saving = null;
       }
-      persistence = { kind: 'idle' };
     });
-    persistence = { kind: 'saving', pending, completion };
-  };
-
-  const restore = (key: StorageKey, apply: (value: string | null) => void) => {
-    if (initialization.kind === 'ready' || !initialization.pending.has(key))
-      return Promise.resolve();
-    return Storage.getItem(key)
-      .then((value) => {
-        if (initialization.kind === 'loading' && initialization.pending.delete(key)) apply(value);
-      })
-      .catch(() => undefined);
   };
 
   const setLayout = (next: readonly ComposerToolbarSlot[]) => {
-    const normalized = normalizeComposerToolbarLayout(next);
-    selected(LAYOUT_KEY);
-    layout.set(normalized);
-    persist(LAYOUT_KEY, JSON.stringify(normalized));
+    dirty.add('layout');
+    layout.set(normalizeComposerToolbarLayout(next));
+    persist();
   };
 
   return {
@@ -363,41 +292,42 @@ function createComposerToolbarOwner() {
     },
     chooseContextUsage(mode: ContextUsageDisplay) {
       if (!VALID_CONTEXT_MODES.has(mode)) return;
-      selected(CONTEXT_USAGE_KEY);
+      dirty.add('contextUsage');
       contextUsage.set(mode);
-      persist(CONTEXT_USAGE_KEY, mode);
+      persist();
     },
     setUsageLimits(enabled: boolean) {
-      selected(USAGE_LIMITS_KEY);
+      dirty.add('usageLimits');
       usageLimits.set(enabled);
-      persist(USAGE_LIMITS_KEY, enabled ? '1' : '0');
+      persist();
     },
-    saving: () => persistence.kind === 'saving',
-    whenIdle: () => (persistence.kind === 'saving' ? persistence.completion : Promise.resolve()),
+    whenIdle: () => saving ?? Promise.resolve(),
     initialize() {
-      if (initialization.kind !== 'uninitialized' || !supported) return;
-      initialization = { kind: 'loading', pending: initialization.pending };
-      void Promise.all([
-        restore(LAYOUT_KEY, (value) => {
-          if (value === null) return;
-          try {
-            layout.set(normalizeComposerToolbarLayout(JSON.parse(value)));
-          } catch {
-            return;
+      if (initialized || !supported) return;
+      initialized = true;
+      loading = Storage.getItem(STORAGE_KEY)
+        .then((raw) => {
+          if (!raw) return;
+          const parsed = JSON.parse(raw) as Record<string, unknown>;
+          if (!parsed || typeof parsed !== 'object') return;
+          if (!dirty.has('layout') && 'layout' in parsed) {
+            layout.set(normalizeComposerToolbarLayout(parsed.layout));
           }
-        }),
-        restore(CONTEXT_USAGE_KEY, (value) => {
-          if (value !== null && VALID_CONTEXT_MODES.has(value)) {
-            contextUsage.set(value as ContextUsageDisplay);
+          if (
+            !dirty.has('contextUsage') &&
+            typeof parsed.contextUsage === 'string' &&
+            VALID_CONTEXT_MODES.has(parsed.contextUsage)
+          ) {
+            contextUsage.set(parsed.contextUsage as ContextUsageDisplay);
           }
-        }),
-        restore(USAGE_LIMITS_KEY, (value) => {
-          if (value === '1' || value === 'true') usageLimits.set(true);
-          else if (value === '0' || value === 'false') usageLimits.set(false);
-        }),
-      ]).then(() => {
-        initialization = { kind: 'ready' };
-      });
+          if (!dirty.has('usageLimits') && typeof parsed.usageLimits === 'boolean') {
+            usageLimits.set(parsed.usageLimits);
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          loading = null;
+        });
     },
   };
 }

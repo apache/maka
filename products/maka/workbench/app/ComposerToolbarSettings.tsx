@@ -56,6 +56,26 @@ function widgetLabel(widget: ComposerToolbarWidget): string {
   }
 }
 
+function FixedAnchor(props: { icon: 'plus' | 'send'; color: string }) {
+  return (
+    <View
+      accessibilityElementsHidden
+      style={{
+        width: 28,
+        height: 28,
+        borderRadius: 14,
+        backgroundColor: C.raised,
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+        opacity: 0.7,
+      }}
+    >
+      <Icon name={props.icon} color={props.color} />
+    </View>
+  );
+}
+
 function GripDots(props: { color: string }) {
   return (
     <Canvas
@@ -189,21 +209,7 @@ export function ComposerToolbarSettings() {
             minHeight: 44,
           }}
         >
-          <View
-            accessibilityElementsHidden
-            style={{
-              width: 28,
-              height: 28,
-              borderRadius: 14,
-              backgroundColor: C.raised,
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0,
-              opacity: 0.7,
-            }}
-          >
-            <Icon name="plus" color={C.muted} />
-          </View>
+          <FixedAnchor icon="plus" color={C.muted} />
           <View
             ref={(node) => {
               trackRef = node;
@@ -347,21 +353,7 @@ export function ComposerToolbarSettings() {
               />
             </If>
           </View>
-          <View
-            accessibilityElementsHidden
-            style={{
-              width: 28,
-              height: 28,
-              borderRadius: 14,
-              backgroundColor: C.raised,
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0,
-              opacity: 0.7,
-            }}
-          >
-            <Icon name="send" color={C.secondary} />
-          </View>
+          <FixedAnchor icon="send" color={C.secondary} />
         </View>
         <View
           style={{

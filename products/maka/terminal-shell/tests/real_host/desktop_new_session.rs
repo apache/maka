@@ -4113,15 +4113,12 @@ async fn desktop_composer_toolbar_customizes_layout_and_context_usage() {
         sandbox_before.left() < model_before.left(),
         "default layout places sandbox left of model: sandbox={sandbox_before:?}, model={model_before:?}"
     );
-    desktop.artifact("composer-toolbar-conversation");
-
     desktop.press("Open settings").await;
     desktop.control("Close settings").await;
     desktop.press("Settings section General").await;
     desktop.control("Language").await;
     desktop.control("70%+").await;
     desktop.control("Model").await;
-    desktop.artifact("composer-toolbar-settings");
 
     desktop.press("Usage limits: Off").await;
     desktop.control("Usage limits: On").await;
@@ -4145,8 +4142,6 @@ async fn desktop_composer_toolbar_customizes_layout_and_context_usage() {
         usage_indicator.left() > model_after.left(),
         "usage limits indicator should render on the right side after moving model left: usage={usage_indicator:?}, model={model_after:?}"
     );
-    desktop.artifact("composer-toolbar-reordered");
-
     desktop.press("Open settings").await;
     desktop.press("Settings section General").await;
     desktop.press("Off").await;
@@ -4159,9 +4154,6 @@ async fn desktop_composer_toolbar_customizes_layout_and_context_usage() {
         model_reset.left() >= model_before.left() - px(2.0),
         "reset should restore model to the right side: before={model_before:?}, reset={model_reset:?}"
     );
-    desktop.press("Open settings").await;
-    desktop.press("Settings section General").await;
-    desktop.press("Always").await;
     desktop.close().await;
     fixture.finish().await;
 }
