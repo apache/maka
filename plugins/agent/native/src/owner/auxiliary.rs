@@ -83,6 +83,18 @@ impl Auxiliary {
         admission: Admission,
         quote: maka_agent_facts::pricing::Quote,
     ) -> Result<ModelGeneration, Error> {
+        self.generate_streamed(request, cancellation, log, admission, quote, |_| {})
+            .await
+    }
+    pub async fn generate_streamed(
+        &self,
+        request: ModelRequest,
+        cancellation: CancellationToken,
+        log: &RootStore,
+        admission: Admission,
+        quote: maka_agent_facts::pricing::Quote,
+        delta: impl Fn(&str) + std::marker::Send + Sync,
+    ) -> Result<ModelGeneration, Error> {
         if cancellation.is_cancelled() {
             return Err(Error::Model(ModelError::Cancelled));
         }
@@ -163,7 +175,7 @@ impl Auxiliary {
                 .await
                 .map_err(Error::Model)?;
             custody.phase = ProviderPhase::Active;
-            let generation = receive(stream, &mut custody, model_id).await?;
+            let generation = receive(stream, &mut custody, model_id, delta).await?;
             if generation.finish_reason == ModelFinishReason::ToolCalls {
                 return Err(failed("Auxiliary generation cannot finish with tool calls").into());
             }
@@ -317,6 +329,7 @@ async fn receive(
     mut stream: ModelStream,
     custody: &mut JournalCustody,
     model_id: String,
+    delta: impl Fn(&str) + std::marker::Send + Sync,
 ) -> Result<ModelGeneration, Error> {
     let journal = custody.journal();
     let result = async {
@@ -334,6 +347,7 @@ async fn receive(
                 ModelEvent::PartDelta { id, text, .. } => {
                     if let Some((_, output)) = parts.iter_mut().find(|(part, _)| *part == id) {
                         output.push_str(&text);
+                        delta(&text);
                     }
                 }
                 ModelEvent::Finished { reason, usage, .. } => {

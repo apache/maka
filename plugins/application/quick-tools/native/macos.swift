@@ -335,6 +335,56 @@ case "activate", "paste":
         RunLoop.current.run(until: Date().addingTimeInterval(0.1))
     }
 case "trusted": output(AXIsProcessTrusted() ? "true" : "false")
+case "running-apps":
+    let targets = try JSONDecoder().decode([String].self, from: Data(argument.utf8))
+    var running: [String: [Int32]] = [:]
+    for app in NSWorkspace.shared.runningApplications where !app.isTerminated {
+        if let url = app.bundleURL {
+            running[url.resolvingSymlinksInPath().standardizedFileURL.path, default: []].append(app.processIdentifier)
+        }
+    }
+    var result: [String: Int32] = [:]
+    for path in targets {
+        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
+        if let matches = running[url.path], matches.count == 1 { result[path] = matches[0] }
+    }
+    emit(result)
+case "manage-app":
+    guard args.count == 5, let pid = Int32(args[4]), pid > 0 else { fail("Invalid application target") }
+    let target = URL(fileURLWithPath: args[3]).resolvingSymlinksInPath().standardizedFileURL
+    guard target.pathExtension == "app",
+          let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated,
+          app.bundleURL?.resolvingSymlinksInPath().standardizedFileURL.path == target.path
+    else { fail("应用的运行状态已改变，请重新选择。") }
+    if argument == "hide" {
+        if !app.isHidden {
+            let deadline = Date().addingTimeInterval(2)
+            while !app.isHidden && !app.isTerminated && Date() < deadline {
+                if app.isFinishedLaunching { _ = app.hide() }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            }
+            guard app.isHidden else { fail("无法隐藏应用。") }
+        }
+        emit(["ok": true])
+        break
+    }
+    guard ["quit", "restart", "forceQuit"].contains(argument) else { fail("Invalid application action") }
+    guard argument == "forceQuit" ? app.forceTerminate() : app.terminate() else { fail("应用未接受退出请求。") }
+    let deadline = Date().addingTimeInterval(15)
+    while !app.isTerminated && Date() < deadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    }
+    guard app.isTerminated else { fail("应用尚未退出，请检查是否有待保存的窗口。") }
+    if argument == "restart" {
+        // Open only after this instance has exited, including when the app prompts to save.
+        let launch = Process()
+        launch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        launch.arguments = [target.path]
+        try launch.run()
+        launch.waitUntilExit()
+        guard launch.terminationStatus == 0 else { fail("应用已退出，但重新打开失败。") }
+    }
+    emit(["ok": true])
 case "app-icons":
     let paths = try JSONSerialization.jsonObject(with: Data(argument.utf8)) as! [String]
     guard paths.count <= 40 else { fail("Too many icon requests") }

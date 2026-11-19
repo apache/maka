@@ -32,6 +32,20 @@ export async function run(command: string, args: string[], timeoutMs = 5000): Pr
   if (result.code !== 0) throw Error(result.stderr.trim() || `${command}: ${result.code}`);
   return result.stdout.trim();
 }
+// The macOS host can reap a short-lived helper before the VM reads its status.
+async function helperJSON<T>(args: string[], timeoutMs = 5000): Promise<T> {
+  const result = await process.run(helperPath(), args, { timeoutMs });
+  if (result.signal || (result.code !== 0 && result.code !== null) || !result.stdout.trim())
+    throw Error(result.stderr.trim() || `Application helper failed: ${result.signal ?? result.code}`);
+  return JSON.parse(result.stdout) as T;
+}
+
+export async function manageApplication(input: Services['applications.manage']['input']) {
+  const { target, pid, action } = input;
+  const result = await helperJSON<{ ok: boolean }>(['manage-app', action, target, String(pid)], 20000);
+  if (!result.ok) throw Error(qt('无效操作'));
+}
+
 export async function applications(): Promise<Services['applications.list']['output']> {
   if (process.platform !== 'macos') throw Error(qt('应用启动器目前支持 macOS'));
   const apps: Services['applications.list']['output'] = [];
@@ -61,21 +75,26 @@ export async function applications(): Promise<Services['applications.list']['out
   // Batch helper requests stay below process argument/output limits.
   for (let offset = 0; process.env.MAKA_QUICK_NATIVE && offset < apps.length; offset += 32) {
     const batch = apps.slice(offset, offset + 32);
-    const [icons, keywords] = await Promise.all([
-      run(helperPath(), ['app-icons', JSON.stringify(batch.map((app) => app.target))]).then(
-        (value) => JSON.parse(value) as string[],
-      ),
-      run(helperPath(), ['transliterate', JSON.stringify(batch.map((app) => app.name))]).then(
-        (value) => JSON.parse(value) as string[],
-      ),
+    const [icons, keywords] = await Promise.allSettled([
+      helperJSON<string[]>(['app-icons', JSON.stringify(batch.map((app) => app.target))], 15000),
+      helperJSON<string[]>(['transliterate', JSON.stringify(batch.map((app) => app.name))]),
     ]);
     batch.forEach((app, index) => {
-      if (icons[index]?.startsWith('data:image/png;base64,'))
-        app.icon = icons[index] as `data:image/png;base64,${string}`;
-      app.keywords = keywords[index];
+      if (icons.status === 'fulfilled' && icons.value[index]?.startsWith('data:image/png;base64,'))
+        app.icon = icons.value[index] as `data:image/png;base64,${string}`;
+      if (keywords.status === 'fulfilled') app.keywords = keywords.value[index];
     });
   }
   return apps.sort((a, b) => a.name.localeCompare(b.name));
+}
+export async function runningApplications(targets: string[]): Promise<Record<string, number>> {
+  if (!process.env.MAKA_QUICK_NATIVE) return {};
+  const running: Record<string, number> = {};
+  for (let i = 0; i < targets.length; i += 128) {
+    const paths = targets.slice(i, i + 128);
+    Object.assign(running, await helperJSON<Record<string, number>>(['running-apps', JSON.stringify(paths)]));
+  }
+  return running;
 }
 export async function open(target: string, reveal = false, quicklink = false) {
   if (target.startsWith('~/')) target = join(homedir(), target.slice(2));

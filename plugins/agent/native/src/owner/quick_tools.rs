@@ -22,7 +22,172 @@ use super::*;
 use maka_capabilities::call::Scope;
 use maka_event_log::applications::operations::OperationDispatchScope;
 use maka_plugin_core::operation::RecoveryRef;
+#[derive(Default)]
+pub(super) struct QuickHistory {
+    session: String,
+    latest: String,
+    messages: Vec<maka_model::prompt::Message>,
+}
+
+impl QuickHistory {
+    fn begin(&mut self, input: &QuickQuestion) -> Result<Vec<maka_model::prompt::Message>, String> {
+        use maka_model::prompt::Message;
+        if let Some(previous) = &input.continue_from {
+            if self.session != input.session_id || self.latest != *previous {
+                return Err("This quick question has been replaced".into());
+            }
+            if self.messages.len() >= 64 {
+                return Err("Start a new quick question to continue".into());
+            }
+        } else {
+            self.messages.clear();
+        }
+        self.session.clone_from(&input.session_id);
+        self.latest.clone_from(&input.request_id);
+        self.messages.push(Message::user(&input.question));
+        Ok(self.messages.clone())
+    }
+
+    fn finish(&mut self, input: &QuickQuestion, text: String) {
+        use maka_model::prompt::{AssistantPart, Message};
+        if self.session == input.session_id && self.latest == input.request_id && !text.is_empty() {
+            self.messages.push(Message::Assistant {
+                content: vec![AssistantPart::Text {
+                    text,
+                    provider_options: None,
+                }],
+                provider_options: None,
+            });
+        }
+    }
+}
+
 impl Owner {
+    async fn quick_tool_model(
+        &self,
+        scope: &Scope,
+        session_id: &str,
+    ) -> Result<Option<crate::model::Source>, String> {
+        let session = self.scoped_session(scope, session_id).await?;
+        if session.archived {
+            return Ok(None);
+        }
+        let backend = match session.configuration.backend {
+            Some(value) => Some(value),
+            None => self.remembered_backend(session_id).await?,
+        };
+        let Some(BackendPreference::Model {
+            connection_id,
+            model_id,
+            thinking_level,
+        }) = backend
+        else {
+            return Ok(None);
+        };
+        let (source, _) = crate::model::Source::select(
+            self.configuration.clone(),
+            self.catalog.clone(),
+            self.credentials.clone(),
+            ModelSelection {
+                connection_id,
+                model_id,
+            },
+            thinking_level,
+            session_id.to_owned(),
+            self.revision.clone(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        Ok(Some(source))
+    }
+
+    pub async fn ask_quick_question(
+        self: &Arc<Self>,
+        input: QuickQuestion,
+        scope: &Scope,
+        operation: &RecoveryRef,
+        dispatch: OperationDispatchScope,
+        progress: tokio::sync::watch::Sender<String>,
+    ) -> Result<(), String> {
+        use maka_model::prompt::Message;
+        if input.question.trim().is_empty()
+            || input.question.len() > 16000
+            || input.request_id.len() > 128
+            || input.request_id.is_empty()
+        {
+            return Err("Invalid quick question".into());
+        }
+        let operation = operation.clone();
+        self.resource_work(scope, move |owner, scope| {
+            Box::pin(async move {
+                let source = owner
+                    .quick_tool_model(&scope, &input.session_id)
+                    .await?
+                    .ok_or("quick_question_model_required")?;
+                let prepared = source
+                    .capture_auxiliary()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let language = owner.resolve_language(
+                    &owner
+                        .configuration
+                        .runtime_policy()
+                        .await
+                        .map_err(|e| e.to_string())?,
+                );
+                let quote = owner
+                    .configuration
+                    .quote_model(prepared.provider_id, source.accepted.binding.model.clone())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let mut prompt = vec![Message::System {
+                    content: "Answer the user's question directly and concisely in their language."
+                        .into(),
+                    provider_options: None,
+                }];
+                prompt.extend(owner.quick_answer.lock().await.begin(&input)?);
+                let cancellation = scope.cancellation.child_token();
+                let _guard = cancellation.clone().drop_guard();
+                let generation = owner.auxiliary.generate_streamed(
+                    maka_model::ModelRequest {
+                        operation: maka_agent_facts::context::ModelOperation::Inference,
+                        language,
+                        provider: prepared.provider,
+                        prompt: prompt.into(),
+                        tools: vec![],
+                        tool_choice: Default::default(),
+                        provider_options: prepared.options,
+                        max_output_tokens: Some(
+                            prepared.main_output_limit.map_or(2048, |n| n.min(2048)),
+                        ),
+                    },
+                    cancellation.clone(),
+                    &owner.store,
+                    auxiliary::Admission::Operation {
+                        reference: Box::new(operation),
+                        scope: Box::new(dispatch),
+                        execution: None,
+                        binding: source.accepted.binding.clone(),
+                        session_id: input.session_id.clone(),
+                    },
+                    quote,
+                    |delta| progress.send_modify(|answer| answer.push_str(delta)),
+                );
+                tokio::pin!(generation);
+                let result = tokio::select! {
+                    result = &mut generation => result,
+                    _ = owner.stop.cancelled() => { cancellation.cancel(); generation.await }
+                };
+                let answer = progress.borrow().clone();
+                owner.quick_answer.lock().await.finish(&input, answer);
+                result
+                    .map(|_| ())
+                    .map_err(|e| maka_agent_facts::tools::ToolError::from(e).to_string())
+            })
+        })
+        .await
+    }
+
     pub async fn rank_quick_tools(
         self: &Arc<Self>,
         input: QuickToolRank,
@@ -42,20 +207,9 @@ impl Owner {
                 if input.query.trim().is_empty() || input.candidates.is_empty() {
                     return Ok(local());
                 }
-                let session = owner.scoped_session(&scope, &input.session_id).await?;
-                if session.archived { return Ok(local()); }
-                let backend = match session.configuration.backend.clone() {
-                    Some(value) => Some(value),
-                    None => owner.remembered_backend(&input.session_id).await?,
-                };
-                let Some(BackendPreference::Model { connection_id, model_id, thinking_level }) = backend else {
+                let Some(source) = owner.quick_tool_model(&scope, &input.session_id).await? else {
                     return Ok(local());
                 };
-                let (source, _) = crate::model::Source::select(
-                    owner.configuration.clone(), owner.catalog.clone(), owner.credentials.clone(),
-                    ModelSelection { connection_id, model_id }, thinking_level,
-                    input.session_id.clone(), owner.revision.clone(),
-                ).await.map_err(|e| e.to_string())?;
                 let prepared = source.capture_auxiliary().await.map_err(|e| e.to_string())?;
                 let policy = owner.configuration.runtime_policy().await.map_err(|e| e.to_string())?;
                 let language = owner.resolve_language(&policy);

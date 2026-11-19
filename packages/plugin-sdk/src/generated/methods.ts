@@ -691,6 +691,16 @@ export type TerminalReadDisplayOutput_Color =
 
 export interface ServiceMethods {
   agent: {
+    askQuickQuestion: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        question: string;
+        requestId: string;
+        continueFrom?: string | null;
+      };
+      output: null;
+    };
     attachmentImage: {
       mode: 'query';
       input: Runtime.AgentAttachmentImageRead;

@@ -828,6 +828,132 @@ async fn bot_count(f: &Fixture) -> usize {
 }
 
 #[tokio::test]
+async fn quick_question_streams_and_only_continues_explicit_history() {
+    async fn exercise() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        let session = open(&fixture).await["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        fixture
+            .mutation(
+                2,
+                "selectBackend",
+                json!({"sessionId":session,"backend":model_backend(&fixture.selection().await)}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        let before = fixture
+            .query("observe", json!({"sessionId":session}))
+            .await
+            .unwrap();
+        for (request_id, previous, question) in [
+            ("first", None, "Translate hello"),
+            ("second", Some("first"), "Explain the translation"),
+            ("third", None, "An independent question"),
+        ] {
+            let client = fixture.app.client();
+            let prepared = client.prepare_mutation(fixture.binding(2).await, "askQuickQuestion".into(), json!({"sessionId":session,"requestId":request_id,"continueFrom":previous,"question":question}), scope(&fixture.issuer,true), Uuid::new_v4(), Attachments::new().into()).await.unwrap();
+            let mut operation = client.mutate_owned(prepared).await.unwrap();
+            let (mut socket, _) = tokio::select! {
+                accepted = listener.accept() => accepted.unwrap(),
+                early = operation.recv() => panic!("no model request: {early:?}"),
+            };
+            let sent = request(&mut socket).await;
+            assert!(tool_names(&sent).is_empty());
+            let messages = sent["messages"].as_array().unwrap();
+            assert_eq!(
+                messages.iter().any(
+                    |m| m["role"] == "assistant" && m["content"].to_string().contains("Hello!")
+                ),
+                previous.is_some()
+            );
+            if request_id == "first" {
+                let chunk = |text: &str| {
+                    format!(
+                        "data: {}\n\n",
+                        json!({"id":"fixture","choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]})
+                    )
+                };
+                let end = json!({"id":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}});
+                let first = chunk("Hell");
+                let last = format!("{}data: {end}\n\ndata: [DONE]\n\n", chunk("o!"));
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{first}",first.len()+last.len()).as_bytes()).await.unwrap();
+                assert_eq!(operation.recv().await, Some(json!("Hell")));
+                socket.write_all(last.as_bytes()).await.unwrap();
+            } else {
+                response_with_thinking(&mut socket, "Hello!", Some("hidden reasoning")).await;
+            }
+            let mut answer = Value::Null;
+            while let Some(progress) = operation.recv().await {
+                answer = progress;
+            }
+            assert_eq!(answer, "Hello!");
+            assert!(matches!(
+                operation.result().await.receipt,
+                Receipt::Recorded {
+                    outcome: OperationOutcome::Returned { .. },
+                    ..
+                }
+            ));
+        }
+        let client = fixture.app.client();
+        let request_scope = scope(&fixture.issuer, true);
+        let cancel = request_scope.cancellation.clone();
+        let prepared = client
+            .prepare_mutation(
+                fixture.binding(2).await,
+                "askQuickQuestion".into(),
+                json!({"sessionId":session,"requestId":"fourth","question":"Stop this answer"}),
+                request_scope,
+                Uuid::new_v4(),
+                Attachments::new().into(),
+            )
+            .await
+            .unwrap();
+        let operation = client.mutate_owned(prepared).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        cancel.cancel();
+        let completion = operation.completion().await;
+        assert!(!matches!(
+            completion.reply.receipt,
+            Receipt::Recorded {
+                outcome: OperationOutcome::Returned { .. },
+                ..
+            }
+        ));
+        completion.cleanup.unwrap();
+        let after = fixture
+            .query("observe", json!({"sessionId":session}))
+            .await
+            .unwrap();
+        assert_eq!(after["lastCompletedTurnId"], before["lastCompletedTurnId"]);
+        let appended = fixture
+            .session(&session)
+            .await
+            .session_events(
+                &session,
+                before["through"].as_u64().unwrap(),
+                after["through"].as_u64().unwrap(),
+                1,
+                usize::MAX,
+            )
+            .await
+            .unwrap();
+        assert!(appended.events.is_empty());
+        assert_eq!(bot_count(&fixture).await, 1);
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(45), exercise())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn an_interrupted_claim_is_taken_over() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

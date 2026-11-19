@@ -1,4 +1,14 @@
 {
+  "提问失败": "Quick question failed",
+  "请先为个人助手选择模型": "Choose a model for Personal Assistant first",
+  "⌘↵ 提问": "⌘↵ Ask",
+  "继续追问…": "Ask a follow-up…",
+  "继续上次提问": "Resume last question",
+  "停止生成": "Stop generating",
+  "复制回答": "Copy answer",
+  "在个人助手中继续": "Continue in Personal Assistant",
+  "问：": "Question: ",
+  "答：": "Answer: ",
   "未设置": "Not set",
   "打开快捷工具设置": "Open Quick Tools Settings",
   "加载中…": "Loading…",
@@ -480,5 +490,13 @@
   "插件与命令": "Plugins and commands",
   "搜索插件、命令或别名": "Search plugins, commands, or aliases",
   "命令": "Command",
-  "没有匹配项": "No matches"
+  "没有匹配项": "No matches",
+  "快问": "Quick Question",
+  "查看应用运行状态": "Read application running state",
+  "管理运行中的应用": "Manage running applications",
+  "隐藏应用": "Hide application",
+  "重启应用": "Restart application",
+  "退出应用": "Quit application",
+  "强制退出应用": "Force quit application",
+  "强制退出“${0}”？未保存的更改可能会丢失。": "Force quit “${0}”? Unsaved changes may be lost."
 }

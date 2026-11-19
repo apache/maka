@@ -136,6 +136,76 @@ mod tests {
         }
     }
 
+    #[nsh_core::element::class]
+    struct QuestionHost;
+
+    #[nsh_core::element::class]
+    impl QuestionHost {
+        #[getter]
+        pub fn system_locale(&self) -> String {
+            "en".into()
+        }
+        pub fn mutation(
+            &self,
+            endpoint: String,
+            method: String,
+            _input: nsh_core::JsonValue,
+        ) -> nsh_core::JsonValue {
+            assert_eq!((endpoint.as_str(), method.as_str()), ("agent", "openBot"));
+            serde_json::json!({"reply":{"receipt":{"kind":"recorded","outcome":{"kind":"returned","value":{"kind":"opened","sessionId":"assistant"}}}}})
+        }
+        pub fn session(&self, id: String) -> Instance<QuestionDraft> {
+            assert_eq!(id, "assistant");
+            Instance::new(QuestionDraft)
+        }
+        pub fn begin_mutation(
+            &self,
+            endpoint: String,
+            method: String,
+            input: nsh_core::JsonValue,
+        ) -> Instance<QuestionOperation> {
+            assert_eq!(
+                (endpoint.as_str(), method.as_str()),
+                ("agent", "askQuickQuestion")
+            );
+            Instance::new(QuestionOperation {
+                answer: Some(format!("收到：{}", input["question"].as_str().unwrap())),
+            })
+        }
+    }
+    #[nsh_core::element::class]
+    struct QuestionDraft;
+    #[nsh_core::element::class]
+    impl QuestionDraft {
+        pub fn load_draft(&self) -> nsh_core::JsonValue {
+            serde_json::json!({"text":"原有草稿","attachments":["attachment"],"revision":7})
+        }
+        pub fn save_draft(&self, revision: u32, edit: nsh_core::JsonValue) -> nsh_core::JsonValue {
+            assert_eq!(revision, 7);
+            assert_eq!(edit["attachments"], serde_json::json!(["attachment"]));
+            assert_eq!(
+                edit["text"],
+                "原有草稿\n\n问：快捷提问测试\n答：收到：快捷提问测试\n\n问：追问测试\n答：收到：追问测试"
+            );
+            edit
+        }
+    }
+    #[nsh_core::element::class]
+    struct QuestionOperation {
+        answer: Option<String>,
+    }
+    #[nsh_core::element::class]
+    impl QuestionOperation {
+        pub fn next(&mut self) -> nsh_core::JsonValue {
+            match self.answer.take() {
+                Some(value) => serde_json::json!({"kind":"progress","value":value}),
+                None => {
+                    serde_json::json!({"kind":"finished","reply":{"receipt":{"kind":"recorded","outcome":{"kind":"returned","value":null}}}})
+                }
+            }
+        }
+    }
+
     #[test]
     fn recycled_completion_cells_refresh_labels_and_press_actions() {
         let mut registry = crate::bindings::ui_registry();
@@ -241,7 +311,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn native_quick_tools_search_and_language() {
         let mut registry = crate::bindings::ui_registry();
-        registry.value("host", || Instance::new(CompletionHost));
+        registry.value("host", || Instance::new(QuestionHost));
         let sets = vec![nsh_base::registry(), registry];
         let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
             entry: std::path::Path::new("tests/fixtures/quick-tools.tsx")
@@ -411,6 +481,19 @@ mod tests {
         app.press("id:chinese").unwrap();
         app.press("id:reopen").unwrap();
         app.wait_for("role:button[快捷链接]").unwrap();
+        app.type_text("label:搜索", "快捷提问测试").unwrap();
+        app.press_key("mod+enter").unwrap();
+        app.wait_for("text:收到：快捷提问测试").unwrap();
+        app.press("role:button[复制回答]").unwrap();
+        assert_eq!(app.screen().clipboard(), Some("收到：快捷提问测试"));
+        app.press_key("escape").unwrap();
+        app.press("id:reopen").unwrap();
+        app.press("role:button[继续上次提问]").unwrap();
+        app.wait_for("text:快捷提问测试").unwrap();
+        app.type_text("label:继续追问…", "追问测试\n").unwrap();
+        app.wait_for("text:收到：追问测试").unwrap();
+        app.press("role:button[在个人助手中继续]").unwrap();
+        app.press("id:reopen").unwrap();
     }
 
     #[test]

@@ -85,6 +85,8 @@ export type Permission =
   | 'assistant.open'
   | 'model.rank'
   | 'applications.list'
+  | 'applications.running'
+  | 'applications.manage'
   | 'system.open'
   | 'system.reveal'
   | 'clipboard.read'
@@ -186,6 +188,11 @@ export interface Services {
   'applications.list': {
     input: undefined;
     output: { id: string; name: string; target: string; icon?: ToolIcon; keywords?: string }[];
+  };
+  'applications.running': { input: string[]; output: Record<string, number> };
+  'applications.manage': {
+    input: { target: string; pid: number; action: 'hide' | 'restart' | 'quit' | 'forceQuit' };
+    output: void;
   };
   'system.open': { input: string; output: void };
   'system.reveal': { input: string; output: void };

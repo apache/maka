@@ -35,23 +35,29 @@ const pluginGlyph = (id = '', icon = ''): Parameters<typeof Icon>[0]['name'] => 
   if (/application/.test(kind)) return 'split';
   return 'command';
 };
-export const toolIcon = (icon?: string, id?: string, compact = false) => (
-  <View
-    style={{
-      width: compact ? 20 : 32,
-      height: compact ? 20 : 32,
-      alignItems: 'center',
-      justifyContent: 'center',
-      flexShrink: 0,
-    }}
-  >
-    <If
-      when={icon?.startsWith('data:image/png;base64,')}
-      else={
-        <Icon size={compact ? 18 : undefined} name={pluginGlyph(id, icon)} color={C.secondary} />
-      }
+export const toolIcon = (icon?: string, id?: string, compact = false, website = false) => {
+  const imageSize = compact || website ? 18 : id === 'maka.quick-question' ? 24 : 26;
+  return (
+    <View
+      style={{
+        width: compact ? 20 : 32,
+        height: compact ? 20 : 32,
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+      }}
     >
-      <Image src={icon ?? ''} style={{ width: compact ? 18 : 26, height: compact ? 18 : 26 }} />
-    </If>
-  </View>
-);
+      <If
+        when={icon?.startsWith('data:image/png;base64,')}
+        else={
+          <Icon size={compact ? 18 : undefined} name={pluginGlyph(id, icon)} color={C.secondary} />
+        }
+      >
+        <Image
+          src={icon ?? ''}
+          style={{ width: imageSize, height: imageSize, objectFit: 'contain' }}
+        />
+      </If>
+    </View>
+  );
+};

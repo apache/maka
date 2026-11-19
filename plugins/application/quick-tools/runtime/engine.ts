@@ -69,6 +69,9 @@ import assistantManifest from '../tools/assistant/manifest.json';
 import screenshot from '../tools/screenshot/index';
 import screenshotManifest from '../tools/screenshot/manifest.json';
 
+import questionManifest from '../tools/question/manifest.json';
+import { quickQuestionPlugin, type QuickQuestionEntry } from '../tools/question/index';
+
 const builtins: { manifest: Manifest; create: PluginFactory }[] = [
   [assistantManifest, assistant],
   [bilibiliManifest, bilibili],
@@ -91,6 +94,7 @@ type Loaded = { manifest: Manifest; plugin: Plugin };
 export type Page = { plugin: string; id: string } | null;
 
 export class QuickTools {
+  private readonly builtinPlugins: typeof builtins;
   private plugins: Loaded[] = [];
   private workers = new Map<string, string>();
   readonly packages = new Packages();
@@ -113,11 +117,20 @@ export class QuickTools {
     private readonly hooks: {
       changed(): void;
       close(): void;
+      question: QuickQuestionEntry;
       assistant(text?: string): Promise<void>;
       appearance(): 'dark' | 'light';
       report(error: unknown): void;
     },
-  ) {}
+  ) {
+    this.builtinPlugins = [
+      ...builtins,
+      {
+        manifest: questionManifest as Manifest,
+        create: () => quickQuestionPlugin(hooks.question),
+      },
+    ];
+  }
   async start(locale: QuickLocale) {
     setQuickLocale(locale);
     configureQuickWeb({
@@ -142,7 +155,9 @@ export class QuickTools {
         close: async () => {},
       }),
       connect: async () => {
-        const value = (await host.call('quickTools.web.connect', {})) as { connected: boolean };
+        const value = (await host.call('quickTools.web.connect', {})) as {
+          connected: boolean;
+        };
         if (!value.connected)
           await native.open(
             'https://chromewebstore.google.com/detail/browsermcp-connector/lnaoghmfcdnbhgcihkakfobckmfhllkg',
@@ -186,16 +201,22 @@ export class QuickTools {
             record.bundle.manifest as Manifest,
           );
         }
-        await host.call('quickTools.plugin.reply', { token: request.token, value: result ?? null });
+        await host.call('quickTools.plugin.reply', {
+          token: request.token,
+          value: result ?? null,
+        });
       } catch (error) {
-        await host.call('quickTools.plugin.reply', { token: request.token, error: String(error) });
+        await host.call('quickTools.plugin.reply', {
+          token: request.token,
+          error: String(error),
+        });
       }
     });
     await this.packages.start();
     this.history = normalizeInputHistory(await storage.read('input-history', {}));
     this.preferences = await storage.read('preferences', {});
     this.shortcuts = await storage.read('shortcuts', {});
-    for (const builtin of builtins.filter(
+    for (const builtin of this.builtinPlugins.filter(
       (builtin) =>
         !this.packages.records.some((record) => record.bundle.manifest.id === builtin.manifest.id),
     )) {
@@ -303,7 +324,7 @@ export class QuickTools {
   installed() {
     const manifests = new Map(
       [
-        ...builtins,
+        ...this.builtinPlugins,
         ...this.packages.records.map((record) => ({
           manifest: record.bundle.manifest as Manifest,
         })),
@@ -322,7 +343,10 @@ export class QuickTools {
         .find((p) => p.manifest.id === id)
         ?.plugin.run('disable', undefined, {}, new AbortController().signal);
     }
-    const next = { ...this.preferences, [id]: { ...this.preferences[id], enabled } };
+    const next = {
+      ...this.preferences,
+      [id]: { ...this.preferences[id], enabled },
+    };
     await storage.write('preferences', next);
     this.preferences = next;
     if (!enabled) {
@@ -336,7 +360,7 @@ export class QuickTools {
       const record = this.packages.records.find((record) => record.bundle.manifest.id === id);
       if (record) await this.loadPackage(record.bundle);
       else {
-        const builtin = builtins.find((builtin) => builtin.manifest.id === id);
+        const builtin = this.builtinPlugins.find((builtin) => builtin.manifest.id === id);
         if (builtin) await this.loadBuiltin(builtin);
       }
     }
@@ -354,7 +378,10 @@ export class QuickTools {
   }
   async preference(row: ResultRow, patch: Preference) {
     const key = this.itemKey(row);
-    const next = { ...this.preferences, [key]: { ...this.preferences[key], ...patch } };
+    const next = {
+      ...this.preferences,
+      [key]: { ...this.preferences[key], ...patch },
+    };
     if (row.source && (next[key].alias || this.shortcuts[key] || next[key].favorite))
       next[key].source = row.source;
     else delete next[key].source;
@@ -454,7 +481,10 @@ export class QuickTools {
   async used(row: ResultRow) {
     if (row.persistable === false) return;
     const pref = this.preferences[this.itemKey(row)];
-    await this.preference(row, { uses: (pref?.uses ?? 0) + 1, lastUsed: Date.now() });
+    await this.preference(row, {
+      uses: (pref?.uses ?? 0) + 1,
+      lastUsed: Date.now(),
+    });
   }
   favorite(row: ResultRow) {
     return this.preferences[this.itemKey(row)]?.favorite ?? false;
@@ -680,6 +710,13 @@ export class QuickTools {
       case 'window.hide':
         this.hooks.close();
         break;
+      case 'applications.running':
+        result = await native.runningApplications(input as string[]);
+        break;
+      case 'applications.manage': {
+        await native.manageApplication(input as Services['applications.manage']['input']);
+        break;
+      }
       case 'applications.list':
         result = await native.applications();
         break;

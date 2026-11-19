@@ -32,28 +32,71 @@ const create: PluginFactory = async (ctx) => {
         .catch(() => {}),
     60000,
   );
-  const rows = (): Row[] =>
-    apps.map((a) => ({
-      id: a.id,
-      name: a.name,
-      icon: a.icon,
-      kind: qt('应用'),
-      keywords: a.keywords,
-      detail: a.target,
-      actions: [
-        { id: 'open', title: qt('打开'), data: a.id },
-        { id: 'reveal', title: qt('在 Finder 中显示'), data: a.id },
-      ],
-    }));
+  let snapshot: Promise<Record<string, number>> | undefined;
+  let checked = 0;
+  const rows = async (): Promise<Row[]> => {
+    if (!snapshot || Date.now() - checked >= 1000) {
+      checked = Date.now();
+      snapshot = ctx.call(
+        'applications.running',
+        apps.map((app) => app.target),
+      ).catch(() => ({}));
+    }
+    const running = await snapshot;
+    return apps.map((a) => {
+      const pid = running[a.target];
+      const instance = { id: a.id, pid };
+      return {
+        id: a.id,
+        name: a.name,
+        icon: a.icon,
+        kind: qt('应用'),
+        keywords: a.keywords,
+        detail: a.target,
+        actions: [
+          { id: 'open', title: qt('打开'), data: a.id },
+          ...(pid
+            ? [
+                { id: 'hide', title: qt('隐藏应用'), data: instance },
+                { id: 'restart', title: qt('重启应用'), data: instance },
+                { id: 'quit', title: qt('退出应用'), data: instance },
+                {
+                  id: 'forceQuit',
+                  title: qt('强制退出应用'),
+                  data: instance,
+                  confirm: qt('强制退出“${0}”？未保存的更改可能会丢失。', a.name),
+                },
+              ]
+            : []),
+          { id: 'copyPath', title: qt('复制路径'), data: a.id },
+          { id: 'reveal', title: qt('在 Finder 中显示'), data: a.id },
+        ],
+      };
+    });
+  };
   return {
     search: () => rows(),
-    view: () => ({ title: qt('应用启动器'), rows: rows() }),
+    view: async () => ({ title: qt('应用'), rows: await rows() }),
     async run(action, data) {
       if (action === 'browse') return { navigate: 'main' };
-      const app = apps.find((a) => a.id === data);
+      const instance =
+        data && typeof data === 'object' && 'id' in data && 'pid' in data ? data : null;
+      const app = apps.find((a) => a.id === (instance?.id ?? data));
       if (!app) throw Error(qt('应用已不存在'));
-      if (action !== 'open' && action !== 'reveal') throw Error(qt('无效操作'));
-      await ctx.call(action === 'open' ? 'system.open' : 'system.reveal', app.target);
+      if (action === 'open' || action === 'reveal') {
+        await ctx.call(action === 'open' ? 'system.open' : 'system.reveal', app.target);
+      } else if (action === 'copyPath') {
+        await ctx.call('clipboard.write', { text: app.target });
+      } else if (
+        (action === 'hide' ||
+          action === 'restart' ||
+          action === 'quit' ||
+          action === 'forceQuit') &&
+        typeof instance?.pid === 'number'
+      ) {
+        snapshot = undefined;
+        await ctx.call('applications.manage', { target: app.target, pid: instance.pid, action });
+      } else throw Error(qt('无效操作'));
       await ctx.call('window.hide', undefined);
     },
     dispose: () => clearInterval(refresh),

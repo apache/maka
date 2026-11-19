@@ -213,6 +213,7 @@ pub(crate) struct Owner {
     bot: Arc<bot::Bot>,
     goals: Arc<goal::Goals>,
     recap_storage: Arc<maka_host_runtime::storage::Storage>,
+    quick_answer: Mutex<quick_tools::QuickHistory>,
     auxiliary: auxiliary::Auxiliary,
     titles: title::Registry,
     pub settings: Configuration,
@@ -584,6 +585,7 @@ impl Owner {
         ));
         let owner = Arc::new(Self {
             goals,
+            quick_answer: Mutex::default(),
             auxiliary,
             todo,
             bot,

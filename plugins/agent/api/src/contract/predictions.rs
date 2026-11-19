@@ -69,3 +69,12 @@ pub struct QuickToolRanking {
     pub source: String,
     pub ids: Vec<String>,
 }
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QuickQuestion {
+    pub session_id: String,
+    pub question: String,
+    pub request_id: String,
+    pub continue_from: Option<String>,
+}

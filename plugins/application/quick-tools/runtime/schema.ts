@@ -89,6 +89,8 @@ const permissions = [
   'assistant.open',
   'model.rank',
   'applications.list',
+  'applications.running',
+  'applications.manage',
   'system.open',
   'system.reveal',
   'clipboard.read',

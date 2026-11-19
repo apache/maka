@@ -25,6 +25,7 @@ const root = fileURLToPath(new URL('../../../../', import.meta.url));
 const built = await build({
   stdin: {
     contents: `
+    export { default as applicationsPlugin } from './plugins/application/quick-tools/tools/applications/index.ts';
     export * from './plugins/application/quick-tools/shared/input-history.ts';
     export * from './plugins/application/quick-tools/shared/assistant-layout.ts';
     export * from './plugins/application/quick-tools/shared/i18n.ts';
@@ -394,4 +395,31 @@ test('quick assistant shows messages oldest first with replies below prompts and
     ]),
     ['old', 'working'],
   );
+});
+
+test('application results bind lifecycle actions to the selected running instance', async () => {
+  const app = { id: '/Applications/Test.app', target: '/Applications/Test.app', name: 'Test' };
+  const idle = { id: '/Applications/Idle.app', target: '/Applications/Idle.app', name: 'Idle' };
+  const calls = [];
+  const plugin = await tools.applicationsPlugin({
+    changed() {},
+    async call(name, input) {
+      if (name === 'applications.list') return [app, idle];
+      if (name === 'applications.running') return { [app.target]: 42 };
+      calls.push({ name, input });
+    },
+  });
+  try {
+    const [running, closed] = await plugin.search('');
+    assert.equal(running.actions[0].id, 'open');
+    assert.deepEqual(closed.actions.map(a => a.id), ['open', 'copyPath', 'reveal']);
+    const force = running.actions.find(a => a.id === 'forceQuit');
+    assert.ok(force.confirm.includes('Test'));
+    await plugin.run(force.id, force.data);
+    assert.deepEqual(calls[0], {
+      name: 'applications.manage', input: { target: app.target, pid: 42, action: 'forceQuit' },
+    });
+  } finally {
+    plugin.dispose();
+  }
 });

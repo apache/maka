@@ -34,6 +34,7 @@ export function QuickMessageTools(props: {
   enabled: boolean;
   user?: boolean;
   timestamp?: number;
+  inset?: number;
   children: JSX.Element;
   text(current: () => boolean): string | null | Promise<string | null>;
 }) {
@@ -82,7 +83,7 @@ export function QuickMessageTools(props: {
           alignItems: 'center',
           gap: 4,
           alignSelf: props.user ? 'flex-end' : 'flex-start',
-          marginLeft: props.user ? 0 : 32,
+          marginLeft: props.inset ?? (props.user ? 0 : 32),
           opacity: hovered() || focused() || busy() || result() ? 1 : 0,
         }}
       >
@@ -108,7 +109,12 @@ export function QuickMessageTools(props: {
           <Icon name={result() === 'copied' ? 'check' : 'copy'} size={14} color={C.muted} />
         </View>
         <If when={result()}>
-          <Text style={{ color: result() === 'failed' ? C.danger : C.muted, fontSize: 11 }}>
+          <Text
+            style={{
+              color: result() === 'failed' ? C.danger : C.muted,
+              fontSize: 11,
+            }}
+          >
             {result() === 'failed' ? tr('Copy failed') : tr('Copied')}
           </Text>
         </If>

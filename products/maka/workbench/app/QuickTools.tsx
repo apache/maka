@@ -51,12 +51,13 @@ import type {
 } from '../../../../plugins/application/quick-tools/shared/plugin';
 import { currentLocale } from './locale';
 import { loadDraft, saveDraft } from './host';
-import type { OperationReply } from '../../../../packages/plugin-sdk/src/index.js';
+import { createQuickQuestion, personalAssistantId } from './quickQuestion';
 import { C, isDark, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
 
 import { toolIcon } from './QuickToolIcon';
 import { Icon } from './Icon';
 import { serveQuickSettings } from './quickSettings';
+import { QuickMessageTools } from './QuickMessageTools';
 import { QuickShortcutRecorder } from './QuickShortcutRecorder';
 import { IconButton } from './ui';
 
@@ -74,12 +75,21 @@ function ErrorHint(props: { message: string }) {
     <View style={{ flexDirection: 'row', gap: 6, alignItems: 'flex-start' }}>
       <Text
         accessibilityElementsHidden
-        style={{ fontSize: 14, lineHeight: 18, color: isDark() ? C.danger : '#a0413c' }}
+        style={{
+          fontSize: 14,
+          lineHeight: 18,
+          color: isDark() ? C.danger : '#a0413c',
+        }}
       >
         ⓘ
       </Text>
       <Text
-        style={{ flex: 1, fontSize: 12, lineHeight: 18, color: isDark() ? C.danger : '#a0413c' }}
+        style={{
+          flex: 1,
+          fontSize: 12,
+          lineHeight: 18,
+          color: isDark() ? C.danger : '#a0413c',
+        }}
       >
         {props.message}
       </Text>
@@ -110,8 +120,16 @@ export function QuickToolsSurface(props: {
     busy = signal(false),
     error = signal('');
   props.attachSettings?.(() => settings.set(true));
-  const editor = signal<{ plugin: string; action: Action; row?: ResultRow } | null>(null);
-  const confirmation = signal<{ plugin: string; action: Action; row?: ResultRow } | null>(null);
+  const editor = signal<{
+    plugin: string;
+    action: Action;
+    row?: ResultRow;
+  } | null>(null);
+  const confirmation = signal<{
+    plugin: string;
+    action: Action;
+    row?: ResultRow;
+  } | null>(null);
   const values = signal<Record<string, string | boolean>>({});
   const packagePreview = signal<PackagePreview | null>(null);
   const actionQuery = signal(''),
@@ -152,44 +170,47 @@ export function QuickToolsSurface(props: {
     if (alive) error.set(cause instanceof Error ? cause.message : String(cause));
   };
   const inbox = createAssistantInbox(report);
+  const openAssistantDraft = async (text?: string) => {
+    const id = await personalAssistantId();
+    await props.prepareAssistant?.(id);
+    if (text) {
+      const session = host.session(id),
+        draft = await loadDraft(session);
+      if (draft?.text?.trim()) throw Error(qt('助手已有未发送草稿，请先处理草稿'));
+      await saveDraft(session, draft.revision, {
+        text,
+        attachments: draft?.attachments ?? [],
+      });
+    }
+    if (alive && (await props.openAssistant(id))) {
+      query.set('');
+      if (!props.keepOpenAfterAssistant) props.close();
+    }
+  };
+  const quick = createQuickQuestion();
+  const asking = signal(false),
+    follow = signal('');
+  const ask = (continued: boolean) => {
+    const question = (continued ? follow() : query()).trim();
+    if (!question || quick.running() || composing()) return;
+    clearErrors();
+    asking.set(true);
+    follow.set('');
+    void quick.ask(question, continued);
+  };
   const engine = new QuickTools({
     changed: () => untracked(() => version.set(version() + 1)),
     report,
     close: props.close,
     appearance: () => (isDark() ? 'dark' : 'light'),
-    assistant: async (text) => {
-      const response = (await host.mutation('agent', 'openBot', {})) as { reply: OperationReply };
-      const receipt = response.reply?.receipt;
-      if (receipt?.kind !== 'recorded' || receipt.outcome?.kind !== 'returned')
-        throw Error(qt('无法打开个人助手'));
-      const value = receipt.outcome.value;
-      if (
-        !value ||
-        typeof value !== 'object' ||
-        !('kind' in value) ||
-        value.kind !== 'opened' ||
-        !('sessionId' in value) ||
-        typeof value.sessionId !== 'string'
-      )
-        throw Error(qt('无法打开个人助手'));
-      const id = value.sessionId;
-      await props.prepareAssistant?.(id);
-      if (text) {
-        const session = host.session(id),
-          draft = await loadDraft(session);
-        if (draft?.text?.trim()) throw Error(qt('助手已有未发送草稿，请先处理草稿'));
-        await saveDraft(session, draft.revision, {
-          text,
-          attachments: draft?.attachments ?? [],
-        });
-      }
-      if (alive && (await props.openAssistant(id))) {
-        query.set('');
-        if (!props.keepOpenAfterAssistant) props.close();
-      }
+    assistant: openAssistantDraft,
+    question: {
+      lastQuestion: () => quick.turns()[0]?.question,
+      resume: () => asking.set(true),
     },
   });
   const resetHome = () => {
+    asking.set(false);
     clearErrors();
     rememberEditor();
     if (packagePreview()) engine.packages.cancel(packagePreview()!.token);
@@ -213,7 +234,10 @@ export function QuickToolsSurface(props: {
       if (event.home) resetHome();
       if (event.settings) settings.set(true);
       if (!query() && !page() && !editor() && !settings() && !actions()) orderLocked.set(false);
-    } else commandHeld.set(false);
+    } else {
+      asking.set(false);
+      commandHeld.set(false);
+    }
   });
   effect(() => {
     if (surfaceHost.params.quickToolsPanel && props.opened())
@@ -246,6 +270,10 @@ export function QuickToolsSurface(props: {
     version();
     return engine.installed();
   };
+  const questionEnabled = () =>
+    installed().some((item) => item.manifest.id === 'maka.quick-question' && item.enabled);
+  const websiteIcon = (id: string) =>
+    installed().some((item) => item.manifest.id === id && item.manifest.web);
   const selected = () => result().rows[Math.min(index(), Math.max(0, result().rows.length - 1))];
   const offered = () => {
     version();
@@ -277,13 +305,17 @@ export function QuickToolsSurface(props: {
             : [
                 {
                   id: '$preferences',
-                  title: qt('设置'),
+                  title: qt('条目设置'),
                   form: {
                     title: qt('设置'),
                     fields: [
                       { id: 'alias', label: qt('别名'), maxLength: 80 },
                       { id: 'shortcut', label: qt('快捷键'), maxLength: 100 },
-                      { id: 'favorite', label: qt('收藏'), type: 'checkbox' as const },
+                      {
+                        id: 'favorite',
+                        label: qt('收藏'),
+                        type: 'checkbox' as const,
+                      },
                     ],
                     values: {
                       alias: engine.alias(row),
@@ -299,7 +331,11 @@ export function QuickToolsSurface(props: {
   const menu = () => {
     const target = page();
     return [
-      ...rowMenu().map((action) => ({ action, plugin: selected()?.plugin ?? '', row: selected() })),
+      ...rowMenu().map((action) => ({
+        action,
+        plugin: selected()?.plugin ?? '',
+        row: selected(),
+      })),
       ...(target
         ? (result().view?.actions ?? []).map((action) => ({
             action,
@@ -339,12 +375,16 @@ export function QuickToolsSurface(props: {
       top = at * rowHeight + (!menu && result().view?.notice ? noticeHeight : 0);
     if (top < offset || top + rowHeight > offset + height) {
       const next = top < offset ? top : top + rowHeight - height;
-      (menu ? actionScroll : resultScroll)?.scrollTo({ y: next, animated: false });
+      (menu ? actionScroll : resultScroll)?.scrollTo({
+        y: next,
+        animated: false,
+      });
     }
   };
   const select = (at: number) => {
     orderLocked.set(true);
     index.set(Math.max(0, Math.min(result().rows.length - 1, at)));
+    if (index() > 0) cursor = { index: -1, draft: '', text: '' };
     reveal(index());
   };
   const selectAction = (at: number) => {
@@ -358,7 +398,7 @@ export function QuickToolsSurface(props: {
   let pendingSearch: Promise<void> = Promise.resolve();
   const update = async () => {
     version();
-    if (!ready() || !props.opened() || editor() || settings() || composing()) return;
+    if (!ready() || !props.opened() || asking() || editor() || settings() || composing()) return;
     const ticket = ++revision;
     if (suggestionTimer !== undefined) clearTimeout(suggestionTimer);
     searchAbort.abort();
@@ -428,6 +468,8 @@ export function QuickToolsSurface(props: {
     'assistant.open': qt('打开个人助手并发送所选消息'),
     'model.rank': qt('使用配置的模型推荐选项'),
     'applications.list': qt('发现应用'),
+    'applications.running': qt('查看应用运行状态'),
+    'applications.manage': qt('管理运行中的应用'),
     'system.open': qt('打开网址和文件'),
     'system.reveal': qt('显示文件位置'),
     'clipboard.read': qt('读取剪贴板'),
@@ -609,6 +651,7 @@ export function QuickToolsSurface(props: {
   cleanup(() => menuKeys.forEach((remove) => remove()));
   let unbind: (() => void)[] = [];
   cleanup(() => unbind.forEach((remove) => remove()));
+
   const bindKeys = (node: ViewRef) => {
     unbind.forEach((remove) => remove());
     const key = (name: string, run: () => void) =>
@@ -625,6 +668,7 @@ export function QuickToolsSurface(props: {
       );
     unbind = [
       key('escape', back),
+
       key('mod+k', () => {
         if (!editor() && !settings()) toggleActions();
       }),
@@ -665,7 +709,7 @@ export function QuickToolsSurface(props: {
         'up',
         () => {
           if (composing()) return;
-          if (engine.history.search.length) {
+          if (index() === 0 && engine.history.search.length) {
             cursor = recallInput(engine.history.search, cursor.index, cursor.draft, query(), 1);
             query.set(cursor.text);
           } else select(index() - 1);
@@ -674,7 +718,7 @@ export function QuickToolsSurface(props: {
       ),
     ];
   };
-  const button = (title: string, run: () => void) => (
+  const button = (title: string, run: () => void, hint?: string) => (
     <Button
       accessibilityLabel={title}
       disabled={busy()}
@@ -683,46 +727,160 @@ export function QuickToolsSurface(props: {
         ...controlStyle,
         minHeight: 32,
         paddingVertical: 6,
-        alignSelf: 'flex-start',
-        backgroundColor: title === qt('保存') ? C.accent : C.raised,
+        alignSelf:
+          hint || title === qt('⌘↵ 提问') || title === qt('停止生成')
+            ? 'center'
+            : 'flex-start',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        backgroundColor: hint ? 'transparent' : title === qt('保存') ? C.accent : C.raised,
       }}
       hoverStyle={controlHoverStyle()}
       focusStyle={controlFocusStyle()}
     >
-      <Text style={{ ...compactText, color: title === qt('保存') ? '#ffffff' : C.secondary }}>
+      <Text
+        style={{
+          ...compactText,
+          color: title === qt('保存') ? '#ffffff' : C.secondary,
+        }}
+      >
         {title}
       </Text>
+      <If when={hint}>
+        <Text style={{ fontSize: 12, color: C.muted }}>{hint}</Text>
+      </If>
     </Button>
   );
+  const dialogStyle = () =>
+    ({
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: surfaceHost.params.quickToolsPanel ? C.surface : C.scrim,
+      padding: surfaceHost.params.quickToolsPanel ? 0 : 24,
+    }) as const;
+  const panelStyle = () =>
+    ({
+      width: surfaceHost.params.quickToolsPanel ? '100%' : 720,
+      maxWidth: '100%',
+      height: surfaceHost.params.quickToolsPanel ? '100%' : 560,
+      maxHeight: '100%',
+      backgroundColor: C.surface,
+      borderRadius: surfaceHost.params.quickToolsPanel ? 0 : 12,
+      borderWidth: surfaceHost.params.quickToolsPanel ? 0 : 1,
+      borderColor: C.line,
+      overflow: 'hidden',
+    }) as const;
+  let questionScroll: ScrollRef | undefined;
+  let followTail = true;
+  const closeQuestion = () => {
+    asking.set(false);
+    change('');
+    props.close();
+  };
+  effect(() => {
+    if (!props.opened() || composing()) return;
+    if (asking()) return keymap.bind('escape', closeQuestion, { when: 'always' });
+    if (
+      page() ||
+      editor() ||
+      settings() ||
+      actions() ||
+      confirmation() ||
+      packagePreview() ||
+      busy() ||
+      quick.running() ||
+      !questionEnabled() ||
+      !query().trim()
+    )
+      return;
+    return keymap.bind('mod+enter', () => ask(false), { when: 'always' });
+  });
   return (
     <>
-      <If when={props.opened()}>
+      <If when={props.opened() && asking()}>
         <Dialog
           animation="none"
-          onOpenChange={back}
-          closeOnEscape={false}
-          style={{
-            flex: 1,
-            alignItems: 'center',
-            justifyContent: 'center',
-            backgroundColor: surfaceHost.params.quickToolsPanel ? C.surface : C.scrim,
-            padding: surfaceHost.params.quickToolsPanel ? 0 : 24,
-          }}
+          closeOnEscape={!composing()}
+          onOpenChange={closeQuestion}
+          style={dialogStyle()}
         >
-          <View
-            ref={bindKeys}
-            style={{
-              width: surfaceHost.params.quickToolsPanel ? '100%' : 720,
-              maxWidth: '100%',
-              height: surfaceHost.params.quickToolsPanel ? '100%' : 560,
-              maxHeight: '100%',
-              backgroundColor: C.surface,
-              borderRadius: surfaceHost.params.quickToolsPanel ? 0 : 12,
-              borderWidth: surfaceHost.params.quickToolsPanel ? 0 : 1,
-              borderColor: C.line,
-              overflow: 'hidden',
-            }}
-          >
+          <View style={panelStyle()}>
+            <QuickToolsBar showSettings={false} openSettings={() => settings.set(true)}>
+              <QuickToolsMark />
+              <Input
+                autoFocus
+                value={follow()}
+                accessibilityLabel={qt('继续追问…')}
+                placeholder={qt('继续追问…')}
+                onCompositionChange={({ composing: value }) => composing.set(value)}
+                onChange={({ value }) => follow.set(value)}
+                onSubmit={() => {
+                  followTail = true;
+                  ask(true);
+                }}
+                style={{ ...quickFieldStyle(), flex: 1, minWidth: 0 }}
+              />
+              <If when={quick.running()}>{button(qt('停止生成'), quick.stop)}</If>
+            </QuickToolsBar>
+            <Scroll
+              ref={(node) => {
+                questionScroll = node;
+                followTail = true;
+              }}
+              style={{ flex: 1, paddingHorizontal: 18 }}
+              onScroll={({ offset, contentSize, size }) => {
+                followTail = offset.y + size.height >= contentSize.height - 32;
+              }}
+            >
+              <View
+                style={{ paddingVertical: 16, gap: 8 }}
+                onLayout={() => {
+                  if (followTail) questionScroll?.scrollToEnd({ animated: false });
+                }}
+              >
+                <Each of={quick.turns()} key={(_, i) => i}>
+                  {(turn) => (
+                    <View style={{ gap: 8 }}>
+                      <View
+                        style={{
+                          alignSelf: 'flex-end',
+                          maxWidth: '80%',
+                          backgroundColor: C.raised,
+                          borderRadius: 8,
+                          paddingHorizontal: 10,
+                          paddingVertical: 7,
+                        }}
+                      >
+                        <Text style={{ ...compactText, color: C.text }}>{turn().question}</Text>
+                      </View>
+                      <QuickMessageTools enabled text={() => turn().answer} inset={0}>
+                        <Text
+                          style={{
+                            fontSize: 14,
+                            lineHeight: 24,
+                            color: C.text,
+                            userSelect: 'text',
+                          }}
+                        >
+                          {turn().answer || (quick.running() ? '…' : '')}
+                        </Text>
+                      </QuickMessageTools>
+                    </View>
+                  )}
+                </Each>
+                <If when={quick.error() || error()}>
+                  <ErrorHint message={quick.error() || error()} />
+                </If>
+              </View>
+            </Scroll>
+          </View>
+        </Dialog>
+      </If>
+      <If when={props.opened() && !asking()}>
+        <Dialog animation="none" onOpenChange={back} closeOnEscape={false} style={dialogStyle()}>
+          <View ref={bindKeys} style={panelStyle()}>
             <QuickToolsBar showSettings={!settings()} openSettings={() => settings.set(true)}>
               <If when={page() || editor() || settings()} else={<QuickToolsMark />}>
                 <IconButton label={qt('返回')} icon="back" onPress={back} />
@@ -776,13 +934,29 @@ export function QuickToolsSurface(props: {
                     (settings() ? qt('快捷工具设置') : qt('个人助手'))}
                 </Text>
               </If>
+              <If
+                when={
+                  !page() &&
+                  !settings() &&
+                  !editor() &&
+                  !actions() &&
+                  !quick.running() &&
+                  questionEnabled() &&
+                  query().trim()
+                }
+              >
+                {button(qt('⌘↵ 提问'), () => ask(false))}
+              </If>
               <If when={inbox.unread()}>
                 <IconButton
                   label={qt('助手有新消息')}
                   icon="unread"
                   selected
                   onPress={() => {
-                    void execute('maka.assistant', { id: 'open', title: qt('个人助手') });
+                    void execute('maka.assistant', {
+                      id: 'open',
+                      title: qt('个人助手'),
+                    });
                   }}
                 />
               </If>
@@ -809,7 +983,13 @@ export function QuickToolsSurface(props: {
                       title: qt('全局快捷键'),
                       form: {
                         title: qt('全局快捷键'),
-                        fields: [{ id: 'shortcut', label: qt('快捷键'), maxLength: 100 }],
+                        fields: [
+                          {
+                            id: 'shortcut',
+                            label: qt('快捷键'),
+                            maxLength: 100,
+                          },
+                        ],
                         values: { shortcut: engine.shortcut() },
                       },
                     });
@@ -825,7 +1005,12 @@ export function QuickToolsSurface(props: {
                         .catch(report)
                         .finally(() => busy.set(false));
                     }}
-                    style={{ padding: 6, flexDirection: 'row', gap: 8, alignItems: 'center' }}
+                    style={{
+                      padding: 6,
+                      flexDirection: 'row',
+                      gap: 8,
+                      alignItems: 'center',
+                    }}
                     indicatorStyle={{
                       width: 20,
                       height: 20,
@@ -859,7 +1044,14 @@ export function QuickToolsSurface(props: {
                     .catch(report);
                 })}
 
-                <Text style={{ fontSize: 12, color: C.muted, paddingTop: 24, paddingBottom: 8 }}>
+                <Text
+                  style={{
+                    fontSize: 12,
+                    color: C.muted,
+                    paddingTop: 24,
+                    paddingBottom: 8,
+                  }}
+                >
                   {qt('插件')} · {installed().length}
                 </Text>
                 <Each of={installed()} key={(item) => item.manifest.id}>
@@ -890,9 +1082,20 @@ export function QuickToolsSurface(props: {
                           }}
                           hoverStyle={controlHoverStyle()}
                         >
-                          {toolIcon(item().manifest.icon, item().manifest.id)}
+                          {toolIcon(
+                            item().manifest.icon,
+                            item().manifest.id,
+                            false,
+                            Boolean(item().manifest.web),
+                          )}
                           <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                            <Text style={{ ...compactText, color: C.text, numberOfLines: 1 }}>
+                            <Text
+                              style={{
+                                ...compactText,
+                                color: C.text,
+                                numberOfLines: 1,
+                              }}
+                            >
                               {item().manifest.name}
                             </Text>
                             <If when={item().manifest.description !== item().manifest.name}>
@@ -1014,7 +1217,13 @@ export function QuickToolsSurface(props: {
                     </View>
                   )}
                 </Each>
-                <View style={{ paddingTop: 24, paddingBottom: 8, alignItems: 'flex-start' }}>
+                <View
+                  style={{
+                    paddingTop: 24,
+                    paddingBottom: 8,
+                    alignItems: 'flex-start',
+                  }}
+                >
                   {button(qt('清空输入历史'), () => void engine.clearHistory().catch(report))}
                 </View>
               </Scroll>
@@ -1033,12 +1242,29 @@ export function QuickToolsSurface(props: {
                       borderColor: C.line,
                     }}
                   >
-                    {toolIcon(editor()?.row?.icon, editor()?.row?.plugin)}
+                    {toolIcon(
+                      editor()?.row?.icon,
+                      editor()?.row?.plugin,
+                      false,
+                      websiteIcon(editor()?.row?.plugin ?? ''),
+                    )}
                     <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={{ ...compactText, color: C.text, numberOfLines: 1 }}>
+                      <Text
+                        style={{
+                          ...compactText,
+                          color: C.text,
+                          numberOfLines: 1,
+                        }}
+                      >
                         {editor()?.row?.name}
                       </Text>
-                      <Text style={{ fontSize: 12, color: C.muted, numberOfLines: 1 }}>
+                      <Text
+                        style={{
+                          fontSize: 12,
+                          color: C.muted,
+                          numberOfLines: 1,
+                        }}
+                      >
                         {editor()?.row?.pluginName === editor()?.row?.name
                           ? qt('自定义快捷访问方式')
                           : editor()?.row?.pluginName}
@@ -1202,7 +1428,11 @@ export function QuickToolsSurface(props: {
                       onLayout={({ bounds }) => {
                         noticeHeight = bounds.size.height;
                       }}
-                      style={{ ...compactText, color: C.secondary, padding: 16 }}
+                      style={{
+                        ...compactText,
+                        color: C.secondary,
+                        padding: 16,
+                      }}
                     >
                       {result().view?.notice}
                     </Text>
@@ -1218,7 +1448,9 @@ export function QuickToolsSurface(props: {
                       <View
                         role="button"
                         focusable
-                        accessibilityState={{ selected: index() === position() }}
+                        accessibilityState={{
+                          selected: index() === position(),
+                        }}
                         accessibilityLabel={row().name}
                         onPress={(event) => {
                           select(position());
@@ -1244,6 +1476,8 @@ export function QuickToolsSurface(props: {
                             installed().find((item) => item.manifest.id === row().plugin)?.manifest
                               .icon,
                           row().plugin,
+                          false,
+                          websiteIcon(row().plugin),
                         )}
                         <View
                           style={{
@@ -1276,13 +1510,15 @@ export function QuickToolsSurface(props: {
                               numberOfLines: 1,
                             }}
                           >
-                            {row().plugin === 'maka.assistant' &&
-                            row().id === 'open' &&
-                            inbox.unread() > 0
-                              ? inbox.preview()
-                              : row().pluginName !== row().name && row().pluginName !== row().kind
-                                ? row().pluginName
-                                : ''}
+                            {row().plugin === 'maka.quick-question' && row().id === 'resume'
+                              ? quick.turns()[0]?.question
+                              : row().plugin === 'maka.assistant' &&
+                                  row().id === 'open' &&
+                                  inbox.unread() > 0
+                                ? inbox.preview()
+                                : row().pluginName !== row().name && row().pluginName !== row().kind
+                                  ? row().pluginName
+                                  : ''}
                           </Text>
                         </View>
                         <If
@@ -1331,7 +1567,12 @@ export function QuickToolsSurface(props: {
                 </Scroll>
                 <If when={selected()?.detail || selected()?.image}>
                   <Scroll
-                    style={{ width: '38%', padding: 16, borderLeftWidth: 1, borderColor: C.line }}
+                    style={{
+                      width: '38%',
+                      padding: 16,
+                      borderLeftWidth: 1,
+                      borderColor: C.line,
+                    }}
                   >
                     <If
                       when={selected()?.image}
@@ -1357,34 +1598,30 @@ export function QuickToolsSurface(props: {
                   borderColor: C.line,
                 }}
               >
-                <Each of={result().view?.actions ?? []} key={(action) => action.id}>
-                  {(action) =>
-                    button(action().title, () => {
-                      const target = page();
-                      if (target) void execute(target.plugin, action());
-                    })
-                  }
-                </Each>
-                <View style={{ flex: 1 }} />
+                <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <If when={selected()?.plugin === 'maka.quick-question'}>
+                    {toolIcon(installed().find(item => item.manifest.id === 'maka.quick-question')?.manifest.icon, 'maka.quick-question', true)}
+                  </If>
+                  <Text style={{ fontSize: 13, color: C.muted, flexShrink: 1, numberOfLines: 1 }}>
+                    {selected()?.name ?? ''}
+                  </Text>
+                </View>
                 <If when={selected()?.actions[0]}>
-                  {button(`${selected()!.actions[0].title} ↵`, () => void choose())}
+                  {button(selected()!.actions[0].title, () => void choose(), '↵')}
                 </If>
-                <If when={selected()?.actions.length}>
-                  <IconButton
-                    label={qt('条目设置')}
-                    icon="settings"
-                    onPress={() => {
-                      const row = selected(),
-                        action = rowMenu().find((item) => item.id === '$preferences');
-                      if (row && action) void execute(row.plugin, action, false, row);
-                    }}
-                  />
-                </If>
-                {button(qt('操作 ⌘ K'), toggleActions)}
+                {button(qt('操作'), toggleActions, '⌘ K')}
               </View>
             </If>
             <If when={actions()}>
-              <View style={{ position: 'absolute', top: 60, left: 0, right: 0, bottom: 0 }}>
+              <View
+                style={{
+                  position: 'absolute',
+                  top: 60,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                }}
+              >
                 <View
                   onPress={() => {
                     actions.set(false);
@@ -1591,7 +1828,13 @@ export function QuickToolsSurface(props: {
                   <Text style={{ ...compactText, color: C.text }}>
                     {confirmation()?.action.confirm}
                   </Text>
-                  <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      justifyContent: 'flex-end',
+                      gap: 8,
+                    }}
+                  >
                     {button(qt('取消'), () => confirmation.set(null))}
                     {button(qt('确认'), () => {
                       const pending = confirmation();

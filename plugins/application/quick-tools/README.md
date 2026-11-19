@@ -46,9 +46,19 @@ native application before testing real assistant predictions or AI ranking.
   usage, ICU Chinese segmentation and BM25F search.
 - Quicklink URL parameters and literal file paths; local notes, snippets, symbols,
   calculator, applications with icons and transliteration, Spotlight file search.
+- Applications (应用): Return opens the selected app. Its action menu includes
+  Reveal in Finder and Copy Path. A running instance also offers Hide, Restart,
+  Quit and Force Quit. Restart waits for a normal exit, and Force Quit asks for
+  confirmation. Management actions bind the selected app path and process ID.
 - Main application locale and theme integration. Chinese and English copy,
   Up/Down input history, Tab acceptance and faint inline completion. Native
   assistant composer also recalls its own input history inside the Quick Tools panel.
+- Website icons use an 18-point mark centered in the standard 32-point result-row icon slot. Web plugins declare their website integration in the manifest.
+- Quick Question is enabled by default. Type a question in the launcher and press Command+Return.
+  Answers stream in the panel. Return asks a follow-up, Escape hides the panel,
+  and Stop cancels generation. Resume the last question from its launcher result row, or copy an individual reply. Quick
+  questions share the assistant's model connection and keep their own in-memory
+  history without opening a new conversation session for each question.
 - Independent assistant pane using the real native conversation/composer. A session
   handoff saves drafts before another window takes ownership. Unread indication
   observes Host-owned read state. Ranking is a journaled auxiliary model request
