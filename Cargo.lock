@@ -9527,6 +9527,7 @@ dependencies = [
 name = "maka-settings-native"
 version = "0.2.0"
 dependencies = [
+ "base64 0.23.1",
  "futures-util",
  "hex",
  "maka-agent-api",
@@ -9544,6 +9545,7 @@ dependencies = [
  "maka-providers",
  "maka-skills-api",
  "maka-workspace-api",
+ "reqwest",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -9779,6 +9781,7 @@ name = "maka-workbench"
 version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
+ "cc",
  "clipboard-rs 0.3.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "clipboard-win",
  "image",
@@ -10018,6 +10021,16 @@ name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
+
+[[package]]
+name = "mime_guess"
+version = "2.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
+dependencies = [
+ "mime",
+ "unicase",
+]
 
 [[package]]
 name = "minicbor"
@@ -13902,6 +13915,7 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "log",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -17780,6 +17794,12 @@ name = "unarray"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
+
+[[package]]
+name = "unicase"
+version = "2.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "357cc3acc6a036009fd6c973ed009037c732d60d0b4f6c673e9041497482a28f"
 
 [[package]]
 name = "unicode-bidi"

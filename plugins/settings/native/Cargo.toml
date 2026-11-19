@@ -23,6 +23,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+base64 = "0.23.1"
+reqwest = { workspace = true, features = ["multipart"] }
 maka-packages.workspace = true
 maka-fs-tools.workspace = true
 tokio.workspace = true

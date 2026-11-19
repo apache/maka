@@ -277,6 +277,11 @@ export const lucide = {
       d: 'M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z',
     },
   ],
+  mic: [
+    { tag: 'path', d: 'M12 19v3' },
+    { tag: 'path', d: 'M19 10v2a7 7 0 0 1-14 0v-2' },
+    { tag: 'rect', x: 9.0, y: 2.0, width: 6.0, height: 13.0, rx: 3.0 },
+  ],
   minus: [{ tag: 'path', d: 'M5 12h14' }],
   'move-right': [
     { tag: 'path', d: 'M18 8L22 12L18 16' },

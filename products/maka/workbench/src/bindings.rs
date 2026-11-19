@@ -22,6 +22,7 @@
 mod assets;
 mod community;
 mod diagrams;
+mod dictation;
 mod file_search;
 mod files;
 mod links;
@@ -274,6 +275,7 @@ pub fn ui_registry() -> Registry {
     registry.register::<crate::composer_input::file::MarkdownFileEditor>();
     registry.class::<crate::composer_input::ComposerInputState>();
     registry.register::<uploads::AttachmentPicker>();
+    registry.class::<dictation::MessageDictation>();
     registry.class::<terminal_grid::TerminalGrid>();
     registry.class::<uploads::UploadIntake>();
     registry.class::<uploads::StagedFile>();
@@ -412,6 +414,21 @@ impl ApplicationHost {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
         execute(owner, file_search::search(query, roots)).await
+    }
+
+    pub fn dictation_storage_prefix(&self) -> String {
+        format!("dictation.{}.", self.owner.client.source().state_domain)
+    }
+
+    pub fn legacy_dictation_key(&self) -> bool {
+        dictation::legacy_key()
+    }
+
+    pub fn message_dictation(&self) -> Result<Instance<dictation::MessageDictation>, String> {
+        Ok(Instance::new(dictation::MessageDictation::new(
+            self.owner.clone(),
+            self.client.clone(),
+        )?))
     }
 
     pub async fn open_local_path(this: Instance<Self>, path: String) -> Result<(), String> {

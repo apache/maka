@@ -63,6 +63,7 @@ ICONS = [
     'lock',
     'maximize',
     'message-square',
+    'mic',
     'minus',
     'move-right',
     'move-up-right',
