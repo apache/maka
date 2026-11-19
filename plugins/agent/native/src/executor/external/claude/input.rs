@@ -264,19 +264,10 @@ pub(super) async fn send(
     }
     let mark = screen.borrow().end;
     paste(io, prompt).await?;
-    let visible = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
     let echoed = async {
         loop {
             let observation = screen.borrow().after(mark);
-            let text = composer(&observation);
-            // Claude replaces large pastes by a numbered placeholder, preserving the actual text.
-            if text.contains("[Pasted text")
-                || text
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .contains(&visible)
-            {
+            if shows(composer(&observation), prompt) {
                 return Ok::<_, Error>(());
             }
             changed(screen).await?;
@@ -296,6 +287,14 @@ pub(super) async fn send(
     })
 }
 
+/// Whether the composer shows the pasted prompt. The terminal wraps a long line
+/// wherever it reaches the last column, which in text without spaces is inside a
+/// word, so only the characters that are not whitespace are compared.
+fn shows(composer: &str, prompt: &str) -> bool {
+    let visible = |text: &str| -> String { text.chars().filter(|c| !c.is_whitespace()).collect() };
+    // Claude replaces large pastes by a numbered placeholder, preserving the actual text.
+    composer.contains("[Pasted text") || visible(composer).contains(&visible(prompt))
+}
 fn image_marker(text: &str) -> Option<String> {
     // A complete AX prompt redraw supersedes any historical labels before it.
     let (_, after) = composer(text).rsplit_once("[Image #")?;
@@ -312,6 +311,17 @@ fn composer(text: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_prompt_wrapped_inside_text_without_spaces_is_acknowledged() {
+        let prompt = "第一行没有空格的长文本。\n\n第二行 with spaces";
+        // The composer as a 120 column terminal draws it: wrapped after a character.
+        assert!(shows(
+            "\u{a0} 第一行没有空格\n的长文本。\n\n第二行 with\nspaces",
+            prompt
+        ));
+        assert!(shows("\u{a0} [Pasted text #1 +4 lines]", prompt));
+        assert!(!shows("\u{a0} 第一行没有空格", prompt));
+    }
     #[test]
     fn latest_composer_image_labels_do_not_assume_a_counter_reset() {
         assert_eq!(
