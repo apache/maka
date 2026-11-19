@@ -528,6 +528,7 @@ fn catalog_inner(
                     computer: binding.contract().name == computer_contract.name && binding.contract().version == 1,
                     network_ceiling: selection.input == ToolInput::Web
                         || contract == &process_contract,
+                    file_ceiling: contract == &file_contract || contract == &process_contract,
                     input_projection,
                     title_kind,
                     presentation,
@@ -672,6 +673,9 @@ struct Service {
     /// Host Web effects and the workspace process tools ask for network per
     /// request, so their floor carries the Run's network approval ceiling.
     network_ceiling: bool,
+    /// The workspace file and process tools ask for file writes per call, so
+    /// their floor carries the Run's file approval ceiling.
+    file_ceiling: bool,
     input_projection: Projection,
     title_kind: Option<title::Kind>,
     presentation: Option<String>,
@@ -799,6 +803,7 @@ impl Service {
             mode,
             computer,
             network_ceiling,
+            file_ceiling,
             ..
         } = self;
         Box::pin(async move {
@@ -875,6 +880,8 @@ impl Service {
                 .await?;
             let mut floor = if computer {
                 access.workspace_sandbox_floor().await?
+            } else if file_ceiling {
+                access.file_approval_floor(&context.call.origin).await?
             } else {
                 access.sandbox_floor(&context.call.origin).await?
             };

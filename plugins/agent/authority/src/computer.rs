@@ -75,6 +75,10 @@ pub trait NativeCallAccess: Access {
     fn target(&self) -> &maka_agent_facts::durable::AuthorizationObligation;
     fn language(&self) -> Language;
     fn current(&self) -> BoxFuture<'_, Result<ResolvedConfiguration, ToolError>>;
+    /// What the Run holds before any grant. A tool that asks per call gets a
+    /// wider floor so that a grant can reach the Run's approval ceiling; its
+    /// base sandbox stays within this.
+    fn permission_ceiling(&self) -> &maka_sandbox::Sandbox;
     /// Validate actual Host dispatch, original native caller intent and original custody.
     /// Bind canonical original-reference evidence only; do not fabricate a provider outcome.
     fn bind_original<'a>(

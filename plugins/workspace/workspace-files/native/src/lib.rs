@@ -216,6 +216,8 @@ struct Captured {
     directory: cap_std::fs::Dir,
     sandbox: Sandbox,
     ceiling: Sandbox,
+    /// Workspace metadata and Host-private protections, before the caller's floor.
+    protections: Sandbox,
 }
 fn capture(
     workspace: &Workspace,
@@ -228,7 +230,8 @@ fn capture(
     let (sandbox, ceiling) =
         maka_workspace_support::sandbox(workspace, access, state_root).map_err(failed)?;
     let sandbox = sandbox.intersect(floor).map_err(failed)?;
-    let ceiling = ceiling.intersect(floor).map_err(failed)?;
+    let protections = ceiling;
+    let ceiling = protections.intersect(floor).map_err(failed)?;
     // Policy resolution may inspect workspace metadata; never accept replacement
     // of the original directory during those reads.
     maka_fs_tools::directory::open(&path, &identity).map_err(failed)?;
@@ -237,6 +240,7 @@ fn capture(
         directory,
         sandbox,
         ceiling,
+        protections,
     })
 }
 pub enum Output {
@@ -546,8 +550,13 @@ async fn execute(
     let workspace = configuration.workspace.clone();
     let workspace_access = configuration.permissions.access;
     let floor = context.scope().sandbox_floor().clone();
+    let held = access.permission_ceiling().clone();
+    let captured_root = state_root.clone();
     let mut captured = tokio::task::spawn_blocking(move || {
-        capture(&workspace, workspace_access, &state_root, &floor)
+        let mut captured = capture(&workspace, workspace_access, &captured_root, &floor)?;
+        // The floor bounds grants; without one the call holds no more than its Run.
+        captured.sandbox = captured.sandbox.intersect(&held).map_err(failed)?;
+        Ok::<_, ToolError>(captured)
     })
     .await
     .map_err(failed)??;
@@ -559,6 +568,7 @@ async fn execute(
             access,
             captured,
             &configuration,
+            &state_root,
             tool,
             &input,
             context.scope().sandbox_floor(),

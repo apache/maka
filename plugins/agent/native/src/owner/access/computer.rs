@@ -311,6 +311,9 @@ impl NativeCallAccess for BoundCall {
     fn language(&self) -> maka_agent_facts::language::Language {
         self.access.spec.language
     }
+    fn permission_ceiling(&self) -> &maka_sandbox::Sandbox {
+        &self.access.spec.permission_ceiling.sandbox
+    }
     fn current(&self) -> BoxFuture<'_, Result<ResolvedConfiguration, ToolError>> {
         Box::pin(async move {
             self.access.check_tool(&self.call, &self.tool).await?;

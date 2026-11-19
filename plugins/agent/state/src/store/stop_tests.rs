@@ -92,6 +92,7 @@ fn spec() -> (RunSpec, Vec<ContentBlob>) {
             approval: maka_sandbox::Approval::Never,
         },
         network_approval_ceiling: None,
+        filesystem_approval_ceiling: None,
         backend: BackendSpec::Model {
             binding: ModelBinding {
                 connection_id: "fixture".into(),
