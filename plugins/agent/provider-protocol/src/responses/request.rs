@@ -59,6 +59,7 @@ pub enum Input {
         custom: bool,
         output: ToolOutput,
     },
+    HostedItems(Vec<Value>),
     ProviderResult {
         replay: Option<Replay>,
         action: Value,
@@ -248,7 +249,7 @@ fn encode_items(input: &[Input], reasoning: ReasoningMode, options: &Value) -> R
             },
             Input::ToolCall { id, name, input, provider_executed, metadata } => {
                 if *provider_executed {
-                    if options["store"] != false && let Some(metadata) = metadata && !metadata.id.is_empty() {
+                    if !reasoning.is_plaintext() && options["store"] != false && let Some(metadata) = metadata && !metadata.id.is_empty() {
                         items.push(json!({"type":"item_reference", "id":metadata.id}));
                     }
                     continue;
@@ -267,6 +268,18 @@ fn encode_items(input: &[Input], reasoning: ReasoningMode, options: &Value) -> R
                 });
             }
             Input::ToolOutput { id, custom, output } => items.push(json!({"type": if *custom && reasoning == ReasoningMode::Encrypted { "custom_tool_call_output" } else { "function_call_output" }, "call_id":id, "output":output.encode()})),
+            Input::HostedItems(accepted) => {
+                if options["store"] == false || reasoning.is_plaintext() {
+                    items.extend(accepted.iter().cloned());
+                } else {
+                    // The original call already contributed its item reference.
+                    let referenced_call = accepted.first().is_some_and(|call| call["id"].is_string());
+                    items.extend(accepted.iter().skip(usize::from(referenced_call)).map(|receipt| match receipt["id"].as_str() {
+                        Some(id) => json!({"type":"item_reference","id":id}),
+                        None => receipt.clone(),
+                    }));
+                }
+            }
             Input::ProviderResult { replay, action } => {
                 if (reasoning.is_plaintext() || options["store"] == false) && let Some(replay) = replay {
                     items.push(replay.provider(action)?);

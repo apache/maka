@@ -249,6 +249,15 @@ fn project(
                         output,
                         ..
                     } => {
+                        if provider_options
+                            .as_ref()
+                            .is_some_and(|o| o["openai"]["responsesHostedItems"] == true)
+                            && let ToolOutput::Json(Value::Array(items))
+                            | ToolOutput::ErrorJson(Value::Array(items)) = output
+                        {
+                            input.push(Input::HostedItems(items.clone()));
+                            continue;
+                        }
                         if plaintext.is_some() || options[namespace]["store"] == false {
                             let replay = replay(provider_options)?;
                             let action = match output {

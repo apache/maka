@@ -550,6 +550,8 @@ const OPTION_FIELDS: &[&str] = &[
     "title",
     "context",
     "containerUpload",
+    "serverResultType",
+    "serverResultError",
 ];
 struct Options {
     kind: Option<JsonKind>,
@@ -1309,7 +1311,7 @@ impl Compiler {
         } else {
             None
         };
-        if executed && !mcp && !code && !advisor {
+        if executed && !mcp && !code && !advisor && !opts.is("type", "server-tool-use").await? {
             let mut accepted = false;
             for known in [
                 "web_fetch",
@@ -1506,6 +1508,22 @@ impl Compiler {
             }
             if is_error {
                 plan.field("is_error", vec![literal(b"true")])
+            }
+            plan.cache_slot_at = Some(plan.fragments.len());
+            return Ok(plan);
+        }
+        if let Some(kind) = opts.maybe_string("serverResultType")
+            && let ToolOutputRecipe::Json(value) | ToolOutputRecipe::ErrorJson(value) =
+                &result.output
+        {
+            let mut plan = Plan::empty();
+            plan.emitted = true;
+            plan.fragments.push(literal(b"{\"type\":"));
+            plan.fragments.extend(quoted(kind));
+            plan.string("tool_use_id", result.tool_call_id);
+            plan.raw("content", value.clone());
+            if let Some(flag) = opts.get("serverResultError") {
+                plan.raw("is_error", flag.source);
             }
             plan.cache_slot_at = Some(plan.fragments.len());
             return Ok(plan);

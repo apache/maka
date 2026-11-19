@@ -91,6 +91,18 @@ impl Builder<'_> {
                 }
             });
         }
+        let options = super::canonical(&result.extensions);
+        if let Some(kind) = options["serverResultType"].as_str()
+            && let ToolValue::Json(content) | ToolValue::ErrorJson(content) = output
+        {
+            return Ok(Some(Block::ServerResult {
+                kind: kind.into(),
+                tool_use_id: result.id.clone(),
+                content: content.clone(),
+                is_error: options["serverResultError"].as_bool(),
+                cache_control: cache,
+            }));
+        }
         let Some(tool) = ProviderTool::from_name(self.provider_name(&result.name)) else {
             self.warn(format!(
                 "provider executed tool result for tool {} is not supported",

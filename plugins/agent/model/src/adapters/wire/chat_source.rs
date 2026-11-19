@@ -412,6 +412,7 @@ async fn encode(
             let mut nonempty_reasoning = false;
             let mut observed_reasoning = None;
             let mut has_calls = false;
+            let mut hosted_results = Vec::new();
             while let Some(part) = cursor.next().await.map_err(error)? {
                 tokio::task::yield_now().await;
                 let part_options = match &part {
@@ -456,6 +457,9 @@ async fn encode(
                         }
                     }
                     AssistantRecipe::ToolCall { .. } => has_calls = true,
+                    AssistantRecipe::ToolResult(result) => {
+                        hosted_results.push(tool_message(result, options, language, &budget).await?)
+                    }
                     _ => {}
                 }
             }
@@ -486,6 +490,7 @@ async fn encode(
                 ));
             }
             items.push(overlay(provider_options, fields, &budget).await?);
+            items.extend(hosted_results);
         }
         MessageRecipe::Tool {
             content: results, ..
@@ -494,30 +499,7 @@ async fn encode(
             while let Some(result) = cursor.next().await.map_err(error)? {
                 tokio::task::yield_now().await;
                 validate_options(&result.provider_options, &budget).await?;
-                let output = match result.output {
-                    ToolOutputRecipe::Text(value) | ToolOutputRecipe::ErrorText(value) => {
-                        text(value)
-                    }
-                    ToolOutputRecipe::Json(value) | ToolOutputRecipe::ErrorJson(value) => {
-                        vec![l(b"\""), F::JsonString(value), l(b"\"")]
-                    }
-                    ToolOutputRecipe::Content(parts) if options.multipart_tool_content => {
-                        content(parts, language)?
-                    }
-                    ToolOutputRecipe::Content(parts) => textual_content(parts, language)?,
-                };
-                items.push(
-                    overlay(
-                        result.provider_options,
-                        vec![
-                            ("role", text(generated("tool"))),
-                            ("tool_call_id", text(result.tool_call_id)),
-                            ("content", output),
-                        ],
-                        &budget,
-                    )
-                    .await?,
-                );
+                items.push(tool_message(result, options, language, &budget).await?);
             }
         }
     }
@@ -530,6 +512,34 @@ async fn encode(
             owned_bytes: 0,
         })
         .collect())
+}
+
+async fn tool_message(
+    result: ToolResultRecipe,
+    options: &PromptOptions,
+    language: Language,
+    budget: &Arc<dyn SourceBudget>,
+) -> Result<Vec<F>, ModelError> {
+    let output = match result.output {
+        ToolOutputRecipe::Text(value) | ToolOutputRecipe::ErrorText(value) => text(value),
+        ToolOutputRecipe::Json(value) | ToolOutputRecipe::ErrorJson(value) => {
+            vec![l(b"\""), F::JsonString(value), l(b"\"")]
+        }
+        ToolOutputRecipe::Content(parts) if options.multipart_tool_content => {
+            content(parts, language)?
+        }
+        ToolOutputRecipe::Content(parts) => textual_content(parts, language)?,
+    };
+    overlay(
+        result.provider_options,
+        vec![
+            ("role", text(generated("tool"))),
+            ("tool_call_id", text(result.tool_call_id)),
+            ("content", output),
+        ],
+        budget,
+    )
+    .await
 }
 
 async fn render_call(

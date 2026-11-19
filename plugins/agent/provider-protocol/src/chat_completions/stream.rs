@@ -18,7 +18,7 @@
  */
 
 use super::{
-    response::{self, Annotation, Envelope, TextSpan, ToolDelta, UrlCitation, Usage},
+    response::{self, Annotation, CallEntry, Envelope, TextSpan, ToolDelta, UrlCitation, Usage},
     tools::Tracker,
 };
 use crate::{
@@ -137,6 +137,7 @@ pub struct Stream {
     usage: Option<(Usage, Value)>,
     pending: Vec<(f64, ToolDelta)>,
     forwarded: HashSet<String>,
+    reported: response::ReportedCalls,
     tools: Tracker,
 }
 impl Stream {
@@ -154,6 +155,7 @@ impl Stream {
             usage: None,
             pending: vec![],
             forwarded: HashSet::new(),
+            reported: Default::default(),
             tools: Tracker::default(),
         }
     }
@@ -282,8 +284,21 @@ impl Stream {
             {
                 self.prose.close(&mut events);
             }
-            for delta in delta.tool_calls.into_iter().flatten() {
-                self.tool(delta, generate_id, &mut events)?;
+            for entry in delta.tool_calls.into_iter().flatten().chain(
+                delta
+                    .executed_tools
+                    .into_iter()
+                    .flatten()
+                    .map(CallEntry::Server),
+            ) {
+                match entry {
+                    CallEntry::Local(tool) => self.tool(tool, generate_id, &mut events)?,
+                    CallEntry::Server(tool) => {
+                        let (call, result) = self.reported.observe(tool);
+                        events.extend(call.map(Event::ToolCall));
+                        events.extend(result.map(Event::ToolResult));
+                    }
+                }
             }
         }
         Ok(events)
