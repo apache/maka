@@ -35,6 +35,8 @@ pub struct RecallPassage {
     pub session: Session,
     pub anchor_message_id: String,
     pub anchor_position: RowPosition,
+    /// History boundary at which the anchor was resolved.
+    pub through: u64,
     /// Display preview beginning at the first match. The anchor opens the complete source.
     pub excerpt: String,
     /// Highlight ranges in UTF-16 code units within `excerpt`.

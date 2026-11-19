@@ -35049,6 +35049,12 @@ export const contracts: {
                   anchorPosition: {
                     $ref: '#/$defs/HistoryRowAddress',
                   },
+                  through: {
+                    description: 'History boundary at which the anchor was resolved.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
                   excerpt: {
                     description:
                       'Display preview beginning at the first match. The anchor opens the complete source.',
@@ -35073,6 +35079,7 @@ export const contracts: {
                   'session',
                   'anchorMessageId',
                   'anchorPosition',
+                  'through',
                   'excerpt',
                   'highlights',
                   'matchedTerms',

@@ -36,6 +36,7 @@ import {
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { quietWaits, retrying, waitActivity } from './runWaits';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
+import type { RecallAnchor } from '../../../../products/maka/workbench/app/RecallSearch';
 import { SessionInspector } from '../../../../products/maka/workbench/app/SessionInspector';
 import type {
   WorkspacePullRequestTarget,
@@ -278,11 +279,10 @@ import {
   type DraftAttachment,
 } from '../../../../products/maka/workbench/app/attachmentDraft';
 
-export type ConversationAnchor = { messageId?: string | null; position: HistoryRowAddress };
 type HistoryNavigation =
   | { kind: 'start' | 'tail' }
   | { kind: 'turn'; item: TurnNavigationItem }
-  | { kind: 'message'; anchor: ConversationAnchor };
+  | { kind: 'message'; anchor: RecallAnchor };
 type HistoryWindow = Pick<ConversationHistoryPage, 'before' | 'after'> & {
   through: number;
   identity: object;
@@ -315,7 +315,7 @@ export type ConversationHandle = Omit<
   /** A null target follows the current live turn; `reload` reads the tail again. */
   jumpLatest(turnId: string | null, reload?: boolean): void;
   refresh(): Promise<any>;
-  reveal(anchor: ConversationAnchor, current: () => boolean): Promise<void>;
+  reveal(anchor: RecallAnchor, current: () => boolean): Promise<void>;
   focusHistory(): void;
   focusActivity(turnId: string | null): void;
   /** The title its header shows. */
@@ -2531,7 +2531,7 @@ export function Conversation(props: ConversationProps) {
       animated: false,
     });
   };
-  const reveal = async (anchor: ConversationAnchor, current: () => boolean) => {
+  const reveal = async (anchor: RecallAnchor, current: () => boolean) => {
     if (!alive) throw new UiError('This conversation is closed.');
     if (!current()) throw new UiError('History navigation was cancelled.');
     const target: HistoryNavigation = { kind: 'message', anchor };
@@ -2549,12 +2549,12 @@ export function Conversation(props: ConversationProps) {
     try {
       const opened = await resetHistory(
         { kind: 'row', position: anchor.position, field: 'body' },
-        null,
+        anchor.through,
         (page) => {
           if (
             !page.chunks.some(
               (chunk) =>
-                (anchor.messageId == null || chunk.messageId === anchor.messageId) &&
+                chunk.messageId === anchor.messageId &&
                 chunk.field === 'body' &&
                 chunk.offset === 0 &&
                 sameHistoryRow(chunk.position, anchor.position),
@@ -2569,7 +2569,7 @@ export function Conversation(props: ConversationProps) {
         throw new UiError('History navigation was cancelled.');
       const row = rows().find(
         (candidate) =>
-          (anchor.messageId == null || candidate.messageId === anchor.messageId) &&
+          candidate.messageId === anchor.messageId &&
           candidate.field === 'body' &&
           candidate.position &&
           sameHistoryRow(candidate.position, anchor.position),

@@ -7698,6 +7698,10 @@ export interface AgentRecallPassage {
   anchorMessageId: string;
   anchorPosition: HistoryRowAddress;
   /**
+   * History boundary at which the anchor was resolved.
+   */
+  through: number;
+  /**
    * Display preview beginning at the first match. The anchor opens the complete source.
    */
   excerpt: string;
