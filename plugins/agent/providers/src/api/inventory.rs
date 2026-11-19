@@ -18,6 +18,7 @@
  */
 use std::collections::HashSet;
 
+use maka_agent_facts::configuration::ApiProtocol;
 use maka_agent_facts::configuration::ConnectionEffectFailureClass;
 use maka_agent_facts::configuration::ModelCapabilities;
 use maka_agent_facts::configuration::ModelInfo;
@@ -28,15 +29,30 @@ type Failure = ConnectionEffectFailureClass;
 /// Provider-specific JSON ends here; catalog normalization operates on typed rows.
 pub(super) fn from_rows<'a>(
     provider: &str,
+    wire: ApiProtocol,
     rows: impl IntoIterator<Item = &'a Value>,
 ) -> Result<Vec<ModelInfo>, Failure> {
-    let models = rows
-        .into_iter()
-        .map(|row| model_info(provider, row))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .flatten()
-        .collect();
+    let mut models = Vec::new();
+    for row in rows {
+        // Magpie includes image generators when asked for per-model search capabilities.
+        if provider == "magpie" && row["kind"] == "image" {
+            continue;
+        }
+        let Some(mut model) = model_info(provider, row)? else {
+            continue;
+        };
+        if wire != ApiProtocol::AnthropicMessages
+            && let Some(tiers) = row.get("service_tiers").filter(|tiers| !tiers.is_null())
+        {
+            model.service_tiers =
+                serde::Deserialize::deserialize(tiers).map_err(|_| Failure::InvalidResponse)?;
+        }
+        if provider == "magpie" {
+            model.capabilities.get_or_insert_default().web_search =
+                Some(row["web_search"] == "native");
+        }
+        models.push(model);
+    }
     normalize(models)
 }
 
@@ -177,7 +193,12 @@ mod tests {
         if !root.is_object() && !root.is_array() {
             return Err(Failure::InvalidResponse);
         }
-        super::from_rows("fixture", object_array(root.get("data"))?).map(|models| {
+        super::from_rows(
+            "fixture",
+            ApiProtocol::OpenaiResponses,
+            object_array(root.get("data"))?,
+        )
+        .map(|models| {
             models
                 .into_iter()
                 .map(|model| serde_json::to_value(model).unwrap())

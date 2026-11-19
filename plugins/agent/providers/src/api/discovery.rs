@@ -71,7 +71,10 @@ pub(super) async fn discover(
     } else {
         HeaderAuth::Bearer
     };
-    let headers = effects::headers(kind, credentials, request.request_headers)?;
+    let mut headers = effects::headers(kind, credentials, request.request_headers)?;
+    if provider.id == "magpie" {
+        headers.insert("x-magpie-drawers".into(), "1".into());
+    }
     let client = InventoryClient { context, headers };
     let base = endpoint(&configuration.base_url)?;
     match declaration {
@@ -140,7 +143,12 @@ pub(super) async fn discover(
                 !matches!(filter, Some(ModelFilter::LanguageModels))
                     || row.get("type").and_then(Value::as_str) == Some("language")
             });
-            let mut models = inventory::from_rows(provider.id, filtered).map_err(|_| invalid())?;
+            let mut models = inventory::from_rows(
+                provider.id,
+                provider.facts.runtime_adapter.wire()?,
+                filtered,
+            )
+            .map_err(|_| invalid())?;
             if matches!(filter, Some(ModelFilter::ToolCapable)) {
                 models.retain(|model| {
                     model
