@@ -374,6 +374,14 @@ fe7ed012d92c642fd8e5607ac5a45d517538b5c5. Its manifest uses the workspace
 rusqlite version. The original MIT license and finite file provenance are
 recorded in third-party/deno-node-sqlite/{LICENSE.md,upstream.json}.
 
+Deno crypto dependency alignment (adapted, MIT)
+
+third-party/deno-crypto and third-party/deno-node-crypto contain
+deno_crypto 0.274.0 and deno_node_crypto 0.30.0 from Deno at revision
+fe7ed012d92c642fd8e5607ac5a45d517538b5c5. Their manifests pin AES 0.8.4
+to match rtc-crypto. The MIT license and source provenance are recorded
+in each directory.
+
 SQLx SQLite dependency alignment (adapted, Apache License 2.0 OR MIT)
 
 third-party/sqlx-sqlite contains sqlx-sqlite 0.9.0 from

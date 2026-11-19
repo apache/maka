@@ -47,6 +47,13 @@ impl ServiceRun {
         }
         // This read only locates Root. Admission is repeated after acquiring the
         // actual writer lease, so a waiting process cannot reuse an old grant.
-        crate::serve::run(&deployment.root_path, None, Some(&self.root_id.0)).await
+        crate::serve::run(
+            &deployment.root_path,
+            None,
+            Some(&self.root_id.0),
+            #[cfg(target_os = "linux")]
+            None,
+        )
+        .await
     }
 }

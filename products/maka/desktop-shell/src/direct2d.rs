@@ -45,10 +45,27 @@ pub(crate) fn start(target: crate::Target) -> Result<(), String> {
         )
         .await
     })?;
-    run(first, runtime)
+    run(first, &runtime, None).map(|_| ())
 }
 
-fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
+pub(crate) fn start_wsl(target: crate::wsl::Target) -> Result<(), String> {
+    let runtime = Runtime::new().map_err(|err| err.to_string())?;
+    let endpoint = runtime.block_on(target.endpoint())?;
+    let (mut first, root, peer) = runtime.block_on(target.connect(endpoint.clone(), None))?;
+    while run(first, &runtime, Some((endpoint.connectivity(), peer)))? {
+        (first, _, _) = runtime.block_on(target.connect(endpoint.clone(), Some((&root, peer))))?;
+    }
+    Ok(())
+}
+
+fn run(
+    first: Connection,
+    runtime: &Runtime,
+    observer: Option<(
+        watch::Receiver<maka_peer::engine::ConnectivitySnapshot>,
+        maka_peer::PeerId,
+    )>,
+) -> Result<bool, String> {
     let Connection {
         bindings, config, ..
     } = first;
@@ -59,8 +76,24 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
         .get::<UiReload>()
         .expect("the admitted workbench owns its UI reload channel")
         .take_requests();
-    carry_out(requests, &runtime);
+    carry_out(requests, runtime);
     refuse_reloads(reloading, runtime.handle());
+    let lost = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reconnect = observer.map(|(mut state, peer)| {
+        let lost = lost.clone();
+        let mut foreground = active.subscribe();
+        runtime.spawn(async move {
+            // The native window must be registered before requesting its close.
+            if foreground.wait_for(|active| *active).await.is_err() {
+                return;
+            }
+            let _ = state
+                .wait_for(|value| !value.connected_peers.contains(&peer))
+                .await;
+            lost.store(true, std::sync::atomic::Ordering::Release);
+            quit_app();
+        })
+    });
     let result = run_app_with_config(
         shell.attach(config),
         AppOptions {
@@ -74,10 +107,15 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
             active.send_replace(is_active);
         },
     );
-    runtime.block_on(host::quit(bindings));
-    runtime.shutdown_background();
+    if let Some(reconnect) = reconnect {
+        reconnect.abort();
+    }
+    let lost = lost.load(std::sync::atomic::Ordering::Acquire);
+    if !lost {
+        runtime.block_on(host::quit(bindings));
+    }
     if result == std::process::ExitCode::SUCCESS {
-        Ok(())
+        Ok(lost)
     } else {
         Err("the Direct2D window failed".into())
     }

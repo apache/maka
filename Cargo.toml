@@ -61,6 +61,7 @@ members = [
     "plugins/agent/model",
     "plugins/agent/provider-protocol",
     "platform/network",
+    "platform/peer",
     "platform/plugin-core",
     "platform/presentation",
     "platform/process",
@@ -166,6 +167,7 @@ maka-code-runtime = { path = "platform/code-runtime" }
 maka-model = { path = "plugins/agent/model" }
 maka-provider-protocol = { path = "plugins/agent/provider-protocol" }
 maka-network = { path = "platform/network" }
+maka-peer = { path = "platform/peer" }
 maka-plugin-core = { path = "platform/plugin-core" }
 maka-presentation = { path = "platform/presentation" }
 maka-process = { path = "platform/process" }
@@ -253,6 +255,9 @@ opt-level = 3
 opt-level = 3
 
 [patch.crates-io]
+# Align both Deno AES pins with the WebRTC stack without changing crypto implementation code.
+deno_node_crypto = { path = "third-party/deno-node-crypto" }
+deno_crypto = { path = "third-party/deno-crypto" }
 zbus = { git = "https://github.com/maka-agent/cua", rev = "b97a7e7a97b1dabc669b7c362ba39691766df761" }
 nom = { git = "https://github.com/maka-agent/cua", rev = "b97a7e7a97b1dabc669b7c362ba39691766df761" }
 reqwest = { path = "third-party/reqwest" }

@@ -29,6 +29,7 @@ pub(super) async fn run(
     path: &Path,
     websocket: Option<std::net::SocketAddr>,
     expected_root: Option<&str>,
+    #[cfg(target_os = "linux")] wsl_peer: Option<maka_peer::PeerId>,
 ) -> Result<(), maka_host_runtime::HostError> {
     use maka_event_log::root::{ROOT_MARKER, RootNamespaces, RootOwner};
     let namespaces = RootNamespaces::for_current_account()?;
@@ -66,6 +67,12 @@ pub(super) async fn run(
     if expected_root.is_some() && deployment.is_none() {
         return Err("service State Root must have a supervised deployment".into());
     }
+    #[cfg(target_os = "linux")]
+    let websocket = if wsl_peer.is_some() {
+        Some("127.0.0.1:0".parse()?)
+    } else {
+        websocket
+    };
     let websocket = match deployment
         .as_ref()
         .map(|deployment| deployment.websocket)
@@ -92,17 +99,31 @@ pub(super) async fn run(
         None,
     )
     .await?;
-    serve_product(host, websocket).await
+    serve_product(
+        host,
+        websocket,
+        #[cfg(target_os = "linux")]
+        wsl_peer,
+    )
+    .await
 }
 async fn serve_product(
     mut product: crate::application::ProductHost,
     websocket: Option<WebSocketListener>,
+    #[cfg(target_os = "linux")] wsl_peer: Option<maka_peer::PeerId>,
 ) -> Result<(), HostError> {
     let result = async {
     let host = &product.host;
     let endpoint = super::endpoint::LocalEndpoint::bind()?;
     let cancellation = CancellationToken::new();
     let _signals = super::signals::watch(cancellation.clone())?;
+    #[cfg(target_os = "linux")]
+    let peer = match wsl_peer {
+        Some(id) => Some(crate::wsl_peer::Listener::new(
+            host, id, websocket.as_ref().ok_or("WSL Host needs WebSocket")?.local_addr()?
+        ).await?),
+        None => None,
+    };
     let registration = host.publish_registration(
         &endpoint.path,
         websocket
@@ -115,7 +136,16 @@ async fn serve_product(
         ready["websocketUrl"] = format!("ws://{}/runtime-host", listener.local_addr()?).into();
     }
     println!("{ready}");
-    let result = listen(endpoint, websocket, host.clone(), cancellation).await;
+    let serving = listen(endpoint, websocket, host.clone(), cancellation.clone());
+    #[cfg(target_os = "linux")]
+    let result = if let Some(peer) = peer {
+        let p = async { let result = peer.run(cancellation.clone()).await; cancellation.cancel(); result };
+        let h = async { let result = serving.await; cancellation.cancel(); result };
+        let (h, p) = tokio::join!(h, p);
+        h.and(p)
+    } else { serving.await };
+    #[cfg(not(target_os = "linux"))]
+    let result = serving.await;
     result.and(registration.remove().map_err(Into::into))
     }.await;
     let cleanup = product.shutdown().await;

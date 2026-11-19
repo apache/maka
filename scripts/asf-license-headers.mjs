@@ -168,6 +168,8 @@ const upstreamFiles = new Set(
     'async-io',
     'deno-tls',
     'deno-node-sqlite',
+    'deno-crypto',
+    'deno-node-crypto',
     'gix-index',
     'gix-discover',
     'sqlx-sqlite',

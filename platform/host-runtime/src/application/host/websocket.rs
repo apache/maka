@@ -68,3 +68,36 @@ pub(super) async fn connection(
     host.channel(bytes::Channel::new(socket), Authority::Remote { hash })
         .await
 }
+
+/// Open the existing application WebSocket on an already connected byte stream.
+pub(super) async fn connect_on_stream<S>(
+    stream: S,
+    bearer: &str,
+) -> Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + use<S>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio_tungstenite::tungstenite::{Error, client::IntoClientRequest, http::header};
+
+    // The URI selects the existing Host route. It never causes a TCP dial.
+    let mut request = "ws://localhost/runtime-host"
+        .into_client_request()
+        .map_err(|error| error.to_string())?;
+    let mut authorization = header::HeaderValue::from_str(&format!("Bearer {bearer}"))
+        .map_err(|_| "invalid Host Bearer header")?;
+    authorization.set_sensitive(true);
+    request
+        .headers_mut()
+        .insert(header::AUTHORIZATION, authorization);
+    let (socket, _) = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio_tungstenite::client_async_with_config(request, stream, Some(bytes::config())),
+    )
+    .await
+    .map_err(|_| "Host WebSocket upgrade timed out")?
+    .map_err(|error| match error {
+        Error::Http(response) => format!("Host WebSocket upgrade rejected: {}", response.status()),
+        _ => "Host WebSocket upgrade failed".into(),
+    })?;
+    Ok(bytes::Channel::new(socket))
+}

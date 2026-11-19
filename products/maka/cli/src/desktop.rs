@@ -45,12 +45,43 @@ pub(super) struct Args {
     /// Business Host Root to initialize or reopen (default: ~/.maka/application/host).
     #[arg(long)]
     root: Option<PathBuf>,
+    /// Select a WSL distribution instead of the local Windows Host.
+    #[cfg(windows)]
+    #[arg(long, requires_all = ["wsl_maka", "wsl_root"], conflicts_with = "root")]
+    wsl: Option<String>,
+    /// Absolute path to the Linux Maka executable inside the selected distribution.
+    #[cfg(windows)]
+    #[arg(long, requires = "wsl")]
+    wsl_maka: Option<String>,
+    /// Absolute Host Root inside the selected distribution.
+    #[cfg(windows)]
+    #[arg(long, requires = "wsl")]
+    wsl_root: Option<String>,
 }
 
 impl Args {
     pub(super) async fn run(self) -> Result<ExitCode, HostError> {
         let stop = CancellationToken::new();
         let _signals = crate::signals::watch(stop.clone())?;
+        #[cfg(windows)]
+        if let Some(distro) = self.wsl {
+            let maka = self.wsl_maka.ok_or("--wsl-maka is required")?;
+            let root = self.wsl_root.ok_or("--wsl-root is required")?;
+            if !maka.starts_with('/') || !root.starts_with('/') {
+                return Err("WSL executable and Root must be absolute Linux paths".into());
+            }
+            let data = maka_sandbox::account_home()?
+                .join(".maka")
+                .join("wsl-desktop");
+            let status = Command::new(std::env::current_exe()?.with_file_name(SHELL))
+                .env("MAKA_DESKTOP_WSL_DISTRO", distro)
+                .env("MAKA_DESKTOP_WSL_MAKA", maka)
+                .env("MAKA_DESKTOP_WSL_ROOT", root)
+                .env("MAKA_DESKTOP_WSL_CLIENT_DIR", data)
+                .status()
+                .await?;
+            std::process::exit(status.code().unwrap_or(1));
+        }
         let root = crate::application::root_path(self.root)?;
         let mut client = tokio::select! {
             result = crate::deployment::connect_local(root.clone()) => result?,

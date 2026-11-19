@@ -30,13 +30,37 @@ use std::path::{Path, PathBuf};
 /// Returns the workbench's client and the clients directory, where the shell
 /// keeps its data. `host` is closed when admission fails.
 pub async fn admit(
-    mut host: HostClient,
+    host: HostClient,
     root: &Path,
     shell: &str,
 ) -> Result<(Client, PathBuf), String> {
+    let location = root::resolve(root).map_err(|error| error.to_string())?;
+    admit_client(
+        host,
+        location.root_id(),
+        location.canonical_path().join("clients"),
+        shell,
+    )
+    .await
+}
+
+#[cfg(windows)]
+pub async fn admit_wsl(
+    host: HostClient,
+    root_id: &str,
+    directory: &Path,
+) -> Result<(Client, PathBuf), String> {
+    admit_client(host, root_id, directory.join(root_id), "desktop").await
+}
+
+async fn admit_client(
+    mut host: HostClient,
+    root_id: &str,
+    directory: PathBuf,
+    shell: &str,
+) -> Result<(Client, PathBuf), String> {
     let prepare = async {
-        let location = root::resolve(root).map_err(|error| error.to_string())?;
-        if host.source().state_domain != location.root_id() {
+        if host.source().state_domain != root_id {
             return Err(format!(
                 "application Host changed during {shell} startup admission"
             ));
@@ -44,7 +68,6 @@ pub async fn admit(
         if host.catalogue().describe("receipts")?.contract != receipt_reader_contract() {
             return Err("Host receipts endpoint has a different contract".into());
         }
-        let directory = location.canonical_path().join("clients");
         root::private_directory(&directory).map_err(|error| error.to_string())?;
         let journal = Journal::open(&directory.join(format!("{shell}.sqlite"))).await?;
         Ok((journal, directory))

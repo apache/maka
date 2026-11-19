@@ -39,6 +39,8 @@ mod signals;
 mod startup;
 #[cfg(windows)]
 mod windows;
+#[cfg(target_os = "linux")]
+mod wsl_peer;
 
 fn main() -> std::process::ExitCode {
     #[cfg(unix)]

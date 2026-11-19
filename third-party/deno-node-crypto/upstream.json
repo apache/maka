@@ -1,0 +1,26 @@
+{
+  "repository": "https://github.com/denoland/deno",
+  "revision": "fe7ed012d92c642fd8e5607ac5a45d517538b5c5",
+  "path_in_vcs": "ext/node_crypto",
+  "registry_version": "0.30.0",
+  "changes": [
+    "Cargo.toml: change the exact AES pin from 0.8.3 to 0.8.4.",
+    "LICENSE.md: MIT license from the same Deno revision."
+  ],
+  "files": {
+    "Cargo.toml": "354e7fd00a2f8b31a6b8ca9b41166a28d3aacc6bf01f0900907d4eb52fd627cc",
+    "cipher.rs": "cfa51029b0e0c1d7a4fa098a8eacab920f65a08d2e52d9514fafa1248ca190a7",
+    "clippy.toml": "b3768f180935df850c047416d480dd1242d54f84a178891e6ace2af6e518c41d",
+    "dh.rs": "65e8d0f05daffc92e78ec170dbc03e5fb5be12b05fd782170b470d14f18a7cfd",
+    "digest.rs": "174d8df61f95046515545b40c2048814074055b76b3f034f09406f020e804ff3",
+    "keys.rs": "e2e6c840d2b7516140a17475aa7522b9ad13cedf0d4c99364de26fbecf7adcb4",
+    "lib.rs": "d62952dc094d3ffd8a5d023eab95c960ce14c7f8f4fd6c51cc5fe125729867c3",
+    "LICENSE.md": "f62497fffecc0852960c8d3e6934b9db86d16396e9b604072e923892cae3a588",
+    "md5_sha1.rs": "7258c14b3dfe9cfb1c13d43bc083c7d2d7b4c137e66accb31fb8469a9c6fcac3",
+    "pkcs3.rs": "f46978886700d437c8561584ccded61db46373073c78e239a19631ac115004ea",
+    "primes.rs": "30cbea4d6611023345eaf2368b4b833bfe45400cd92c60d6d1ba5d8bec5e71d7",
+    "sign.rs": "f56376647db41c20f26fdcc72c1dce661d67ae290c3acaca1bd1edb91714df06",
+    "x509.rs": "68febcdf99e8ecb7ed73042dc831673bdc3df39d33b25243b7dac588cb8e93fe",
+    "digest/ring_sha2.rs": "710d0d1ab4b12968809b4b60718819ed68d713c64966d486304c0ce601c96af3"
+  }
+}

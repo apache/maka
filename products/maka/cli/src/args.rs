@@ -119,11 +119,17 @@ enum HostCommand {
     #[command(hide = true)]
     ServiceRun(crate::deployment::ServiceRun),
     /// Serve a native State Root over a private local endpoint.
+    #[cfg(target_os = "linux")]
+    #[command(hide = true)]
+    WslConnect(crate::wsl_peer::Connect),
     Serve {
         #[command(flatten)]
         root: Root,
         #[arg(long)]
         websocket: Option<SocketAddr>,
+        #[cfg(target_os = "linux")]
+        #[arg(long, hide = true)]
+        wsl_peer: Option<maka_peer::PeerId>,
     },
 }
 
@@ -248,10 +254,24 @@ impl Cli {
                 command_exit(args.run(crate::deployment::ControlAction::Uninstall))
             }
             Command::Host(HostCommand::Init(args)) => command_exit(args.run()),
-            Command::Host(HostCommand::Serve { root, websocket }) => command_exit(async move {
+            #[cfg(target_os = "linux")]
+            Command::Host(HostCommand::WslConnect(args)) => command_exit(args.run()),
+            Command::Host(HostCommand::Serve {
+                root,
+                websocket,
+                #[cfg(target_os = "linux")]
+                wsl_peer,
+            }) => command_exit(async move {
                 #[cfg(windows)]
                 crate::windows::own_process_tree()?;
-                serve::run(&root.root, websocket, None).await
+                serve::run(
+                    &root.root,
+                    websocket,
+                    None,
+                    #[cfg(target_os = "linux")]
+                    wsl_peer,
+                )
+                .await
             }),
             Command::Host(HostCommand::ServiceRun(args)) => command_exit(args.run()),
             Command::Host(HostCommand::Status(args)) => command_exit(args.run()),
