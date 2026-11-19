@@ -20,33 +20,88 @@
 import { urlSource, type AnswerSource } from './answerCitations';
 import { record } from './toolCards';
 
+const queryFields = [
+  'queries',
+  'query',
+  'q',
+  'search_query',
+  'searchQuery',
+  'search_queries',
+  'searchQueries',
+  'search_terms',
+  'searchTerms',
+  'keywords',
+] as const;
+
+// A few gateways wrap the native JSON in a text content block.
+function structured(value: unknown): unknown {
+  if (typeof value !== 'string' || !/^[{\[]/.test(value.trimStart())) return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
 export function providerSearch(input: unknown, output: unknown) {
-  const args = record(input);
-  const result = record(output);
-  const action = record(result?.action);
   const queries = new Set<string>();
   const sources = new Map<string, AnswerSource>();
+  let error: string | null = null;
   const addQuery = (value: unknown) => {
-    if (typeof value === 'string' && value.trim()) queries.add(value.trim());
+    if (typeof value === 'string') {
+      if (value.trim()) queries.add(value.trim());
+    } else if (Array.isArray(value)) {
+      value.forEach(addQuery);
+    } else {
+      const row = record(value);
+      if (row) for (const field of queryFields) if (row[field] != null) addQuery(row[field]);
+    }
   };
-  addQuery(args?.query);
-  if (Array.isArray(action?.queries)) action.queries.forEach(addQuery);
-  addQuery(action?.query);
-  if (action?.type === 'find' || action?.type === 'find_in_page') addQuery(action.pattern);
-
   const addSource = (value: unknown) => {
     const row = record(value);
-    if (typeof row?.url !== 'string') return;
-    const source = urlSource(row.url, typeof row.title === 'string' ? row.title : undefined);
+    const target =
+      typeof value === 'string' ? value : (row?.url ?? row?.link ?? row?.href ?? row?.uri);
+    if (typeof target !== 'string') return;
+    const label = row?.title ?? row?.name;
+    const source = urlSource(target, typeof label === 'string' ? label : undefined);
     if (source.url && !sources.has(source.key)) sources.set(source.key, source);
   };
-  if (Array.isArray(output)) output.forEach(addSource);
-  if (Array.isArray(action?.sources)) action.sources.forEach(addSource);
-  if (action?.url) addSource(action);
-
-  return {
-    queries: [...queries],
-    sources: [...sources.values()],
-    error: typeof result?.error_code === 'string' ? result.error_code : null,
+  const readResult = (value: unknown) => {
+    const parsed = structured(value);
+    if (Array.isArray(parsed)) {
+      for (const hit of parsed) {
+        const item = record(hit);
+        if (item?.type === 'text') readResult(item.text);
+        else addSource(hit);
+      }
+      return;
+    }
+    const row = record(parsed);
+    if (!row) return;
+    addQuery(row);
+    if (row.type === 'find' || row.type === 'find_in_page') addQuery(row.pattern);
+    addSource(row);
+    const failure = row.error_code ?? record(row.error)?.message;
+    if (typeof failure === 'string') error = failure;
+    for (const field of [
+      'sources',
+      'results',
+      'search_results',
+      'searchResults',
+      'citations',
+      'items',
+      'organic',
+      'organic_results',
+    ]) {
+      if (Array.isArray(row[field])) row[field].forEach(addSource);
+    }
+    const webPages = record(row.webPages)?.value;
+    if (Array.isArray(webPages)) webPages.forEach(addSource);
+    for (const field of ['action', 'data', 'result', 'content']) {
+      if (row[field] != null) readResult(row[field]);
+    }
   };
+  addQuery(structured(input));
+  readResult(output);
+  return { queries: [...queries], sources: [...sources.values()], error };
 }

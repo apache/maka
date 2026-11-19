@@ -63,7 +63,7 @@ const workspaceTitles = {
   stdin: ['Send process input', 'terminal'],
   stop: ['Stop process', 'terminal'],
   fetch: ['Read web page', 'link'],
-  webSearch: ['Search the web', 'search'],
+  webSearch: ['Search the web', 'globe'],
 } as const;
 
 const presentations: ReadonlyMap<string, ActivityPresentation> = new Map(

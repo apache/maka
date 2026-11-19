@@ -79,7 +79,7 @@ async fn history_recognizes_hosted_search_independently_of_the_local_tool_name()
         let session = rig.start().await?;
         rig.assemble(&session).await?;
         let attempt = rig.attempt().await?;
-        let parts = [
+        let mut parts = vec![
             ModelPart::ToolCall {
                 call: ModelToolCall {
                     id: "hosted".into(),
@@ -108,6 +108,25 @@ async fn history_recognizes_hosted_search_independently_of_the_local_tool_name()
                 },
             },
         ];
+        let aliases = [
+            "web.run",
+            "openai.webSearchPreview",
+            "web_search_20250305",
+            "deepseek-web-search",
+            "browser.search",
+            "google_search",
+        ];
+        for name in aliases {
+            parts.push(ModelPart::ToolCall {
+                call: ModelToolCall {
+                    id: name.into(),
+                    name: name.into(),
+                    input: json!({"search_query":[{"q":"another query"}]}).into(),
+                    provider_options: None,
+                    provider_executed: true,
+                },
+            });
+        }
         let facts = parts
             .into_iter()
             .enumerate()
@@ -120,8 +139,21 @@ async fn history_recognizes_hosted_search_independently_of_the_local_tool_name()
             .collect();
         rig.append(facts, vec![]).await?;
 
-        let page = live(&rig, &session, wire::Position::Tail).await?;
-        let rows = tools(&page);
+        let mut page = live(&rig, &session, wire::Position::Start).await?;
+        let mut rows = tools(&page);
+        while !page["after"].is_null() {
+            page = query(
+                &rig,
+                "history",
+                json!({
+                    "sessionId": session, "through": page["through"],
+                    "position": {"kind": "after", "cursor": page["after"]},
+                    "includeThinking": true, "view": "conversation"
+                }),
+            )
+            .await?;
+            rows.extend(tools(&page));
+        }
         let hosted: Vec<_> = rows
             .iter()
             .filter_map(|row| row.call.as_ref())
@@ -135,6 +167,19 @@ async fn history_recognizes_hosted_search_independently_of_the_local_tool_name()
         for call in hosted {
             assert_eq!(call.presentation.as_deref(), Some("provider.web_search"));
             assert_eq!(call.title.as_ref().unwrap().fallback, "query from result");
+        }
+        for name in aliases {
+            let call = rows
+                .iter()
+                .filter_map(|row| row.call.as_ref())
+                .find(|call| call.name == name)
+                .unwrap();
+            assert_eq!(
+                call.presentation.as_deref(),
+                Some("provider.web_search"),
+                "{name}"
+            );
+            assert_eq!(call.title.as_ref().unwrap().fallback, "another query");
         }
         let local = rows
             .iter()

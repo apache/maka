@@ -445,3 +445,25 @@ test('hosted search cards preserve distinct queries and expose recorded web sour
     'Search the web · ' + q,
   );
 });
+
+test('gateway search envelopes accept query batches, text blocks and titled result links', () => {
+  const url = 'https://example.org/reference';
+  const sources = [{ key: url, title: 'Reference', url, site: 'example.org' }];
+  const input = { search_query: [{ q: 'one' }, { q: 'two' }, { q: 'one' }] };
+  for (const output of [
+    { data: { results: [{ link: url, title: 'Reference' }] } },
+    {
+      content: [
+        { type: 'text', text: JSON.stringify({ items: [{ href: url, name: 'Reference' }] }) },
+      ],
+    },
+    { result: { webPages: { value: [{ url, name: 'Reference' }] } } },
+    { action: { searchQuery: 'two', sources: [{ url, title: 'Reference' }, url] } },
+  ]) {
+    assert.deepEqual(providerSearch(input, output), {
+      queries: ['one', 'two'],
+      sources,
+      error: null,
+    });
+  }
+});
