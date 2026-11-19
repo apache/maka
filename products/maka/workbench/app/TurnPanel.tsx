@@ -340,7 +340,6 @@ function ActivityLog(props: {
   resumed(): void;
   /** Whether the activity list is scrolled to its end, following or not. */
   settled?(atEnd: boolean): void;
-  reveal(): void;
 }) {
   const state = props.state;
   const lease = ++state.lease;
@@ -349,17 +348,6 @@ function ActivityLog(props: {
   const fadeTop = signal(false);
   const fadeBottom = signal(false);
   const error = createText();
-  // Reveal a user-opened source after its native height changes, so the outer
-  // List positions the grown group rather than its old one-line body.
-  const pendingReveal = signal<{ rowId: string; height: number } | null>(null);
-  effect(() => {
-    const pending = pendingReveal();
-    if (
-      pending &&
-      (!props.group().rowIds.includes(pending.rowId) || !props.rowState(pending.rowId).expanded())
-    )
-      pendingReveal.set(null);
-  });
   const opening = state.opening;
   state.opening = undefined;
   let ownList: ListRef | undefined;
@@ -380,7 +368,6 @@ function ActivityLog(props: {
   };
   cleanup(() => {
     alive = false;
-    pendingReveal.set(null);
     if (state.list === ownList) {
       state.list = undefined;
       state.visibleRows.set(new Set());
@@ -538,15 +525,6 @@ function ActivityLog(props: {
                       ) {
                         state.measured.set(ownedId(), { width, height: frame.size.height });
                         measurements.set(measurements() + 1);
-                        const pending = pendingReveal();
-                        if (
-                          pending?.rowId === ownedId() &&
-                          frame.size.height > pending.height &&
-                          props.rowState(ownedId()).expanded()
-                        ) {
-                          pendingReveal.set(null);
-                          props.reveal();
-                        }
                       }
                     }}
                   >
@@ -577,20 +555,6 @@ function ActivityLog(props: {
                       openLink={props.openLink}
                       senders={props.senders}
                       userScroll={props.userScroll}
-                      onExpand={(key) => {
-                        if (!alive || !ownList) return;
-                        scrollInput = 'idle';
-                        state.following.set(false);
-                        props.reading(true);
-                        const index = props.group().rowIds.indexOf(key);
-                        if (index >= 0) {
-                          pendingReveal.set({
-                            rowId: key,
-                            height: state.measured.get(key)?.height ?? 16,
-                          });
-                          ownList.scrollToIndex({ index, viewPosition: 0, animated: false });
-                        }
-                      }}
                     />
                   </View>
                 );
@@ -613,6 +577,7 @@ function ActivityLog(props: {
 }
 
 type TurnPanelProps = {
+  revealTerminalGroup?(): void;
   group: () => ProcessGroup;
   toolProgress(id: string): ToolActivity['phase'] | null;
   turn: () => TurnPresentation;
@@ -626,7 +591,6 @@ type TurnPanelProps = {
   through: () => number;
   viewport: () => { width: number; height: number };
   activity: () => LiveActivity;
-  reveal(): void;
   previewImage(image: ImagePreview): void;
   previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
@@ -756,7 +720,7 @@ function GroupHeader(props: TurnPanelProps) {
     props.reading(action.open && props.group().closed);
     animateDisclosure();
     props.state.open.set(action.open);
-    if (action.open) props.reveal();
+    if (action.open) props.revealTerminalGroup?.();
   };
   const icon = () => {
     const last =

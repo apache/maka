@@ -25,6 +25,7 @@ import {
   effect,
   inputAction,
   platform,
+  reduceMotion,
   Scroll,
   signal,
   Text,
@@ -71,7 +72,7 @@ import {
   IconButton,
   textTooltip,
 } from './ui';
-import { LoadingIndicator } from './Loading';
+import { LoadingIndicator, ShimmerText } from './Loading';
 import { toolActivitySummary, type ToolActivity } from './toolActivity';
 import { Icon } from './Icon';
 import { viewRuntimeContext } from './plugins/viewContext';
@@ -440,6 +441,8 @@ function WriteFields(
   );
 }
 
+const useToolShimmer = () => platform.idiom !== 'terminal' && !reduceMotion();
+
 /** A tool whose call is still streaming in has no record to open yet. */
 export function LiveToolRow(props: { activity(): ToolActivity }) {
   const phase = () =>
@@ -456,16 +459,18 @@ export function LiveToolRow(props: { activity(): ToolActivity }) {
       foldable={false}
       terminalInset={controlStyle.paddingHorizontal}
       onPress={() => {}}
-      trailing={<Status label={phase()} kind={props.activity().phase} />}
+      trailing={
+        <If when={!useToolShimmer()}>
+          <Status label={phase()} kind={props.activity().phase} />
+        </If>
+      }
     >
-      <Text
-        style={[
-          { ...disclosureTitleStyle, color: C.secondary },
-          { numberOfLines: 1, textOverflow: 'ellipsis' },
-        ]}
+      <If
+        when={useToolShimmer()}
+        else={<Text style={{ ...disclosureTitleStyle, color: C.secondary }}>{title()}</Text>}
       >
-        {title()}
-      </Text>
+        <ShimmerText text={title()} style={disclosureTitleStyle} />
+      </If>
     </Disclosure>
   );
 }
@@ -519,6 +524,8 @@ export function ToolCard(props: {
     const phase = props.progress?.();
     return phase === 'preparing' && tool()?.call?.dispatched ? 'running' : phase;
   };
+  const progressLabel = () =>
+    progress() === 'preparing' ? tr('Preparing tool') : tr('Running tool');
   const references = () =>
     tool()
       ? (['result', 'arguments'] as const).flatMap((field) => {
@@ -604,9 +611,11 @@ export function ToolCard(props: {
   return (
     <View style={{ width: '100%', minWidth: 0, gap: detailsGap }}>
       <Disclosure
-        label={tr('Toggle tool {name}', {
-          name: title(),
-        })}
+        label={
+          platform.idiom !== 'terminal' && progress() != null
+            ? `${tr('Toggle tool {name}', { name: title() })} · ${progressLabel()}`
+            : tr('Toggle tool {name}', { name: title() })
+        }
         tooltip={title()}
         icon={icon()}
         open={props.expanded()}
@@ -674,10 +683,9 @@ export function ToolCard(props: {
                 </If>
               }
             >
-              <Status
-                label={progress() === 'preparing' ? tr('Preparing tool') : tr('Running tool')}
-                kind={progress() ?? 'running'}
-              />
+              <If when={!useToolShimmer()}>
+                <Status label={progressLabel()} kind={progress() ?? 'running'} />
+              </If>
             </If>
           </View>
         }
@@ -685,19 +693,26 @@ export function ToolCard(props: {
         <View
           style={{ flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1 }}
         >
-          <Text
-            style={[
-              {
-                ...captionTextStyle,
-                minWidth: 0,
-                flexShrink: 1,
-                color: props.expanded() ? C.text : C.secondary,
-              },
-              { numberOfLines: 1, textOverflow: 'ellipsis' },
-            ]}
+          <If
+            when={progress() != null && useToolShimmer()}
+            else={
+              <Text
+                style={[
+                  {
+                    ...captionTextStyle,
+                    minWidth: 0,
+                    flexShrink: 1,
+                    color: props.expanded() ? C.text : C.secondary,
+                  },
+                  { numberOfLines: 1, textOverflow: 'ellipsis' },
+                ]}
+              >
+                {title()}
+              </Text>
+            }
           >
-            {title()}
-          </Text>
+            <ShimmerText text={title()} style={captionTextStyle} />
+          </If>
           <If when={platform.idiom !== 'terminal'}>
             <Icon name={props.expanded() ? 'down' : 'right'} size={12} color={C.muted} />
           </If>

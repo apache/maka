@@ -478,8 +478,7 @@ impl Desktop {
         self.control(step).await
     }
 
-    /// Presses `label` until `shown` appears. A group that has just opened is
-    /// still gliding into place, and a press it receives then is dropped.
+    /// Presses `label` until `shown` appears. The Room test may press while its work summary is settling.
     async fn press_until(&self, label: &str, shown: &str) {
         self.retry(
             &format!("pressing {label} did not show {shown}"),
@@ -2110,9 +2109,7 @@ async fn desktop_presents_session_tools_in_chat_and_trajectory() {
     let row = format!("Toggle tool {title}");
     desktop.open_group(&row).await;
     desktop.artifact("session-send-collapsed");
-    desktop
-        .press_until(&row, "Toggle original tool details")
-        .await;
+    desktop.press(&row).await;
     desktop.control("Toggle original tool details").await;
     desktop.artifact("session-send-expanded");
     desktop.press("Toggle original tool details").await;

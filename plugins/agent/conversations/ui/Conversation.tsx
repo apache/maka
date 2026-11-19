@@ -4395,12 +4395,6 @@ export function Conversation(props: ConversationProps) {
           const initial = displayEntry(ownedKey());
           if (!initial) return <View />;
           const entry = () => displayEntry(ownedKey()) ?? initial;
-          const reveal = () =>
-            list?.scrollToIndex({
-              index: (props.compact ? shownKeys() : displayKeys()).indexOf(ownedKey()),
-              viewPosition: 0,
-              animated: false,
-            });
           if (initial.kind === 'trajectory-turn') {
             return (
               <TrajectoryTurn
@@ -4596,7 +4590,16 @@ export function Conversation(props: ConversationProps) {
                 openLink={openLink}
                 senders={senders}
                 userScroll={() => cancelNavigation()}
-                reveal={reveal}
+                revealTerminalGroup={
+                  platform.idiom === 'terminal'
+                    ? () =>
+                        list?.scrollToIndex({
+                          index: (props.compact ? shownKeys() : displayKeys()).indexOf(ownedKey()),
+                          viewPosition: 0,
+                          animated: false,
+                        })
+                    : undefined
+                }
                 activity={activity}
                 viewport={readingSize}
                 reading={(away) => {
@@ -4725,7 +4728,6 @@ export function Conversation(props: ConversationProps) {
               openSession={canOpenWorker() ? openWorker : undefined}
               senders={senders}
               userScroll={() => cancelNavigation()}
-              onExpand={reveal}
               onToolReading={(key) => {
                 if (
                   !alive ||
