@@ -32,8 +32,20 @@ pub(super) fn tool() -> maka_agent_facts::tools::ToolRegistration {
     ToolRegistration {
         definition: ToolDefinition {
             name: TOOL.into(), provider: None, freeform: None, output_schema: None,
-            description: "Summarize earlier context and continue this Run. Use at a natural break when earlier work no longer needs its full detail. The checkpoint is applied after this batch of tools settles.".into(),
-            input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+            description: "Summarize earlier work at a natural break and continue from the checkpoint after the current tool batch settles.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "What this checkpoint should prioritize retaining. Applies only to this compaction."},
+                    "resumeModel": {
+                        "type": "object",
+                        "description": "Model to take over after a successful checkpoint and use for later messages. Omit to keep the current model.",
+                        "properties": {"connectionId": {"type":"string","minLength":1}, "modelId":{"type":"string","minLength":1}},
+                        "required":["connectionId","modelId"], "additionalProperties":false
+                    }
+                },
+                "additionalProperties": false
+            }),
         },
         nesting: ToolNesting::DirectOnly,
         semantics: ToolSemantics::Parallel,
@@ -230,5 +242,81 @@ impl Owner {
             .session_run(session, run)
             .await?
             .is_some_and(|view| view.terminal.is_none()))
+    }
+}
+
+impl super::driver::NativeDriver {
+    pub(super) async fn resume_after_checkpoint(
+        &self,
+        view: &maka_agent_state::fold::RunView,
+        baseline: maka_agent_state::ContentBlob,
+        target: ModelSelection,
+    ) -> Result<(), maka_agent_engine::RunError> {
+        use maka_agent_engine::RunError;
+        use maka_agent_facts::durable::{BackendSpec, Trigger};
+        use maka_agent_state::{Admission, ContentBlob};
+
+        let session = &view.spec.session_id;
+        let owner = &self.owner;
+        let root = owner.store.owned_root()?;
+        let source = crate::model::Source::select(
+            owner.configuration.clone(),
+            owner.catalog.clone(),
+            owner.credentials.clone(),
+            target.clone(),
+            None,
+            session.clone(),
+            owner.revision.clone(),
+        )
+        .await?;
+        let model = ContentBlob::json(&source.accepted)?;
+        let input = ContentBlob::json(&RunInput::CheckpointHandoff { source: view.run })?;
+        let mut spec = view.spec.clone();
+        spec.trigger = Trigger::CheckpointHandoff { source: view.run };
+        spec.input = input.reference().clone();
+        spec.backend = BackendSpec::Model {
+            binding: source.accepted.binding,
+            descriptor: model.reference().clone(),
+        };
+        let admission = Admission::new(
+            spec,
+            UnixMillis(
+                now()
+                    .try_into()
+                    .map_err(|_| RunError::Internal("invalid clock".into()))?,
+            ),
+            vec![input, model],
+        );
+        let statement =
+            self.state
+                .checkpoint_handoff(self.access.claim(), view.into(), baseline, admission)?;
+        let writer = self.access.data_writer().map_err(RunError::InvalidInput)?;
+        let _ordered = owner.runs.ordered(session).await;
+        let metadata = owner
+            .mutable_session(session)
+            .await
+            .map_err(RunError::InvalidInput)?;
+        if metadata.archived
+            || metadata.configuration.permission_basis() != view.spec.permission_basis
+        {
+            return Err(RunError::InvalidInput(
+                "Session workspace or availability changed before model handoff".into(),
+            ));
+        }
+        owner
+            .store
+            .write_session_metadata_with(
+                session,
+                metadata.revision,
+                move |settings: &mut StoredSessionConfiguration| {
+                    settings.backend = Some(BackendPreference::model(target, None));
+                    Ok(())
+                },
+                &writer,
+                statement,
+            )
+            .await?;
+        root.capability_source_changed();
+        Ok(())
     }
 }

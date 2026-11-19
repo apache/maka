@@ -138,6 +138,27 @@ pub(crate) fn admit_continuation(
         (Trigger::Continuation { source }, RunInput::Continuation { claim, .. }) => {
             (*source, claim.as_ref())
         }
+        (
+            Trigger::CheckpointHandoff { source },
+            RunInput::CheckpointHandoff { source: original },
+        ) if source == original => {
+            let prior = crate::sql::load(c, *source, &[], false)?;
+            if prior.spec.session_id != view.spec.session_id
+                || prior.spec.owner != view.spec.owner
+                || prior.spec.turn_id != view.spec.turn_id
+                || prior.terminal != Some(Terminal::Completed)
+                || prior.baseline.is_none()
+                || prior.spec.permission_basis != view.spec.permission_basis
+                || prior.spec.permission_ceiling != view.spec.permission_ceiling
+                || prior.spec.budget_basis.is_some()
+            {
+                return Err(invalid("invalid checkpoint handoff source"));
+            }
+            return record_successor(c, *source, record);
+        }
+        (Trigger::CheckpointHandoff { .. }, _) | (_, RunInput::CheckpointHandoff { .. }) => {
+            return Err(invalid("checkpoint handoff trigger differs from input"));
+        }
         (Trigger::ContextCompact, RunInput::ContextCompact { .. }) => return Ok(()),
         (Trigger::Continuation { .. } | Trigger::ContextCompact, _)
         | (_, RunInput::Continuation { .. } | RunInput::ContextCompact { .. }) => {
@@ -210,16 +231,22 @@ pub(crate) fn admit_continuation(
             "the sealed source Run already has an original continuation successor",
         ));
     }
+    record_successor(c, source, record)
+}
+
+fn record_successor(
+    c: &Connection,
+    parent: RunId,
+    record: &RecordedFact,
+) -> Result<(), StoreError> {
     c.execute(
         "INSERT INTO agent_continuation_successors VALUES(?,?,?)",
         params![
-            source.to_string(),
-            view.run.to_string(),
+            parent.to_string(),
+            record.run.to_string(),
             record.id.to_string()
         ],
     )?;
-    // Prepared prompt/input_digest/route checks occur at the real first target
-    // request boundary in Engine, not before such a request exists at admission.
     Ok(())
 }
 
@@ -353,6 +380,9 @@ pub(super) fn rebuild_record(
     if source.spec.origin != RunOrigin::Local {
         return Ok(());
     }
+    if let Trigger::CheckpointHandoff { source: parent } = source.spec.trigger {
+        return record_successor(c, parent, record);
+    }
     let Trigger::Continuation { source: parent } = source.spec.trigger else {
         return Ok(());
     };
@@ -380,13 +410,5 @@ pub(super) fn rebuild_record(
     }
     // Only derive the original immutable reference. Current source terminal,
     // revision and policy may legitimately differ due to later observations.
-    c.execute(
-        "INSERT INTO agent_continuation_successors VALUES(?,?,?)",
-        params![
-            parent.to_string(),
-            record.run.to_string(),
-            record.id.to_string()
-        ],
-    )?;
-    Ok(())
+    record_successor(c, parent, record)
 }

@@ -170,7 +170,10 @@ fn validate_request(
             id(schedule_id)?;
             request.spec.budget_basis.is_some()
         }
-        Trigger::Continuation { .. } | Trigger::ContextCompact | Trigger::HistorySource => false,
+        Trigger::Continuation { .. }
+        | Trigger::ContextCompact
+        | Trigger::CheckpointHandoff { .. }
+        | Trigger::HistorySource => false,
     };
     if !matches_source {
         return Err(invalid(

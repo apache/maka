@@ -43,6 +43,9 @@ pub enum RunInput {
         claim: Box<crate::continuation::ContinuationClaim>,
         request_fingerprint: String,
     },
+    CheckpointHandoff {
+        source: crate::durable::RunId,
+    },
     ContextCompact {
         request_fingerprint: String,
     },
@@ -71,7 +74,7 @@ impl RunInput {
             | Self::ContextCompact {
                 request_fingerprint,
             } => Some(request_fingerprint),
-            Self::Code { .. } | Self::HistorySource { .. } => None,
+            Self::CheckpointHandoff { .. } | Self::Code { .. } | Self::HistorySource { .. } => None,
         }
     }
 

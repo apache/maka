@@ -326,9 +326,9 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                 RunInput::HistorySource { .. } => None,
                 RunInput::ContextCompact { .. } => Some(OpeningKind::Compact),
                 RunInput::Code { .. } => Some(OpeningKind::Code),
-                RunInput::Message { .. } | RunInput::Continuation { .. } => {
-                    Some(OpeningKind::Conversation)
-                }
+                RunInput::Message { .. }
+                | RunInput::Continuation { .. }
+                | RunInput::CheckpointHandoff { .. } => Some(OpeningKind::Conversation),
             };
             if let RunInput::Message {
                 content,

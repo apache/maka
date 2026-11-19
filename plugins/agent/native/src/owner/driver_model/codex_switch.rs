@@ -76,6 +76,12 @@ impl DriverModel {
         target: &maka_agent_engine::PreparedModel,
     ) -> Result<Option<Plan>, RunError> {
         match mode {
+            Preparation::Initial
+                if matches!(view.spec.trigger, Trigger::CheckpointHandoff { .. }) =>
+            {
+                // The source already produced a portable text checkpoint for this transition.
+                return Ok(None);
+            }
             Preparation::Initial => {
                 let cut = self.history.capture_before(view.run).await?;
                 return self.initial_switch_plan(&cut, target).await;

@@ -158,6 +158,7 @@ impl Owner {
                     task_id: schedule_id.clone(),
                 },
                 Trigger::Message { .. }
+                | Trigger::CheckpointHandoff { .. }
                 | Trigger::Continuation { .. }
                 | Trigger::ContextCompact => BackgroundKind::Interactive,
             },

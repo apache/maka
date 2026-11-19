@@ -185,6 +185,30 @@ impl PreparedTool {
         cancellation: CancellationToken,
         semantics: ToolSemantics,
     ) -> Result<Self, ToolRejection> {
+        if name == super::compaction::TOOL
+            && let Some(target) = input.get("resumeModel")
+        {
+            catalog.validate(&name, &input)?;
+            if access.spec().budget_basis.is_some() {
+                return Err(ToolRejection::PolicyDenied {
+                    message: "This background Run is authorized for its assigned model.".into(),
+                });
+            }
+            let model = serde_json::from_value(target.clone()).map_err(|error| {
+                ToolRejection::PreparationFailed {
+                    message: error.to_string(),
+                }
+            })?;
+            if !owner
+                .backend_available(&super::BackendPreference::model(model, None))
+                .await
+                .map_err(|message| ToolRejection::PreparationFailed { message })?
+            {
+                return Err(ToolRejection::PreparationFailed {
+                    message: "The requested resume model is unavailable on this connection.".into(),
+                });
+            }
+        }
         if name == "Shell"
             && let Some(command) = input.get("command").and_then(serde_json::Value::as_str)
             && let Some(original) =
@@ -818,6 +842,14 @@ impl NativeDriver {
 }
 
 impl DriverPorts for NativeDriver {
+    fn handoff_checkpoint<'a>(
+        &'a self,
+        view: &'a RunView,
+        baseline: ContentBlob,
+        target: maka_agent_facts::configuration::ModelSelection,
+    ) -> BoxFuture<'a, Result<(), RunError>> {
+        self.resume_after_checkpoint(view, baseline, target).boxed()
+    }
     fn external(&self) -> Option<Arc<dyn ExternalPorts>> {
         match &self.backend {
             NativeBackend::Executor(executor) => Some(executor.clone()),
