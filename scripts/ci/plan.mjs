@@ -45,7 +45,9 @@ export function documentation(path) {
   return (
     contains('docs', path) ||
     contains('website', path) ||
-    (/\.md$/.test(path) && (!path.includes('/') || /(^|\/)README(?:\.[^/]+)?\.md$/.test(path)))
+    (/\.md$/.test(path) &&
+      !/\/src\//.test(path) &&
+      (!path.includes('/') || /(^|\/)README(?:\.[^/]+)?\.md$/.test(path)))
   );
 }
 

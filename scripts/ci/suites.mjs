@@ -27,8 +27,8 @@ export const taskHelperConsumers = [
   'maka-eval',
 ];
 export const taskHelperBinaries = [
-  { package: 'maka-cli', binary: 'maka', cargoArgs: [] },
-  { package: 'maka-python-runtime', binary: 'maka-python-worker', cargoArgs: [] },
+  { package: 'maka-cli', binary: 'maka' },
+  { package: 'maka-python-runtime', binary: 'maka-python-worker' },
 ];
 
 export const manifests = {
@@ -60,6 +60,9 @@ export const productInputs = [
 ];
 const uiProductInputs = productInputs.filter(
   (entry) => !sharedProductContractInputs.includes(entry),
+);
+const nonWorkbenchProductInputs = productInputs.filter(
+  (entry) => entry !== 'products/maka/workbench',
 );
 const distributionInputs = [
   'scripts/asf-source-release.mjs',
@@ -164,6 +167,7 @@ export const suites = {
       '--test',
       'native-desktop',
     ],
+    targetArgs: ['--test', 'native-desktop'],
     filter: 'binary_id(=maka-cli::native-desktop) & test(terminal::desktop_new_session)',
     extraInputs: desktopInputs,
   },
@@ -266,6 +270,7 @@ export const suites = {
     workspace: 'root',
     packages: ['maka-terminal-shell'],
     cargoArgs: ['--locked', '-p', 'maka-terminal-shell', '--test', 'native-pixels'],
+    targetArgs: ['--test', 'native-pixels'],
     filter: 'binary_id(=maka-terminal-shell::native-pixels)',
     extraInputs: [...productInputs, externalAgentFixture],
   },
@@ -323,6 +328,7 @@ export const suites = {
     workspace: 'root',
     packages: ['maka-desktop-shell'],
     cargoArgs: ['--locked', '-p', 'maka-desktop-shell'],
+    targetArgs: ['--bin', 'maka-desktop-shell', '--test', 'open_directly'],
     filter: 'package(=maka-desktop-shell)',
     extraInputs: productInputs,
   },
@@ -330,6 +336,7 @@ export const suites = {
     workspace: 'root',
     packages: ['maka-desktop-shell'],
     cargoArgs: ['--locked', '-p', 'maka-desktop-shell'],
+    targetArgs: ['--bin', 'maka-desktop-shell', '--test', 'open_directly'],
     filter: 'package(=maka-desktop-shell)',
     extraInputs: productInputs,
   },
@@ -337,6 +344,7 @@ export const suites = {
     workspace: 'root',
     packages: ['maka-skills-native'],
     cargoArgs: ['--locked', '-p', 'maka-skills-native', '--lib'],
+    targetArgs: ['--lib'],
     filter: 'package(=maka-skills-native) & kind(lib)',
     extraInputs: [...bundledSkillInputs, ...sharedProductContractInputs],
   },
@@ -365,6 +373,7 @@ export const suites = {
     workspace: 'root',
     packages: ['maka-cli', 'maka-host-shell'],
     cargoArgs: ['--locked', '-p', 'maka-cli', '--bin', 'maka'],
+    targetArgs: ['--bin', 'maka'],
     filter: 'binary_id(=maka-cli::bin/maka) & test(deployment::host_identity::tests::)',
     extraInputs: [
       ...distributionInputs,
@@ -394,6 +403,18 @@ export const suites = {
       '--test',
       'producer_reopen',
     ],
+    targetArgs: [
+      '--test',
+      'mainline_reopen',
+      '--test',
+      'journal_recovery',
+      '--test',
+      'codemode_reopen',
+      '--test',
+      'external_jobs',
+      '--test',
+      'producer_reopen',
+    ],
     filter: [
       'binary_id(=maka-cli::mainline_reopen)',
       'binary_id(=maka-cli::journal_recovery)',
@@ -401,7 +422,7 @@ export const suites = {
       'binary_id(=maka-cli::external_jobs)',
       'binary_id(=maka-cli::producer_reopen)',
     ].join(' | '),
-    extraInputs: [externalCodexFixture, 'products/maka/bundle', ...skillInputs],
+    extraInputs: [...nonWorkbenchProductInputs, ...skillInputs, externalCodexFixture],
   },
   'windows-shell': {
     workspace: 'root',
@@ -415,6 +436,7 @@ export const suites = {
       '-p',
       'maka-host-runtime',
     ],
+    targetArgs: ['--lib', '--test', 'integration'],
     filter: [
       '(package(=maka-process) & test(git_bash))',
       '(package(=maka-settings-native) & test(shell_setting_rejects_invalid_bash_and_persists_valid_host_choice))',
@@ -426,6 +448,7 @@ export const suites = {
     workspace: 'root',
     packages: ['maka-computer-use'],
     cargoArgs: ['--locked', '-p', 'maka-computer-use', '--lib', '--features', 'native-desktop'],
+    targetArgs: ['--lib'],
     filter:
       'package(=maka-computer-use) & kind(lib) & (' +
       [
@@ -518,18 +541,6 @@ export const workers = [
   {
     id: 'native-macos-agent',
     suites: ['macos-agent-execution'],
-    prepareTargets: [
-      '--test',
-      'mainline_reopen',
-      '--test',
-      'journal_recovery',
-      '--test',
-      'codemode_reopen',
-      '--test',
-      'external_jobs',
-      '--test',
-      'producer_reopen',
-    ],
     cargoScope: [
       '--locked',
       '-p',
@@ -599,7 +610,6 @@ export const workers = [
     id: 'native-windows-desktop-2',
     suites: ['desktop'],
     desktopPartition: 'count:2/2',
-    prepareTargets: ['--test', 'native-desktop'],
     cargoScope: [
       '--locked',
       '-p',

@@ -933,7 +933,23 @@ test('scoped native workers compile once with one unified Cargo feature scope', 
     assert.equal(calls.length, 2);
     assert.deepEqual(calls[0], {
       exe: 'cargo',
-      args: ['nextest', 'run', ...worker.cargoScope, '--no-run'],
+      args: [
+        'nextest',
+        'run',
+        ...worker.cargoScope,
+        '--lib',
+        '--bin',
+        'maka',
+        '--bin',
+        'maka-desktop-shell',
+        '--test',
+        'open_directly',
+        '--test',
+        'native-desktop',
+        '--test',
+        'native-pixels',
+        '--no-run',
+      ],
     });
     assert.deepEqual(calls[1], {
       exe: 'cargo',

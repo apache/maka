@@ -301,6 +301,28 @@ async function stageV8() {
   console.log(`Staged ${assetName} to ${primaryLib} and ${join(libDirs[1], libName)}`);
 }
 
+async function rootLocalPackages(manifest, wantThirdParty) {
+  const metadata = JSON.parse(
+    await command(
+      'cargo',
+      ['metadata', '--locked', '--format-version=1', '--manifest-path', manifest],
+      { capture: true },
+    ),
+  );
+  const repoRoot = process.cwd();
+  return [
+    ...new Set(
+      metadata.packages
+        .filter((pkg) => {
+          if (pkg.source !== null) return false;
+          const rel = relative(repoRoot, pkg.manifest_path).replaceAll('\\', '/');
+          return rel.startsWith('third-party/') === wantThirdParty;
+        })
+        .map((pkg) => pkg.name),
+    ),
+  ];
+}
+
 async function main(action) {
   if (action === 'tool-list') {
     output({ tools: tools.join(' ') });
@@ -333,9 +355,9 @@ async function main(action) {
         readFileSync('.github/actions/ci-cache/action.yml'),
       ]),
     );
-    const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${cacheRole}-${configuration}-${thirdPartyTree}`;
+    const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${cacheRole}-${configuration}`;
     output({
-      compiled: `${compiled}-${lock}-${hash(readFileSync(new URL(import.meta.url)))}`,
+      compiled: `${compiled}-${thirdPartyTree}-${lock}-${hash(readFileSync(new URL(import.meta.url)))}`,
       compiled_prefix: `${compiled}-`,
       downloads: `cargo-sources-${workspace}-${lock}`,
       downloads_prefix: `cargo-sources-${workspace}-`,
@@ -353,29 +375,26 @@ async function main(action) {
       }
     };
     if (existsSync('third-party')) visit('third-party');
+  } else if (action === 'clean-third-party') {
+    if (!existsSync(TARGET_ROOT)) return;
+    ensureCargoTargetTag();
+    const packages = await rootLocalPackages(manifests.root, true);
+    if (packages.length) {
+      await command('cargo', [
+        'clean',
+        '--manifest-path',
+        manifests.root,
+        '--target-dir',
+        TARGET_ROOT,
+        ...packages.flatMap((name) => ['--package', name]),
+      ]);
+    }
   } else if (action === 'prune') {
     if (existsSync(TARGET_ROOT)) ensureCargoTargetTag();
     for (const manifest of selectedManifests) {
       let packages;
       if (workspace === 'root') {
-        const metadata = JSON.parse(
-          await command(
-            'cargo',
-            ['metadata', '--locked', '--format-version=1', '--manifest-path', manifest],
-            { capture: true },
-          ),
-        );
-        const repoRoot = process.cwd();
-        // Retain compiled outputs for vendored third-party/* path crates; their
-        // exact Git tree SHA is part of the cache key and timestamps are stabilized
-        // on exact cache hits.
-        packages = metadata.packages
-          .filter((pkg) => {
-            if (pkg.source !== null) return false;
-            const rel = relative(repoRoot, pkg.manifest_path).replaceAll('\\', '/');
-            return !rel.startsWith('third-party/');
-          })
-          .map((pkg) => pkg.name);
+        packages = await rootLocalPackages(manifest, false);
       } else {
         packages = JSON.parse(
           await command(

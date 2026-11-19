@@ -257,9 +257,33 @@ export function executor(
       : {}),
   });
 
+  const unionTargetArgs = (ids) => {
+    const seen = new Set();
+    const args = [];
+    for (const id of ids) {
+      const targetArgs = suites[id].targetArgs;
+      if (!targetArgs?.length) return [];
+      for (let i = 0; i < targetArgs.length; i++) {
+        const flag = targetArgs[i];
+        if (flag === '--bin' || flag === '--test') {
+          const name = targetArgs[++i];
+          const key = `${flag}\0${name}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            args.push(flag, name);
+          }
+        } else if (!seen.has(flag)) {
+          seen.add(flag);
+          args.push(flag);
+        }
+      }
+    }
+    return args;
+  };
+
   const cargoScopeFor = (id) =>
     worker.cargoScope && suites[id].workspace === worker.workspace
-      ? [...worker.cargoScope, ...(worker.prepareTargets ?? [])]
+      ? [...worker.cargoScope, ...(suites[id].targetArgs ?? [])]
       : suites[id].cargoArgs;
 
   function parseRuntimeHelpers(records) {
@@ -288,46 +312,21 @@ export function executor(
   }
 
   async function buildRuntimeHelpers(id, extra = []) {
-    if (worker.cargoScope && suites[id]?.workspace === worker.workspace) {
-      const output = await cargo(
-        [
-          'build',
-          ...worker.cargoScope,
-          ...taskHelperBinaries.flatMap((artifact) => ['--bin', artifact.binary]),
-          '--message-format=json-render-diagnostics',
-        ],
-        { env: suiteEnv(id), capture: true },
-      );
-      const records = output
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith('{'))
-        .map((line) => JSON.parse(line));
-      return parseRuntimeHelpers(records);
-    }
-    const forwarded = helperBuildFlags(extra);
-    const records = [];
-    for (const artifact of taskHelperBinaries) {
-      const output = await cargo(
-        [
-          'build',
-          '--locked',
-          '-p',
-          artifact.package,
-          '--bin',
-          artifact.binary,
-          ...artifact.cargoArgs,
-          ...forwarded,
-          '--message-format=json-render-diagnostics',
-        ],
-        { env: suiteEnv(id), capture: true },
-      );
-      records.push(
-        ...output
-          .split(/\r?\n/)
-          .filter((line) => line.startsWith('{'))
-          .map((line) => JSON.parse(line)),
-      );
-    }
+    const scoped = Boolean(worker.cargoScope && suites[id]?.workspace === worker.workspace);
+    const output = await cargo(
+      [
+        'build',
+        ...(scoped ? worker.cargoScope : ['--locked', '--workspace']),
+        ...taskHelperBinaries.flatMap((artifact) => ['--bin', artifact.binary]),
+        ...(scoped ? [] : helperBuildFlags(extra)),
+        '--message-format=json-render-diagnostics',
+      ],
+      { env: suiteEnv(id), capture: true },
+    );
+    const records = output
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('{'))
+      .map((line) => JSON.parse(line));
     return parseRuntimeHelpers(records);
   }
 
@@ -514,7 +513,7 @@ export function executor(
     if (scoped.length) {
       const envSuite = scoped.includes('windows-shell') ? 'windows-shell' : scoped[0];
       await cargo(
-        ['nextest', 'run', ...worker.cargoScope, ...(worker.prepareTargets ?? []), '--no-run'],
+        ['nextest', 'run', ...worker.cargoScope, ...unionTargetArgs(scoped), '--no-run'],
         {
           env: { ...suiteEnv(envSuite), NEXTEST_PROFILE: 'default' },
         },

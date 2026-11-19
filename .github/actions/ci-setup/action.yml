@@ -146,6 +146,10 @@ runs:
       if: inputs.compile == 'true' && inputs.workspace == 'root' && steps.compiled.outputs.cache-hit == 'true'
       shell: bash
       run: node scripts/ci/setup.mjs stamp-third-party
+    - name: Clean vendored third-party outputs on fallback restore
+      if: inputs.compile == 'true' && inputs.workspace == 'root' && steps.compiled.outputs.cache-hit != 'true'
+      shell: bash
+      run: node scripts/ci/setup.mjs clean-third-party
     - name: Stage prebuilt V8 archive
       if: inputs.workspace == 'root' && inputs.role != 'replay' && steps.compiled.outputs.cache-hit != 'true'
       shell: bash
