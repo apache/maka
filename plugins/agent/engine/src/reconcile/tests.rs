@@ -866,3 +866,72 @@ fn known_publication_failure_only_fences_followup_until_original_cleanup() {
     assert!(!view.blocks_followup());
     assert_eq!(view.recovery_failure(), Some(&reason));
 }
+
+#[test]
+fn a_finished_turn_fails_the_run_when_its_external_task_closed_as_failed() {
+    use maka_agent_facts::external_effects::{ExternalEffectEvent, ExternalEffectKey};
+    use maka_agent_state::fold::{ExternalClosure, ExternalTask};
+    use maka_plugin_core::operation::OperationCleanup;
+
+    let mut view = policy_view(None);
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
+    let task = ExternalTaskId::new();
+    view.external = Some(ExternalTask {
+        task,
+        descriptor: view.spec.input.clone(),
+        live_workspace: true,
+        admitted: true,
+        binding: None,
+        observed: 0,
+        active_tools: Default::default(),
+        turn_usage: None,
+        closed: None,
+        cleanup: OperationCleanup::Confirmed,
+        cleanup_not_before: None,
+        steering: None,
+        effects: Default::default(),
+        publication: None,
+    });
+    let key = ExternalEffectKey {
+        task,
+        operation: Uuid::new_v4(),
+    };
+    for event in [
+        ExternalEffectEvent::Prepared {
+            key,
+            descriptor: view.spec.input.clone(),
+        },
+        ExternalEffectEvent::Admitted {
+            key,
+            approval: None,
+        },
+        ExternalEffectEvent::CleanupObserved {
+            key,
+            cleanup: OperationCleanup::Confirmed,
+        },
+        ExternalEffectEvent::Returned {
+            key,
+            output: view.spec.input.clone(),
+            finish_turn: true,
+        },
+    ] {
+        apply_policy_fact(&mut view, Fact::ExternalEffect { event });
+    }
+    assert!(view.finish_requested());
+    view.external.as_mut().unwrap().closed = Some(ExternalClosure {
+        outcome: Terminal::Failed,
+        diagnostic: Some("the executor closed its task as failed".into()),
+        final_message: None,
+    });
+
+    assert!(matches!(
+        next(&view, &Live::default(), UnixMillis(1), None, false),
+        Action::Terminate(Terminal::Failed)
+    ));
+}
