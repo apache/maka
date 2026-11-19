@@ -257,7 +257,17 @@ export function createPlan({
   }
   const matrix = workers.flatMap((worker) => {
     const entries = worker.suites.filter((id) => selected[id]);
-    return entries.length ? [{ ...worker, suites: entries }] : [];
+    return entries.length
+      ? [
+          {
+            ...worker,
+            suites: entries,
+            saveCache: Boolean(
+              worker.saveCache && (!worker.cargoScope || entries.length === worker.suites.length),
+            ),
+          },
+        ]
+      : [];
   });
   return { revision, baseline, full, reasons: fullReasons, suites: selected, workers: matrix };
 }

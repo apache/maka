@@ -209,8 +209,22 @@ function helperBuildFlags(extra) {
   const separator = extra.indexOf('--');
   const slice = extra.slice(0, separator < 0 ? extra.length : separator);
   const flags = [];
-  const valueFlags = new Set(['--cargo-profile', '--target', '--target-dir', '-F', '--features']);
-  const boolFlags = new Set(['--release', '-r', '--no-default-features', '--all-features']);
+  const valueFlags = new Set([
+    '--cargo-profile',
+    '--config',
+    '--target',
+    '--target-dir',
+    '-F',
+    '--features',
+  ]);
+  const boolFlags = new Set([
+    '--release',
+    '-r',
+    '--no-default-features',
+    '--all-features',
+    '--offline',
+    '--frozen',
+  ]);
   for (let i = 0; i < slice.length; i++) {
     const arg = slice[i];
     if (boolFlags.has(arg)) {
@@ -494,7 +508,7 @@ export function executor(
     } else if (id === 'native') {
       if (process.platform === 'darwin') await nextest(id, true, filter, extra);
       else if (worker.cacheRole === 'root')
-        await cargo(['check', '--locked', '--workspace', '--bin', 'maka']);
+        await cargo(['build', '--locked', '--workspace', '--bin', 'maka']);
       else await cargo(['check', ...suites.native.cargoArgs]);
     } else if (!['tooling', 'windows-ci'].includes(id)) {
       throw new Error(`Unknown suite: ${id}`);
@@ -754,7 +768,6 @@ export function executor(
           artifact.package,
           '--bin',
           artifact.binary,
-          ...artifact.cargoArgs,
           '--message-format=json-render-diagnostics',
         ],
         { capture: true },
