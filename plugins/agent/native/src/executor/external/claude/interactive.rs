@@ -65,7 +65,11 @@ pub(in crate::executor::external) async fn execute(
         .arg(if resume { "--resume" } else { "--session-id" })
         .arg(&session)
         .arg("--mcp-config")
-        .arg(mcp_path);
+        .arg(mcp_path)
+        // These tools wait for an answer in Claude's own terminal UI, which the
+        // Host never shows. Questions go through the Host's AskUserQuestion tool.
+        .arg("--disallowedTools")
+        .arg("AskUserQuestion,EnterPlanMode,ExitPlanMode");
     if let Some(model) = request["model"]
         .as_str()
         .filter(|model| *model != "default")
