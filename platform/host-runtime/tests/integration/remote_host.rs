@@ -52,7 +52,7 @@ fn package(id: &str, host: Value) -> Package {
 }
 
 #[tokio::test]
-async fn remote_host_opens_independent_websocket_channels() {
+async fn host_opens_independent_supplied_channels() {
     let dir = tempfile::tempdir().unwrap();
     private_directory(dir.path()).unwrap();
     let root = Arc::new(
@@ -144,11 +144,36 @@ async fn remote_host_opens_independent_websocket_channels() {
         .await
         .unwrap();
     assert_eq!(client.epoch(), epoch);
+    assert!(client.publication().await.is_err());
     let (first, second) = tokio::join!(client.open_call_channel(), client.open_call_channel());
     let (first, second) = (first.unwrap(), second.unwrap());
     assert_eq!(opened.load(Ordering::Relaxed), 5);
     drop((first, second));
     client.quit_ephemeral().await.unwrap();
+    assert_eq!(
+        Client::status(&socket, Some(epoch)).await.unwrap().sessions,
+        0
+    );
+
+    let opener: OpenChannel = Arc::new({
+        let socket = socket.clone();
+        move || {
+            let socket = socket.clone();
+            Box::pin(async move {
+                Ok(Box::new(
+                    maka_host_runtime::ipc::connect(&socket)
+                        .await
+                        .map_err(|err| err.to_string())?,
+                ) as Channel)
+            })
+        }
+    });
+    let mut supplied = Client::connect_on(opener, Some(epoch)).await.unwrap();
+    assert_eq!(supplied.epoch(), epoch);
+    supplied.publication().await.unwrap();
+    let (first, second) = tokio::join!(supplied.open_call_channel(), supplied.open_call_channel());
+    drop((first.unwrap(), second.unwrap()));
+    supplied.quit_ephemeral().await.unwrap();
     assert_eq!(
         Client::status(&socket, Some(epoch)).await.unwrap().sessions,
         0
