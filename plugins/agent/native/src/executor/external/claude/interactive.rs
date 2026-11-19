@@ -491,48 +491,66 @@ async fn observe(
         usage: Default::default(),
         duration_ms: 0,
     };
-    loop {
-        // Keep this future across ready/take/paste. Dropping Cursor::next after it
-        // drained a large row would also discard its in-flight blocking JSON parse.
-        let next = async {
-            loop {
-                if let Some(row) = cursor.next().await? {
-                    return Ok::<_, Error>(row);
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        };
-        tokio::pin!(next);
-        let row = loop {
-            tokio::select! {
-                biased;
-                () = stop.cancelled() => {
-                    // The Host accepts the end of a turn only when every message it saw start has ended.
-                    turn.end_message(output).await?;
-                    return Err(Error::Cancelled);
-                }
-                row = &mut next => break row?,
-                ready = async {
-                    match steering.as_deref_mut() {
-                        Some(steering) => steering.ready().await,
-                        None => std::future::pending().await,
+    let result = async {
+        loop {
+            // Keep this future across ready/take/paste. Dropping Cursor::next after it
+            // drained a large row would also discard its in-flight blocking JSON parse.
+            let next = async {
+                loop {
+                    if let Some(row) = cursor.next().await? {
+                        return Ok::<_, Error>(row);
                     }
-                }, if turn.admitted => {
-                    ready?;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                 }
-                () = async {
-                    match deadline {
-                        Some(at) => tokio::time::sleep_until(at).await,
-                        None => std::future::pending().await,
+            };
+            tokio::pin!(next);
+            let row = loop {
+                tokio::select! {
+                    biased;
+                    () = stop.cancelled() => return Err(Error::Cancelled),
+                    row = &mut next => break row?,
+                    ready = async {
+                        match steering.as_deref_mut() {
+                            Some(steering) => steering.ready().await,
+                            None => std::future::pending().await,
+                        }
+                    }, if turn.admitted => {
+                        ready?;
                     }
-                } => {
-                    return Err(Error::Invalid(
-                        "Claude native JSONL did not confirm prompt admission within the input budget".into(),
-                    ));
+                    () = async {
+                        match deadline {
+                            Some(at) => tokio::time::sleep_until(at).await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        return Err(Error::Invalid(
+                            "Claude native JSONL did not confirm prompt admission within the input budget".into(),
+                        ));
+                    }
                 }
-            }
-            // Commit only outside select: cancellation of ready cannot consume input.
-            if let Some(steering) = steering.as_deref_mut()
+                // Commit only outside select: cancellation of ready cannot consume input.
+                if let Some(steering) = steering.as_deref_mut()
+                    && let Some(request) = steering.take().await?
+                {
+                    let images = request["images"]
+                        .as_array()
+                        .expect("canonical steering images");
+                    let prompt = input::text(runtime::string(&request, "/message")?);
+                    turn.pending.push_back(
+                        unless_stopped(stop, input::send(io, screen, &prompt, images, start)).await?,
+                    );
+                }
+            };
+            let terminal = row["type"] == "system"
+                && row["subtype"] == "turn_duration"
+                && row.get("isSidechain").and_then(Value::as_bool) != Some(true);
+            // A ready batch at the final native boundary still belongs to this PTY.
+            // Take it before row() can settle; an empty take does not create a new turn.
+            if terminal
+                && turn.admitted
+                && row.get("sessionId").and_then(Value::as_str) == Some(session)
+                && turn.pending.is_empty()
+                && let Some(steering) = steering.as_deref_mut()
                 && let Some(request) = steering.take().await?
             {
                 let images = request["images"]
@@ -543,55 +561,41 @@ async fn observe(
                     unless_stopped(stop, input::send(io, screen, &prompt, images, start)).await?,
                 );
             }
-        };
-        let terminal = row["type"] == "system"
-            && row["subtype"] == "turn_duration"
-            && row.get("isSidechain").and_then(Value::as_bool) != Some(true);
-        // A ready batch at the final native boundary still belongs to this PTY.
-        // Take it before row() can settle; an empty take does not create a new turn.
-        if terminal
-            && turn.admitted
-            && row.get("sessionId").and_then(Value::as_str) == Some(session)
-            && turn.pending.is_empty()
-            && let Some(steering) = steering.as_deref_mut()
-            && let Some(request) = steering.take().await?
-        {
-            let images = request["images"]
-                .as_array()
-                .expect("canonical steering images");
-            let prompt = input::text(runtime::string(&request, "/message")?);
-            turn.pending.push_back(
-                unless_stopped(stop, input::send(io, screen, &prompt, images, start)).await?,
-            );
-        }
-        let pending = turn.pending.len();
-        let admitted = turn.admitted;
-        if let Some(outcome) = turn.row(row, output).await? {
-            return Ok(outcome);
-        }
-        if !admitted
-            && turn.admitted
-            && let Some(journal) = journal
-        {
-            journal
-                .bind_task(NativeTask::ClaudePty {
-                    session: session.into(),
-                })
-                .await?;
-        }
-        if (!admitted && turn.admitted) || turn.pending.len() < pending {
-            // A native busy queue can wait on arbitrarily long running tools.
-            deadline = None;
-        }
-        if terminal
-            && turn.admitted
-            && deadline.is_none()
-            && let Some(input) = turn.pending.front()
-        {
-            // Once a native turn ends, the queued input must be admitted, not lost.
-            deadline = Some(input_deadline(&input.prompt));
+            let pending = turn.pending.len();
+            let admitted = turn.admitted;
+            if let Some(outcome) = turn.row(row, output).await? {
+                return Ok(outcome);
+            }
+            if !admitted
+                && turn.admitted
+                && let Some(journal) = journal
+            {
+                journal
+                    .bind_task(NativeTask::ClaudePty {
+                        session: session.into(),
+                    })
+                    .await?;
+            }
+            if (!admitted && turn.admitted) || turn.pending.len() < pending {
+                // A native busy queue can wait on arbitrarily long running tools.
+                deadline = None;
+            }
+            if terminal
+                && turn.admitted
+                && deadline.is_none()
+                && let Some(input) = turn.pending.front()
+            {
+                // Once a native turn ends, the queued input must be admitted, not lost.
+                deadline = Some(input_deadline(&input.prompt));
+            }
         }
     }
+    .await;
+    // The Host accepts the end of a turn only when every message it saw start has ended.
+    if matches!(result, Err(Error::Cancelled)) {
+        turn.end_message(output).await?;
+    }
+    result
 }
 /// Terminal input publishes nothing to the Host, so a stop may end it at any point.
 async fn unless_stopped<T>(
