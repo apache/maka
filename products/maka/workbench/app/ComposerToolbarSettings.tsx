@@ -18,7 +18,6 @@
  */
 
 import { Canvas, signal, Text, View, type ViewRef } from 'nsh';
-import { Button } from 'nsh/base';
 import {
   composerToolbar,
   computeDropSlot,
@@ -308,6 +307,9 @@ export function ComposerToolbarSettings() {
                       if (node) slotRefs.set(widget, node);
                       else slotRefs.delete(widget);
                     }}
+                    role="button"
+                    accessibilityLabel={widgetLabel(widget)}
+                    onPress={() => selected.set(selected() === widget ? null : widget)}
                     onMoveShouldSetResponder={(_event, gesture) =>
                       Math.hypot(gesture.dx, gesture.dy) > 4
                     }
@@ -325,39 +327,34 @@ export function ComposerToolbarSettings() {
                     onResponderTerminate={() => {
                       finishDrag(false);
                     }}
+                    style={{
+                      height: 30,
+                      paddingLeft: 6,
+                      paddingRight: 8,
+                      borderRadius: 8,
+                      backgroundColor: C.surface,
+                      borderWidth: 1,
+                      borderStyle: isOff(widget) ? 'dashed' : 'solid',
+                      borderColor: selected() === widget ? C.accent : C.line,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 4,
+                      flexShrink: 0,
+                      cursor: drag()?.widget === widget ? 'grabbing' : 'grab',
+                      opacity: drag()?.widget === widget ? 0.35 : isOff(widget) ? 0.5 : 1,
+                    }}
+                    hoverStyle={{ backgroundColor: C.raised }}
+                    focusStyle={{ borderColor: C.accent, backgroundColor: C.raised }}
                   >
-                    <Button
-                      accessibilityLabel={widgetLabel(widget)}
-                      selected={selected() === widget}
-                      onPress={() => selected.set(selected() === widget ? null : widget)}
-                      style={{
-                        height: 30,
-                        paddingLeft: 6,
-                        paddingRight: 8,
-                        borderRadius: 8,
-                        backgroundColor: C.surface,
-                        borderWidth: 1,
-                        borderStyle: isOff(widget) ? 'dashed' : 'solid',
-                        borderColor: selected() === widget ? C.accent : C.line,
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 4,
-                        flexShrink: 0,
-                        opacity: drag()?.widget === widget ? 0.35 : isOff(widget) ? 0.5 : 1,
-                      }}
-                      hoverStyle={{ backgroundColor: C.raised }}
-                      focusStyle={{ borderColor: C.accent, backgroundColor: C.raised }}
+                    <GripDots color={C.muted} />
+                    <Text
+                      style={[
+                        { fontSize: 12, lineHeight: 16, fontWeight: '500', color: C.text },
+                        { numberOfLines: 1 },
+                      ]}
                     >
-                      <GripDots color={C.muted} />
-                      <Text
-                        style={[
-                          { fontSize: 12, lineHeight: 16, fontWeight: '500', color: C.text },
-                          { numberOfLines: 1 },
-                        ]}
-                      >
-                        {widgetLabel(widget)}
-                      </Text>
-                    </Button>
+                      {widgetLabel(widget)}
+                    </Text>
                   </View>
                 );
               }}
