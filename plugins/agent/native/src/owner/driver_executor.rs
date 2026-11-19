@@ -273,6 +273,74 @@ impl Publications {
         }
         Ok(true)
     }
+    async fn close(
+        &self,
+        publication: &mut PublicationState,
+        closure: TaskClosure,
+    ) -> Result<(), Error> {
+        if let Some(original) = publication.closed.as_ref() {
+            return if original == &closure {
+                Ok(())
+            } else {
+                Err(Error::Unknown)
+            };
+        }
+        if self.closed_in_store(&closure).await? {
+            publication.closed = Some(closure);
+            return Ok(());
+        }
+        let pending = if closure.0 == Terminal::Completed {
+            self.publication_source.clone()
+        } else {
+            None
+        };
+        let committed = self
+            .publish_locked(
+                publication,
+                ExternalObservation::Closed {
+                    outcome: closure.0.clone(),
+                    diagnostic: closure.1.clone(),
+                    final_message: closure.2.clone(),
+                    publication: pending,
+                },
+            )
+            .await;
+        if let Err(error) = committed {
+            if !self.closed_in_store(&closure).await? {
+                return Err(error);
+            }
+            tracing::debug!(%error, "Original task closure already committed by its source");
+        }
+        publication.closed = Some(closure);
+        Ok(())
+    }
+    /// Closes the task when a native executor's error is its verdict on the turn.
+    /// A stop or a retiring Host is not the executor's verdict, so the error keeps
+    /// the original recovery path.
+    async fn executor_failed(&self, error: Error, descriptor: ContentRef) -> Result<(), RunError> {
+        let Some(closure) = error_closure(&error) else {
+            return Err(external_error(error, descriptor));
+        };
+        if self.root_observation.is_cancelled()
+            || self.owner_stop.is_cancelled()
+            || !matches!(self.stop_requested().await, Ok(false))
+        {
+            return Err(external_error(error, descriptor));
+        }
+        tracing::warn!(%error, "External agent ended its turn with an error");
+        let mut publication = self.publication.lock().await;
+        self.close(&mut publication, closure)
+            .await
+            .map_err(|error| external_error(error, descriptor))
+    }
+}
+/// `Invalid` and `Provider` mean the executor gave up on its turn, so nothing is
+/// left to observe: the task fails with the executor's own text, and a reply it
+/// already showed stays in history. Any other error, `Unknown` included, does not
+/// say how the turn ended.
+fn error_closure(error: &Error) -> Option<TaskClosure> {
+    matches!(error, Error::Invalid(_) | Error::Provider(_))
+        .then(|| (Terminal::Failed, Some(error.to_string()), None))
 }
 impl OutputSink for Publications {
     fn turn_usage(
@@ -369,42 +437,7 @@ impl TaskBinding for Publications {
                 }
                 Outcome::Failed { message, .. } => (Terminal::Failed, Some(message), None),
             };
-            if let Some(original) = publication.closed.as_ref() {
-                return if original == &closure {
-                    Ok(())
-                } else {
-                    Err(Error::Unknown)
-                };
-            }
-            if self.closed_in_store(&closure).await? {
-                publication.closed = Some(closure);
-                return Ok(());
-            }
-            let pending = if closure.0 == Terminal::Completed {
-                self.publication_source.clone()
-            } else {
-                None
-            };
-            let committed = self
-                .publish_locked(
-                    &mut publication,
-                    ExternalObservation::Closed {
-                        outcome: closure.0.clone(),
-                        diagnostic: closure.1.clone(),
-                        final_message: closure.2.clone(),
-                        publication: pending,
-                    },
-                )
-                .await;
-            if let Err(error) = committed {
-                if !self.closed_in_store(&closure).await? {
-                    return Err(error);
-                }
-                tracing::debug!(%error, "Original task closure already committed by its source");
-            }
-            publication.closed = Some(closure);
-            drop(publication);
-            Ok(())
+            self.close(&mut publication, closure).await
         })
     }
     fn cleanup(&self, cleanup: OperationCleanup) -> BoxFuture<'_, Result<(), Error>> {
@@ -782,6 +815,8 @@ impl DriverExecutor {
             retained: self.retained.clone(),
         });
         let backend = self.backend.clone();
+        // A service executor's job can outlive this call and is observed again.
+        let native = fresh && backend.service_binding().is_none();
         let custody = self.access.custody().clone();
         let inputs = self.inputs.clone();
         let cleanup = self.cleanup.clone();
@@ -840,6 +875,11 @@ impl DriverExecutor {
                         .closed(outcome)
                         .await
                         .map_err(|error| external_error(error, descriptor.clone())),
+                    Err(error) if native => {
+                        publications
+                            .executor_failed(error, descriptor.clone())
+                            .await
+                    }
                     Err(error) => Err(external_error(error, descriptor.clone())),
                 }};
                 if !matches!(settlement.root_cleanup, OperationCleanup::Confirmed) {
@@ -1577,5 +1617,39 @@ impl maka_agent_engine::ports::ExternalPublicationPorts for DriverExecutor {
                 .observe_publication_item(run, key, reference, witness)
                 .await
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_an_executor_verdict_closes_the_task_with_its_own_error() {
+        for (error, text) in [
+            (
+                Error::Provider("Claude Code exited (1): usage limit reached".into()),
+                "executor failed: Claude Code exited (1): usage limit reached",
+            ),
+            (
+                Error::Invalid("Claude live transcript rotated".into()),
+                "invalid executor input or output: Claude live transcript rotated",
+            ),
+        ] {
+            assert_eq!(
+                error_closure(&error),
+                Some((Terminal::Failed, Some(text.into()), None))
+            );
+        }
+        // These do not say how the turn ended, so the task stays observable.
+        for error in [
+            Error::Unknown,
+            Error::Persistence("disk full".into()),
+            Error::Cancelled,
+            Error::ObservationRetired,
+            Error::CleanupUnconfirmed,
+        ] {
+            assert_eq!(error_closure(&error), None, "{error}");
+        }
     }
 }
