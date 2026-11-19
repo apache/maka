@@ -910,9 +910,7 @@ export class AiSdkTurn {
     const priorUnknownProjection = observedPriorUnknownProjection;
     const preservingUnknownHistory =
       priorUnknownProjection.kind === 'projected' && priorUnknownProjection.requiresUserAttention;
-    const midTurnState = preservingUnknownHistory
-      ? undefined
-      : this.deps.compaction.buildMidTurnCapacityCompactState(input);
+    const midTurnState = this.deps.compaction.buildMidTurnCapacityCompactState(input);
     const queue = new AsyncEventQueue<SessionEvent>();
     const codeModeExecTool = this.createCodeModeExecTool(queue);
 
@@ -1434,7 +1432,14 @@ export class AiSdkTurn {
                 pruned.projectionSnapshot,
               )
             : pruned.events;
-          const replayPlan = buildRuntimeEventModelReplayPlan(foldedReplayEvents, {
+          // A freshly compacted prior prefix still has pending unknown calls in
+          // its verbatim tail. Rebuild their request-only results alongside the
+          // calls before provider replay; the immutable ledger stays unchanged.
+          const modelReplayEvents =
+            projectionCheckpoint && priorUnknownProjection.kind === 'projected'
+              ? appendPriorUnknownToolResponses(foldedReplayEvents, priorUnknownProjection)
+              : foldedReplayEvents;
+          const replayPlan = buildRuntimeEventModelReplayPlan(modelReplayEvents, {
             toolActivityTurnIds: collectToolActivityTurnIds([
               ...(input.runtimeContext ?? []),
               ...turnEvents,
@@ -2082,7 +2087,6 @@ export class AiSdkTurn {
               // nothing left to grant it, so the error is terminal.
               const stepBudgetRemains = maxSteps === undefined || runtimeSteps < maxSteps;
               const recovered =
-                !preservingUnknownHistory &&
                 stepBudgetRemains &&
                 failure.kind === 'context_overflow' &&
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&

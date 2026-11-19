@@ -95,6 +95,7 @@ import {
   collectToolActivityTurnIds,
   compatibleProviderReasoningReplayEventIds,
   type RuntimeEventModelReplayPlan,
+  appendPriorUnknownToolResponses,
   inspectPriorUnknownToolOutcomes,
   type PriorUnknownToolOutcomeProjection,
 } from './model-history.js';
@@ -805,9 +806,13 @@ export class AiSdkCompaction {
       resolveDeclaredContextWindow(this.input.connection, this.input.modelId) ??
         policy.historyCompact.midTurn.fallbackThresholdTokens,
     );
-    state.unknownToolOutcomes = acknowledgedUnknownOutcomes(
-      inspectPriorUnknownToolOutcomes(input.runtimeContext ?? [], input.runtimeContextInvocations),
+    const priorUnknownOutcomes = inspectPriorUnknownToolOutcomes(
+      input.runtimeContext ?? [],
+      input.runtimeContextInvocations,
     );
+    state.unknownToolOutcomes = acknowledgedUnknownOutcomes(priorUnknownOutcomes);
+    if (priorUnknownOutcomes.kind === 'projected')
+      state.unknownOutcomesForReplay = priorUnknownOutcomes;
     // Seed the turn's FIRST request with the last request the provider
     // actually counted, so step 0 is judged by the same real number as every
     // later step. No anchor means no proactive fold on step 0; the provider
@@ -1156,7 +1161,12 @@ export class AiSdkCompaction {
     // check must never be persisted because it would poison every later
     // projection.
     const effectiveReplacement = await this.foldEffectiveModelHistory(plan.replacementEvents);
-    const replayPlan = buildRuntimeEventModelReplayPlan(effectiveReplacement, {
+    // Pending unknown calls remain in the raw tail. Reconstruct their synthetic
+    // results before validating and materializing the retry, not in the ledger.
+    const projectedReplacement = state.unknownOutcomesForReplay
+      ? appendPriorUnknownToolResponses(effectiveReplacement, state.unknownOutcomesForReplay)
+      : effectiveReplacement;
+    const replayPlan = buildRuntimeEventModelReplayPlan(projectedReplacement, {
       toolActivityTurnIds: collectToolActivityTurnIds(orderedEvents),
     });
     if (
@@ -1413,6 +1423,10 @@ function acknowledgedUnknownOutcomes(
 export class MidTurnCapacityCompactState {
   /** Validated prior unknowns eligible for paired summarization. */
   unknownToolOutcomes:
+    | Extract<PriorUnknownToolOutcomeProjection, { kind: 'projected' }>
+    | undefined;
+  /** All unknowns, including pending calls kept in the replay tail. */
+  unknownOutcomesForReplay:
     | Extract<PriorUnknownToolOutcomeProjection, { kind: 'projected' }>
     | undefined;
   /**
