@@ -62,6 +62,7 @@ App 和 Tab 觀察：
 若應用程式忙碌導致原生 AX 觀察失敗，待應用程式恢復後重新整理同一綁定物件。失敗的觀察會使舊索引和座標失效。
 
 App 和 Tab 操作：
+- `await app.bringToFront()` 將綁定的原生視窗置前並保持前台，不傳送按鍵或指標輸入。桌面無法確認目標已置前時，回報結果未知。
 - `click(index | [x,y], {mouseButton?, clickCount?})`、`drag([x,y], [x,y])`。
 - `scroll(index | [x,y], "up" | "down" | "left" | "right", distance?)`。
 - 原生應用程式也接受滑鼠按鈕 `l/r/m` 和方向 `u/d/l/r`。macOS 會移除名稱兩端空白並忽略大小寫，也接受按鈕 `0/1/2` 分別表示左鍵、右鍵和中鍵。

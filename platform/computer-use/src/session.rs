@@ -901,6 +901,10 @@ impl Session {
                 )
                 .await
             }
+            Command::Action {
+                handle: Handle::Tab(_),
+                action: Action::BringToFront,
+            } => Err(failed("bringToFront requires a bound native application")),
             command => self
                 .browsers
                 .invoke(command, invocation, &cursor, cancellation, language)
@@ -1896,6 +1900,56 @@ impl Session {
                 invocation,
             )
             .await?;
+        if matches!(action, Action::BringToFront) {
+            let pid = window.pid.ok_or_else(|| failed("window has no process"))?;
+            let window_id = window.window_id;
+            let args = json!({ "pid": pid, "window_id": window_id });
+            #[cfg(target_os = "windows")]
+            let result = self
+                .raw_windows_tool(
+                    RawTool::ActivateWindow,
+                    args,
+                    false,
+                    cancellation,
+                    language,
+                    invocation,
+                )
+                .await
+                .map(|call| call.value);
+            #[cfg(not(target_os = "windows"))]
+            let result = self
+                .invoke_native("bring_to_front", args, cancellation, language)
+                .await;
+            self.targets.get_mut(handle).unwrap().invalidate_capture();
+            let receipt = result?.structured_content.ok_or_else(|| {
+                ToolError::OutcomeUnknown("Window activation returned no receipt".into())
+            })?;
+            #[cfg(target_os = "macos")]
+            let confirmed = receipt["pid"].as_u64() == Some(u64::from(pid))
+                && receipt["window_id"].as_u64() == Some(window_id)
+                && receipt["status"] == "activated"
+                && receipt["activated"] == true
+                && receipt["exact_window_effect"]["verified"] == true;
+            #[cfg(target_os = "windows")]
+            let confirmed = {
+                let hwnd = format!("0x{window_id:x}");
+                receipt["landed_on_target"] == true
+                    && receipt["target_hwnd"].as_str() == Some(hwnd.as_str())
+                    && receipt["now_fg_hwnd"].as_str() == Some(hwnd.as_str())
+            };
+            #[cfg(target_os = "linux")]
+            let confirmed = receipt["pid"].as_u64() == Some(u64::from(pid))
+                && receipt["window_id"].as_u64() == Some(window_id)
+                && receipt["verified"] == true;
+            #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+            let confirmed = false;
+            if !confirmed {
+                return Err(ToolError::OutcomeUnknown(format!(
+                    "Foreground activation of window {window_id} (pid {pid}) was not confirmed: {receipt}"
+                )));
+            }
+            return Ok(receipt);
+        }
         #[cfg(target_os = "macos")]
         {
             use crate::macos::page_scroll::dispatch::{Operation, PointerAction};
@@ -2467,7 +2521,6 @@ fn linux_generic_pointer_action(tool: LinuxPointerTool, input: Value) -> Result<
 }
 
 impl Target {
-    #[cfg(target_os = "macos")]
     fn invalidate_capture(&mut self) {
         self.capture = None;
         if let Some(snapshot) = &mut self.snapshot {

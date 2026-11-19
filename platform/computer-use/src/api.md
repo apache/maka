@@ -106,6 +106,7 @@ If a native AX observation fails while an app is busy, refresh the same bound ob
 when the app responds again. Failed observations invalidate old indices and coordinates.
 
 App and Tab actions:
+- `await app.bringToFront()` persistently activates the exact bound native window. It sends no key or pointer input and reports an unknown outcome if the desktop cannot confirm activation.
 - `click(index | [x,y], {mouseButton?, clickCount?})`, `drag([x,y], [x,y])`.
 - `scroll(index | [x,y], "up" | "down" | "left" | "right", distance?)`.
 - Native apps also accept mouse buttons `l/r/m` and directions `u/d/l/r`.

@@ -832,7 +832,7 @@ impl crate::protocol::Action {
             Action::Navigate { .. } | Action::Back | Action::Forward | Action::Reload => {
                 Cue::Navigate
             }
-            Action::Close => Cue::App,
+            Action::BringToFront | Action::Close => Cue::App,
         }
     }
 }
