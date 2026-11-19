@@ -28,7 +28,7 @@ test("Tab and Shift-Tab indent list items, and the toolbar edits the shown edito
   // follows the session's new state.
   await app.keyboard.press("tab");
   await app.waitFor("▪");
-  await app.press("role:button[Undo]");
+  await app.press("id:toolbar >> role:button[Undo]");
   await app.waitFor("▪", { state: "gone" });
   expect(app.shows(ITEM)).toBe(true);
 });

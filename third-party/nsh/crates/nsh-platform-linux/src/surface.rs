@@ -2,8 +2,9 @@
 //! thread.
 //!
 //! The engine thread hands each commit to [`Sink`], which queues it and
-//! wakes the main loop once (`MainContext::invoke`); the main thread
-//! drains the queue and applies every batch in order ([`Surface::drain`]).
+//! wakes the main loop once, ahead of the frame clock's layout and paint
+//! ([`DRAIN_PRIORITY`]); the main thread drains the queue and applies every
+//! batch in order ([`Surface::drain`]).
 //! Native animations, the platform's own (transitions, screen transitions,
 //! scroll glides: [`Surface::add_frame_callback`]) and JS frame requests
 //! run on the root view's frame clock (`add_tick_callback`) while there is
@@ -33,6 +34,16 @@ use nsh_engine::{Engine, EngineConfig, EngineControl, Environment, MainThreadTas
 use rustc_hash::FxHashMap;
 
 use crate::{animation::UiAnimation, mount::Mounter, text::PangoTextEngine, view::NshView};
+
+/// The main loop's priority for taking what the engine thread sent: after
+/// input (`G_PRIORITY_DEFAULT`), before the frame clock lays out and paints
+/// (`GDK_PRIORITY_REDRAW`, 120). At GLib's idle priority (200, what
+/// `MainContext::invoke` uses) a wake-up waits for the loop to have nothing
+/// else to do, and while a frame costs more than a refresh and something
+/// animates, the next paint is always due first: no batch was applied and no
+/// frame reached JS until a frame came in under a refresh, so an app that
+/// drew slowly did not slow down, it stopped.
+const DRAIN_PRIORITY: glib::Priority = glib::Priority::HIGH_IDLE;
 
 /// What the engine thread sends the main thread.
 enum Message {
@@ -72,7 +83,7 @@ impl Sink {
         let _ = self.tx.send(message);
         if !self.pending.swap(true, Ordering::AcqRel) {
             let key = self.key;
-            glib::MainContext::default().invoke(move || {
+            glib::MainContext::default().invoke_with_priority(DRAIN_PRIORITY, move || {
                 let surface = SURFACES.with(|s| s.borrow().get(&key).and_then(Weak::upgrade));
                 if let Some(surface) = surface {
                     surface.drain();
@@ -136,6 +147,9 @@ pub(crate) struct Surface {
     /// What the main window keeps: its attributes, its state's
     /// bookkeeping ([`crate::window`]).
     pub(crate) main_window: RefCell<crate::window::MainWindow>,
+    /// The view the screen reader's focus is on while the keyboard focus
+    /// is elsewhere ([`crate::access::focus`]).
+    pub(crate) reader_focus: RefCell<glib::WeakRef<NshView>>,
     /// Pointer input state ([`crate::input`]).
     pub(crate) input: crate::input::Input,
     pub(crate) file_drop: crate::file_drop::State,
@@ -202,6 +216,8 @@ pub(crate) struct Surface {
     pub(crate) native: crate::native::NativeState,
     /// The app's keyboard shortcuts ([`crate::keymap`]).
     pub(crate) keymap: crate::keymap::KeymapState,
+    /// Focused views' keys ([`crate::keyboard`]).
+    pub(crate) keyboard: crate::keyboard::Keyboard,
     /// The window's chrome: title bar, menus ([`crate::chrome`]).
     pub(crate) chrome: crate::chrome::Chrome,
     /// Selections across the texts of selectable views
@@ -269,6 +285,7 @@ impl Surface {
             nav: RefCell::default(),
             windows: RefCell::default(),
             main_window: RefCell::default(),
+            reader_focus: RefCell::default(),
             input: Default::default(),
             file_drop: Default::default(),
             engine: RefCell::new(None),
@@ -306,6 +323,7 @@ impl Surface {
             access: RefCell::new(Arc::default()),
             native: Default::default(),
             keymap: Default::default(),
+            keyboard: Default::default(),
             chrome: Default::default(),
             selection: Default::default(),
             fps: RefCell::new(None),
@@ -325,6 +343,7 @@ impl Surface {
                     crate::canvas::reveal();
                     crate::shader::reveal();
                 });
+                crate::fps::log_first_frame(&clock);
             }
         });
         crate::input::install(&surface);
@@ -435,6 +454,7 @@ impl Surface {
         *self.rx.borrow_mut() = Some(rx);
         *self.pending.borrow_mut() = pending;
         let family = crate::text::ui_family();
+        crate::text::read_font_rendering();
         // The embedding app's theme overrides are in the first frame, and
         // the links that came before are the app's address when its code
         // first runs (`UrlScheme.url()`).
@@ -503,6 +523,7 @@ impl Surface {
         crate::selectable_view::reset(self);
         crate::keymap::clear(self);
         crate::window::clear(self);
+        crate::keyboard::reset(self);
         self.js_frame.set(false);
     }
 
@@ -1002,6 +1023,38 @@ mod tests {
             let until = Instant::now() + Duration::from_millis(200);
             gtk_test::wait_until(|| Instant::now() >= until);
             assert_eq!(calls.borrow().len(), 2, "drawing only, without frames");
+        });
+    }
+
+    /// What the engine sends is taken while the main loop always has a
+    /// paint due: frames that cost more than a refresh, one after another.
+    #[test]
+    fn the_engines_messages_are_taken_while_a_paint_is_always_due() {
+        gtk_test::run(|| {
+            let surface = gtk_test::surface();
+            let (tx, rx) = crossbeam_channel::unbounded();
+            let pending = Arc::new(AtomicBool::new(false));
+            *surface.rx.borrow_mut() = Some(rx);
+            *surface.pending.borrow_mut() = pending.clone();
+            let sink = Sink {
+                key: surface.key,
+                tx,
+                pending,
+            };
+            // A source at the frame clock's paint priority that is ready at
+            // every turn of the loop, as the clock's own is while each frame
+            // takes longer than the refresh interval.
+            let painting = glib::idle_add_local_full(
+                glib::Priority::from(gtk::gdk::PRIORITY_REDRAW as i32),
+                || glib::ControlFlow::Continue,
+            );
+            // From another thread, as the engine's is: JS asks for a frame.
+            std::thread::spawn(move || sink.request_frame())
+                .join()
+                .expect("the request is sent");
+            let asked = gtk_test::wait_until(|| surface.js_frame.get());
+            painting.remove();
+            assert!(asked, "the request waited for the paints to end");
         });
     }
 }

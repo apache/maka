@@ -362,6 +362,21 @@ final class Decor extends Drawable {
     private static final float AWAY = 1 << 14;
     private final Path shadowPath = new Path();
 
+    /**
+     * A decoration draws the same whether its view is shown, so a change of
+     * visibility does not invalidate it. `Drawable.setVisible` would: a stack
+     * screen hidden under the next one, and shown again by a pop, tells every
+     * view in it, and each one would record its display list again.
+     */
+    @Override
+    public boolean setVisible(boolean visible, boolean restart) {
+        Callback callback = getCallback();
+        setCallback(null);
+        boolean changed = super.setVisible(visible, restart);
+        setCallback(callback);
+        return changed;
+    }
+
     @Override
     public void draw(Canvas canvas) {
         Rect b = getBounds();

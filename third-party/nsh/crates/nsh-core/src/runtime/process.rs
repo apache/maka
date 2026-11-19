@@ -28,9 +28,10 @@ pub(crate) struct Process;
 impl Process {
     /// The native operating system's name, as Rust's `std::env::consts::OS`
     /// and gpui-shell's say it: `"macos"`, `"windows"`, `"linux"`, `"ios"`,
-    /// `"android"` (not Node's `"darwin"` / `"win32"`).
+    /// `"android"` (not Node's `"darwin"` / `"win32"`); `"harmonyos"` on
+    /// HarmonyOS, which Rust's target calls Linux.
     #[allow(non_upper_case_globals)]
-    pub(crate) const platform: &'static str = std::env::consts::OS;
+    pub(crate) const platform: &'static str = super::os::SYSTEM;
     /// The native CPU architecture's name, as Rust's
     /// `std::env::consts::ARCH` and gpui-shell's say it: `"aarch64"`,
     /// `"x86_64"` (not Node's `"arm64"` / `"x64"`).
@@ -157,6 +158,14 @@ impl Process {
     #[getter]
     pub(crate) fn data_dir(sys: System) -> Option<String> {
         sys.data_dir.map(|dir| dir.to_string_lossy().into_owned())
+    }
+
+    /// The file the app's log lines are written to (a packaged desktop
+    /// app's rolling log in its data directory), `null` when they go to the
+    /// platform's log only.
+    #[getter]
+    pub(crate) fn log_file() -> Option<String> {
+        crate::log_file::path().map(|file| file.to_string_lossy().into_owned())
     }
 }
 
@@ -1658,6 +1667,7 @@ mod tests {
             "export declare const platform: string;",
             "  readonly env: Record<string, string>;",
             "  readonly dataDir: string | null;",
+            "  readonly logFile: string | null;",
             "} & { nextTick: typeof nextTick };",
             "  on(event: ExitEvent, handler: (result: ExitResult) => void): ChildProcess;",
             "  on(event: OutputEvent, handler: (text: string) => void): ChildProcess;",

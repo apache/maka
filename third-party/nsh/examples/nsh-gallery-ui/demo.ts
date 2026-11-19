@@ -11,14 +11,14 @@ export { ui, tint } from "./palette";
 export { buttonGlyph, buttonLabel, buttonLook, buttonSizes, ghostOutdent, iconButtonGlyph, iconButtonLook, type ButtonKind, type ButtonLookOptions, type ButtonSize, type IconButtonLookOptions } from "./look/button";
 export { switchHitSlop, switchLook, type SwitchLook, type SwitchSize } from "./look/switch";
 export { toggleGlyph, toggleLabel, toggleLook, toggleSizes, toolbarRule, toolbarTrack, type ToggleDimensions, type ToggleLookOptions, type ToggleSize, type ToolbarTrackOptions } from "./look/tool";
-export { menuHighlight, menuItemGlyph, menuItemLabel, menuItemLook, menuItemNote, menuItemSize, menuPressed, menuSeparator, menuPopup, MenuLabel, SubmenuBack, SubmenuRow, type MenuItemDimensions, type MenuItemLookOptions, type MenuPopupOptions, type MenuItemTextOptions } from "./look/menu";
+export { menuHighlight, menuItemGlyph, menuItemLabel, menuItemLook, menuItemNote, menuItemSize, menuPressed, menuSeparator, menuIsPopup, menuPopup, MenuLabel, SubmenuBack, SubmenuRow, type MenuItemDimensions, type MenuItemLookOptions, type MenuPopupOptions, type MenuItemTextOptions } from "./look/menu";
 export { backdrop, dialogCard, dialogText, dialogTitle, popoverLook, sheetGrabber, sheetPanel, toastActionLabel, toastActionLook, toastCloseLook, toastLook, toastText, toastTitle, tooltipLook, tooltipNote, tooltipText, type PopoverLookOptions, type SheetSide, type TooltipLookOptions } from "./look/overlay";
 export { pressSink } from "./look/press";
 export { controlSize, density, insetSurface, listRow, plainRow, RowDivider, RowLabel, sectionSurface, type ListRowLook, type ListRowOptions, type PlainRowOptions, type SectionSurfaceOptions } from "./look/surface";
 export { CheckboxMark, checkboxLook, choiceTileLook, MARK_WEIGHT, RadioRing, type CheckboxLook, type CheckboxMarkKind, type ChoiceOptions, type ChoiceTileLook, type ChoiceTileOptions } from "./look/choice";
 export { segmentedLook, TabTitle, tabsLook, underlineTabsLook, type SegmentedLookOptions, type SegmentedSize, type TabLook, type TabState } from "./look/tabs";
 export { fieldLook, fieldSize, fieldText, inputLook, numberInputClasses, numberInputSteps, numberInputText, NumberStep, otpCellLook, otpCells, timeFieldClass, type FieldLookOptions, type FieldTextOptions, type OtpCellOptions } from "./look/field";
-export { calendarLook, CalendarItem, Chevron, clearButtonLook, ComboToggle, comboboxLook, datePickerLook, DateTrigger, ListboxEmpty, listboxFooter, ListboxHeader, listboxPopup, listboxProps, listboxSearch, OptionRow, optionClass, Picker, pickerLook, TimeSegment, type ClearButtonOptions, type ComboboxLookOptions, type CalendarItemProps, type DatePickerLookOptions, type ListboxPopupOptions, type PickerLookOptions, type PickerProps } from "./look/listbox";
+export { calendarLook, CalendarItem, Chevron, clearButtonLook, ComboToggle, comboboxLook, datePickerLook, DateTrigger, ListboxEmpty, listboxFooter, ListboxHeader, listboxPopup, listboxPopupStarting, listboxProps, listboxSearch, OptionRow, optionClass, Picker, pickerLook, TimeSegment, type ClearButtonOptions, type ComboboxLookOptions, type CalendarItemProps, type DatePickerLookOptions, type ListboxPopupOptions, type PickerLookOptions, type PickerProps } from "./look/listbox";
 export { progressFill, progressGlide, progressLook, progressRail, progressRemaining, progressSweep, type ProgressLookOptions, type ProgressSweep } from "./look/meter";
 export { DisclosureChevron, disclosurePanel, disclosureTriggerLook, type DisclosurePanelOptions, type DisclosureTriggerOptions } from "./look/disclosure";
 export { carouselArrowLook, CarouselDot, carouselDotItemLook, carouselPaginationLook, carouselSizes, linkColor, linkLook, linkSize, LinkText, paginationArrows, paginationItemClass, type CarouselArrowOptions, type LinkState } from "./look/nav";
@@ -117,8 +117,8 @@ export type FieldOptions = FieldLookOptions;
 export const field = inputLook;
 
 /** The subject in a wide window: a quiet bordered stage (the theme's card
- * corners, a whisper of the text color) that takes the room and centers its
- * content, at most `width` across (440). */
+ * corners, a whisper of the text color) as tall as its content, which it
+ * centers across, at most `width` wide (440). */
 export function Stage(props: { children?: __JSX.Element; width?: number; gap?: number }) {
   return __View({
     get style() {
@@ -130,8 +130,8 @@ export function Stage(props: { children?: __JSX.Element; width?: number; gap?: n
         borderColor: ui().line,
         backgroundColor: tint(ui().text, 0.02),
         padding: 24,
+        alignSelf: "flex-start" as const,
         alignItems: "center" as const,
-        justifyContent: "center" as const,
       };
     },
     get children() {

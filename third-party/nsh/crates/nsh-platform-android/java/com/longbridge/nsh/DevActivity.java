@@ -68,7 +68,7 @@ public final class DevActivity extends Activity {
     }
 
     /** Sets each {@code nsh.env.<name>} string extra as the variable {@code <name>}. */
-    private static void applyEnv(Bundle extras) {
+    static void applyEnv(Bundle extras) {
         if (extras == null) return;
         for (String key : extras.keySet()) {
             if (!key.startsWith("nsh.env.")) continue;

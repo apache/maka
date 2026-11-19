@@ -20,8 +20,8 @@
 # Native Shell (NSH)
 
 This directory contains NSH from [`longbridge/nsh`](https://github.com/longbridge/nsh),
-synchronized through revision `75e009e652ccb18c3dfbcc7e65a44b1f21da538c`
-(version 0.5.0). The original import came from `M4n5ter/nsh`, branch
+synchronized through revision `80b17ee2ca33fa187a0a8575d5644e62b817517b`
+(version 0.6.0). The original import came from `M4n5ter/nsh`, branch
 `tui/terminal-backend`, at `de176695240d550f2b303643b8019146c7989e7f`.
 
 `upstream.json` records the original import and current upstream revision.
@@ -43,8 +43,11 @@ focus-visible behavior use upstream implementations. Immutable captured files
 provide indexed rows through the same list items memo and cell publication,
 without materializing a full JavaScript array. Cached cells distinguish their
 current row assignment from retained content, so accessibility follows only
-bound rows. Asset builds use upstream
-app roots and package-relative paths; built-in plugin builds declare the Maka
+bound rows. Keyed changes use NSH's `ListDiff` and sibling placement logic.
+AppKit uses the upstream keyboard monitor for both raw keys and scoped
+shortcuts. Windows uses the upstream selection lifecycle when text changes.
+
+Asset builds use upstream app roots and package-relative paths; built-in plugin builds declare the Maka
 repository as their shared root. Callers migrate with upstream rather than
 keeping aliases or older implementations.
 
@@ -68,6 +71,8 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
   terminal inspection are required by Maka's shells and plugin composition.
 - **Source-aware reading:** TextView preserves canonical source identity,
   byte offsets and reading anchors through Markdown rendering and repair.
+  Markdown without source mapping uses the upstream incremental parser,
+  including chunked reads for long documents with eligible plugins.
   RichEditor exposes leased geometry for the composer and terminal surfaces.
 - **Input ordering and scopes:** `inputAction`, `ScrollIntent`, scoped/fallback
   key bindings and focus-event fences preserve editor actions, IME, paste and
@@ -75,14 +80,6 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
 - **Native lifecycle:** terminal surfaces keep host ownership of windows and
   event loops while honoring menu labels, quit requests and system session
   termination. Stopping an engine revokes its input and frame receipts.
-
-## Applied ahead of a sync
-
-- **TextView `tableGrid` part:** upstream longbridge/nsh#2342, merged as
-  `6c278f748f36d1bc5f4ccb26cd9ed0a6bfa06164`, so Maka can frame a Markdown
-  table. Its source, docs and compat case are applied here; its headless test
-  (`a_tables_grid_takes_the_apps_frame`) is not, since this copy's
-  `tests/base/text_view.rs` differs. A sync through that revision replaces it.
 
 ## Maintenance and verification
 

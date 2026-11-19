@@ -17,6 +17,8 @@ test("state() reports a window, and its requests change it", async () => {
   await app.waitFor("text:/^Notes: .* size=360x240 /");
   await app.press("Maximize notes");
   await app.waitFor("text:/^Notes: mode=maximized /");
+  // What shows of it: the work area, without a frame hanging over its edges.
+  await app.waitFor("Notes on display: fills");
   // An intent, not a toggle: normal again.
   await app.press("Normal notes");
   await app.waitFor("text:/^Notes: mode=normal /");
@@ -24,6 +26,15 @@ test("state() reports a window, and its requests change it", async () => {
   await app.waitFor("text:/^Notes: mode=normal minimized=true visible=false /");
   await app.press("Restore notes");
   await app.waitFor("text:/^Notes: mode=normal minimized=false visible=true /");
+});
+
+test("a window opens at the defaultPosition the app gives it", async () => {
+  const app = await open(FIXTURE, OPTIONS);
+  await app.press("Open notes");
+  await app.waitFor("text:/^Notes: mode=normal /");
+  // A normal window, without a parent or a display: the kind whose default once won over the app's position on
+  // macOS. GTK places windows itself.
+  await app.waitFor("text:/^Notes placed: (as asked|by the system)$/");
 });
 
 test("set() changes what the platform reports: sizeToContent fits the window to its content", async () => {

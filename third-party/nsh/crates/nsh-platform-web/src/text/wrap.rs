@@ -160,25 +160,64 @@ pub(crate) fn breaks_between(before: &impl Item, after: &impl Item) -> bool {
 /// may not break before it, the line breaks at its last opportunity
 /// instead, and only a line without one breaks there anyway. A newline
 /// ends its line and belongs to none.
+#[allow(
+    dead_code,
+    reason = "the engine fills from a line on (`fill_from`); tests/text fill whole texts"
+)]
 pub(crate) fn fill(items: &[impl Item], max: Option<f32>) -> Vec<Line> {
-    let mut lines = Vec::new();
-    let mut start = 0;
+    fill_from(items, max, 0, |_| false).lines
+}
+
+/// Lines filled by [`fill_from`].
+pub(crate) struct Filled {
+    pub(crate) lines: Vec<Line>,
+    /// Per line, the last item its breaking looked at: the piece that did
+    /// not fit, its newline, or `items.len()` for the last line. A line
+    /// depends on nothing after it, so a change to the items from there on
+    /// leaves the line as it is.
+    pub(crate) next: Vec<usize>,
+    /// Where filling stopped because `stop` said so: the start of the line
+    /// that would have come next.
+    pub(crate) stopped: Option<usize>,
+}
+
+/// [`fill`] from the line starting at item `from`, until a line would start
+/// at an item `stop` accepts. Filling holds nothing over from one line to
+/// the next, so the lines from any line's start are the same as the ones
+/// the whole text gets from there.
+pub(crate) fn fill_from(
+    items: &[impl Item],
+    max: Option<f32>,
+    from: usize,
+    mut stop: impl FnMut(usize) -> bool,
+) -> Filled {
+    let mut filled = Filled {
+        lines: Vec::new(),
+        next: Vec::new(),
+        stopped: None,
+    };
+    let mut start = from;
     // Width without and with trailing spaces.
     let mut width = 0.0f32;
     let mut advance = 0.0f32;
-    let mut i = 0;
+    let mut i = from;
     while i < items.len() {
         let item = &items[i];
         match item.piece() {
             Piece::Newline => {
-                lines.push(Line {
+                filled.lines.push(Line {
                     start,
                     end: i,
                     width,
                 });
+                filled.next.push(i);
                 start = i + 1;
                 width = 0.0;
                 advance = 0.0;
+                if stop(start) {
+                    filled.stopped = Some(start);
+                    return filled;
+                }
             }
             Piece::Space => advance += item.width(),
             Piece::Text | Piece::Object => {
@@ -193,14 +232,19 @@ pub(crate) fn fill(items: &[impl Item], max: Option<f32>) -> Vec<Line> {
                     if at < i {
                         width = content_width(&items[start..at]);
                     }
-                    lines.push(Line {
+                    filled.lines.push(Line {
                         start,
                         end: at,
                         width,
                     });
+                    filled.next.push(i);
                     start = at;
                     width = 0.0;
                     advance = 0.0;
+                    if stop(start) {
+                        filled.stopped = Some(start);
+                        return filled;
+                    }
                     if at < i {
                         // The pieces after the break go on the next line.
                         i = at;
@@ -213,12 +257,13 @@ pub(crate) fn fill(items: &[impl Item], max: Option<f32>) -> Vec<Line> {
         }
         i += 1;
     }
-    lines.push(Line {
+    filled.lines.push(Line {
         start,
         end: items.len(),
         width,
     });
-    lines
+    filled.next.push(items.len());
+    filled
 }
 
 /// The width of `items` without trailing spaces.

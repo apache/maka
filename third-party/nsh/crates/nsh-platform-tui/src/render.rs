@@ -490,7 +490,10 @@ impl Painter<'_> {
         let press = if pointer
             && view.props.pointer_events != PointerEvents::BoxNone
             && !view.props.accessibility.state.disabled
-            && nsh_core::input::has_press(view.events)
+            // The terminal's mouse holds no long press: a view that
+            // listens only to `onLongPress` leaves the clicks to the one
+            // around it.
+            && nsh_core::input::has_tap(view.events)
         {
             Some((id, cell_origin))
         } else {

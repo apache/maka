@@ -32,6 +32,16 @@ test("a press selects a file and opens a folder; the build folder takes none", a
   await app.waitFor("Collapsed app/assets");
 });
 
+test("a row's long press leaves its taps to the tree", async () => {
+  // Rows listen only to onLongPress: a press still selects and opens.
+  await app.press("role:treeitem[assets]");
+  await app.waitFor("Expanded app/assets");
+  await app.drag("role:treeitem[Cargo.toml]", { x: 0, y: 0 });
+  await app.waitFor("Selected: app/Cargo.toml");
+  await app.longPress("text:README.md");
+  await app.waitFor("Long pressed README.md");
+});
+
 test("revealItem opens the folders above a file", async () => {
   await app.press("text:Reveal compose.rs");
   await app.waitFor("role:treeitem[compose.rs]");

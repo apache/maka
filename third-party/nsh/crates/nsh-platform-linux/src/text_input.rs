@@ -48,6 +48,7 @@ use nsh_core::{
     Points, ResolvedTextStyle, SubmitBehavior, TextAlign,
     geometry::{Point, Size, point, px, size},
     tailwind::state,
+    text_edit::clip_chars,
 };
 use rustc_hash::FxHashMap;
 
@@ -657,15 +658,15 @@ impl Ctx {
         }
     }
 
-    /// The part of `text` an insertion into `current` may add
-    /// (`maxLength`).
-    fn allowed<'a>(&self, current: impl FnOnce() -> String, text: &'a str) -> &'a str {
+    /// The part of `text` an insertion into a text of `current` characters
+    /// may add (`maxLength`, [`clip_chars`]).
+    fn allowed<'a>(&self, current: impl FnOnce() -> usize, text: &'a str) -> &'a str {
         let max = self
             .input
             .upgrade()
             .and_then(|input| input.config.borrow().max_length);
         match max {
-            Some(max) => clip_utf16(text, (max as usize).saturating_sub(utf16_len(&current()))),
+            Some(max) => clip_chars(text, (max as usize).saturating_sub(current())),
             None => text,
         }
     }
@@ -837,7 +838,7 @@ fn attach(cx: &Ctx, editor: &Editor, input: &InputState) {
             let c = cx.clone();
             t.connect_insert_text(move |t, text, pos| {
                 let Some(input) = c.user_edit() else { return };
-                let fit = c.allowed(|| t.text().into(), text);
+                let fit = c.allowed(|| usize::from(t.text_length()), text);
                 if !fit.is_empty() {
                     c.inserted(&input, fit);
                 }
@@ -890,10 +891,7 @@ fn attach(cx: &Ctx, editor: &Editor, input: &InputState) {
                     input.lines.borrow_mut().edit(start, end);
                 }
                 let Some(input) = c.user_edit() else { return };
-                let fit = c.allowed(
-                    || b.text(&b.start_iter(), &b.end_iter(), false).into(),
-                    text,
-                );
+                let fit = c.allowed(|| b.char_count().max(0) as usize, text);
                 if !fit.is_empty() {
                     c.inserted(&input, fit);
                 }
@@ -1537,18 +1535,22 @@ fn purpose(config: &InputConfig) -> (gtk::InputPurpose, gtk::InputHints) {
         (false, KeyboardType::Phone) => gtk::InputPurpose::Phone,
         (false, KeyboardType::Url) => gtk::InputPurpose::Url,
     };
+    // A visible password is typed as it is: never capitalized, checked,
+    // completed or learned.
+    let password = config.visible_password();
     let mut hints = match config.auto_capitalize {
+        _ if password => gtk::InputHints::NONE,
         AutoCapitalize::None => gtk::InputHints::NONE,
         AutoCapitalize::Sentences => gtk::InputHints::UPPERCASE_SENTENCES,
         AutoCapitalize::Words => gtk::InputHints::UPPERCASE_WORDS,
         AutoCapitalize::Characters => gtk::InputHints::UPPERCASE_CHARS,
     };
-    hints |= if config.auto_correct {
+    hints |= if config.auto_correct && !password {
         gtk::InputHints::SPELLCHECK | gtk::InputHints::WORD_COMPLETION
     } else {
         gtk::InputHints::NO_SPELLCHECK
     };
-    if config.secure {
+    if config.secure || password {
         hints |= gtk::InputHints::PRIVATE;
     }
     (purpose, hints)
@@ -1853,11 +1855,6 @@ fn undoes(key: gtk::gdk::Key, modifiers: gtk::gdk::ModifierType) -> bool {
 /// The key an insertion reports (`onKeyPress`).
 fn key_of(text: &str) -> &str {
     if text == "\n" { "Enter" } else { text }
-}
-
-/// Length of `s` in UTF-16 units.
-fn utf16_len(s: &str) -> usize {
-    s.chars().map(char::len_utf16).sum()
 }
 
 /// The UTF-16 offset of character `chars` of `s` (clamped to its end).
@@ -2972,7 +2969,6 @@ mod tests {
     #[test]
     fn utf16_offsets() {
         let s = "a😀b";
-        assert_eq!(utf16_len(s), 4);
         assert_eq!(char_to_utf16(s, 0), 0);
         assert_eq!(char_to_utf16(s, 1), 1);
         assert_eq!(char_to_utf16(s, 2), 3);
@@ -2984,17 +2980,6 @@ mod tests {
         assert_eq!(utf16_to_char(s, 3), 2);
         assert_eq!(utf16_to_char(s, 4), 3);
         assert_eq!(utf16_to_char(s, 99), 3);
-    }
-
-    #[test]
-    fn max_length_clipping() {
-        assert_eq!(clip_utf16("hello", 3), "hel");
-        assert_eq!(clip_utf16("hello", 9), "hello");
-        assert_eq!(clip_utf16("hello", 0), "");
-        // A pair is never split.
-        assert_eq!(clip_utf16("a😀", 2), "a");
-        assert_eq!(clip_utf16("a😀", 3), "a😀");
-        assert_eq!(clip_utf16("中文", 1), "中");
     }
 
     #[test]

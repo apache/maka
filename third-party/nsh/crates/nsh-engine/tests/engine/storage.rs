@@ -30,13 +30,13 @@ fn start(
 }
 
 /// `app` with `capabilities` and the id `app_id`, the platform giving
-/// `data_dir` and `storage`.
+/// `support_dir` and `storage`.
 fn launch(
     name: &str,
     app: &str,
     capabilities: Option<&str>,
     app_id: Option<&str>,
-    data_dir: Option<&std::path::Path>,
+    support_dir: Option<&std::path::Path>,
     storage: Option<&PathBuf>,
 ) -> (Engine, Receiver<MountBatch>) {
     let dir = scratch(name);
@@ -74,7 +74,7 @@ fn launch(
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: data_dir.map(Into::into),
+        support_dir: support_dir.map(Into::into),
         cache: nsh_engine::CacheOptions::off(),
         storage: storage.map(|data| FileStorage::open(data) as _),
         clock: Default::default(),
@@ -86,6 +86,8 @@ fn launch(
         speech: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     (
         Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap(),
@@ -189,7 +191,7 @@ fn rust_shares_the_entries_of_js() {
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: Some(FileStorage::open(&data)),
         clock: Default::default(),
@@ -201,6 +203,8 @@ fn rust_shares_the_entries_of_js() {
         speech: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
     assert_eq!(shown(&rx, "rust"), "rust saw 1 from_rust,launches");
@@ -295,7 +299,7 @@ fn rust_edits_the_storage() {
         ui_sets: Vec::new(),
         runtime: None,
         // In memory: the platform gave none.
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -307,6 +311,8 @@ fn rust_edits_the_storage() {
         speech: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     let _engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
     assert_eq!(shown(&rx, "rust"), "rust b true 0 true");
@@ -385,7 +391,7 @@ fn a_rust_root_keeps_its_data_under_its_id() {
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: Some(root.clone()),
+        support_dir: Some(root.clone()),
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -397,13 +403,15 @@ fn a_rust_root_keeps_its_data_under_its_id() {
         speech: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
     assert_eq!(shown(&rx, "rust"), "rust wrote");
     drop(engine);
     let file = root.join("com.example.rusty/storage.json");
     assert_eq!(std::fs::read_to_string(file).unwrap(), r#"{"from":"rust"}"#);
-    // Its own files sit beside its storage (`data_dir`).
+    // Its own files sit beside its storage (`support_dir`).
     let db = root.join("com.example.rusty/app.db");
     assert_eq!(std::fs::read_to_string(db).unwrap(), "rust");
 }

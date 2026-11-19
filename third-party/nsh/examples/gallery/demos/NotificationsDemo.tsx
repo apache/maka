@@ -26,7 +26,7 @@ export function NotificationsDemo() {
       cards={[
         () => (
           <Card title="Permission" subtitle="Asked once, when the user wants them">
-            <Row>
+            <Row first>
               <Button label="Allow notifications" onPress={() => asked(Notifications.requestPermission())} />
               <Badge label={permission()} />
             </Row>
@@ -34,7 +34,7 @@ export function NotificationsDemo() {
         ),
         () => (
           <Card title="A message" subtitle="The same id replaces it; a press reports it">
-            <Row>
+            <Row first>
               <Button label="Show" onPress={() => show("chat:ada", "Ada", "Are you coming tonight?")} />
               <Button label="Replace" variant="secondary" onPress={() => show("chat:ada", "Ada", "I saved you a seat.")} />
               <Button label="Remove" variant="ghost" onPress={() => Notifications.close("chat:ada")} />
@@ -44,7 +44,7 @@ export function NotificationsDemo() {
         ),
         () => (
           <Card title="Badge" subtitle="The count on the app's icon, in the Dock on macOS">
-            <Row>
+            <Row first>
               <Button label="Add one" onPress={() => setBadge(badge() + 1)} />
               <Button label="Clear" variant="ghost" onPress={() => setBadge(0)} />
               <Badge label={String(badge())} />

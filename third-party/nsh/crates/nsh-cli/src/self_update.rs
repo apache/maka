@@ -117,6 +117,13 @@ pub(crate) fn update(channel: Option<Channel>) -> anyhow::Result<()> {
             env!("NSH_VERSION_TEXT"),
             channel.name()
         ));
+        // The CLI is current, but a runtime may be left from an earlier
+        // release (an update that could not add it again): bring it along.
+        let stale = crate::component::stale(&root);
+        if !stale.is_empty() {
+            let names: Vec<String> = stale.iter().map(|n| (*n).to_owned()).collect();
+            crate::component::add_named(&names)?;
+        }
         return Ok(());
     }
 

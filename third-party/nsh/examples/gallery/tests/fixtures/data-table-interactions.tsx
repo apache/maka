@@ -23,6 +23,7 @@ function App() {
   const loading = signal(false);
   const more = signal(false);
   const movable = signal(true);
+  const modifierSelects = signal(true);
   const vbar = signal<boolean | undefined>(undefined);
   const hbar = signal<boolean | undefined>(undefined);
   const sort = signal<DataTableSort | undefined>(undefined);
@@ -67,6 +68,7 @@ function App() {
         {button("loading", () => loading.set(!loading()))}
         {button("more", () => more.set(!more()))}
         {button("fixed-moves", () => movable.set(!movable()))}
+        {button("own-modifiers", () => modifierSelects.set(false))}
         {button("select-3", () => table.select({ row: 3 }))}
         {button("to-note", () => table.scrollToColumn("note"))}
         {button("to-row-50", () => table.scrollToRow(50))}
@@ -106,6 +108,8 @@ function App() {
           cellSelectable={cells()}
           rowSelectable={rows()}
           columnSelectable={cols()}
+          selectOnModifierPress={modifierSelects()}
+          cellClasses={[{ row: 0, column: 4, class: "underline" }]}
           rowHeader={header()}
           loopSelection={loop()}
           loading={loading()}
@@ -118,6 +122,7 @@ function App() {
           loadingView={<Text>Loading rows</Text>}
           onSelectionChange={({ selection: s }) => put("sel", s ? `${s.row ?? "-"}:${s.column ?? "-"}` : "none")}
           onRowPress={(e) => put("press", `${e.row}:${e.column ?? "-"}:${e.clicks}`)}
+          onColumnPress={(e) => put("col", `${e.column}:${e.clicks}:${e.shift ? 1 : 0}`)}
           onDoublePress={({ target: t }) => put("double", `${t.row ?? "-"}:${t.column ?? "-"}`)}
           onContextMenu={(e) => put("menu", `${e.row ?? "-"}:${e.column ?? "-"}`)}
           onSortChange={({ sort: next }) => {

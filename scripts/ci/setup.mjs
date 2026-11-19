@@ -431,6 +431,7 @@ async function main(action) {
       'libssl-dev',
     ];
     const headless = [
+      'at-spi2-core',
       'bubblewrap',
       'libgtk-4-dev',
       'libgstreamer1.0-dev',

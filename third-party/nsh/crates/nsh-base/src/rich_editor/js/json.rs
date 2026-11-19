@@ -27,6 +27,14 @@ fn declare_all(types: &mut TsTypes) {
          /** A text node's text. */\n  text?: string;\n}"
             .into()
     });
+    types.declare("RichSliceJSON", |_| {
+        "/** A slice of a document in ProseMirror's JSON shape: its content and how many levels of nodes are open at its start and end (a paragraph's text pasted into another is open at both, 1). */\n\
+         export interface RichSliceJSON {\n  \
+         /** Its top-level nodes (none for an empty slice). */\n  content?: RichNodeJSON[];\n  \
+         /** The depth open at its start (0 when left out). */\n  openStart?: number;\n  \
+         /** The depth open at its end (0 when left out). */\n  openEnd?: number;\n}"
+            .into()
+    });
     types.declare("RichSelectionJSON", |_| {
         "/** A selection in ProseMirror's JSON shape (`{ type: \"text\", anchor, head }`, `{ type: \"node\", anchor }`, `{ type: \"all\" }`, a table's cells `{ type: \"cell\", anchor, head }` (the positions before the anchor and head cells), or a custom kind's). */\n\
          export interface RichSelectionJSON {\n  \
@@ -107,6 +115,10 @@ json_type!(
     NodeJson => "RichNodeJSON"
 );
 json_type!(
+    /// TS: `RichSliceJSON`.
+    SliceJson => "RichSliceJSON"
+);
+json_type!(
     /// TS: `RichSelectionJSON`.
     SelectionJson => "RichSelectionJSON"
 );
@@ -117,6 +129,14 @@ json_type!(
 json_type!(
     /// TS: `RichTransactionJSON`.
     TransactionJson => "RichTransactionJSON"
+);
+json_type!(
+    /// A node as a node view's props show it.
+    NodeViewNodeJson => "{ readonly type: string; readonly attrs: Record<string, any>; readonly textContent: string }"
+);
+json_type!(
+    /// The extension a node view came from.
+    NodeViewExtensionJson => "{ readonly name: string; readonly options: Record<string, any> }"
 );
 json_type!(
     /// TS: `Record<string, unknown>`: a node's or mark's attributes.

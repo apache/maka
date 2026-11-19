@@ -7,7 +7,9 @@
 //! document's own text ([`Document::plain_text`]): the two differ only in
 //! their whitespace (a copy breaks blocks with one line break, the document
 //! with a blank line), so they are compared without it, the start telling
-//! repeated text apart. The document is then cut to the found range, node
+//! repeated text apart. A copy also leaves formulas and images out, so
+//! their own text may be missing from it: they are skipped where it is,
+//! and kept when inside the range. The document is then cut to the found range, node
 //! by node, and written out; a selection of all of it gives the source as
 //! it came, when it came in that format.
 
@@ -76,7 +78,14 @@ pub(crate) fn selected(
         return text.to_owned();
     }
     let plain = doc.plain_text();
-    let Some((from, to)) = locate(&plain, text, reported.start) else {
+    // The same text with each formula's and image's own text masked: a
+    // copy leaves those out, so they may be missing from `text`.
+    let masked = mask_atoms(doc).plain_text();
+    debug_assert_eq!(masked.len(), plain.len());
+    let found = locate(&plain, &plain, text, reported.start)
+        .or_else(|| locate(&plain, &masked, text, reported.start))
+        .map(|(from, to)| widen(&masked, text, from, to));
+    let Some((from, to)) = found else {
         // Not found (text the document does not have, as a list's
         // markers): the text itself, in the format.
         return match format {
@@ -89,7 +98,8 @@ pub(crate) fn selected(
             _ => escape_markdown(text),
         };
     };
-    let all = plain[..from].trim().is_empty() && plain[to..].trim().is_empty();
+    let outside = |s: &str| s.chars().all(|c| c.is_whitespace() || c == ATOM);
+    let all = outside(&masked[..from]) && outside(&masked[to..]);
     match (format, source, all) {
         (TextSelectionFormat::Markdown, Source::Markdown(s), true)
         | (TextSelectionFormat::Html, Source::Html(s), true) => return s.clone(),
@@ -102,13 +112,110 @@ pub(crate) fn selected(
     }
 }
 
-/// The byte range of `text` in `plain`, compared without whitespace: of
-/// the matches, the one starting nearest to `start` (UTF-16 units of the
-/// view's copy).
-fn locate(plain: &str, text: &str, start: Option<u32>) -> Option<(usize, usize)> {
-    let hay: Vec<(usize, char)> = plain
+/// What [`mask_atoms`] writes in place of each byte of an atom's text.
+const ATOM: char = '\u{1}';
+
+/// `doc` with the text of its formulas and images (atoms, which a copy
+/// leaves out) replaced by as many [`ATOM`]s, so its plain text keeps the
+/// same byte offsets.
+fn mask_atoms(doc: &Document) -> Document {
+    fn mask(s: &mut String) {
+        *s = ATOM.to_string().repeat(s.len());
+    }
+    fn inlines(list: &mut [Inline]) {
+        for inline in list {
+            match inline {
+                Inline::Math { tex } => mask(tex),
+                Inline::Image(image) => mask(&mut image.alt),
+                Inline::Custom(node) => {
+                    inlines(&mut node.content);
+                    blocks(&mut node.children);
+                }
+                other => {
+                    if let Some(content) = content_mut(other) {
+                        inlines(content);
+                    }
+                }
+            }
+        }
+    }
+    fn blocks(list: &mut [Block]) {
+        for block in list {
+            match block {
+                Block::Paragraph { content } | Block::Heading { content, .. } => inlines(content),
+                Block::Blockquote { children, .. } => blocks(children),
+                Block::List { items, .. } => {
+                    for item in items {
+                        blocks(&mut item.children);
+                    }
+                }
+                Block::Math { tex, .. } => mask(tex),
+                Block::Table(table) => {
+                    for row in std::iter::once(&mut table.head).chain(table.rows.iter_mut()) {
+                        for cell in row {
+                            inlines(&mut cell.content);
+                        }
+                    }
+                }
+                Block::Details {
+                    summary, children, ..
+                } => {
+                    inlines(summary);
+                    blocks(children);
+                }
+                Block::Custom(node) => {
+                    inlines(&mut node.content);
+                    blocks(&mut node.children);
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut doc = doc.clone();
+    blocks(&mut doc.blocks);
+    for note in &mut doc.footnotes {
+        blocks(&mut note.children);
+    }
+    doc
+}
+
+/// `from..to` widened over the atoms just before or after it when `text`
+/// reaches past its first or last line there: an atom alone in its line (a
+/// formula block) leaves only that line break in the copy.
+fn widen(masked: &str, text: &str, mut from: usize, mut to: usize) -> (usize, usize) {
+    let breaks = |s: &str| {
+        s.chars()
+            .take_while(|c| c.is_whitespace())
+            .any(|c| c == '\n')
+    };
+    let atom_or_space = |c: char| c.is_whitespace() || c == ATOM;
+    if breaks(text) {
+        let before = &masked[..from];
+        let kept = before.trim_end_matches(atom_or_space);
+        if before[kept.len()..].contains(ATOM) {
+            from =
+                kept.len() + (before[kept.len()..].len() - before[kept.len()..].trim_start().len());
+        }
+    }
+    if breaks(&text.chars().rev().collect::<String>()) {
+        let after = &masked[to..];
+        let kept = after.trim_start_matches(atom_or_space);
+        let gap = &after[..after.len() - kept.len()];
+        if gap.contains(ATOM) {
+            to += gap.trim_end().len();
+        }
+    }
+    (from, to)
+}
+
+/// The byte range of `text` in `plain`, compared without whitespace and
+/// without the [`ATOM`]s of `masked` (`plain` itself, or it masked by
+/// [`mask_atoms`]): of the matches, the one starting nearest to `start`
+/// (UTF-16 units of the view's copy). Atoms inside the range are in it.
+fn locate(plain: &str, masked: &str, text: &str, start: Option<u32>) -> Option<(usize, usize)> {
+    let hay: Vec<(usize, char)> = masked
         .char_indices()
-        .filter(|(_, c)| !c.is_whitespace())
+        .filter(|(_, c)| !c.is_whitespace() && *c != ATOM)
         .collect();
     let needle: Vec<char> = text
         .chars()
@@ -289,6 +396,7 @@ impl Cut {
                 self.take(text).map(|part| {
                     let mut code = code.clone();
                     code.code = part;
+                    code.content.clear();
                     Block::CodeBlock(code)
                 })
             }
@@ -1017,8 +1125,54 @@ mod tests {
         let source = Source::Markdown(md.into());
         let out = selected(&d, &source, &reported, TextSelectionFormat::Html);
         assert_eq!(out, "<p>same</p>");
-        assert_eq!(locate(&d.plain_text(), "same", Some(5)), Some((6, 10)));
-        assert_eq!(locate(&d.plain_text(), "same", Some(0)), Some((0, 4)));
+        let plain = d.plain_text();
+        assert_eq!(locate(&plain, &plain, "same", Some(5)), Some((6, 10)));
+        assert_eq!(locate(&plain, &plain, "same", Some(0)), Some((0, 4)));
+    }
+
+    // #2121: a copy leaves formulas out, so the reported text lacks them.
+    #[test]
+    fn a_part_keeps_the_formulas_inside_it() {
+        let md = "First two\n\nAlpha $x^2$ omega\n\nLast two";
+        assert_eq!(
+            sel(md, "Alpha  omega\nLast two", TextSelectionFormat::Markdown),
+            "Alpha $x^2$ omega\n\nLast two"
+        );
+        let md = "First four\n\nAlpha **bold** $x^2$ omega\n\nLast four";
+        assert_eq!(
+            sel(
+                md,
+                "Alpha bold  omega\nLast four",
+                TextSelectionFormat::Markdown
+            ),
+            "Alpha **bold** $x^2$ omega\n\nLast four"
+        );
+        let md = "First three\n\n$$\nx^2\n$$\n\nLast three";
+        assert_eq!(
+            sel(md, "First three\nLast three", TextSelectionFormat::Markdown),
+            md
+        );
+        // From the end of the first line: the block's line break leads.
+        assert_eq!(
+            sel(md, "\nLast three", TextSelectionFormat::Markdown),
+            "$$\nx^2\n$$\n\nLast three"
+        );
+        assert_eq!(
+            sel(md, "First three\n", TextSelectionFormat::Markdown),
+            "First three\n\n$$\nx^2\n$$"
+        );
+        // Within a line, an atom at the edge stays out.
+        let md = "Alpha $x^2$ omega";
+        assert_eq!(sel(md, " omega", TextSelectionFormat::Markdown), "omega");
+    }
+
+    #[test]
+    fn a_reported_formula_still_matches() {
+        let md = "Alpha $x^2$ omega";
+        assert_eq!(
+            sel(md, "pha x^2 om", TextSelectionFormat::Markdown),
+            "pha $x^2$ om"
+        );
     }
 
     #[test]

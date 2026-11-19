@@ -9,11 +9,12 @@
 //! [`DataTableRows::numbers`], [`DataTableRows::bools`]), as the core's
 //! `Rows::from_columns` does.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use nsh_core::element::{
     JsHost, JsIn, JsKind, JsOwned, JsPrimitive, JsValue, PropError, SharedString, TsTypes,
 };
+use rustc_hash::FxHashMap;
 
 /// What a cell holds.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -33,7 +34,7 @@ impl Cell {
             Cell::Empty => SharedString::default(),
             Cell::Number(n) => format_number(*n).into(),
             Cell::Bool(b) => if *b { "true" } else { "false" }.into(),
-            Cell::Text(s) => SharedString::from(s.as_ref().to_owned()),
+            Cell::Text(s) => SharedString::from(s.clone()),
         }
     }
 
@@ -76,7 +77,7 @@ pub struct DataTableRows {
     len: usize,
     /// Columns by the field of object rows they hold.
     named: Vec<Vec<Cell>>,
-    names: HashMap<String, usize>,
+    names: FxHashMap<String, usize>,
     /// Columns by position of array rows.
     indexed: Vec<Vec<Cell>>,
 }

@@ -11,11 +11,13 @@
 // The page scrolls in `nativeID="embedded.scroll"`, which the host app watches
 // (`NshView.watchScroll`): a native label follows its offset in the frame of
 // the scroll and a native button scrolls it back to the top.
+// The Markdown note is `nsh/base`'s `TextView`: the hosts serve all of `nsh/base`.
 
 import { mount, type NativeComponentRef, Scroll, signal, Text, View } from "nsh";
 import { nativeComponent } from "nsh";
 import { host } from "nsh";
 import { openUrl } from "nsh";
+import { TextView } from "nsh/base";
 
 /** The host app's badge: a label it draws, sized to its text. */
 const Badge = nativeComponent<{ text: string; color?: string }, { tap: { count: number } }>("embed.badge", {
@@ -55,6 +57,7 @@ function App() {
         <View class="self-start rounded-(--radius) bg-primary px-3 py-2">
           <Text class="text-primary-foreground">Styled by the host app's theme</Text>
         </View>
+        <TextView markdown={"This note is **Markdown**, laid out by `nsh/base`'s `TextView`."} />
         <Badge
           ref={(node) => (badge = node)}
           text={taps() === 0 ? "Tap the native badge" : `Tapped ${taps()}×`}

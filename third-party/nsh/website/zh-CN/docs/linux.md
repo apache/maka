@@ -18,14 +18,16 @@ NSH 应用也能在 Linux 上运行。Linux 后端用 GTK 4 控件渲染应用�
 - **GTK 4.14** 及以上。构建 Rust 应用的 runner 或 NSH 的 Linux 运行时（从源码构建，或在 Linux 上运行 `cargo xtask dist`）
   还需要它们的开发包和 clang：Debian 与 Ubuntu（24.04 及以上）为 `libgtk-4-dev clang`，Arch 为 `gtk4 clang`，Fedora 为
   `gtk4-devel clang`。
-- Web 视图需要 **WebKitGTK 6.0**（2.40 及以上）：构建运行时需要 Debian 与 Ubuntu 上的 `libwebkitgtk-6.0-dev`、Arch 上的
+- Web 视图及下载决策需要 **WebKitGTK 6.0**（2.42 及以上）：构建运行时需要 Debian 与 Ubuntu 上的 `libwebkitgtk-6.0-dev`、Arch 上的
   `webkitgtk-6.0`、Fedora 上的 `webkitgtk6.0-devel`。开发宿主和发布运行器默认使用它，因此打包后的应用运行的机器上需要装有
   WebKitGTK 6.0（Debian 与 Ubuntu 上为 `libwebkitgtk-6.0-4`；GNOME 桌面自带）。在没有它的开发包的机器上，`cargo xtask dist`
   构建的运行时中 Web 视图为占位视图，其应用只需要 GTK。
 - **GStreamer** 1.14 及以上：GTK 通过它播放视频，NSH 用它播放声音。构建运行时需要它的开发包：Debian 与 Ubuntu 上为
   `libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev`，Arch 上为 `gstreamer gst-plugins-base`，Fedora 上为
   `gstreamer1-devel gstreamer1-plugins-base-devel`。应用运行的机器上需要 GStreamer 及其 base 插件（桌面系统自带），以及应用要播放的
-  视频和音频格式对应的插件。
+  视频和音频格式对应的插件。开发包供 `Sound` 使用，即运行时的 Cargo feature `sound`：不播放音效的 Rust 应用在
+  `nsh-platform-linux` 上设置 `default-features = false` 并不启用这个 feature，就无需它们即可构建，视频和 `AudioPlayer`
+  仍通过 GTK 播放。
 
 ## 运行应用
 
@@ -126,6 +128,10 @@ view.load(Bundle::source(code).into());
 或 `AssetBase::Http`）。字节码 bundle（`bundle.nshc`）用 `unsafe { Bundle::bytecode(bytes) }` 加载：字节码是受信任的输入，
 只能从你自己应用的文件中加载。独立窗口用 `nsh_platform_linux::run_app(source, options)`，传入 `AppSource::Rust(root)` 或
 `AppSource::Bundle(bundle)`。
+
+`AppOptions::login_item` 让 `run_app` 运行的应用拥有[登录项](../modules/nsh-desktop.md#登录时打开)：XDG 自启动条目
+`~/.config/autostart/<app_id>.desktop`，启动本可执行文件。默认关闭，且只有 `run_app` 读取它，所以嵌入应用
+不会登录时打开；`nsh package` 构建的应用的运行器会打开它。
 
 `AppOptions::cache`（或 `AppView::set_cache`，作用于之后加载的应用）设置应用保存缓存（[下载的图片](./images-and-assets.md#磁盘缓存)）的位置和每种缓存的大小（`CacheOptions`：默认为系统的缓存目录和 256 MiB 图片）。
 

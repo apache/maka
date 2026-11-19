@@ -22,4 +22,8 @@ test("the Diff demo navigates, reverts and keeps changes, and shows a patch", as
   // A patch: its hunks under their headers.
   await app.press("Patch");
   await app.waitFor("@@ impl Layout {");
+  // Long unwrapped lines, each on its own row, and the text size shown.
+  await app.press("Long lines");
+  await app.waitFor("export const value9 = 9090; // a long unwrapped filler line number 9");
+  await app.waitFor("Text size 1.00× · raise the system text size: every line stays on its own row");
 });

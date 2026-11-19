@@ -106,15 +106,19 @@ pub struct ResponderEvent {
     /// The gesture since it began: since the grant for the responder's
     /// events, since the first finger went down for a claim's question.
     pub gesture: PanGesture,
+    /// The modifier keys held when the finger (or mouse button) went
+    /// down, as a press's (TS: `modifiers`).
+    pub modifiers: crate::keymap::Modifiers,
 }
 
 impl ResponderEvent {
-    pub(crate) fn new(about: &TouchPoint, timestamp: f64, gesture: PanGesture) -> Self {
+    pub(crate) fn new(about: &TouchPoint, touch: &TouchEvent, gesture: PanGesture) -> Self {
         Self {
             location: about.location,
             page: about.page,
-            timestamp,
+            timestamp: touch.timestamp,
             gesture,
+            modifiers: touch.modifiers,
         }
     }
 }

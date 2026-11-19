@@ -10,6 +10,8 @@ import ModAppInfo from "./mod-app-info";
 import ModAudio from "./mod-audio";
 import ModClipboard from "./mod-clipboard";
 import ModFps from "./mod-fps";
+import ModFpsMode from "./mod-fps-mode";
+import ModPerfStats from "./mod-perf-stats";
 import ModUrlScheme from "./mod-url-scheme";
 import ModDesktop from "./mod-desktop";
 import ModDevice from "./mod-device";
@@ -21,6 +23,7 @@ import ModIos from "./mod-ios";
 import ModKeymap from "./mod-keymap";
 import ModMobile from "./mod-mobile";
 import ModPicker from "./mod-picker";
+import ModShare from "./mod-share";
 import ModNotifications from "./mod-notifications";
 import ModSpeech from "./mod-speech";
 import ModStorage from "./mod-storage";
@@ -35,6 +38,8 @@ const cases: Record<string, () => JSX.Element> = {
   "mod-audio": ModAudio,
   "mod-clipboard": ModClipboard,
   "mod-fps": ModFps,
+  "mod-fps-mode": ModFpsMode,
+  "mod-perf-stats": ModPerfStats,
   "mod-url-scheme": ModUrlScheme,
   "mod-desktop": ModDesktop,
   "mod-device": ModDevice,
@@ -46,6 +51,7 @@ const cases: Record<string, () => JSX.Element> = {
   "mod-keymap": ModKeymap,
   "mod-mobile": ModMobile,
   "mod-picker": ModPicker,
+  "mod-share": ModShare,
   "mod-notifications": ModNotifications,
   "mod-speech": ModSpeech,
   "mod-storage": ModStorage,

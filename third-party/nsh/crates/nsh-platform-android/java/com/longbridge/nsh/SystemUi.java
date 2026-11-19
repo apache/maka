@@ -70,13 +70,16 @@ final class SystemUi {
      * Alerts map buttons as React Native does: the last is positive, the
      * one before negative, the one before that neutral (three at most).
      * styles: 0 default, 1 cancel, 2 destructive. Drawn in the app's colors
-     * ({@link Mounter#dialogColors}) where it has them.
+     * ({@link Mounter#dialogColors}) where it has them. An alert with
+     * {@code input} has a text field starting with it, its text answered as
+     * {@code value}: the IME's action presses the last default button, and
+     * while a {@code required} field is empty only cancel buttons are enabled.
      */
     static void dialog(Mounter mounter, int dialogId, String title, String message, boolean cancelable, boolean sheet,
-            String[] texts, int[] styles) {
+            String[] texts, int[] styles, String input, String placeholder, boolean selectAll, boolean required) {
         Activity activity = activity(mounter.context);
         if (activity == null || activity.isFinishing()) {
-            answer(mounter, dialogId, -1);
+            answer(mounter, dialogId, -1, null);
             return;
         }
         boolean[] answered = {false};
@@ -90,6 +93,9 @@ final class SystemUi {
         int buttonColor = colors[6 + at], destructive = colors[8 + at];
         if (title != null && !title.isEmpty()) b.setTitle(colored(title, titleColor));
         b.setCancelable(cancelable);
+        final android.widget.EditText field = sheet || input == null
+                ? null
+                : textField(b, activity, input, placeholder, selectAll, titleColor, messageColor);
         if (sheet) {
             // The cancel option is the dismissal (a tap outside / back).
             int count = 0;
@@ -105,7 +111,7 @@ final class SystemUi {
             if ((title == null || title.isEmpty()) && message != null) b.setTitle(colored(message, titleColor));
             b.setItems(items, (d, which) -> {
                 answered[0] = true;
-                answer(mounter, dialogId, indices[which]);
+                answer(mounter, dialogId, indices[which], null);
             });
             b.setCancelable(true);
         } else {
@@ -114,31 +120,39 @@ final class SystemUi {
             if (n >= 1) {
                 b.setPositiveButton(texts[n - 1], (d, w) -> {
                     answered[0] = true;
-                    answer(mounter, dialogId, n - 1);
+                    answer(mounter, dialogId, n - 1, field);
                 });
             }
             if (n >= 2) {
                 b.setNegativeButton(texts[n - 2], (d, w) -> {
                     answered[0] = true;
-                    answer(mounter, dialogId, n - 2);
+                    answer(mounter, dialogId, n - 2, field);
                 });
             }
             if (n >= 3) {
                 b.setNeutralButton(texts[n - 3], (d, w) -> {
                     answered[0] = true;
-                    answer(mounter, dialogId, n - 3);
+                    answer(mounter, dialogId, n - 3, field);
                 });
             }
         }
         b.setOnDismissListener(d -> {
             if (TestAgent.shownDialog == d) TestAgent.shownDialog = null;
+            if (mounter.dialogs.get(dialogId) == d) mounter.dialogs.remove(dialogId);
             if (!answered[0]) {
                 answered[0] = true;
-                answer(mounter, dialogId, -1);
+                answer(mounter, dialogId, -1, field);
             }
         });
-        AlertDialog shown = b.show();
+        AlertDialog shown = b.create();
+        if (field != null && shown.getWindow() != null) {
+            // The field has the focus as it shows: bring the keyboard up with it.
+            shown.getWindow().setSoftInputMode(
+                    android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+        }
+        shown.show();
         TestAgent.shownDialog = shown;
+        mounter.dialogs.put(dialogId, shown);
         if (surface != 0 && shown.getWindow() != null) {
             // The theme's shape (corners, insets), filled with the app's color.
             Drawable background = shown.getWindow().getDecorView().getBackground();
@@ -153,6 +167,98 @@ final class SystemUi {
                 if (button != null && color != 0) button.setTextColor(color);
             }
         }
+        if (field != null) followTextField(shown, field, styles, required);
+    }
+
+    /**
+     * The text field of an alert ({@link #dialog}), set as {@code b}'s view with the theme's dialog padding, its
+     * text {@code input} and its caret after it unless {@code selectAll}.
+     */
+    private static android.widget.EditText textField(AlertDialog.Builder b, Activity activity, String input,
+            String placeholder, boolean selectAll, int textColor, int hintColor) {
+        android.content.Context context = b.getContext();
+        android.widget.EditText field = new android.widget.EditText(context);
+        field.setSingleLine(true);
+        field.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
+        field.setText(input);
+        if (placeholder != null) field.setHint(placeholder);
+        if (textColor != 0) field.setTextColor(textColor);
+        if (hintColor != 0) field.setHintTextColor(hintColor);
+        field.setSelectAllOnFocus(selectAll);
+        if (!selectAll) field.setSelection(input.length());
+        // The theme's inset of the dialog's content (?android:dialogPreferredPadding).
+        android.util.TypedValue inset = new android.util.TypedValue();
+        int side = context.getTheme().resolveAttribute(android.R.attr.dialogPreferredPadding, inset, true)
+                ? android.util.TypedValue.complexToDimensionPixelSize(inset.data,
+                        activity.getResources().getDisplayMetrics())
+                : 0;
+        android.widget.FrameLayout box = new android.widget.FrameLayout(context);
+        box.setPadding(side, 0, side, 0);
+        box.addView(field, new android.widget.FrameLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+        b.setView(box);
+        field.requestFocus();
+        return field;
+    }
+
+    /**
+     * Wires the text field of the alert {@code shown}: the IME's action presses its last default button (the
+     * alert's default action) while enabled; a {@code required} field enables only the cancel buttons while empty.
+     */
+    private static void followTextField(AlertDialog shown, android.widget.EditText field, int[] styles,
+            boolean required) {
+        int n = styles.length;
+        // The button of index n - 1 - k is which[k] (see dialog).
+        int[] which = {AlertDialog.BUTTON_POSITIVE, AlertDialog.BUTTON_NEGATIVE, AlertDialog.BUTTON_NEUTRAL};
+        // The k of the last default button (BUTTON_* are negative: no sentinel among them).
+        int preferred = -1;
+        for (int k = 0; k < Math.min(n, 3) && preferred < 0; k++) if (styles[n - 1 - k] == 0) preferred = k;
+        final int submit = preferred;
+        field.setOnEditorActionListener((v, action, event) -> {
+            boolean enter = action == android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+                    || (event != null && event.getKeyCode() == android.view.KeyEvent.KEYCODE_ENTER
+                            && event.getAction() == android.view.KeyEvent.ACTION_DOWN);
+            if (!enter) return false;
+            android.widget.Button button = submit >= 0 ? shown.getButton(which[submit]) : null;
+            if (button != null && button.isEnabled()) button.performClick();
+            return true;
+        });
+        if (!required) return;
+        Runnable enable = () -> {
+            boolean empty = field.getText().length() == 0;
+            for (int k = 0; k < Math.min(n, 3); k++) {
+                android.widget.Button button = shown.getButton(which[k]);
+                if (button == null) continue;
+                boolean enabled = !empty || styles[n - 1 - k] == 1;
+                button.setEnabled(enabled);
+                // The app's button color is a plain color, without the theme's disabled state.
+                button.setAlpha(enabled ? 1f : 0.38f);
+            }
+        };
+        enable.run();
+        field.addTextChangedListener(new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+
+            @Override
+            public void afterTextChanged(android.text.Editable s) {
+                enable.run();
+            }
+        });
+    }
+
+    /**
+     * Takes back the alert {@link #dialog} showed as {@code dialogId}: the core answered it already, so the
+     * dismissal it reports goes unheard.
+     */
+    static void closeDialog(Mounter mounter, int dialogId) {
+        AlertDialog shown = mounter.dialogs.get(dialogId);
+        if (shown == null) return;
+        mounter.dialogs.remove(dialogId);
+        shown.dismiss();
     }
 
     /** {@code text} in {@code color} (0: the theme's). */
@@ -163,9 +269,15 @@ final class SystemUi {
         return s;
     }
 
-    private static void answer(Mounter mounter, int dialogId, int index) {
-        mounter.eventMap(1, Native.DIALOG, new String[] {"id", "index"},
-                new Object[] {(double) dialogId, (double) index});
+    /** Answers dialog {@code dialogId} with button {@code index} (-1: none) and the text of its {@code field}. */
+    private static void answer(Mounter mounter, int dialogId, int index, android.widget.EditText field) {
+        if (field == null) {
+            mounter.eventMap(1, Native.DIALOG, new String[] {"id", "index"},
+                    new Object[] {(double) dialogId, (double) index});
+            return;
+        }
+        mounter.eventMap(1, Native.DIALOG, new String[] {"id", "index", "value"},
+                new Object[] {(double) dialogId, (double) index, field.getText().toString()});
     }
 
     /**
@@ -216,6 +328,13 @@ final class SystemUi {
         android.content.ClipboardManager clipboard =
                 (android.content.ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
         if (clipboard != null) clipboard.setPrimaryClip(android.content.ClipData.newPlainText(null, text));
+    }
+
+    /** {@code Clipboard.write}: a clip of text with its HTML, which apps that read formatting paste. */
+    static void setClipboardHtml(Context context, String text, String html) {
+        android.content.ClipboardManager clipboard =
+                (android.content.ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard != null) clipboard.setPrimaryClip(android.content.ClipData.newHtmlText(null, text, html));
     }
 
     /**

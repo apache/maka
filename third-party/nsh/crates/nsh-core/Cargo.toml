@@ -40,6 +40,8 @@ naga = { workspace = true, optional = true }
 wuff.workspace = true
 # Fonts' family names (`text::font_family`).
 ttf-parser.workspace = true
+# `nsh/mobile`'s `DateTimePicker` values (`mobile.rs`).
+chrono.workspace = true
 
 [features]
 # SVG images for the native backends (`svg`: sniffing, sizes and rasters with
@@ -58,33 +60,42 @@ glsl = ["shader", "naga/glsl-out"]
 # UI sets turn it on; apps and the web runtime go without
 # (`element::DECLARATIONS`).
 declarations = []
+# The native WebSocket client (`websocket` on native hosts: tokio-tungstenite
+# over rustls, with the platform's trust store). Without it `connect` rejects
+# with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` unless the host supplies a transport.
+websocket = [
+  "dep:futures-util",
+  "dep:tokio-tungstenite",
+  "dep:rustls",
+  "dep:rustls-platform-verifier",
+]
+# App self-updates (`nsh/updater`, on nsh-updater). Without it a check finds
+# nothing and downloads, installs and package restarts reject.
+updater = ["dep:nsh-updater"]
 
 # Native socket/file implementations. Browser WebSockets and files use
 # the host services; their shared checks do not need these dependencies.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["net", "io-util", "sync", "macros"] }
 cap-std.workspace = true
-futures-util.workspace = true
-tokio-tungstenite.workspace = true
-rustls.workspace = true
+# The native WebSocket client (feature `websocket`).
+futures-util = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
 # The image disk cache (`image/cache.rs`).
 httpdate.workspace = true
 # The image loader's downloads (`image/loader.rs`, feature `loader`).
 ureq = { workspace = true, optional = true }
 crc32fast.workspace = true
-# `nsh/updater`.
-nsh-updater.workspace = true
+# `nsh/updater` (feature `updater`).
+nsh-updater = { workspace = true, optional = true }
 
 # `process`'s children: their process groups and exits (`runtime/process.rs`);
 # the names of Unix error numbers (`element/system.rs`). Emscripten is wasm32
 # and `unix` both, so it needs libc for the `cfg(unix)` code too.
-# WebSocket TLS roots: the system trust store, except on Android, whose
-# verifier needs a JNI init the host does not run; there the bundled roots.
-[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
-rustls-platform-verifier.workspace = true
-
-[target.'cfg(target_os = "android")'.dependencies]
-webpki-roots.workspace = true
+# WebSocket TLS roots: the system trust store. On Android the host
+# initializes it over JNI (nsh-platform-android).
+rustls-platform-verifier = { workspace = true, optional = true }
 
 [target.'cfg(any(not(target_arch = "wasm32"), target_os = "emscripten"))'.dependencies]
 libc.workspace = true
@@ -104,6 +115,8 @@ windows-sys = { workspace = true, features = [
 [dev-dependencies]
 # The tests compile shaders.
 nsh-core = { path = ".", features = ["shader"] }
+# The tests use `futures_util` directly.
+futures-util.workspace = true
 # The `unit_types` check reads the crate's public API.
 syn = { workspace = true, features = ["visit"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time"] }

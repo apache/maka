@@ -230,7 +230,7 @@ pub(crate) fn takes_part(view: &NshView) -> bool {
         .text
         .as_ref()
         .is_some_and(|t| t.text.selectable != Some(false));
-    part && area_of(view).is_some()
+    part && area_of(view).is_some() && !in_control(view)
 }
 
 /// A point in root coordinates in `area`'s.
@@ -839,4 +839,46 @@ fn unhighlight(old: &[glib::WeakRef<NshView>], keep: &[NshView]) {
             view.queue_draw();
         }
     }
+}
+
+/// Whether `view` sits in a control (a button, link, tab…) inside its
+/// area, or in a view that takes presses: its text then keeps the control's pointer, not the I-beam.
+fn in_control(view: &NshView) -> bool {
+    let mut current = Some(view.clone());
+    while let Some(v) = current {
+        let s = v.state();
+        if s.props.selectable_view {
+            return false;
+        }
+        // A role, or a press handler on a row the app built itself.
+        if s.props.accessibility.role.is_control()
+            || [EventKind::Press, EventKind::LongPress, EventKind::PressDown]
+                .iter()
+                .any(|&k| s.events.contains(k))
+        {
+            return true;
+        }
+        drop(s);
+        current = v.parent_view();
+    }
+    false
+}
+
+/// Whether a view between text `view` and its area (the area included)
+/// sets a cursor: as CSS inherits `cursor`, the texts inside show it, not
+/// the I-beam.
+pub(crate) fn cursor_above(view: &NshView) -> bool {
+    let mut current = view.parent_view();
+    while let Some(v) = current {
+        let s = v.state();
+        if s.style.cursor != nsh_core::Cursor::Auto {
+            return true;
+        }
+        if s.props.selectable_view {
+            return false;
+        }
+        drop(s);
+        current = v.parent_view();
+    }
+    false
 }

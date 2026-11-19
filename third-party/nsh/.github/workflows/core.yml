@@ -84,7 +84,7 @@ jobs:
       deployment: false
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # QuickJS is C (bindgen needs libclang); none of these crates needs a
       # platform backend.

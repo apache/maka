@@ -32,7 +32,8 @@ use std::sync::Arc;
 
 use crate::{
     AttributedText, Bounds, BoxShadow, Color, Corners, Edges, Filter, KeyframeAnimation, Keyframes,
-    LayoutCurve, LayoutProperty, LayoutTransition, Points, Transform, TransitionProps, ViewStyle,
+    LayoutCurve, LayoutProperty, LayoutTransition, Points, Transform, Transition, TransitionProps,
+    ViewStyle,
     geometry::{Percentage, Point, Radians, Size, deg},
 };
 
@@ -382,7 +383,7 @@ pub fn restyle(
     let keyframes_changed = style.animation != old.animation;
     let transition = style.transition.filter(|t| {
         !reduce_motion
-            && t.duration + t.delay > 0.0
+            && t.run_ms() + t.delay > 0.0
             && differs(old, style, t.properties)
             // A view's first style does not transition from the defaults.
             && *old != ViewStyle::default()
@@ -398,7 +399,7 @@ pub fn restyle(
             from: Box::new(old.clone()),
             to,
             props: t.properties,
-            timing: Timing::new(t.delay, t.duration, Curve::Bezier(t.easing)),
+            timing: Timing::transition(&t),
         }
     });
     Some(Restyle { track, keyframes })
@@ -517,7 +518,7 @@ pub fn recolor(
     reduce_motion: bool,
 ) -> Recolor {
     let transition = style.transition.filter(|t| {
-        !reduce_motion && t.duration + t.delay > 0.0 && t.properties.has(TransitionProps::COLORS)
+        !reduce_motion && t.run_ms() + t.delay > 0.0 && t.properties.has(TransitionProps::COLORS)
     });
     // Most texts have no transition: their runs are not looked at.
     let Some((t, to)) = transition.and_then(|t| Some((t, text.uniform_color()?))) else {
@@ -528,7 +529,7 @@ pub fn recolor(
         Some(from) => Recoloring::Start {
             from,
             to,
-            timing: Timing::new(t.delay, t.duration, Curve::Bezier(t.easing)),
+            timing: Timing::transition(&t),
         },
         None => Recoloring::Stop,
     })
@@ -586,6 +587,7 @@ impl Curve {
             }
             LayoutCurve::FittedSpring { damping_ratio } => Curve::Spring(damping_ratio),
             LayoutCurve::Spring(spring) => Curve::Physical(spring),
+            LayoutCurve::Bezier(points) => Curve::Bezier(points),
         }
     }
 
@@ -694,6 +696,14 @@ impl Timing {
 
     fn layout(t: &LayoutTransition) -> Self {
         Timing::new(t.delay_ms, t.run_ms(), Curve::of(t.curve))
+    }
+
+    fn transition(t: &Transition) -> Self {
+        let curve = match t.spring {
+            Some(spring) => Curve::Physical(spring),
+            None => Curve::Bezier(t.easing),
+        };
+        Timing::new(t.delay, t.run_ms(), curve)
     }
 
     /// When it ends (ms), `now` before its first step.
@@ -1354,6 +1364,80 @@ mod tests {
         assert_eq!(progress(Curve::Linear, 0.0, 0.0, 0.0), Some((1.0, true)));
     }
 
+    /// A view scaled from `from` to `to` with `easing` on its transforms:
+    /// the scales it shows every 10 ms until the transition ends.
+    fn scales(
+        easing: [f32; 4],
+        spring: Option<crate::element::Spring>,
+        from: f32,
+        to: f32,
+    ) -> Vec<f32> {
+        let styled = |scale: f32| {
+            let mut transform = Transform::IDENTITY;
+            let _ = transform.push(crate::transform::TransformKind::Scale, scale);
+            ViewStyle {
+                transform,
+                transition: Some(Transition {
+                    properties: TransitionProps(TransitionProps::TRANSFORM),
+                    duration: 200.0,
+                    delay: 0.0,
+                    easing,
+                    spring,
+                }),
+                ..ViewStyle::default()
+            }
+        };
+        let old = styled(from);
+        let mut style = Box::new(styled(to));
+        let mut live = Live::default();
+        live.restyle(restyle(&old, &mut style, false).expect("it transitions"));
+        let mut frame = Bounds::default();
+        let mut out = Vec::new();
+        for i in 0..200 {
+            let step = live.step(f64::from(i) * 10.0, &mut frame, &mut style);
+            out.push(style.transform.ops()[0].value);
+            if step.finished {
+                break;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_style_transition_runs_on_a_spring() {
+        let spring = crate::element::Spring {
+            stiffness: 620.0,
+            damping: 36.0,
+            ..crate::element::Spring::default()
+        };
+        let shown = scales(Transition::EASE, Some(spring), 0.95, 1.0);
+        // It passes its target (by 3.7% of the travel) and settles on it, in
+        // the time the spring takes, not the transition's 200 ms.
+        let peak = shown.iter().copied().fold(f32::MIN, f32::max);
+        assert!(peak > 1.001 && peak < 1.003, "{peak}");
+        assert_eq!(*shown.last().unwrap(), 1.0);
+        let ms = (shown.len() - 1) * 10;
+        assert!((380..=390).contains(&ms), "{ms}");
+        // Its exit waits as long.
+        let t = Transition {
+            properties: TransitionProps(TransitionProps::ALL),
+            duration: 200.0,
+            delay: 20.0,
+            easing: Transition::EASE,
+            spring: Some(spring),
+        };
+        assert!((t.run_ms() - spring.settle_ms()).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn a_bezier_past_one_overshoots() {
+        let shown = scales([0.3, 1.25, 0.6, 1.0], None, 0.95, 1.0);
+        let peak = shown.iter().copied().fold(f32::MIN, f32::max);
+        assert!(peak > 1.0, "{peak}");
+        assert_eq!(*shown.last().unwrap(), 1.0);
+        assert_eq!(shown.len(), 21);
+    }
+
     #[test]
     fn presets_time_as_configured() {
         let mut t = Timing::layout(&LayoutAnimation::EASE_IN_EASE_OUT.update.unwrap());
@@ -1650,6 +1734,7 @@ mod tests {
                 duration: 150.0,
                 delay: 0.0,
                 easing: [0.0, 0.0, 1.0, 1.0],
+                spring: None,
             }),
             ..ViewStyle::default()
         }

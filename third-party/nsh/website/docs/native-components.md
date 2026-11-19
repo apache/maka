@@ -19,7 +19,7 @@ there is no layering problem, it clips, scrolls and receives touches like a `<Vi
 > [!NOTE]
 > Native components are registered by the app that embeds NSH ([iOS](./ios.md), [Android](./android.md),
 > [macOS](./macos.md#embedding-in-a-mac-app), [Linux](./linux.md#embedding-in-a-gtk-app),
-> [Windows](./windows.md#embedding-in-a-win32-app)), or on Windows, macOS, Linux and iOS by the app's own Rust crate,
+> [Windows](./windows.md#embedding-in-a-win32-app)), or on Windows, macOS, Linux, iOS and Android by the app's own Rust crate,
 > whose components the development host and the packaged app (`nsh package`) register
 > ([Registering from the app's crate](#registering-from-the-apps-crate)). A name nothing registered renders an empty
 > view (the name is logged once as unknown).
@@ -657,18 +657,22 @@ fn components(components: &nsh_platform_windows::Components) {
 }
 ```
 
-The platform is `windows`, `macos`, `linux` or `ios`, and the components are those of
-`nsh_platform_windows`, `nsh_platform_macos`, `nsh_platform_linux` or `nsh_platform_ios` (the sections above). The
+The platform is `windows`, `macos`, `linux`, `ios` or `android`, and the components are those of
+`nsh_platform_windows`, `nsh_platform_macos`, `nsh_platform_linux`, `nsh_platform_ios` (the sections above) or
+`nsh-platform-android` (`nsh::Components`, `nsh::NativeComponent` over JNI). The
 function compiles only on its platform, so a crate has one per platform it supports, each registering the same names,
 and depends on each platform's crate for that platform only, at the version and from the source of its other NSH
 crates (`nsh-core` and the rest; the CLI checks that they all match):
 
 ```toml
 [target.'cfg(windows)'.dependencies]
-nsh-platform-windows = { version = "0.3", default-features = false }
+nsh-platform-windows = { version = "0.6", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-nsh-platform-macos = { version = "0.3", default-features = false }
+nsh-platform-macos = { version = "0.6", default-features = false }
+
+[target.'cfg(target_os = "android")'.dependencies]
+nsh-platform-android = { version = "0.6", default-features = false }
 ```
 
 The host registers the crate's components when it makes each view, before the code holding the view registers its

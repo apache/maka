@@ -18,7 +18,10 @@
 //! leaves, so nothing visible is late. The rest come in later turns,
 //! nearest the viewport first, at most [`PACE_VIEWS`] views or
 //! [`PACE_TIME`] a turn; the core asks for a display frame while some
-//! wait ([`Core::has_paced_mounts`]).
+//! wait ([`Core::has_paced_mounts`]). A list's cell that waits has made
+//! none of its views: the list places them with the cell (`update_lists`),
+//! so they are ranked by where they are when the cell is made, not last
+//! as views without a frame are.
 //!
 //! Content culling's own window ([`Core::sync_culled`]) keeps the same
 //! budget: the overscan it makes past [`PACE_AFTER`] waits for later turns
@@ -33,8 +36,11 @@
 //!
 //! Nothing waits that may show away from its frame or lays out on its own
 //! ([`Core::never_culled`]: sticky, followers, overlays, screens, modals,
-//! transformed or animated views), nor anything outside scroll views and
-//! lists, whose content shows wherever its frame is.
+//! views scaled, rotated or moved by a value of no known bound), nor
+//! anything outside scroll views and lists, whose content shows wherever
+//! its frame is. A view translated by a bounded value (an entrance's slide,
+//! `animation/reach.rs`) waits like any other, its rectangle widened by
+//! how far it may move.
 
 use std::time::Duration;
 
@@ -88,6 +94,7 @@ impl<M: TextEngine> Core<M> {
     pub fn begin_mount_turn(&mut self) {
         self.pace.in_turn = true;
         self.reset_pace();
+        self.reset_list_motion();
     }
 
     /// Whether views wait to be made in a later turn: ask the platform for
@@ -100,6 +107,7 @@ impl<M: TextEngine> Core<M> {
     pub(super) fn pace_commit(&mut self) {
         if !self.pace.in_turn {
             self.reset_pace();
+            self.reset_list_motion();
         }
     }
 
@@ -176,9 +184,10 @@ impl<M: TextEngine> Core<M> {
 
     /// How far waiting `key`'s frame is from showing, in points: 0 when it
     /// meets the viewport of every scroll view and list around it, or when
-    /// that cannot be told (it is empty, or a transform or a zoom is
-    /// between it and the viewport), so it is made now; the most when it
-    /// has no frame (not laid out).
+    /// that cannot be told (it is empty, or a zoom or a transform of no
+    /// known reach is between it and the viewport), so it is made now; the
+    /// most when it has no frame (not laid out). A transform whose reach is
+    /// known (`Core::reach_of`) widens its rectangle by as much.
     fn sight(&self, key: Key) -> f32 {
         let node = &self.nodes[key as usize];
         let f = node.frame;
@@ -192,16 +201,20 @@ impl<M: TextEngine> Core<M> {
         if w <= 0.0 || h <= 0.0 {
             return 0.0;
         }
-        let mut r = (x, y, x + w, y + h);
+        // Widened by how far its transform may move it (`Core::reach_of`).
+        let Some((rx, ry)) = self.reach_of(key) else {
+            return 0.0;
+        };
+        let mut r = (x - rx, y - ry, x + w + rx, y + h + ry);
         let mut far = 0.0f32;
         let mut k = node.parent;
         while k != NO_KEY {
             let n = &self.nodes[k as usize];
             let f = n.frame;
+            let moves = self.reach_of(k);
             if !n.created
                 || !(f.origin.x.0.is_finite() && f.origin.y.0.is_finite())
-                || !n.animated.is_empty()
-                || !n.view_style.transform.ops().is_empty()
+                || moves.is_none()
             {
                 // Past the viewports met so far, nothing moves the view
                 // within them.
@@ -231,7 +244,9 @@ impl<M: TextEngine> Core<M> {
                 far = far.max(gap(r, (ox, oy, ox + w, oy + h)));
             }
             let (dx, dy) = (f.origin.x.0 - ox, f.origin.y.0 - oy);
-            r = (r.0 + dx, r.1 + dy, r.2 + dx, r.3 + dy);
+            // Its own transform moves all of it, its viewport included.
+            let (mx, my) = moves.unwrap_or_default();
+            r = (r.0 + dx - mx, r.1 + dy - my, r.2 + dx + mx, r.3 + dy + my);
             if n.is_layout_root() && n.kind != Kind::Cell {
                 break;
             }
@@ -257,12 +272,17 @@ impl<M: TextEngine> Core<M> {
                     continue;
                 };
                 // Made by now, gone, or its parent given up (its parent
-                // holds it back again when it is made).
+                // holds it back again when it is made). Taken out of its
+                // parent, or its parent released, it has none: it waits
+                // again when it is inserted somewhere.
                 if node.id != id
                     || node.created
                     || !node.culled
                     || node.layout.is_none()
-                    || !self.nodes[node.parent as usize].created
+                    || !self
+                        .nodes
+                        .get(node.parent as usize)
+                        .is_some_and(|parent| parent.created)
                     || !self.in_tree(key)
                 {
                     continue;
@@ -292,9 +312,17 @@ impl<M: TextEngine> Core<M> {
                 }
                 // One view: its children wait, ranked in the next pass.
                 self.pace.holding = true;
-                let parent = self.nodes[key as usize].parent;
+                let node = &self.nodes[key as usize];
+                let parent = node.parent;
+                // Held back in a view the layout walked past unmade (a
+                // list's cell, #1783): no frame, and nothing may lay the
+                // tree out again.
+                let unplaced = node.frame.origin.x.0.is_nan() && !node.is_layout_root();
                 self.make_culled(parent, key);
                 self.pace.holding = false;
+                if unplaced {
+                    self.emit_frames(key);
+                }
                 made = true;
             }
             // Only what shows goes down a level in this turn; the rest

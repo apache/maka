@@ -4,12 +4,14 @@
 // the steps after it are that case's.
 import { type JSX, View, mount, signal } from "nsh";
 import BaseDialogAndroid from "./base-dialog-android";
+import BaseSplitViewAndroid from "./base-split-view-android";
 import ModClipboardAndroid from "./mod-clipboard-android";
 import PropsPlatformAndroid from "./props-platform-android";
 import PropsViewAndroid from "./props-view-android";
 
 const cases: Record<string, () => JSX.Element> = {
   "base-dialog-android": BaseDialogAndroid,
+  "base-split-view-android": BaseSplitViewAndroid,
   "mod-clipboard-android": ModClipboardAndroid,
   "props-platform-android": PropsPlatformAndroid,
   "props-view-android": PropsViewAndroid,

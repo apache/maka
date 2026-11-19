@@ -19,7 +19,7 @@ from `nsh_core::element::desktop` in Rust ([Desktop title bars](./rust.md#deskto
 - **GTK 4.14** or later. To build a Rust app's runner or NSH's Linux runtime (from a checkout, or `cargo xtask
   dist` on Linux) you need their development packages and clang: `libgtk-4-dev clang` on Debian and Ubuntu (24.04 or
   later), `gtk4 clang` on Arch, `gtk4-devel clang` on Fedora.
-- **WebKitGTK 6.0** (2.40 or later) for web views: `libwebkitgtk-6.0-dev` on Debian and Ubuntu, `webkitgtk-6.0` on
+- **WebKitGTK 6.0** (2.42 or later) for web views and download decisions: `libwebkitgtk-6.0-dev` on Debian and Ubuntu, `webkitgtk-6.0` on
   Arch, `webkitgtk6.0-devel` on Fedora to build the runtime. The development host and the release runner use it by
   default, so packaged apps need WebKitGTK 6.0 where they run (`libwebkitgtk-6.0-4` on Debian and Ubuntu; GNOME
   desktops have it). `cargo xtask dist` on a machine without its development files builds a runtime whose web views
@@ -27,7 +27,10 @@ from `nsh_core::element::desktop` in Rust ([Desktop title bars](./rust.md#deskto
 - **GStreamer** 1.14 or later, which GTK plays video through and NSH plays sound with: to build the runtime its
   development packages, `libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev` on Debian and Ubuntu, `gstreamer
   gst-plugins-base` on Arch, `gstreamer1-devel gstreamer1-plugins-base-devel` on Fedora. Where apps run, GStreamer and
-  its base plug-ins (desktops have them), and the plug-ins for the video and audio formats your app plays.
+  its base plug-ins (desktops have them), and the plug-ins for the video and audio formats your app plays. The
+  development packages are for `Sound`, the runtime's Cargo feature `sound`: a Rust app that plays no sounds builds
+  without them by leaving that feature out (`default-features = false` on `nsh-platform-linux`), and video and
+  `AudioPlayer` still play through GTK.
 
 ## Running an app
 
@@ -132,6 +135,10 @@ view.load(Bundle::source(code).into());
 (`AssetBase::Directory` or `AssetBase::Http`). Bytecode bundles (`bundle.nshc`) load with `unsafe { Bundle::bytecode(bytes) }`:
 QuickJS bytecode is trusted input, so only load it from your own app's files. A standalone window is
 `nsh_platform_linux::run_app(source, options)`, with `AppSource::Rust(root)` or `AppSource::Bundle(bundle)`.
+
+`AppOptions::login_item` gives the app `run_app` runs its [login item](../modules/nsh-desktop.md#opening-at-login): an
+XDG autostart entry, `~/.config/autostart/<app_id>.desktop`, starting this executable. It is off by default and read
+by `run_app` alone, so an embedded app never launches at login; the runner of the apps `nsh package` builds sets it.
 
 `AppOptions::cache` (or `AppView::set_cache`, for the apps loaded next) sets where the apps keep their caches, the
 [images they download](./images-and-assets.md#kept-on-disk), and how much each keeps (`CacheOptions`: the system's

@@ -43,11 +43,56 @@ pub fn enabled_by_env() -> bool {
         .is_some_and(|value| !matches!(value.to_str(), Some("" | "0" | "false")))
 }
 
+/// How the monitor shows at launch, as [`ENV_VAR`] names it: `collapsed`
+/// (the frame rate alone) or `hidden` (nothing on screen, still
+/// measuring); `None` for any other value, which shows it whole.
+pub fn mode_by_env() -> Option<nsh_core::FpsMode> {
+    match std::env::var(ENV_VAR).ok()?.as_str() {
+        "collapsed" => Some(nsh_core::FpsMode::Collapsed),
+        "hidden" => Some(nsh_core::FpsMode::Hidden),
+        _ => None,
+    }
+}
+
 /// The log target of the readings the platforms log once a second while
 /// the monitor runs (`--fps`). It is not `nsh::perf`, the timings of
 /// `--trace`, so a command line tells the two apart: `nsh run --fps` shows
 /// the panel and logs these lines only with `-v`.
 pub const LOG_TARGET: &str = "nsh::fps";
+
+/// The log target of startup milestones (`RUST_LOG=nsh::startup=info`).
+pub const STARTUP_LOG_TARGET: &str = "nsh::startup";
+
+/// Logs `first_frame <ms>` once per process, `<ms>` counted from the
+/// process's start: the platforms call it after their first presented
+/// frame (benchmarks read the line). Nothing where the start time is not
+/// known (only Linux reads it, from `/proc`, at 10 ms resolution).
+pub fn first_frame() {
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    if let Some(ms) = since_process_start() {
+        log::info!(target: STARTUP_LOG_TARGET, "first_frame {ms:.0}");
+    }
+}
+
+/// Milliseconds since the process started: the system's uptime less the
+/// process's start (`/proc/self/stat`'s 22nd field, in 1/100 s ticks).
+fn since_process_start() -> Option<f64> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+        // The command name may hold spaces: fields count from its `)`.
+        let rest = &stat[stat.rfind(')')? + 2..];
+        let start: f64 = rest.split(' ').nth(19)?.parse().ok()?;
+        let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
+        let uptime: f64 = uptime.split(' ').next()?.parse().ok()?;
+        Some(((uptime - start / 100.0) * 1000.0).max(0.0))
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
+}
 
 use nsh_core::time::Instant;
 
@@ -185,6 +230,16 @@ pub struct PerfSnapshot {
     /// What the app holds, as last given to [`PerfMonitor::set_memory`]:
     /// none before the engine's first idle collection.
     pub memory: Option<MemorySample>,
+}
+
+impl PerfSnapshot {
+    /// What apps read of it (`perfStats()`, [`nsh_core::element::perf_stats`]).
+    pub fn stats(&self) -> nsh_core::platform::PerfStats {
+        let mut stats = nsh_core::platform::PerfStats::new(self.fps);
+        stats.refresh_rate = self.refresh_rate;
+        stats.dropped = nsh_core::geometry::Percentage(self.dropped);
+        stats
+    }
 }
 
 /// Collects a surface's frame and commit timings. Shared by its engine

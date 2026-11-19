@@ -13,10 +13,20 @@ repository.workspace = true
 workspace = true
 
 [features]
-default = ["js"]
+default = ["js", "websocket", "updater", "net"]
 js = ["nsh-engine/js"]
 run-app = []
-dev = ["js", "dep:nsh-dev", "dep:nsh-testing", "dep:serde_json", "dep:ureq"]
+dev = ["js", "websocket", "updater", "dep:nsh-dev", "dep:nsh-testing", "dep:serde_json", "dep:ureq", "net"]
+
+# The native WebSocket client (tokio-tungstenite, rustls). Without it
+# `connect` of `websocket` rejects with ERR_FEATURE_UNAVAILABLE_ON_PLATFORM.
+websocket = ["nsh-engine/websocket"]
+# App self-updates (`nsh/updater`). Without it a check finds no update.
+updater = ["nsh-engine/updater"]
+
+# HTTP: `fetch` and remote images (ureq, rustls). Without it `fetch`
+# rejects and an `<Image>` shows only files, assets and inline data.
+net = ["nsh-engine/net"]
 
 [dependencies]
 nsh-dev = { workspace = true, optional = true, features = ["client"] }
@@ -25,7 +35,7 @@ serde_json = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
 nsh-core = { workspace = true, features = ["loader", "svg"] }
 nsh-base = { workspace = true, features = ["editor", "emoji-picker", "highlight", "plot", "rich-editor", "term"] }
-nsh-engine = { workspace = true, features = ["net"] }
+nsh-engine.workspace = true
 icy_sixel.workspace = true
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }
 ratatui-core.workspace = true

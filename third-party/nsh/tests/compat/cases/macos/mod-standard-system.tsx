@@ -79,6 +79,8 @@ check("process.environment", firstEnvironment !== secondEnvironment
   && process.env.NSH_COMPAT_LOCAL === undefined);
 check("process.dataDir", runtimeProcess.dataDir === process.dataDir
   && (process.dataDir === null || typeof process.dataDir === "string"));
+check("process.logFile", runtimeProcess.logFile === process.logFile
+  && (process.logFile === null || typeof process.logFile === "string"));
 const runDenied = rejected(() => run("nsh-compat-ungranted", []), "nsh-compat-ungranted");
 check("process.spawnDenied", denied(() => spawn("nsh-compat-ungranted", []), "nsh-compat-ungranted"));
 check("process.childConstructor", misused(() => new (ChildProcess as any)()));

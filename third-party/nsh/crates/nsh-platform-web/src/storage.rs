@@ -8,19 +8,31 @@
 //! alone.
 //!
 //! `localStorage` throws when the browser refuses it (blocked storage,
-//! the quota): the error is logged and the app keeps its entries in
-//! memory.
+//! the quota): a value it refuses is not set (`setItem` fails), and one
+//! that could not load leaves the app with none.
+//!
+//! Other tabs of the origin share `localStorage`: what they change under
+//! the app's prefix comes as `storage` events, which `nsh.js` hands in
+//! ([`nsh_storage_changed`]) with the value this tab now reads, so the app's
+//! entries follow.
 
-use std::{cell::RefCell, collections::BTreeMap};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    sync::{Arc, Weak},
+};
 
 use nsh_engine::{StorageBackend, StorageChange};
 
-use crate::{bytes, ffi};
+use crate::{bytes, ffi, string};
 
 thread_local! {
     /// What `nsh.js` handed over during a `storage_*` call
     /// ([`nsh_storage_reply`]).
     static REPLY: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// The storages of the apps started on the page, for the changes other
+    /// tabs make ([`nsh_storage_changed`]).
+    static OPEN: RefCell<Vec<Weak<LocalStorage>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Takes what [`nsh_storage_reply`] handed over.
@@ -41,6 +53,48 @@ pub unsafe extern "C" fn nsh_storage_reply(ptr: *const u8, len: usize) {
     REPLY.with(|r| *r.borrow_mut() = Some(reply));
 }
 
+/// What another tab did to `localStorage` entry `prefix` + `key`, as this
+/// tab now reads it: `kind` 1 holds `value`, 0 removed it; 2 is any entry
+/// (`localStorage.clear()`, `key` empty). Returns the delay (ms) until
+/// `nsh_pump` is due, or -1.
+///
+/// # Safety
+///
+/// The ranges are memory from [`crate::nsh_alloc`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_storage_changed(
+    prefix: *const u8,
+    prefix_len: usize,
+    key: *const u8,
+    key_len: usize,
+    value: *const u8,
+    value_len: usize,
+    kind: u32,
+) -> f64 {
+    // SAFETY: guaranteed by the caller.
+    let (prefix, key, value) = unsafe {
+        (
+            string(prefix, prefix_len),
+            string(key, key_len),
+            string(value, value_len),
+        )
+    };
+    let change = match kind {
+        0 => Some(StorageChange::Remove(key)),
+        1 => Some(StorageChange::Set(key, value)),
+        _ => None,
+    };
+    let storages: Vec<_> = OPEN.with(|o| {
+        let mut open = o.borrow_mut();
+        open.retain(|s| s.strong_count() > 0);
+        open.iter().filter_map(Weak::upgrade).collect()
+    });
+    for storage in storages.iter().filter(|s| s.prefix == prefix) {
+        nsh_core::storage::changed_elsewhere(&**storage, change.clone());
+    }
+    crate::pump()
+}
+
 /// The app's entries in `localStorage`, under the app's prefix. Holds no JS
 /// handle: `nsh.js` reaches `localStorage` on each call.
 pub(crate) struct LocalStorage {
@@ -51,10 +105,12 @@ impl LocalStorage {
     /// The storage of app `app_id` on the page at `base_url`
     /// (`document.baseURI`). Without an id, the page's path names it
     /// (`None`: an unknown page, whose apps share one namespace).
-    pub(crate) fn new(app_id: Option<&str>, base_url: Option<&str>) -> Self {
-        Self {
+    pub(crate) fn open(app_id: Option<&str>, base_url: Option<&str>) -> Arc<Self> {
+        let storage = Arc::new(Self {
             prefix: nsh_engine::local_storage_prefix(app_id, base_url.unwrap_or("")),
-        }
+        });
+        OPEN.with(|o| o.borrow_mut().push(Arc::downgrade(&storage)));
+        storage
     }
 }
 
@@ -64,14 +120,11 @@ impl StorageBackend for LocalStorage {
         serde_json::from_str(&reply).map_err(|e| e.to_string())
     }
 
-    fn write(&self, change: StorageChange) {
-        let result = match &change {
+    fn write(&self, change: StorageChange) -> Result<(), String> {
+        match &change {
             StorageChange::Set(key, value) => ffi::storage_set(&self.prefix, key, value),
             StorageChange::Remove(key) => ffi::storage_remove(&self.prefix, key),
             StorageChange::Clear => ffi::storage_clear(&self.prefix),
-        };
-        if let Err(e) = result {
-            log::error!(target: "js", "the app's storage could not be written: {e}");
         }
     }
 }

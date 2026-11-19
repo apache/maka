@@ -1,5 +1,13 @@
-import { cleanup, signal, Text, View } from "nsh";
-import { DataTable, type DataTableColumn, type DataTableRef, type DataTableSelection, type DataTableSort } from "nsh/base";
+import { cleanup, platform, signal, Text, View } from "nsh";
+import {
+  DataTable,
+  type DataTableColumn,
+  type DataTableColumnPress,
+  type DataTablePress,
+  type DataTableRef,
+  type DataTableSelection,
+  type DataTableSort,
+} from "nsh/base";
 import { Button as GalleryButton, dataTableClasses, dataTableFitPadding, Segmented, terminal, ToggleButton } from "../ui";
 
 // `nsh/base`'s `DataTable` over a million stocks of sixty columns the app
@@ -175,6 +183,79 @@ function row(id: number, n: Float64Array): (string | number)[] {
   return out;
 }
 
+// Several: the app keeps its own rows, cells or columns. The table's selection
+// stays off, so Shift and the command key are the app's. A body press follows
+// Rows or Cells; a title press picks columns.
+type PickCell = { row: number; column: number };
+type AppPick =
+  | { kind: "rows"; anchor: number; rows: number[] }
+  | { kind: "cells"; anchor: PickCell; cells: PickCell[] }
+  | { kind: "columns"; anchor: number; columns: number[] };
+
+const NO_ROW_CLASSES: string[] = [];
+const NO_CELL_CLASSES: { row: number; column: number; class: string }[] = [];
+
+function commandHeld(event: { control: boolean; platform: boolean }) {
+  return platform.os === "macos" || platform.os === "ios" ? event.platform : event.control;
+}
+
+function cellBlock(from: PickCell, to: PickCell): PickCell[] {
+  const row0 = Math.min(from.row, to.row);
+  const row1 = Math.max(from.row, to.row);
+  const column0 = Math.min(from.column, to.column);
+  const column1 = Math.max(from.column, to.column);
+  const cells: PickCell[] = [];
+  for (let row = row0; row <= row1; row++) {
+    for (let column = column0; column <= column1; column++) cells.push({ row, column });
+  }
+  return cells;
+}
+
+function indexRun(from: number, to: number): number[] {
+  const start = Math.min(from, to);
+  const end = Math.max(from, to);
+  return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+}
+
+function withoutIndex(list: number[], index: number): number[] | null {
+  const next = list.filter((item) => item !== index);
+  if (next.length !== list.length) return next.length ? next : null;
+  return [...list, index];
+}
+
+function withoutCell(cells: PickCell[], cell: PickCell): PickCell[] | null {
+  const next = cells.filter((c) => c.row !== cell.row || c.column !== cell.column);
+  if (next.length !== cells.length) return next.length ? next : null;
+  return [...cells, cell];
+}
+
+function describeRun(label: string, indexes: number[], name: (index: number) => string): string {
+  const sorted = [...indexes].sort((a, b) => a - b);
+  if (sorted.length === 1) return `${label} ${name(sorted[0])}`;
+  const run = sorted.every((index, i) => i === 0 || index === sorted[i - 1] + 1);
+  return run ? `${label}s ${name(sorted[0])}-${name(sorted[sorted.length - 1])}` : `${sorted.length} ${label.toLowerCase()}s`;
+}
+
+function describePick(pick: AppPick | null): string {
+  const titles = columns.map((column) => column.title ?? column.key);
+  if (!pick) return "Nothing picked";
+  if (pick.kind === "rows") return describeRun("Row", pick.rows, (row) => String(row + 1));
+  if (pick.kind === "columns") return describeRun("Column", pick.columns, (column) => titles[column]);
+  const { cells } = pick;
+  if (cells.length === 1) return `Cell row ${cells[0].row + 1}, ${titles[cells[0].column]}`;
+  const rows = cells.map((cell) => cell.row);
+  const cols = cells.map((cell) => cell.column);
+  const row0 = Math.min(...rows);
+  const row1 = Math.max(...rows);
+  const column0 = Math.min(...cols);
+  const column1 = Math.max(...cols);
+  if (cells.length === (row1 - row0 + 1) * (column1 - column0 + 1)) {
+    const span = column0 === column1 ? titles[column0] : `${titles[column0]}-${titles[column1]}`;
+    return `Cells rows ${row0 + 1}-${row1 + 1}, ${span}`;
+  }
+  return `${cells.length} cells`;
+}
+
 /** A small secondary button of the gallery's (`buttonLook`). */
 function Tool(props: { label: string; name: string; onPress: () => void }) {
   return <GalleryButton label={props.name} accessibilityLabel={props.label} variant="secondary" size="small" onPress={props.onPress} />;
@@ -184,6 +265,7 @@ function Tool(props: { label: string; name: string; onPress: () => void }) {
  * DataTable: a million stocks of sixty columns whose quotes in view tick
  * every 33 ms, the ID and Symbol columns fixed at the left, the ID column
  * sortable, rows, cells or columns selected, columns resized and moved.
+ * Several keeps the app's own rows, cells or columns on this table.
  */
 export function DataTableDemo() {
   const mode = signal<"row" | "cell">("row");
@@ -193,6 +275,8 @@ export function DataTableDemo() {
   const visible = signal({ start: 0, end: 0 });
   const stripe = signal(true);
   const live = signal(true);
+  const several = signal(false);
+  const pick = signal<AppPick | null>(null);
   const ticks = signal(0);
   let table: DataTableRef | undefined;
   let around = { start: 0, end: 40 };
@@ -267,11 +351,48 @@ export function DataTableDemo() {
   serve();
 
   const describe = () => {
+    if (several()) return describePick(pick());
     const s = selection();
     if (!s) return "Nothing selected";
     if (s.row != null && s.column != null) return `Cell row ${s.row + 1}, ${columns[s.column].title}`;
     if (s.row != null) return `Row ${s.row + 1}`;
     return `Column ${columns[s.column ?? 0].title}`;
+  };
+  const onRowPress = (event: DataTablePress) => {
+    if (!several()) return;
+    const current = pick();
+    if (mode() === "cell" && event.column != null) {
+      const cell = { row: event.row, column: event.column };
+      if (event.shift && current?.kind === "cells") {
+        pick.set({ kind: "cells", anchor: current.anchor, cells: cellBlock(current.anchor, cell) });
+      } else if (commandHeld(event) && current?.kind === "cells") {
+        const cells = withoutCell(current.cells, cell);
+        pick.set(cells ? { kind: "cells", anchor: current.anchor, cells } : null);
+      } else {
+        pick.set({ kind: "cells", anchor: cell, cells: [cell] });
+      }
+      return;
+    }
+    if (event.shift && current?.kind === "rows") {
+      pick.set({ kind: "rows", anchor: current.anchor, rows: indexRun(current.anchor, event.row) });
+    } else if (commandHeld(event) && current?.kind === "rows") {
+      const rows = withoutIndex(current.rows, event.row);
+      pick.set(rows ? { kind: "rows", anchor: current.anchor, rows } : null);
+    } else {
+      pick.set({ kind: "rows", anchor: event.row, rows: [event.row] });
+    }
+  };
+  const onColumnPress = (event: DataTableColumnPress) => {
+    if (!several()) return;
+    const current = pick();
+    if (event.shift && current?.kind === "columns") {
+      pick.set({ kind: "columns", anchor: current.anchor, columns: indexRun(current.anchor, event.column) });
+    } else if (commandHeld(event) && current?.kind === "columns") {
+      const picked = withoutIndex(current.columns, event.column);
+      pick.set(picked ? { kind: "columns", anchor: current.anchor, columns: picked } : null);
+    } else {
+      pick.set({ kind: "columns", anchor: event.column, columns: [event.column] });
+    }
   };
 
   return (
@@ -287,56 +408,100 @@ export function DataTableDemo() {
             onChange={(value) => {
               mode.set(value);
               selection.set(null);
+              pick.set(null);
             }}
             size="small"
           />
         </View>
         <ToggleButton label="Live" accessibilityLabel="Toggle live updates" on={live()} onPress={() => live.set(!live())} />
         <ToggleButton label="Stripes" accessibilityLabel="Toggle stripes" on={stripe()} onPress={() => stripe.set(!stripe())} />
+        <ToggleButton
+          label="Several"
+          accessibilityLabel="Toggle several"
+          on={several()}
+          onPress={() => {
+            const next = !several();
+            several.set(next);
+            if (!next) pick.set(null);
+          }}
+        />
         <Tool label="Go to row 500000" name="Row 500,000" onPress={() => table?.scrollToRow(499_999)} />
         <Tool label="Go to Indicator 30" name="Indicator 30" onPress={() => table?.scrollToColumn("x30")} />
       </View>
       {/* One row in a terminal too: a line that wrapped as the counts grow
           would move the table under the pointer dragging its bar. The
           tick gives way first. */}
-      <View class={terminal ? "flex-row items-center gap-x-6" : "flex-row items-center gap-3"}>
-        {/* Muted as the rest of the line; only a selection, a value, in the text color. */}
-        <Text class={`shrink-0 text-xs ${selection() ? "text-foreground" : "text-muted-foreground"}`}>{describe()}</Text>
-        <Text class="shrink-0 text-xs tabular-nums text-muted-foreground">
-          {`Rows ${visible().start + 1}–${visible().end} of ${ROWS.toLocaleString("en-US")}`}
-        </Text>
-        <Text style={{ numberOfLines: 1 }} class="shrink text-xs tabular-nums text-muted-foreground">{`${columns.length} columns · ${ticks()} updates`}</Text>
-        <If when={!live()}>
-          <Text class="shrink-0 text-xs text-muted-foreground">Paused</Text>
-        </If>
+      <View class="flex-1 gap-3">
+        <View class={terminal ? "flex-row items-center gap-x-6" : "flex-row items-center gap-3"}>
+          {/* Muted as the rest of the line; only a selection, a value, in the text color. */}
+          <Text class={`shrink-0 text-xs ${(several() ? pick() : selection()) ? "text-foreground" : "text-muted-foreground"}`}>{describe()}</Text>
+          <Text class="shrink-0 text-xs tabular-nums text-muted-foreground">
+            {`Rows ${visible().start + 1}–${visible().end} of ${ROWS.toLocaleString("en-US")}`}
+          </Text>
+          <Text style={{ numberOfLines: 1 }} class="shrink text-xs tabular-nums text-muted-foreground">{`${columns.length} columns · ${ticks()} updates`}</Text>
+          <If when={!live()}>
+            <Text class="shrink-0 text-xs text-muted-foreground">Paused</Text>
+          </If>
+        </View>
+        <DataTable
+          ref={(r) => (table = r)}
+          testID="table"
+          class="flex-1"
+          classes={dataTableClasses}
+          columns={(() => {
+            if (!several()) return columns;
+            const current = pick();
+            if (current?.kind !== "columns") return columns;
+            const chosen = new Set(current.columns);
+            return columns.map((column, i) =>
+              chosen.has(i) ? { ...column, headerClass: "bg-primary/10", cellClass: "bg-primary/10" } : column,
+            );
+          })()}
+          data={page().rows}
+          dataStart={page().start}
+          rowCount={ROWS}
+          rowHeight={28}
+          fontSize={13}
+          stripe={stripe()}
+          rowHeader={false}
+          rowSelectable={!several()}
+          columnSelectable={!several()}
+          cellSelectable={!several() && mode() === "cell"}
+          selectOnModifierPress={!several()}
+          rowClasses={(() => {
+            if (!several()) return NO_ROW_CLASSES;
+            const current = pick();
+            if (current?.kind !== "rows") return NO_ROW_CLASSES;
+            const held = page();
+            const chosen = new Set(current.rows);
+            return held.rows.map((_, i) => (chosen.has(held.start + i) ? "bg-primary/15" : ""));
+          })()}
+          cellClasses={(() => {
+            if (!several()) return NO_CELL_CLASSES;
+            const current = pick();
+            if (current?.kind !== "cells") return NO_CELL_CLASSES;
+            const held = page();
+            const end = held.start + held.rows.length;
+            return current.cells
+              .filter((cell) => cell.row >= held.start && cell.row < end)
+              .map((cell) => ({ ...cell, class: "bg-primary/15" }));
+          })()}
+          sort={sort()}
+          onSortChange={({ sort: next }) => {
+            sort.set(next ?? undefined);
+            quotes.clear();
+            serve(true);
+          }}
+          onSelectionChange={({ selection: next }) => selection.set(next)}
+          onRowPress={onRowPress}
+          onColumnPress={onColumnPress}
+          onVisibleRowsChange={({ range }) => {
+            visible.set(range);
+            around = range;
+            follow();
+          }}
+        />
       </View>
-      <DataTable
-        ref={(r) => (table = r)}
-        testID="table"
-        class="flex-1"
-        classes={dataTableClasses}
-        columns={columns}
-        data={page().rows}
-        dataStart={page().start}
-        rowCount={ROWS}
-        rowHeight={28}
-        fontSize={13}
-        stripe={stripe()}
-        rowHeader={false}
-        cellSelectable={mode() === "cell"}
-        sort={sort()}
-        onSortChange={({ sort: next }) => {
-          sort.set(next ?? undefined);
-          quotes.clear();
-          serve(true);
-        }}
-        onSelectionChange={({ selection: next }) => selection.set(next)}
-        onVisibleRowsChange={({ range }) => {
-          visible.set(range);
-          around = range;
-          follow();
-        }}
-      />
     </View>
   );
 }

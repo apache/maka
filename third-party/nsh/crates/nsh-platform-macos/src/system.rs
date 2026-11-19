@@ -2,8 +2,20 @@
 //! the clipboard, exiting; the system's settings followed into
 //! [`Environment`].
 //!
-//! Dialogs are `NSAlert`s shown as sheets on the surface's window (they
-//! never block the main thread).
+//! Dialogs are `NSAlert`s ([`show_dialog`]). One is a sheet of the window
+//! the user is in while they see that window. A sheet of a window out of
+//! sight (a tray app's hidden main window, the app hidden, the window
+//! minimized or off every screen) would stay out of sight with it, its
+//! answer waiting for the window to show, so the alert then shows on its
+//! own, in front, the app activated first: the open and save panels' rule
+//! ([`crate::window::panel_window`]). AppKit shows an alert on its own only
+//! app-modal, in a modal loop of its own (`runModal`), which
+//! [`run_alone`] enters from a turn of the main run loop, never from the
+//! batch that raised the alert or from a main-queue block. Neither form
+//! blocks the main thread: the modal loop runs the main queue (the app's
+//! batches, the test agent's calls), the display link and the surface's
+//! timers, so the app goes on while the alert shows; only input to the
+//! app's other windows waits for the answer.
 //!
 //! The environment follows:
 //! - the color scheme: the app's appearance (`nsh.json` `"appearance"`,
@@ -85,27 +97,43 @@ use objc2_app_kit::{
     NSApplicationDidResignActiveNotification, NSApplicationDidUnhideNotification,
     NSApplicationOcclusionState, NSAttributedStringAppKitDocumentFormats,
     NSAttributedStringDocumentFormats, NSBitmapImageFileType, NSBitmapImageRep,
-    NSDocumentTypeDocumentAttribute, NSExcludedElementsDocumentAttribute, NSHTMLTextDocumentType,
-    NSModalResponse, NSPasteboard, NSPasteboardTypeRTF, NSPasteboardTypeRTFD,
-    NSPasteboardTypeString, NSScreen, NSWorkspace,
+    NSDocumentTypeDocumentAttribute, NSEvent, NSEventModifierFlags, NSEventType,
+    NSExcludedElementsDocumentAttribute, NSHTMLTextDocumentType, NSModalPanelRunLoopMode,
+    NSModalResponse, NSModalResponseAbort, NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypeRTF,
+    NSPasteboardTypeRTFD, NSPasteboardTypeString, NSScreen, NSTextField, NSWorkspace,
     NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification, NSWorkspaceDidWakeNotification,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSCalendar, NSCurrentLocaleDidChangeNotification, NSData,
-    NSDateFormatter, NSDictionary, NSKeyValueObservingOptions, NSLocale, NSLocaleLanguageDirection,
-    NSLocaleMeasurementSystem, NSNotification, NSNotificationCenter, NSObject,
-    NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSOperationQueue, NSProcessInfo,
-    NSPropertyListReadOptions, NSPropertyListSerialization, NSRange, NSString,
-    NSSystemTimeZoneDidChangeNotification, NSTimeZone, NSURL, NSUserDefaults, ns_string,
+    NSDateFormatter, NSDefaultRunLoopMode, NSDictionary, NSKeyValueObservingOptions, NSLocale,
+    NSLocaleLanguageDirection, NSLocaleMeasurementSystem, NSNotification, NSNotificationCenter,
+    NSObject, NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSOperationQueue, NSPoint,
+    NSProcessInfo, NSPropertyListReadOptions, NSPropertyListSerialization, NSRange, NSRunLoop,
+    NSString, NSSystemTimeZoneDidChangeNotification, NSTimeZone, NSURL, NSUserDefaults, ns_string,
 };
 
 use crate::surface::Surface;
 
-/// A dialog shown on a surface's window.
+/// A dialog of a surface: its `NSAlert` ([`show_dialog`]).
 struct Shown {
     surface: Weak<Surface>,
     alert: Retained<NSAlert>,
     answer: Rc<DialogAnswer>,
+    /// The dialog's index of the alert's button n (see `show_dialog`).
+    order: Vec<usize>,
+    /// Where it shows.
+    shows: Shows,
+}
+
+/// Where an alert shows ([`show_dialog`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shows {
+    /// As a sheet of a window the user sees.
+    Sheet,
+    /// On its own, after the alert shown on its own now ([`run_alone`]).
+    Waiting,
+    /// On its own: its modal loop runs ([`run_alone`]).
+    Alone,
 }
 
 #[derive(Default)]
@@ -116,6 +144,7 @@ struct System {
     observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
     /// Observes `NSWorkspace.voiceOverEnabled`.
     voice_over: Option<Retained<Observer>>,
+    /// The dialogs shown or waiting to show, oldest first.
     dialogs: Vec<Shown>,
 }
 
@@ -268,16 +297,34 @@ fn install(mtm: MainThreadMarker) {
     );
     // The displays: plugged in, unplugged, arranged again.
     let screens = RcBlock::new(|_: NonNull<NSNotification>| screens_changed());
+    // Another app came in front (or this one hid): the keys held are no
+    // longer held, and their releases may never come. No release is made
+    // up for them.
+    let resigned = RcBlock::new(|_: NonNull<NSNotification>| {
+        for surface in surfaces() {
+            crate::keyboard::deactivated(&surface);
+        }
+    });
     // SAFETY: as above.
     let observers = observers
-        .chain([unsafe {
-            NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
-                Some(NSApplicationDidChangeScreenParametersNotification),
-                None,
-                Some(&queue),
-                &screens,
-            )
-        }])
+        .chain([
+            unsafe {
+                NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                    Some(NSApplicationDidResignActiveNotification),
+                    None,
+                    Some(&queue),
+                    &resigned,
+                )
+            },
+            unsafe {
+                NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                    Some(NSApplicationDidChangeScreenParametersNotification),
+                    None,
+                    Some(&queue),
+                    &screens,
+                )
+            },
+        ])
         .collect();
     // VoiceOver posts no notification: its setting is observed.
     // SAFETY: NSObject's initializer.
@@ -589,13 +636,24 @@ fn os_version() -> (u16, u16) {
 }
 
 /// A command not addressed to a kind of view.
-pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
+pub(crate) fn command(surface: &Rc<Surface>, id: NodeId, command: &Command) {
     match command {
         Command::Dialog(dialog) => show_dialog(surface, dialog),
+        Command::CloseDialog(dialog) => close_dialog(surface, *dialog),
         Command::Desktop(command) => crate::chrome::command(surface, command),
         Command::PerfMonitor(show) => {
             if let Some(toggle) = &*surface.perf_toggle.borrow() {
                 toggle(*show);
+            }
+        }
+        Command::PerfMonitorMode(mode) => {
+            if let Some(set) = &*surface.perf_mode.borrow() {
+                set(*mode);
+            }
+        }
+        Command::SetAppUrl(url) | Command::PushAppUrl(url) if id == nsh_core::ROOT_ID => {
+            if let Some(activity) = surface.handoff.borrow_mut().as_mut() {
+                activity.publish(url);
             }
         }
         Command::Announce(text) => crate::access::announce(
@@ -604,6 +662,16 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
             NSAccessibilityPriorityLevel::Medium,
         ),
         Command::SetClipboard(text) => write_clipboard(surface, text),
+        Command::SetClipboardItem(item) => {
+            let pasteboard = NSPasteboard::generalPasteboard();
+            pasteboard.clearContents();
+            // SAFETY: immutable AppKit constants.
+            let (string, kind_html) = unsafe { (NSPasteboardTypeString, NSPasteboardTypeHTML) };
+            pasteboard.setString_forType(&NSString::from_str(&item.text), string);
+            if let Some(html) = &item.html {
+                pasteboard.setString_forType(&NSString::from_str(html), kind_html);
+            }
+        }
         Command::ReadClipboard { id, has_only } => read_clipboard(surface, *id, *has_only),
         Command::SetClipboardImage(uri) => set_clipboard_image(uri),
         Command::ReadClipboardImage { id, has_only } => {
@@ -615,6 +683,22 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
             crate::file_requests::pick_files(surface, *id, request);
         }
         Command::PickScreenColor { id } => crate::screen_color::pick_screen_color(surface, *id),
+        Command::Share { id, sheet } => crate::share::schedule(surface, *id, sheet),
+        Command::RenderCanvas {
+            id,
+            drawing,
+            width,
+            height,
+            scale,
+            format,
+        } => crate::canvas::render_offscreen(
+            surface,
+            *id,
+            drawing.clone(),
+            (*width, *height),
+            *scale,
+            *format,
+        ),
         Command::Speech(command) => surface.control(|c| crate::speech::command(c, command)),
         Command::Audio(command) => surface.control(|c| {
             let base = surface.asset_base.borrow().clone();
@@ -667,24 +751,64 @@ pub(crate) fn end_batch(surface: &Surface) {
     follow_background(surface);
 }
 
-/// The app stopped: its dialogs go too, unanswered.
+/// The app stopped, or the surface went: its dialogs go too, unanswered
+/// (and those of surfaces gone before). A sheet ends; an alert shown on
+/// its own ends its modal loop ([`stop_alone`]) and stays listed until the
+/// loop is over ([`run_alone`]), so the next one does not show inside it;
+/// one waiting to show never shows.
 pub(crate) fn clear(surface: &Surface) {
-    let dialogs = SYSTEM.with(|s| {
-        let mut s = s.borrow_mut();
-        let (dialogs, kept): (Vec<Shown>, Vec<Shown>) =
-            std::mem::take(&mut s.dialogs).into_iter().partition(|d| {
-                d.surface
-                    .upgrade()
-                    .is_none_or(|s| std::ptr::eq(&*s, surface))
-            });
-        s.dialogs = kept;
-        dialogs
+    end_dialogs(surface, None);
+}
+
+/// Takes back the dialog [`show_dialog`] showed on `surface` as `id`
+/// (`Command::CloseDialog`), as [`clear`] does, reporting nothing: the core
+/// answered it.
+fn close_dialog(surface: &Surface, id: u32) {
+    end_dialogs(surface, Some(id));
+}
+
+/// Ends `surface`'s dialogs unanswered (and those of surfaces gone), or
+/// only its dialog `only`: see [`clear`].
+fn end_dialogs(surface: &Surface, only: Option<u32>) {
+    // `try_with`: also as the surface drops, which may be as the thread
+    // ends.
+    let ended = SYSTEM.try_with(|s| {
+        let Ok(mut s) = s.try_borrow_mut() else {
+            return Vec::new();
+        };
+        let mut ended = Vec::new();
+        s.dialogs.retain(|d| {
+            let shown_on = d.surface.upgrade();
+            let ours = match only {
+                None => shown_on.is_none_or(|s| std::ptr::eq(&*s, surface)),
+                Some(id) => {
+                    d.answer.id == id && shown_on.is_some_and(|s| std::ptr::eq(&*s, surface))
+                }
+            };
+            // Answered: an alert on its own already told to stop.
+            if !ours || d.answer.answered.replace(true) {
+                return true;
+            }
+            d.answer.stop_following();
+            ended.push((d.alert.clone(), d.shows));
+            d.shows == Shows::Alone
+        });
+        ended
     });
-    for dialog in dialogs {
-        dialog.answer.answered.set(true);
-        let sheet = dialog.alert.window();
-        if let Some(parent) = sheet.sheetParent() {
-            parent.endSheet(&sheet);
+    for (alert, shows) in ended.unwrap_or_default() {
+        match shows {
+            Shows::Sheet => {
+                let sheet = alert.window();
+                if let Some(parent) = sheet.sheetParent() {
+                    parent.endSheet(&sheet);
+                }
+            }
+            Shows::Alone => {
+                if !stop_alone(&alert, NSModalResponseAbort) {
+                    log::warn!("macos: an alert stays up under another app-modal window");
+                }
+            }
+            Shows::Waiting => {}
         }
     }
 }
@@ -733,6 +857,11 @@ struct DialogAnswer {
     id: u32,
     surface: Weak<Surface>,
     answered: Cell<bool>,
+    /// The alert's text field (`Dialog::input`, its accessory view), whose
+    /// text goes with the answer.
+    field: Option<Retained<NSTextField>>,
+    /// Follow the field ([`add_text_field`]) until the alert closes.
+    observers: RefCell<Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>>,
 }
 
 impl DialogAnswer {
@@ -740,37 +869,132 @@ impl DialogAnswer {
         if self.answered.replace(true) {
             return;
         }
+        self.stop_following();
         let Some(surface) = self.surface.upgrade() else {
             return;
         };
-        surface.event(
-            ROOT_ID,
-            EventKind::Dialog,
-            EventPayload::Map(vec![
-                ("id", PayloadValue::Number(self.id as f64)),
-                ("index", PayloadValue::Number(index as f64)),
-            ]),
-        );
+        let mut payload = vec![
+            ("id", PayloadValue::Number(self.id as f64)),
+            ("index", PayloadValue::Number(index as f64)),
+        ];
+        if let Some(field) = &self.field {
+            payload.push(("value", PayloadValue::Str(field.stringValue().to_string())));
+        }
+        surface.event(ROOT_ID, EventKind::Dialog, EventPayload::Map(payload));
+    }
+
+    /// Stops following the field, once the alert closed.
+    fn stop_following(&self) {
+        let center = NSNotificationCenter::defaultCenter();
+        for observer in self.observers.take() {
+            // SAFETY: an observer `addObserverForName…` returned.
+            unsafe { center.removeObserver(observer.as_ref()) };
+        }
     }
 }
 
-/// Shows `dialog` as a sheet on the surface's window, its buttons in the
-/// dialog's order (see the comment on `order`); the cancel button answers
-/// Escape. Answers the button's index; -1 when the dialog cannot be shown.
+/// The text field of `dialog`'s input, made to be `alert`'s accessory view
+/// (an alert's only), focused as it shows.
+fn text_field(alert: &NSAlert, dialog: &Dialog) -> Option<Retained<NSTextField>> {
+    let input = dialog.input.as_ref().filter(|_| !dialog.sheet)?;
+    let mtm = MainThreadMarker::from(alert);
+    let field = NSTextField::textFieldWithString(&NSString::from_str(&input.text), mtm);
+    if let Some(placeholder) = &input.placeholder {
+        field.setPlaceholderString(Some(&NSString::from_str(placeholder)));
+    }
+    // NSAlert's text column is this wide.
+    field.setFrame(objc2_foundation::NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        objc2_foundation::NSSize::new(230.0, 24.0),
+    ));
+    alert.setAccessoryView(Some(&field));
+    alert.window().setInitialFirstResponder(Some(&field));
+    Some(field)
+}
+
+/// Follows `answer`'s text field in `alert`: AppKit selects a field's
+/// text as it takes the focus, so without `select_all` the caret goes
+/// after it once the alert shows; while a required field is empty only
+/// the cancel buttons are enabled (`order` as in [`Shown::order`]).
+fn follow_text_field(alert: &NSAlert, dialog: &Dialog, order: &[usize], answer: &DialogAnswer) {
+    let (Some(field), Some(input)) = (&answer.field, &dialog.input) else {
+        return;
+    };
+    let center = NSNotificationCenter::defaultCenter();
+    let mut observers = answer.observers.borrow_mut();
+    if !input.select_all {
+        let weak = objc2::rc::Weak::from_retained(field);
+        let block = RcBlock::new(move |_: NonNull<NSNotification>| {
+            if let Some(field) = weak.load()
+                && let Some(editor) = field.currentEditor()
+            {
+                let end = field.stringValue().length();
+                editor.setSelectedRange(NSRange::new(end, 0));
+            }
+        });
+        // SAFETY: the block runs on the main queue it is delivered on, and
+        // `stop_following` removes the observer.
+        observers.push(unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(objc2_app_kit::NSWindowDidBecomeKeyNotification),
+                Some(&alert.window()),
+                Some(&NSOperationQueue::mainQueue()),
+                &block,
+            )
+        });
+    }
+    if !input.required {
+        return;
+    }
+    let enable = {
+        let alert = objc2::rc::Weak::new(alert);
+        let buttons = dialog.buttons.clone();
+        let order = order.to_vec();
+        let input = input.clone();
+        move |text: &str| {
+            let Some(alert) = alert.load() else { return };
+            for (button, &index) in alert.buttons().iter().zip(&order) {
+                button.setEnabled(input.enables(&buttons[index], text));
+            }
+        }
+    };
+    enable(&input.text);
+    let weak = objc2::rc::Weak::from_retained(field);
+    let block = RcBlock::new(move |_: NonNull<NSNotification>| {
+        if let Some(field) = weak.load() {
+            enable(&field.stringValue().to_string());
+        }
+    });
+    // SAFETY: as above.
+    observers.push(unsafe {
+        center.addObserverForName_object_queue_usingBlock(
+            Some(objc2_app_kit::NSControlTextDidChangeNotification),
+            Some(field),
+            Some(&NSOperationQueue::mainQueue()),
+            &block,
+        )
+    });
+}
+
+/// Shows `dialog` as an `NSAlert`, its buttons in the dialog's order (see
+/// the comment on `order`); the cancel button answers Escape. It is a sheet
+/// of the window the user is in while they see that window; else it shows
+/// on its own, in front, the app activated first
+/// ([`crate::window::panel_window`]), after any alert shown on its own now
+/// ([`run_alone`]). A surface in no window (an embedded `AppView` out of
+/// its window) shows its alert on its own too, app-modal in the app that
+/// embeds it, as the open and save panels do. Answers the button's index;
+/// -1 when it closes without one.
 fn show_dialog(surface: &Rc<Surface>, dialog: &Dialog) {
     let mtm = surface.mtm;
+    let alert = NSAlert::new(mtm);
     let answer = Rc::new(DialogAnswer {
         id: dialog.id,
         surface: Rc::downgrade(surface),
         answered: Cell::new(false),
+        field: text_field(&alert, dialog),
+        observers: RefCell::new(Vec::new()),
     });
-    // The window the user is in: a window of the app's own when it has the
-    // keyboard.
-    let Some(window) = crate::window::sheet_window(surface) else {
-        log::warn!("macos: a dialog needs the surface in a window");
-        return answer.answer(-1);
-    };
-    let alert = NSAlert::new(mtm);
     alert.setAlertStyle(NSAlertStyle::Informational);
     match (&dialog.title, &dialog.message) {
         (Some(title), message) => {
@@ -821,63 +1045,222 @@ fn show_dialog(surface: &Rc<Surface>, dialog: &Dialog) {
             button.setHasDestructiveAction(true);
         }
     }
-    // The sheet takes the surface's appearance, which the app may force.
+    follow_text_field(&alert, dialog, &order, &answer);
+    // The alert takes the surface's appearance, which the app may force.
     alert
         .window()
         .setAppearance(Some(&surface.root.ns().effectiveAppearance()));
-    let handler = {
-        let answer = answer.clone();
-        let alert = alert.clone();
-        RcBlock::new(move |response: NSModalResponse| {
-            SYSTEM.with(|s| {
-                s.borrow_mut()
-                    .dialogs
-                    .retain(|d| !std::ptr::eq(&*d.alert, &*alert))
-            });
-            let index = usize::try_from(response - NSAlertFirstButtonReturn)
-                .ok()
-                .and_then(|n| order.get(n))
-                .map_or(-1, |i| *i as i32);
-            answer.answer(index);
-        })
-    };
+    // The window the user is in (a window of the app's own when it has the
+    // keyboard) while they see it; `None`: on its own, the app activated.
+    let window = crate::window::panel_window(surface);
     SYSTEM.with(|s| {
         s.borrow_mut().dialogs.push(Shown {
             surface: Rc::downgrade(surface),
             alert: alert.clone(),
             answer,
+            order,
+            shows: if window.is_some() {
+                Shows::Sheet
+            } else {
+                Shows::Waiting
+            },
         })
     });
-    alert.beginSheetModalForWindow_completionHandler(&window, Some(&handler));
+    match window {
+        Some(window) => {
+            let handler = {
+                let alert = alert.clone();
+                RcBlock::new(move |response: NSModalResponse| closed(&alert, response))
+            };
+            alert.beginSheetModalForWindow_completionHandler(&window, Some(&handler));
+        }
+        None => schedule_alone(),
+    }
+}
+
+/// `alert` closed with `response` (`NSAlertFirstButtonReturn` and up for
+/// its buttons): it leaves the list, and its dialog gets the button's
+/// index (-1 for none), unless the app stopped meanwhile.
+fn closed(alert: &NSAlert, response: NSModalResponse) {
+    let shown = SYSTEM.with(|s| {
+        let mut s = s.borrow_mut();
+        let at = s
+            .dialogs
+            .iter()
+            .position(|d| std::ptr::eq(&*d.alert, alert))?;
+        Some(s.dialogs.remove(at))
+    });
+    if let Some(shown) = shown {
+        shown.answer.answer(answered_index(&shown.order, response));
+    }
+}
+
+/// The dialog's index of the button an alert closed with: `response` is
+/// `NSAlertFirstButtonReturn` for its button 0 and up from there, its
+/// button n the dialog's `order[n]`; -1 for any other response (an alert
+/// closed without a button, stopped or aborted).
+fn answered_index(order: &[usize], response: NSModalResponse) -> i32 {
+    usize::try_from(response - NSAlertFirstButtonReturn)
+        .ok()
+        .and_then(|n| order.get(n))
+        .map_or(-1, |i| *i as i32)
+}
+
+/// Shows the alerts waiting to show on their own ([`run_alone`]) on a
+/// later turn of the main run loop.
+///
+/// Not now: the batch that raised the alert holds the surface's mounter,
+/// which the batches applied in the alert's modal loop borrow again. Not
+/// from a main-queue block either: CFRunLoop drains the main queue only
+/// outside its blocks (the queue is serial), so a modal loop run in one
+/// would hold the queue, and the app's batches and the test agent's calls,
+/// which come through it, would wait for the answer. A block of the run
+/// loop's own runs the modal loop where the queue drains. In the default
+/// and modal modes only: not while a menu or a drag tracks the mouse, or
+/// a window resizes live, which the alert waits for.
+fn schedule_alone() {
+    let block = RcBlock::new(run_alone);
+    // SAFETY: immutable constants of Foundation and AppKit.
+    let (default, modal) = unsafe { (NSDefaultRunLoopMode, NSModalPanelRunLoopMode) };
+    let modes = NSArray::from_slice(&[default, modal]);
+    // SAFETY: the block runs on the main thread, where it was made.
+    unsafe { NSRunLoop::mainRunLoop().performInModes_block(&modes, &block) };
+}
+
+/// Shows the alerts waiting to show on their own, the oldest first, each
+/// in a modal loop of its own (`runModal`: app-modal; its loop runs in
+/// `NSModalPanelRunLoopMode`, one of the common modes, where the main
+/// queue, the display link and the surface's timers run too). One at a
+/// time: an alert raised while one shows waits for it, as sheets of one
+/// window wait for each other, so the alert a modal loop shows is always
+/// the innermost one, the one `stopModalWithCode:` ends. No borrow is held
+/// while a loop runs: the batches it applies (raising alerts too), the
+/// app stopping and the test agent's calls go on in it.
+fn run_alone() {
+    loop {
+        let next = SYSTEM.with(|s| {
+            let mut s = s.borrow_mut();
+            // The waiting alerts of a surface gone have no one to answer.
+            s.dialogs
+                .retain(|d| d.shows != Shows::Waiting || d.surface.strong_count() > 0);
+            let at = next_alone(s.dialogs.iter().map(|d| d.shows))?;
+            let d = &mut s.dialogs[at];
+            d.shows = Shows::Alone;
+            Some(d.alert.clone())
+        });
+        let Some(alert) = next else {
+            return;
+        };
+        let response = alert.runModal();
+        alert.window().orderOut(None);
+        closed(&alert, response);
+    }
+}
+
+/// The alert to show on its own next ([`run_alone`]), given where each
+/// listed alert shows, oldest first: the oldest one waiting, unless one
+/// shows on its own now (its loop shows the next when it closes).
+fn next_alone(shows: impl IntoIterator<Item = Shows>) -> Option<usize> {
+    let mut next = None;
+    for (i, shows) in shows.into_iter().enumerate() {
+        match shows {
+            Shows::Alone => return None,
+            Shows::Waiting if next.is_none() => next = Some(i),
+            _ => {}
+        }
+    }
+    next
+}
+
+/// Ends the modal loop of `alert`, shown on its own, with `code`, from
+/// outside the loop's own events (the app stopping, the test agent):
+/// AppKit ends a loop told to stop only after an event, so one is posted
+/// ([`wake`]). Only the innermost modal loop ends: false, and nothing
+/// done, while another app-modal window shows over the alert (an
+/// embedding app's).
+fn stop_alone(alert: &NSAlert, code: NSModalResponse) -> bool {
+    let app = NSApplication::sharedApplication(MainThreadMarker::from(alert));
+    if app.modalWindow().is_some_and(|w| w != alert.window()) {
+        return false;
+    }
+    app.stopModalWithCode(code);
+    wake(&app);
+    true
+}
+
+/// Posts an application-defined event, which wakes the app's event loop or
+/// a modal loop told to stop from outside its events (`stop:`,
+/// `stopModalWithCode:`): AppKit looks at the request only after an event.
+pub(crate) fn wake(app: &NSApplication) {
+    if let Some(event) = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+        NSEventType::ApplicationDefined,
+        NSPoint::new(0.0, 0.0),
+        NSEventModifierFlags::empty(),
+        0.0,
+        0,
+        None,
+        0,
+        0,
+        0,
+    ) {
+        app.postEvent_atStart(&event, true);
+    }
 }
 
 /// Answers the oldest dialog shown on `surface` as a user would: presses
-/// its button titled `button`, or closes it without one (`None`).
+/// its button titled `button`, or closes it without one (`None`). An
+/// alert shown on its own ends its modal loop on the click's
+/// `stopModalWithCode:` once an event comes, which is posted ([`wake`]);
+/// one still waiting for its turn is answered without showing.
 #[cfg(feature = "dev")]
 pub(crate) fn answer_dialog(surface: &Rc<Surface>, button: Option<&str>) -> Result<(), String> {
-    let alert = SYSTEM
+    let (alert, shows) = SYSTEM
         .with(|s| {
             s.borrow()
                 .dialogs
                 .iter()
+                .filter(|d| !d.answer.answered.get())
                 .find(|d| d.surface.upgrade().is_some_and(|x| Rc::ptr_eq(&x, surface)))
-                .map(|d| d.alert.clone())
+                .map(|d| (d.alert.clone(), d.shows))
         })
         .ok_or("no dialog is shown")?;
-    match button {
-        Some(text) => {
-            let buttons = alert.buttons();
-            let found = buttons
+    let app = NSApplication::sharedApplication(surface.mtm);
+    if shows == Shows::Alone && app.modalWindow().is_some_and(|w| w != alert.window()) {
+        return Err("another modal window shows over the dialog".into());
+    }
+    let pressed = match button {
+        Some(text) => Some(
+            alert
+                .buttons()
                 .iter()
-                .find(|b| b.title().to_string() == text)
-                .ok_or_else(|| format!("the dialog has no button {text:?}"))?;
+                .enumerate()
+                .find(|(_, b)| b.title().to_string() == text)
+                .map(|(n, b)| (b, n))
+                .ok_or_else(|| format!("the dialog has no button {text:?}"))?,
+        ),
+        None => None,
+    };
+    match (shows, pressed) {
+        (Shows::Waiting, pressed) => {
+            let response = pressed.map_or(objc2_app_kit::NSModalResponseCancel, |(_, n)| {
+                NSAlertFirstButtonReturn + n as NSModalResponse
+            });
+            closed(&alert, response);
+        }
+        (shows, Some((button, _))) => {
             // SAFETY: a button of a live alert, clicked on the main thread
             // with no sender, as a user's click has none to hand over.
-            unsafe { found.performClick(None) };
+            unsafe { button.performClick(None) };
+            if shows == Shows::Alone {
+                wake(&app);
+            }
         }
-        None => {
+        (Shows::Sheet, None) => {
             let window = alert.window().sheetParent().ok_or("the window is gone")?;
             window.endSheet_returnCode(&alert.window(), objc2_app_kit::NSModalResponseCancel);
+        }
+        (Shows::Alone, None) => {
+            stop_alone(&alert, objc2_app_kit::NSModalResponseCancel);
         }
     }
     Ok(())
@@ -1228,7 +1611,46 @@ mod tests {
         NSData, NSDictionary, NSPropertyListFormat, NSPropertyListSerialization, NSString,
     };
 
-    use super::pasted_html;
+    use super::{Shows, answered_index, next_alone, pasted_html};
+
+    #[test]
+    fn alerts_on_their_own_show_one_at_a_time_oldest_first() {
+        use Shows::{Alone, Sheet, Waiting};
+        // The oldest waiting one shows; sheets are no turn of theirs.
+        assert_eq!(next_alone([Sheet, Waiting, Waiting]), Some(1));
+        assert_eq!(next_alone([Waiting, Sheet, Waiting]), Some(0));
+        // While one shows on its own (also one told to stop, until its
+        // loop is over), the others wait for it: never a modal loop in
+        // another.
+        assert_eq!(next_alone([Alone, Waiting]), None);
+        assert_eq!(next_alone([Sheet, Alone, Waiting, Waiting]), None);
+        // Nothing to show.
+        assert_eq!(next_alone([Sheet, Sheet]), None);
+        assert_eq!(next_alone([]), None);
+    }
+
+    #[test]
+    fn an_alert_answers_the_dialogs_index_of_its_button() {
+        use objc2_app_kit::{
+            NSAlertFirstButtonReturn, NSModalResponseAbort, NSModalResponseCancel,
+            NSModalResponseStop,
+        };
+        // Two buttons in a row are added in reverse, the cancel button
+        // (the dialog's 0) last: the alert's buttons are the dialog's 1, 0.
+        let order = [1, 0];
+        assert_eq!(answered_index(&order, NSAlertFirstButtonReturn), 1);
+        assert_eq!(answered_index(&order, NSAlertFirstButtonReturn + 1), 0);
+        // No such button, or closed without one: the test agent's
+        // dismissal (`Cancel`), the app stopping (`Abort`), `stopModal`.
+        for response in [
+            NSAlertFirstButtonReturn + 2,
+            NSModalResponseCancel,
+            NSModalResponseAbort,
+            NSModalResponseStop,
+        ] {
+            assert_eq!(answered_index(&order, response), -1, "{response}");
+        }
+    }
 
     /// A private pasteboard holding `bytes` as `kind`.
     fn board(kind: &str, bytes: &[u8]) -> objc2::rc::Retained<NSPasteboard> {

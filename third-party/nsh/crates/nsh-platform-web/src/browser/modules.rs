@@ -129,6 +129,14 @@ impl Modules {
                             .collect::<Result<Vec<_>, _>>()?,
                     )?,
                 )?;
+                component.set(
+                    "hostProps",
+                    &Value::array(
+                        spec.host_props()
+                            .map(Value::string)
+                            .collect::<Result<Vec<_>, _>>()?,
+                    )?,
+                )?;
                 let mut methods = Vec::new();
                 for (index, method) in spec.methods.iter().enumerate() {
                     let value = Value::object()?;

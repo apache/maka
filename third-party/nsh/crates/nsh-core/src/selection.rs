@@ -28,7 +28,13 @@
 //!
 //! Words are runs of letters, digits, `_` and combining marks, runs of
 //! spaces, or single other characters: punctuation, an emoji, each CJK
-//! ideograph or kana (scripts written without spaces between words).
+//! ideograph or kana (scripts written without spaces between words). A long
+//! press on a touch screen selects a token, as the phones' own text views keep
+//! a link or an address whole: the punctuation of a hostname, URL, path or id
+//! between two words joins them into one (`demo-app.pages.dev`,
+//! `https://x.y/a-b?c=1`, `~/a/b-c.md`, `v0.5.1`), while a sentence's last word
+//! (`foo.`) is still the word alone. A double click selects the word alone, as
+//! desktops and browsers do.
 
 use std::ops::Range;
 
@@ -123,10 +129,32 @@ pub enum Granularity {
     /// Characters (a press and drag).
     #[default]
     Character,
-    /// Words (a double click, a long press, then drags by words).
+    /// Words (a double click, then drags by words).
     Word,
     /// Paragraphs: a whole text (a triple click).
     Paragraph,
+}
+
+/// What the model selects by: a [`Granularity`], or a long press's tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Unit {
+    #[default]
+    Character,
+    Word,
+    /// Words joined by the punctuation of a hostname, URL, path or id
+    /// between them (a long press on a touch screen).
+    Token,
+    Paragraph,
+}
+
+impl From<Granularity> for Unit {
+    fn from(granularity: Granularity) -> Self {
+        match granularity {
+            Granularity::Character => Unit::Character,
+            Granularity::Word => Unit::Word,
+            Granularity::Paragraph => Unit::Paragraph,
+        }
+    }
 }
 
 /// One of the two ends of a selection, for touch handles.
@@ -146,7 +174,7 @@ pub enum Handle {
 pub struct SelectionModel {
     anchor: Option<TextPosition>,
     focus: Option<TextPosition>,
-    granularity: Granularity,
+    granularity: Unit,
     /// The unit (word, paragraph) around the anchor that a drag by words
     /// or paragraphs keeps selected.
     anchor_unit: Option<(TextPosition, TextPosition)>,
@@ -191,7 +219,7 @@ impl SelectionModel {
             2 => Granularity::Word,
             _ => Granularity::Paragraph,
         };
-        self.select_unit(texts, pos, granularity);
+        self.select_unit(texts, pos, granularity.into());
         self.remember(texts);
         self.bounds() != before
     }
@@ -212,13 +240,14 @@ impl SelectionModel {
         self.bounds() != before
     }
 
-    /// Selects the word at `point` (a long press on a touch screen).
+    /// Selects the token at `point` (a long press on a touch screen): a
+    /// hostname, URL, path or id whole, or else the word.
     pub fn select_word_at(&mut self, texts: &impl SelectionTexts, point: Point<Points>) -> bool {
         let before = self.bounds();
         let Some(pos) = hit(texts, point) else {
             return self.clear();
         };
-        self.select_unit(texts, pos, Granularity::Word);
+        self.select_unit(texts, pos, Unit::Token);
         self.remember(texts);
         self.bounds() != before
     }
@@ -245,10 +274,31 @@ impl SelectionModel {
         };
         self.anchor = Some(fixed);
         self.focus = Some(pos);
-        self.granularity = Granularity::Character;
+        self.granularity = Unit::Character;
         self.anchor_unit = None;
         self.remember(texts);
         self.bounds() != Some((start, end))
+    }
+
+    /// Selects a range of UTF-16 positions, for assistive technologies and
+    /// programmatic selection. Offsets clamp to the text and character boundary;
+    /// a position naming a missing text clears the selection.
+    pub fn select_range(
+        &mut self,
+        texts: &impl SelectionTexts,
+        start: TextPosition,
+        end: TextPosition,
+    ) -> bool {
+        if start.text >= texts.len() || end.text >= texts.len() {
+            return self.clear();
+        }
+        let before = self.bounds();
+        self.anchor = Some(clamp_position(texts, start));
+        self.focus = Some(clamp_position(texts, end));
+        self.granularity = Unit::Character;
+        self.anchor_unit = None;
+        self.remember(texts);
+        self.bounds() != before
     }
 
     /// Selects every text of the area.
@@ -256,14 +306,12 @@ impl SelectionModel {
         if texts.is_empty() {
             return self.clear();
         }
-        let before = self.bounds();
         let last = texts.len() - 1;
-        self.anchor = Some(TextPosition::new(0, 0));
-        self.focus = Some(TextPosition::new(last, utf16_len(texts.content(last))));
-        self.granularity = Granularity::Character;
-        self.anchor_unit = None;
-        self.remember(texts);
-        self.bounds() != before
+        self.select_range(
+            texts,
+            TextPosition::new(0, 0),
+            TextPosition::new(last, utf16_len(texts.content(last))),
+        )
     }
 
     /// Clears the selection.
@@ -317,7 +365,7 @@ impl SelectionModel {
                 .then(|| (clamp_position(texts, a), clamp_position(texts, b)))
         });
         if self.anchor_unit.is_none() {
-            self.granularity = Granularity::Character;
+            self.granularity = Unit::Character;
         }
         self.remember(texts);
         moved || self.bounds() != before
@@ -444,14 +492,9 @@ impl SelectionModel {
 
     /// Puts the anchor at `pos` and selects the unit of `granularity`
     /// around it (nothing for characters).
-    fn select_unit(
-        &mut self,
-        texts: &impl SelectionTexts,
-        pos: TextPosition,
-        granularity: Granularity,
-    ) {
+    fn select_unit(&mut self, texts: &impl SelectionTexts, pos: TextPosition, granularity: Unit) {
         self.granularity = granularity;
-        if granularity == Granularity::Character {
+        if granularity == Unit::Character {
             self.anchor = Some(pos);
             self.focus = Some(pos);
             self.anchor_unit = None;
@@ -649,49 +692,46 @@ fn hit(texts: &impl SelectionTexts, point: Point<Points>) -> Option<TextPosition
 fn unit_at(
     texts: &impl SelectionTexts,
     pos: TextPosition,
-    granularity: Granularity,
+    granularity: Unit,
 ) -> (TextPosition, TextPosition) {
     let content = texts.content(pos.text);
     match granularity {
-        Granularity::Character => (pos, pos),
-        Granularity::Word => {
-            let range = word_range(content, pos.offset);
-            let mut start = TextPosition::new(pos.text, range.start);
-            let mut end = TextPosition::new(pos.text, range.end);
-            // A word a wrap cut runs on into the parts around it: while the
-            // word reaches its text's start and the text continues one
-            // whose last character is of the same kind, it goes on there
-            // (and the same forward).
-            while start.offset == 0
-                && continues(texts, start.text)
-                && joins_word(texts, start.text - 1, start.text)
-            {
-                let before = texts.content(start.text - 1);
-                let range = word_range(before, utf16_len(before));
-                start = TextPosition::new(start.text - 1, range.start);
+        Unit::Character => (pos, pos),
+        Unit::Word | Unit::Token => {
+            // The word is found in the line the text is part of (it, the
+            // texts it continues and those that continue it, joined as a
+            // copy joins them): a word a wrap cut, or a token whose parts
+            // are texts of their own, runs on into the parts around it.
+            let (first, last) = line_of(texts, pos.text);
+            let mut line = String::new();
+            let mut starts = Vec::with_capacity(last - first + 1);
+            for i in first..=last {
+                starts.push(utf16_len(&line));
+                line.push_str(texts.content(i));
             }
-            while end.offset == utf16_len(texts.content(end.text))
-                && end.text + 1 < texts.len()
-                && continues(texts, end.text + 1)
-                && joins_word(texts, end.text, end.text + 1)
-            {
-                let after = texts.content(end.text + 1);
-                let range = word_range(after, 0);
-                end = TextPosition::new(end.text + 1, range.end);
+            let mut at = starts[pos.text - first] + pos.offset;
+            // At a text's end, the character before it, as in a text alone.
+            if pos.offset > 0 && pos.offset == utf16_len(content) {
+                let before = content.chars().next_back().map_or(0, char::len_utf16);
+                at -= before as u32;
             }
-            (start, end)
+            let range = word_range(&line, at, granularity == Unit::Token);
+            if range.is_empty() {
+                return (pos, pos);
+            }
+            // The start in the text its first character is in, the end in
+            // the text its last character is in.
+            let start_text = starts.partition_point(|&s| s <= range.start) - 1;
+            let end_text = starts.partition_point(|&s| s < range.end) - 1;
+            (
+                TextPosition::new(first + start_text, range.start - starts[start_text]),
+                TextPosition::new(first + end_text, range.end - starts[end_text]),
+            )
         }
         // The whole line: the text and the texts it continues and that
         // continue it.
-        Granularity::Paragraph => {
-            let mut first = pos.text;
-            while continues(texts, first) {
-                first -= 1;
-            }
-            let mut last = pos.text;
-            while last + 1 < texts.len() && continues(texts, last + 1) {
-                last += 1;
-            }
+        Unit::Paragraph => {
+            let (first, last) = line_of(texts, pos.text);
             (
                 TextPosition::new(first, 0),
                 TextPosition::new(last, utf16_len(texts.content(last))),
@@ -705,19 +745,18 @@ fn continues(texts: &impl SelectionTexts, i: usize) -> bool {
     i > 0 && i < texts.len() && texts.continues(i)
 }
 
-/// Whether the characters on both sides of the join of texts `a` and `b`
-/// (`b` continuing `a`) are of one kind that makes words longer than a
-/// character (letters and digits, or spaces): a word a wrap cut there is
-/// one word.
-fn joins_word(texts: &impl SelectionTexts, a: usize, b: usize) -> bool {
-    let (Some(last), Some(first)) = (
-        texts.content(a).chars().next_back(),
-        texts.content(b).chars().next(),
-    ) else {
-        return false;
-    };
-    let kind = CharKind::of(last);
-    kind != CharKind::Single && kind == CharKind::of(first)
+/// The first and last texts of the line text `i` is part of: it, the
+/// texts it continues and the texts that continue it.
+fn line_of(texts: &impl SelectionTexts, i: usize) -> (usize, usize) {
+    let mut first = i;
+    while continues(texts, first) {
+        first -= 1;
+    }
+    let mut last = i;
+    while last + 1 < texts.len() && continues(texts, last + 1) {
+        last += 1;
+    }
+    (first, last)
 }
 
 /// What kind of character `c` is, for word boundaries.
@@ -778,8 +817,9 @@ fn is_combining_mark(c: char) -> bool {
 
 /// The UTF-16 range of the word at UTF-16 offset `offset` of `text`: the
 /// word of the character after the offset, or of the one before at a line's
-/// or the text's end. Empty on an empty line or text.
-fn word_range(text: &str, offset: u32) -> Range<u32> {
+/// or the text's end; with `tokens`, the token (`token_at`) there, if any.
+/// Empty on an empty line or text.
+fn word_range(text: &str, offset: u32, tokens: bool) -> Range<u32> {
     // UTF-16 starts of each character, with the characters.
     let chars: Vec<(u32, char)> = text
         .chars()
@@ -803,6 +843,10 @@ fn word_range(text: &str, offset: u32) -> Range<u32> {
     } else {
         after
     };
+    if let Some((first, last)) = tokens.then(|| token_at(&chars, index)).flatten() {
+        let end = chars[last].0 + chars[last].1.len_utf16() as u32;
+        return chars[first].0..end;
+    }
     let kind = CharKind::of(chars[index].1);
     let (mut first, mut last) = (index, index);
     if kind != CharKind::Single {
@@ -815,6 +859,106 @@ fn word_range(text: &str, offset: u32) -> Range<u32> {
     }
     let end = chars[last].0 + chars[last].1.len_utf16() as u32;
     chars[first].0..end
+}
+
+/// Punctuation that joins the words on both sides of it into one: a
+/// hostname's dots and hyphens, a path's slashes, a URL's `://` and `%`, an
+/// address's `@`, a version's dots, a port's or a time's `:`; with `query`,
+/// also a URL query's `?`, `=`, `&` and fragment's `#`.
+fn is_joiner(c: char, query: bool) -> bool {
+    matches!(c, '-' | '.' | '/' | ':' | '@' | '~' | '%') || (query && is_query(c))
+}
+
+/// A URL query's and fragment's punctuation.
+fn is_query(c: char) -> bool {
+    matches!(c, '?' | '=' | '&' | '#')
+}
+
+/// Joiners a token may start with: a path's root or home (`/etc`, `~/a`),
+/// a relative path's or a dotfile's dot (`./x`, `.env`), a flag's dashes
+/// (`--force`), a handle's `@`.
+fn is_leading(c: char) -> bool {
+    matches!(c, '/' | '~' | '.' | '-' | '@')
+}
+
+/// The token around character `index` of `chars`, as indexes of its first
+/// and last characters: words joined by runs of joiners (`is_joiner`) each
+/// between two words, after a run of leading joiners (`is_leading`) and
+/// before a directory's last `/`. A query's punctuation joins only after a
+/// `/` (a URL's path): `a=b` or `really?yes` are words apart. `None` when the
+/// character is a joiner in no token, or is no word's nor a joiner's.
+fn token_at(chars: &[(u32, char)], index: usize) -> Option<(usize, usize)> {
+    let (first, last) = grow_token(chars, index, true)?;
+    match (first..=last).find(|&i| is_query(chars[i].1)) {
+        Some(q) if !(first..q).any(|i| chars[i].1 == '/') => grow_token(chars, index, false),
+        _ => Some((first, last)),
+    }
+}
+
+/// `token_at`'s token, with the query's punctuation joining (`query`) or not.
+fn grow_token(chars: &[(u32, char)], index: usize, query: bool) -> Option<(usize, usize)> {
+    let word = |i: usize| CharKind::of(chars[i].1) == CharKind::Word;
+    let joiner = |i: usize| is_joiner(chars[i].1, query);
+    let n = chars.len();
+    // A word of the token to grow from.
+    let core = if word(index) {
+        index
+    } else if joiner(index) {
+        let (mut a, mut b) = (index, index);
+        while a > 0 && joiner(a - 1) {
+            a -= 1;
+        }
+        while b + 1 < n && joiner(b + 1) {
+            b += 1;
+        }
+        let before = a > 0 && word(a - 1);
+        let after = b + 1 < n && word(b + 1);
+        if before && after {
+            a - 1
+        } else if after && !before && (a..=b).all(|i| is_leading(chars[i].1)) {
+            b + 1
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+    let (mut first, mut last) = (core, core);
+    loop {
+        while last + 1 < n && word(last + 1) {
+            last += 1;
+        }
+        let mut j = last + 1;
+        while j < n && joiner(j) {
+            j += 1;
+        }
+        if j > last + 1 && j < n && word(j) {
+            last = j;
+        } else {
+            break;
+        }
+    }
+    loop {
+        while first > 0 && word(first - 1) {
+            first -= 1;
+        }
+        let mut j = first;
+        while j > 0 && joiner(j - 1) {
+            j -= 1;
+        }
+        if j < first && j > 0 && word(j - 1) {
+            first = j - 1;
+        } else {
+            break;
+        }
+    }
+    while first > 0 && is_leading(chars[first - 1].1) {
+        first -= 1;
+    }
+    if last + 1 < n && chars[last + 1].1 == '/' {
+        last += 1;
+    }
+    Some((first, last))
 }
 
 /// `text`'s length in UTF-16 code units.
@@ -931,6 +1075,20 @@ mod tests {
                 size(px(width), px((l1 - l0 + 1.0) * 20.0)),
             ))
         }
+    }
+
+    #[test]
+    fn explicit_ranges_snap_utf16_and_clear_missing_texts() {
+        let texts = Fake::new(&[("前😀日本", (0.0, 0.0, 100.0, 20.0))]);
+        let mut model = SelectionModel::new();
+        assert!(model.select_range(&texts, TextPosition::new(0, 2), TextPosition::new(0, 99)));
+        assert!(!model.select_range(&texts, TextPosition::new(0, 1), TextPosition::new(0, 5)));
+        assert_eq!(model.text(&texts), "😀日本");
+        assert_eq!(model.start_offset(&texts), 1);
+        model.select_range(&texts, TextPosition::new(0, 3), TextPosition::new(0, 1));
+        assert_eq!(model.text(&texts), "😀");
+        assert!(model.select_range(&texts, TextPosition::new(1, 0), TextPosition::new(0, 1)));
+        assert!(model.is_empty());
     }
 
     /// Three texts in a column: one line, two lines, one line, with gaps.
@@ -1211,14 +1369,14 @@ mod tests {
         assert_eq!(snap("a😀b", 3), 3);
         assert_eq!(snap("a😀b", 9), 4);
         assert_eq!(byte_offset("a😀b", 3), 5);
-        assert_eq!(word_range("a😀b", 2), 1..3);
+        assert_eq!(word_range("a😀b", 2, false), 1..3);
     }
 
     #[test]
     fn words_in_latin_and_cjk() {
         let text = "中文abc 测试, café_1  x\n\nend";
         let word = |offset| {
-            let range = word_range(text, offset);
+            let range = word_range(text, offset, false);
             let (from, to) = (byte_offset(text, range.start), byte_offset(text, range.end));
             text[from..to].to_string()
         };
@@ -1235,7 +1393,130 @@ mod tests {
         assert_eq!(word(19), "x");
         assert_eq!(word(20), "");
         assert_eq!(word(24), "end");
-        assert_eq!(word_range("", 0), 0..0);
+        assert_eq!(word_range("", 0, false), 0..0);
+    }
+
+    /// The word `word_range` finds at each `at` of `text` (the first
+    /// occurrence of `at`, then `skip` characters into it).
+    fn word_at(text: &str, at: &str, skip: usize) -> String {
+        let byte = text.find(at).expect("in the text") + at.char_indices().nth(skip).unwrap().0;
+        let offset = utf16_len(&text[..byte]);
+        let range = word_range(text, offset, true);
+        text[byte_offset(text, range.start)..byte_offset(text, range.end)].to_string()
+    }
+
+    #[test]
+    fn hostnames_urls_paths_and_ids_are_one_word() {
+        let host = "Open demo-app.pages.dev now.";
+        for (at, skip) in [
+            ("demo", 0),
+            ("demo", 3),
+            ("-app", 0),
+            ("app", 1),
+            (".pages", 0),
+            ("dev", 2),
+        ] {
+            assert_eq!(
+                word_at(host, at, skip),
+                "demo-app.pages.dev",
+                "at {at}+{skip}"
+            );
+        }
+        let url = "See https://x.y/a-b?c=1, then";
+        for (at, skip) in [("https", 0), ("://", 1), ("x.y", 2), ("a-b", 2), ("c=1", 2)] {
+            assert_eq!(
+                word_at(url, at, skip),
+                "https://x.y/a-b?c=1",
+                "at {at}+{skip}"
+            );
+        }
+        assert_eq!(word_at("edit ~/a/b-c.md today", "b-c", 0), "~/a/b-c.md");
+        assert_eq!(word_at("edit ~/a/b-c.md today", "~", 0), "~/a/b-c.md");
+        assert_eq!(word_at("(in /etc/hosts)", "hosts", 0), "/etc/hosts");
+        assert_eq!(word_at("cd client/ui/ first", "ui", 0), "client/ui/");
+        assert_eq!(word_at("run with --force-all", "force", 0), "--force-all");
+        assert_eq!(word_at("mail me@x.io.", "me", 0), "me@x.io");
+        assert_eq!(word_at("NSH v0.5.1 is out", "5", 0), "v0.5.1");
+        assert_eq!(word_at("id ab-1234cdef ok", "12", 0), "ab-1234cdef");
+        assert_eq!(word_at("worker `abc_def-1` here", "def", 0), "abc_def-1");
+        // Punctuation after a token, or alone, stays out of it.
+        assert_eq!(word_at("It ends with foo.", "foo", 1), "foo");
+        assert_eq!(word_at("It ends with foo.", ".", 0), ".");
+        assert_eq!(
+            word_at("(see demo-app.pages.dev)", "dev", 0),
+            "demo-app.pages.dev"
+        );
+        assert_eq!(word_at("one, two", "one", 0), "one");
+        assert_eq!(word_at("a - b", "-", 0), "-");
+        assert_eq!(word_at("so -- then", "--", 0), "-");
+        // Prose and CJK as before.
+        assert_eq!(word_at("the quick brown fox", "quick", 2), "quick");
+        assert_eq!(word_at("it's here", "it", 0), "it");
+        assert_eq!(word_at("中文demo-app.pages.dev。", "中", 0), "中");
+        assert_eq!(
+            word_at("中文demo-app.pages.dev。", "app", 0),
+            "demo-app.pages.dev"
+        );
+        assert_eq!(word_at("测试。日本", "。", 0), "。");
+        assert_eq!(word_at("测试-日本", "-", 0), "-");
+    }
+
+    #[test]
+    fn a_long_press_selects_a_hostname_whole_and_a_double_click_its_word() {
+        let texts = Fake::new(&[("Open demo-app.pages.dev now.", (0.0, 0.0, 300.0, 20.0))]);
+        let mut model = SelectionModel::new();
+        // On `demo` (characters 5 to 8, 8pt each).
+        assert!(model.select_word_at(&texts, at(44.0, 10.0)));
+        assert_eq!(model.text(&texts), "demo-app.pages.dev");
+        // A double click (desktops), as the platforms' own text views do.
+        model.press(&texts, at(44.0, 10.0), 2, false);
+        assert_eq!(model.text(&texts), "demo");
+        model.drag(&texts, at(124.0, 10.0));
+        assert_eq!(model.text(&texts), "demo-app.pages");
+    }
+
+    #[test]
+    fn a_query_joins_only_in_a_url_and_operators_never() {
+        assert_eq!(
+            word_at("go to https://x.y/a?b=1&c=2#d now", "c=2", 0),
+            "https://x.y/a?b=1&c=2#d"
+        );
+        assert_eq!(word_at("go to x.y/a?b=1 now", "b=1", 2), "x.y/a?b=1");
+        assert_eq!(word_at("set a=b first", "a=b", 0), "a");
+        assert_eq!(word_at("set a=b first", "a=b", 2), "b");
+        assert_eq!(word_at("then x+y is", "x+y", 0), "x");
+        assert_eq!(word_at("really?yes", "yes", 0), "yes");
+        assert_eq!(word_at("issue#12 here", "issue", 0), "issue");
+        // A time, a port, a key and a missing space after a period are
+        // written as tokens are: they stay one.
+        assert_eq!(word_at("at 12:30 today", "30", 0), "12:30");
+        assert_eq!(
+            word_at("on localhost:8080 now", "8080", 0),
+            "localhost:8080"
+        );
+        assert_eq!(word_at("key:value pairs", "key", 0), "key:value");
+        assert_eq!(word_at("the end.Next one", "end", 0), "end.Next");
+    }
+
+    #[test]
+    fn a_token_a_wrap_cut_after_a_hyphen_is_one_word() {
+        // `demo-` ends the first line, `app.pages.dev` starts the next.
+        let texts = Wrapped(
+            Fake::new(&[
+                ("Open demo-", (0.0, 0.0, 80.0, 20.0)),
+                ("app.pages.dev now.", (0.0, 20.0, 144.0, 20.0)),
+            ]),
+            vec![false, true],
+        );
+        let mut model = SelectionModel::new();
+        model.select_word_at(&texts, at(44.0, 5.0));
+        assert_eq!(model.text(&texts), "demo-app.pages.dev");
+        assert_eq!(model.bounds(), Some((pos(0, 5), pos(1, 13))));
+        model.select_word_at(&texts, at(4.0, 25.0));
+        assert_eq!(model.text(&texts), "demo-app.pages.dev");
+        // A double click selects the word alone, wrapped or not.
+        model.press(&texts, at(44.0, 5.0), 2, false);
+        assert_eq!(model.text(&texts), "demo");
     }
 
     #[test]

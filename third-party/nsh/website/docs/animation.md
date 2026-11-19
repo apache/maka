@@ -179,6 +179,24 @@ card.play({
 card.play({ duration: 600, iterations: "infinite", keyframes: { rotateY: ["0deg", "180deg", "360deg"] } });
 ```
 
+### Spring motions
+
+Give a motion a `spring` and each channel springs to where its keyframes end instead of running through them. It starts from where the channel is and keeps its velocity, so a motion that interrupts another (a sheet sent away while it still rises, a card pressed again mid-bounce) turns smoothly instead of starting again from its first frame. The first keyframe is still where `enter` starts a view; `delay` waits before the spring starts; the keyframes between, `duration`, `easing` and `iterations` are not used, since the spring decides how long the motion takes. The stiffness, damping and mass are [`spring`](#animatedvalue-methods)'s (170, 26 and 1 by default). Presets take a spring as an option, as they take a timing. When the user asks for less motion, a spring motion lands where it ends at once, as any motion does.
+
+```rust tabs
+// About 380 ms to settle, overshooting by 3 %.
+let spring = Spring { stiffness: 620.0, damping: 36.0, ..Spring::default() };
+let sheet = motion().entering(MotionPreset::SlideInUp.spec().spring(spring));
+let _ = sheet.play(MotionPreset::SlideOutDown.spec().spring(spring));
+```
+
+```tsx tabs
+// About 380 ms to settle, overshooting by 3 %.
+const spring = { stiffness: 620, damping: 36 };
+const sheet = createMotion({ enter: "slideInUp", spring });
+sheet.play("slideOutDown", { spring });
+```
+
 ### Entrances and staggered lists
 
 Give each row a motion that enters, with a delay that grows with its index: rows that appear together come in one after another. Cap the delay so that a row added far down the list does not wait.
@@ -309,7 +327,7 @@ mount(App);
 | `transitionProperty` | `.transition()`, `.transition_all()`, `.transition_colors()`, `.transition_opacity()`, `.transition_transform()`, `.transition_shadow()` | `string` | What animates, comma-separated: `"all"`, `"colors"`, `"opacity"`, `"transform"`, `"box-shadow"`, `"border-radius"`, ... |
 | `transitionDuration` | `.duration(ms)` | `number \| "150ms" \| "0.2s"` | Milliseconds as a number, or a CSS time. |
 | `transitionDelay` | `.delay(ms)` | `number \| "150ms" \| "0.2s"` | Before it starts. |
-| `transitionTimingFunction` | `.ease_linear()`, `.ease_in()`, `.ease_out()`, `.ease_in_out()`, `.ease_bezier(..)` | `"linear" \| "ease" \| "ease-in" \| "ease-out" \| "ease-in-out" \| "cubic-bezier(…)"` | The curve. |
+| `transitionTimingFunction` | `.ease_linear()`, `.ease_in()`, `.ease_out()`, `.ease_in_out()`, `.ease_bezier(..)`, `.ease_spring(..)` | `"linear" \| "ease" \| "ease-in" \| "ease-out" \| "ease-in-out" \| "cubic-bezier(…)" \| "spring(…)"` | The curve, or a spring (stiffness, damping, mass) that times itself until it settles, the duration unused. |
 
 Properties that transition, by group: **colors** (background, border, outline, shadow and text colors, gradient stops), **opacity**, **transform**, **shadows** (`box-shadow`) and **shape** (border radius and width). CSS names and their camel-case forms both work (`background-color`, `backgroundColor`, `transform`, `scale`, ...). Layout changes animate with [layout animations](#layoutanimation).
 
@@ -363,7 +381,7 @@ view().h_4().w_40().rounded(px(4.0)).bg(ZINC.shade(200)).animate_pulse()
 | `animationName` | `.animate_spin()`, `.animate_ping()`, `.animate_pulse()`, `.animate_bounce()`, `.animate_none()`, or `.animation(KeyframeAnimation::new(Keyframes::Spin))` | `"none" \| "spin" \| "ping" \| "pulse" \| "bounce"` | The animation. |
 | `animationDuration` | `KeyframeAnimation::duration(ms)` | `number \| "1s" \| …` | One iteration. |
 | `animationDelay` | `KeyframeAnimation::delay(ms)` | `number \| "200ms" \| …` | Before it starts. |
-| `animationTimingFunction` | `KeyframeAnimation::easing([x1, y1, x2, y2])` | as `transitionTimingFunction` | The curve. |
+| `animationTimingFunction` | `KeyframeAnimation::easing([x1, y1, x2, y2])` | as `transitionTimingFunction`, without `spring()` | The curve. |
 | `animationIterationCount` | `KeyframeAnimation::iterations(n)` | `number \| "infinite"` | Default `"infinite"`. |
 | `animationFrameRate` | `KeyframeAnimation::frame_rate(hz)` | `number` | The highest frame rate it needs, in Hz ([Frame rate](#frame-rate)). Default: the screen's highest. |
 
@@ -622,6 +640,30 @@ let header = offset.diff_clamp_with(0.0, 56.0, DiffClamp::snapping());
 const header = scroll.diffClamp(0, 56, { snap: true });
 ```
 
+Either bound can be an animated value, read on the UI thread every frame. A drag limited to a range that changes as the content or layout does (a timeline, a canvas) passes the range as a value: when it shrinks, the result clamps at once, and when the drag reverses at an edge, the result moves back immediately, with no dead zone:
+
+```rust tabs
+let drag = animated_value(0.0);
+let max = animated_value(240.0);
+let knob = drag.diff_clamp(0.0, &max);
+
+view().pan_values(Some(&drag), None).child(view().size(px(44.0)).bind_translate_x(&knob))
+// Later, as the layout changes:
+max.set(96.0);
+```
+
+```tsx tabs
+const drag = createAnimatedValue(0);
+const max = createAnimatedValue(240);
+const knob = drag.diffClamp(0, max);
+
+<View pan={{ x: drag }}>
+  <View style={{ width: 44, height: 44, translate: [knob, 0] }} />
+</View>
+// Later, as the layout changes:
+max.set(96);
+```
+
 ## Composite animations
 
 Animations are built out of steps (`Animation` in Rust, `Animated` from `nsh` in TSX) and the whole tree runs natively: each step starts on the UI thread the moment the previous one ends, with no gap and none of your code in between.
@@ -789,7 +831,7 @@ const remove = () => {
 | `easeInEaseOut(onEnd?)`, `linear(onEnd?)`, `spring(onEnd?)` | `animate_layout` with a preset | `configureNext` with a preset. |
 | `Types`, `Properties` | `LayoutCurve`, `LayoutProperty` | The names, for building configs. |
 
-A config is `{ duration, create?, update?, delete? }` (`LayoutAnimation { create, update, delete }` in Rust): `create` for inserted views, `update` for moved or resized ones, `delete` for removed ones. Each phase is `{ type?, property?, duration?, delay?, springDamping? }` (`LayoutTransition { curve, property, duration_ms, delay_ms }`), where `type` is `"easeInEaseOut"`, `"spring"`, `"linear"`, `"easeIn"`, `"easeOut"` or `"keyboard"` (the software keyboard's own curve, timed from when the keyboard started to move, so that what makes room for it moves with it; `LayoutCurve::Keyboard`), `property` is what appearing and disappearing views animate (`"opacity"`, `"scaleXY"`, `"scale"`), and `springDamping` (0..1, 0.7 by default; `LayoutCurve::FittedSpring { damping_ratio }`) sets the spring's overshoot.
+A config is `{ duration, create?, update?, delete? }` (`LayoutAnimation { create, update, delete }` in Rust): `create` for inserted views, `update` for moved or resized ones, `delete` for removed ones. Each phase is `{ type?, property?, duration?, delay?, springDamping?, stiffness?, damping?, mass?, bezier? }` (`LayoutTransition { curve, property, duration_ms, delay_ms }`), where `type` is `"easeInEaseOut"`, `"spring"`, `"linear"`, `"easeIn"`, `"easeOut"`, `"bezier"` (a cubic Bézier: the phase's `bezier: [x1, y1, x2, y2]`, as CSS `cubic-bezier()`, each `x` clamped to 0..1; `LayoutCurve::bezier(x1, y1, x2, y2)`) or `"keyboard"` (the software keyboard's own curve, timed from when the keyboard started to move, so that what makes room for it moves with it; `LayoutCurve::Keyboard`), `property` is what appearing and disappearing views animate (`"opacity"`, `"scaleXY"`, `"scale"`), and `springDamping` (0..1, 0.7 by default; `LayoutCurve::FittedSpring { damping_ratio }`) sets the overshoot of a spring fitted into the phase's duration. A `"spring"` with `stiffness`, `damping` or `mass` moves on that physics instead (below).
 
 ```rust tabs
 use nsh_core::element::{LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition};
@@ -813,7 +855,9 @@ LayoutAnimation.configureNext({
 });
 ```
 
-A layout animation covers every frame the update changes, anywhere on the screen: a list that refreshes or live data that lands in the same update moves with it. In a Rust component, animate only what one element's change moves with `ElementRef::animate_layout(transition)`: the element's own frame and its content's, and those of the views its size pushes along (its siblings and theirs, up to the screen). The update's other frames change at once. This is how `nsh/base`'s `Collapsible` and `AccordionPanel` reveal their content.
+A layout animation covers every frame the update changes, anywhere on the screen: a list that refreshes or live data that lands in the same update moves with it.
+
+In a `List`, the rows already shown slide to their new places and a row that comes in appears in its own, as UIKit's batch updates do: a chat's new message at the bottom of an `inverted` list pushes the messages above it up, while the list keeps its distance from the end. A new row that takes a recycled cell shows at its place at once. To animate only what one element's change moves, call `ElementRef::animate_layout(transition)` in Rust or `ref.animateLayout(transition)` in TSX (`transition` is a phase as above; easing in and out over 300 ms without one): the element's own frame and its content's, and those of the views its size pushes along (its siblings and theirs, up to the screen, and the content of those it resizes). The update's other frames change at once: a list that gains or loses rows in the same update does not move its rows with it, even when it grows with the change. Insertions and removals are not animated, and a `configureNext` in the same update animates every frame instead. This is how `nsh/base`'s `Collapsible` and `AccordionPanel` reveal their content, and how a header collapses over a list that keeps updating.
 
 ```rust
 use nsh_core::element::{LayoutTransition, Spring};
@@ -830,14 +874,38 @@ view()
     .style_with(move |s| if open.get() { s } else { s.h(px(0.0)) })
 ```
 
-A spring given by its physics, as design systems give theirs, is `LayoutTransition::spring(spring)` with gpui-base's `Spring`: `Spring::new(response_ms)` (the period of the undamped spring, critically damped) or `Spring::from_stiffness(stiffness)` (a mass of 1), each shaped by `.damping_ratio(ζ)`. The animation lasts until the spring stays within a thousandth of its target (`Spring::settle_ms`), whatever duration the transition was given, and moves by the same physics on every platform (`LayoutCurve::Spring`). A `LayoutCurve::FittedSpring { damping_ratio }` is the spring JS configs name (`type: "spring"`): its stiffness is fitted to the transition's duration.
+```tsx
+import { signal, View } from "nsh";
+import type { ViewRef } from "nsh";
 
-```rust
+let header: ViewRef | undefined;
+const compact = signal(false);
+const collapse = () => {
+  header?.animateLayout({ type: "bezier", bezier: [0.2, 0, 0, 1], duration: 250 });
+  compact.set(true);
+};
+
+<View ref={(r) => (header = r)} style={{ height: compact() ? 56 : 120 }} />;
+```
+
+A spring given by its physics, as design systems give theirs, is `LayoutTransition::spring(spring)` with gpui-base's `Spring`: `Spring::new(response_ms)` (the period of the undamped spring, critically damped) or `Spring::from_stiffness(stiffness)` (a mass of 1), each shaped by `.damping_ratio(ζ)`. The animation lasts until the spring stays within a thousandth of its target (`Spring::settle_ms`), whatever duration the transition was given, and moves by the same physics on every platform (`LayoutCurve::Spring`). In TSX, a `"spring"` phase that names `stiffness`, `damping` (the damping coefficient, not a ratio) or `mass` is that spring, the others `Animated.spring`'s defaults (170, 26 and 1); its `duration` and `springDamping` are not used. It works in `configureNext` and `ref.animateLayout` alike. A `LayoutCurve::FittedSpring { damping_ratio }` is the spring a `"spring"` phase without them names (`springDamping`): its stiffness is fitted to the transition's duration.
+
+```rust tabs
 use nsh_core::element::{LayoutTransition, Spring};
 
 // Material 3 Expressive's fast spatial spring: stiffness 800, damping ratio 0.6.
 region.animate_layout(LayoutTransition::spring(Spring::from_stiffness(800.0).damping_ratio(0.6)));
 ```
+
+```tsx tabs
+// Stiffness 620, damping 36, mass 1: a damping ratio of about 0.72, settled in about 380 ms.
+const spring = { type: "spring", stiffness: 620, damping: 36, mass: 1 } as const;
+
+region?.animateLayout(spring);
+LayoutAnimation.configureNext({ duration: 380, update: spring });
+```
+
+`configureNext`'s `onEnd` runs after the config's `duration`, so give it the spring's settle time when something waits for it.
 
 ## What runs where
 

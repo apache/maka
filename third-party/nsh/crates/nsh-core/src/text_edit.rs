@@ -196,15 +196,15 @@ impl Model {
         self.last = Some(kind);
     }
 
-    /// Replaces the selection with `text`, clipped to what `max_len`
-    /// (UTF-16 units of the whole text) leaves room for. Returns what was
-    /// inserted; `None` when nothing changed.
+    /// Replaces the selection with `text`, clipped ([`clip_chars`]) to what
+    /// `max_len` (`maxLength`: characters of the whole text) leaves room
+    /// for. Returns what was inserted; `None` when nothing changed.
     pub fn insert(&mut self, text: &str, max_len: Option<u32>) -> Option<String> {
         let (s, e) = self.selection();
         let fit = match max_len {
             Some(max) => {
-                let kept = utf16_len(&self.text[..s]) + utf16_len(&self.text[e..]);
-                clip_utf16(text, (max as usize).saturating_sub(kept))
+                let kept = char_len(&self.text[..s]) + char_len(&self.text[e..]);
+                clip_chars(text, (max as usize).saturating_sub(kept))
             }
             None => text,
         };
@@ -589,17 +589,31 @@ pub fn utf16_to_byte(s: &str, units: u32) -> usize {
     s.len()
 }
 
-/// The longest prefix of `s` that fits in `max` UTF-16 units, cut between
-/// characters.
-pub fn clip_utf16(s: &str, max: usize) -> &str {
-    let mut units = 0;
-    for (i, c) in s.char_indices() {
-        units += c.len_utf16();
-        if units > max {
-            return &s[..i];
+/// Length of `s` in characters (Unicode scalar values, Rust's `char`), the
+/// unit of `maxLength`: an emoji or a CJK ideograph beyond the Basic
+/// Multilingual Plane is one, though UTF-16 takes two units for it.
+pub fn char_len(s: &str) -> usize {
+    s.chars().count()
+}
+
+/// The longest prefix of `s` of at most `max` characters ([`char_len`])
+/// that ends between user-perceived characters ([`next_cluster`]): text a
+/// `maxLength` leaves no room for is cut there, so a cluster that does not
+/// fit whole (a letter with its combining accent, an emoji with its skin
+/// tone or its zero-width joiner sequence) stays out rather than going in
+/// as another character.
+pub fn clip_chars(s: &str, max: usize) -> &str {
+    let mut end = 0;
+    let mut chars = 0;
+    while end < s.len() {
+        let next = next_cluster(s, end);
+        chars += char_len(&s[end..next]);
+        if chars > max {
+            break;
         }
+        end = next;
     }
-    s
+    &s[..end]
 }
 
 /// The key an insertion reports (`onKeyPress`).
@@ -646,10 +660,10 @@ mod tests {
 
     #[test]
     fn max_length_clipping() {
-        assert_eq!(clip_utf16("hello", 3), "hel");
-        assert_eq!(clip_utf16("hello", 0), "");
-        assert_eq!(clip_utf16("a😀", 2), "a");
-        assert_eq!(clip_utf16("中文", 1), "中");
+        assert_eq!(clip_chars("hello", 3), "hel");
+        assert_eq!(clip_chars("hello", 9), "hello");
+        assert_eq!(clip_chars("hello", 0), "");
+        assert_eq!(clip_chars("中文", 1), "中");
         let mut m = model("abc");
         assert_eq!(m.insert("defg", Some(5)).as_deref(), Some("de"));
         assert_eq!(m.text(), "abcde");
@@ -658,6 +672,58 @@ mod tests {
         m.select(0, 2);
         assert_eq!(m.insert("xyz", Some(5)).as_deref(), Some("xy"));
         assert_eq!(m.text(), "xycde");
+    }
+
+    #[test]
+    fn max_length_counts_characters_not_utf16_units() {
+        // An emoji, and an ideograph of CJK Extension B: one character
+        // each, two UTF-16 units.
+        assert_eq!(char_len("a😀𠀀"), 3);
+        assert_eq!(clip_chars("a😀", 2), "a😀");
+        assert_eq!(clip_chars("a😀b", 2), "a😀");
+        assert_eq!(clip_chars("😀😀😀", 2), "😀😀");
+        assert_eq!(clip_chars("𠀀𠀁", 1), "𠀀");
+        let mut m = model("");
+        for _ in 0..800 {
+            assert_eq!(m.insert("😀", Some(1500)).as_deref(), Some("😀"));
+        }
+        assert_eq!(char_len(m.text()), 800);
+        assert_eq!(utf16_len(m.text()), 1600);
+        // At the limit nothing more goes in, an emoji or a letter.
+        let mut m = model(&"😀".repeat(1500));
+        assert_eq!(m.insert("😀", Some(1500)), None);
+        assert_eq!(m.insert("a", Some(1500)), None);
+        // Replacing an emoji frees one character's room, not two.
+        let mut m = model("😀😀");
+        m.select(0, 4);
+        assert_eq!(m.insert("ab", Some(2)).as_deref(), Some("a"));
+        assert_eq!(m.text(), "a😀");
+    }
+
+    #[test]
+    fn max_length_cuts_a_paste_between_user_perceived_characters() {
+        // A letter and its combining accent: two characters that go in
+        // together or not at all.
+        let decomposed = "cafe\u{301}";
+        assert_eq!(char_len(decomposed), 5);
+        assert_eq!(clip_chars(decomposed, 5), decomposed);
+        assert_eq!(clip_chars(decomposed, 4), "caf");
+        // An emoji with its skin tone, and a family joined by zero-width
+        // joiners (five characters), never split.
+        assert_eq!(clip_chars("ok👍🏽", 3), "ok");
+        assert_eq!(clip_chars("ok👍🏽", 4), "ok👍🏽");
+        let family = "👨\u{200D}👩\u{200D}👧";
+        assert_eq!(char_len(family), 5);
+        assert_eq!(clip_chars(&format!("a{family}b"), 5), "a");
+        assert_eq!(clip_chars(&format!("a{family}b"), 6), format!("a{family}"));
+        // A flag is two regional indicators.
+        assert_eq!(clip_chars("🇯🇵🇫🇷", 3), "🇯🇵");
+        // Text pasted past the limit: what fits, cut between characters.
+        let mut m = model("12345");
+        assert_eq!(m.insert("ABCD😀👍🏽XYZ", Some(10)).as_deref(), Some("ABCD😀"));
+        assert_eq!(m.text(), "12345ABCD😀");
+        let mut m = model("12345");
+        assert_eq!(m.insert("ABC👍🏽XYZ", Some(9)).as_deref(), Some("ABC"));
     }
 
     #[test]

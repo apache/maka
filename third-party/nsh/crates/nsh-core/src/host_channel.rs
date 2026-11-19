@@ -110,8 +110,10 @@ pub fn too_many_calls(name: &str) -> JsError {
 /// engine implements it over the embedding app's channel; the answer to a
 /// call comes back to the VM later, by its id.
 pub trait HostBridge {
-    /// Whether the native embedding app configured this channel. A false
-    /// value leaves calls to the platform transport (including the web).
+    /// Whether the native embedding app configured this channel: it
+    /// handles calls or sent events (launch parameters alone do not). A
+    /// false value leaves calls to the platform transport (including the
+    /// web's page host).
     fn available(&self) -> bool {
         true
     }

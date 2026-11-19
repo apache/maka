@@ -13,7 +13,7 @@ repository.workspace = true
 workspace = true
 
 [features]
-default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto"]
+default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "websocket", "updater", "svg"]
 # JS apps (the bundle in the app's resources). Without it the runner runs a
 # Rust app only (`run_rust`) and links no QuickJS.
 js = ["nsh-platform-macos/js", "nsh-engine/js-core"]
@@ -31,10 +31,17 @@ emoji-picker = ["nsh-platform-macos/emoji-picker"]
 zlib = ["nsh-platform-macos/zlib"]
 crypto = ["nsh-platform-macos/crypto"]
 
+# The native WebSocket client and app self-updates (`docs/dev/features.md`).
+websocket = ["nsh-platform-macos/websocket"]
+updater = ["nsh-platform-macos/updater"]
+# SVG images and (Linux, Windows) HTTP for `fetch` and remote images.
+svg = ["nsh-platform-macos/svg"]
+
 [dependencies]
 log.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
+nsh-base.workspace = true
 nsh-platform-macos.workspace = true
 # The app's logs in the unified log (`unified_log`).
 nsh-platform-apple.workspace = true

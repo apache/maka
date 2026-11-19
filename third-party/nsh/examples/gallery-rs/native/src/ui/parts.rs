@@ -180,7 +180,6 @@ impl IntoElement for PageHeader {
                 .rounded(px(radius::CONTROL))
                 .items_center()
                 .justify_center()
-                .cursor_pointer()
                 .role(AccessibilityRole::Button)
                 .label("Back")
                 .hover(|s| s.bg(colors::RAISED))

@@ -79,7 +79,8 @@ pub(crate) struct RichSuggestionOptions {
     pub(crate) decoration_empty_class: Option<String>,
     /// Keys taken while a suggestion is active, recorded in its state
     /// (`lastKey`, `keyCount`) for the app's list: `"ArrowUp"`,
-    /// `"ArrowDown"`, `"Enter"`, `"Tab"`. Escape always dismisses.
+    /// `"ArrowDown"`, `"Enter"`, `"Tab"`; not while the app's list is closed
+    /// (`setSuggestionOpen(false, key)`). Escape always dismisses.
     pub(crate) capture_keys: Option<Vec<String>>,
 }
 
@@ -214,6 +215,11 @@ pub(crate) struct RichSuggestionState {
     pub(crate) last_key: Option<String>,
     /// How many keys of `captureKeys` were taken.
     pub(crate) key_count: f64,
+    /// Whether the app's list shows for the active query and takes
+    /// `captureKeys` (`setSuggestionOpen`): `true` when a suggestion starts
+    /// or its query changes, until the app says otherwise; `false` while
+    /// inactive.
+    pub(crate) open: bool,
 }
 
 /// The suggestion state keyed `key`, `null` without the plugin.
@@ -230,5 +236,6 @@ pub(crate) fn suggestion_of(state: &EditorState, key: Option<&str>) -> Option<Ri
         decoration_id: s.decoration_id.clone(),
         last_key: s.last_key.clone(),
         key_count: s.key_count as f64,
+        open: s.open,
     })
 }

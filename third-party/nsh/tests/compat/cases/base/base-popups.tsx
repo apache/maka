@@ -2,24 +2,29 @@
 // `nsh/base` on a phone, on the core's overlays: a `Popover` anchored to its
 // trigger (controlled and not; its side, alignment, gap and margin; Escape
 // heard without closing), a `Menu` presented as a sheet whose `Submenu`
-// replaces its items (and reports it), its `MenuItem`s (disabled, kept open, labelled) and a
+// replaces its items (and reports it, or with `open` asks the app), its `MenuItem`s (disabled, kept open, labelled) and a
 // `MenuSeparator`, a `ContextMenu` a held finger opens, `Tooltip`s given as
 // elements' `tooltip` the app opens (a touch screen shows none of its own, nor an
-// element's `tooltip`), a `Sheet` at an edge over a backdrop; every part
+// element's `tooltip`), a `Sheet` at an edge over a backdrop, bottom sheets
+// resting at detents with a grabber and a footer; every part
 // styled by the app, every change reported with its reason, their
 // lifecycles (`onOpen`, `onClose`) and Escape or back heard (`onCancel`). Its script
 // checks each.
 import { Text, View, signal } from "nsh";
-import { ContextMenu, Menu, MenuItem, MenuSeparator, Popover, Sheet, Submenu, Tooltip } from "nsh/base";
+import { ContextMenu, Menu, MenuItem, MenuSeparator, Popover, Sheet, type SheetDetent, Submenu, Tooltip } from "nsh/base";
 
 function App() {
   const log = signal("Log: none");
   const pop = signal(true);
   const sheet = signal(false);
   const swipeSheet = signal(false);
+  const detentSheet = signal(false);
+  const detent = signal<SheetDetent>("medium");
+  const customSheet = signal(false);
   const ctxOff = signal(false);
   const ctx = signal(false);
   const menu = signal(false);
+  const tools = signal(false);
   const tip = signal(false);
   const tipOn = signal(false);
   const life = signal("Life: none");
@@ -80,6 +85,17 @@ function App() {
         </Submenu>
         <Submenu disabled trigger={<View><Text>LockedItem</Text></View>}>
           <MenuItem><Text>HiddenItem</Text></MenuItem>
+        </Submenu>
+        <Submenu
+          open={tools()}
+          onOpenChange={({ open, reason }) => {
+            tools.set(open);
+            log.set(`Log: tools ${open} ${reason}`);
+          }}
+          trigger={<View><Text>ToolsItem</Text></View>}
+          back={<View><Text>ToolsBack</Text></View>}
+        >
+          <MenuItem><Text>RulerItem</Text></MenuItem>
         </Submenu>
       </Menu>
       <ContextMenu
@@ -142,6 +158,7 @@ function App() {
         onClose={() => life.set("Life: sheet closed")}
         onCancel={() => log.set("Log: sheet cancel")}
         side="top"
+        accessibilityLabel="Top sheet"
         closeOnEscape={false}
         popupClass="bg-[#abcdef]"
         popupStyle={{ height: 50 }}
@@ -165,6 +182,28 @@ function App() {
       <View style={{ height: 30 }} tooltip={<Tooltip open={tip()}><Text>AskedTip</Text></Tooltip>}>
         <Text>AskedTrigger</Text>
       </View>
+      <Text>Detent: {typeof detent() === "string" ? detent() : "custom"}</Text>
+      <View onPress={() => detentSheet.set(true)}><Text>OpenDetentSheet</Text></View>
+      <Sheet
+        open={detentSheet()}
+        onOpenChange={({ open }) => detentSheet.set(open)}
+        detents={["medium", "large"]}
+        detent={detent()}
+        onDetentChange={({ detent: next }) => detent.set(next)}
+        grabber
+        grabberClass="bg-[#123456]"
+        grabberStyle={{ width: 40, height: 6, alignSelf: "center" }}
+        grabberAccessibilityLabel="Resize"
+        footer={<Text>DetentFooter</Text>}
+        footerClass="bg-[#234567]"
+        footerStyle={{ height: 40 }}
+      >
+        <Text>DetentBody</Text>
+      </Sheet>
+      <View onPress={() => customSheet.set(true)}><Text>OpenCustomSheet</Text></View>
+      <Sheet open={customSheet()} onOpenChange={({ open }) => customSheet.set(open)} detents={[{ height: 200 }, { fraction: 0.5 }]} defaultDetent={{ fraction: 0.5 }}>
+        <Text>CustomBody</Text>
+      </Sheet>
       {/* Out of the column's flow: the lifecycle and what was heard. */}
       <View style={{ position: "absolute", left: 0, bottom: 0 }}>
         <Text>{life()}</Text>

@@ -1,6 +1,6 @@
 ---
 title: Sheet
-description: "The Sheet component: a panel at an edge of the screen over a backdrop, closed by the backdrop, Escape and back, styled by the app."
+description: "The Sheet component: a panel at an edge of the screen over a backdrop, closed by the backdrop, Escape and back, resting at detents, styled by the app."
 group: base
 demo: el-sheet
 ---
@@ -85,8 +85,83 @@ The panel fits its content, including short menus; use `popupStyle` or a child's
 The app draws its own handle, which can be any view inside the panel. On iOS, an inner vertical `Scroll` or `List`
 consumes the drag until its top and hands the remaining downward motion to the panel within the same gesture.
 On Android, desktops and the web, dragging the handle or content outside a scroll uses their native pan support;
-inner scrolls keep their platform's normal gesture arbitration. Setting `closeOnSwipe` to false keeps the panel
+inner scrolls keep their platform's normal gesture arbitration. When the panel starts to follow the finger, editing
+ends: the focused input inside blurs and the software keyboard goes down; scrolling an inner list keeps it. Setting `closeOnSwipe` to false keeps the panel
 stationary and preserves the mounted content and scroll position. Other sides retain their existing behavior.
+
+## Detents
+
+A bottom sheet can rest at several heights, as a map's or a player's panel does: give it `detents`, from
+`"medium"` (about half the screen) and `"large"` (the screen below the status bar) to `{ height }` in points and
+`{ fraction }` of the large one. The panel is as tall as the largest and rests lower for a smaller one, so its top
+part shows. A drag moves it between them, following the finger; a release springs it to the nearest detent, or on to
+the next one in the direction of a flick. Below the smallest, `closeOnSwipe` closes it as without detents; without
+`closeOnSwipe` it comes back. On iOS a scroll inside it hands the downward drag over once it is at its top, so a list
+at the largest detent scrolls first and then brings the sheet down. Mouse drags move it the same way on the desktops
+and the web.
+
+Without `detent`, the sheet keeps its own detent, starting from `defaultDetent` (the smallest by default). With
+`detent`, the app owns it: change it in `onDetentChange({ detent })`, which reports each detent the user moves it
+to; a detent the app keeps brings the panel back. `detents` may change while the sheet is open: given to a sheet
+that had none, or all taken away, they take effect at once, and the sheet makes its content again; so does a `side`
+changing between the bottom and another edge.
+
+`grabber` shows a handle at the top of the panel, before the content. Like the rest of the sheet it looks like
+nothing: style it with `grabberClass` / `grabberStyle` and name it with `grabberAccessibilityLabel`. Screen readers
+adjust it to change the detent, and a press moves to the next larger one (after the largest, the smallest). With
+reduced motion the sheet moves between detents at once.
+
+`footer` shows at the bottom of the panel, after the content: an input bar, the sheet's actions. With detents it stays
+at the bottom of the part of the panel that shows, at every detent and while a drag or a spring moves the panel
+between them, moving natively with the panel; below the smallest detent it goes with the panel. Give the smallest
+detent room for it. Style it with `footerClass` / `footerStyle`.
+
+```tsx
+const detent = signal<SheetDetent>("medium");
+
+<Sheet
+  open={open()}
+  onOpenChange={(e) => open.set(e.open)}
+  detents={["medium", "large"]}
+  detent={detent()}
+  onDetentChange={(e) => detent.set(e.detent)}
+  closeOnSwipe
+  grabber
+  grabberClass="h-1.5 w-9 self-center rounded-full bg-zinc-300"
+  grabberAccessibilityLabel="Resize"
+  popupClass="rounded-t-2xl bg-white pt-2"
+  backdropClass="bg-black/40"
+  footer={<Input placeholder="Add a comment" />}
+  footerClass="border-t border-zinc-200 px-4 py-2"
+>
+  <Scroll class="flex-1">{/* … */}</Scroll>
+</Sheet>
+```
+
+The software keyboard lifts a sheet with detents as any bottom sheet, below the status bar at most. While it is up the
+sheet rests at its largest detent, so what is typed in the footer or the content shows, and it goes back to its detent
+once the keyboard goes. The raise leaves the detent the app reads as it is, and the grabber reads and changes that
+detent meanwhile.
+
+## The software keyboard
+
+While the software keyboard is up, a panel that reaches the bottom of the screen (a bottom sheet, a drawer at the left
+or right) ends at the keyboard's top instead of the screen's bottom, and moves with the keyboard as it comes and goes,
+on the keyboard's own curve. Pad the panel's bottom by the safe area (`pb-[env(safe-area-inset-bottom)]`, Rust
+`.pb_safe_area()`), as without a keyboard: that padding then sits behind the keyboard, so the panel's content ends
+right above it, the larger of the safe area and the keyboard. Lifted by the keyboard, a bottom sheet stays below the
+status bar, however tall its content. A `maxHeight` in `popupStyle` takes the place of that limit: a lower one
+subtracts the room the keyboard takes past the safe area (`keyboardFrame().height - safeArea().bottom`) itself, as
+in `windowSize().height - safeArea().top - Math.max(0, keyboardFrame().height - safeArea().bottom) - 24`. Menus,
+selects and date pickers that a phone shows as sheets do the same, and a `maxHeight` in their `popupStyle` or
+`popupClass` takes the place of their limit the same way.
+
+## Screen readers and keyboard focus
+
+A sheet is a modal dialog on every platform, as a [Dialog](./dialog.md) is. Screen readers hear it as a dialog named
+by `accessibilityLabel` (give it the sheet's title) and keep to it while it shows. On the desktops and the web, the
+keyboard focus leaves what is under it as it opens, Tab goes round the stops in its panel, and the focus goes back
+where it was as it closes. To start with the focus on a control in the panel, focus it in `onOpen`.
 
 ## Native sheets
 
@@ -103,8 +178,17 @@ on iOS), use a [Dialog](./dialog.md) with `presentation="pageSheet"`.
 | `closeOnEscape` | `.close_on_escape(..)` | `boolean` | `true` | Escape and the Android back button close it. |
 | `closeOnBackdropPress` | `.close_on_backdrop_press(..)` | `boolean` | `true` | A press on the backdrop closes it. |
 | `closeOnSwipe` | `.close_on_swipe(..)` | `boolean` | `false` | A bottom panel follows downward dragging and closes on a sufficient release. |
+| `detents` | `.detents(..)` | `SheetDetent[]` | `[]` | The heights a bottom sheet rests at: `"medium"`, `"large"`, `{ height }`, `{ fraction }`. |
+| `detent` | `.detent(..)` | `SheetDetent` | none | The detent it rests at, controlled by the app. |
+| `defaultDetent` | `.default_detent(..)` | `SheetDetent` | the smallest | The detent it rests at first, without `detent`. |
+| `grabber` | `.grabber(..)` | `boolean` | `false` | Shows a grabber at the top of the panel. |
+| `grabberClass`, `grabberStyle` | `.grabber_class(..)`, `.grabber_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The look of the grabber. |
+| `grabberAccessibilityLabel` | `.grabber_accessibility_label(..)` | `string` | none | What screen readers call the grabber. |
+| `footer` | `.footer(..)` | `JSX.Element` | none | What shows at the bottom of the panel; with detents, at the bottom of what shows. |
+| `footerClass`, `footerStyle` | `.footer_class(..)`, `.footer_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The look of the footer. |
 | `popupClass`, `popupStyle` | `.popup_class(..)`, `.popup_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The look of the panel. |
 | `backdropClass`, `backdropStyle` | `.backdrop_class(..)`, `.backdrop_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The look of the backdrop, such as a translucent color. |
+| `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers call the dialog: the sheet's title. |
 | `children` | `.child(..)` | `JSX.Element` | none | The content. |
 
 ## Events
@@ -115,6 +199,7 @@ on iOS), use a [Dialog](./dialog.md) with `presentation="pageSheet"`.
 | `onOpen` | `.on_open(\|\| ..)` | It came in: it is all there. |
 | `onClose` | `.on_close(\|\| ..)` | It went: it is all gone. Also when the app closed it. |
 | `onCancel` | `.on_cancel(\|\| ..)` | The user tried to close it (Escape or back, a press on the backdrop, an enabled swipe), whether or not it closed. |
+| `onDetentChange` | `.on_detent_change(\|detent\| ..)` | The user moved it to another detent (a drag, the grabber). |
 
 On the web, embedding with `dialogs: "viewport"` presents the sheet and its backdrop over the host page,
 including a same-origin iframe. Cross-origin frames use [`hostPlayerFrame`](../docs/web.md#embed-it-in-a-page).

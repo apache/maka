@@ -2,10 +2,13 @@
 // makes another theme the app's while it runs, in place of nsh.json's
 // `"theme"` (which sets `up` and `radius-card` here) and over shadcn's
 // `neutral`, as nsh.json's is. `token()` reads it at once and classes naming
-// its tokens follow, in each appearance; a theme with a value NSH cannot
-// read throws a `TypeError` and the theme in force stays; `null` gives
-// nsh.json's back. Its script checks each.
+// its tokens follow, in each appearance, a page's `headerClass` among them;
+// a theme with a value NSH cannot read throws a `TypeError` and the theme
+// in force stays; `null` gives nsh.json's back. Its script checks each.
 import { Text, View, cleanup, setColorScheme, setTheme, signal, token } from "nsh";
+import { NavPage, NavStack, createNavStack } from "nsh/base";
+
+const pages = createNavStack<string>(["page"]);
 
 const brand = { cssVars: { light: { up: "#2563eb" }, dark: { up: "#93c5fd" } } };
 const malformed = [
@@ -29,6 +32,13 @@ function BaseSetTheme() {
       <Text>{`theme radius-card ${token("radius-card")}`}</Text>
       <Text>{`theme result ${result()}`}</Text>
       <View testID="themed" class="h-4 bg-up" />
+      <NavStack state={pages} style={{ height: 40 }}>
+        {() => (
+          <NavPage {...{ testID: "page" }} title="Themed page" headerClass="bg-up">
+            <Text>A page whose header names a token</Text>
+          </NavPage>
+        )}
+      </NavStack>
       <View
         testID="set"
         onPress={() => {

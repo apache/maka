@@ -320,6 +320,8 @@ fn kept(items: &[MenuItem]) -> Vec<MenuItem> {
                         items,
                         // A terminal draws no images.
                         icon: None,
+                        symbol: None,
+                        inline: false,
                     });
                 }
             }
@@ -1047,6 +1049,8 @@ mod tests {
             role: None,
             when: Default::default(),
             icon: None,
+            symbol: None,
+            destructive: false,
         })
     }
 
@@ -1060,6 +1064,8 @@ mod tests {
                 enabled: true,
                 items: vec![action(3, "Mail", true)],
                 icon: None,
+                symbol: None,
+                inline: false,
             },
         ]
     }
@@ -1164,6 +1170,8 @@ mod tests {
                 role: None,
                 when: Default::default(),
                 icon: None,
+                symbol: None,
+                destructive: false,
             })
         };
         let items = vec![
@@ -1176,6 +1184,8 @@ mod tests {
                 enabled: true,
                 items: vec![action(5, "Mail", true)],
                 icon: None,
+                symbol: None,
+                inline: false,
             },
         ];
         let mut menus = Menus {

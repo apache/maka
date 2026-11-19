@@ -1,6 +1,6 @@
 //! `rust-exports.meter`, a native component of the crate: a bar filled to
 //! its `value` (a fraction, 0 to 1), the platform's own progress bar on
-//! macOS and Linux and drawn with Direct2D on Windows. `lib.rs` registers it
+//! macOS, Linux and Android, and drawn with Direct2D on Windows. `lib.rs` registers it
 //! with `#[native_components]`, so the hosts nsh builds for the app (`nsh
 //! run`, `nsh test --target`, `nsh package`) show it; `App.tsx` declares it
 //! with `nativeComponent`.
@@ -146,6 +146,71 @@ pub(crate) fn register(components: &nsh_platform_linux::Components) {
         NAME,
         Rc::new(|_context: ComponentContext| -> Box<dyn NativeComponent> {
             Box::new(Meter(gtk::ProgressBar::new()))
+        }),
+    );
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn register(components: &nsh::Components) {
+    use nsh::{
+        ComponentContext, NativeComponent,
+        jni::{
+            JNIEnv,
+            objects::{GlobalRef, JObject, JValue},
+        },
+    };
+
+    const PROGRESS_BAR_STYLE_HORIZONTAL: i32 = 0x0101_0078;
+    const MAX: i32 = 10_000;
+
+    struct Meter(GlobalRef);
+
+    impl NativeComponent for Meter {
+        fn view(&self) -> &GlobalRef {
+            &self.0
+        }
+
+        fn set_prop(&mut self, env: &mut JNIEnv<'_>, name: &str, value: Option<&JsonValue>) {
+            if name == "value" {
+                let progress = (fraction(value) * f64::from(MAX)).round() as i32;
+                let _ = env.call_method(
+                    self.0.as_obj(),
+                    "setProgress",
+                    "(I)V",
+                    &[JValue::Int(progress)],
+                );
+            }
+        }
+    }
+
+    components.register(
+        NAME,
+        Rc::new(|context: ComponentContext| -> Box<dyn NativeComponent> {
+            let view = context
+                .with_env(|env| {
+                    if let Ok(bar) = env.new_object(
+                        "android/widget/ProgressBar",
+                        "(Landroid/content/Context;Landroid/util/AttributeSet;I)V",
+                        &[
+                            JValue::Object(context.android_context().as_obj()),
+                            JValue::Object(&JObject::null()),
+                            JValue::Int(PROGRESS_BAR_STYLE_HORIZONTAL),
+                        ],
+                    ) {
+                        let _ = env.call_method(&bar, "setMax", "(I)V", &[JValue::Int(MAX)]);
+                        if let Ok(global) = env.new_global_ref(bar) {
+                            return Ok(global);
+                        }
+                    }
+                    let fallback = env.new_object(
+                        "android/view/View",
+                        "(Landroid/content/Context;)V",
+                        &[JValue::Object(context.android_context().as_obj())],
+                    )?;
+                    env.new_global_ref(fallback)
+                })
+                .unwrap_or_else(|_| context.android_context().clone());
+            Box::new(Meter(view))
         }),
     );
 }

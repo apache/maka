@@ -16,7 +16,7 @@ NSH 本身就用系统原生视图渲染，所以原生组件只是同一视图�
 
 > [!NOTE]
 > 原生组件由嵌入 NSH 的应用注册（[iOS](./ios.md)、[Android](./android.md)、[macOS](./macos.md#嵌入-mac-应用)、[Linux](./linux.md#嵌入-gtk-应用)、[Windows](./windows.md#嵌入-win32-应用)）；
-> 在 Windows、macOS、Linux 和 iOS 上也可以由应用自己的 Rust crate 注册，开发宿主和打包出的应用（`nsh package`）会注册这些组件（见[从应用的 crate 注册](#从应用的-crate-注册)）。
+> 在 Windows、macOS、Linux、iOS 和 Android 上也可以由应用自己的 Rust crate 注册，开发宿主和打包出的应用（`nsh package`）会注册这些组件（见[从应用的 crate 注册](#从应用的-crate-注册)）。
 > 没有任何地方注册的名称会渲染成一个空视图（并记录一次“未知名称”日志）。
 
 ## 整体流程
@@ -633,16 +633,19 @@ fn components(components: &nsh_platform_windows::Components) {
 }
 ```
 
-平台可以是 `windows`、`macos`、`linux` 或 `ios`，对应的组件分别来自 `nsh_platform_windows`、`nsh_platform_macos`、
-`nsh_platform_linux` 和 `nsh_platform_ios`（见上面各节）。这个函数只在它的平台上编译，所以 crate 为支持的每个平台各写一个，注册相同的名称，
+平台可以是 `windows`、`macos`、`linux`、`ios` 或 `android`，对应的组件分别来自 `nsh_platform_windows`、`nsh_platform_macos`、
+`nsh_platform_linux`、`nsh_platform_ios`（见上面各节）以及 `nsh-platform-android`（`nsh::Components`、`nsh::NativeComponent` 及其 JNI 接口）。这个函数只在它的平台上编译，所以 crate 为支持的每个平台各写一个，注册相同的名称，
 并且只在对应平台上依赖该平台的 crate，版本和来源与它的其他 NSH crate（`nsh-core` 等）相同（CLI 会检查它们是否一致）：
 
 ```toml
 [target.'cfg(windows)'.dependencies]
-nsh-platform-windows = { version = "0.3", default-features = false }
+nsh-platform-windows = { version = "0.6", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-nsh-platform-macos = { version = "0.3", default-features = false }
+nsh-platform-macos = { version = "0.6", default-features = false }
+
+[target.'cfg(target_os = "android")'.dependencies]
+nsh-platform-android = { version = "0.6", default-features = false }
 ```
 
 宿主在创建每个视图时注册 crate 的组件，早于持有该视图的代码自己的注册：之后在视图上注册的同名组件（`AppView::register_component`）会替换 crate 的。

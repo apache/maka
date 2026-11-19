@@ -7,7 +7,7 @@ demo: el-hover-card
 
 # HoverCard
 
-悬停卡片在不离开当前页面的情况下预览触发元素所指向的内容：一次提及背后的个人资料、一个链接背后的页面、一个股票代码背后的报价。在桌面平台和桌面浏览器中，指针在触发元素上停留 `openDelay`（600 毫秒）后，或键盘焦点来到触发元素上时，它会打开。指针从触发元素移到卡片上再移回来时，以及键盘焦点在触发元素上或在卡片里的链接、按钮上时，它都保持打开，所以卡片里的内容用指针和键盘都能使用；指针离开两者、焦点也不在两者之中 `closeDelay`（300 毫秒）后，它会关闭。Escape 和外部按压会立即关闭它。在手机和平板上，按下触发元素会打开和关闭它，外部按压会关闭它。
+悬停卡片在不离开当前页面的情况下预览触发元素所指向的内容：一次提及背后的个人资料、一个链接背后的页面、一个股票代码背后的报价。在桌面平台和桌面浏览器中，指针在触发元素上停留 `openDelay`（600 毫秒）后会打开。指针从触发元素移到卡片上再移回来时，它保持打开；指针离开两者 `closeDelay`（300 毫秒）后，它会关闭。和 Radix 的悬停卡片一样，它只跟随指针：键盘焦点既不会打开它，也不会让它保持打开。Escape 和外部按压会立即关闭它。在手机和平板上，按下触发元素会打开和关闭它，外部按压会关闭它。
 
 来自 [`nsh/base`](../modules/nsh-base.md) 的 `HoverCard` 自己不绘制任何东西：触发元素是你的元素，弹出层和其中的内容也都属于你。
 
@@ -61,7 +61,7 @@ function Mention() {
 
 ## 打开状态
 
-没有 `open` 时，卡片自己保存状态，初始值为 `defaultOpen`。有 `open` 时，状态由应用持有：在 `onOpenChange({ open, reason })` 中修改它，每次打开或关闭的请求都会带着原因报告给它：`"hover"`（指针）、`"focus"`（键盘焦点）、`"triggerPress"`（触摸屏上的按压）、`"pressOutside"` 或 `"cancel"`（Escape 或返回键）。
+没有 `open` 时，卡片自己保存状态，初始值为 `defaultOpen`。有 `open` 时，状态由应用持有：在 `onOpenChange({ open, reason })` 中修改它，每次打开或关闭的请求都会带着原因报告给它：`"hover"`（指针）、`"triggerPress"`（触摸屏上的按压）、`"pressOutside"` 或 `"cancel"`（Escape 或返回键）。
 
 ```tsx
 const open = signal(false);
@@ -98,8 +98,8 @@ const open = signal(false);
 |---|---|---|---|---|
 | `open` | `.open(..)` | `boolean` | 无 | 是否打开，由应用控制。 |
 | `defaultOpen` | `.default_open(..)` | `boolean` | `false` | 没有 `open` 时，初始是否打开。 |
-| `openDelay` | `.open_delay(..)` | `number` | `600` | 指针在触发元素上停留、或焦点停在它上面多少毫秒后打开；`Infinity`：不会自行打开。 |
-| `closeDelay` | `.close_delay(..)` | `number` | `300` | 指针离开触发元素和卡片、焦点也不在两者之中多少毫秒后关闭；`Infinity`：不会自行关闭。 |
+| `openDelay` | `.open_delay(..)` | `number` | `600` | 指针在触发元素上停留多少毫秒后打开；`Infinity`：不会自行打开。 |
+| `closeDelay` | `.close_delay(..)` | `number` | `300` | 指针离开触发元素和卡片多少毫秒后关闭；`Infinity`：不会自行关闭。 |
 | `placement` | `.placement(..)` | `"top" \| "bottom" \| "left" \| "right"` | `"bottom"` | 它位于触发元素的哪一侧。 |
 | `align` | `.align(..)` | `"start" \| "center" \| "end"` | `"center"` | 它沿这一侧如何与触发元素对齐。 |
 | `offset` | `.offset(..)` | `number` | `0` | 触发元素与卡片之间的间距。 |
@@ -116,7 +116,7 @@ const open = signal(false);
 
 | 事件 | Rust | 说明 |
 |---|---|---|
-| `onOpenChange` | `.on_open_change(\|e\| ..)` | 它请求打开或关闭，附带原因：`"hover"`、`"focus"`、`"triggerPress"`、`"pressOutside"` 或 `"cancel"`。 |
+| `onOpenChange` | `.on_open_change(\|e\| ..)` | 它请求打开或关闭，附带原因：`"hover"`、`"triggerPress"`、`"pressOutside"` 或 `"cancel"`。 |
 | `onOpen` | `.on_open(\|\| ..)` | 它已显示。 |
 | `onClose` | `.on_close(\|\| ..)` | 它已消失（在离开过渡之后），应用关闭它时也会触发。 |
 | `onPosition` | `.on_position(\|e\| ..)` | 弹出层已放置：`placement`（它所在的一侧）、`bounds`（它的框）、`available`（那一侧的空间）。 |
@@ -125,4 +125,4 @@ const open = signal(false);
 
 ## 无障碍
 
-悬停卡片是对触发元素的补充：触发元素保留自己的角色和标签，按下它时打开或执行的东西也不变。键盘用户在焦点停在触发元素上时得到卡片，Escape 关闭它。卡片自己不获取焦点，所以 Tab 照常从触发元素往后移动。卡片里的链接和按钮像别处一样获取焦点，其中一个持有焦点时卡片保持打开；卡片里重要的内容，也应能从触发元素通往的页面中找到。
+悬停卡片是对触发元素的补充：触发元素保留自己的角色和标签，按下它时打开或执行的东西也不变。卡片面向使用指针的用户：焦点移到触发元素上不会打开它，Escape 关闭已打开的卡片。卡片自己不获取焦点，所以 Tab 照常从触发元素往后移动。卡片里重要的内容，必须也能从触发元素通往的页面中找到。

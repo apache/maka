@@ -154,13 +154,13 @@ pub(crate) fn main_font_description(style: &ResolvedTextStyle) -> pango::FontDes
 fn resolve_family(name: &str, ui: &str) -> String {
     let mut out = String::with_capacity(name.len());
     use nsh_core::FamilyName;
-    for family in nsh_core::font_families(name) {
+    nsh_core::for_each_font_family(name, |family| {
         let family = match family {
             FamilyName::Monospace => "monospace",
             FamilyName::Serif => "serif",
             // Pango's list is comma-separated: a quoted name with a comma
             // in it can't be one of its families.
-            FamilyName::Named(f) if f.contains(',') => continue,
+            FamilyName::Named(f) if f.contains(',') => return,
             FamilyName::Named(f) => f,
             _ => ui,
         };
@@ -168,7 +168,7 @@ fn resolve_family(name: &str, ui: &str) -> String {
             out.push(',');
         }
         out.push_str(family);
-    }
+    });
     if out.is_empty() {
         out.push_str(ui);
     }
@@ -295,6 +295,9 @@ struct Line {
     info: TextLine,
     /// Its runs in [`LinuxLayout::runs`].
     runs: std::ops::Range<usize>,
+    /// Its baseline: where its runs are drawn (`info.ascender` is from its
+    /// logical top, which a `lineHeight` moves off the line's top).
+    baseline: f32,
 }
 
 /// A final layout: plain data, drawn on the main thread.
@@ -459,20 +462,108 @@ fn natural_line_heights(
     layout.set_attributes(Some(attrs));
 }
 
-/// Font options both threads use: unhinted metrics, so advances do not
-/// depend on the pixel grid.
-fn font_options(hint: pangocairo::cairo::HintStyle) -> Option<pangocairo::cairo::FontOptions> {
+/// How glyphs are rasterized and measured: NSH's defaults, or the
+/// desktop's choices when it asks for manual font rendering, as GTK's own
+/// text does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FontRendering {
+    /// The hint style drawn glyphs use.
+    pub(crate) hint_style: pangocairo::cairo::HintStyle,
+    pub(crate) antialias: pangocairo::cairo::Antialias,
+    /// Hinted metrics with whole-pixel glyph positions (in layout too).
+    pub(crate) hint_metrics: bool,
+}
+
+impl Default for FontRendering {
+    /// Slight hinting, gray antialiasing and unhinted metrics, so advances
+    /// do not depend on the pixel grid.
+    fn default() -> Self {
+        FontRendering {
+            hint_style: pangocairo::cairo::HintStyle::Slight,
+            antialias: pangocairo::cairo::Antialias::Gray,
+            hint_metrics: false,
+        }
+    }
+}
+
+static FONT_RENDERING: Mutex<Option<FontRendering>> = Mutex::new(None);
+
+fn font_rendering() -> FontRendering {
+    FONT_RENDERING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_default()
+}
+
+/// Reads the desktop's font rendering settings, on the main thread,
+/// before an engine starts. With `gtk-font-rendering=manual` GTK draws
+/// its text with `gtk-xft-hintstyle`, `gtk-xft-antialias` and
+/// `gtk-hint-font-metrics`, and so does NSH; otherwise (automatic) NSH
+/// keeps its defaults.
+pub(crate) fn read_font_rendering() {
+    let rendering = gtk::Settings::default()
+        .map(|s| font_rendering_from(&s))
+        .unwrap_or_default();
+    *FONT_RENDERING.lock().unwrap_or_else(|e| e.into_inner()) = Some(rendering);
+}
+
+fn font_rendering_from(settings: &gtk::Settings) -> FontRendering {
+    use gtk::prelude::ObjectExt;
+    use pangocairo::cairo::{Antialias, HintStyle};
+    let mut rendering = FontRendering::default();
+    let manual = settings.find_property("gtk-font-rendering").is_some()
+        && gtk::glib::EnumValue::from_value(&settings.property_value("gtk-font-rendering"))
+            .is_some_and(|(_, v)| v.nick() == "manual");
+    if !manual {
+        return rendering;
+    }
+    if settings.property::<i32>("gtk-xft-hinting") == 0 {
+        rendering.hint_style = HintStyle::None;
+    } else if let Some(style) = settings.property::<Option<String>>("gtk-xft-hintstyle") {
+        rendering.hint_style = match style.as_str() {
+            "hintnone" => HintStyle::None,
+            "hintslight" => HintStyle::Slight,
+            "hintmedium" => HintStyle::Medium,
+            "hintfull" => HintStyle::Full,
+            _ => rendering.hint_style,
+        };
+    }
+    // GSK draws grayscale coverage only: subpixel stays gray, as in GTK.
+    if settings.property::<i32>("gtk-xft-antialias") == 0 {
+        rendering.antialias = Antialias::None;
+    }
+    if settings.find_property("gtk-hint-font-metrics").is_some() {
+        rendering.hint_metrics = settings.property::<bool>("gtk-hint-font-metrics");
+    }
+    rendering
+}
+
+/// Font options of a context. Layout (`draw` false) is unhinted unless
+/// metrics are hinted, so measuring stays resolution-independent by default.
+fn font_options(rendering: FontRendering, draw: bool) -> Option<pangocairo::cairo::FontOptions> {
+    use pangocairo::cairo::{HintMetrics, HintStyle};
     let mut options = pangocairo::cairo::FontOptions::new().ok()?;
-    options.set_hint_metrics(pangocairo::cairo::HintMetrics::Off);
-    options.set_hint_style(hint);
-    options.set_antialias(pangocairo::cairo::Antialias::Gray);
+    options.set_hint_metrics(if rendering.hint_metrics {
+        HintMetrics::On
+    } else {
+        HintMetrics::Off
+    });
+    options.set_hint_style(if draw || rendering.hint_metrics {
+        rendering.hint_style
+    } else {
+        HintStyle::None
+    });
+    options.set_antialias(rendering.antialias);
     Some(options)
 }
 
-fn context(font_map: &pango::FontMap, hint: pangocairo::cairo::HintStyle) -> pango::Context {
+fn context(font_map: &pango::FontMap, rendering: FontRendering, draw: bool) -> pango::Context {
     let context = font_map.create_context();
-    pangocairo::functions::context_set_font_options(&context, font_options(hint).as_ref());
-    context.set_round_glyph_positions(false);
+    pangocairo::functions::context_set_font_options(
+        &context,
+        font_options(rendering, draw).as_ref(),
+    );
+    context.set_round_glyph_positions(rendering.hint_metrics);
     context
 }
 
@@ -528,9 +619,10 @@ impl PangoTextEngine {
         {
             log::warn!("cannot load app fonts: {err}");
         }
-        let ltr = context(&font_map, pangocairo::cairo::HintStyle::None);
+        let rendering = font_rendering();
+        let ltr = context(&font_map, rendering, false);
         ltr.set_base_dir(pango::Direction::Ltr);
-        let rtl = context(&font_map, pangocairo::cairo::HintStyle::None);
+        let rtl = context(&font_map, rendering, false);
         rtl.set_base_dir(pango::Direction::Rtl);
         PangoTextEngine {
             font_map,
@@ -779,8 +871,9 @@ impl TextEngine for PangoTextEngine {
             } else {
                 self.attachment_font(context, text, a)
             };
-            let top = a.ascent(font, alignments.get(a.index));
-            let (up, down) = a.extent(font, alignments.get(a.index));
+            // By the baseline of its own text where it has one.
+            let top = alignments.ascent(a, font);
+            let (up, down) = alignments.extent(a, font);
             let (mut up, mut down) = (to_pango(up.0), to_pango(down.0));
             // With a fixed `lineHeight`, at least the box the text's runs
             // take (their font with the line height spread evenly above and
@@ -878,6 +971,15 @@ impl TextEngine for PangoTextEngine {
 
     fn breaks_lines_greedily(&self) -> bool {
         true
+    }
+
+    fn first_baseline(&self, prepared: &Prepared, width: Points) -> Option<Points> {
+        // Typeset at the size it measures `width` wide, as the text is laid
+        // out: the baseline of its first line (the line's, as a line of
+        // only a break or an inline view has no runs).
+        let layout = self.layout(prepared, self.measure(prepared, Some(width)));
+        let layout = layout.downcast::<LinuxLayout>()?;
+        Some(Points(layout.lines.first()?.baseline))
     }
 
     fn layout(&self, prepared: &Prepared, size: Size<Points>) -> TextLayout {
@@ -1010,6 +1112,7 @@ impl TextEngine for PangoTextEngine {
                     x_height: Points(x_height),
                 },
                 runs: first..out.runs.len(),
+                baseline,
             });
         }
         TextLayout(Arc::new(out))
@@ -1180,10 +1283,7 @@ thread_local! {
 fn main_font(desc: &Arc<str>) -> Option<pango::Font> {
     MAIN_FONTS.with_borrow_mut(|fonts| {
         let fonts = fonts.get_or_insert_with(|| MainFonts {
-            context: context(
-                &pangocairo::FontMap::default(),
-                pangocairo::cairo::HintStyle::Slight,
-            ),
+            context: context(&pangocairo::FontMap::default(), font_rendering(), true),
             fonts: FxHashMap::default(),
             files: 0,
         });
@@ -2202,22 +2302,43 @@ impl LinuxLayout {
             let Some(baseline) = runs.first().map(|r| r.baseline) else {
                 continue;
             };
-            let pieces = runs.iter().flat_map(|run| {
-                let mut gx = run.x;
-                let (ascent, descent) = run.font.extents;
-                run.glyphs.iter().map(move |g| {
-                    let x = gx;
-                    let width = from_pango(g.width);
-                    gx += width;
-                    nsh_core::LinePiece {
-                        x: Points(x),
-                        width: Points(width),
-                        background: text.background_at(g.index),
-                        ascent: Points(ascent),
-                        descent: Points(descent),
-                    }
+            let mut pieces: Vec<_> = runs
+                .iter()
+                .flat_map(|run| {
+                    let mut gx = run.x;
+                    let (ascent, descent) = run.font.extents;
+                    run.glyphs.iter().map(move |g| {
+                        let x = gx;
+                        let width = from_pango(g.width);
+                        gx += width;
+                        nsh_core::LinePiece {
+                            x: Points(x),
+                            width: Points(width),
+                            background: text.background_at(g.index),
+                            ascent: Points(ascent),
+                            descent: Points(descent),
+                        }
+                    })
                 })
-            });
+                .collect();
+            // Attachments hold no glyphs: their room (a span's padding
+            // too) is in the background of their span.
+            let range = line.info.start..line.info.end;
+            let before = pieces.len();
+            for (&(index, width), at) in self.attachment_extents.iter().zip(&self.attachments) {
+                if let (true, Some((x, _))) = (range.contains(&index), at) {
+                    pieces.push(nsh_core::LinePiece {
+                        x: Points(*x),
+                        width: Points(width),
+                        background: text.background_at(index),
+                        ascent: Points(0.0),
+                        descent: Points(0.0),
+                    });
+                }
+            }
+            if pieces.len() > before {
+                pieces.sort_by(|a, b| a.x.0.total_cmp(&b.x.0));
+            }
             let clip = (line.info.x, line.info.x + line.info.width);
             nsh_core::BackgroundBox::join(pieces, clip, |b| {
                 f(
@@ -2370,6 +2491,7 @@ mod tests {
 
     #[test]
     fn families() {
+        assert_eq!(resolve_family(r#"'A\\B', 'A\"B'"#, "X"), "A\\B,A\"B");
         assert_eq!(resolve_family("Inter", "Adwaita Sans"), "Inter");
         assert_eq!(resolve_family("system-ui", "Adwaita Sans"), "Adwaita Sans");
         assert_eq!(resolve_family("ui-monospace", "X"), "monospace");
@@ -2436,6 +2558,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A text's first baseline (what `align-items: baseline` lines it up
+    /// by) is where its first line is drawn, wrapped or not, also with a
+    /// line height, and grows with the font.
+    #[test]
+    fn the_first_baseline_is_the_first_lines() {
+        let engine = PangoTextEngine::new("sans-serif".into());
+        let at_of = |content: &str, style: ResolvedTextStyle, width: Option<f32>| {
+            let t = text(&[(content, style)]);
+            let prepared = engine.prepare(&t);
+            let measured = engine.measure(&prepared, width.map(Points));
+            let baseline = engine
+                .first_baseline(&prepared, measured.width)
+                .expect("a first line");
+            let line = engine.lines(&engine.layout(&prepared, measured)).remove(0);
+            (baseline.0, (line.y + line.ascender).0)
+        };
+        let at = |style, width| at_of("Chat with the world", style, width);
+        let near = |a: f32, b: f32| (a - b).abs() < 0.5;
+        let sized = |size: f32| ResolvedTextStyle {
+            font_size: Points(size),
+            ..Default::default()
+        };
+        let (small, drawn) = at(sized(12.0), None);
+        assert!(near(small, drawn), "{small} {drawn}");
+        let (wrapped, drawn) = at(sized(12.0), Some(30.0));
+        assert!(
+            near(wrapped, drawn) && near(wrapped, small),
+            "{wrapped} {drawn}"
+        );
+        let spaced = ResolvedTextStyle {
+            line_height: Points(26.0),
+            ..sized(17.0)
+        };
+        let (baseline, drawn) = at(spaced, None);
+        assert!(near(baseline, drawn), "{baseline} {drawn}");
+        let (large, _) = at(sized(24.0), None);
+        assert!(large > small, "{large} {small}");
+        // A first line of only a break has no runs: its own baseline, not
+        // the next line's.
+        let (broken, drawn) = at_of("\nChat", sized(12.0), None);
+        assert!(
+            near(broken, drawn) && near(broken, small),
+            "{broken} {drawn}"
+        );
     }
 
     /// With a fixed `lineHeight`, an attachment taller than the line grows
@@ -2834,6 +3002,8 @@ mod tests {
                 color: nsh_core::Color(0xeeee_eeff),
                 radius: Points(4.0),
                 node: 4,
+                top: Default::default(),
+                bottom: Default::default(),
             }),
             ..style
         };
@@ -3015,5 +3185,37 @@ mod fallback_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod font_rendering_tests {
+    use super::*;
+    use pangocairo::cairo::{HintMetrics, HintStyle};
+
+    /// By default layout is unhinted and drawing slightly hinted; hinted
+    /// metrics (manual font rendering) hint and round layout too.
+    #[test]
+    fn layout_follows_hint_metrics() {
+        let default = FontRendering::default();
+        let layout = font_options(default, false).unwrap();
+        assert_eq!(layout.hint_style(), HintStyle::None);
+        assert_eq!(layout.hint_metrics(), HintMetrics::Off);
+        assert_eq!(
+            font_options(default, true).unwrap().hint_style(),
+            HintStyle::Slight
+        );
+
+        let manual = FontRendering {
+            hint_style: HintStyle::Full,
+            hint_metrics: true,
+            ..default
+        };
+        let layout = font_options(manual, false).unwrap();
+        assert_eq!(layout.hint_style(), HintStyle::Full);
+        assert_eq!(layout.hint_metrics(), HintMetrics::On);
+        let font_map = pangocairo::FontMap::new();
+        assert!(context(&font_map, manual, false).is_round_glyph_positions());
+        assert!(!context(&font_map, default, false).is_round_glyph_positions());
     }
 }

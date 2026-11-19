@@ -43,6 +43,8 @@ struct HarnessProps {
 fn Harness(props: HarnessProps) -> impl IntoElement {
     let content = element_ref();
     let offset = signal(0.0_f32);
+    let height = signal(props.content);
+    let presses = signal(0);
     view()
         .child(
             view()
@@ -56,7 +58,18 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
                         .size_full()
                         .scrollbar(false)
                         .on_scroll(move |e: &ScrollEvent| offset.set(e.offset.y.0))
-                        .child(view().w_full().h(px(props.content))),
+                        .child(
+                            view().w_full().h(move || px(height.get())).child(
+                                view()
+                                    .test_id("edge")
+                                    .absolute()
+                                    .right_0()
+                                    .top(px(50.0))
+                                    .w(px(10.0))
+                                    .h(px(20.0))
+                                    .on_press(move || presses.update(|n| *n += 1)),
+                            ),
+                        ),
                 )
                 .child(
                     scrollbar()
@@ -75,6 +88,21 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
                 ),
         )
         .child(text(move || format!("Offset {}", offset.get().round())))
+        .child(text(move || format!("Presses {}", presses.get())))
+        .child(
+            view()
+                .test_id("grow")
+                .w(px(80.0))
+                .h(px(30.0))
+                .on_press(move || height.set(1000.0)),
+        )
+        .child(
+            view()
+                .test_id("shrink")
+                .w(px(80.0))
+                .h(px(30.0))
+                .on_press(move || height.set(150.0)),
+        )
 }
 
 /// What the batches showed of the bar.
@@ -291,6 +319,28 @@ fn on_hover_it_shows_while_the_pointer_is_over_the_bar() {
     assert!(seen.shown());
     app.fast_forward(Duration::from_millis(200)).unwrap();
     assert!(!seen.shown());
+}
+
+#[test]
+fn a_hover_bar_passes_presses_through_until_its_content_overflows() {
+    let (mut app, seen) = start(ScrollbarMode::Hover, 150.0);
+    assert!(!seen.shown());
+    assert_eq!(seen.pointer(), Some(PointerEvents::None));
+    app.press("id:edge").unwrap();
+    app.wait_for("text:Presses 1").unwrap();
+
+    app.press("id:grow").unwrap();
+    assert_eq!(seen.pointer(), Some(PointerEvents::Auto));
+    app.hover("label:Bar").unwrap();
+    assert!(seen.shown());
+    app.drag("label:Bar", point(px(0.0), px(40.0))).unwrap();
+    app.wait_for("text:Offset 600").unwrap();
+
+    app.press("id:shrink").unwrap();
+    assert!(!seen.shown());
+    assert_eq!(seen.pointer(), Some(PointerEvents::None));
+    app.press("id:edge").unwrap();
+    app.wait_for("text:Presses 2").unwrap();
 }
 
 #[test]

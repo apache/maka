@@ -50,3 +50,11 @@ test("the URLs the app opens are recorded, not opened", async () => {
   await app.press("text:the guide");
   expect(app.openedUrls()).toEqual(["https://example.com/help", "mailto:guide@example.com"]);
 });
+
+test("the URLs the test fails to open report that they did not open", async () => {
+  const app = await open("./App.tsx");
+  await app.failOpenUrls("https://example.com/*");
+  await app.press("Open");
+  expect(app.shows("opened false")).toBe(true);
+  expect(app.openedUrls()).toEqual(["https://example.com/help"]);
+});

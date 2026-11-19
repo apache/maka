@@ -18,11 +18,12 @@ test("desktop tray and global shortcuts retain their off-platform behavior", asy
   assert.equal(pressed, false);
 });
 
-test("the window API: the page is the main window, and no window of the app's own opens", () => {
+test("the window API: the page is the main window, titled with its title, and no window of the app's own opens", () => {
   const desktop = {};
   const modules = { exports: new Map([["nsh/desktop", desktop]]) };
   const titleBar = () => ({ height: 0, left: 0, right: 0 });
-  configureAPIs({}, modules, {}, () => true, { titleBar });
+  const titles = [];
+  configureAPIs({}, modules, {}, () => true, { titleBar }, { setWindowTitle: title => titles.push(title) });
   const main = desktop.currentWindow();
   assert.equal(main.id, "main");
   assert.equal(main.main, true);
@@ -36,6 +37,11 @@ test("the window API: the page is the main window, and no window of the app's ow
   assert.deepEqual(desktop.displays(), []);
   assert.equal(desktop.Window({ id: "inspector" }), null);
   assert.throws(() => desktop.Window.open(() => null, { id: "inspector" }), { code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" });
+  // The main window's title titles the page; a set without one, of what
+  // the browser places and sizes, goes nowhere.
   main.set({ title: "Report" });
+  main.set({ resizable: false });
+  desktop.Window.get("main").set({ title: "" });
+  assert.deepEqual(titles, ["Report", ""]);
   main.on("close", () => {})();
 });

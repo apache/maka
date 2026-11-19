@@ -34,23 +34,23 @@ pub const URL: &str = "url";
 /// marking the address of the page the app is (the web): an `http(s)` URL
 /// of the page's own, which needs no scheme the app claims. Only the
 /// platform sends root events.
-pub(crate) const PAGE: &str = "page";
+pub const PAGE: &str = "page";
 
 /// The payload key of [`EventKind::UrlScheme`](crate::EventKind::UrlScheme)
 /// that, `true`, only takes the URL as the app's address (the page's
 /// address at start), with no `open` event.
-pub(crate) const QUIET: &str = "quiet";
+pub const QUIET: &str = "quiet";
 
 /// The payload key of [`EventKind::UrlScheme`](crate::EventKind::UrlScheme)
 /// with the page's base URL (the web: its `document.baseURI`).
-pub(crate) const BASE: &str = "base";
+pub const BASE: &str = "base";
 
 /// The payload key of [`EventKind::UrlScheme`](crate::EventKind::UrlScheme)
 /// that makes the URL an address the app moved to without making the move
-/// itself, and says how ([`AppUrlChangeReason::parse`]: the web's back or
-/// forward to an entry, or an address the user typed): the app hears it as
+/// itself, and says how (`"back"`, `"forward"`: the web's back or forward
+/// to an entry; `"address"`: an address the user typed): the app hears it as
 /// a change ([`crate::element::next_app_url_change`]), not as `open`.
-pub(crate) const CHANGE: &str = "change";
+pub const CHANGE: &str = "change";
 
 /// How the app's address it sets meets the history (TS: `UrlScheme.setUrl`'s
 /// `history`, Rust: [`set_app_url_with`](crate::element::set_app_url_with)):

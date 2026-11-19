@@ -33,7 +33,11 @@
 //! apps keep it outside, keyed by id. Unbound cells keep their last content:
 //! the core moves those in the render window out of sight (never with a NaN
 //! frame; cells never placed are skipped) and hides them from touches and
-//! screen readers until they are placed again (`Core::set_spare`). The
+//! screen readers until they are placed again (`Core::set_spare`). An item
+//! shows in one cell at most: a cell whose item went reads the item now at
+//! its old index, which is its own unless another cell moved there with
+//! it; then the components' lists let its content go before it reads
+//! there, and it is the first cell a new item takes. The
 //! header, footer and empty placeholder are cells with a role
 //! (`slot="header"`, ...) and are never recycled. Each cell is a Taffy root
 //! of its own (its width follows the list's cross axis), so scrolling
@@ -45,7 +49,12 @@
 //! never rendered, so the first offset is off. Their target stays pinned:
 //! after each round of measurements the list follows it (`follow_pin`),
 //! retargeting an animated scroll in flight, until the rows in the
-//! viewport are measured, the user scrolls away or the items change.
+//! viewport are measured, the user scrolls away or the items change. The
+//! End key of the desktops and the web is one of them (`Core::key_scrolled`):
+//! the platform animates to the end it knows, the list follows the real
+//! one, and any other scroll key leaves the target. An animated scroll
+//! that moves away from its target once every scroll the core issued is
+//! applied was taken over by the user (a wheel, a drag, the scroll bar).
 //!
 //! # In its parent's viewport
 //!
@@ -69,6 +78,7 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     fenwick::Fenwick,
+    list_diff::ListDiff,
     ops::{CellSlot, ListAlignment, ListContentStyle, Viewability},
     text_source::{SourceGeometry, SourcePoint, SourcePosition},
 };
@@ -114,6 +124,16 @@ pub(super) struct Slot {
     /// Item the runtime was last asked to show in this slot (its cell's
     /// index); `None` before the first request or when that item is gone.
     pub(super) requested: Option<u32>,
+    /// Item the cell's frame was last placed for: a cell placed for
+    /// another one appears there rather than moving from that row's place
+    /// under a layout animation (`core/list_motion.rs`).
+    pub(super) placed: Option<u32>,
+    /// The cell's content was bound to an item that went, and the item now
+    /// at its index is another cell's (or there is none): it shows nothing
+    /// (a component's list let its content go), or that other cell's item.
+    /// Such a cell is the first a new item takes
+    /// ([`ListState::adopt_orphans`]).
+    pub(super) stale: bool,
 }
 
 impl Slot {
@@ -275,6 +295,7 @@ enum Pin {
         /// it landed.
         animating: bool,
         automatic: bool,
+        nearest: f32,
     },
 }
 
@@ -356,6 +377,9 @@ pub(super) struct ListState {
     pub(super) viewable: Option<(u32, u32)>,
     /// `loadMoreThreshold`, in viewports.
     pub(super) end_threshold: f32,
+    /// A row grows under a scoped layout animation in this commit
+    /// ([`ListState::anchor_end`] does not follow the end it moves).
+    pub(super) revealing: bool,
     /// `loadMoreAtStartThreshold`, in viewports.
     pub(super) start_threshold: f32,
     /// Main-axis scroll offset reported by the platform (content
@@ -421,6 +445,11 @@ pub(super) struct ListState {
     pub(super) automatic: bool,
     /// A direct native snapshot, unknown until the initial TrackStates report.
     interaction: Option<u16>,
+    /// The animated `scrollToEnd`s the End key queued for the list that
+    /// the next update resolves (`Core::key_scrolled`), by their place among
+    /// the list's queued commands: another scroll key before that takes
+    /// them back.
+    pub(super) key_ends: Vec<u32>,
     /// The item the last change of columns kept at the top: while its row
     /// is still the first visible one, the next change keeps it rather than
     /// the row's first item, so resizing back and forth does not drift.
@@ -473,6 +502,7 @@ impl ListState {
             viewability: Viewability::default(),
             viewable: None,
             end_threshold: END_THRESHOLD,
+            revealing: false,
             start_threshold: START_THRESHOLD,
             offset: 0.0,
             viewport: 0.0,
@@ -498,6 +528,7 @@ impl ListState {
             source_dirty: false,
             automatic: false,
             interaction: None,
+            key_ends: Vec::new(),
             columns_anchor: None,
             parent: false,
             outer: None,
@@ -613,7 +644,10 @@ impl ListState {
             self.pin = None;
         }
         self.source_dirty |= !self.source_geometry.is_empty();
-        let anchor = self.visible_anchor();
+        let anchor = self
+            .visible_anchor()
+            .filter(|&(index, _)| index >= at + removed)
+            .map(|(index, from_top)| (index - removed + inserted, from_top));
         let natural_before = self.natural_offset();
         let end = (at + removed) as usize;
         self.sizes.splice(
@@ -621,7 +655,7 @@ impl ListState {
             std::iter::repeat_n(f32::NAN, inserted as usize),
         );
         self.count = self.count - removed + inserted;
-        let shift = |i: u32| -> Option<u32> {
+        self.follow_items(|i: u32| -> Option<u32> {
             if i < at {
                 Some(i)
             } else if i >= at + removed {
@@ -629,15 +663,96 @@ impl ListState {
             } else {
                 None
             }
-        };
+        });
+        if removed == 0 && at + inserted == self.count {
+            // Appended: the rows before stay as they are.
+            self.resize_rows(at);
+        } else {
+            self.rebuild_offsets();
+        }
+        self.after_items_changed(anchor, natural_before);
+    }
+
+    /// The items changed by key ([`ListDiff`]): each item that stays keeps
+    /// its measurement and its cell (the content, the state in it, the
+    /// focus) wherever it goes, the items it passes too; only new items
+    /// need a cell, and only gone ones free theirs. The first visible item
+    /// that kept its order keeps its place, as for a splice: one that moved
+    /// away leaves the rows around it where they were.
+    pub(super) fn reorder(&mut self, diff: &ListDiff) {
+        if diff.old_len != self.count {
+            // Not a change of these items: all of them are new.
+            self.splice(0, self.count, diff.new_len);
+            return;
+        }
+        if let Some((at, removed, inserted)) = diff.as_splice() {
+            self.splice(at, removed, inserted);
+            return;
+        }
+        self.items_changed = true;
+        self.pin = None;
+        let anchor = self.visible_anchor().and_then(|(first, _)| {
+            let top = self.natural_offset();
+            let bottom = top + self.viewport;
+            (first..self.count)
+                .take_while(|&i| self.item_at(i) < bottom)
+                .find_map(|i| match diff.new_index(i) {
+                    Some((to, false)) => Some((to, self.item_at(i) - top)),
+                    _ => None,
+                })
+        });
+        let natural_before = self.natural_offset();
+        let mut sizes = Vec::with_capacity(diff.new_len as usize);
+        for run in &diff.runs {
+            let len = run.len() as usize;
+            match run.from().and_then(|from| {
+                let from = from as usize;
+                self.sizes.get(from..from + len)
+            }) {
+                Some(measured) => sizes.extend_from_slice(measured),
+                None => sizes.resize(sizes.len() + len, f32::NAN),
+            }
+        }
+        self.sizes = sizes;
+        self.count = diff.new_len;
+        let indices = diff.new_indices();
+        self.follow_items(|i| indices.get(i as usize).copied().flatten());
+        self.kept.sort_unstable();
+        self.rebuild_offsets();
+        self.after_items_changed(anchor, natural_before);
+    }
+
+    /// The runtime never got the binds of `slots` (their items changed
+    /// first): each cell shows what it showed before them, and the window
+    /// asks again.
+    pub(super) fn unrequest(&mut self, slots: &[u32]) {
+        for &slot in slots {
+            if let Some(s) = self.slots.get_mut(slot as usize) {
+                s.requested = s.rendered;
+            }
+        }
+    }
+
+    /// The items moved as `shift` says (an item's new index, `None` when it
+    /// is gone): the cells, the items kept rendered and the rows the
+    /// runtime is told follow them.
+    fn follow_items(&mut self, shift: impl Fn(u32) -> Option<u32>) {
         self.kept = self.kept.iter().filter_map(|&i| shift(i)).collect();
         self.by_index.clear();
+        // New indices not sent yet (items that moved before): the runtime
+        // is told where they are now, or nothing for a cell that shows no
+        // item of its own any more.
+        let unsent = std::mem::take(&mut self.moved);
+        // Cells whose item went, with the index their content still reads
+        // and whether it showed that item.
+        let mut orphans = Vec::new();
         for (slot, s) in self.slots.iter_mut().enumerate() {
-            let index = s.index.and_then(shift);
+            s.placed = s.placed.and_then(&shift);
+            let index = s.index.and_then(&shift);
             let Some(new) = index else {
                 if s.index.take().is_some() {
                     self.free.push(slot as u32);
-                } else if let (Some(r), Some(n)) = (s.requested, s.requested.and_then(shift))
+                } else if let (Some(r), Some(n)) = (s.requested, s.requested.and_then(&shift))
                     && s.rendered == Some(r)
                 {
                     // A free cell still showing an item that stays follows
@@ -649,14 +764,19 @@ impl ListState {
                     }
                     continue;
                 }
-                // The cell's content follows the new data at its old index:
-                // it is bound again before it shows.
+                // Its item went: its content follows the new data at its
+                // old index, and shows the item now there (below). Else it
+                // is bound again before it shows.
+                if let Some(r) = s.requested.take()
+                    && shift(r).is_none()
+                {
+                    orphans.push((slot, r, s.rendered == Some(r)));
+                }
                 s.rendered = None;
-                s.requested = None;
                 continue;
             };
             s.index = Some(new);
-            s.rendered = s.rendered.and_then(shift);
+            s.rendered = s.rendered.and_then(&shift);
             // The runtime's index for the cell follows its item at once, or
             // its content shows the item now at the old index.
             match s.requested.map(|r| (r, shift(r))) {
@@ -666,7 +786,8 @@ impl ListState {
                         self.moved.push((slot as u32, n));
                     }
                 }
-                Some((_, None)) => {
+                Some((r, None)) => {
+                    orphans.push((slot, r, false));
                     s.requested = None;
                     s.rendered = None;
                 }
@@ -674,21 +795,52 @@ impl ListState {
             }
             self.by_index.insert(new, slot as u32);
         }
+        if !orphans.is_empty() {
+            self.adopt_orphans(orphans);
+        }
+        for (slot, previous) in unsent {
+            if let Some(n) = shift(previous)
+                && self.slots[slot as usize].requested == Some(n)
+                && !self.moved.iter().any(|&(s, _)| s == slot)
+            {
+                self.moved.push((slot, n));
+            }
+        }
         self.free.sort_unstable();
         self.free.dedup();
-        if removed == 0 && at + inserted == self.count {
-            // Appended: the rows before stay as they are.
-            self.resize_rows(at);
-        } else {
-            self.rebuild_offsets();
+    }
+
+    /// Cells whose item went (`(slot, index, shown)`: the index their
+    /// content reads, and whether it showed the item there) show the item
+    /// now at that index. One no other cell shows is that item's (it takes
+    /// the cell back as it is, as a spare cell's); one another cell shows
+    /// too (an item moved there with its cell) shows nothing, as do those
+    /// past the end: the components' lists let its content go before it
+    /// reads there (`move_rows` in `core/components.rs`, by the same rule),
+    /// and it is the first a new item takes ([`Slot::stale`]).
+    fn adopt_orphans(&mut self, orphans: Vec<(usize, u32, bool)>) {
+        let mut shown: Vec<u32> = self.slots.iter().filter_map(|s| s.requested).collect();
+        shown.sort_unstable();
+        for (slot, r, was_shown) in orphans {
+            let s = &mut self.slots[slot];
+            if r < self.count && shown.binary_search(&r).is_err() {
+                s.requested = Some(r);
+                s.rendered = was_shown.then_some(r);
+                s.stale = false;
+            } else {
+                s.stale = true;
+            }
         }
+    }
+
+    /// After the items changed: the first visible item (`anchor`: its new
+    /// index and where it showed) keeps its place, from a natural offset of
+    /// `natural_before`.
+    fn after_items_changed(&mut self, anchor: Option<(u32, f32)>, natural_before: f32) {
         if self.load_more_at.is_some() {
             self.load_more_at = None;
         }
-        if let Some((index, from_top)) = anchor
-            && index >= at + removed
-        {
-            let moved_to = index - removed + inserted;
+        if let Some((moved_to, from_top)) = anchor {
             if self.inverted {
                 // `anchor_end` restores the natural offset the list had;
                 // the visible rows need it moved by as much as they did.
@@ -853,6 +1005,7 @@ impl ListState {
             at: pinned,
             animating,
             automatic,
+            nearest,
         }) = &mut self.pin
             && settled
         {
@@ -869,6 +1022,15 @@ impl ListState {
                     target: *target,
                     animated: false,
                 });
+            } else {
+                let distance = (at - *pinned).abs();
+                if distance > *nearest + PIN_SLACK {
+                    // Away from where the animation goes: the user took
+                    // over.
+                    self.pin = None;
+                } else {
+                    *nearest = nearest.min(distance);
+                }
             }
         }
         if (moved || reading_displaced) && self.pin.is_none() {
@@ -915,7 +1077,31 @@ impl ListState {
             at: offset,
             animating: animated,
             automatic,
+            nearest: f32::INFINITY,
         });
+    }
+
+    /// Whether the list's End key follows its end (`Core::key_scrolled`):
+    /// not in its parent's viewport (the key moves the view around it),
+    /// nor inverted (End shows its first items).
+    pub(super) fn follows_end_key(&self) -> bool {
+        !self.parent && !self.inverted
+    }
+
+    /// Whether the list follows its end (`scrollToEnd` or End).
+    pub(super) fn follows_end(&self) -> bool {
+        matches!(
+            self.pin,
+            Some(Pin::Following {
+                target: PinTarget::End,
+                ..
+            })
+        )
+    }
+
+    /// The user scrolled away from the target the list followed.
+    pub(super) fn unpin(&mut self) {
+        self.pin = None;
     }
 
     /// The content offset for `target` with the sizes known now.
@@ -966,7 +1152,7 @@ impl ListState {
         if self.viewport <= 0.0 {
             return Follow::Stay;
         }
-        let (target, mut at, animating, automatic) = match pin {
+        let (target, mut at, animating, automatic, mut nearest) = match pin {
             Pin::Reading { .. } => return Follow::Stay,
             Pin::WaitingForIdle { target, animated } => {
                 if self.interaction != Some(0) {
@@ -984,21 +1170,26 @@ impl ListState {
                 at,
                 animating,
                 automatic,
+                nearest,
             } => {
                 if automatic && !self.idle() {
                     self.wait_for_idle(target, animating);
                     return Follow::Stay;
                 }
-                (target, at, animating, automatic)
+                (target, at, animating, automatic, nearest)
             }
         };
         let offset = self.target_offset(target);
         if animating {
             // The platform moves an animation in flight along with the
-            // anchoring scroll.
+            // anchoring scroll; the web moves only where it goes, so the
+            // list may report itself farther from there by as much.
             at += anchored;
+            nearest += anchored.abs();
             let follow = if (offset - at).abs() > PIN_SLACK {
                 at = offset;
+                // The retargeted animation comes nearer from where it is.
+                nearest = f32::INFINITY;
                 Follow::To {
                     offset,
                     animated: true,
@@ -1011,6 +1202,7 @@ impl ListState {
                 at,
                 animating,
                 automatic,
+                nearest,
             });
             return follow;
         }
@@ -1023,6 +1215,7 @@ impl ListState {
             at: offset,
             animating,
             automatic,
+            nearest,
         });
         if delta == 0.0 {
             Follow::Stay
@@ -1371,6 +1564,10 @@ impl ListState {
             if s.requested.is_some_and(|r| r >= count) {
                 s.requested = None;
                 s.rendered = None;
+                s.stale = true;
+            }
+            if s.placed.is_some_and(|p| p >= count) {
+                s.placed = None;
             }
         }
         let old = self.sizes.len() as u32;
@@ -1394,7 +1591,9 @@ impl ListState {
         }
     }
 
-    pub(super) fn set_columns(&mut self, columns: u32) {
+    /// Whether the cells change width: they are laid out again
+    /// (`Core::layout_cells`), which only runs in a turn that lays out.
+    pub(super) fn set_columns(&mut self, columns: u32) -> bool {
         let columns = columns.max(1);
         if columns != self.columns {
             // The first visible item stays where it is (a window resized to
@@ -1417,22 +1616,27 @@ impl ListState {
             if let Some((index, from_top)) = anchor {
                 self.keep_in_place(index, from_top);
             }
+            true
+        } else {
+            false
         }
     }
 
-    /// `contentStyle`: it wins over `contentClass` when set.
-    pub(super) fn set_content(&mut self, content: ListContentStyle) {
+    /// `contentStyle`: it wins over `contentClass` when set. Whether the
+    /// cells change width, as [`Self::set_columns`].
+    pub(super) fn set_content(&mut self, content: ListContentStyle) -> bool {
         self.content_style = content;
-        self.apply_content();
+        self.apply_content()
     }
 
-    /// What `contentClass` sets.
-    pub(super) fn set_class_content(&mut self, content: ListContentStyle) {
+    /// What `contentClass` sets. Whether the cells change width, as
+    /// [`Self::set_columns`].
+    pub(super) fn set_class_content(&mut self, content: ListContentStyle) -> bool {
         self.content_class = content;
-        self.apply_content();
+        self.apply_content()
     }
 
-    fn apply_content(&mut self) {
+    fn apply_content(&mut self) -> bool {
         let content = if self.content_style != ListContentStyle::default() {
             self.content_style
         } else {
@@ -1457,6 +1661,9 @@ impl ListState {
                 self.cells_cross = f32::NAN;
             }
             self.rebuild_offsets();
+            cross_changed
+        } else {
+            false
         }
     }
 
@@ -1715,6 +1922,7 @@ impl ListState {
     /// is, so a list at its end is still at its end.
     pub(super) fn anchor_end(&mut self, kept: f32) -> f32 {
         self.measured_scroll = 0.0;
+        let revealing = std::mem::take(&mut self.revealing);
         if self.viewport <= 0.0 {
             return 0.0;
         }
@@ -1752,6 +1960,13 @@ impl ListState {
             // instead of sending a competing ScrollBy on every report.
             let settle = bottom && (0.0..=PIN_SLACK).contains(&distance);
             if !opening && (was.is_nan() || distance > threshold || (end <= was && !settle)) {
+                return 0.0;
+            }
+            // A row growing under its own layout animation: the scroll
+            // would land at once while the row slides open, so the content
+            // above jumps. The list keeps its place, the row grows below
+            // the viewport, as it does further from the end (#2218).
+            if revealing && !opening && end > was {
                 return 0.0;
             }
             let delta = end - self.offset;
@@ -1835,24 +2050,19 @@ impl ListState {
                     index: None,
                     rendered: None,
                     requested: None,
+                    placed: None,
+                    stale: false,
                 },
             );
         }
         self.slots[s].cell = cell;
+        self.slots[s].stale = false;
         self.dirty = true;
     }
 
     fn set_extra(&mut self, kind: ExtraKind, cell: u32) {
         self.extras[kind as usize] = Extra { cell, size: 0.0 };
         self.dirty = true;
-    }
-
-    /// Whether cell `cell` is a slot's the list freed: bound to no item, it
-    /// still holds what it showed last until the list binds it again.
-    pub(super) fn frees(&self, cell: u32) -> bool {
-        self.slots
-            .iter()
-            .any(|s| s.cell == cell && s.index.is_none())
     }
 
     pub(super) fn remove_cell(&mut self, cell: u32) {
@@ -1862,6 +2072,8 @@ impl ListState {
                 slot.cell = u32::MAX;
                 slot.rendered = None;
                 slot.requested = None;
+                slot.placed = None;
+                slot.stale = false;
                 self.dirty = true;
             }
         }
@@ -1870,6 +2082,23 @@ impl ListState {
                 *extra = Extra::NONE;
                 self.dirty = true;
             }
+        }
+    }
+
+    /// Item `index`'s cell is placed for it. True when it was placed for
+    /// another item before, or never: it shows a new row there.
+    pub(super) fn place(&mut self, index: u32) -> bool {
+        let Some(&slot) = self.by_index.get(&index) else {
+            return true;
+        };
+        let s = &mut self.slots[slot as usize];
+        s.placed.replace(index) != Some(index)
+    }
+
+    /// Cell `cell` was moved out of sight: it shows no row's place.
+    pub(super) fn unplace(&mut self, cell: u32) {
+        if let Some(s) = self.slots.iter_mut().find(|s| s.cell == cell) {
+            s.placed = None;
         }
     }
 
@@ -2032,7 +2261,14 @@ impl ListState {
         // First the items whose own cell is free and still shows them (the
         // window shrank and grew back: a dock showed and went, the window
         // was resized): they take it back as it is, nothing to make again.
-        // Then the rest, each in any free cell.
+        // Then the rest, each in any free cell. Cells that show no item of
+        // their own (`Slot::stale`; data changes leave them, scrolling none)
+        // show another cell's in the runtime's lists: those go first, to
+        // show it once. A component's list let their content go: those go
+        // last, after the cells that still show an item, which are bound
+        // again rather than made.
+        let stale = (self.free.iter()).any(|&s| self.slots[s as usize].stale);
+        let first = self.paced;
         let bind = |this: &mut Self, i: u32, own: bool| {
             if this.by_index.contains_key(&i) {
                 return;
@@ -2046,7 +2282,15 @@ impl ListState {
             let slot = match own_slot {
                 Some(at) => this.free.remove(at),
                 None if own => return,
-                None => match this.free.pop() {
+                None => match stale
+                    .then(|| {
+                        let mut free = this.free.iter();
+                        free.rposition(|s| slots[*s as usize].stale == first)
+                    })
+                    .flatten()
+                    .map(|at| this.free.remove(at))
+                    .or_else(|| this.free.pop())
+                {
                     Some(slot) => slot,
                     None => {
                         this.slots.push(Slot {
@@ -2054,6 +2298,8 @@ impl ListState {
                             index: None,
                             rendered: None,
                             requested: None,
+                            placed: None,
+                            stale: false,
                         });
                         this.slots.len() as u32 - 1
                     }
@@ -2097,6 +2343,7 @@ impl ListState {
                 || self.item_overlaps(i, start, end)
             {
                 self.slots[slot].requested = Some(i);
+                self.slots[slot].stale = false;
                 binds.push((slot as u32, i));
             }
         }
@@ -2171,6 +2418,7 @@ impl ListState {
                 break;
             };
             self.slots[slot as usize].requested = Some(i);
+            self.slots[slot as usize].stale = false;
             binds.push((slot, i));
             taken += 1;
         }
@@ -3051,6 +3299,177 @@ mod tests {
         assert!(!l.has_paced());
     }
 
+    /// A list of `count` rows at `offset` with every cell of its window
+    /// made (cell `100 + slot`) and showing its row.
+    fn with_cells(count: u32, offset: f32) -> ListState {
+        let mut l = list(count, 50.0, 400.0);
+        l.offset = offset;
+        let mut binds = Vec::new();
+        l.update_window(&mut binds, None);
+        for (slot, index) in binds {
+            l.add_slot_cell(CellSlot::Item(slot), 100 + slot);
+            l.rendered(100 + slot, index);
+        }
+        l
+    }
+
+    /// Each cell and the row it shows.
+    fn shown(l: &ListState) -> Vec<(u32, u32)> {
+        let mut shown: Vec<_> = l
+            .slots
+            .iter()
+            .filter_map(|s| Some((s.cell, s.ready()?)))
+            .collect();
+        shown.sort_unstable();
+        shown
+    }
+
+    /// Rows `0..count` with row `from` moved to `to`.
+    fn moved_row(count: u32, from: usize, to: usize) -> (Vec<u32>, Vec<u32>) {
+        let old: Vec<u32> = (0..count).collect();
+        let mut new = old.clone();
+        let row = new.remove(from);
+        new.insert(to, row);
+        (old, new)
+    }
+
+    #[test]
+    fn a_moved_row_and_the_rows_it_passed_keep_their_cells() {
+        let mut l = with_cells(100, 0.0);
+        l.measured(3, 80.0);
+        let before = shown(&l);
+        let slots = l.slots.len();
+        let (old, new) = moved_row(100, 10, 2);
+        let diff = ListDiff::new(&old, &new).unwrap();
+        l.reorder(&diff);
+        // Every cell shows the row it showed, at the row's new index.
+        let follow = |(cell, i): (u32, u32)| (cell, diff.new_index(i).unwrap().0);
+        assert_eq!(
+            shown(&l),
+            before.into_iter().map(follow).collect::<Vec<_>>()
+        );
+        // Measurements went with their rows.
+        assert_eq!(l.row_extent(4), 80.0);
+        assert_eq!(l.row_extent(3), 50.0);
+        // The runtime only learns the new indices: no cell is made or bound
+        // to another row.
+        let mut binds = Vec::new();
+        l.update_window(&mut binds, None);
+        assert_eq!(l.slots.len(), slots);
+        for &(slot, index) in &binds {
+            assert_eq!(l.slots[slot as usize].rendered, Some(index), "{binds:?}");
+        }
+        let mut moved: Vec<u32> = binds.iter().map(|b| b.1).collect();
+        moved.sort_unstable();
+        assert_eq!(moved, (2..=10).collect::<Vec<_>>());
+        // At its start the list stays there: the row shows at the top.
+        assert_eq!((l.offset, l.take_splice_anchor()), (0.0, 0.0));
+    }
+
+    #[test]
+    fn moves_inserts_and_removes_keep_the_rows_that_stay() {
+        let mut l = with_cells(100, 0.0);
+        let before = shown(&l);
+        // Row 5 goes, row 1000 arrives at the top, row 12 moves to 3.
+        let old: Vec<u32> = (0..100).collect();
+        let mut new: Vec<u32> = old.iter().copied().filter(|&k| k != 5 && k != 12).collect();
+        new.insert(0, 1000);
+        new.insert(3, 12);
+        let diff = ListDiff::new(&old, &new).unwrap();
+        l.reorder(&diff);
+        assert_eq!(l.count, 100);
+        let kept: Vec<_> = before
+            .iter()
+            .filter_map(|&(cell, i)| Some((cell, diff.new_index(i)?.0)))
+            .collect();
+        assert_eq!(shown(&l), kept);
+        // The gone row's cell is free; the new row takes a cell.
+        let mut binds = Vec::new();
+        l.update_window(&mut binds, None);
+        let new_row = binds.iter().find(|b| b.1 == 0).expect("the new row binds");
+        assert_eq!(l.slots[new_row.0 as usize].rendered, None);
+        assert_eq!(
+            binds
+                .iter()
+                .filter(|b| l.slots[b.0 as usize].rendered != Some(b.1))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn rows_out_of_the_window_move_their_measurements_and_cells() {
+        let moves = || {
+            // Row 2 moves past the window, row 60 (never shown) to the end.
+            let old: Vec<u32> = (0..100).collect();
+            let mut new: Vec<u32> = old.iter().copied().filter(|&k| k != 2 && k != 60).collect();
+            new.insert(80, 2);
+            new.push(60);
+            ListDiff::new(&old, &new).unwrap()
+        };
+        let mut l = with_cells(100, 0.0);
+        l.measured(60, 90.0);
+        let slots = l.slots.len();
+        l.reorder(&moves());
+        assert_eq!(l.row_extent(99), 90.0);
+        assert_eq!(l.row_extent(59), 50.0);
+        // Row 2's cell, out of the window, shows the row that came in.
+        let mut binds = Vec::new();
+        l.update_window(&mut binds, None);
+        assert_eq!(l.slots.len(), slots);
+        // A row that holds the focus keeps its cell wherever it goes.
+        let mut l = with_cells(100, 0.0);
+        let slot = l.by_index[&2];
+        l.set_kept(vec![2]);
+        l.reorder(&moves());
+        binds.clear();
+        l.update_window(&mut binds, None);
+        assert_eq!(l.slots[slot as usize].ready(), Some(80));
+        assert_eq!(l.slots.len(), slots + 1, "the row that came in");
+        assert!(binds.iter().all(|b| b.0 != slot || b.1 == 80), "{binds:?}");
+    }
+
+    #[test]
+    fn repeated_keys_pair_up_and_keep_their_cells() {
+        let mut l = with_cells(12, 0.0);
+        let before = shown(&l);
+        let old = [7, 7, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11];
+        let new = [1, 7, 2, 7, 3, 4, 5, 6, 8, 9, 10, 11];
+        let diff = ListDiff::new(&old, &new).unwrap();
+        l.reorder(&diff);
+        let follow = |(cell, i): (u32, u32)| (cell, diff.new_index(i).unwrap().0);
+        let mut expected: Vec<_> = before.into_iter().map(follow).collect();
+        expected.sort_unstable();
+        assert_eq!(shown(&l), expected);
+        // A diff of other rows than the list's: all of them are new.
+        l.reorder(&ListDiff::new(&[1, 2], &[2, 1]).unwrap());
+        assert_eq!(l.count, 2);
+        assert!(shown(&l).is_empty());
+    }
+
+    #[test]
+    fn moves_keep_the_first_visible_row_in_place() {
+        // Row 20 at the top, 10 points scrolled into it.
+        let mut l = with_cells(100, 1010.0);
+        let first = l.item_at(20) - l.offset;
+        // A row below moves to the top: row 20 (now 21) stays on screen.
+        let (old, new) = moved_row(100, 50, 0);
+        l.reorder(&ListDiff::new(&old, &new).unwrap());
+        assert_eq!(l.item_at(21) - l.offset, first);
+        assert_eq!(l.take_splice_anchor(), 50.0);
+        // The first visible row itself moves to the top: the rows after it
+        // stay where they were, rather than following it.
+        let next = l.item_at(22) - l.offset;
+        let (old, new) = moved_row(100, 21, 0);
+        l.reorder(&ListDiff::new(&old, &new).unwrap());
+        assert_eq!(l.item_at(22) - l.offset, next);
+        // A row above moves below the viewport: the visible rows stay.
+        let (old, new) = moved_row(100, 3, 90);
+        l.reorder(&ListDiff::new(&old, &new).unwrap());
+        assert_eq!(l.item_at(21) - l.offset, next);
+        assert_eq!(l.take_splice_anchor(), -50.0);
+    }
+
     #[test]
     fn a_change_of_columns_keeps_the_first_visible_item_in_place() {
         let mut l = list(90, 50.0, 400.0);
@@ -3207,6 +3626,27 @@ mod tests {
         l.update_window(&mut binds, None);
         while l.take_paced(100, &mut binds) > 0 {}
         assert!(binds.iter().all(|&(_, i)| i < 3), "{binds:?}");
+    }
+
+    #[test]
+    fn an_animated_pin_ends_when_the_list_moves_away_from_it() {
+        let mut l = list(100, 50.0, 400.0);
+        l.pin(Some(PinTarget::End), 4600.0, true, false);
+        l.issue_scroll_to(4600.0);
+        l.reported(3000.0, 1);
+        l.reported(3500.0, 1);
+        // Rows above measured: the web moves only where the animation
+        // goes, not where the list is.
+        l.measured(0, 150.0);
+        assert_eq!(l.follow_pin(100.0), Follow::Stay);
+        l.issue_scroll_by(100.0);
+        l.reported(3500.0, 2);
+        assert!(l.pinned(), "anchoring is no move away");
+        l.reported(3900.0, 2);
+        assert!(l.pinned());
+        // A wheel turns it back.
+        l.reported(3700.0, 2);
+        assert!(!l.pinned());
     }
 
     #[test]
@@ -3485,13 +3925,36 @@ mod tests {
         bind_all(&mut l, &mut binds);
         assert_eq!(cell_of(&l, last + 2), Some(own));
         assert!(!binds.iter().any(|&(s, _)| s == slot), "{binds:?}");
-        // A free cell whose row went is bound again before it shows.
+        // A free cell whose row went shows the row now at its index, which
+        // no other cell shows: that row takes it back as it is.
         l.viewport = 200.0;
         bind_all(&mut l, &mut binds);
         assert_eq!(cell_of(&l, last + 2), None);
         l.splice(last + 2, 1, 0);
         let s = l.slots[slot as usize];
-        assert_eq!((s.rendered, s.requested), (None, None));
+        assert_eq!(
+            (s.rendered, s.requested, s.stale),
+            (Some(last + 2), Some(last + 2), false)
+        );
+        l.viewport = 400.0;
+        bind_all(&mut l, &mut binds);
+        assert_eq!(cell_of(&l, last + 2), Some(own));
+        assert!(!binds.iter().any(|&(s, _)| s == slot), "{binds:?}");
+        // One whose index a row moved to with its own cell shows nothing of
+        // its own: it is bound again before it shows.
+        l.viewport = 200.0;
+        bind_all(&mut l, &mut binds);
+        let spare = |l: &ListState, i: u32| {
+            (l.slots.iter())
+                .position(|s| s.index.is_none() && s.requested == Some(i))
+                .unwrap()
+        };
+        let (before, mine) = (spare(&l, last + 1), spare(&l, last + 2));
+        l.splice(last + 1, 1, 0);
+        let s = l.slots[before];
+        assert_eq!((s.rendered, s.requested, s.stale), (None, None, true));
+        let s = l.slots[mine];
+        assert_eq!((s.rendered, s.requested), (Some(last + 1), Some(last + 1)));
     }
 
     #[test]

@@ -341,6 +341,21 @@ pub(crate) fn owner_handle(cx: *mut JsContext) -> (u32, u32) {
     }
 }
 
+/// No owner ([`live_owner`] of a gone one).
+pub(crate) const NONE_OWNER: u32 = r::NONE;
+
+/// Owner `owner` (from [`owner_handle`]) if it is still live, else
+/// [`NONE_OWNER`].
+pub(crate) fn live_owner(cx: *mut JsContext, (owner, generation): (u32, u32)) -> u32 {
+    // SAFETY: a short borrow.
+    let g = unsafe { graph(cx) };
+    if g.is_live_owner(owner) && g.live(owner, generation, u32::MAX) {
+        owner
+    } else {
+        r::NONE
+    }
+}
+
 /// Hands the pending exception to the error boundary of owner `owner`
 /// (from [`owner_handle`]): whether one caught it (else it stays pending).
 /// A listener's failure goes there, as one of a computation does.
@@ -1445,6 +1460,27 @@ mod tests {
                 return log;
             "#),
             r#"["2/2","4/3","read 6","6/4"]"#
+        );
+    }
+
+    #[test]
+    fn a_memo_that_threw_once_still_tells_its_readers_of_changes() {
+        // The round's error is thrown from the write that started it.
+        assert_eq!(
+            run(r#"
+                const [a, setA] = R.createSignal(0);
+                const m = R.createMemo(() => {
+                    if (a() === 1) throw new Error("failed once");
+                    return a() * 10;
+                });
+                const log = [];
+                R.createRoot(() => R.createRenderEffect(() => log.push(m())));
+                for (const v of [1, 2, 3]) {
+                    try { setA(v); } catch (e) { log.push(e.message); }
+                }
+                return log;
+            "#),
+            r#"[0,"failed once",20,30]"#
         );
     }
 

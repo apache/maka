@@ -9,10 +9,9 @@ demo: el-hover-card
 
 A hover card previews what its trigger points at without leaving the page: the profile behind a mention, the page
 behind a link, the quote behind a ticker. On the desktops and in desktop browsers it opens once the pointer has rested
-on the trigger for `openDelay` (600 ms), or once the keyboard focus comes to the trigger. It stays open while the
-pointer moves from the trigger onto the card and back, and while the keyboard focus is on the trigger or on a link or
-button in the card, so everything in the card can be used with the pointer and the keyboard alike. It closes
-`closeDelay` (300 ms) after the pointer has left both and the focus is in neither. Escape and a press outside close it
+on the trigger for `openDelay` (600 ms). It stays open while the pointer moves from the trigger onto the card and back,
+and closes `closeDelay` (300 ms) after the pointer has left both. Like Radix's hover card, it follows the pointer only:
+the keyboard focus neither opens nor holds it. Escape and a press outside close it
 at once. On phones and
 tablets a press on the trigger opens and closes it, and a press outside closes it.
 
@@ -75,7 +74,7 @@ the card opens or closes. An `openDelay` of `Infinity` leaves opening to the app
 
 Without `open`, the card keeps its own state, starting from `defaultOpen`. With `open`, the app owns it: change it in
 `onOpenChange({ open, reason })`, which reports every request to open or close with its reason: `"hover"` (the
-pointer), `"focus"` (the keyboard focus), `"triggerPress"` (a press on a touch screen), `"pressOutside"` or
+pointer), `"triggerPress"` (a press on a touch screen), `"pressOutside"` or
 `"cancel"` (Escape or back).
 
 ```tsx
@@ -114,8 +113,8 @@ inside the safe area. `onPosition({ placement, bounds, available })` says where 
 |---|---|---|---|---|
 | `open` | `.open(..)` | `boolean` | none | Open, controlled by the app. |
 | `defaultOpen` | `.default_open(..)` | `boolean` | `false` | Open at first, without `open`. |
-| `openDelay` | `.open_delay(..)` | `number` | `600` | Milliseconds the pointer rests on the trigger, or the focus stays on it, before it opens; `Infinity`: never by itself. |
-| `closeDelay` | `.close_delay(..)` | `number` | `300` | Milliseconds the pointer is away from the trigger and the card, with the focus in neither, before it closes; `Infinity`: never by itself. |
+| `openDelay` | `.open_delay(..)` | `number` | `600` | Milliseconds the pointer rests on the trigger before it opens; `Infinity`: never by itself. |
+| `closeDelay` | `.close_delay(..)` | `number` | `300` | Milliseconds the pointer is away from the trigger and the card before it closes; `Infinity`: never by itself. |
 | `placement` | `.placement(..)` | `"top" \| "bottom" \| "left" \| "right"` | `"bottom"` | The side of the trigger it goes on. |
 | `align` | `.align(..)` | `"start" \| "center" \| "end"` | `"center"` | How it lines up with the trigger along that side. |
 | `offset` | `.offset(..)` | `number` | `0` | The gap between the trigger and the card. |
@@ -130,7 +129,7 @@ inside the safe area. `onPosition({ placement, bounds, available })` says where 
 
 | Event | Rust | Description |
 |---|---|---|
-| `onOpenChange` | `.on_open_change(\|e\| ..)` | It asks to open or close, with why: `"hover"`, `"focus"`, `"triggerPress"`, `"pressOutside"` or `"cancel"`. |
+| `onOpenChange` | `.on_open_change(\|e\| ..)` | It asks to open or close, with why: `"hover"`, `"triggerPress"`, `"pressOutside"` or `"cancel"`. |
 | `onOpen` | `.on_open(\|\| ..)` | It is shown. |
 | `onClose` | `.on_close(\|\| ..)` | It is gone, after its exit; also when the app closed it. |
 | `onPosition` | `.on_position(\|e\| ..)` | The popup was placed: `placement` (the side it went on), `bounds` (its frame), `available` (the room on that side). |
@@ -138,7 +137,6 @@ inside the safe area. `onPosition({ placement, bounds, available })` says where 
 ## Accessibility
 
 A hover card adds to its trigger: the trigger keeps its role and label, and what it opens or does when pressed stays
-the same. Keyboard users get the card when the focus rests on the trigger, and Escape closes it. The card takes no
-focus of its own, so Tab moves on from the trigger as before. Links and buttons in the card take the focus as anywhere
-else, and the card stays open while one of them has it; what matters in the card should also be reachable from the
-page the trigger leads to.
+the same. The card is for sighted pointer users: focusing the trigger does not open it, and Escape closes an open
+card. The card takes no focus of its own, so Tab moves on from the trigger as before. What matters in the card must
+also be reachable from the page the trigger leads to.

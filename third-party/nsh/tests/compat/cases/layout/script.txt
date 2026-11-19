@@ -370,6 +370,31 @@ frame id:variant-order 0 0 20 20
 covers [styles] position
 covers [styles] marginRight
 
+# layout-sibling-classes
+tap id:case-layout-sibling-classes
+expect Sibling classes
+style id:sibling-1 backgroundColor #00ff00ff
+style id:sibling-2 backgroundColor #ff0000ff
+style id:sibling-3 backgroundColor #0000ffff
+frame id:sibling-1 0 0 10 20
+frame id:sibling-2 0 20 10 30
+frame id:sibling-3 0 50 10 20
+tap text:Reorder siblings
+style id:sibling-3 backgroundColor #00ff00ff
+style id:sibling-1 backgroundColor #ff0000ff
+style id:sibling-2 backgroundColor #0000ffff
+frame id:sibling-3 0 0 10 20
+frame id:sibling-1 0 20 10 30
+frame id:sibling-2 0 50 10 20
+tap text:Append sibling
+style id:sibling-2 backgroundColor #ff0000ff
+style id:sibling-4 backgroundColor #0000ffff
+frame id:sibling-4 0 70 10 30
+tap text:Keep one sibling
+style id:sibling-2 backgroundColor #0000ffff
+frame id:sibling-2 0 0 10 20
+frame id:sibling-inner-2 2 2 1 1
+
 # layout-sticky
 tap id:case-layout-sticky
 expect Sticky bar

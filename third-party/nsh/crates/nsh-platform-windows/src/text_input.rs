@@ -79,7 +79,7 @@ use nsh_core::{
     SubmitBehavior, TextAlign,
     geometry::{Point, Size},
     tailwind::state,
-    text_edit::{key_of, pasted},
+    text_edit::{clip_chars, key_of, pasted},
 };
 use rustc_hash::FxHashMap;
 use windows::{
@@ -96,8 +96,8 @@ use windows::{
                 DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_JUSTIFIED,
                 DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
                 DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-                DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP, IDWriteTextFormat,
-                IDWriteTextLayout,
+                DWRITE_WORD_WRAPPING_EMERGENCY_BREAK, DWRITE_WORD_WRAPPING_NO_WRAP,
+                IDWriteTextFormat, IDWriteTextLayout,
             },
         },
         UI::{
@@ -131,7 +131,7 @@ use windows::{
                 DefWindowProcW, GetCaretBlinkTime, KillTimer, SetTimer, WM_CHAR, WM_CLEAR, WM_COPY,
                 WM_CUT, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT,
                 WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-                WM_LBUTTONUP, WM_MOUSEMOVE,
+                WM_LBUTTONUP, WM_MOUSEMOVE, WS_VSCROLL,
             },
         },
     },
@@ -360,6 +360,56 @@ impl InputState {
         self.editor.as_ref().map_or((0, 0), Editor::selection)
     }
 
+    /// What of `text` may replace the selection: cut to what `maxLength`
+    /// (characters, Unicode scalar values) leaves room for.
+    fn fit<'a>(&self, text: &'a str) -> &'a str {
+        let Some(max) = self.config.borrow().max_length else {
+            return text;
+        };
+        let units = self.units();
+        let (a, b) = self.selection();
+        let start = (a.min(b) as usize).min(units.len());
+        let end = (a.max(b) as usize).min(units.len());
+        let kept = char_count(&units[..start]) + char_count(&units[end..]);
+        clip_chars(text, (max as usize).saturating_sub(kept))
+    }
+
+    /// RichEdit's limit (`TxGetMaxLength`) for `maxLength`. RichEdit counts
+    /// UTF-16 units, `maxLength` characters: the limit is the units the
+    /// text has plus one per character of room left, set again after each
+    /// edit, so what RichEdit inserts by itself (an input method's
+    /// composition and commit, the emoji panel, a drop) stays within
+    /// `maxLength` characters. A character of one unit leaves the limit as
+    /// it was; one of two (an emoji) raises it by one, though RichEdit
+    /// takes such a character by itself only while two characters of room
+    /// are left. The field's own insertions (typing, pastes, `insertText`)
+    /// cut their text by characters first ([`InputState::fit`]) and lift
+    /// the limit ([`uncut`]), so they fill the room exactly.
+    fn limit(&self) -> u32 {
+        let Some(max) = self.config.borrow().max_length else {
+            return i32::MAX as u32;
+        };
+        let units = self.units();
+        let room = (max as usize).saturating_sub(char_count(&units));
+        (units.len() + room).min(i32::MAX as usize) as u32
+    }
+
+    fn set_limit(&self, units: u32) {
+        if let Some(e) = &self.editor
+            && e.props().max_length != units
+        {
+            e.update(|p| p.max_length = units, TXTBIT_MAXLENGTHCHANGE);
+        }
+    }
+
+    /// Sets RichEdit's limit for the text it holds now
+    /// ([`InputState::limit`]).
+    fn follow_limit(&self) {
+        if self.config.borrow().max_length.is_some() {
+            self.set_limit(self.limit());
+        }
+    }
+
     /// The text being composed, while there is any.
     fn composed_text(&self) -> Option<String> {
         let (before, after) = self.composing.get()?;
@@ -431,7 +481,7 @@ impl InputState {
                 .CreateTextLayout(text, &format, if multiline { width } else { 1.0e6 }, 1.0e6)
                 .ok()?;
             let _ = layout.SetWordWrapping(if multiline {
-                DWRITE_WORD_WRAPPING_WRAP
+                DWRITE_WORD_WRAPPING_EMERGENCY_BREAK
             } else {
                 DWRITE_WORD_WRAPPING_NO_WRAP
             });
@@ -490,6 +540,18 @@ impl InputState {
         ((self.size.get().1 - self.line_height()) / 2.0).max(0.0)
     }
 
+    /// A multiline field's vertical scroll in pixels: where it is and the
+    /// farthest it goes (the last line at the content box's bottom).
+    /// Clamp the wheel to the text's height rather than scrolling past its end.
+    fn text_scroll(&self) -> Option<(i32, i32)> {
+        let e = self.editor.as_ref()?;
+        let mut at = windows::Win32::Foundation::POINT::default();
+        e.send(EM_GETSCROLLPOS, 0, &mut at as *mut _ as isize);
+        let client = self.client();
+        let height = e.text_height(client.right - client.left)?;
+        Some((at.y, (height - (client.bottom - client.top)).max(0)))
+    }
+
     /// RichEdit's client rectangle: the content box in the window's client
     /// pixels (one line centered).
     fn client(&self) -> RECT {
@@ -522,6 +584,9 @@ impl InputState {
         self.set_size((content.size.width.0, content.size.height.0));
         let scale_changed = self.scale.replace(s) != s;
         self.origin.set(origin);
+        if let Some(e) = &self.editor {
+            e.show_in(crate::app_window::hwnd_showing(&surface, view));
+        }
         if scale_changed {
             self.apply_formats();
         }
@@ -553,6 +618,7 @@ impl InputState {
         let color = self.anim_color.get().unwrap_or(style.color);
         let face = family(style.font_family.map(|f| f.name()).as_deref());
         let bits = base_bits(&config);
+        let limit = self.limit();
         e.update(
             |p| {
                 let cf = &mut p.char_format;
@@ -601,12 +667,8 @@ impl InputState {
                     pf.dyLineSpacing = 0;
                 }
                 p.bits = bits;
-                p.max_length = config.max_length.unwrap_or(i32::MAX as u32);
-                p.scroll = if config.multiline {
-                    ES_AUTOVSCROLL
-                } else {
-                    ES_AUTOHSCROLL
-                };
+                p.max_length = limit;
+                p.scroll = scroll_flags(&config);
                 p.highlight = config
                     .selection_color
                     .map(|c| (colorref(c), colorref(color)));
@@ -617,8 +679,9 @@ impl InputState {
                 | TXTBIT_SCROLLBARCHANGE,
         );
         // Spelling (and the touch keyboard's suggestions) where the app
-        // wants corrections: never in a password.
-        let spell = config.auto_correct && !config.secure && config.editable;
+        // wants corrections: never in a password, shown or not.
+        let spell =
+            config.auto_correct && !config.secure && !config.visible_password() && config.editable;
         drop(config);
         let (options, _) = self.send(EM_GETLANGOPTIONS, 0, 0);
         let flags = IMF_SPELLCHECKING | IMF_TKBPREDICTION;
@@ -706,11 +769,20 @@ impl InputState {
                 dc.SetTarget(&list);
                 dc.SetDpi(96.0 * s, 96.0 * s);
                 dc.BeginDraw();
-                // RichEdit draws in the window's client pixels.
-                dc.SetTransform(
-                    &(Matrix3x2::translation(-ox as f32, -oy as f32)
-                        * Matrix3x2::scale(1.0 / s, 1.0 / s)),
-                );
+                // RichEdit draws its client pixels in units of GDI's DPI,
+                // not the target's: scaled to the target's (nothing on a
+                // monitor at the system's scale), then the origin comes
+                // back to the view's points.
+                let k = Surface::by_key(self.surface)
+                    .map_or(1.0, |surface| richedit::target_scale(surface.hwnd(), s));
+                dc.SetTransform(&Matrix3x2 {
+                    M11: k,
+                    M12: 0.0,
+                    M21: 0.0,
+                    M22: k,
+                    M31: -ox as f32 / s,
+                    M32: -oy as f32 / s,
+                });
                 let drawn = e.draw(dc.as_raw(), bounds);
                 let ended = dc.EndDraw(None, None);
                 dc.SetTarget(None);
@@ -778,7 +850,19 @@ impl Hosted for InputState {
         // shows, the background is transparent), or its first caret keeps
         // the height of the default font. The recording is in the content
         // box's points, as this item draws.
-        if let Some(drawn) = &*self.drawn.borrow() {
+        // RichEdit takes the text color as a COLORREF, which has no alpha
+        // (`colorref`): it would draw a transparent or translucent color
+        // opaque. The color's alpha is applied to its drawing here instead,
+        // so a field whose text is transparent (`OtpInput`'s, over its
+        // cells) shows nothing of its text.
+        let text_alpha = alpha(color);
+        if text_alpha > 0.0
+            && let Some(drawn) = &*self.drawn.borrow()
+        {
+            let faded = text_alpha < 1.0;
+            if faded {
+                cx.push_opacity(text_alpha);
+            }
             // SAFETY: a COM call between BeginDraw and EndDraw.
             unsafe {
                 cx.dc.DrawImage(
@@ -788,6 +872,9 @@ impl Hosted for InputState {
                     D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
                     D2D1_COMPOSITE_MODE_SOURCE_OVER,
                 );
+            }
+            if faded {
+                cx.pop();
             }
         }
 
@@ -845,6 +932,11 @@ fn base_bits(config: &InputConfig) -> u32 {
     bits
 }
 
+/// The alpha of a color, 0 to 1: what [`colorref`] leaves out.
+fn alpha(c: Color) -> f32 {
+    (c.0 & 0xff) as f32 / 255.0
+}
+
 fn colorref(c: Color) -> COLORREF {
     let v = c.0;
     let (r, g, b) = ((v >> 24) & 0xff, (v >> 16) & 0xff, (v >> 8) & 0xff);
@@ -877,6 +969,13 @@ fn family(name: Option<&str>) -> String {
         Some("ui-serif" | "serif") => "Times New Roman".to_owned(),
         Some(f) => f.to_owned(),
     }
+}
+
+fn scroll_flags(config: &InputConfig) -> u32 {
+    if !config.multiline {
+        return ES_AUTOHSCROLL;
+    }
+    ES_AUTOVSCROLL | WS_VSCROLL.0
 }
 
 /// The horizontal alignment of the text (0: left, 1: right).
@@ -1083,6 +1182,24 @@ pub(crate) fn focused_view(surface: &Surface) -> Option<NshView> {
     if can_hold_focus(surface, &view) {
         return Some(view);
     }
+    drop_quietly(surface, &view);
+    None
+}
+
+/// `view` was removed ([`crate::input::removed`]): a field in it loses the
+/// focus without a blur, its `FOCUSED` state cleared.
+pub(crate) fn removed(surface: &Surface, view: &NshView) {
+    let field = FOCUS.with(|f| f.borrow().get(&surface.key()).and_then(|f| f.view.clone()));
+    if let Some(field) = field
+        && crate::input::holds(view, &field)
+    {
+        drop_quietly(surface, &field);
+        crate::input::set_state(surface, &field, state::FOCUSED, false);
+    }
+}
+
+/// The focused `field` loses the focus without a word.
+fn drop_quietly(surface: &Surface, field: &NshView) {
     surface.terminal_focus_generation.set(
         surface
             .terminal_focus_generation
@@ -1090,7 +1207,7 @@ pub(crate) fn focused_view(surface: &Surface) -> Option<NshView> {
             .checked_add(1)
             .expect("native focus generation exhausted"),
     );
-    if let Some(input) = input_of(&view) {
+    if let Some(input) = input_of(field) {
         input.focused.set(false);
         input.dragging.set(false);
         #[cfg(feature = "terminal")]
@@ -1099,19 +1216,21 @@ pub(crate) fn focused_view(surface: &Surface) -> Option<NshView> {
         if let Some(e) = &input.editor {
             e.set_focus(false);
         }
-
-        report_composition(surface, &view, &input);
     }
     FOCUS.with(|f| {
         if let Some(f) = f.borrow_mut().get_mut(&surface.key()) {
             f.view = None;
         }
     });
-    crate::input::set_state(surface, &view, state::FOCUSED, false);
-    send(surface, &view, EventKind::Blur, || EventPayload::None);
+    crate::input::set_state(surface, field, state::FOCUSED, false);
     update_ime(surface);
     blink::update();
-    None
+}
+
+/// The surface's window was destroyed: forgets its focus entirely.
+pub(crate) fn destroyed(surface: &Surface) {
+    stopped(surface);
+    FOCUS.with(|f| f.borrow_mut().remove(&surface.key()));
 }
 
 fn window_active(surface: &Surface) -> bool {
@@ -1125,6 +1244,12 @@ fn set_focus(surface: &Rc<Surface>, view: Option<&NshView>) {
         && !can_hold_focus(surface, target)
     {
         return;
+    }
+    if let Some(view) = view {
+        // A custom view of this window gives its keyboard focus to the
+        // field, as the field's gives way to the view's
+        // (`crate::keyboard`).
+        crate::keyboard::blur_window(surface, crate::app_window::window_of(surface, view));
     }
     if view.is_some() {
         FOCUS.with(|f| f.borrow_mut().entry(surface.key()).or_default().auto_focus = None);
@@ -1678,6 +1803,9 @@ fn process(surface: &Surface, view: &NshView, input: &InputState) -> bool {
     } else if notes.composition_start.is_some() {
         report_composition(surface, view, input);
     }
+    if notes.changed || notes.composition_end {
+        input.follow_limit();
+    }
     if notes.changed || notes.selection {
         input.wake_caret();
         report_selection(surface, view, input);
@@ -1689,11 +1817,32 @@ fn process(surface: &Surface, view: &NshView, input: &InputState) -> bool {
     changed
 }
 
-/// Replaces the selection with `text` (undo takes it back; `maxLength`
-/// clips it).
+/// Replaces the selection with `text`, cut to what `maxLength` leaves room
+/// for ([`InputState::fit`]); undo takes it back.
 fn replace_selection(input: &InputState, text: &str) {
-    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
-    input.send(EM_REPLACESEL, 1, wide.as_ptr() as isize);
+    let wide: Vec<u16> = input.fit(text).encode_utf16().chain(Some(0)).collect();
+    uncut(input, || {
+        input.send(EM_REPLACESEL, 1, wide.as_ptr() as isize);
+    });
+}
+
+/// Runs `insert`, an insertion of text [`InputState::fit`] cut already, with
+/// RichEdit's limit lifted, so that its count of UTF-16 units does not cut
+/// it again; then sets the limit for the text it made.
+fn uncut(input: &InputState, insert: impl FnOnce()) {
+    if input.config.borrow().max_length.is_none() {
+        insert();
+        return;
+    }
+    input.set_limit(i32::MAX as u32);
+    insert();
+    input.set_limit(input.limit());
+}
+
+/// The characters (Unicode scalar values) of UTF-16 `units`; an unpaired
+/// surrogate counts as one.
+fn char_count(units: &[u16]) -> usize {
+    char::decode_utf16(units.iter().copied()).count()
 }
 
 /// RichEdit owns native clipboard commands; terminal hosts supply the
@@ -1886,7 +2035,8 @@ fn set_value(view: &NshView, input: &InputState, text: &str, count: u32) {
     }
     let Some(e) = &input.editor else { return };
     input.programmatic.set(true);
-    e.set_text(text);
+    // The app's value is never cut to `maxLength`, as on every platform.
+    uncut(input, || e.set_text(text));
     input.send(EM_SETSEL, usize::MAX >> 1, -1);
     input.programmatic.set(false);
     input.reported_text.replace(input.text());
@@ -2021,12 +2171,15 @@ fn char_input_now(surface: &Rc<Surface>, text: &str) {
         return;
     }
     input.follow(&view);
-    for unit in text.encode_utf16() {
-        input.send(WM_CHAR, unit as usize, 1);
-    }
+    let fit = input.fit(&text);
+    uncut(&input, || {
+        for unit in fit.encode_utf16() {
+            input.send(WM_CHAR, unit as usize, 1);
+        }
+    });
     let changed = process(surface, &view, &input);
     if changed {
-        key_press(surface, &view, key_of(&text));
+        key_press(surface, &view, key_of(fit));
     }
 }
 
@@ -2117,7 +2270,6 @@ pub(crate) fn pointer(surface: &Rc<Surface>, view: &NshView, event: &ItemPointer
 
 /// A wheel over input `view`: scrolls the lines of a multiline field that
 /// do not fit. True when it scrolled (an outer scroll view does not).
-#[allow(dead_code)] // For `crate::input`'s wheel routing.
 pub(crate) fn wheel(view: &NshView, dy: f32) -> bool {
     let Some(input) = input_of(view) else {
         return false;
@@ -2125,25 +2277,51 @@ pub(crate) fn wheel(view: &NshView, dy: f32) -> bool {
     if !input.multiline() {
         return false;
     }
+    let Some((before, max)) = input.text_scroll() else {
+        return false;
+    };
     let s = input.scale.get().max(0.01);
-    let mut at = windows::Win32::Foundation::POINT::default();
-    input.send(EM_GETSCROLLPOS, 0, &mut at as *mut _ as isize);
-    let before = at.y;
-    at.y = (at.y as f32 + dy * s).round().max(0.0) as i32;
-    input.send(EM_SETSCROLLPOS, 0, &mut at as *mut _ as isize);
-    let mut now = windows::Win32::Foundation::POINT::default();
-    input.send(EM_GETSCROLLPOS, 0, &mut now as *mut _ as isize);
-    let moved = now.y != before;
-    if moved {
-        view.changed();
-        input.report_scroll();
-        if input.focused.get()
-            && let Some(surface) = surface_of(view)
-        {
-            report_caret(&surface, view, &input);
-        }
+    let to = (before as f32 + dy * s).round() as i32;
+    // Up to the top; down to the last line, never further than it is.
+    let y = if dy > 0.0 {
+        to.min(max).max(before)
+    } else {
+        to.max(0)
+    };
+    if y == before {
+        return false;
     }
-    moved
+    let mut at = windows::Win32::Foundation::POINT { x: 0, y };
+    input.send(EM_SETSCROLLPOS, 0, &mut at as *mut _ as isize);
+    view.changed();
+    input.report_scroll();
+    if input.focused.get()
+        && let Some(surface) = surface_of(view)
+    {
+        report_caret(&surface, view, &input);
+    }
+    true
+}
+
+/// Whether `view` is a multiline input, which scrolls its own text under
+/// a vertical wheel ([`can_wheel`]).
+pub(crate) fn scrolls_text(view: &NshView) -> bool {
+    input_of(view).is_some_and(|i| i.multiline())
+}
+
+/// Whether multiline input `view` has lines left to scroll towards `dy`
+/// (down when positive): a wheel over it scrolls its text before the
+/// scroll views around it, as a textarea does in browsers and on macOS.
+pub(crate) fn can_wheel(view: &NshView, dy: f32) -> bool {
+    let Some(input) = input_of(view) else {
+        return false;
+    };
+    if dy == 0.0 || !input.multiline() {
+        return false;
+    }
+    input
+        .text_scroll()
+        .is_some_and(|(at, max)| if dy > 0.0 { at < max } else { at > 0 })
 }
 
 /// `Command::ScrollTo` for a multiline input: scrolls its text to `y`,
@@ -2170,10 +2348,11 @@ pub(crate) fn scroll_to(view: &NshView, y: Points) {
     }
 }
 
-/// A right click on field `view`: it takes the focus (keeping its
-/// selection) and shows Windows' edit menu, each item RichEdit's own
-/// command.
-pub(crate) fn context_menu(surface: &Rc<Surface>, view: &NshView) {
+/// A right click on field `view`, or the Menu key or Shift+F10 in it: it
+/// takes the focus (keeping its selection) and shows Windows' edit menu,
+/// each item RichEdit's own command, at `at` (in the window's points) or
+/// at the pointer.
+pub(crate) fn context_menu(surface: &Rc<Surface>, view: &NshView, at: Option<(f32, f32)>) {
     use nsh_core::desktop::MenuRole;
 
     use crate::chrome::{Action, LocalItem};
@@ -2217,7 +2396,7 @@ pub(crate) fn context_menu(surface: &Rc<Surface>, view: &NshView) {
             enabled,
             action,
         };
-    crate::chrome::popup_actions(
+    crate::chrome::popup_actions_at(
         surface,
         vec![
             item(
@@ -2262,6 +2441,10 @@ pub(crate) fn context_menu(surface: &Rc<Surface>, view: &NshView) {
                 command(EM_SETSEL, 0, -1),
             ),
         ],
+        at,
+        // At a corner of the field (the keyboard's menu): a right-to-left
+        // layout's is its bottom-end one, which the menu opens leftwards from.
+        at.is_some() && surface.mounter.try_borrow().is_ok_and(|m| m.rtl),
     );
 }
 
@@ -2314,6 +2497,15 @@ fn send_key(input: &InputState, vk: u16, modifiers: Modifiers) {
         input.send(WM_KEYDOWN, vk as usize, lparam);
         input.send(WM_KEYUP, vk as usize, lparam | (3 << 30));
     });
+}
+
+/// True when a Copy key (Ctrl+C, Ctrl+Insert) is for a selection outside the
+/// field: it selects nothing itself, and a text or a selectable view of the
+/// surface selects something.
+fn copy_is_elsewhere(surface: &Surface, input: &InputState) -> bool {
+    let (start, end) = input.selection();
+    start == end
+        && (crate::text::has_selection(surface) || crate::selectable_view::has_selection(surface))
 }
 
 /// A key for the focused field; true when handled.
@@ -2404,6 +2596,13 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
             false
         }
         _ if m.ctrl && !m.alt => match vk {
+            // A copy with nothing selected in the field is for the selection
+            // of the text around it, which goes on to `text::key` and
+            // `selectable_view::key`: a chat's composer keeps the focus
+            // while the messages above it are selected. What the field
+            // selects itself still copies first.
+            0x43 if copy_is_elsewhere(surface, &input) => false,
+            _ if vk == VK_INSERT.0 && !m.shift && copy_is_elsewhere(surface, &input) => false,
             // Select all, copy, cut, undo: RichEdit's (a password copies
             // and cuts nothing).
             0x41 => forward(&input),
@@ -2805,6 +3004,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn multiline_scrollbars_have_native_overflow_ranges() {
+        for editable in [false, true] {
+            let config = InputConfig {
+                multiline: true,
+                editable,
+                ..Default::default()
+            };
+            let editor = Editor::new(
+                HWND::default(),
+                Props {
+                    client: RECT {
+                        right: 160,
+                        bottom: 80,
+                        ..Default::default()
+                    },
+                    bits: base_bits(&config),
+                    scroll: scroll_flags(&config),
+                    ..Default::default()
+                },
+                Box::new(|| {}),
+                Box::new(|| {}),
+            )
+            .expect("RichEdit");
+            let line =
+                "<entry name=\"a-long-xml-attribute-that-overflows-the-report-viewport\" />\r\n";
+            editor.set_text(&line.repeat(40));
+            editor.send(0x00BA, 0, 0); // EM_GETLINECOUNT forces text layout.
+            let (min, max, _, _) = editor.vscroll();
+            assert!(max - min > 80, "vertical overflow missing: {min}..{max}");
+        }
+    }
+
+    #[test]
+    fn stop_and_destroy_forget_the_focus() {
+        let surface = Surface::new(Default::default());
+        FOCUS.with(|f| f.borrow_mut().entry(surface.key()).or_default().inactive = true);
+        stopped(&surface);
+        // Stopping keeps whether the window is active (the app may restart).
+        assert!(!window_active(&surface));
+        destroyed(&surface);
+        assert!(FOCUS.with(|f| !f.borrow().contains_key(&surface.key())));
+        assert!(window_active(&surface));
+    }
+
+    #[test]
     fn alignment() {
         let mut c = InputConfig::default();
         assert_eq!(xalign(&c), 0.0);
@@ -2854,6 +3098,12 @@ mod tests {
             colorref(Color::rgba(0x11, 0x22, 0x33, 0xff)),
             COLORREF(0x332211)
         );
+        // A COLORREF has no alpha: transparent comes out black, so the
+        // drawing takes the alpha apart.
+        assert_eq!(colorref(Color::rgba(0, 0, 0, 0)), COLORREF(0));
+        assert_eq!(alpha(Color::rgba(0, 0, 0, 0)), 0.0);
+        assert_eq!(alpha(Color::rgba(0x11, 0x22, 0x33, 0xff)), 1.0);
+        assert!((alpha(Color::rgba(0, 0, 0, 0x80)) - 0.502).abs() < 0.001);
     }
 
     #[test]

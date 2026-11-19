@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use nsh_core::{
     Dialog, ResolvedTextStyle,
+    element::ClipboardItem,
     geometry::{Point, Points, Size},
     platform::{ColorScheme, Lifecycle},
 };
@@ -34,7 +35,7 @@ pub(crate) trait Driver: Send {
     /// Drops local files (`file:` URLs) on what `selector` names.
     fn drop_files(&mut self, selector: &str, uris: Vec<String>) -> Result<(), String> {
         let _ = (selector, uris);
-        Err("`dropFiles` runs headless and on Linux for now".into())
+        Err("`dropFiles` runs headless, on Linux and on macOS for now".into())
     }
     /// Drags without lifting, until [`Driver::drop_held`].
     fn drag_and_hold(&mut self, selector: &str, by: Point<Points>) -> Result<(), String> {
@@ -48,8 +49,12 @@ pub(crate) trait Driver: Send {
     fn press_key(&mut self, keys: &str) -> Result<(), String>;
     /// Holds (`down`) or lets go of modifier keys for the pointer's steps.
     fn hold_keys(&mut self, keys: &str, down: bool) -> Result<(), String> {
-        let _ = (keys, down);
-        Err("holding keys (`keyboard.down` / `keyboard.up`) runs headless only for now: run the test without `--target`".into())
+        let _ = keys;
+        Err(headless_only(if down {
+            "keyboard.down"
+        } else {
+            "keyboard.up"
+        }))
     }
     fn hover(&mut self, selector: &str) -> Result<(), String>;
     fn right_click(&mut self, selector: &str) -> Result<(), String>;
@@ -100,6 +105,21 @@ pub(crate) trait Driver: Send {
         let _ = url;
         Err(headless_only("failImages"))
     }
+    /// The URLs matching `url` (a `*` glob) fail to open (`failOpenUrls`).
+    fn fail_open_urls(&mut self, url: &str) -> Result<(), String> {
+        let _ = url;
+        Err(headless_only("failOpenUrls"))
+    }
+    /// The platform shows a share sheet, and the user answers every share
+    /// with `outcome` (`onShare`).
+    fn on_share(&mut self, outcome: nsh_core::share::ShareOutcome) -> Result<(), String> {
+        let _ = outcome;
+        Err(headless_only("onShare"))
+    }
+    /// What the app shared, in order (`shares()`).
+    fn shares(&mut self) -> Result<Vec<nsh_core::share::ShareSheet>, String> {
+        Err(headless_only("`shares()`"))
+    }
     fn run_for(&mut self, time: Duration) -> Result<(), String>;
     fn fast_forward(&mut self, time: Duration) -> Result<(), String>;
     fn set_system_time(&mut self, at: std::time::SystemTime) -> Result<(), String>;
@@ -148,10 +168,16 @@ pub(crate) trait Driver: Send {
     fn shows(&mut self, selector: &str) -> Result<bool, String>;
     fn value(&mut self, selector: &str) -> Result<Option<String>, String>;
     fn span_style(&mut self, selector: &str) -> Result<ResolvedTextStyle, String>;
+    fn view_style(&mut self, selector: &str) -> Result<Option<crate::screen::ViewStyle>, String>;
     fn dialogs(&mut self) -> Result<Vec<Dialog>, String>;
     /// The open context menu's actions, `None` when none is open.
     fn menu(&mut self) -> Result<Option<Vec<crate::menu::Entry>>, String>;
     fn clipboard(&mut self) -> Result<Option<String>, String>;
+    /// The item on the clipboard, every format (`app.clipboardItem`).
+    /// Only the headless app keeps it.
+    fn clipboard_item(&mut self) -> Result<Option<ClipboardItem>, String> {
+        Err("the clipboard's item is only read in a headless test".into())
+    }
     /// The embedding app sends event `name` with `data` to the app
     /// (`app.host.send`), which then settles.
     fn send_host_event(&mut self, name: &str, data: Value) -> Result<(), String>;
@@ -279,6 +305,16 @@ impl Driver for Headless {
     fn fail_images(&mut self, url: &str) -> Result<(), String> {
         Headless::fail_images(self, url)
     }
+    fn fail_open_urls(&mut self, url: &str) -> Result<(), String> {
+        Headless::fail_open_urls(self, url)
+    }
+    fn on_share(&mut self, outcome: nsh_core::share::ShareOutcome) -> Result<(), String> {
+        Headless::on_share(self, outcome)
+    }
+    fn shares(&mut self) -> Result<Vec<nsh_core::share::ShareSheet>, String> {
+        self.catch_up();
+        Ok(self.screen().shares().to_vec())
+    }
     fn open_with_url(&mut self, url: &str) -> Result<(), String> {
         Headless::open_with_url(self, url)
     }
@@ -353,6 +389,10 @@ impl Driver for Headless {
         self.catch_up();
         self.screen().span_style(selector)
     }
+    fn view_style(&mut self, selector: &str) -> Result<Option<crate::screen::ViewStyle>, String> {
+        self.catch_up();
+        self.screen().view_style(selector)
+    }
     fn dialogs(&mut self) -> Result<Vec<Dialog>, String> {
         self.catch_up();
         Ok(self.screen().dialogs().to_vec())
@@ -364,6 +404,10 @@ impl Driver for Headless {
     fn clipboard(&mut self) -> Result<Option<String>, String> {
         self.catch_up();
         Ok(self.screen().clipboard().map(str::to_owned))
+    }
+    fn clipboard_item(&mut self) -> Result<Option<ClipboardItem>, String> {
+        self.catch_up();
+        Ok(self.screen().clipboard_item().cloned())
     }
     fn send_host_event(&mut self, name: &str, data: Value) -> Result<(), String> {
         Headless::send_host_event(self, name, data)
@@ -522,7 +566,10 @@ fn step_name(step: &TestStep) -> Option<String> {
 
 /// What a test asks of a real platform that only headless runs do.
 pub(crate) fn headless_only(what: &str) -> String {
-    format!("{what} runs headless only for now: run the test without `--target`")
+    crate::failure::unsupported_here(
+        what,
+        "it runs headless only for now; run the test without `--target`",
+    )
 }
 
 fn ms(time: Duration) -> u64 {
@@ -708,6 +755,11 @@ impl Driver for Remote {
     fn answer_dialog(&mut self, answer: DialogAnswer) -> Result<(), String> {
         let button = match answer {
             DialogAnswer::Press(text) => Some(text),
+            DialogAnswer::TypeAndPress { .. } => {
+                return Err("a native host answers a dialog with a button only: \
+                     type into its text field in a headless run"
+                    .into());
+            }
             DialogAnswer::Dismiss => None,
         };
         self.action(TestStep::AnswerDialog { button })
@@ -735,6 +787,16 @@ impl Driver for Remote {
             selector: selector.into(),
         })
     }
+    fn view_style(&mut self, selector: &str) -> Result<Option<crate::screen::ViewStyle>, String> {
+        let style: Option<nsh_dev::protocol::ViewStyle> = self.query(TestStep::ViewStyle {
+            selector: selector.into(),
+        })?;
+        Ok(style.map(|s| crate::screen::ViewStyle {
+            background_color: s.background_color,
+            opacity: s.opacity,
+            effective_opacity: s.effective_opacity,
+        }))
+    }
     fn span_style(&mut self, selector: &str) -> Result<ResolvedTextStyle, String> {
         let span: nsh_dev::protocol::SpanStyle = self.query(TestStep::SpanStyle {
             selector: selector.into(),
@@ -752,6 +814,8 @@ impl Driver for Remote {
                 color: nsh_core::Color(color),
                 radius: nsh_core::Points::ZERO,
                 node: 0,
+                top: Default::default(),
+                bottom: Default::default(),
             }),
             ..ResolvedTextStyle::default()
         })

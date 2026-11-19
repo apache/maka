@@ -73,7 +73,7 @@ function PhotoRow(props: { photo: Photo }) {
 function PhotoTile(props: { photo: Photo }) {
   return (
     <Press scale={0.97} accessibilityLabel={props.photo.title}>
-      <View class="hover:bg-card" style={{ padding: 6, gap: 8, borderRadius: radius.card, borderCurve: "continuous", cursor: "pointer" }}>
+      <View class="hover:bg-card" style={{ padding: 6, gap: 8, borderRadius: radius.card, borderCurve: "continuous" }}>
         <Image
           src={photoUrl(photoNames[props.photo.id % photoNames.length], "small")}
           style={{

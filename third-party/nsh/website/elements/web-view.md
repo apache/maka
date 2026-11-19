@@ -83,7 +83,7 @@ A web view takes the props of a [view](./view.md) (it has no children) plus:
 | `onError` | `.on_error` | `{ message, code? }` (`&str`, the message) | Loading failed; `code` is `"ERR_ACCESS_DENIED"` for a page, `html` or `baseUrl` the app's capabilities do not grant, `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` where the platform shows no web view (Rust: also `.on_unavailable`, the message), and `"ERR_NSH_WEBVIEW_TERMINATED"` when the page's process ended, until `reload()`, `load()` or a new source (Rust: also `.on_process_terminated`). |
 | `onNavigationStateChange` | `.on_navigation_state_change` | `WebViewNavigation` | The URL, title, loading state or history changed. |
 | `onMessage` | `.on_message` | `{ data: string }` (`&str`) | The page called `window.nsh.postMessage(data)`. |
-| `onDownload` | | `WebViewDownload` | A download started, finished or failed (macOS). |
+| `onDownload` | `.on_download` | `WebViewDownload` (`WebDownload`) | A download started, finished, failed, or was cancelled. |
 
 `WebViewNavigation` is `{ url, title, loading, canGoBack, canGoForward }`; in Rust `WebNavigation` with `url`, `title`,
 `loading`, `can_go_back` and `can_go_forward`.
@@ -92,17 +92,67 @@ A web view takes the props of a [view](./view.md) (it has no children) plus:
 platform has no web engine or the app's capabilities do not grant `webview` ([When there is no web
 engine](../docs/web-view-and-video.md#when-there-is-no-web-engine)).
 
-`WebViewDownload` is `{ state, id, url, filename, path, bytes?, message? }`: `state` is `"started"`, `"finished"`
-(with the file's `bytes`) or `"failed"` (with its `message`). With an `onDownload` listener, what the page downloads
-(an attachment, a type the web view does not show, a `download` link) is saved in the app's data directory as
-`downloads/<id>/<filename>`, where `path` points, and the app reads it with `fs/promises`.
+Native download decisions and app-data destinations are available on iOS, macOS, Linux and Windows.
 
-On macOS, adding the listener lets any loaded page allowed by the `webview` capability save downloads
-automatically. The app is responsible for its storage budget and for removing completed files from `downloads/`
-when it has finished using them. Removing the web view cancels downloads in progress and removes their partial
-directories. Downloads report through `onDownload`; converting a navigation into a download keeps `onError`
-for actual navigation failures. Filenames have control characters and bidirectional formatting controls removed,
-and long names are shortened to 200 bytes while preserving an extension that fits.
+`WebViewDownload` is `{ state, id, url, filename, path, bytes?, message?, source, code?, reason? }`.
+Its `state` is `"started"`, `"finished"`, `"failed"` or `"cancelled"`.
+`"finished"` means the file has been published at `path`; `bytes` is its size. A failure carries a diagnostic
+`message` and, when available, a stable `code`. A cancellation reports its `reason`: `"app"`, `"timeout"`,
+`"teardown"` or `"noListener"`.
+Removing both download listeners cancels in-flight downloads with `reason: "noListener"`; the WebView stays mounted.
+
+`source` describes the available data: `"transfer"` for a live browser download, `"request"` for a request owned by
+NSH, or `"none"` when the browser reported the download after releasing its response. `"page"` is reserved for
+page-provided data. The event's source describes the transfer, not a promise that every engine produces each kind.
+
+With an `onDownload` listener, owned downloads are saved in the app's data directory as
+`downloads/<id>/<filename>`, where `path` points, and the app reads them with `fs/promises`. The app manages its
+storage budget and removes completed files when it has finished using them. Removing the web view stops its
+active downloads; owned temporary output is cleaned after writing stops. Published files belong to the app.
+Filenames are sanitized for path separators, control and bidirectional-formatting characters, length, and the
+destination platform's reserved names. Download outcomes use `onDownload`; navigation errors use `onError`.
+
+### Download destinations in Rust
+
+A Rust host chooses where a download goes by registering `.on_download_pending(..)`. Registration selects manual
+decisions; otherwise the automatic behavior above applies. The `WebDownloadPending` event contains `id`, `url`,
+`filename`, `source`, and optional `mime_type`, `bytes` and `method`. Metadata can be unknown; in particular,
+a URL alone does not establish the method of the request that produced it.
+
+The event carries a private decision handle. Clones refer to the same download, and changing public metadata does
+not retarget the handle. Its inherent `accept(destination)` and `cancel()` methods return an awaitable decision
+result. A `WebDownload` event has an inherent `cancel()` method for an active transfer.
+
+```rust
+use nsh_core::prelude::*;
+use nsh_core::webview::{DownloadDestination, WebDownloadPending};
+
+web_view("https://example.com").on_download_pending(|event: &WebDownloadPending| {
+    let (event, path) = (event.clone(), std::env::temp_dir().join("report.pdf"));
+    spawn(async move {
+        let destination = DownloadDestination::new(path).overwrite(false);
+        if let Err(error) = event.accept(destination).await {
+            log::warn!("download destination refused: {error}");
+        }
+    });
+});
+```
+
+`accept` resolves when the transport accepts its output, not when the file is complete. `on_download` reports the
+transfer's outcome. The destination must be absolute, name a file, and have an existing parent directory. Existing
+entries are refused by default, including one created while a transfer is running. `overwrite(true)` permits
+replacement only at successful publication. The transfer writes into an owned private staging directory beside
+the destination; failure and cancellation preserve an existing destination.
+
+`cancel()` applies while pending or active. It waits for writing to stop and for owned output to be cleaned.
+An unanswered pending decision expires after 60 seconds; a command's reply has a separate 30-second deadline.
+Late, duplicate, foreign and unbound decisions cannot affect another transfer. `WebDownloadPending::default()`
+has no bound download and its decisions return an error.
+
+An unavailable response is reported with `ERR_NSH_DOWNLOAD_DISCARDED`, rather than being fetched again automatically.
+
+Saving to arbitrary host paths and pending decisions are Rust-host APIs. TSX observes the shared `onDownload`
+lifecycle. Applications can compose a save-path picker with `accept` where the platform provides that picker.
 
 ## Ref methods
 
@@ -179,6 +229,9 @@ navigates to the hosts listed under `webview`. A `src` on another host, or `html
 empty view; a `baseUrl` on another host is dropped, and the HTML loads without it; a top-level navigation to another
 host (a link the user taps) is cancelled natively. Each reports
 `onError` with `code` `"ERR_ACCESS_DENIED"`.
+
+A page's own `blob:` URL (`URL.createObjectURL`, a `<a download>` link) counts as the origin it embeds: it shows
+and downloads when that origin is granted, while an opaque `blob:null/…` is refused.
 
 ```json
 {

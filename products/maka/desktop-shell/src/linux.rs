@@ -724,7 +724,10 @@ mod tests {
         fn load_source(&self, source: &str) -> (EngineConfig, mpsc::UnboundedReceiver<JsonValue>) {
             let mut policy = nsh_engine::Policy::default();
             policy.declared = Some(
-                nsh_engine::parse_capabilities(r#"{"host":["observed"],"windows":{}}"#).unwrap(),
+                nsh_engine::parse_capabilities(
+                    r#"{"host":["observed"],"windows":{},"application":true}"#,
+                )
+                .unwrap(),
             );
             let config =
                 EngineConfig::new(nsh_engine::Bundle::source(source.into()).with_policy(policy));

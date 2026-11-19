@@ -2,7 +2,7 @@
 //! standalone app ([`run_app`]: one `AppView` filling a window).
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::PathBuf,
     rc::Rc,
     sync::{Arc, RwLock},
@@ -22,7 +22,7 @@ use crate::{
 
 static UI_SETS: RwLock<Option<Vec<nsh_core::element::Registry>>> = RwLock::new(None);
 
-/// Sets the UI sets every engine serves (default: `nsh/base`); an app
+/// Sets the UI sets every engine serves (default: `nsh/base`'s core part, enough for a Rust app; hosts that run JS pass all of `nsh/base`, `nsh_base::registry()`); an app
 /// with Rust components of its own calls this before [`run_app`].
 pub fn set_ui_sets(sets: Vec<nsh_core::element::Registry>) {
     *UI_SETS.write().unwrap_or_else(|e| e.into_inner()) = Some(sets);
@@ -75,13 +75,20 @@ fn register_app_components(components: &crate::native::Components) {
     }
 }
 
-/// The UI sets engines serve.
+/// The UI sets engines serve: [`set_ui_sets`]'s, else `nsh/base`'s core
+/// part only. A Rust app makes `nsh/base`'s components by type, so
+/// registering every part would link every component into its binary;
+/// hosts that run JS register the sets their code imports.
 pub(crate) fn ui_sets() -> Vec<nsh_core::element::Registry> {
     UI_SETS
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone()
-        .unwrap_or_else(|| vec![nsh_base::registry()])
+        .unwrap_or_else(|| {
+            vec![nsh_base::registry_of([
+                nsh_base::parts::core as nsh_base::parts::Part
+            ])]
+        })
 }
 
 /// What [`run_app`] runs.
@@ -133,23 +140,30 @@ pub struct AppOptions {
     /// release runner run apps on their own, with none
     /// ([`Limits::standalone`]). See [`AppView::set_limits`].
     pub limits: Limits,
-    /// Where the apps it runs keep their data, each in `<dir>/<app id>`
-    /// (`nsh.json` `"id"`, which travels with the bundle): `None` uses the
-    /// system's data directory ([`nsh_engine::data_dir`]); an app that
-    /// embeds nsh gives its own (its data directory + `/nsh`, say).
+    /// The app's own data directory, used as it is
+    /// ([`nsh_engine::EngineConfig::data_dir`]): the release runner's
+    /// `nsh.json` `"dataDir"`, the development host's `--data-dir`. `None`:
+    /// the one under its id in the system's directory for apps' data.
     pub data_dir: Option<PathBuf>,
     /// Where the apps it runs keep their caches (the images they
     /// downloaded) and how much each keeps: by default the system's cache
     /// directory, each app's in `<dir>/<app id>`. See [`AppView::set_cache`].
     pub cache: nsh_engine::CacheOptions,
     /// The apps' storage (`nsh/storage`), overriding the `storage.json` in
-    /// their directory of [`data_dir`](Self::data_dir).
+    /// their data directory.
     pub storage: Option<Arc<dyn nsh_engine::StorageBackend>>,
     /// The app this view runs owns the process's notifications (`nsh`'s
     /// `Notifications`). On Linux the desktop portal knows the app by
     /// [`app_id`](Self::app_id) either way, so notifications show without it
     /// too; [`run_app`] sets it, as on macOS and Windows.
     pub notifications: bool,
+    /// The app [`run_app`] runs reads and changes its login item
+    /// (`Application.loginItem()`: an XDG autostart entry,
+    /// `~/.config/autostart/<app id>.desktop`, starting this executable).
+    /// False by default, and read by [`run_app`]'s view only: a view
+    /// embedded in another app has no login item. The release runner sets
+    /// it, except under `nsh run`.
+    pub login_item: bool,
     /// The embedding app's channel with the apps the view runs
     /// (`nsh/host`): their launch parameters, events to them and handlers of
     /// their calls and posts ([`AppView::host`]). One for every app the view
@@ -172,6 +186,14 @@ pub struct AppOptions {
     /// and hands each file to the app (`Application.on("openFiles", ...)`),
     /// reported as a `file://` URL as for [`schemes`](Self::schemes).
     pub file_types: Vec<nsh_core::file_type::FileType>,
+    /// [`run_app`] runs the app in the background where a user may type
+    /// on the display (the development host's `--background`, which `nsh
+    /// test --target linux` passes): its windows show without taking the
+    /// focus from the app the user works in, the window it activates only
+    /// acts as the active one, and the test agent's keys go to the widgets
+    /// rather than through the X server. On an X server with no keyboard
+    /// but its own virtual ones (Xvfb) it runs as in the foreground.
+    pub background: bool,
 }
 
 impl Default for AppOptions {
@@ -190,10 +212,12 @@ impl Default for AppOptions {
             cache: Default::default(),
             storage: None,
             notifications: false,
+            login_item: false,
             host: nsh_engine::HostChannel::default(),
             schemes: Vec::new(),
             single_instance: false,
             file_types: Vec::new(),
+            background: false,
         }
     }
 }
@@ -239,6 +263,9 @@ pub struct AppView {
     /// ([`crate::chrome`]).
     outer: gtk::Box,
     options: RefCell<AppOptions>,
+    /// The view is [`run_app`]'s: the standalone app's, not one embedded in
+    /// another app.
+    standalone: Cell<bool>,
     #[cfg(feature = "dev")]
     pub(crate) dev: RefCell<Option<crate::dev::DevSession>>,
 }
@@ -267,6 +294,7 @@ impl AppView {
             overlay,
             outer,
             options: RefCell::new(options),
+            standalone: Cell::new(false),
             #[cfg(feature = "dev")]
             dev: RefCell::new(None),
         });
@@ -328,7 +356,11 @@ impl AppView {
             viewport: nsh_core::Size::new(px(0.0), px(0.0)),
             trace: options.trace,
             content_culling: true,
+            // Without `net`, `fetch` rejects and remote images fail.
+            #[cfg(feature = "net")]
             network: Some(nsh_engine::net::network()),
+            #[cfg(not(feature = "net"))]
+            network: None,
             websocket: None,
             refuse_connections: None,
             filesystem: None,
@@ -340,7 +372,8 @@ impl AppView {
             limits: options.limits,
             ui_sets: ui_sets(),
             runtime: None,
-            data_dir: options.data_dir.clone().or_else(nsh_engine::data_dir),
+            support_dir: nsh_engine::support_dir(),
+            data_dir: options.data_dir.clone(),
             cache: options.cache.clone(),
             storage: options.storage.clone(),
             clock: Default::default(),
@@ -353,6 +386,7 @@ impl AppView {
             audio: None,
             // Windows of the app's own are this backend's (`crate::window`).
             windows: None,
+            login_item: self.login_item(&options),
         };
         crate::image::set_asset_base(&self.surface, options.asset_base.clone());
         self.surface
@@ -412,6 +446,21 @@ impl AppView {
                 }
             }
         }
+    }
+
+    /// The login item of the app this view runs: the standalone app's alone
+    /// ([`run_app`]'s view, not one embedded in another app, also while the
+    /// standalone app runs on this thread), when its runner says.
+    fn login_item(
+        &self,
+        options: &AppOptions,
+    ) -> Option<Arc<dyn nsh_core::desktop::LoginItemBackend>> {
+        (options.login_item && self.standalone.get()).then(|| {
+            Arc::new(crate::login_item::LoginItem::new(
+                &options.app_id,
+                &options.title,
+            )) as Arc<dyn nsh_core::desktop::LoginItemBackend>
+        })
     }
 
     /// Where `asset:/` URIs resolve from now on.
@@ -497,6 +546,7 @@ fn initial_environment() -> Environment {
         color_scheme: ColorScheme::Light,
         os: Os::Linux,
         idiom: Idiom::Desktop,
+        canvas_render: true,
         file_requests: true,
         native_focus_scopes: true,
         fallback_key_bindings: true,
@@ -504,6 +554,7 @@ fn initial_environment() -> Environment {
         audio: true,
         // WebKitGTK, in builds with it.
         web_views: cfg!(feature = "webview"),
+        webview_requests: cfg!(feature = "webview"),
         // wgpu, in builds with it, until it finds no GPU.
         shaders: nsh_engine::shader::LINKED,
         ..Environment::default()
@@ -577,6 +628,7 @@ fn quit_application(app: &gtk::Application) {
 pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
     options.notifications = true;
     prefer_gl_on_nvidia();
+    fill_data_dirs();
     // X11's WM_CLASS comes from the program name: the app's id, as the
     // `StartupWMClass` of the `.desktop` file `nsh package` writes (Wayland's
     // app id is the application id).
@@ -596,8 +648,25 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
         } else {
             gtk::gio::ApplicationFlags::NON_UNIQUE
         })
+        // Told by the session manager before the session ends (`query-end`).
+        .register_session(true)
         .build();
     STANDALONE.with(|s| *s.borrow_mut() = Some(app.downgrade()));
+    // Signing out or shutting down closes no window: the app leaves when
+    // the session manager asks, and stops when it ends the run; systemd
+    // sends SIGTERM to what remains of the session, which quits the app
+    // (`crate::session`).
+    app.connect_query_end(|_| crate::session::leave());
+    app.connect_startup(|app| {
+        let app = app.downgrade();
+        crate::session::on_terminate(move || {
+            crate::session::leave();
+            if let Some(app) = app.upgrade() {
+                quit_application(&app);
+            }
+        });
+    });
+    app.connect_shutdown(|_| crate::session::end());
     if links {
         let mut mime_types: Vec<String> = Vec::new();
         for mime in options.file_types.iter().flat_map(|t| &t.mime_types) {
@@ -633,11 +702,11 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
             app.activate();
             return;
         }
-        if let Some((window, view)) = &*shown_open.borrow() {
+        if let Some((_, view)) = &*shown_open.borrow() {
             for file in files {
                 view.open_url(&file.uri());
             }
-            window.present();
+            crate::window::activate_main(&view.surface);
         }
     });
     let shown_line = shown.clone();
@@ -670,7 +739,7 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
             app.activate();
             return gtk::glib::ExitCode::SUCCESS;
         }
-        if let Some((window, view)) = &*shown_line.borrow() {
+        if let Some((_, view)) = &*shown_line.borrow() {
             let cwd = cwd
                 .map(|cwd| cwd.to_string_lossy().into_owned())
                 .unwrap_or_default();
@@ -682,18 +751,23 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
             for url in urls {
                 view.open_url(&url);
             }
-            window.present();
+            crate::window::activate_main(&view.surface);
         }
         gtk::glib::ExitCode::SUCCESS
     });
     let source = RefCell::new(Some(source));
     app.connect_activate(move |app| {
         let Some(source) = source.borrow_mut().take() else {
-            if let Some((window, _)) = &*shown.borrow() {
-                window.present();
+            if let Some((_, view)) = &*shown.borrow() {
+                crate::window::activate_main(&view.surface);
             }
             return;
         };
+        if options.background
+            && let Some(display) = gtk::gdk::Display::default()
+        {
+            crate::window::run_in_background(&display);
+        }
         // nsh.json `window`: known before the window is made, so its first
         // frame has it.
         // A JS bundle's or a Rust app's root's.
@@ -714,7 +788,8 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
         let kept = match &app_of {
             Ok(app) if launch.restore_bounds => {
                 let mut config = EngineConfig::new(app.clone());
-                config.data_dir = options.data_dir.clone().or_else(nsh_engine::data_dir);
+                config.support_dir = nsh_engine::support_dir();
+                config.data_dir = options.data_dir.clone();
                 config.storage = options.storage.clone();
                 config.main_window_placement(&crate::window::displays())
             }
@@ -732,7 +807,9 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
             .default_width(size.0.max(1))
             .default_height(size.1.max(1))
             .build();
+        window.add_css_class("nsh-window");
         let view = AppView::new(options.clone());
+        view.standalone.set(true);
         window.set_child(Some(&view.widget()));
         crate::window::launch_main(
             &view.surface,
@@ -770,16 +847,20 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
         }
         install_shortcuts(app, &window, &view.surface);
         *shown.borrow_mut() = Some((window.clone(), view.clone()));
+        let surface = view.surface.clone();
         // The window keeps the view (and its engine) alive.
         unsafe_keep(&window, view);
         if present {
-            window.present();
+            crate::window::activate_main(&surface);
         }
     });
     // GTK must not parse the host's own arguments: only the URL the app
     // was opened with goes to it (`open`).
     let code = app.run_with_args(&args);
     // The new process waits for this one to exit.
+    // An update waiting for the app to quit replaces it now, before a
+    // restart starts it again.
+    nsh_core::restart::run_at_exit();
     if RESTART.take() {
         if cfg!(feature = "dev") {
             // `nsh run` ends with its host and stops the dev server: a host
@@ -807,6 +888,54 @@ fn prefer_gl_on_nvidia() {
     // only one reading the environment (the engine and the dev client start
     // with the window).
     unsafe { std::env::set_var("GSK_RENDERER", "ngl") };
+}
+
+/// Gives the app the `XDG_DATA_DIRS` a desktop session would when whatever
+/// launched it passed none (a panel, a systemd user service, `env -i`):
+/// GIO finds the handler of a URL or file (`GtkUriLauncher`, `open_url`)
+/// in the `applications` directories under these, and a browser installed
+/// with Flatpak or Snap has its `.desktop` file only in their export
+/// directories, which the session's own environment scripts add.
+fn fill_data_dirs() {
+    let current = std::env::var_os("XDG_DATA_DIRS");
+    let Some(dirs) = data_dirs_to_fill(current.as_deref(), &glib::user_data_dir(), |dir| {
+        dir.is_dir()
+    }) else {
+        return;
+    };
+    // SAFETY: called before GTK starts, while this thread is the process'
+    // only one reading the environment (the engine and the dev client start
+    // with the window), as `prefer_gl_on_nvidia`.
+    unsafe { std::env::set_var("XDG_DATA_DIRS", dirs) };
+}
+
+/// The `XDG_DATA_DIRS` to set when `current` is missing or empty (`None`
+/// when it has a value, which stays): the XDG Base Directory
+/// specification's default, `/usr/local/share:/usr/share`, between the
+/// export directories Flatpak's and snapd's environment scripts put before
+/// and after it, those that exist (`exists`): Flatpak's per user (under
+/// `data_home`, `XDG_DATA_HOME`) and system wide first, snapd's last.
+fn data_dirs_to_fill(
+    current: Option<&std::ffi::OsStr>,
+    data_home: &std::path::Path,
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> Option<std::ffi::OsString> {
+    if current.is_some_and(|value| !value.is_empty()) {
+        return None;
+    }
+    let user_flatpak = data_home.join("flatpak/exports/share");
+    let before = [
+        user_flatpak.as_path(),
+        "/var/lib/flatpak/exports/share".as_ref(),
+    ];
+    let defaults = ["/usr/local/share", "/usr/share"].map(std::path::Path::new);
+    let after = [std::path::Path::new("/var/lib/snapd/desktop")];
+    let dirs = before
+        .into_iter()
+        .filter(|dir| exists(dir))
+        .chain(defaults)
+        .chain(after.into_iter().filter(|dir| exists(dir)));
+    std::env::join_paths(dirs).ok()
 }
 
 /// GNOME's window shortcuts: Ctrl+W closes the window, Ctrl+Q quits, F11
@@ -940,6 +1069,87 @@ mod tests {
             );
             view.resume_input();
             assert!(view.widget().is_sensitive());
+        });
+    }
+}
+
+#[cfg(test)]
+mod desktop_entry_tests {
+    use std::{ffi::OsStr, path::Path};
+
+    use super::*;
+
+    const HOME_DATA: &str = "/home/user/.local/share";
+
+    #[test]
+    fn data_dirs_keep_a_value_the_launcher_passed() {
+        let current = OsStr::new("/opt/share:/usr/share");
+        assert_eq!(
+            data_dirs_to_fill(Some(current), Path::new(HOME_DATA), |_| true),
+            None
+        );
+    }
+
+    #[test]
+    fn missing_data_dirs_get_the_specification_default() {
+        let dirs = data_dirs_to_fill(None, Path::new(HOME_DATA), |_| false);
+        assert_eq!(
+            dirs.as_deref(),
+            Some(OsStr::new("/usr/local/share:/usr/share"))
+        );
+    }
+
+    #[test]
+    fn empty_data_dirs_are_filled_as_missing_ones() {
+        let dirs = data_dirs_to_fill(Some(OsStr::new("")), Path::new(HOME_DATA), |_| false);
+        assert_eq!(
+            dirs.as_deref(),
+            Some(OsStr::new("/usr/local/share:/usr/share"))
+        );
+    }
+
+    #[test]
+    fn data_dirs_add_the_flatpak_and_snap_exports_that_exist() {
+        let dirs = data_dirs_to_fill(None, Path::new(HOME_DATA), |_| true);
+        assert_eq!(
+            dirs.as_deref(),
+            Some(OsStr::new(
+                "/home/user/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share:/var/lib/snapd/desktop"
+            ))
+        );
+        let snap_only = data_dirs_to_fill(None, Path::new(HOME_DATA), |dir| {
+            dir.starts_with("/var/lib/snapd")
+        });
+        assert_eq!(
+            snap_only.as_deref(),
+            Some(OsStr::new(
+                "/usr/local/share:/usr/share:/var/lib/snapd/desktop"
+            ))
+        );
+    }
+
+    #[test]
+    fn only_the_standalone_apps_view_has_a_login_item() {
+        crate::gtk_test::run(|| {
+            let options = AppOptions {
+                login_item: true,
+                ..Default::default()
+            };
+            // A view embedded in another app, also while the standalone app
+            // runs on this thread.
+            let app = gtk::Application::builder()
+                .application_id("com.example.logintest")
+                .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+                .build();
+            STANDALONE.with(|s| *s.borrow_mut() = Some(app.downgrade()));
+            let embedded = AppView::new(options.clone());
+            assert!(embedded.login_item(&options).is_none());
+            // `run_app`'s own view, when its runner turns it on.
+            let standalone = AppView::new(options.clone());
+            standalone.standalone.set(true);
+            assert!(standalone.login_item(&options).is_some());
+            assert!(standalone.login_item(&AppOptions::default()).is_none());
+            STANDALONE.with(|s| s.borrow_mut().take());
         });
     }
 }

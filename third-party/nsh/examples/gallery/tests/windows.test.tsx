@@ -72,6 +72,20 @@ test("an overlay the app did not declare is refused", async () => {
   expect(app.shows("Windows: main")).toBe(true);
 });
 
+test("a hover in a window shows its controls, and they take presses", async () => {
+  const app = await open(FIXTURE, OPTIONS);
+  await app.press("Open viewer");
+  await app.waitFor("id:viewer-surface");
+  await app.hover("id:viewer-surface");
+  await app.waitFor("Pin viewer");
+  // The pointer stays over the viewer: what the hover showed stays too,
+  // as with the user's own mouse.
+  await app.wait(300);
+  expect(app.shows("Pin viewer")).toBe(true);
+  await app.press("Pin viewer");
+  await app.waitFor("Pins: 1");
+});
+
 test("the Windows demo's inspector is a window that shares the page's state", async () => {
   const app = await open("../App.tsx", { platform: "macos", width: 1200, height: 800 });
   await app.press("label:Windows");

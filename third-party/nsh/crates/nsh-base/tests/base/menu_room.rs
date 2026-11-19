@@ -112,7 +112,11 @@ fn start(root: Root, height: f32) -> Headless {
 }
 
 fn scrolls(app: &Headless) -> usize {
-    app.screen()
+    scrolls_on(app.screen())
+}
+
+fn scrolls_on(screen: &nsh_testing::Screen) -> usize {
+    screen
         .commands()
         .iter()
         .filter(|(_, c)| matches!(c, Command::ScrollTo { y, .. } if y.0 > 0.0))
@@ -132,6 +136,23 @@ fn choose(keys: &[&str], chosen: &str) {
     app.press_key("enter").unwrap();
     app.wait_for(&format!("text:chose:{chosen}"))
         .unwrap_or_else(|e| panic!("{keys:?}: {e}"));
+}
+
+/// As [`choose`], with `keys` typed ahead: pressed within one turn of the
+/// engine, faster than the menu measures and the platform reports its
+/// scroll, Return with them.
+fn choose_typed_ahead(before: &[&str], keys: &[&str], chosen: &str) {
+    let mut app = start(Root::of::<LongMenu>(), 300.0);
+    app.press("id:open").unwrap();
+    app.wait_for("Item 1").unwrap();
+    for key in before {
+        app.press_key(key).unwrap();
+    }
+    let mut keys = keys.to_vec();
+    keys.push("enter");
+    app.press_keys(&keys).unwrap();
+    app.wait_for(&format!("text:chose:{chosen}"))
+        .unwrap_or_else(|e| panic!("{before:?} {keys:?}: {e}"));
 }
 
 #[test]
@@ -163,7 +184,13 @@ fn the_keys_bring_the_item_they_reach_into_view() {
     for _ in 0..7 {
         app.press_key("down").unwrap();
     }
-    assert!(scrolls(&app) > 0, "Item 12 is brought into view");
+    // The scroll follows the focus, once the item is measured.
+    let brought = app.wait_until(
+        "Item 12 brought into view",
+        std::time::Duration::from_secs(5),
+        |s| scrolls_on(s) > 0,
+    );
+    assert!(brought.is_ok(), "Item 12 is brought into view");
     app.press_key("enter").unwrap();
     app.wait_for("text:chose:Item 12").unwrap();
 }
@@ -241,4 +268,106 @@ fn a_submenu_closes_when_scrolling_back_to_exactly_zero() {
     app.scroll("Boundary More", px(-1000.0)).unwrap();
     app.wait_for_gone("Boundary Sub A", std::time::Duration::from_secs(2))
         .unwrap();
+}
+
+#[test]
+fn keys_typed_ahead_go_on_from_where_the_one_before_left_the_menu() {
+    // Each key acts on the menu as the key before it left it, scroll and
+    // focus, though neither the platform's scroll report nor the focus
+    // has come: the same items as pressed one at a time.
+    choose_typed_ahead(&["down"], &["end", "pageup"], "Item 12");
+    choose_typed_ahead(&["down"], &["end", "home"], "Item 1");
+    choose_typed_ahead(&["down"], &["pagedown", "pagedown"], "Item 18");
+    choose_typed_ahead(&["down"], &["pagedown"], "Item 9");
+    choose_typed_ahead(&["down"], &["down", "down"], "Item 3");
+}
+
+#[test]
+fn keys_typed_ahead_before_any_item_has_the_focus() {
+    // A menu the pointer opened: End and Page Up come before any item has
+    // the focus; Return, once one has, chooses the one Page Up went to.
+    let mut app = start(Root::of::<LongMenu>(), 300.0);
+    app.press("id:open").unwrap();
+    app.wait_for("Item 1").unwrap();
+    app.press_keys(&["end", "pageup"]).unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("text:chose:Item 12").unwrap();
+}
+
+#[test]
+fn space_typed_ahead_selects_the_item_paged_to() {
+    let mut app = start(Root::of::<LongMenu>(), 300.0);
+    app.press("id:open").unwrap();
+    app.wait_for("Item 1").unwrap();
+    app.press_key("down").unwrap();
+    app.press_keys(&["pagedown", "space"]).unwrap();
+    app.wait_for("text:chose:Item 9").unwrap();
+}
+
+#[component]
+fn ListMenu() -> impl IntoElement {
+    menu()
+        .trigger(view().test_id("open").child(text("Open")))
+        .child(
+            nsh_base::menu_list()
+                .count(30)
+                .render_item(|e: &nsh_base::MenuListEntry| {
+                    menu_item().child(text(format!("Row {}", e.index)).h(px(30.0)))
+                })
+                .w(px(200.0))
+                .h(px(150.0)),
+        )
+}
+
+#[test]
+fn menu_scrollers_stop_at_their_edges_without_bars() {
+    use std::sync::{Arc, Mutex};
+
+    use nsh_core::MountItem;
+
+    // Cover a fitting menu, a constrained menu and its nested popup.
+    for (root, height, nested, expected) in [
+        (Root::of::<LowMenu>(), 400.0, false, 1),
+        (Root::of::<LongMenu>(), 300.0, false, 1),
+        (Root::of::<LongMenuWithSubmenu>(), 300.0, true, 2),
+        (Root::of::<ListMenu>(), 300.0, false, 2),
+    ] {
+        let mut app = start(root, height);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let into = seen.clone();
+        app.observe(move |_, batch| into.lock().unwrap().extend(batch.items.iter().cloned()));
+        app.press("id:open").unwrap();
+        if nested {
+            app.press_key("down").unwrap();
+            app.press_key("right").unwrap();
+            app.wait_for("Sub A").unwrap();
+        }
+        let seen = seen.lock().unwrap();
+        let mut scrollers = std::collections::HashSet::new();
+        let mut behaviors = std::collections::HashSet::new();
+        for item in seen.iter() {
+            match item {
+                MountItem::ScrollConfig {
+                    id,
+                    scrollbar_visible,
+                    replaced,
+                    ..
+                } => {
+                    assert!(!scrollbar_visible && !replaced, "no native or themed bar");
+                    scrollers.insert(*id);
+                }
+                MountItem::ScrollBehavior { id, behavior } => {
+                    assert!(
+                        !behavior.bounces,
+                        "no rubber banding even when content fits"
+                    );
+                    assert!(behavior.enabled, "overflow remains scrollable");
+                    behaviors.insert(*id);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(scrollers.len(), expected);
+        assert_eq!(scrollers, behaviors);
+    }
 }

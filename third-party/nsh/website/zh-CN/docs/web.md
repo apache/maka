@@ -59,9 +59,9 @@ frame.src = "https://apps.example.com/player.html"; // 播放器设置 dialogs: 
 - **滚轮和触控板**滚动沿其方向、还能继续滚动的最内层滚动视图（没有可滚动的纵向视图时，纵向滚轮也会滚动横向列表），并且直到这次滚动结束都停留在这个视图上；滚轮的每一格平滑滑动，分页和吸附的视图每次滚动移动一页。Ctrl + 滚轮和触控板捏合会捏合带原生捏合值的视图，而不是缩放页面。和桌面平台一样，用鼠标拖动不会滚动：鼠标拖动交给拖拽手势、响应者系统和文字选择。滚动视图像桌面平台一样上报 `onScrollDragStart` / `onScrollDragEnd`、`onMomentumStart` / `End` 和 `onScrollEnd`。
 - **键盘**：Tab 和 Shift+Tab 在可按压的视图和输入框之间移动（应用的 `focus-visible:` 样式标出键盘焦点）；回车按下获得焦点的视图，空格在松开时按下；方向键、Page Up / Page Down、空格、Home 和 End 滚动焦点所在或鼠标下方的滚动视图；Escape 先离开输入框、关闭对话框，再返回。`keymap` 的快捷键在浏览器里同样有效，当场匹配（Mac 上的 Safari 和 Chrome 里 `mod` 是 Command，其他地方是 Control）。
 - **返回**：Escape、Alt+左方向键（Mac 上是 Cmd+[）和鼠标的后退键会关闭最上层的对话框或弹出当前显示的最内层的栈（未选中的 tab 里的栈保留它的页面），和 Android 返回键一样；`popOnBack` 和 `onBackPress` 也照常生效。应用占据整个页面时，正在显示的栈里压入的每个页面和打开的每个对话框都是一条浏览器历史记录，浏览器的后退按钮会在应用内返回。`nsh.json` 的 `web.history` 为打包的页面和开发服务器的页面决定这一点：`false` 让浏览器历史只保留页面自己的记录，`true` 在 iframe 里也加入应用的记录。
-- **地址**：应用占据整个页面时，[`UrlScheme.setUrl(url)`](../modules/nsh.md#urlscheme) 设置当前历史记录的地址，相对于页面地址（以及它的 `<base href>`）解析，`UrlScheme.url()` 读取它。浏览器的后退按钮在应用内后退：栈的页面返回，地址变为那条记录的地址。用户输入的地址（`#fragment`）是应用在当前页面上的一条记录，后退或前进到页面相同的记录时，[`UrlScheme.on("change")`](../modules/nsh.md#urlschemeonchange) 把那条记录的地址告诉应用。`setUrl(url, { history: "push" })` 为应用自己的地址（标签页、筛选）新建这样一条记录。
+- **地址**：应用占据整个页面时，[`UrlScheme.setUrl(url)`](../modules/nsh.md#urlscheme) 设置当前历史记录的地址，相对于页面地址（或站点的 `web.base`）解析，`UrlScheme.url()` 读取它。浏览器的后退按钮在应用内后退：栈的页面返回，地址变为那条记录的地址。用户输入的地址（`#fragment`）是应用在当前页面上的一条记录，后退或前进到页面相同的记录时，[`UrlScheme.on("change")`](../modules/nsh.md#urlschemeonchange) 把那条记录的地址告诉应用。`setUrl(url, { history: "push" })` 为应用自己的地址（标签页、筛选）新建这样一条记录。
 - **触摸**：只有滚动视图可以平移；应用下面的页面本身不会滚动、缩放或下拉刷新，点按没有延迟。嵌在 iframe 里时，应用不处理的滑动会滚动外层页面。在带原生平移、捏合的视图和响应者系统上的拖动都交给应用处理。
-- **无障碍**：`role`、`accessibilityLabel`、`accessibilityHint`、`accessibilityDescription`、`accessibilityState`、`accessibilityValue`、`accessibilityLiveRegion` 和 `accessibilityElementsHidden` 会转成 ARIA；`announce` 通过实时区域朗读，`setAccessibilityFocus` 移动焦点。对话框或提示框下面的视图不可交互。
+- **无障碍**：`role`、`accessibilityLabel`、`accessibilityHint`、`accessibilityDescription`、`accessibilityState`、`accessibilityValue`、`accessibilityLiveRegion` 和 `accessibilityElementsHidden` 会转成 ARIA；`announce` 通过实时区域朗读，`setAccessibilityFocus` 把焦点移过去（输入框则移到它的输入区）；用户正在某个输入框里打字时，它改为朗读该视图，焦点留在输入框里。对话框或提示框下面的视图不可交互。
 - **选择和菜单**：在桌面浏览器中，文字默认可以选择，和网页一样，但交互元素里的文字（带按压或触摸处理的视图：按钮、可按压的列表行、标签栏）以及设置了 `userSelect: "none"` 或 `select-none` 的文字除外；在上面拖动鼠标会选择文字，Ctrl/Cmd+C 按行复制，Ctrl/Cmd+A 全选选区所在的这段文字。在手机和平板浏览器中，只有设置了 `userSelect: "text"` 的文字可以选择，和原生应用一样。浏览器的右键菜单只在可选文字和输入框里出现。
 
 
@@ -184,7 +184,14 @@ nsh package --target web --asset-url https://cdn.example.com/debugger/
 { "web": { "base": "/apps/counter/" } }
 ```
 
-页面随之带上 `<base href="/apps/counter/">`，在 `https://example.com/apps/counter/sports/football` 和在 `https://example.com/apps/counter/` 一样能加载。`"base": "/"` 表示站点位于主机的根路径。`nsh package --target web --run` 在这个路径下提供站点。路径的各段由 ASCII 字母、数字、`-`、`.`、`_` 和 `~` 组成，其他字符按浏览器发送时的方式做百分号编码（`/应用/` 写作 `/%E5%BA%94%E7%94%A8/`）。
+页面随之在 `/apps/counter/` 下引用自己的文件，应用的相对 URL 也相对于它解析，在 `https://example.com/apps/counter/sports/football` 和在 `https://example.com/apps/counter/` 一样能加载。`"base": "/"` 表示站点位于主机的根路径。`nsh package --target web --run` 在这个路径下提供站点。路径的各段由 ASCII 字母、数字、`-`、`.`、`_` 和 `~` 组成，其他字符按浏览器发送时的方式做百分号编码（`/应用/` 写作 `/%E5%BA%94%E7%94%A8/`）。
+
+### 支持的浏览器
+
+发布的应用需要 Safari 16.4（iOS 和 iPadOS 16.4）、Chrome 和 Edge 97、Firefox 108 及以上版本。页面通过 import map
+加载模块，并使用这些版本才有的 JavaScript 内置函数（`Object.hasOwn`、`Array.prototype.findLastIndex`、
+`OffscreenCanvas`）；更早的浏览器，例如 iOS 15 的 Safari 或旧版 Android 的 WebView，会显示空白页面。NSH 不为它们附带
+polyfill，现代浏览器因此不必多下载任何内容。
 
 ### 运行时大小
 
@@ -220,6 +227,23 @@ nsh package --target web --asset-url https://cdn.example.com/debugger/
 在多段的路径上（`/sports/football`），`nsh.json` 写明站点路径时（上文的 `web.base`），页面从站点自己的路径加载它的文件；开发服务器的页面从 `/` 加载。
 
 发布到 Web 的应用与打包的原生应用运行方式相同：以发布模式运行，具有其 `nsh.json` 声明的能力（[沙箱与能力](./sandbox-and-capabilities.md)），TSX 应用由浏览器的 JavaScript 引擎执行。当能力限制了 `network` 时，页面还会带上 Content-Security-Policy `connect-src`，其中列出声明的主机（以及页面自身的源和 `--asset-url` 的源），由浏览器自己拒绝发往其他主机的请求和重定向。导致应用无法启动的错误会显示在页面上；之后的错误输出到浏览器控制台。
+
+#### 在严格的内容安全策略下运行
+
+页面没有内联代码，也没有内联样式：它的脚本、样式和应用的模块都是站点里的文件，运行时自己的样式规则用就地构建的样式表加入。运行时自己生成的图片（内存中的图片、按文字颜色绘制的 `svg()`、剪贴板里的图片）是 `blob:` 和 `data:` URL，由 `img-src` 放行。服务器发送下面这样的严格策略时，页面无需改动即可运行：
+
+```text
+default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:; base-uri 'none'
+```
+
+`nsh package` 会打印它需要的策略：
+
+```text
+✓ packaged .nsh/out/Sports, 5.1 MB
+  under a Content-Security-Policy it needs script-src 'self' 'wasm-unsafe-eval'; img-src 'self' blob: data:
+```
+
+设置了 `web.base` 时，页面用绝对路径引用自己的文件，并直接把站点的基址交给运行时，不用 `<base href>`，所以在 `base-uri 'none'` 下应用在它的每个路径上都能加载。整体加载原生模块的 TSX 应用（把 `import * as base from "nsh/base"` 当作值传递、`import(name)`）在启动时才链接它的模块，需要 `'unsafe-inline' blob:`，`nsh package` 会提示。Web 视图的桥（`window.nsh.postMessage`）也是文件；Web 视图自己的 `html` 里的脚本和 `injectedJavaScript*` 是内联的，由应用自己放行，`injectJavaScript` 需要 `'unsafe-eval'`。
 
 ### 用 iframe 嵌入
 
@@ -283,19 +307,27 @@ const player = await createPlayer(document.querySelector("#phone"), {
   // idiom: "phone",        // 强制 "phone"、"pad" 或 "desktop"；不设置时由指针和尺寸决定
   // history: false,        // 页面和对话框是否作为浏览器历史记录；默认只在应用占据整个页面时开启，iframe 里不开启
   // dialogs: "viewport",   // Dialog 和 AlertDialog 覆盖整个浏览器窗口；默认覆盖容器
+  // overlays: "viewport",  // Popover、菜单、提示等锚定浮层显示在整个浏览器窗口之上；默认在容器内
 });
 await player.runModule(new URL("./bundle.js", location.href).href);
 ```
 
-`assets`（从 `asset:/` 路径到 URL 的映射）可代替 `assetBase`，`readAsset(uri)` 返回引擎需要立即读取的资源（字体）的字节，或 `null`，`data` 把运行时第一次需要时才下载的文件映射到 URL（`syntaxes`：`nsh-syntaxes.<digest>.bin`；默认是 `nsh.js` 旁边的 `nsh-<name>.bin`），`glue` 是 crate [在 Rust 中调用浏览器 API](#在-rust-中使用浏览器-api) 的运行时的 wasm-bindgen 胶水代码的 URL（`nsh-bindgen.<digest>.js`），播放器会随运行时一起加载它；`player.runModule(url, { capabilities, appId })` 在应用声明的能力（它的 `capabilities.json`）下运行应用，并把它的存储保存在 `nsh.json` 的 id 之下（没有 id 时保存在页面路径之下）。这些选项和应用图片里的相对 URL 都相对于创建播放器时页面的 URL（`player.baseURL`）解析，所以页面把地址改到其他目录后，它们仍能加载。`nsh package --target web` 写出的页面都用到了。
+`assets`（从 `asset:/` 路径到 URL 的映射）可代替 `assetBase`，`readAsset(uri)` 返回引擎需要立即读取的资源（字体）的字节，或 `null`，`data` 把运行时第一次需要时才下载的文件映射到 URL（`syntaxes`：`nsh-syntaxes.<digest>.bin`；默认是 `nsh.js` 旁边的 `nsh-<name>.bin`），`glue` 是 crate [在 Rust 中调用浏览器 API](#在-rust-中使用浏览器-api) 的运行时的 wasm-bindgen 胶水代码的 URL（`nsh-bindgen.<digest>.js`），播放器会随运行时一起加载它；`player.runModule(url, { capabilities, appId })` 在应用声明的能力（它的 `capabilities.json`）下运行应用，并把它的存储保存在 `nsh.json` 的 id 之下（没有 id 时保存在页面路径之下）。这些选项和应用图片里的相对 URL 都相对于创建播放器时页面的 URL 解析，给了 `baseURL`（站点的基址）时相对于它（`player.baseURL`），所以页面把地址改到其他目录后，它们仍能加载。`nsh package --target web` 写出的页面都用到了。
 
-`runModule(url, { chunks })` 还可以指定[拆分 bundle](#拆分-bundle) 的 chunk 所在位置；`runModule(url, { params })` 指定应用的 `host.params`：页面已经为应用准备好的 JSON 对象，比如首屏的数据。`nsh package --target web` 写出的页面里如果有 `<script type="application/json" id="nsh-params">`，就把它的 JSON 传给应用，这样提供页面的服务器可以随页面把数据交给应用，应用直接显示，不必再请求一次。
+`runModule(url, { chunks })` 还可以指定[拆分 bundle](#拆分-bundle) 的 chunk 所在位置；`runModule(url, { params })` 指定应用的 `host.params`：页面已经为应用准备好的 JSON 对象，比如首屏的数据。`nsh package --target web` 写出的页面里如果有 `<script type="application/json" id="nsh-params">`，就把它的 JSON 传给应用，这样提供页面的服务器可以随页面把数据交给应用，应用直接显示，不必再请求一次。参数和页面的[宿主](#宿主的函数)一起使用：应用的 `host.call` 照样交给 `createPlayer` 的 `host` 回答。
 
 `player.runSource(code, { name, sourceMap, capabilities, appId })` 运行以源码文本给出的 ES 模块，选项相同。使用 `nsh-playground.wasm` 时，`player.compileAndRun(tsx, name, options)` 会先编译 TSX，再用 `runSource` 的选项运行，结果是编译错误或 `null`；`player.compile(tsx)` 返回 `{ code }` 或 `{ error }`。
 
 容器的尺寸就是应用的窗口（`windowSize()`），调整容器大小会同步调整应用。`player.setDark(true)` 可在运行时切换外观，应用通过 `colorScheme()` 和 `dark:` 类感知到变化。
 
+应用的生命周期就是页面的生命周期。监听退出请求的应用（`Application.on("quitRequest")`，见
+[退出](../modules/nsh-desktop.md#退出)）在用户离开嵌入它的页面时会被询问，浏览器可能询问用户是否离开；页面离开时它的
+`quit` listener 会运行。想自己掌管离开的页面在不含 `"application": true` 的能力下运行应用
+（`runModule(url, { capabilities })`）：用户离开时不会询问应用，页面离开时它的 `quit` listener 仍会运行。
+
 Dialog、Sheet 和 AlertDialog 默认覆盖容器。设置 `dialogs: "viewport"` 后，它们像页面自己的模态对话框一样覆盖整个浏览器窗口，应用的窗口仍是容器：`Dialog` 按窗口的尺寸和安全区域布局，从窗口底边滑入，背景覆盖整个页面，在它上面滚动鼠标滚轮时页面保持不动。对话框显示在浏览器的顶层（Chrome 114、Safari 17、Firefox 125 及更新版本），所以无论容器在页面的什么位置，它都在页面其他内容之上；更早的浏览器里它覆盖容器。
+
+Popover、菜单、提示、`Select` 和 `Combobox` 的列表、编辑器的联想列表，以及其他所有锚定在元素上的浮层（`<Overlay anchor>`）默认显示在容器内。页面只给应用布局中的一小块时，比如 250 像素高的短评发布框里有一个 360 像素高的话题选择层，可以设置 `overlays: "viewport"`：浮层改为显示在整个浏览器窗口之上，不再被容器裁掉。它们按窗口（而不是容器）的边缘和安全区域定位和翻转，页面滚动或容器移动时跟随锚点，点击页面上浮层之外的任何地方会像在应用里点击一样关闭它们。在浮层上的点击、键盘焦点和 Escape 行为不变，覆盖窗口的对话框仍在它们之上，所以设置 `overlays: "viewport"` 的页面也要设置 `dialogs: "viewport"`。浮层显示在浏览器的顶层（Chrome 114、Safari 17、Firefox 125 及更新版本）；更早的浏览器里它们留在容器内。没有锚点的浮层（`fixed` 视图、底部面板的背景等）留在容器内。
 
 ## 宿主的函数
 
@@ -388,7 +420,7 @@ export async function createHost(player) {
 
 `fetch`（包括流、`AbortController` 和 `FormData`）以及 `<Image>` 的 URL 都走浏览器自己的网络栈，在此之前 NSH 已按应用的[能力声明](./sandbox-and-capabilities.md)做过检查。请求是浏览器发出的，所以遵循浏览器的规则：
 
-- **相对 URL** 与浏览器里一样，相对于应用启动时页面的 URL（页面有 `<base href>` 时为它）解析：发布出去的应用用 `fetch("/api/items")` 就能访问自己的接口，`<Image src="/photos/a.jpg" />` 从自己的服务器加载。（原生平台没有页面，仍需使用绝对 URL。）
+- **相对 URL**：`fetch`（参数为字符串或 `URL` 时）和应用的图片、视频、声音里的相对 URL 相对于应用启动时页面的 URL 解析，站点有 `web.base` 时相对于它：发布出去的应用用 `fetch("/api/items")` 就能访问自己的接口，`<Image src="/photos/a.jpg" />` 从自己的服务器加载。链接的 `href` 和 Web 视图的 `url` 在站点有 `web.base` 时也相对于它解析，否则相对于页面当前的地址。（原生平台没有页面，仍需使用绝对 URL。）
 - **CORS。** 发往页面所在源以外的请求，只有对方服务器允许页面的源（`Access-Control-Allow-Origin`）才会成功，否则 `fetch` 以网络错误拒绝。只能读到服务器公开的响应头。
 - **Cookie**（以及 HTTP 认证信息）只发送给页面自己的源（`credentials: "same-origin"`），浏览器禁止的请求头（`Cookie`、`User-Agent`、`Host` 等）会被丢弃。
 - **重定向**由浏览器跟随。不应跟随重定向的请求遇到重定向时会失败：`redirect: "manual"` 和 `"error"`，以及能力声明限制了 `network` 的应用发出的请求（NSH 要逐跳检查，而浏览器在跟随之前不会透露重定向的目标）。
@@ -458,6 +490,18 @@ import { Head } from "nsh/web";
   />
   …
 </NavPage>
+```
+
+主窗口的标题也是页面的标题，用 Rust 编写的应用就这样设置标签页的标题：按桌面上的方式设置（TSX 中是 `currentWindow().set({ title })`）；已挂载的 `Head` 设置的标题优先。空标题让页面恢复它自己的 `<title>`。Rust 应用的 nsh.json `window.title` 从启动起就是标签页的标题，和它在桌面上作为窗口标题一样。浏览器历史的每一条记录都保留它的页面当时的标题，所以标题要和它所属的页面或地址在同一轮里设置。
+
+```rust
+use nsh_core::{desktop::WindowAttributes, element::desktop::main_window};
+
+fn show_title(title: &str) {
+    let mut attributes = WindowAttributes::default();
+    attributes.title = Some(format!("{title} · Market Notes"));
+    main_window().set(attributes);
+}
 ```
 
 ## 限制

@@ -34,7 +34,7 @@ impl StorageBackend for MemoryStorage {
         Ok(self.entries())
     }
 
-    fn write(&self, change: StorageChange) {
+    fn write(&self, change: StorageChange) -> Result<(), String> {
         let mut entries = self.entries.lock().expect("entries");
         match change {
             StorageChange::Set(key, value) => {
@@ -45,6 +45,7 @@ impl StorageBackend for MemoryStorage {
             }
             StorageChange::Clear => entries.clear(),
         }
+        Ok(())
     }
 }
 
@@ -56,8 +57,12 @@ mod tests {
     fn storage_starts_with_its_entries_and_keeps_changes() {
         let storage = MemoryStorage::new([("todos".to_owned(), "[]".to_owned())]);
         assert_eq!(storage.load().unwrap()["todos"], "[]");
-        storage.write(StorageChange::Set("theme".into(), "dark".into()));
-        storage.write(StorageChange::Remove("todos".into()));
+        storage
+            .write(StorageChange::Set("theme".into(), "dark".into()))
+            .unwrap();
+        storage
+            .write(StorageChange::Remove("todos".into()))
+            .unwrap();
         assert_eq!(
             storage.entries().into_iter().collect::<Vec<_>>(),
             [("theme".to_owned(), "dark".to_owned())]

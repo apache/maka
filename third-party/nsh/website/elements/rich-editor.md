@@ -50,6 +50,12 @@ Without `schema` an editor uses the starter schema (`starterSchema()`); without 
 (`starterKit()`: the starter's input rules and key bindings, the base key bindings and the history). An empty
 `plugins` array makes an editor with no plugins at all.
 
+`onCompositionChange({ composing })` reports `true` when this view starts input-method composition and `false`
+when it ends, including cancellation. Updates to the text being composed keep the current state. The callback
+observes the session's updated `composing` value and any committed text, so an app can retain the editor view
+while composition is active and release it when it ends. Starting or canceling composition can keep the document
+and its revision unchanged; `onChange` reports document edits.
+
 ## Styling
 
 The editor draws the document with the app's look: `classes` and `styles` style its parts (`root`, `content`, `caret`,
@@ -87,6 +93,11 @@ document scrolls in. A chat composer is an editor with a `maxHeight` and no heig
 <RichEditor editor={editor} class="max-h-40 px-3 py-2" />
 ```
 
+`onContentSizeChange={({ contentSize }) => …}` reports the laid-out document's size when it changes, as
+`Input`'s does, at most once per frame. `contentSize` is its full flow size in points, including blocks outside
+the viewport and excluding the `content` part's padding. It stays independent of a fixed viewport height.
+Scrolling does not report a change; use `onScroll` for the offset.
+
 ### Touch selection
 
 On iOS and Android the editor selects as the platform's own text views do. A long press selects the word under the
@@ -119,6 +130,47 @@ const inLink = () => (revision(), editor.isActive("link"));
 
 A link menu edits the link under the caret with `chain([extendMarkRange("link"), command("setLink", { href })])`
 and removes it with `command("unsetLink")` after the same `extendMarkRange`.
+
+`contentLayer` is the app's own layer over the document, inside the box that scrolls: what it holds moves with
+the text in the same frame. Place its children in the content box's points, where `editor.nodeRect(pos)` (the box
+of the block starting at `pos`) and `editor.coordsAtPos(pos)` answer: a handle in a block's margin, a marker beside
+a node. The layer itself takes no press; its children do.
+
+```tsx
+const box = editor.nodeRect(blockStart);
+
+<RichEditor
+  editor={editor}
+  contentLayer={box ? <Handle style={{ position: "absolute", left: box.x - 28, top: box.y }} /> : undefined}
+/>
+```
+
+### Copy and paste
+
+A copy or cut puts the selection on the clipboard in two forms at once, as ProseMirror does: as plain text (Markdown with the
+`markdown` extension's `copyAsMarkdown`) and as HTML written by the schema's `renderHTML`, which mail, documents and
+other editors paste with its formatting. The HTML marks the copied slice (`data-pm-slice`), so a paste into a
+`RichEditor` gets the same nodes back, mentions and other inline nodes included, a part of a list item stays a part of
+one, and spaces are kept. Pasted HTML from elsewhere is read by the schema's parse rules. A Rust plugin changes what
+is copied with `transform_copied`.
+
+### Pasted and dropped files
+
+Files reach the app, which decides what they become (an image node, an attachment, a link to an uploaded copy); the
+editor inserts nothing for them and keeps its selection, where the app inserts what it makes of them. A paste of
+images or of files copied in a file manager calls `onPasteFiles` with `{ files, uris }`: `files` the images with
+their bytes, `uris` the copied files' `file:` URLs. On the desktops, files dragged from another application onto
+the editor call its `onFileDrop` with `{ uris, mimeTypes }`, as a [view's file drops](./view.md#desktop-file-drops)
+do, and `onFileDragEnter` / `onFileDragLeave` follow the drag, for a hint such as "Release to attach". Without
+`onFileDrop` the editor leaves dropped files to the view around it that listens.
+
+```tsx
+<RichEditor
+  editor={editor}
+  onPasteFiles={({ files }) => attach(files)}
+  onFileDrop={({ uris, mimeTypes }) => attachFiles(uris, mimeTypes)}
+/>
+```
 
 ## Schemas
 
@@ -187,6 +239,7 @@ const canIndent = editor.can(sinkListItem("listItem"));
 | `isEmpty`, `undoDepth`, `redoDepth`, `composing` | What a UI shows about the editor |
 | `setContent(content, format?)` | Replaces the document, as one undoable change |
 | `insertContent(content, format?)` | Inserts content over the selection |
+| `pasteHTML(html)`, `pasteText(text)` | Pastes HTML or plain text over the selection as a paste of it would go in; whether it pasted |
 | `getJSON()`, `getHTML()`, `getMarkdown()`, `getText()`, `textBetween(from?, to?, separator?)` | The document in a format |
 | `dispatch(tr)` | Applies a transaction given as JSON (its steps against the current document) |
 | `on(event, listener)` | Calls `listener` with the payload of every `event`, in JS's next turn: `revision` (`{ revision }`, after every change, from any source), `update`, `selectionUpdate`, `transaction`, `focus`, `blur`, `delete`. Returns a function that stops it; a listener added while a component renders stops with the component |
@@ -275,6 +328,42 @@ to other types; `addProseMirrorPlugins` returns plugins, `RichEditorPlugin`s inc
 `textRule` and `markRule` rules for pasted text. A built-in class's `extend({...})` replaces the parts it gives:
 `Underline.extend({ addKeyboardShortcuts: () => ({ "Mod-Alt-u": toggleMark("underline") }) })`.
 
+### Node views
+
+`addNodeView` returns the component that renders every node of the extension's node type: a stock tag in the text, a
+card between paragraphs, a mention, an embed. The node type must be an atom (`atom: true`, or a leaf): the caret steps
+over it as one character or one block and Backspace deletes it. A node with content is refused.
+
+```tsx
+import { RichEditor, StarterKit, createRichEditor, defineExtension, type RichNodeViewProps } from "nsh/base";
+
+function StockTag(props: RichNodeViewProps) {
+  return (
+    <View class={props.selected ? "rounded border border-primary px-1" : "rounded border border-transparent px-1"}>
+      <Text>{`$${props.node.attrs.symbol}`}</Text>
+    </View>
+  );
+}
+
+const Stock = defineExtension({
+  name: "stock",
+  node: { group: "inline", inline: true, atom: true, attrs: { symbol: { default: "AAPL" } } },
+  addNodeView: () => StockTag,
+});
+
+const editor = createRichEditor({ extensions: [StarterKit, Stock] });
+```
+
+The component runs once per node. Its props follow the node: read in JSX or an effect, `node` (`{ type, attrs,
+textContent }`) and `selected` change in place when the node's attributes or its selection change, and typing around
+the node never calls it. `editor` is the editor the node is in, `extension` is `{ name, options }`. `getPos()` is
+where the node starts now (`null` once it is gone); `updateAttributes(attrs)` sets some of its attributes and
+`deleteNode()` deletes it, each one undoable change through the editor (and its `dispatchTransaction`).
+
+A press on a view's own area selects its node and gives the editor the focus, inline views as block ones (ProseMirror
+selects a clicked atom too); with Shift held it extends the selection instead, and with Mod held it does what it does
+on text. A control inside the view (a `Button`, a `Link`) keeps its press, and the selection stays where it was.
+
 An app's crate registers extensions written in Rust through its UI set, and JS takes them by name:
 
 ```rust
@@ -337,26 +426,71 @@ editor.setDecorations("suggestions", [{ from: 5, to: 9, kind: "inline", attrs: {
   `dispatch`, `setContent`, …) in that call: `filterTransaction` may drop one, `appendTransaction` may return one
   more to apply with it. `on("revision", …)` hears every change, typing included.
 
+#### Paste
+
+A plugin can take part in a paste with ProseMirror's `transformPasted` and `handlePaste`:
+
+```tsx
+const paste = new RichEditorPlugin("paste")
+  .transformPasted((slice) => slice)
+  // Word's list items, Google Docs' bold, a video link pasted on its own: the app reads the clipboard itself.
+  .handlePaste((slice, clipboard) => {
+    if (!isVideoLink(clipboard.text)) return false;
+    editor.run(insertContent({ type: "video", attrs: { src: clipboard.text } }));
+    return true;
+  });
+```
+
+- `transformPasted(slice)` changes the content before it goes in, each plugin's in turn. The content is a
+  `RichSliceJSON` (`{ content, openStart, openEnd }`), parsed from the clipboard's HTML by the schema's rules, else
+  from its text.
+- `handlePaste(slice, clipboard)` returning `true` means the app handled the paste and the editor inserts nothing.
+  `clipboard` is `{ text, html }`, what the clipboard held: an app that reads Word or Google Docs HTML, Markdown or a
+  link in its own way inserts the result itself (`editor.run(insertContent(...))`) and returns `true`.
+
+An app that cleans up the clipboard's HTML itself (Word's lists, Google Docs' wrapper, Markdown turned into HTML)
+hands the result on with `editor.pasteHTML(html)` and returns `true`; plain text goes on with `editor.pasteText(text)`.
+They are ProseMirror's `pasteHTML` and `pasteText`: the content is read as a paste is, by the schema's parse rules and
+fitted to the selection, so a node marked `isolating` (a figure with its caption) stays whole where
+`insertContent(html, "html")` would open it, and the editor's own paste steps (links, character limits, paste rules)
+apply. The plugins' `transformPasted` and `handlePaste` are not asked again. They return whether something was pasted.
+
+```tsx
+const paste = new RichEditorPlugin("paste").handlePaste((_slice, clipboard) => {
+  const docs = /^<b id="docs-internal-guid-[^"]*">([\s\S]*)<\/b>$/.exec(clipboard.html);
+  return docs ? editor.pasteHTML(docs[1]) : false;
+});
+```
+
+Paste is the one input that waits for JS: once a plugin has a paste hook, the paste goes in after the hooks have
+answered, a JS turn later. Pastes go in in the order they were made. A paste whose document or selection changes
+while its hooks answer starts over from the editor as it is then. Typing and keys never wait. To insert something
+that takes longer, such as an upload, `handlePaste` returns `true` and the app inserts it when it is ready.
+
 ## Links, character counts and suggestions
 
 Three plugins carry Tiptap's Link, CharacterCount and Suggestion behavior, all of it native:
 
 ```tsx
-import { RichEditor, characterCount, createRichEditor, insertMention, link, starterKit, starterSchema, suggestion, withMention } from "nsh/base";
+import { RichEditor, characterCount, createRichEditor, insertMention, link, setSuggestionOpen, starterKit, starterSchema, suggestion, withMention } from "nsh/base";
 
 const editor = createRichEditor({
   schema: withMention(starterSchema()),
   plugins: [
+    suggestion({ key: "mention", char: "@", decorationClass: "text-primary", captureKeys: ["ArrowUp", "ArrowDown", "Enter"] }),
     starterKit(),
     link({ defaultProtocol: "https" }),
     characterCount({ limit: 280 }),
-    suggestion({ key: "mention", char: "@", decorationClass: "text-primary", captureKeys: ["ArrowUp", "ArrowDown", "Enter"] }),
   ],
 });
 
 editor.on("transaction", () => {
   const s = editor.suggestion("mention");
-  if (s?.active) showPeople(s.query, editor.coordsAtPos(s.range.from), s.lastKey);
+  if (s?.active) {
+    const people = peopleMatching(s.query);
+    editor.run(setSuggestionOpen(people.length > 0, "mention"));
+    showPeople(people, editor.coordsAtPos(s.range.from), s.lastKey);
+  }
   setCount(`${editor.characters()} / ${editor.characterLimit}`);
 });
 
@@ -383,10 +517,16 @@ editor.run(insertMention(editor.suggestion("mention")!.range, "u1", "Joan"));
 - `suggestion(options?)`: follows a trigger (`char`, `@` by default) typed before the cursor. `allowSpaces` lets the
   query hold spaces, `allowedPrefixes` lists what may precede the trigger (a space by default; `anyPrefix` takes
   anything), `startOfLine` asks for it at the line's start (a `/` command menu). `editor.suggestion(key)` gives
-  `{ active, range, query, text, lastKey, keyCount }`; the active range carries the app's `decorationClass` (and
+  `{ active, range, query, text, lastKey, keyCount, open }`; the active range carries the app's `decorationClass` (and
   `decorationEmptyClass` while the query is empty). While a suggestion is active the keys in `captureKeys` belong
   to the app's list: the editor takes them and records the last one in the state, and Escape dismisses the
-  suggestion (`exitSuggestion(key)` does too). `replaceSuggestion(content, key?)` replaces the trigger and the query
+  suggestion (`exitSuggestion(key)` does too). `setSuggestionOpen(open, key?)` tells the suggestion whether the
+  list shows for the query (its state's `open`): closed, the keys in `captureKeys` go on to the editor, so Enter
+  sends or starts a new line when nothing matches, and Escape still dismisses. It holds for the query it was said
+  for, so say it each time the query changes; until then the list is open and the keys are its own. A list that
+  loads its items (a remote people search) closes only once it knows the list is empty, not while the results are
+  still loading, or Enter would act before they arrive.
+  A suggestion comes before `starterKit()` and the app's own keys in `plugins`, so its keys reach it first. `replaceSuggestion(content, key?)` replaces the trigger and the query
   with text or JSON content.
 - `withMention(schema, { name?, char? })` adds Tiptap's mention node: an inline atom with `id`, `label` and its
   trigger, written as `@label` in text and as `<span data-type="mention">` in HTML. `insertMention(range, id, label?)`

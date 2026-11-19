@@ -367,6 +367,8 @@ export class Values {
           case 39: return this.put(this.makeNode(a, b !== 0));
           case 42: { const error = this.hasError ? this.error : new Error(text(b, c)); this.error = null; this.hasError = false; this.report(error); return 0; }
           case 41: return this.put(new File([this.get(a)], this.get(b), { type: this.get(c), lastModified: Number.isNaN(number) ? Date.now() : number }));
+          // A `Blob` of the bytes `a` of MIME type `b` (`OffscreenCanvas.convertToBlob`'s).
+          case 51: return this.put(new Blob([this.get(a)], { type: this.get(b) }));
           case 43: return this.put(String(this.get(a)));
           case 45: return Number(this.hasError);
           case 46: this.edges?.push([a, b, c, number >>> 0]); return 0;

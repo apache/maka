@@ -130,6 +130,21 @@ mount(App);
 
 时间行（`timeClass`、`timeStyle`）是一行，其中各项垂直居中、两端分布（`flex-row items-center justify-between`，与 `gpui-component` 的相同）：开头是 `timeLabel`，即应用为它写的文字（"时间"），末尾是时间输入框（`timeFieldClass`、`timeFieldStyle`、`timeAccessibilityLabel`），其各段与 [TimeField](./time-field.md) 的相同（`segmentClass`、`separatorClass`、`renderSegment`）。
 
+<a id="entrance-and-exit"></a>
+
+## 出现与离开
+
+在桌面平台上，弹出层像 [Popover](./popover.md#entrance-and-exit) 一样随你的过渡出现和离开：`popupStartingClass` 是它第一帧的外观，`popupClass` 里的 `transition-*` 类把它过渡到自己的外观；`popupEndingClass` 是关闭后的外观，在这些过渡播放期间它会保留、不接受按压，随后触发 `onClose`。关闭时键盘焦点就回到触发元素，除非选择的 `onChange` 把焦点移到了别的视图（比如表单的下一个输入框），那样焦点就留在那里。在离开途中再次打开时，它从当前状态回到自己的外观。`popupStartingStyle` 和 `popupEndingStyle` 以内联样式做同样的事。用户要求减少动态效果时，它立即出现、立即离开；触摸屏上的 sheet 自带滑入和滑出的动作。
+
+```tsx
+<DatePicker
+  popupClass="rounded-lg bg-popover p-3 shadow-md transition-all duration-150 ease-out"
+  popupStartingClass="opacity-0 -translate-y-1"
+  popupEndingClass="opacity-0"
+  trigger={<DateTrigger />}
+/>
+```
+
 <a id="props"></a>
 
 ## 属性
@@ -152,6 +167,8 @@ mount(App);
 | `previousAccessibilityLabel`、`nextAccessibilityLabel` | 同 `Calendar` | `string` | 无 | 屏幕阅读器对日历的"上一个"和"下一个"的称呼。 |
 | `placement`、`align`、`offset`、`margin` | `.placement(..)` 等 | 同 `Select` | `"bottom"`、`"start"`、0、0 | 桌面平台：弹出层相对触发元素的位置。 |
 | `popupClass`、`popupStyle` | `.popup_class(..)`、`.popup_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 弹出层（桌面平台）或 sheet（触屏设备）。 |
+| `popupStartingClass`、`popupStartingStyle` | `.popup_starting_class(..)`、`.popup_starting_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 桌面：弹出层第一帧的外观，叠加在它自己的外观之上：它的过渡从这里开始。 |
+| `popupEndingClass`、`popupEndingStyle` | `.popup_ending_class(..)`、`.popup_ending_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 桌面：弹出层关闭后的外观，叠加在它自己的外观之上：过渡播放期间它会保留。 |
 | `backdropClass`、`backdropStyle` | `.backdrop_class(..)`、`.backdrop_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | sheet 后面的背景层。 |
 | `contentClass`、`contentStyle` | `.content_class(..)`、`.content_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 弹出层的内容：预设在日历和时间旁边。 |
 | `presetsClass`、`presetsStyle` | `.presets_class(..)`、`.presets_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 预设列。 |

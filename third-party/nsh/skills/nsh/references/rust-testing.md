@@ -121,7 +121,7 @@ the cell. Select by text there.
 | Step | Does |
 |---|---|
 | `press(sel)`, `long_press(sel)`, `press_at(sel, point)` | As a tap: press down, up, press, inside a finger's touch |
-| `type_text(sel, "text")` | Focuses, then a key and a change per character, at the end of the text. A line break in a single-line input is the return key |
+| `type_text(sel, "text")` | Focuses the input unless it has the focus already, then a key and a change per character, at its caret and over its selection (headless, the caret is at the end of the text). A line break in a single-line input is the return key |
 | `clear(sel)`, `submit(sel)` | Empties an input; the return key |
 | `press_key("cmd-k")`, `hold_keys(keys, down)` | The keymap |
 | `scroll(sel, px(3000.0))` | Scrolls the view, and lists bind the rows they reach |
@@ -164,7 +164,8 @@ fn adds_and_deletes_a_todo() -> Result<(), String> {
 - `shows(text)`, `matches(sel)`, `count(sel)`, `enabled(sel)`, `selected(sel)`, `input_text(sel)`,
   `accessibility_state(sel)`.
 - `dialogs()`, `clipboard()`, `opened_urls()`, `picks()`, `file_requests()`: what the app asked the platform for.
-- `commands()`, `sent(&command)`: commands sent to views (focus, scroll).
+- `commands()`, `sent(&command)`: commands sent to views (focus, scroll). `app.clear_commands()` starts the record
+  afresh: a long test calls it before the steps whose commands it checks.
 
 Assert on what a user sees. Do not export signals from the app so that a test can read them.
 

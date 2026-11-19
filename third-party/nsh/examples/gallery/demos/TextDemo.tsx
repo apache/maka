@@ -5,7 +5,7 @@ import logo from "../logo@2x.png";
 import { alpha, Caption, Card, colors, DemoPage, finish, isDark, mono, photoUrl, type PhotoName, Press, radius, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, terminal, tints } from "../ui";
 
 const LOREM =
-  "Native text, typeset once on the engine thread with CoreText and drawn on the main thread without any layout work.";
+  "Native text, typeset once on the engine thread with the platform's text engine and drawn on the main thread without any layout work.";
 
 const body = () => ({ fontSize: 15, lineHeight: 22, color: colors.text }) as const;
 const link = () => ({ color: colors.accent, textDecorationLine: "underline", textDecorationColor: alpha(colors.accent, 0.5) }) as const;
@@ -53,6 +53,11 @@ function Links() {
         </Text>
         .
       </Text>
+      <Text style={body()}>
+        {"Run "}
+        <Text style={{ fontFamily: "monospace", backgroundColor: colors.raised, borderRadius: 4, paddingHorizontal: 4 }}>nsh test</Text>
+        {" first: a padded span keeps room around its code."}
+      </Text>
       <Caption label="Pressed" note={tapped()} />
     </Card>
   );
@@ -65,17 +70,17 @@ function Inline() {
       <Text style={{ ...body(), fontSize: 16, lineHeight: 28 }}>
         {"Made with "}
         <If when={!terminal}>
-          <Image src={logo} style={{ width: 18, height: 18, borderRadius: 5 }} />
+          <Image src={logo} style={{ width: 18, height: 18, borderRadius: 5, verticalAlign: "middle" }} />
         </If>
         {terminal ? "nsh. Status " : " nsh. Status "}
-        <View style={{ backgroundColor: tints.up, borderRadius: 9, paddingHorizontal: 8, height: terminal ? TERMINAL_ROW : 18, flexDirection: "row", alignItems: "center", gap: 4 }}>
+        <View style={{ verticalAlign: "middle", backgroundColor: tints.up, borderRadius: 9, paddingHorizontal: 8, height: terminal ? TERMINAL_ROW : 18, flexDirection: "row", alignItems: "center", gap: 4 }}>
           <If when={!terminal}>
             <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.up }} />
           </If>
           <Text style={{ color: colors.up, fontSize: 11, fontWeight: "700", letterSpacing: 0.5 }}>LIVE</Text>
         </View>
         {" and a button inside the sentence "}
-        <Press onPress={() => likes.set(likes() + 1)} scale={0.9} accessibilityLabel="Like" hitSlop={10}>
+        <Press onPress={() => likes.set(likes() + 1)} style={{ verticalAlign: "middle" }} scale={0.9} accessibilityLabel="Like" hitSlop={10}>
           <View
             style={{
               backgroundColor: colors.raised,

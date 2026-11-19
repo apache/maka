@@ -164,7 +164,7 @@ fn Site() -> impl IntoElement {
         .child(frame(
             web_view(SITE)
                 .element_ref(&site)
-                .h(px(340.0))
+                .h(px(560.0))
                 .bg(colors::INSET)
                 .on_navigation_state_change(move |s: &WebNavigation| state.set(Some(s.clone()))),
         ))
@@ -351,7 +351,7 @@ fn messaging() -> impl IntoElement {
             web_view_html(move || page(dark()), None)
                 .url_scheme(SCHEME, serve)
                 .element_ref(&web)
-                .h(px(210.0))
+                .h(px(360.0))
                 .bg(colors::INSET)
                 .on_message(move |data: &str| message.set(data.to_owned())),
         ))
@@ -389,7 +389,24 @@ fn messaging() -> impl IntoElement {
 /// tell the app.
 #[component]
 pub(crate) fn WebViewPage() -> impl IntoElement {
-    DemoPage::new().card(messaging).card(site)
+    DemoPage::new().columns(1).card(web_views)
+}
+
+/// The inline page and the web site, one at a time across the page's width.
+fn web_views() -> impl IntoElement {
+    // 0: the inline page, 1: the web site.
+    let tab = signal(0_u32);
+    view()
+        .flex_col()
+        .gap(px(16.0))
+        .child(
+            segmented()
+                .options([Segment::new("Inline page"), Segment::new("Web site")])
+                .selected(move || tab.get())
+                .on_change(move |&i: &u32| tab.set(i)),
+        )
+        .child(when(move || tab.get() == 0, messaging))
+        .child(when(move || tab.get() == 1, site))
 }
 
 /// The Video demo's page: a player and what it tells the app.

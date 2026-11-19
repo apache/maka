@@ -108,9 +108,18 @@ pub(crate) const NOTHING_TO_GO_BACK_FROM: &str = "nothing to go back from";
 /// platform: `ERR_NSH_TEST_UNSUPPORTED`.
 #[cfg(any(feature = "js", feature = "agent"))]
 pub(crate) fn web_only(what: &str) -> String {
-    format!(
-        "`{what}` is unsupported here: only the browser's history goes forward; run the test with `--target web`"
+    unsupported_here(
+        what,
+        "only the browser's history goes forward; run the test with `--target web`",
     )
+}
+
+/// A step (`keyboard.down`, `setLifecycle`) the platform under test
+/// cannot take, `why`: `ERR_NSH_TEST_UNSUPPORTED`.
+#[allow(dead_code)]
+pub(crate) fn unsupported_here(what: &str, why: &str) -> String {
+    let what = what.trim_matches('`');
+    format!("`{what}` is unsupported here: {why}")
 }
 
 /// How many characters of the texts on screen a failure shows: enough to
@@ -258,8 +267,7 @@ pub(crate) fn code_of(message: &str) -> Option<&'static str> {
     } else if message.starts_with(NOTHING_TO_GO_BACK_FROM) {
         Some(NO_BACK)
     } else if message.starts_with("open(") && message.contains("` is unsupported on --target ")
-        || quoted
-            && message.contains("` is unsupported here: only the browser's history goes forward")
+        || quoted && message.contains("` is unsupported here: ")
     {
         Some(UNSUPPORTED)
     } else {
@@ -308,6 +316,14 @@ mod tests {
                 Some(UNSUPPORTED),
             ),
             (web_only("forward"), Some(UNSUPPORTED)),
+            (
+                unsupported_here("keyboard.down", "holding keys runs headless only for now"),
+                Some(UNSUPPORTED),
+            ),
+            (
+                crate::driver::headless_only("setLifecycle"),
+                Some(UNSUPPORTED),
+            ),
             ("open(\"./App.tsx\"): the engine did not start".into(), None),
             ("`Pay` matches 2 pressable views".into(), None),
             (

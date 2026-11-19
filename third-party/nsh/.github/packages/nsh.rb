@@ -34,7 +34,7 @@ class Nsh < Formula
     # Other platforms' runtimes are components, added when first needed.
     # Releases before `nsh component` (0.4.0 and older) bundle them instead.
     if shell_output("#{bin}/nsh --help").include?("component")
-      assert_match "android", shell_output("#{bin}/nsh component list")
+      assert_match "android", shell_output("#{bin}/nsh component list 2>&1")
     end
   end
 end

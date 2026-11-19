@@ -15,7 +15,7 @@
 use super::{DocFormat, DomParser, FormatError, ParseOptions};
 use crate::rich_editor::model::{
     AttrRender, AttrSpec, Attrs, DomAttrValue, DomOutputSpec, DomSource, Fragment, Mark, Node,
-    Schema, attr_value_text,
+    Schema, Slice, attr_value_text,
 };
 
 /// Elements written without content or an end tag.
@@ -153,6 +153,73 @@ impl DomSerializer {
     pub fn serialize_fragment(&self, fragment: &Fragment) -> String {
         let mut out = Vec::new();
         self.fragment_into(fragment, &mut out);
+        write_all(&out)
+    }
+
+    /// The HTML a copy of `slice` puts on the clipboard (ProseMirror's
+    /// `serializeForClipboard`): the slice's content, the nodes it is
+    /// open through on both sides taken off as context, table parts
+    /// wrapped in the elements HTML needs around them, and the first
+    /// element marked `data-pm-slice="openStart openEnd [-wrappers]
+    /// context"`, so that a paste into an editor
+    /// ([`DomParser::parse_from_clipboard`]) gets the same slice back.
+    pub(crate) fn serialize_for_clipboard(&self, slice: &Slice) -> String {
+        let mut content = slice.content.clone();
+        let (mut open_start, mut open_end) = (slice.open_start, slice.open_end);
+        let mut context = Vec::new();
+        while open_start > 1
+            && open_end > 1
+            && content.child_count() == 1
+            && content.first_child().is_some_and(|n| n.child_count() == 1)
+        {
+            open_start -= 1;
+            open_end -= 1;
+            let node = content.first_child().expect("one child").clone();
+            context.push(serde_json::Value::from(node.ty().name()));
+            context.push(
+                if node.ty().default_attrs().as_ref() == Some(node.attrs()) {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::Object(node.attrs().clone().into_iter().collect())
+                },
+            );
+            content = node.content().clone();
+        }
+        let mut out = Vec::new();
+        self.fragment_into(&content, &mut out);
+        let mut wrappers = 0;
+        while let Some(Out::El(first)) = out.first() {
+            let wrap: &[&str] = match first.tag.as_str() {
+                "thead" | "tbody" | "tfoot" | "caption" | "colgroup" => &["table"],
+                "col" => &["table", "colgroup"],
+                "tr" => &["table", "tbody"],
+                "td" | "th" => &["table", "tbody", "tr"],
+                _ => break,
+            };
+            for tag in wrap.iter().rev() {
+                out = vec![Out::El(OutEl {
+                    tag: (*tag).to_owned(),
+                    attrs: Vec::new(),
+                    children: out,
+                })];
+            }
+            wrappers += wrap.len();
+        }
+        if let Some(Out::El(first)) = out.first_mut() {
+            let wrapped = if wrappers > 0 {
+                format!(" -{wrappers}")
+            } else {
+                String::new()
+            };
+            let data = format!(
+                "{open_start} {open_end}{wrapped} {}",
+                serde_json::Value::Array(context)
+            );
+            // Set, as `setAttribute` does: a node's own `data-pm-slice`
+            // gives way.
+            first.attrs.retain(|(name, _)| name != "data-pm-slice");
+            first.attrs.push(("data-pm-slice".into(), data));
+        }
         write_all(&out)
     }
 

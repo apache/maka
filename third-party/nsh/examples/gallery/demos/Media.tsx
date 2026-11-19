@@ -28,7 +28,7 @@ function Messaging() {
   let web!: WebViewRef;
   return (
     <Card icon="media" title="Web view" subtitle="Inline HTML, with messages both ways">
-      <WebView ref={web} html={page()} style={{ height: 210, backgroundColor: colors.inset, ...frame() }} onMessage={(e) => message.set(e.data)} />
+      <WebView ref={web} html={page()} style={{ height: 360, backgroundColor: colors.inset, ...frame() }} onMessage={(e) => message.set(e.data)} />
       <Caption label="From the page" note={message() || "—"} />
       <Caption label="To the page" note={sent() ? `hi #${sent()}` : "—"} />
       <Button
@@ -104,7 +104,7 @@ function Site() {
       <WebView
         ref={site}
         src="https://nsh.dev"
-        style={{ height: 340, backgroundColor: colors.inset, ...frame() }}
+        style={{ height: 560, backgroundColor: colors.inset, ...frame() }}
         onNavigationStateChange={(v) => state.set(v)}
       />
       {/* Two Cells between the buttons in a terminal, where they are words. */}
@@ -181,8 +181,31 @@ function Player() {
   );
 }
 
+/** The inline page and the web site, one at a time across the page's width. */
+function WebViews() {
+  const tab = signal<"page" | "site">("page");
+  return (
+    <View style={{ gap: 16 }}>
+      <Segmented
+        options={[
+          { value: "page", label: "Inline page" },
+          { value: "site", label: "Web site" },
+        ]}
+        value={tab()}
+        onChange={(v) => tab.set(v)}
+      />
+      <If when={tab() === "page"}>
+        <Messaging />
+      </If>
+      <If when={tab() === "site"}>
+        <Site />
+      </If>
+    </View>
+  );
+}
+
 export function WebViewDemo() {
-  return <DemoPage cards={[Messaging, Site]} />;
+  return <DemoPage cards={[WebViews]} columns={1} />;
 }
 
 export function VideoDemo() {

@@ -140,4 +140,7 @@ relative path plays only on the web, as the page's.
 
 - iOS draws the video in an `AVPlayerLayer`, or in the system player view with `controls`; AVFoundation is loaded the
   first time a video is created.
+- On iOS, `audioSession="playback"` or `"mixWithOthers"` allows playback to continue in the background when the app's
+  `Info.plist` includes `UIBackgroundModes: ["audio"]` (set through `ios.infoPlist` in `nsh.json` for packaged apps).
+  Switching back to `"default"` restores the system's automatic background playback policy.
 - Android plays with MediaPlayer on a TextureView, with a MediaController for `controls`.

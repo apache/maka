@@ -83,8 +83,9 @@ pub(crate) struct FocusWatch {
     /// Hears the focus come in (`true`) or leave (`false`).
     pub(crate) handler: FocusHandler,
     /// Whether the focus was within it when the core last looked; `None`
-    /// before the core found it, so a watch made while the focus is in its
-    /// element hears it leave, not come.
+    /// before the core first found it, so a watch made while the focus is
+    /// in its element hears it leave, not come. `false` once its element
+    /// is gone, so the ref's next element hears the focus come in.
     pub(crate) last: Option<bool>,
 }
 

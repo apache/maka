@@ -23,7 +23,9 @@ on:
       - "crates/nsh-package/**"
       - "crates/nsh-updater/**"
       - "crates/nsh-platform-linux/**"
+      - "crates/nsh-platform-android/**"
       - "crates/nsh-platform-apple/**"
+      - "crates/nsh-platform-ios/**"
       - "crates/nsh-platform-macos/**"
       - "crates/nsh-platform-web/**"
       - "crates/nsh-platform-windows/**"
@@ -82,12 +84,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-15, windows-latest]
-    runs-on: ${{ matrix.os }}
+    # The Linux and Windows runs of a pull request from this repository run
+    # on the self-hosted runners; forks' pull requests, the scheduled runs
+    # (which save the dependencies' caches forks restore) and macOS run on
+    # GitHub's runners (docs/dev/tooling.md "Runners").
+    runs-on: ${{ (github.event_name != 'schedule' && !(github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository)) && (matrix.os == 'ubuntu-24.04' && fromJSON('["public", "Linux", "X64"]') || matrix.os == 'windows-latest' && fromJSON('["public", "Windows", "X64"]')) || matrix.os }}
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Set up temporary files
         run: |
           mkdir -p "$RUNNER_TEMP/nsh-test-tmp"
@@ -98,9 +104,22 @@ jobs:
       - name: Install GTK 4 and GStreamer
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust
+        if: runner.environment == 'github-hosted'
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # The self-hosted runner is shared: install the toolchain without
+      # making it the machine's default (RUSTUP_TOOLCHAIN picks it).
+      - name: Setup Rust (self-hosted)
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          export PATH="$bin:$PATH"
+          command -v rustup || curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
+          rustup toolchain install stable --profile minimal -c clippy,rustfmt
+          echo "$bin" >> "$GITHUB_PATH"
       # huacnlee/cargo, and the dependencies' builds: main's runs save
       # them, pull requests restore them.
       - name: Cargo
@@ -143,7 +162,7 @@ jobs:
       deployment: false
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Set up temporary files
         run: |
           mkdir -p "$RUNNER_TEMP/nsh-test-tmp"
@@ -151,8 +170,8 @@ jobs:
       # QuickJS is C: bindgen needs libclang for the CLI; the web runtime's
       # C code (zstd) clang and llvm-ar. The describe program links the gallery's crate,
       # whose native entry (`cargo run`) uses GTK 4 on Linux.
-      - name: Install clang, LLVM, GTK 4 and GStreamer
-        run: sudo apt-get update && sudo apt-get install -y clang llvm libclang-dev libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - name: Install clang, LLVM, GTK 4, WebKitGTK and GStreamer
+        run: sudo apt-get update && sudo apt-get install -y clang llvm libclang-dev libgtk-4-dev libwebkitgtk-6.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -177,14 +196,18 @@ jobs:
             echo "The Rust app's web runtime unexpectedly carries JS"
             exit 1
           fi
-      - name: Test the Rust app and check that it builds no JS engine or bundler
+      - name: Test the Rust app and check that it builds no JS engine, bundler or WebKitGTK
         run: |
-          # `nsh test` builds the app's programs in `.nsh/rust` and runs its
-          # TypeScript tests (`examples/gallery-rs/*.test.tsx`) in the test
-          # runner. `nsh` describes the app's crates with the generated
-          # `describe` program: it links no QuickJS, nsh-js, bundler,
-          # rolldown or Oxc. The test runner runs TypeScript tests (QuickJS,
-          # source maps) on entries `nsh` builds: no bundler or parser.
+          # `nsh` describes the app's crates with the generated `describe`
+          # program. Built for `nsh check`, it links no QuickJS, nsh-js,
+          # bundler, rolldown or Oxc. `nsh test` then builds the app's
+          # programs in `.nsh/rust` sharing their features with its runner
+          # (the hack), which adds QuickJS to `describe` on purpose, and runs
+          # the TypeScript tests (`examples/gallery-rs/*.test.tsx`) in the
+          # test runner (QuickJS, source maps) on entries `nsh` builds: no
+          # bundler or parser. Neither builds what only the hosts need: the
+          # app's crate uses `nsh-platform-linux`, whose web views (WebKitGTK,
+          # not installed here) the Linux host turns on.
           check() {
             cargo tree --manifest-path examples/gallery-rs/.nsh/rust/Cargo.toml \
               -p "nsh-app-gallery-native-$1" -e normal --target all \
@@ -194,9 +217,13 @@ jobs:
               exit 1
             fi
           }
-          ./target/debug/nsh test examples/gallery-rs
+          ./target/debug/nsh check examples/gallery-rs
           check describe '(rquickjs|quickjs-jit|nsh-js|nsh-bundler|rolldown|oxc)([ _-]|$)' "a JS engine or the bundler"
+          ./target/debug/nsh test examples/gallery-rs
           check test '(nsh-bundler|rolldown|oxc_parser)([ _-]|$)' "the bundler"
+          for program in describe test; do
+            check "$program" '(webkit6|soup3|javascriptcore6)([ _-]|$)' "WebKitGTK"
+          done
       - name: Run the examples' tests
         run: |
           for app in counter gallery post-editor rust-exports tasks tasks-rs; do
@@ -213,7 +240,7 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           ./target/debug/nsh test examples/counter --target web
-          for file in device dock form gestures hover links navigation network photos resizable shortcuts storage timers; do
+          for file in device dock form gestures hidden-focus hover links navigation network photos resizable shortcuts storage timers; do
             ./target/debug/nsh test "examples/gallery/tests/$file.test.tsx" --target web
           done
           # This host drives a desktop mouse, not the file's held-finger case.

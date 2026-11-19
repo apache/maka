@@ -69,6 +69,7 @@ two-face = { workspace = true, optional = true }
 syntect = { workspace = true, optional = true, features = ["regex-onig"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["rt"] }
 # The declarations tests read the specs' text (nsh-core `declarations`).
 nsh-core = { workspace = true, features = ["declarations"] }
 # The components' tests run them headless (`tests/base`), without QuickJS.

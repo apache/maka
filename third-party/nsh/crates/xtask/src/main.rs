@@ -19,6 +19,7 @@
 //!   (docs/dev/compatibility.md).
 
 mod android;
+mod cargo;
 mod compat;
 mod dist;
 mod emoji;

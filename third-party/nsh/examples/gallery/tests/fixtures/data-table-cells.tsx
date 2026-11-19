@@ -26,6 +26,8 @@ function App() {
                 testID={`copy-${cell.row}`}
                 style={{ width: 40, height: 20 }}
                 onPress={() => put(`copy ${cell.row}`)}
+                onMouseEnter={() => put(`enter ${cell.row}`)}
+                onMouseLeave={() => put(`leave ${cell.row}`)}
               >
                 <Text>Copy</Text>
               </View>

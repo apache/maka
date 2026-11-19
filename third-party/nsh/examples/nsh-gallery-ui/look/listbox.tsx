@@ -10,6 +10,7 @@ import type { InputStyle, JSX, ViewStyle } from "nsh";
 import { platform, reduceMotion, Text, View } from "nsh";
 import type { CalendarEntry, SelectEntry, SelectGroup } from "nsh/base";
 import { Icon, type IconName } from "../icons";
+import { popInStyles } from "../popup";
 import { alpha, colors, finish, radius, terminal, TERMINAL_COLUMN, tints } from "../theme";
 import { edgeClass, fieldSize, timeFieldClass } from "./field";
 import { backdrop } from "./overlay";
@@ -30,14 +31,21 @@ export interface ListboxPopupOptions {
 
 /**
  * The list's surface: with a pointer a popup at the trigger that extends
- * it (the raised finish, corners of 10, 6 points of padding); on a touch
- * screen a sheet at the bottom, its top corners rounded, at most 70% of the
- * window high.
+ * it (the raised finish, corners of 10, 6 points of padding) and comes in
+ * as a menu does (`popInStyles`: from `listboxPopupStarting`, a fade, 96%
+ * to full size, 4 points of slide, 150 ms); on a touch screen a sheet at
+ * the bottom, its top corners rounded, at most 70% of the window high,
+ * which slides up on its own.
  */
 export function listboxPopup(o?: ListboxPopupOptions): ViewStyle {
   return pointer
-    ? { backgroundColor: colors.raised, borderRadius: radius.inset, borderWidth: 1, borderColor: colors.border, padding: 6, ...finish.raised, ...(o?.minWidth ? { minWidth: o.minWidth } : {}) }
+    ? { backgroundColor: colors.raised, borderRadius: radius.inset, borderWidth: 1, borderColor: colors.border, padding: 6, ...finish.raised, ...(o?.minWidth ? { minWidth: o.minWidth } : {}), ...popInStyles().style }
     : { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 10, paddingTop: 10, paddingBottom: 34, maxHeight: "70%" };
+}
+
+/** The list's popup in its first frame (its `popupStartingStyle`), from which `listboxPopup`'s transition brings it in; none on a touch screen. */
+export function listboxPopupStarting(): ViewStyle | undefined {
+  return pointer ? popInStyles().starting : undefined;
 }
 
 /**
@@ -61,6 +69,9 @@ export function listboxProps(o?: ListboxPopupOptions) {
     margin: 8,
     get popupStyle() {
       return listboxPopup(o);
+    },
+    get popupStartingStyle() {
+      return listboxPopupStarting();
     },
     get backdropStyle() {
       return backdrop();
@@ -656,6 +667,9 @@ export function datePickerLook(o?: DatePickerLookOptions) {
     margin: 8,
     get popupStyle() {
       return listboxPopup();
+    },
+    get popupStartingStyle() {
+      return listboxPopupStarting();
     },
     get backdropStyle() {
       return backdrop();

@@ -21,7 +21,7 @@ import tapSound from "./sounds/tap.wav";
 import toggleSound from "./sounds/toggle.wav";
 import warningSound from "./sounds/warning.wav";
 import { type DemoEntry, nav, shownDemo } from "./nav";
-import { field } from "../nsh-gallery-ui/demo";
+import { field, fieldLook, fieldSize, fieldText } from "../nsh-gallery-ui/demo";
 import { alpha, Appear, Banner, colors, desktop, focusedSection, focusRing, header, hovered, IconTile, isDark, lazy, Logo, menuItemLabel, menuItemLook, radius, PageHeader, Press, scrollbarTheme, SIDEBAR, sidebarOpen, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, terminal, SoundToggle, ThemeToggle, ToolButton, DirectionToggle, demoDirection, rtl, appearance, setAppearance, type Appearance, segmentedLook, menuPopup } from "./ui";
 
 // Loaded once, ahead of the first press: a sound plays within a frame then.
@@ -61,7 +61,7 @@ const components: DemoEntry[] = [
   { name: "Collapsible", detail: "Storage and advanced settings under their summaries", icon: "collapsible", screen: lazy(() => import("./demos/Controls").then((m) => m.CollapsibleDemo)) },
   { name: "ColorPicker", detail: "An area, sliders of RGB, HSL, HSB or OKLCH, a field and swatches", icon: "styles", screen: lazy(() => import("./demos/ColorPickerDemo").then((m) => m.ColorPickerDemo)) },
   { name: "Combobox", detail: "Topics picked several at once with search, a reviewer picked alone", icon: "select", screen: lazy(() => import("./demos/Controls").then((m) => m.ComboboxDemo)) },
-  { name: "Command", detail: "A Cmd+K palette in a dialog, an inline menu, 5 000 files that filter at every keystroke, a search the server answers", icon: "search", screen: lazy(() => import("./demos/CommandDemo").then((m) => m.CommandDemo)) },
+  { name: "Command", detail: `A ${keymap.label("mod+k")} palette in a dialog, an inline menu, 5 000 files that filter at every keystroke, a search the server answers`, icon: "search", screen: lazy(() => import("./demos/CommandDemo").then((m) => m.CommandDemo)) },
   { name: "DataTable", detail: "A million stocks of sixty columns, their quotes ticking every 33 ms, fixed columns, sorting, selection, resized and moved columns", icon: "table", screen: lazy(() => import("./demos/DataTableDemo").then((m) => m.DataTableDemo)) },
   { name: "DatePicker", detail: "A due date on weekdays, a trip's range with presets, a meeting's day and time", icon: "select", screen: lazy(() => import("./demos/Controls").then((m) => m.DatePickerDemo)) },
   { name: "DiffView", detail: "Two texts side by side or unified, changes navigated, reverted and kept, a patch", icon: "diff", screen: lazy(() => import("./demos/DiffDemo").then((m) => m.DiffDemo)) },
@@ -81,10 +81,11 @@ const components: DemoEntry[] = [
   { name: "Progress", detail: "A transfer the app drives, and one of unknown size", icon: "progress", screen: lazy(() => import("./demos/Controls").then((m) => m.ProgressDemo)) },
   { name: "Radio", detail: "Plans, delivery options as cards, a reading preference", icon: "radio", screen: lazy(() => import("./demos/Controls").then((m) => m.RadioDemo)) },
   { name: "Resizable", detail: "Panels resized by dragging the lines between them, within their ranges", icon: "sidebar", screen: lazy(() => import("./demos/Resizable").then((m) => m.Resizable)) },
-  { name: "RichEditor", detail: "A document editor on Tiptap's extensions: lists, links, tables, Markdown shortcuts, undo and redo", icon: "richtext", screen: lazy(() => import("./demos/RichEditorDemo").then((m) => m.RichEditorDemo)) },
+  { name: "RichEditor", detail: "A document editor on Tiptap's extensions: lists, links, tables, Markdown shortcuts, undo and redo, stock tags and cards as node views", icon: "richtext", screen: lazy(() => import("./demos/RichEditorDemo").then((m) => m.RichEditorDemo)) },
   { name: "Select", detail: "A sort order, fonts in sections with search, a disabled language", icon: "select", screen: lazy(() => import("./demos/Controls").then((m) => m.SelectDemo)) },
   { name: "Sheet", detail: "A panel at an edge, over a backdrop; a swipe, the backdrop, Escape or back closes it", icon: "sheet", screen: lazy(() => import("./demos/Overlays").then((m) => m.SheetDemo)) },
   { name: "Slider", detail: "A level and a price range the app owns", icon: "sliders", screen: lazy(() => import("./demos/Controls").then((m) => m.SliderDemo)) },
+  { name: "SplitView", detail: "Mailboxes, messages and a message in columns: a sidebar that hides, one column at a time on a phone, each column's pages kept", icon: "sidebar", fill: true, screen: lazy(() => import("./demos/SplitViewDemo").then((m) => m.SplitViewDemo)) },
   { name: "Switch", detail: "Settings that take effect at once, one that needs another on", icon: "switch", screen: lazy(() => import("./demos/Controls").then((m) => m.SwitchDemo)) },
   { name: "Tabs", detail: "A section switcher, a disabled tab", icon: "tabs", screen: lazy(() => import("./demos/Controls").then((m) => m.TabsDemo)) },
   { name: "Terminal", detail: "A shell's colors, a progress bar redrawn in place, the keys typed sent back", icon: "terminal", screen: lazy(() => import("./demos/TerminalDemo").then((m) => m.TerminalDemo)) },
@@ -100,7 +101,7 @@ const components: DemoEntry[] = [
 const purposes: [string, string[]][] = [
   ["Actions", ["Button", "Link", "Toggle", "Toolbar", "Command"]],
   ["Inputs", ["Input", "NumberInput", "OtpInput", "Checkbox", "Radio", "Switch", "Slider", "Select", "Combobox", "DatePicker", "ColorPicker", "EmojiPicker"]],
-  ["Navigation", ["NavStack", "Tabs", "Pagination", "Accordion", "Collapsible", "Carousel", "Tree"]],
+  ["Navigation", ["NavStack", "SplitView", "Tabs", "Pagination", "Accordion", "Collapsible", "Carousel", "Tree"]],
   ["Overlays", ["Popover", "HoverCard", "Menu", "Tooltip", "Sheet", "Toast"]],
   ["Data", ["Avatar", "Progress", "DataTable", "Plot", "DiffView"]],
   ["Documents and workspaces", ["TextView", "Editor", "RichEditor", "Terminal", "Dock", "Resizable"]],
@@ -162,16 +163,20 @@ const allGroups: { title: string; demos: DemoEntry[] }[] = [
       { name: "Windows", detail: "A writing app's windows: a floating inspector, preferences, a command palette, the document on its own", icon: "layers", screen: lazy(() => import("./demos/WindowsDemo").then((m) => m.WindowsDemo)) },
       { name: "Tray", detail: "nsh/desktop: an icon in the system tray with its tooltip, click and menu", icon: "system", screen: lazy(() => import("./demos/TrayDemo").then((m) => m.TrayDemo)) },
       { name: "Global shortcut", detail: "nsh/desktop: a keystroke heard whichever app has the keyboard", icon: "system", screen: lazy(() => import("./demos/ShortcutDemo").then((m) => m.ShortcutDemo)) },
+      { name: "Keyboard", detail: "Held arrows, modifier chords, capture bubbling and native Input ownership", icon: "button", screen: lazy(() => import("./demos/KeyboardDemo").then((m) => m.KeyboardDemo)) },
       { name: "Standard APIs", detail: "Files, processes, TCP, WebSockets, buffers, crypto and utilities", icon: "terminal", screen: lazy(() => import("./demos/Standard").then((m) => m.StandardDemo)) },
     ],
   },
 ];
 
-/** The demos a terminal has nothing to show for (pictures, GPU shaders, web
- * views and video), left out of its index. */
-const TERMINAL_HIDDEN = new Set(["Image", "Shader", "WebView", "Video", "Photos"]);
-
-const groups = terminal ? allGroups.map((g) => ({ ...g, demos: g.demos.filter((demo) => !TERMINAL_HIDDEN.has(demo.name)) })) : allGroups;
+/** The demos a terminal has nothing to show for, left out of its index. */
+const TERMINAL_HIDDEN: Record<string, true> = { Image: true, Shader: true, WebView: true, Video: true, Photos: true };
+const keyboardAvailable = !terminal && (platform.desktop || platform.os === "web");
+const groups = allGroups.map((g) => ({
+  ...g,
+  demos: g.demos.filter((demo) =>
+    (!terminal || !TERMINAL_HIDDEN[demo.name]) && (demo.name !== "Keyboard" || keyboardAvailable)),
+}));
 
 /** A group's demos (all of them, or those the search found) in runs under
  * their subheadings: one run without a subheading outside Elements. */
@@ -263,6 +268,17 @@ function Phone() {
             return <Home />;
           case "demo": {
             const Demo = route.demo.screen;
+            // A demo of its own pages (`fill`) takes the whole page: they show
+            // their headers and the way back.
+            if (route.demo.fill) {
+              return (
+                <NavPage title={route.demo.name} headerVisible={false}>
+                  <View style={{ flex: 1, backgroundColor: colors.background }}>
+                    <Demo />
+                  </View>
+                </NavPage>
+              );
+            }
             return (
               <NavPage title={route.demo.name} {...header} header={<PageHeader title={route.demo.name} />}>
                 <View style={{ flex: 1, backgroundColor: colors.background }}>
@@ -386,22 +402,35 @@ function SidebarToggle() {
 function Search() {
   let input: InputRef | undefined;
   keymap.bind("mod+k", () => input?.focus());
+  // The terminal's field is a lone input; elsewhere the input sits in the field's well beside the icon (below).
+  const look = terminal
+    ? field()
+    : {
+        get style() {
+          return { ...fieldText({ inWell: true }), paddingStart: 8 };
+        },
+      };
+  const box = (
+    <Input
+      ref={(node) => (input = node)}
+      {...look}
+      value={query()}
+      onChange={({ value }) => query.set(value)}
+      onKeyPress={(e) => e.key === "Escape" && query.set("")}
+      placeholder={`Search demos  ${keymap.label("mod+k")}`}
+      accessibilityLabel="Search demos"
+    />
+  );
+  if (terminal) return <View style={{ paddingHorizontal: TERMINAL_COLUMN, paddingBottom: TERMINAL_ROW }}>{box}</View>;
+  // The row centers the icon on the field, whatever its height; a press on the icon focuses the input.
   return (
-    <View style={terminal ? { paddingHorizontal: TERMINAL_COLUMN, paddingBottom: TERMINAL_ROW } : { paddingHorizontal: 12, paddingBottom: 8 }}>
-      <Input
-        ref={(node) => (input = node)}
-        {...field({ style: terminal ? undefined : { paddingStart: 26 } })}
-        value={query()}
-        onChange={({ value }) => query.set(value)}
-        onKeyPress={(e) => e.key === "Escape" && query.set("")}
-        placeholder={`Search demos  ${keymap.label("mod+k")}`}
-        accessibilityLabel="Search demos"
-      />
-      <If when={!terminal}>
-        <View style={{ position: "absolute", start: 20, top: 7, pointerEvents: "none" }}>
+    <View style={{ paddingHorizontal: 12, paddingBottom: 8 }}>
+      <View {...fieldLook()} onPress={() => input?.focus()} focusable={false}>
+        <View style={{ paddingStart: fieldSize.pad, pointerEvents: "none" }}>
           <Icon name="search" size={14} tint={colors.faint} />
         </View>
-      </If>
+        {box}
+      </View>
     </View>
   );
 }

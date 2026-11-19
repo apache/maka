@@ -12,9 +12,11 @@
 //! tap clears, and the edit menu (`UIEditMenuInteraction` from iOS 16,
 //! `UIMenuController` before) offers Copy and Select All, which the
 //! responder answers as the first responder (so do ⌘C and ⌘A on hardware
-//! keyboards). Pointers (Mac Catalyst's mouse, iPad trackpads) select as
-//! on the desktops: a press and drag, double and triple clicks, Shift
-//! extends; no handles then.
+//! keyboards). As in UIKit's text views, touch selection plays a selection
+//! haptic when the long press selects and each time a drag moves an end.
+//! Pointers (Mac Catalyst's mouse, iPad trackpads) select as on the
+//! desktops: a press and drag, double and triple clicks, Shift extends; no
+//! handles or haptics then.
 //!
 //! The texts are the area's `TextView`s in document order (subviews depth
 //! first; texts with `selectable={false}` stay out), listed again whenever
@@ -25,8 +27,12 @@
 //! is part of the outer one: its own gestures never begin. Becoming first
 //! responder resigns any other selection, so a surface shows one.
 
-use std::cell::{Cell, RefCell};
+use std::{
+    cell::{Cell, RefCell},
+    ptr::NonNull,
+};
 
+use block2::RcBlock;
 use nsh_core::{
     AttributedText, Bounds, Color, EventKind, EventPayload, NodeId, PayloadValue, Point, Points,
     geometry::{bounds, point, px, size},
@@ -42,11 +48,12 @@ use objc2::{
     sel,
 };
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
-use objc2_foundation::{NSArray, NSNumber, NSObject};
+use objc2_foundation::{NSArray, NSNumber, NSObject, NSString};
 use objc2_ui_kit::{
     UIGestureRecognizer, UIGestureRecognizerDelegate, UIGestureRecognizerState,
-    UILongPressGestureRecognizer, UIPanGestureRecognizer, UIResponder, UIScrollView,
-    UITapGestureRecognizer, UITouch, UITraitEnvironment, UIView,
+    UILongPressGestureRecognizer, UIMenu, UIMenuElement, UIPanGestureRecognizer, UIResponder,
+    UIScrollView, UISelectionFeedbackGenerator, UITapGestureRecognizer, UITouch,
+    UITraitEnvironment, UIView,
 };
 
 use crate::{native_view::NshView, text_view::TextView};
@@ -117,6 +124,22 @@ impl SelectionTexts for AreaTexts {
             None => cg(at),
         };
         e.view.closest_offset(local) as u32
+    }
+
+    fn range_bounds(&self, i: usize, range: std::ops::Range<u32>) -> Option<Bounds<Points>> {
+        let e = self.entries.get(i)?;
+        let area = self.area.as_ref()?;
+        e.view
+            .range_rects(range.start as usize, range.end as usize)
+            .into_iter()
+            .map(|(rect, ..)| {
+                let r = e.view.convertRect_toView(rect, Some(area));
+                bounds(
+                    pt(r.origin),
+                    size(px(r.size.width as f32), px(r.size.height as f32)),
+                )
+            })
+            .reduce(|a, b| a.union(&b))
     }
 
     fn key(&self, i: usize) -> u64 {
@@ -246,6 +269,16 @@ fn faded(color: Color, alpha: f64) -> Color {
     Color((color.0 & !0xff) | a.round().clamp(0.0, 255.0) as u32)
 }
 
+/// The last callback's selection and its position, including ancestor scrolling.
+#[derive(Clone, Default, PartialEq)]
+struct Selected {
+    text: String,
+    start: u32,
+    bounds: Option<Bounds<Points>>,
+    /// Only for change detection; the core computes the callback's page bounds.
+    origin: Point<Points>,
+}
+
 #[derive(Default)]
 pub(crate) struct AreaIvars {
     model: RefCell<SelectionModel>,
@@ -271,12 +304,14 @@ pub(crate) struct AreaIvars {
     edit_menu: RefCell<Option<Retained<AnyObject>>>,
     /// The interaction's menu shows (its delegate hears).
     menu_shown: Cell<bool>,
+    /// The haptic of touch selection, made on first use.
+    feedback: RefCell<Option<Retained<UISelectionFeedbackGenerator>>>,
     /// The area's node id.
     id: Cell<NodeId>,
     /// JS listens to the area's `onSelectionChange`.
     listens: Cell<bool>,
-    /// The selected text last reported to `onSelectionChange`.
-    reported: RefCell<String>,
+    /// The selection last reported to `onSelectionChange`.
+    reported: RefCell<Selected>,
 }
 
 define_class!(
@@ -350,13 +385,17 @@ define_class!(
                 self.hide_menu();
                 self.refresh_texts();
                 self.ivars().touch.set(true);
-                let changed = {
+                let (changed, selected) = {
                     let texts = self.ivars().texts.borrow();
-                    self.ivars().model.borrow_mut().select_word_at(&*texts, at)
+                    let mut model = self.ivars().model.borrow_mut();
+                    (model.select_word_at(&*texts, at), !model.is_empty())
                 };
                 self.becomeFirstResponder();
                 if changed {
                     self.redraw();
+                }
+                if selected {
+                    self.selection_haptic();
                 }
             } else if state == UIGestureRecognizerState::Changed {
                 let changed = {
@@ -365,6 +404,7 @@ define_class!(
                 };
                 if changed {
                     self.redraw();
+                    self.selection_haptic();
                 }
             } else if state == UIGestureRecognizerState::Ended {
                 self.show_menu();
@@ -446,6 +486,7 @@ define_class!(
                     })
                 };
                 let Some(caret) = caret else { return };
+                self.prepare_haptic();
                 let mid = CGPoint::new(
                     caret.origin.x + caret.size.width / 2.0,
                     caret.origin.y + caret.size.height / 2.0,
@@ -483,6 +524,7 @@ define_class!(
                 }
                 if changed {
                     self.redraw();
+                    self.selection_haptic();
                 }
             } else if state == UIGestureRecognizerState::Ended
                 || state == UIGestureRecognizerState::Cancelled
@@ -498,6 +540,18 @@ define_class!(
         fn edit_menu_target_rect(&self, _interaction: &AnyObject, _configuration: &AnyObject) -> CGRect {
             self.selection_rect()
                 .unwrap_or(CGRect::new(CGPoint::ZERO, CGSize::ZERO))
+        }
+
+        /// `UIEditMenuInteractionDelegate`: the system's actions, then the
+        /// area's own (`selectionMenu`).
+        #[unsafe(method_id(editMenuInteraction:menuForConfiguration:suggestedActions:))]
+        fn edit_menu_for_configuration(
+            &self,
+            _interaction: &AnyObject,
+            _configuration: &AnyObject,
+            suggested: &NSArray<UIMenuElement>,
+        ) -> Option<Retained<UIMenu>> {
+            Some(self.menu_with(suggested))
         }
 
         #[unsafe(method(editMenuInteraction:willPresentMenuForConfiguration:animator:))]
@@ -552,9 +606,18 @@ define_class!(
                     .iter()
                     .any(|(h, _)| v.isDescendantOfView(h))
             });
-            let ours = self.ivars().recognizers.borrow().iter().any(|r| {
-                std::ptr::eq::<UIGestureRecognizer>(&**r, recognizer)
-            });
+            let (ours, long_press) = {
+                let recognizers = self.ivars().recognizers.borrow();
+                let is = |r: &Retained<UIGestureRecognizer>| {
+                    std::ptr::eq::<UIGestureRecognizer>(&**r, recognizer)
+                };
+                (recognizers.iter().any(is), recognizers.first().is_some_and(is))
+            };
+            if long_press && !on_handle {
+                // A finger down that may become a selection: ready the
+                // haptic before the long press selects.
+                self.prepare_haptic();
+            }
             !(ours && on_handle)
         }
     }
@@ -602,6 +665,9 @@ impl AreaResponder {
             );
             // Pointers clear with their press (which Shift extends).
             tap.setAllowedTouchTypes(&types(&[TOUCH_DIRECT, TOUCH_PENCIL]));
+            // Releasing a long press must keep its selection and menu. A tap
+            // recognizing the same touch would toggle the menu or clear it.
+            tap.requireGestureRecognizerToFail(&long_press);
             // A press with no delay, kept through drags.
             let pointer = UILongPressGestureRecognizer::initWithTarget_action(
                 UILongPressGestureRecognizer::alloc(mtm),
@@ -685,6 +751,7 @@ impl AreaResponder {
         if !self.ivars().model.borrow().is_empty() {
             self.refresh_texts();
             self.place_handles();
+            self.report();
         }
     }
 
@@ -783,6 +850,32 @@ impl AreaResponder {
         }
     }
 
+    /// The haptic of touch selection, made on first use.
+    // `init` is deprecated from iOS 17.5 for `feedbackGeneratorForView:`,
+    // which iOS 15 lacks.
+    #[allow(deprecated)]
+    fn feedback(&self) -> Retained<UISelectionFeedbackGenerator> {
+        self.ivars()
+            .feedback
+            .borrow_mut()
+            .get_or_insert_with(|| UISelectionFeedbackGenerator::new(self.mtm()))
+            .clone()
+    }
+
+    /// Readies the Taptic Engine for [`Self::selection_haptic`]; UIKit
+    /// keeps it ready for a few seconds.
+    fn prepare_haptic(&self) {
+        self.feedback().prepare();
+    }
+
+    /// Touch selection changed: the tick UIKit's text views play.
+    fn selection_haptic(&self) {
+        let feedback = self.feedback();
+        feedback.selectionChanged();
+        // Ready for the next tick of the same drag.
+        feedback.prepare();
+    }
+
     /// Whether every text is selected whole.
     fn all_selected(&self) -> bool {
         self.refresh_texts();
@@ -862,34 +955,45 @@ impl AreaResponder {
     }
 
     /// Reports the selected text (`""` once nothing is) to the area's
-    /// `onSelectionChange` when it changed and JS listens.
+    /// `onSelectionChange` when it or its position changed and JS listens.
     fn report(&self) {
         if !self.ivars().listens.get() {
             return;
         }
-        let (text, start) = {
+        let selected = {
             let model = self.ivars().model.borrow();
             if model.is_empty() {
-                (String::new(), 0)
+                Selected::default()
             } else {
                 let texts = self.ivars().texts.borrow();
-                (model.text(&*texts), model.start_offset(&*texts))
+                Selected {
+                    text: model.text(&*texts),
+                    start: model.start_offset(&*texts),
+                    bounds: model.selected_bounds(&*texts),
+                    origin: texts.area.as_ref().map_or(Point::default(), |area| {
+                        pt(area.convertPoint_toView(CGPoint::ZERO, None))
+                    }),
+                }
             }
         };
-        if *self.ivars().reported.borrow() == text {
+        if *self.ivars().reported.borrow() == selected {
             return;
         }
-        *self.ivars().reported.borrow_mut() = text.clone();
+        self.ivars().reported.borrow_mut().clone_from(&selected);
+        let mut fields = vec![
+            ("text", PayloadValue::Str(selected.text)),
+            ("start", PayloadValue::Number(f64::from(selected.start))),
+        ];
+        if let Some(bounds) = selected.bounds {
+            fields.push(("bounds", PayloadValue::Bounds(bounds)));
+        }
         // Not borrowed while the handler runs: it may detach the area.
         let control = self.ivars().control.borrow().clone();
         if let Some(control) = control {
             control.dispatch_event(
                 self.ivars().id.get(),
                 EventKind::SelectionChange,
-                EventPayload::Map(vec![
-                    ("text", PayloadValue::Str(text)),
-                    ("start", PayloadValue::Number(f64::from(start))),
-                ]),
+                EventPayload::Map(fields),
             );
         }
     }
@@ -1045,6 +1149,79 @@ impl AreaResponder {
                         && local.y <= r.origin.y + r.size.height
                 })
         })
+    }
+
+    /// The edit menu: the system's `suggested` actions, then the area's
+    /// items (`selectionMenu`), each group between separators an inline
+    /// section; a chosen item reports its id as the root's `Menu` event.
+    fn menu_with(&self, suggested: &NSArray<UIMenuElement>) -> Retained<UIMenu> {
+        use nsh_core::desktop::MenuItem;
+        use objc2_ui_kit::{UIAction, UIMenuElementAttributes, UIMenuOptions};
+
+        let mtm = self.mtm();
+        let items = self
+            .superview()
+            .and_then(|area| area.downcast_ref::<NshView>().map(NshView::selection_menu))
+            .unwrap_or_default();
+        let mut children: Vec<Retained<UIMenuElement>> = suggested.to_vec();
+        let mut group: Vec<Retained<UIMenuElement>> = Vec::new();
+        let flush = |group: &mut Vec<Retained<UIMenuElement>>,
+                     children: &mut Vec<Retained<UIMenuElement>>| {
+            if group.is_empty() {
+                return;
+            }
+            let section = UIMenu::menuWithTitle_image_identifier_options_children(
+                &NSString::from_str(""),
+                None,
+                None,
+                UIMenuOptions::DisplayInline,
+                &NSArray::from_retained_slice(group),
+                mtm,
+            );
+            children.push(Retained::into_super(section));
+            group.clear();
+        };
+        for item in items.iter() {
+            match item {
+                MenuItem::Action(action) => {
+                    let (id, control) = (action.id, self.ivars().control.borrow().clone());
+                    let handler = RcBlock::new(move |_: NonNull<UIAction>| {
+                        if let Some(control) = control.as_ref().filter(|_| id != 0) {
+                            control.dispatch_event(
+                                nsh_core::ROOT_ID,
+                                EventKind::Menu,
+                                EventPayload::Map(vec![(
+                                    "id",
+                                    PayloadValue::Number(f64::from(id)),
+                                )]),
+                            );
+                        }
+                    });
+                    let image = action.symbol.as_deref().and_then(|name| {
+                        objc2_ui_kit::UIImage::systemImageNamed(&NSString::from_str(name))
+                    });
+                    // SAFETY: UIKit copies the handler; the block stays while
+                    // the action does.
+                    let element = unsafe {
+                        UIAction::actionWithTitle_image_identifier_handler(
+                            &NSString::from_str(&action.label),
+                            image.as_deref(),
+                            None,
+                            (&*handler as *const block2::DynBlock<_>).cast_mut(),
+                            mtm,
+                        )
+                    };
+                    if !action.enabled {
+                        element.setAttributes(UIMenuElementAttributes::Disabled);
+                    }
+                    group.push(Retained::into_super(element));
+                }
+                MenuItem::Separator => flush(&mut group, &mut children),
+                MenuItem::Submenu { .. } => {}
+            }
+        }
+        flush(&mut group, &mut children);
+        UIMenu::menuWithChildren(&NSArray::from_retained_slice(&children), mtm)
     }
 
     /// `UIEditMenuInteraction` on the responder, if the system has it

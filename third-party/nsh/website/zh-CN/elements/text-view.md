@@ -241,7 +241,7 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
 
 ## 流式 AI 回复
 
-随着回复增长传入它，并设置 `options={{ streaming: true }}`（Rust 中是 `MarkdownOptions { streaming: true, .. }`）。仍在到达的文本末尾常常留着未闭合的语法（`**bold`、`` `code ``、`[a link](htt`、刚到达表头的表格）；流式模式会把它显示成闭合后的样子，读者不会看到零散的 `**` 或 `[`。含义要看后面字符的末行在这一行结束时显示：单独的列表标记、段落下的 `-` 或 `=` 行、代码围栏的开头行或打了一半的收尾围栏，因此列表项、标题和代码块一出现就是最终的样子。词内的 `*`（`a*b`）保持原样。回复结束后（关闭 `streaming`），文本按原样解析。文档块按位置保留：已完成的块保留它们的视图，只有正在写的块会重新生成，因此长回复的更新依然很轻。
+随着回复增长传入它，并设置 `options={{ streaming: true }}`（Rust 中是 `MarkdownOptions { streaming: true, .. }`）。仍在到达的文本末尾常常留着未闭合的语法（`**bold`、`` `code ``、`[a link](htt`、刚到达表头的表格）；流式模式会把它显示成闭合后的样子，读者不会看到零散的 `**` 或 `[`。含义要看后面字符的末行在这一行结束时显示：单独的列表标记、段落下的 `-` 或 `=` 行、代码围栏的开头行或打了一半的收尾围栏，因此列表项、标题和代码块一出现就是最终的样子。词内的 `*`（`a*b`）保持原样。回复结束后（关闭 `streaming`），文本按原样解析。文档块按位置保留：已完成的块只解析一次并保留它们的视图，每次更新只重新解析并生成正在写的块，因此长回复的更新依然很轻。
 
 `streamingCaret` 跟随文档末尾：以行内方式显示在最后一段文本的末尾，无论最后一个块在哪里结束（段落、列表项、代码块、表格的最后一个单元格）；否则单独一行显示在最后一个块之后（分隔线、渲染函数的内容）。回复结束后去掉它。
 
@@ -574,7 +574,7 @@ function Custom(props: { node: TextViewCustomNode }) {
 | `heading` | `level`（1–6）、`content`、`anchor?` |
 | `blockquote` | `children`、`alert?`（`"note"`、`"tip"`、`"important"`、`"warning"`、`"caution"`） |
 | `list` | `ordered?`、`start?`、`loose?`、`items`（`{ checked?, children }`） |
-| `codeBlock` | `language?`、`meta?`、`code` |
+| `codeBlock` | `language?`、`meta?`、`code`、`id?`、`content?`、`wrap?` |
 | `math` | `tex` |
 | `table` | `align?`（每列 `"none"`、`"left"`、`"center"`、`"right"`）、`head`（单元格）、`rows?`（由单元格组成的行）；单元格是 `{ content }` |
 | `rule` | |
@@ -595,6 +595,8 @@ function Custom(props: { node: TextViewCustomNode }) {
 | `custom` | 同块节点 |
 
 文档还可以有 `footnotes?`：`{ label, index, children }`，按首次引用的顺序显示在文档块之后。应用可以把回复存成文档、用自己的数据构建文档，或者混入由 `renderCustom` 显示的自定义节点。
+
+代码块的 `id` 由应用设定：`onCodeBlockAction` 会连同它把代码块交回，操作由此知道作用于哪一块。`wrap: true` 让代码在视图宽度内换行，而不是横向滚动。`content` 是以行内内容表示的代码（应用的标注：强调、高亮，以及在 `custom` 部件中显示为其内容的自定义节点）；其纯文本与 `code` 相同时代替高亮后的代码显示，因此显示的就是复制得到的文本。
 
 <a id="parsing-and-plain-text"></a>
 
@@ -725,6 +727,8 @@ fn chat() -> impl IntoElement {
 
 插件的 `render` 最先生效，然后是 `renderCustom`，最后是节点的内容。`configure` 打开 markdown-rs 的更多语法，`ParseContext` 按解析器的方式读取节点的子节点。
 
+`ParseContext::source` 是整篇 Markdown 文本，节点位置是它里面的偏移；长文本分段读取时也一样。带插件的长文档同样读得快；`configure` 打开或关闭某个语法结构（construct）的插件会让文本每次按整篇一次解析。
+
 <a id="props"></a>
 
 ## 属性
@@ -772,6 +776,7 @@ fn chat() -> impl IntoElement {
 |---|---|---|
 | `selectedText({ format? })` | `selected_text(Option<TextSelectionOptions>)` | 读取 `selectable` 视图的选区：`format` 为 `"plain"`（默认，与复制相同）、`"markdown"` 或 `"html"`，由选中的节点重新生成；选中全部时返回原样的源文（[读取为 Markdown 或 HTML](./text-selection.md#读取为-markdown-或-html)）。没有选中内容时返回 `""`。 |
 | `onImagePress` | `.on_image_press(\|image: &Image\| ..)` | 不在链接中的图片被点击：`{ image }` 是该图片，由应用放大显示（应用自己的可缩放查看器）。 |
+| `onTaskPress` | `.on_task_press(\|event: &TextViewTaskPressEvent\| ..)` | 任务项的方框被点击：`{ index, checked }`，即文档中的第几个任务（从 0 开始，按阅读顺序）以及这次点击要求的状态。文档本身不会改变：由应用把修改后的源文本交给视图。 |
 
 <a id="accessibility"></a>
 

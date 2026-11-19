@@ -97,6 +97,14 @@ impl From<super::SharedString> for Prop<Option<super::SharedString>> {
     }
 }
 
+/// An optional flag given as a flag (`.cover(false)`): set, where left out
+/// is a default of the component's own.
+impl From<bool> for Prop<Option<bool>> {
+    fn from(value: bool) -> Self {
+        Self::new(Some(value))
+    }
+}
+
 macro_rules! from_handles {
     ($($handle:ident),*) => {$(
         impl<T: Clone + PartialEq + 'static> From<$handle<T>> for Prop<T> {
