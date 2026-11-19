@@ -198,10 +198,10 @@ impl CodeCells {
             admission: tokio::sync::Mutex::new(()),
         }))
     }
-    pub fn definitions(&self, availability: &Availability) -> Vec<ToolDefinition> {
-        Self::definitions_for(availability, self.0.executor.language())
+    pub fn cell_definitions(&self, availability: &Availability) -> Vec<ToolDefinition> {
+        Self::cell_definitions_for(availability, self.0.executor.language())
     }
-    pub fn definitions_for(
+    pub fn cell_definitions_for(
         availability: &Availability,
         language: maka_agent_facts::execution::CodeLanguage,
     ) -> Vec<ToolDefinition> {
@@ -234,9 +234,7 @@ impl CodeCells {
                 deferred_nested.join(", ")
             ));
         }
-        let mut definitions = vec![exec, super::wait_definition()];
-        definitions.extend(availability.direct_only().definitions().cloned());
-        definitions
+        vec![exec, super::wait_definition()]
     }
     pub fn prepare(
         &self,

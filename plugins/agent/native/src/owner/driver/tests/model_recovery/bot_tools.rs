@@ -265,7 +265,7 @@ async fn bot_call(owner: &Owner, bot_id: &str, method: &str, input: Value) -> Te
     }
 }
 
-fn has_tool(request: &Value, name: &str) -> bool {
+pub(super) fn has_tool(request: &Value, name: &str) -> bool {
     request["tools"]
         .as_array()
         .is_some_and(|tools| tools.iter().any(|tool| tool["function"]["name"] == name))
