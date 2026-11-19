@@ -22,6 +22,7 @@ use maka_event_log::{sessions::CatalogSelection, workspace_bindings::WorkspaceBi
 use maka_sandbox::workspace::BindingRef;
 use rusqlite::{OptionalExtension, params_from_iter, types::Value as SqlValue};
 use serde_json::Value;
+use std::sync::LazyLock;
 
 const BASE: &str = "WITH base AS (
  SELECT s.id,s.revision,s.created_at,max(s.updated_at,COALESCE((SELECT MAX(at) FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0)),0),COALESCE((SELECT MAX(at) FROM agent_room_messages m WHERE m.owner=?1 AND m.session=s.id),0)) AS updated_at,s.archived,s.configuration,
@@ -78,6 +79,30 @@ const BASE: &str = "WITH base AS (
 const FILTER: &str =
     "(?11=0 OR json_extract(configuration,'$.parentSessionId') IS NULL) AND (?12=0 OR needs_you=1)";
 const COLUMNS: &str = "id,revision,created_at,updated_at,archived,configuration,binding_id,workspace_json,permission_epoch,metadata_epoch,control_revision,read_message,lineage,has_unread,tail,message_at,preview,pending_since,run,terminal,stopped,run_blocked,run_unknown,run_cleanup,late_sequence,working,blocked,unknown_effects,cleanup_pending,late_evidence,index_gap,latest_schema,control_schema,source_run,source_unread,is_room";
+const SELECTION_PARAMS: usize = 13;
+const RECORD_BUCKETS: [usize; 4] = [8, 32, 128, 256];
+
+static KEY_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!("{BASE} SELECT unpinned,recency,id FROM selected WHERE {FILTER} AND id=?14")
+});
+static PENDING_COUNT_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{BASE} SELECT COUNT(*) FROM selected WHERE needs_you=1 AND ?11 IN(0,1) AND ?12 IN(0,1)"
+    )
+});
+static SINGLE_RECORD_SQL: LazyLock<String> =
+    LazyLock::new(|| format!("{BASE} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id=?14"));
+static RECORD_BUCKET_SQL: LazyLock<[String; 4]> = LazyLock::new(|| {
+    RECORD_BUCKETS.map(|bucket| {
+        let slots = (1..=bucket)
+            .map(|offset| format!("?{}", SELECTION_PARAMS + offset))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{BASE} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id IN ({slots}) ORDER BY unpinned,recency,id"
+        )
+    })
+});
 
 #[derive(Clone)]
 struct Key {
@@ -171,16 +196,12 @@ impl Selection {
         scope: &CatalogScope,
         filter: &Filter,
     ) -> Result<String, StoreError> {
-        let root_revision: i64 = c.query_row(
-            "SELECT revision FROM session_catalog_revision WHERE singleton=1",
-            [],
-            |r| r.get(0),
-        )?;
-        let agent_revision: i64 = c.query_row(
-            "SELECT revision FROM agent_catalog_revision WHERE singleton=1",
-            [],
-            |r| r.get(0),
-        )?;
+        let root_revision: i64 = c
+            .prepare_cached("SELECT revision FROM session_catalog_revision WHERE singleton=1")?
+            .query_row([], |r| r.get(0))?;
+        let agent_revision: i64 = c
+            .prepare_cached("SELECT revision FROM agent_catalog_revision WHERE singleton=1")?
+            .query_row([], |r| r.get(0))?;
         Ok(content_digest(&serde_json::to_vec(&(
             "maka.agent-catalog.v1",
             unsigned_integer(root_revision)?,
@@ -194,16 +215,15 @@ impl Selection {
     fn key(&self, c: &Connection, id: &str) -> Result<Option<Key>, StoreError> {
         let mut values = self.values.clone();
         values.push(id.to_owned().into());
-        let sql =
-            format!("{BASE} SELECT unpinned,recency,id FROM selected WHERE {FILTER} AND id=?14");
-        Ok(c.query_row(&sql, params_from_iter(values), |r| {
-            Ok(Key {
-                unpinned: r.get(0)?,
-                recency: r.get(1)?,
-                id: r.get(2)?,
+        Ok(c.prepare_cached(&KEY_SQL)?
+            .query_row(params_from_iter(values), |r| {
+                Ok(Key {
+                    unpinned: r.get(0)?,
+                    recency: r.get(1)?,
+                    id: r.get(2)?,
+                })
             })
-        })
-        .optional()?)
+            .optional()?)
     }
     fn keys(
         &self,
@@ -250,19 +270,38 @@ impl Selection {
             return Ok(vec![]);
         }
         let mut values = self.values.clone();
-        let mut slots = Vec::new();
-        for key in keys {
-            values.push(key.id.clone().into());
-            slots.push(format!("?{}", values.len()));
-        }
-        let sql = format!(
-            "{BASE} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id IN ({}) ORDER BY unpinned,recency,id",
-            slots.join(",")
-        );
-        let rows = c
-            .prepare_cached(&sql)?
-            .query_map(params_from_iter(values), Raw::read)?
-            .collect::<Result<Vec<_>, _>>()?;
+        let rows = if keys.len() == 1 {
+            values.push(keys[0].id.clone().into());
+            c.prepare_cached(&SINGLE_RECORD_SQL)?
+                .query_map(params_from_iter(values), Raw::read)?
+                .collect::<Result<Vec<_>, _>>()?
+        } else if let Some(index) = RECORD_BUCKETS
+            .iter()
+            .position(|&bucket| keys.len() <= bucket)
+        {
+            let bucket = RECORD_BUCKETS[index];
+            values.reserve(bucket);
+            for key in keys {
+                values.push(key.id.clone().into());
+            }
+            values.resize(SELECTION_PARAMS + bucket, SqlValue::Null);
+            c.prepare_cached(&RECORD_BUCKET_SQL[index])?
+                .query_map(params_from_iter(values), Raw::read)?
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            let mut slots = Vec::with_capacity(keys.len());
+            for key in keys {
+                values.push(key.id.clone().into());
+                slots.push(format!("?{}", values.len()));
+            }
+            let sql = format!(
+                "{BASE} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id IN ({}) ORDER BY unpinned,recency,id",
+                slots.join(",")
+            );
+            c.prepare(&sql)?
+                .query_map(params_from_iter(values), Raw::read)?
+                .collect::<Result<Vec<_>, _>>()?
+        };
         rows.into_iter()
             .map(|mut raw| {
                 let marker = raw
@@ -276,10 +315,9 @@ impl Selection {
             .collect()
     }
     fn pending_count(&self, c: &Connection) -> Result<u64, StoreError> {
-        let sql = format!(
-            "{BASE} SELECT COUNT(*) FROM selected WHERE needs_you=1 AND ?11 IN(0,1) AND ?12 IN(0,1)"
-        );
-        let count: i64 = c.query_row(&sql, params_from_iter(self.values.iter()), |r| r.get(0))?;
+        let count: i64 = c
+            .prepare_cached(&PENDING_COUNT_SQL)?
+            .query_row(params_from_iter(self.values.iter()), |r| r.get(0))?;
         unsigned_integer(count)
     }
 }
@@ -595,4 +633,146 @@ pub(crate) fn records_in_snapshot(
         records.extend(selected.records(c, &keys)?);
     }
     Ok(records)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_event_log::{
+        RootStore,
+        root::{RootNamespaces, RootOwner},
+    };
+    use std::sync::Arc;
+    use uuid::Uuid;
+
+    struct SeedSessions(i64);
+    impl Statement for SeedSessions {
+        type Output = ();
+        type Value = ();
+        fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+            for i in 1..=self.0 {
+                let id = format!("sess-{i:02}");
+                let ts = 1_000 + i;
+                c.execute(
+                    "INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration) VALUES(?1,?2,1,?3,?3,0,'{}')",
+                    rusqlite::params![id, format!("fp-{i:02}"), ts],
+                )?;
+                c.execute(
+                    "INSERT INTO session_creations(session_id,creation_id,fingerprint,command,ready,visible) VALUES(?1,?2,?3,NULL,1,1)",
+                    rusqlite::params![id, format!("create-{i:02}"), format!("fp-{i:02}")],
+                )?;
+            }
+            Ok(Prepared {
+                value: (),
+                changed: true,
+                notification: Notification::default(),
+            })
+        }
+        fn committed(_: ()) {}
+        fn isolated_rejection(_: &StoreError) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn catalog_pages_across_sizes_return_exact_records_with_bounded_statement_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let ns = RootNamespaces {
+            ownership: dir.path().join("owners"),
+            control: dir.path().join("control"),
+        };
+        let owner = Arc::new(RootOwner::create(&dir.path().join("root"), &ns).unwrap());
+        let migrations: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(crate::MIGRATIONS)
+            .copied()
+            .collect();
+        let root = RootStore::open(owner, &migrations).await.unwrap();
+        let data = root.data_writer().unwrap();
+        data.write(SeedSessions(10)).await.unwrap();
+
+        let run_owner: RunOwner = serde_json::from_value(serde_json::json!({
+            "deployment": Uuid::now_v7(),
+            "namespace": []
+        }))
+        .unwrap();
+        let catalog = SessionCatalog::new(data, run_owner, "sess-".into()).unwrap();
+        let filter = Filter {
+            base: CatalogFilter {
+                roots_only: false,
+                archived_only: false,
+                include_archived: true,
+            },
+            needs_you_only: false,
+            room: None,
+        };
+
+        let expected: Vec<String> = (1..=10).rev().map(|i| format!("sess-{i:02}")).collect();
+        for limit in [1u32, 2, 3, 5, 7, 8, 9, 10] {
+            let page = catalog
+                .page(
+                    CatalogScope::Profile,
+                    None,
+                    Position::Start,
+                    filter.clone(),
+                    limit,
+                )
+                .await
+                .unwrap();
+            let got: Vec<String> = page
+                .sessions
+                .iter()
+                .map(|s| s.metadata.id.clone())
+                .collect();
+            assert_eq!(got, expected[..limit as usize], "limit={limit}");
+            assert_eq!(page.pending_session_count, 0);
+        }
+
+        let anchored = catalog
+            .page(
+                CatalogScope::Profile,
+                None,
+                Position::At("sess-06".into()),
+                filter,
+                4,
+            )
+            .await
+            .unwrap();
+        let anchored_ids: Vec<String> = anchored
+            .sessions
+            .iter()
+            .map(|s| s.metadata.id.clone())
+            .collect();
+        assert_eq!(
+            anchored_ids,
+            vec!["sess-06", "sess-05", "sess-04", "sess-03"]
+        );
+
+        let stats = root.sqlite_resource_stats().await.unwrap();
+        let reader_stats: Vec<_> = stats.readers.iter().flatten().collect();
+        assert!(!reader_stats.is_empty());
+        let mut saw_single_record_query = false;
+        for reader in &reader_stats {
+            let record_queries = reader
+                .statements
+                .iter()
+                .filter(|s| {
+                    s.sql
+                        .as_deref()
+                        .is_some_and(|sql| sql.contains("AND id IN ("))
+                })
+                .count();
+            assert!(
+                record_queries <= 2,
+                "expected at most 2 bucketed IN queries for limits 1..=10, got {record_queries}"
+            );
+            saw_single_record_query |= reader.statements.iter().any(|s| {
+                s.sql
+                    .as_deref()
+                    .is_some_and(|sql| sql.ends_with("AND id=?14") && sql.contains(COLUMNS))
+            });
+        }
+        assert!(saw_single_record_query);
+        root.close().await.unwrap();
+    }
 }

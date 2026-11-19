@@ -64,6 +64,7 @@ pub struct OpenOptions {
     read_only: bool,
     exclusive: bool,
     immutable: bool,
+    worker_pool: bool,
     pragmas: Vec<(String, String)>,
 }
 impl OpenOptions {
@@ -74,6 +75,7 @@ impl OpenOptions {
             read_only: false,
             exclusive: false,
             immutable: false,
+            worker_pool: false,
             pragmas: Vec::new(),
         }
     }
@@ -97,6 +99,10 @@ impl OpenOptions {
     }
     pub fn immutable(mut self, value: bool) -> Self {
         self.immutable = value;
+        self
+    }
+    pub(crate) fn worker_pool(mut self, value: bool) -> Self {
+        self.worker_pool = value;
         self
     }
     pub fn pragma(mut self, name: impl Into<String>, value: impl ToString) -> Self {
@@ -163,7 +169,6 @@ struct Envelope {
 }
 enum Command {
     Run(Job),
-    PreparingRun(oneshot::Receiver<Job>),
     Write(PreparedWrite),
     Wake,
     ReaderClosed(Result<(), String>),
@@ -287,6 +292,100 @@ mod tests {
         };
         assert_eq!(slot.index, first_index);
     }
+
+    struct OffThreadInsert(i64);
+    impl crate::writeback::Statement for OffThreadInsert {
+        type Output = i64;
+        type Value = i64;
+        const PREPARE_OFF_THREAD: bool = true;
+
+        fn execute(
+            self,
+            connection: &Connection,
+        ) -> Result<crate::writeback::Prepared<i64>, StoreError> {
+            connection.execute("INSERT INTO items(v) VALUES(?1)", [self.0])?;
+            Ok(crate::writeback::Prepared {
+                value: self.0,
+                changed: true,
+                notification: crate::writeback::Notification::default(),
+            })
+        }
+        fn committed(value: i64) -> i64 {
+            value
+        }
+        fn isolated_rejection(_: &StoreError) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn writer_only_connection_runs_reads_and_off_thread_writes_without_pool_threads() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("single.sqlite");
+        let conn = OwnedConnection::open(
+            OpenOptions::file(&db_path).create(true),
+            ConnectionAuthority::Temporary,
+            |c| {
+                c.execute_batch("CREATE TABLE items(v INTEGER NOT NULL);")?;
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+
+        let commits = crate::commits::CommitHub::new();
+        assert_eq!(
+            conn.write(OffThreadInsert(7), commits.notice())
+                .await
+                .unwrap(),
+            7
+        );
+        let value: i64 = conn
+            .read(|c| Ok(c.query_row("SELECT v FROM items", [], |r| r.get(0))?))
+            .await
+            .unwrap();
+        assert_eq!(value, 7);
+
+        let stats = conn.resource_stats().await.unwrap();
+        assert!(stats.readers.is_empty());
+        conn.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn worker_pool_connection_opens_reader_lanes_and_runs_off_thread_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("pooled.sqlite");
+        let conn = OwnedConnection::open(
+            OpenOptions::file(&db_path).create(true).worker_pool(true),
+            ConnectionAuthority::Temporary,
+            |c| {
+                c.execute_batch(
+                    "PRAGMA journal_mode = WAL; CREATE TABLE items(v INTEGER NOT NULL);",
+                )?;
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+
+        let commits = crate::commits::CommitHub::new();
+        assert_eq!(
+            conn.write(OffThreadInsert(9), commits.notice())
+                .await
+                .unwrap(),
+            9
+        );
+        let value: i64 = conn
+            .read(|c| Ok(c.query_row("SELECT v FROM items", [], |r| r.get(0))?))
+            .await
+            .unwrap();
+        assert_eq!(value, 9);
+
+        let stats = conn.resource_stats().await.unwrap();
+        assert_eq!(stats.readers.len(), PURE_READERS);
+        assert!(stats.readers.iter().any(Option::is_some));
+        conn.shutdown().await.unwrap();
+    }
 }
 
 struct ReadJob {
@@ -357,7 +456,7 @@ pub(crate) struct WriterIngress {
     jobs: Sender<Envelope>,
     failures: Arc<AtomicU64>,
     capacity: Arc<Semaphore>,
-    preparations: Sender<Preparation>,
+    preparations: Option<Sender<Preparation>>,
     custody: Option<Custody>,
 }
 impl WriterIngress {
@@ -376,7 +475,9 @@ impl WriterIngress {
         let (reply, result) = oneshot::channel();
         let pending =
             crate::writeback::Pending::new(statement, commits, reply, self.failures.clone());
-        if S::PREPARE_OFF_THREAD {
+        if S::PREPARE_OFF_THREAD
+            && let Some(preparations) = &self.preparations
+        {
             let (prepared, ready) = oneshot::channel();
             self.jobs
                 .send(Envelope {
@@ -386,7 +487,7 @@ impl WriterIngress {
                 })
                 .await
                 .map_err(|_| StoreError::ConnectionClosed)?;
-            self.preparations
+            preparations
                 .try_send(Box::new(move || {
                     let _permit = permit;
                     let _ = prepared.send(Some(pending.prepare().into_request()));
@@ -403,57 +504,6 @@ impl WriterIngress {
                 .await
                 .map_err(|_| StoreError::ConnectionClosed)?;
         }
-        result.await.map_err(|_| StoreError::OperationUnknown)?
-    }
-    async fn run_prepared<P: Send + 'static, T: Send + 'static>(
-        &self,
-        prepare: impl FnOnce() -> Result<P, StoreError> + Send + 'static,
-        operation: impl FnOnce(&mut Connection, P) -> Result<T, StoreError> + Send + 'static,
-    ) -> Result<T, StoreError> {
-        let permit = Arc::new(
-            self.capacity
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|_| StoreError::ConnectionClosed)?,
-        );
-        let (reply, result) = oneshot::channel();
-        let (prepared, ready) = oneshot::channel();
-        self.jobs
-            .send(Envelope {
-                command: Command::PreparingRun(ready),
-                _custody: self.custody.clone(),
-                _permit: Some(permit.clone()),
-            })
-            .await
-            .map_err(|_| StoreError::ConnectionClosed)?;
-        let failures = self.failures.clone();
-        self.preparations
-            .try_send(Box::new(move || {
-                let _permit = permit;
-                let value = catch_unwind(AssertUnwindSafe(prepare))
-                    .unwrap_or(Err(StoreError::OperationUnknown));
-                let job: Job = Box::new(move |connection, valid, changed| {
-                    let before = connection.total_changes();
-                    let (value, clean, _) = execute(connection, valid, move |connection| {
-                        operation(connection, value?)
-                    });
-                    if value.is_err() {
-                        failures.fetch_add(1, Ordering::AcqRel);
-                    }
-                    if value.is_ok() && connection.total_changes() != before {
-                        changed.send_replace(());
-                    }
-                    (
-                        clean,
-                        Box::new(move || {
-                            let _ = reply.send(value);
-                        }),
-                    )
-                });
-                let _ = prepared.send(job);
-            }))
-            .map_err(|_| StoreError::ConnectionClosed)?;
         result.await.map_err(|_| StoreError::OperationUnknown)?
     }
 
@@ -622,14 +672,24 @@ impl OwnedConnection {
         initialize: impl FnOnce(&mut Connection) -> Result<(), StoreError> + Send + 'static,
         existing: Option<Connection>,
     ) -> Result<Self, StoreError> {
-        let read_on_owner =
-            options.local() || matches!(authority, ConnectionAuthority::Inspection { .. });
+        let read_on_owner = !options.worker_pool
+            || options.local()
+            || matches!(authority, ConnectionAuthority::Inspection { .. });
+        let use_preparers =
+            options.worker_pool && !matches!(authority, ConnectionAuthority::Inspection { .. });
         let temporary = options.path.as_os_str().is_empty();
         let (jobs, receiver) = async_channel::bounded(WRITE_CAPACITY);
-        let (preparations, preparation_receiver) =
-            async_channel::bounded::<Preparation>(WRITE_CAPACITY);
-        let (reads, read_receivers): (Vec<_>, Vec<_>) =
-            (0..PURE_READERS).map(|_| async_channel::bounded(1)).unzip();
+        let (preparations, preparation_receiver) = if use_preparers {
+            let (tx, rx) = async_channel::bounded::<Preparation>(WRITE_CAPACITY);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+        let (reads, read_receivers): (Vec<_>, Vec<_>) = if read_on_owner {
+            (Vec::new(), Vec::new())
+        } else {
+            (0..PURE_READERS).map(|_| async_channel::bounded(1)).unzip()
+        };
         let read_slots = Arc::new(ReadSlots::new());
         let accepting = Arc::new(AtomicBool::new(true));
         let physical_released = Arc::new(AtomicBool::new(false));
@@ -698,22 +758,24 @@ impl OwnedConnection {
                 let mut startup_error = None;
                 let mut readers = Vec::new();
                 let mut preparers = Vec::new();
-                for _ in 0..2 {
-                    let input = preparation_receiver.clone();
-                    match std::thread::Builder::new()
-                        .name("runtime-sqlite-prepare".into())
-                        .spawn(move || {
-                            while let Ok(job) = input.recv_blocking() {
-                                let _ = catch_unwind(AssertUnwindSafe(job));
-                            }
-                        }) {
-                        Ok(thread) => preparers.push(thread),
-                        Err(error) => {
-                            startup_error.get_or_insert(StoreError::Io(error));
-                            accepting.store(false, Ordering::Release);
-                            read_slots.close();
-                            for lane in &reads {
-                                lane.close();
+                if let Some(preparation_receiver) = preparation_receiver {
+                    for _ in 0..2 {
+                        let input = preparation_receiver.clone();
+                        match std::thread::Builder::new()
+                            .name("runtime-sqlite-prepare".into())
+                            .spawn(move || {
+                                while let Ok(job) = input.recv_blocking() {
+                                    let _ = catch_unwind(AssertUnwindSafe(job));
+                                }
+                            }) {
+                            Ok(thread) => preparers.push(thread),
+                            Err(error) => {
+                                startup_error.get_or_insert(StoreError::Io(error));
+                                accepting.store(false, Ordering::Release);
+                                read_slots.close();
+                                for lane in &reads {
+                                    lane.close();
+                                }
                             }
                         }
                     }
@@ -796,14 +858,6 @@ impl OwnedConnection {
                                     job(&mut connection, authority.validate(), &changed);
                                 (clean, Some(reply))
                             }
-                            Command::PreparingRun(ready) => match ready.blocking_recv() {
-                                Ok(job) => {
-                                    let (clean, reply) =
-                                        job(&mut connection, authority.validate(), &changed);
-                                    (clean, Some(reply))
-                                }
-                                Err(_) => (true, None),
-                            },
                             Command::Write(first) => {
                                 let mut group = Vec::new();
                                 if let Some(request) = first.resolve() {
@@ -914,7 +968,9 @@ impl OwnedConnection {
                         failure.get_or_insert("database reader panicked".into());
                     }
                 }
-                preparations.close();
+                if let Some(preparations) = &preparations {
+                    preparations.close();
+                }
                 for preparer in preparers {
                     if preparer.join().is_err() {
                         failure.get_or_insert("database preparation worker panicked".into());
@@ -974,14 +1030,6 @@ impl OwnedConnection {
     ) -> Result<T, StoreError> {
         self.require_open()?;
         self.writer.run(operation).await
-    }
-    pub async fn run_prepared<P: Send + 'static, T: Send + 'static>(
-        &self,
-        prepare: impl FnOnce() -> Result<P, StoreError> + Send + 'static,
-        operation: impl FnOnce(&mut Connection, P) -> Result<T, StoreError> + Send + 'static,
-    ) -> Result<T, StoreError> {
-        self.require_open()?;
-        self.writer.run_prepared(prepare, operation).await
     }
     pub(crate) fn request_shutdown(&self) {
         self.admission.stop();
