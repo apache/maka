@@ -4080,6 +4080,84 @@ async fn desktop_system_permission_guidance_uses_native_actions_without_paths() 
     fixture.finish().await;
 }
 
+async fn desktop_composer_toolbar_customizes_layout_and_context_usage() {
+    let mut fixture = Fixture::configured(Options {
+        usage_limits: true,
+        ..Options::default()
+    })
+    .await;
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1280),
+            nsh_terminal::DevicePixels(800),
+        ),
+        nsh_core::platform::Appearance::Dark,
+        None,
+    )
+    .await;
+    desktop.new_draft().await;
+    desktop.type_text("Check composer context usage").await;
+    desktop.submit().await;
+    let mut reply = desktop.request(&mut fixture).await;
+    reply
+        .delta("Context usage ring stays visible beside the model selector.")
+        .await;
+    desktop
+        .wait("the reply did not finish", reply.finish())
+        .await;
+    let model_before = desktop.control("Choose model and effort").await;
+    let sandbox_before = desktop.control("Sandbox and approvals").await;
+    assert!(
+        sandbox_before.left() < model_before.left(),
+        "default layout places sandbox left of model: sandbox={sandbox_before:?}, model={model_before:?}"
+    );
+    desktop.press("Open settings").await;
+    desktop.control("Close settings").await;
+    desktop.press("Settings section General").await;
+    desktop.control("Language").await;
+    desktop.control("70%+").await;
+    desktop.control("Model").await;
+
+    desktop.press("Usage limits: Off").await;
+    desktop.control("Usage limits: On").await;
+    desktop.press("Model").await;
+    desktop.control("Move left").await;
+    for _ in 0..4 {
+        desktop.press("Move left").await;
+    }
+    desktop.control("Reset").await;
+    desktop.press("Close settings").await;
+    let usage_indicator = desktop
+        .control("NSH fixture · API key spending limit · 72% remaining")
+        .await;
+    let model_after = desktop.control("Choose model and effort").await;
+    let sandbox_after = desktop.control("Sandbox and approvals").await;
+    assert!(
+        model_after.left() < model_before.left(),
+        "moving model across the spacer should shift it left: before={model_before:?}, after={model_after:?}, sandbox={sandbox_after:?}"
+    );
+    assert!(
+        usage_indicator.left() > model_after.left(),
+        "usage limits indicator should render on the right side after moving model left: usage={usage_indicator:?}, model={model_after:?}"
+    );
+    desktop.press("Open settings").await;
+    desktop.press("Settings section General").await;
+    desktop.press("Off").await;
+    desktop.press("Usage limits: On").await;
+    desktop.control("Usage limits: Off").await;
+    desktop.press("Reset").await;
+    desktop.press("Close settings").await;
+    let model_reset = desktop.control("Choose model and effort").await;
+    assert!(
+        model_reset.left() >= model_before.left() - px(2.0),
+        "reset should restore model to the right side: before={model_before:?}, reset={model_reset:?}"
+    );
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_composer_sandbox_choice_becomes_the_default() {
     let fixture = Fixture::open().await;
     let desktop = Desktop::open(&fixture, &fixture.address).await;
@@ -4579,6 +4657,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_changes",
     "desktop_composer_large_paste_keeps_controls_on_screen",
     "desktop_system_permission_guidance_uses_native_actions_without_paths",
+    "desktop_composer_toolbar_customizes_layout_and_context_usage",
     "desktop_composer_sandbox_choice_becomes_the_default",
     "desktop_workspace_stage_inspector_worktrees_and_fullscreen_review",
 ];
@@ -4701,6 +4780,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_system_permission_guidance_uses_native_actions_without_paths" => {
             runtime.block_on(desktop_system_permission_guidance_uses_native_actions_without_paths())
+        }
+        "desktop_composer_toolbar_customizes_layout_and_context_usage" => {
+            runtime.block_on(desktop_composer_toolbar_customizes_layout_and_context_usage())
         }
         "desktop_composer_sandbox_choice_becomes_the_default" => {
             runtime.block_on(desktop_composer_sandbox_choice_becomes_the_default())

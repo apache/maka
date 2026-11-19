@@ -30,6 +30,7 @@ import type {
   PendingComposerPermissions,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { ChoiceIndicator } from './ChoiceIndicator';
+import { useToolbarCompact } from './composerToolbar';
 import { delayed } from './delayed';
 import { Icon } from './Icon';
 import { tr } from './locale';
@@ -199,7 +200,9 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
             open()
               ? undefined
               : owner.snapshot()
-                ? tr('Sandbox and approvals')
+                ? access()
+                  ? `${accessLabel(access()!)} · ${tr('Sandbox and approvals')}`
+                  : tr('Sandbox and approvals')
                 : tr('Loading sandbox settings…'),
           )}
           style={{
@@ -216,11 +219,13 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
           <If when={access()}>
             <Icon name={accessIcon[access()!]} color={tone()} />
           </If>
-          <Text
-            style={[{ ...captionTextStyle, color: tone(), flexShrink: 1 }, { numberOfLines: 1 }]}
-          >
-            {access() ? accessLabel(access()!) : tr('Sandbox')}
-          </Text>
+          <If when={!useToolbarCompact() || !access()}>
+            <Text
+              style={[{ ...captionTextStyle, color: tone(), flexShrink: 1 }, { numberOfLines: 1 }]}
+            >
+              {access() ? accessLabel(access()!) : tr('Sandbox')}
+            </Text>
+          </If>
           <Icon name="down" color={C.muted} />
         </Button>
       }

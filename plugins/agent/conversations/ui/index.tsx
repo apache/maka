@@ -41,6 +41,7 @@ import { invokeFocusedConversation } from '../../../../products/maka/workbench/a
 import type { WorkspaceViewHandle } from '../../../../packages/plugin-sdk/src/workspace-view.js';
 import { RoomView } from './RoomView';
 import { createHost, HostProvider } from '../../../../products/maka/workbench/app/host';
+import { initializeComposerToolbar } from '../../../../products/maka/workbench/app/composerToolbar';
 import {
   createRoomPeople,
   RoomTimeline,
@@ -53,6 +54,7 @@ import { createText, errorText } from '../../../../products/maka/workbench/app/t
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const host = createHost(context.application);
+  initializeComposerToolbar();
   const sides = signal<ReturnType<typeof createConversationUi>[]>([]);
   const rooms = signal<{ id: string; flush(): Promise<void> }[]>([]);
   const window: ConversationWindow = {
