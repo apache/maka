@@ -199,14 +199,28 @@ impl PreparedTool {
                     message: error.to_string(),
                 }
             })?;
-            if !owner
-                .backend_available(&super::BackendPreference::model(model, None))
+            let failed = |message| ToolRejection::PreparationFailed { message };
+            let configuration = access
+                .live_configuration()
                 .await
-                .map_err(|message| ToolRejection::PreparationFailed { message })?
+                .map_err(|error| failed(error.to_string()))?;
+            let thinking = super::compaction::model_thinking_level(&configuration);
+            use maka_agent_api::preset::PresetAvailability;
+            match owner
+                .model_availability(&model, thinking)
+                .await
+                .map_err(failed)?
             {
-                return Err(ToolRejection::PreparationFailed {
-                    message: "The requested resume model is unavailable on this connection.".into(),
-                });
+                PresetAvailability::Available => {}
+                PresetAvailability::ThinkingLevelUnavailable => return Err(failed(
+                    "The requested resume model does not support this session's thinking level."
+                        .into(),
+                )),
+                _ => {
+                    return Err(failed(
+                        "The requested resume model is unavailable on this connection.".into(),
+                    ));
+                }
             }
         }
         if name == "Shell"

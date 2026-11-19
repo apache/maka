@@ -31,7 +31,7 @@ use crate::{
 };
 use maka_agent_api::contract::*;
 use maka_agent_facts::{
-    durable::{ModelAttemptId, StepId},
+    durable::{ModelAttemptId, RunId, StepId},
     interaction::InteractionRecord,
 };
 use maka_capabilities::call::Attachments;
@@ -52,7 +52,7 @@ pub(crate) struct Foreground {
     peer: Peer,
     session: Arc<Session>,
     active: Active,
-    target: WorkTarget,
+    message_id: String,
     work: WorkObservation,
     projection: Projection,
     capabilities: Capabilities,
@@ -108,7 +108,7 @@ impl Foreground {
             .query(
                 "agent",
                 "work",
-                json!({"sessionId":self.session.id,"target":self.target,"cursor":null}),
+                json!({"sessionId":self.session.id,"target":{"kind":"message","messageId":self.message_id},"cursor":null}),
             )
             .await?;
         self.work = match work {
@@ -285,6 +285,11 @@ impl Foreground {
             }
         }
     }
+    fn includes(&self, run: Option<RunId>, turn: Option<&str>) -> bool {
+        self.work.execution().is_some_and(|execution| {
+            run == Some(execution.run_id) || turn == Some(execution.turn_id.as_str())
+        })
+    }
     async fn frame(&mut self, page: DeliveryPage) -> Result<(), Error> {
         if let DeliveryPage::Preview { page } = &page {
             if self.work.execution().is_none() {
@@ -316,11 +321,7 @@ impl Foreground {
             let mut refresh_tools = HashSet::new();
             let mut ended_steps = HashSet::new();
             for event in events {
-                if self
-                    .work
-                    .execution()
-                    .is_none_or(|execution| execution.run_id != event.run_id)
-                {
+                if !self.includes(Some(event.run_id), Some(&event.turn_id)) {
                     continue;
                 }
                 match event.fact {
@@ -438,11 +439,7 @@ impl Foreground {
             chunks.extend(history::row(&self.client, &self.session.id, through, position).await?);
         }
         for chunk in chunks {
-            if self
-                .work
-                .execution()
-                .is_some_and(|execution| chunk.run_id == Some(execution.run_id))
-            {
+            if self.includes(chunk.run_id, chunk.turn_id.as_deref()) {
                 let updates = self.projection.chunk(&chunk)?;
                 self.publish(updates).await?;
             }
@@ -492,17 +489,18 @@ impl Foreground {
     }
     async fn stop(&mut self) -> Result<(), Error> {
         tokio::time::timeout(Duration::from_secs(15), async {
-            let mut requested = false;
+            let mut requested = None;
             loop {
                 self.refresh().await?;
                 if self.work.settled() { return Ok::<_, Error>(()); }
                 if let WorkObservation::Delivered { execution, shared } = &self.work {
                     if *shared { return Err("Accepted input shares another caller's execution; cannot stop that execution".into()); }
-                    if !requested {
+                    if requested != Some(execution.run_id) {
                         let _: Stopped = self.client.mutate("agent", "stop", json!({"sessionId":self.session.id,"runId":execution.run_id}), Attachments::new()).await?;
-                        requested = true;
+                        requested = Some(execution.run_id);
                     }
-                } else if let WorkTarget::Message { message_id } = &self.target {
+                } else {
+                    let message_id = &self.message_id;
                     let queue: Queue = self.client.query("agent", "queue", json!({"sessionId":self.session.id})).await?;
                     if queue.entries.iter().any(|entry| &entry.message_id == message_id) {
                         let _: QueueMutationResult = self.client.mutate("agent", "editQueue", json!({"sessionId":self.session.id,"expectedRevision":queue.revision,"edit":{"kind":"retract","messageId":message_id}}), Attachments::new()).await?;

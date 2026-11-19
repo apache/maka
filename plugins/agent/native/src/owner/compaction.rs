@@ -39,7 +39,7 @@ pub(super) fn tool() -> maka_agent_facts::tools::ToolRegistration {
                     "prompt": {"type": "string", "description": "What this checkpoint should prioritize retaining. Applies only to this compaction."},
                     "resumeModel": {
                         "type": "object",
-                        "description": "Model to take over after a successful checkpoint and use for later messages. Omit to keep the current model.",
+                        "description": "Choose a connectionId and modelId from ModelList to take over after a successful checkpoint and handle later messages. Omit to keep the current model.",
                         "properties": {"connectionId": {"type":"string","minLength":1}, "modelId":{"type":"string","minLength":1}},
                         "required":["connectionId","modelId"], "additionalProperties":false
                     }
@@ -66,6 +66,15 @@ impl maka_agent_facts::tools::ToolExecutor for CompactContext {
         _: CancellationToken,
     ) -> maka_agent_facts::tools::ToolFuture {
         Box::pin(async { Ok(serde_json::json!({"status":"requested"})) })
+    }
+}
+
+pub(super) fn model_thinking_level(
+    configuration: &ResolvedConfiguration,
+) -> Option<maka_agent_facts::execution::ThinkingLevel> {
+    match &configuration.backend {
+        Some(BackendPreference::Model { thinking_level, .. }) => *thinking_level,
+        _ => None,
     }
 }
 
@@ -259,19 +268,55 @@ impl super::driver::NativeDriver {
         let session = &view.spec.session_id;
         let owner = &self.owner;
         let root = owner.store.owned_root()?;
+        let metadata = owner
+            .mutable_session(session)
+            .await
+            .map_err(RunError::InvalidInput)?;
+        let thinking = model_thinking_level(&metadata.configuration);
         let source = crate::model::Source::select(
             owner.configuration.clone(),
             owner.catalog.clone(),
             owner.credentials.clone(),
             target.clone(),
-            None,
+            thinking,
             session.clone(),
             owner.revision.clone(),
         )
         .await?;
         let model = ContentBlob::json(&source.accepted)?;
         let input = ContentBlob::json(&RunInput::CheckpointHandoff { source: view.run })?;
+        let (mcp, _) = self
+            .access
+            .current_model_tools(&metadata.configuration.workspace)?;
+        let mut selection: crate::tools::SelectionSnapshot = owner
+            .run_content(view.run, &view.spec.tool_selection)
+            .await?;
+        let target_tools = owner.select_catalog_tools(
+            &mcp.tools,
+            Some(session),
+            view.spec.allowed_tools.as_deref(),
+            source.accepted.editing_tools,
+        );
+        // Switch only the editing tools. Other bindings retain their original declarations.
+        let edit = |name: &str| owner.editing_tools.iter().any(|(tool, _)| tool == name);
+        selection.definitions.retain(|tool| !edit(&tool.name));
+        selection.direct_only.retain(|name| !edit(name));
+        selection.definitions.extend(
+            target_tools
+                .definitions()
+                .filter(|tool| edit(&tool.name))
+                .cloned(),
+        );
+        selection.direct_only.extend(
+            target_tools
+                .direct_only_names()
+                .into_iter()
+                .filter(|name| edit(name)),
+        );
+        selection.definitions.sort_by(|a, b| a.name.cmp(&b.name));
+        let tools = ContentBlob::json(&selection)?;
         let mut spec = view.spec.clone();
+        spec.tool_selection = tools.reference().clone();
         spec.trigger = Trigger::CheckpointHandoff { source: view.run };
         spec.input = input.reference().clone();
         spec.backend = BackendSpec::Model {
@@ -285,17 +330,13 @@ impl super::driver::NativeDriver {
                     .try_into()
                     .map_err(|_| RunError::Internal("invalid clock".into()))?,
             ),
-            vec![input, model],
+            vec![input, model, tools],
         );
         let statement =
             self.state
                 .checkpoint_handoff(self.access.claim(), view.into(), baseline, admission)?;
         let writer = self.access.data_writer().map_err(RunError::InvalidInput)?;
         let _ordered = owner.runs.ordered(session).await;
-        let metadata = owner
-            .mutable_session(session)
-            .await
-            .map_err(RunError::InvalidInput)?;
         if metadata.archived
             || metadata.configuration.permission_basis() != view.spec.permission_basis
         {
@@ -309,7 +350,7 @@ impl super::driver::NativeDriver {
                 session,
                 metadata.revision,
                 move |settings: &mut StoredSessionConfiguration| {
-                    settings.backend = Some(BackendPreference::model(target, None));
+                    settings.backend = Some(BackendPreference::model(target, thinking));
                     Ok(())
                 },
                 &writer,

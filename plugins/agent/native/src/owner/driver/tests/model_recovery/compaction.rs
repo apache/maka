@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-use super::bot_tools::{completion, has_tool, observed_provider, tool_response};
+use super::bot_tools::{agent_call, completion, has_tool, observed_provider, tool_response};
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -31,6 +31,11 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
         |config| {
             config["toolDiscovery"] = json!(true);
             config["todo"] = json!(true);
+            config["tools"] = json!(["write", "edit", "applyPatch"].map(|method| json!({
+                "name":match method { "write" => "Write", "edit" => "Edit", _ => "ApplyPatch" },
+                "description":method,"target":{"kind":"import","name":"files"},
+                "method":method,"nestable":true,"result":"json","confirmation":"preapproved"
+            })));
         },
     )
     .await?;
@@ -43,8 +48,8 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
             "expectedCatalogRevision":catalog["revision"],
             "connection":{"slug":"compact","name":"Compact fixture",
                 "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
-                "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2","code-source","successor"],
-                "modelOverrides":{"llama3.2":{"codeMode":false,"apiProtocol":"openai-chat-completions"}, "code-source":{"codeMode":true,"apiProtocol":"openai-chat-completions"}, "successor":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}}
+                "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2","code-source","successor","low-only"],
+                "modelOverrides":{"llama3.2":{"thinkingLevels":["high"],"codeMode":false,"apiProtocol":"openai-chat-completions"}, "code-source":{"thinkingLevels":["high"],"codeMode":true,"apiProtocol":"openai-chat-completions"}, "low-only":{"thinkingLevels":["low"]},"successor":{"applyPatch":true,"thinkingLevels":["high"],"codeMode":false,"apiProtocol":"openai-chat-completions"}}}
         })).await?;
         let owner = rig.captured.lock().unwrap().clone().ok_or("native owner missing")?;
         for (source, focused, switch, stop) in [
@@ -52,7 +57,7 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
             ("llama3.2", true, false, false), ("llama3.2", false, true, false),
             ("code-source", true, true, false), ("llama3.2", true, true, true),
         ] {
-            let backend = json!({"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":source});
+            let backend = json!({"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":source,"thinkingLevel":"high"});
             let created = call(client, "agent", "create", json!({
                 "title":"Compact","automaticTitle":false,"labels":[],
                 "workspace":{"kind":"directory","path":base.join("workspace")}
@@ -63,9 +68,24 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
             let mut args = json!({});
             if focused { args["prompt"] = json!("Keep the release checksum."); }
             if switch { args["resumeModel"] = json!({"connectionId":backend["connectionId"],"modelId":"successor"}); }
-            let sent = call(client, "agent", "send", json!({
-                "sessionId":session,"message":"Keep the open task.","backend":backend
-            })).await?;
+            let text = |s| completion(json!({"role":"assistant","content":s}), "stop");
+            let send = json!({"sessionId":session,"message":"Keep the open task.","backend":backend});
+            let mut caller_session = None;
+            let sent = if switch && !focused {
+                let caller = call(client,"agent","create",json!({"title":"Caller","automaticTitle":false,"labels":[],
+                    "workspace":{"kind":"directory","path":base.join("workspace")}})).await?;
+                let caller = caller["session"]["id"].as_str().unwrap().to_owned();
+                let parent = call(client,"agent","send",json!({"sessionId":caller,"message":"Delegate the check.","backend":backend})).await?;
+                let (_, parent_reply) = observed.recv().await.ok_or("caller missing")?;
+                let mut send = send;
+                send["onComplete"] = json!("notify_caller");
+                let delegated = agent_call(&owner, &caller, "send", send).await?;
+                assert_eq!(delegated["completion"], "registered");
+                parent_reply.send(text("Waiting for the worker.")).map_err(|_| "caller closed")?;
+                quiescent_message(client,&caller,&parent["messageId"]).await?;
+                caller_session = Some(caller);
+                delegated
+            } else { call(client, "agent", "send", send).await? };
             let (main, reply) = observed.recv().await.ok_or("initial request missing")?;
             let code = source == "code-source";
             assert_eq!(has_tool(&main, "exec"), code);
@@ -78,6 +98,8 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
                 assert!(description("exec").contains("todo_read"));
                 assert!(!description("exec").contains("CompactContext"));
             }
+            let has_edit = |name: &str| if code { description("exec").contains(name) } else { has_tool(&main, name) };
+            assert!(has_edit("Write") && has_edit("Edit") && !has_edit("ApplyPatch"));
             reply.send(tool_response("tool_search", json!({"query":"CompactContext","limit":1})))
                 .map_err(|_| "provider closed")?;
             let (loaded, reply) = observed.recv().await.ok_or("request after search missing")?;
@@ -85,6 +107,14 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
                 .find(|m| m["tool_call_id"] == "call-tool_search").ok_or("search receipt missing")?;
             assert_eq!(serde_json::from_str::<Value>(receipt["content"].as_str().unwrap())?, json!({"activated":["CompactContext"]}));
             assert!(has_tool(&loaded, "CompactContext"));
+            let reply = if stop {
+                reply.send(tool_response("CompactContext", json!({"resumeModel":{
+                    "connectionId":backend["connectionId"],"modelId":"low-only"}}))).map_err(|_| "provider closed")?;
+                let (rejected, reply) = observed.recv().await.ok_or("unsupported thinking level missing")?;
+                assert!(rejected["messages"].to_string().contains("does not support this session's thinking level"), "{rejected}");
+                assert_eq!(rejected["model"],source);
+                reply
+            } else { reply };
             reply.send(completion(json!({"role":"assistant","tool_calls":[
                 {"index":0,"id":"request-compact","type":"function","function":{"name":"CompactContext","arguments":args.to_string()}},
                 {"index":1,"id":"lookup","type":"function","function":{"name":"tool_search","arguments":json!({"query":"todo_read"}).to_string()}}
@@ -121,16 +151,40 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
                 assert!(owner.durable.session_history(owner.run_owner(), session.into()).successor(serde_json::from_value(run.clone())?).await?.is_none());
                 continue;
             }
-            let text = |s| completion(json!({"role":"assistant","content":s}), "stop");
+            let target = json!({"sessionId":session,"target":{"kind":"message","messageId":sent["messageId"]}});
+            let original = call(client,"agent","work",target.clone()).await?;
             reply.send(text("Checkpoint: the open task is ready.")).map_err(|_| "provider closed")?;
 
             let (resumed, reply) = observed.recv().await.ok_or("resumed request missing")?;
             assert!(resumed["messages"].to_string().contains("Checkpoint: the open task is ready."));
             let expected = if switch { "successor" } else { source };
             assert_eq!(resumed["model"], expected);
+            let running = call(client,"agent","work",target.clone()).await?;
+            assert_eq!(running["execution"]["runId"] != original["execution"]["runId"], switch);
+            assert_eq!(running["execution"]["state"]["kind"], "running");
+            let remembered = serde_json::to_value(owner.remembered_backend(session).await?)?;
+            assert_eq!(remembered["modelId"],expected);
+            assert_eq!(remembered["thinkingLevel"],"high");
+            if switch {
+                assert!(has_tool(&resumed,"ApplyPatch") && !has_tool(&resumed,"Write") && !has_tool(&resumed,"Edit"));
+                assert_eq!(serde_json::to_value(owner.session(session).await?.configuration.backend)?["thinkingLevel"],"high");
+            }
+            if caller_session.is_some() {
+                owner.deliver_completions().await?;
+                assert!(observed.try_recv().is_err(), "caller received an early completion");
+            }
             assert!(!resumed["messages"].to_string().contains("Keep the release checksum."));
             reply.send(text("Done.")).map_err(|_| "provider closed")?;
             quiescent_message(client, session, &sent["messageId"]).await?;
+            let finished = call(client,"agent","work",target).await?;
+            assert_eq!(finished["execution"]["runId"], running["execution"]["runId"]);
+            assert_eq!(finished["answer"]["text"], "Done.");
+            if caller_session.is_some() {
+                let (notice, parent_reply) = observed.recv().await.ok_or("completion notice missing")?;
+                let last = notice["messages"].as_array().unwrap().iter().rev().find(|m| m["role"]=="user").unwrap();
+                assert!(last["content"].to_string().contains("Done."),"{last}");
+                parent_reply.send(text("Received.")).map_err(|_| "caller closed")?;
+            }
             let follow = call(client, "agent", "send", json!({"sessionId":session, "message":"Which model is answering?", "delivery":"queue"})).await?;
             let (next, reply) = observed.recv().await.ok_or("follow-up missing")?;
             assert_eq!(next["model"], expected);

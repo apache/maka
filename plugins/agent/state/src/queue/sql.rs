@@ -805,7 +805,18 @@ pub(super) fn resolve(
     id(message)?;
     let row: Option<(String, Option<String>, bool)> = c
         .query_row(
-            "SELECT state,accepted_run,shared FROM agent_queue_items WHERE session=? AND message=?",
+            "SELECT state, (
+                WITH RECURSIVE handoff(run, depth) AS (
+                    SELECT q.accepted_run, 0
+                    UNION ALL
+                    SELECT x.run, h.depth + 1 FROM handoff h
+                    JOIN agent_continuation_successors x ON x.source_run = h.run
+                    JOIN agent_run_specs s ON s.run = x.run
+                    JOIN contents b ON b.id = s.spec_content_id
+                    WHERE json_extract(b.payload, '$.trigger.kind') = 'checkpoint_handoff'
+                )
+                SELECT run FROM handoff ORDER BY depth DESC LIMIT 1
+            ), shared FROM agent_queue_items q WHERE session=? AND message=?",
             params![session, message],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
