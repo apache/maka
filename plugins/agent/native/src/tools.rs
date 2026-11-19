@@ -528,6 +528,9 @@ fn catalog_inner(
                     computer: binding.contract().name == computer_contract.name && binding.contract().version == 1,
                     network_ceiling: selection.input == ToolInput::Web
                         || contract == &process_contract,
+                    file_ceiling: contract == &file_contract
+                        || (contract == &process_contract
+                            && matches!(selection.method.as_str(), "execute" | "writeStdin")),
                     input_projection,
                     title_kind,
                     presentation,
@@ -672,6 +675,9 @@ struct Service {
     /// Host Web effects and the workspace process tools ask for network per
     /// request, so their floor carries the Run's network approval ceiling.
     network_ceiling: bool,
+    /// The workspace file and process tools ask for file writes per call, so
+    /// their floor carries the Run's file approval ceiling.
+    file_ceiling: bool,
     input_projection: Projection,
     title_kind: Option<title::Kind>,
     presentation: Option<String>,
@@ -799,6 +805,7 @@ impl Service {
             mode,
             computer,
             network_ceiling,
+            file_ceiling,
             ..
         } = self;
         Box::pin(async move {
@@ -865,19 +872,26 @@ impl Service {
                 operation_id: context.operation_id.clone(),
                 tool_use_id: context.tool_use_id(),
             };
+            let (base, approval) = if computer {
+                (access.workspace_sandbox_floor().await?, None)
+            } else if file_ceiling {
+                access.file_approval_floors(&context.call.origin).await?
+            } else {
+                (access.sandbox_floor(&context.call.origin).await?, None)
+            };
+            let (mut floor, file_approval_base) = match approval {
+                Some(approval) => (approval, (selection.method == "writeStdin").then_some(base)),
+                None => (base, None),
+            };
             let capsule = access
                 .native_call(
                     context.clone(),
                     selection.name.clone(),
+                    file_approval_base,
                     cancellation.clone(),
                     computer,
                 )
                 .await?;
-            let mut floor = if computer {
-                access.workspace_sandbox_floor().await?
-            } else {
-                access.sandbox_floor(&context.call.origin).await?
-            };
             if network_ceiling && let maka_sandbox::Sandbox::Managed { network, .. } = &mut floor {
                 // Network still requires a grant from the same tool family. The
                 // ceiling is independent of the preset's base network, which a

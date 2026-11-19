@@ -162,6 +162,9 @@ pub struct RunSpec {
     /// Inherited network ceiling for separately approved Host requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_approval_ceiling: Option<maka_sandbox::Network>,
+    /// Inherited filesystem ceiling for separately approved file and process writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filesystem_approval_ceiling: Option<maka_sandbox::filesystem::Policy>,
     pub backend: BackendSpec,
     pub collaboration: CollaborationMode,
     pub language: Language,
@@ -773,6 +776,20 @@ impl RunSpec {
         self.network_approval_ceiling
             .as_ref()
             .unwrap_or_else(|| self.permission_ceiling.sandbox.network())
+    }
+
+    /// The most a separately approved grant can give this Run.
+    pub fn approval_ceiling(&self) -> maka_sandbox::Sandbox {
+        match &self.permission_ceiling.sandbox {
+            maka_sandbox::Sandbox::Managed { filesystem, .. } => maka_sandbox::Sandbox::Managed {
+                filesystem: self
+                    .filesystem_approval_ceiling
+                    .clone()
+                    .unwrap_or_else(|| filesystem.clone()),
+                network: self.network_approval_ceiling().clone(),
+            },
+            unmanaged => unmanaged.clone(),
+        }
     }
 
     pub fn content_refs(&self) -> Vec<&ContentRef> {

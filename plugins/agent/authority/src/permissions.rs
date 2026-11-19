@@ -61,6 +61,9 @@ pub struct PermissionGrant {
     pub scope: maka_agent_facts::interaction::PermissionScope,
 }
 
+pub const REQUESTS_DISABLED: &str =
+    "Workspace policy does not allow requesting additional permissions";
+
 pub async fn request(
     access: &dyn Access,
     request: PermissionRequest,
@@ -69,9 +72,7 @@ pub async fn request(
 ) -> Result<PermissionGrant, ToolError> {
     let configuration = access.live_configuration().await?;
     if !configuration.permissions.request_permissions {
-        return Err(failed(
-            "Workspace policy does not allow requesting additional permissions",
-        ));
+        return Err(failed(REQUESTS_DISABLED));
     }
     let source = request.source;
     let identity = (

@@ -77,6 +77,7 @@ impl Owner {
                 },
             },
             network_approval_ceiling: None,
+            filesystem_approval_ceiling: None,
             backend: BackendSpec::Historical {},
             collaboration: configuration.collaboration_mode,
             language: self.resolve_language(&settings),

@@ -67,6 +67,7 @@ fn spec(backend: BackendSpec, reference: &ContentRef) -> RunSpec {
             approval: maka_sandbox::Approval::Never,
         },
         network_approval_ceiling: None,
+        filesystem_approval_ceiling: None,
         backend,
         collaboration: Default::default(),
         language: Default::default(),

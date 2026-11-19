@@ -817,6 +817,7 @@ impl Rig {
                 approval: maka_sandbox::Approval::Never,
             },
             network_approval_ceiling: None,
+            filesystem_approval_ceiling: None,
             backend: match &external_backend {
                 Some(external) => BackendSpec::Executor {
                     selection: external.accepted.selection.clone(),
