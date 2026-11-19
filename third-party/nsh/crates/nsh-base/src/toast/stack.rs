@@ -145,15 +145,7 @@ fn distance(heights: &[Points], index: usize, gap: Points, peek: Points) -> (Poi
 /// A critically damped spring whose response is `duration` (no overshoot:
 /// a height or an opacity past its target reads as a glitch).
 fn spring_of(motion: ToastMotion) -> Spring {
-    let response = motion.duration.as_secs_f32().max(0.01);
-    let stiffness = (std::f32::consts::TAU / response).powi(2);
-    Spring {
-        stiffness,
-        damping: 2.0 * stiffness.sqrt(),
-        mass: 1.0,
-        velocity: None,
-        frame_rate: None,
-    }
+    Spring::new((motion.duration.as_secs_f32() * 1000.0).max(10.0))
 }
 
 /// A deep toast stack, as `gpui-base`'s `ToastStack`: it measures its

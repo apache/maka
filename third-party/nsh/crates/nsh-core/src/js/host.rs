@@ -155,6 +155,7 @@ pub fn style_patch_prop(name: &str) -> Option<StylePatchProp> {
         "expandedStyle" => Prop::ExpandedStyle,
         "pressedStyle" => Prop::PressedStyle,
         "focusWithinStyle" => Prop::FocusWithinStyle,
+        "focusVisibleStyle" => Prop::FocusVisibleStyle,
         "headerStyle" => Prop::HeaderStyle,
         _ => return None,
     })
@@ -186,6 +187,52 @@ pub trait HostValue: Sized {
     fn decode<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Self>;
     /// Its TypeScript type, declaring the named types it uses.
     fn ts_type(types: &mut TsTypes) -> String;
+}
+
+/// Decodes a view's `captureKeys` (`"none"`, `"all"`, or an array of
+/// keystroke strings) with the platform's `mod` convention: `apple` says
+/// `mod` is Command ([`crate::keymap::apple_keys`]).
+///
+/// [`HostValue`]'s decoder for [`crate::KeyCapture`] reads the convention
+/// from the engine's ambient environment. A JS host decodes outside one (the
+/// native JS runtime while it renders, the browser's bridge), so it resolves
+/// the convention from the environment it has and calls this. Backend-only
+/// (`#[doc(hidden)]`), never an app-facing key conversion API.
+#[doc(hidden)]
+pub fn decode_capture_keys<I: HostInput>(
+    input: &I,
+    cx: &mut HostCx,
+    apple: bool,
+) -> Option<crate::KeyCapture> {
+    use crate::{KeyCapture, keymap::Keystroke};
+    if let Some(text) = input.as_string() {
+        return match text.as_str() {
+            "none" => Some(KeyCapture::None),
+            "all" => Some(KeyCapture::All),
+            other => {
+                cx.warn(format!(
+                    "captureKeys: expected \"none\", \"all\" or keystrokes, got {other:?}"
+                ));
+                None
+            }
+        };
+    }
+    let list = input.as_list()?;
+    let mut keys = Vec::with_capacity(list.len());
+    for index in 0..list.len() {
+        let Some(item) = list.item(index) else {
+            continue;
+        };
+        let Some(text) = item.as_string() else {
+            cx.warn(format!("captureKeys[{index}]: expected a keystroke string"));
+            continue;
+        };
+        match Keystroke::parse_with(&text, apple) {
+            Ok(keystroke) => keys.push(keystroke),
+            Err(error) => cx.warn(format!("captureKeys: {error}")),
+        }
+    }
+    Some(KeyCapture::Keys(keys.into()))
 }
 
 /// Where a host prop applies, for the generated element types.
@@ -490,6 +537,19 @@ export interface Modifiers {
   platform: boolean;
 }
 
+/** A hardware key transition on the focused view: the payload of `onKeyDown` and `onKeyUp` (`nsh_core::KeyEvent`). */
+export interface KeyEvent {
+  /** The source's logical key: the DOM's spelling for named keys (`"Enter"`, `"ArrowLeft"`), else the character the key reports, in its case and layout. `"Unidentified"` when the source names none. */
+  key: string;
+  /** The key's physical identity as the DOM's `KeyboardEvent.code` spells it (`"KeyA"`, `"ArrowLeft"`, `"ShiftLeft"`); `""` when the source has none (GPUI, synthetic input), never guessed from `key`. */
+  code: string;
+  modifiers: Modifiers;
+  /** An auto-repeat of a held key (the press itself is not one). */
+  repeat: boolean;
+  /** The mounted `captureKeys` policy decided this transition: the platform runs no native default and types no text. It is this transition's decision, observed as the DOM's `defaultPrevented` is; a listener cannot veto handling after the fact. */
+  defaultPrevented: boolean;
+}
+
 /** Where the core placed an overlay: the payload of `onPosition`. */
 export interface OverlayPosition {
   /** The side of the anchor it went on: the one asked for, or the other one when only that one has room. */
@@ -523,7 +583,7 @@ export interface PressEvent {
   clickCount: number;
 }
 
-/** Where the mouse is over a view: the payload of `onMouseEnter`, `onMouseMove` and `onMouseLeave` (GPUI's `MouseMoveEvent`). */
+/** Where the mouse is over a view, or where a button was released over it: the payload of `onMouseEnter`, `onMouseMove`, `onMouseLeave` and `onMouseUp` (GPUI's `MouseMoveEvent`). */
 export interface MouseEvent {
   /** Position in the view (its transforms undone). */
   position: Point;
@@ -532,6 +592,41 @@ export interface MouseEvent {
   modifiers: Modifiers;
   /** The button held down (a drag), or `null`. */
   pressedButton: MouseButton | null;
+  /** The button that changed at this event: the released one on `onMouseUp`, `null` on a move. */
+  button: MouseButton | null;
+  /** `"mouse"`, or `"pen"` for a pen over a tablet. */
+  pointerType: PointerType;
+  /** How hard it presses, 0 to 1 (`PointerEvent.pressure`): 0.5 with a button down and 0 without on a device without pressure. */
+  pressure: number;
+  /** A pen's tilt in degrees, -90 to 90 (`PointerEvent.tiltX` / `tiltY`); 0 when not reported. */
+  tiltX: number;
+  tiltY: number;
+}
+
+/** A wheel over a view: the payload of `onWheel` (GPUI's `ScrollWheelEvent`, the DOM's `WheelEvent`). */
+export interface WheelEvent {
+  /** Position in the view (its transforms undone). */
+  position: Point;
+  /** Position in the root view the view is in (the surface or its modal), as touches' `pageX` / `pageY`. */
+  pagePosition: Point;
+  /** How far it scrolled, in `deltaMode` units: positive `y` scrolls down (toward the end), positive `x` right, as the DOM's `deltaX` / `deltaY`. */
+  delta: Point;
+  /** `"points"`: a precise device (a touchpad); `"lines"`: mouse wheel notches. */
+  deltaMode: "points" | "lines";
+  modifiers: Modifiers;
+}
+
+/** A touchpad pinch over a view: the payload of `onPinch` (GPUI's `PinchEvent`). */
+export interface PinchEvent {
+  /** Position in the view (its transforms undone). */
+  position: Point;
+  /** Position in the root view the view is in (the surface or its modal), as touches' `pageX` / `pageY`. */
+  pagePosition: Point;
+  /** How much the scale changed since the last event, as a fraction: 0.1 is 10 % bigger, negative smaller. */
+  delta: number;
+  /** Where it is in the gesture, as a touch's phase. */
+  phase: "start" | "move" | "end";
+  modifiers: Modifiers;
 }
 
 /** A mouse button (GPUI's `MouseButton`). */
@@ -604,15 +699,21 @@ export interface WebViewNavigation {
 
 /** A web view's download (`onDownload`): where it is saved, in the app's data directory's `downloads`. */
 export interface WebViewDownload {
-  state: "started" | "finished" | "failed";
+  state: "started" | "finished" | "failed" | "cancelled";
   id: string;
   url: string;
   filename: string;
   path: string;
+  /** Who owns the bytes: the engine's transfer, a request NSH made, a page, or none (the response is gone). */
+  source: "transfer" | "request" | "page" | "none";
   /** Once finished: the file's size in bytes. */
   bytes?: number;
   /** When it failed: why. */
   message?: string;
+  /** A stable code on failure or cancellation. */
+  code?: string;
+  /** Why it was cancelled. */
+  reason?: "app" | "timeout" | "teardown" | "noListener";
 }
 "#;
 
@@ -664,6 +765,24 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
         "The mouse moved over the view (or a view inside it), with or without a button down (`e.pressedButton`), or a modifier key changed while it rests there with none down; at most once per frame.",
     ),
     (
+        EventKind::Wheel,
+        on::ALL,
+        "(e: WheelEvent) => void",
+        "A mouse wheel or touchpad scrolled over the view (or a view inside it); desktops and the web. The nearest listener hears it. A listener nearer than any scroll view under the pointer takes the wheel: nothing scrolls or zooms natively (a canvas zooms on `e.modifiers.control` and pans otherwise); a scroll view listening, or a view around one, only observes it.",
+    ),
+    (
+        EventKind::Pinch,
+        on::ALL,
+        "(e: PinchEvent) => void",
+        "A touchpad pinch over the view (or a view inside it); macOS, Linux, the GPUI backend and Safari (Windows and the other browsers report a touchpad pinch as Control + wheel: `onWheel`). The nearest listener hears it; a listener nearer than any view that pinches natively takes it, and nothing zooms natively. A pinch stays on the view its start went to. Fingers pinching a touchscreen are `onPinchStart`'s.",
+    ),
+    (
+        EventKind::MouseUp,
+        on::ALL,
+        "(e: MouseEvent) => void",
+        "A mouse button was released over the view (or a view inside it): which button (`e.button`), where, and with the modifiers. The primary button's release also reports `onPressUp`. Desktops, the terminal and the web; a release outside the view is not reported.",
+    ),
+    (
         EventKind::ContextMenu,
         on::ALL,
         "(e: ContextMenuEvent) => void",
@@ -672,8 +791,8 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::FileDragEnter,
         on::ALL,
-        "() => void",
-        "A local file drag entered this desktop destination.",
+        "(e: { uris: string[]; mimeTypes: string[] }) => void",
+        "A local file drag entered this desktop destination with its offered file URLs and each one's MIME type by its name (`\"\"` when the name says none); no file is read. GTK waits for its file-list preload.",
     ),
     (
         EventKind::FileDragLeave,
@@ -684,8 +803,8 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::FileDrop,
         on::ALL,
-        "(e: { uris: string[]; pagePosition?: { x: number; y: number } }) => void",
-        "Local file URLs dropped on this desktop destination; `pagePosition`: where, in the window's coordinates, on backends that know it (Linux).",
+        "(e: { uris: string[]; mimeTypes: string[]; pagePosition?: { x: number; y: number } }) => void",
+        "Local file URLs dropped on this desktop destination, with each one's MIME type by its name (`\"\"` when the name says none); `pagePosition`: where, in the window's coordinates, on backends that know it (Linux).",
     ),
     (
         EventKind::Layout,
@@ -782,7 +901,7 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
         EventKind::Error,
         on::IMAGE | on::WEBVIEW | on::VIDEO,
         "(e: { message: string; code?: string }) => void",
-        "The source failed to load. `code` is `\"ERR_ACCESS_DENIED\"` when the app's capabilities do not grant it (an image's or video's URL: `network`; a web view's page or `html`: `webview`).",
+        "The source failed to load. `code` is `\"ERR_ACCESS_DENIED\"` when the app's capabilities do not grant it (an image's or video's URL: `network`; a web view's page or `html`: `webview`), `\"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM\"` for a web view where the platform shows none (`WebView.available()`), and `\"ERR_NSH_WEBVIEW_TERMINATED\"` when a web view's web content process ended (it shows no page until `reload()`, `load()` or a new source).",
     ),
     (
         EventKind::LoadEnd,
@@ -799,7 +918,7 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::ScrollIntent,
         on::SCROLLING,
-        "(e: { intent: \"start\" | \"end\" | \"scroll\" }) => void",
+        "(e: { intent: \"start\" | \"end\" | \"scroll\"; delta?: number }) => void",
         "Before user scrolling, including at a boundary; once at drag start. Home is `start`, End is `end`, other scrolling is `scroll`. Programmatic scrolling does not emit it.",
     ),
     (
@@ -873,8 +992,8 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::SelectionChange,
         on::VIEW,
-        "(e: { text: string; start?: number }) => void",
-        "The selection across the texts of a `selectable` view changed: `text` is what a copy would give, empty once nothing is selected; `start` is where it starts in the view's whole text (UTF-16 units) when the platform knows it. Only the outermost selectable view of an area reports it.",
+        "(e: { text: string; start?: number; bounds?: Bounds; pageBounds?: Bounds }) => void",
+        "The selection across the texts of a `selectable` view changed: `text` is what a copy would give, empty once nothing is selected; `start` is where it starts in the view's whole text (UTF-16 units) when the platform knows it; `bounds` is the box around the selected text in the view and `pageBounds` in the root view it is in, as of the event (an `Overlay`'s `anchor`: a bar of actions on the selection), while something is selected and the platform knows them. Only the outermost selectable view of an area reports it.",
     ),
     (
         EventKind::Paste,
@@ -893,6 +1012,18 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
         on::INPUT,
         "(e: { key: string }) => void",
         "Before the text changes: `key` is the typed text, `Backspace` or `Enter`.",
+    ),
+    (
+        EventKind::KeyDown,
+        on::ALL,
+        "(e: KeyEvent) => void",
+        "A hardware key went down on the focused view or a view inside it on desktop and Web. It bubbles to enabled listening ancestors within the same native window. `defaultPrevented` is the mounted `captureKeys` decision for this transition.",
+    ),
+    (
+        EventKind::KeyUp,
+        on::ALL,
+        "(e: KeyEvent) => void",
+        "A hardware key came up on the focused view, with this transition's `defaultPrevented` decision; it bubbles as `onKeyDown` does. A window that loses the focus invents no releases.",
     ),
     (
         EventKind::CompositionChange,
@@ -944,6 +1075,12 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
         "Escape or the Android back button, while this is the top overlay listening to it (it takes the key from the overlays below, the pages and `BackHandler`). Closing is the app's.",
     ),
     (
+        EventKind::DetentChange,
+        on::MODAL,
+        "(e: { detent: SheetDetent }) => void",
+        "The user moved an iOS sheet to another of its `detents` (dragging it, its grabber, a scroll at its edge, a screen reader): set `detent` to it to keep the app's value in step.",
+    ),
+    (
         EventKind::Position,
         on::OVERLAY,
         "(e: OverlayPosition) => void",
@@ -962,17 +1099,28 @@ pub const INTERNAL_EVENTS: &[EventKind] = &[
     EventKind::Dialog,
     EventKind::BackPress,
     EventKind::ImageInfo,
+    EventKind::WebEvaluation,
+    EventKind::WebViewReply,
+    EventKind::DownloadPending,
+    EventKind::DownloadOffer,
+    EventKind::DownloadProgress,
+    EventKind::DownloadEnd,
     EventKind::Clipboard,
     EventKind::Host,
     EventKind::Pick,
     EventKind::OpenUrl,
     EventKind::ScreenColor,
+    EventKind::Share,
+    EventKind::AuthSession,
+    EventKind::CanvasImage,
     EventKind::FileRequest,
     EventKind::Speech,
     EventKind::Notification,
     EventKind::UrlScheme,
+    EventKind::SecondInstance,
     EventKind::Audio,
     EventKind::Window,
+    EventKind::EditAction,
     EventKind::KeyCommand,
     EventKind::Menu,
     EventKind::ViewableItemsChange,
@@ -1014,12 +1162,14 @@ const GROUPS: &[(u32, &str, &str)] = &[
 /// The declarations of the host elements' props: the named types they use
 /// and one interface per element group and platform (`InputHostProps`,
 /// `IOSInputHostProps`, ...), which the element types and the components
-/// of `nsh` (`WebView`, `Video`, ...) extend.
+/// of `nsh` (`WebView`, `Video`, ...) extend, and the options the refs'
+/// methods take (`RevealOptions`).
 pub fn declarations() -> String {
     use std::fmt::Write as _;
     let mut types = TsTypes::default();
     let mut specs = Vec::new();
     <crate::Prop as HostProps>::specs(&mut types, &mut specs);
+    <crate::RevealOptions as HostValue>::ts_type(&mut types);
     let mut out = String::from(EVENT_TYPES);
     for declaration in types.declarations() {
         let _ = write!(out, "\n{declaration}\n");

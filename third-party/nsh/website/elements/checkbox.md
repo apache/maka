@@ -177,7 +177,7 @@ sides named (`{ top: 8, bottom: 8 }`), as a [view's `hitSlop`](./index.md#presse
 - `disabled` is announced as the platform announces it (VoiceOver, TalkBack, UI Automation, the browser's accessibility
   tree).
 - On macOS and the web a checkbox is a stop of the keyboard focus: Tab reaches it, Space and Return toggle it, and
-  `focus:` styles show where the focus is.
+  `focus-visible:` styles show where the focus is.
 
 See [Accessibility](../docs/accessibility.md) for labels, roles and announcements in general.
 

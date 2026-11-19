@@ -19,8 +19,6 @@
 
 //! Closed diagnostic categories; private error payloads never cross this boundary.
 
-use maka_agent_engine::RunError;
-use maka_agent_facts::event::CommitError;
 use maka_config::ConfigError;
 use maka_event_log::StoreError;
 
@@ -50,10 +48,6 @@ pub(crate) fn store_cause(error: &StoreError) -> &'static str {
         StoreError::StartupCleanupFailed { .. } => "store_startup_cleanup_failed",
         StoreError::UnsupportedDatabase => "store_unsupported_database",
         StoreError::Initialization => "store_initialization",
-        StoreError::HistoryTurnMissing => "store_history_turn_missing",
-        StoreError::HistoryTurnSplit => "store_history_turn_split",
-        StoreError::HistoryUnsettled => "store_history_unsettled",
-        StoreError::HistoryProviderEffectUnresolved => "store_history_provider_effect_unresolved",
         _ => "store_error",
     }
 }
@@ -64,31 +58,5 @@ pub(crate) fn store_sql_code(error: &StoreError) -> Option<i32> {
             error.sqlite_error().map(|error| error.extended_code)
         }
         _ => None,
-    }
-}
-
-pub(crate) fn run_cause(error: &RunError) -> &'static str {
-    match error {
-        RunError::Store(error) => store_cause(error),
-        RunError::Commit(CommitError::Retired) => "commit_retired",
-        RunError::Commit(CommitError::PermissionRevoked) => "commit_permission_revoked",
-        RunError::Commit(CommitError::NativeTurnInterrupted) => "commit_native_turn_interrupted",
-        RunError::Commit(CommitError::Rejected(_)) => "commit_rejected",
-        RunError::Commit(CommitError::OutcomeUnknown(_)) => "commit_outcome_unknown",
-        RunError::Busy => "session_busy",
-        RunError::SessionState(_) => "session_state_error",
-        RunError::ContinuationChanged => "continuation_changed",
-        RunError::ReconciliationRequired(_) => "reconciliation_required",
-        RunError::InvalidInput(_) => "invalid_input",
-        RunError::Cancelled => "cancelled",
-        RunError::ModelIncomplete => "model_incomplete",
-        RunError::CleanupUnconfirmed => "cleanup_unconfirmed",
-        RunError::Model(_) => "model_error",
-        RunError::Tool(_) if error.is_cleanup_unconfirmed() => "cleanup_unconfirmed",
-        RunError::Tool(_) => "tool_error",
-        RunError::Internal(_) => "internal_error",
-        RunError::Checkpoint(_) => "activation_checkpoint",
-        RunError::Preparation(_) => "model_preparation",
-        RunError::PreparationCleanup(_) => "cleanup_unconfirmed",
     }
 }

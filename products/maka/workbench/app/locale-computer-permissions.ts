@@ -19,6 +19,16 @@
 import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const computerPermissionMessages = {
+  'Could not stop computer access.': [
+    'Could not stop computer access.',
+    '无法停止计算机访问。',
+    '無法停止電腦存取。',
+  ],
+  'Could not update the computer permission request.': [
+    'Could not update the computer permission request.',
+    '无法更新计算机权限请求。',
+    '無法更新電腦權限請求。',
+  ],
   'permissionSetup.title': ['Set up computer access', '设置电脑访问权限', '設定電腦存取權限'],
   'permissionSetup.subtitle': [
     'Allow {application} to see and interact with the computer. macOS keeps you in control of these permissions.',

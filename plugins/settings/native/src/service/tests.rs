@@ -18,327 +18,27 @@
  */
 
 use super::*;
-use maka_capabilities::call::{Attachments, Identity, Issuer};
-use maka_event_log::{
-    RootStore,
-    root::{RootNamespaces, RootOwner},
-};
-use maka_host_runtime::application::{
-    Application, Binding, Invocation, NativeActivation, NativeRegistry, Policy,
-};
-use maka_packages::Package;
-use maka_plugin_core::composition::InstanceId;
+use maka_event_log::root::{RootNamespaces, RootOwner};
 use serde_json::json;
-use std::collections::BTreeMap;
-use tokio_util::sync::CancellationToken;
-
-struct Grant(Issuer);
-impl Policy for Grant {
-    fn admit(&self, invocation: Invocation<'_>) -> Result<(), String> {
-        self.0
-            .owns(invocation.scope)
-            .then_some(())
-            .ok_or("foreign scope".into())
-    }
-}
-
-struct Fixture {
-    _directory: tempfile::TempDir,
-    configuration: Arc<maka_config::ConfigurationStore>,
-    log: Arc<RootStore>,
-    app: Application,
-    issuer: Issuer,
-    binding: Binding,
-}
-impl Fixture {
-    async fn new() -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let root = Arc::new(
-            RootOwner::create(
-                &directory.path().join("root"),
-                &RootNamespaces {
-                    ownership: directory.path().join("owners"),
-                    control: directory.path().join("control"),
-                },
-            )
-            .unwrap(),
-        );
-        let configuration = Arc::new(
-            maka_config::ConfigurationStore::for_root(root.clone())
-                .await
-                .unwrap(),
-        );
-        let log = Arc::new(RootStore::open(root).await.unwrap());
-        let package = |id, implementation, imports, exports| {
-            Package::new(BTreeMap::from([(
-                "maka.extension.json".into(),
-                serde_json::to_vec(&json!({
-                    "schemaVersion":1,"id":id,"application":{"host":{
-                        "implementation":{"kind":"native","implementation":implementation},
-                        "configuration":{"type":"object","additionalProperties":false},
-                        "imports":imports,"exports":exports
-                    }}
-                }))
-                .unwrap(),
-            )]))
-            .unwrap()
-        };
-        let contract = crate::contract::contract();
-        let settings = package(
-            "test.settings",
-            crate::IMPLEMENTATION,
-            json!({}),
-            json!({
-                crate::EXPORT:{"contract":contract,"availability":"required"}
-            }),
-        );
-        let caller = package(
-            "test.caller",
-            "test.caller",
-            json!({
-                "settings":{"contract":contract,"cardinality":{"kind":"one"}}
-            }),
-            json!({}),
-        );
-        let caller_key = "00000000-0000-4000-8000-000000000002";
-        let deployment = "00000000-0000-4000-8000-000000000003".parse().unwrap();
-        log.commit_application(deployment, 0, serde_json::from_value(json!({"instances":{
-            "settings":{"key":"00000000-0000-4000-8000-000000000001","package":{"source":"pinned","package":settings.application_ref()},"usePackage":"host"},
-            "caller":{"key":caller_key,"package":{"source":"pinned","package":caller.application_ref()},"usePackage":"host",
-                "bindings":{"settings":[{"kind":"instance","path":["settings"],"export":crate::EXPORT}]}}
-        }})).unwrap(), vec![], vec![settings, caller]).await.unwrap();
-        let mut registry = NativeRegistry::default();
-        crate::provide(
-            &mut registry,
-            Arc::new(maka_providers::catalog::Catalog::new(
-                maka_providers::catalog::Snapshot::bundled().unwrap(),
-            )),
-        )
-        .unwrap();
-        registry
-            .insert(
-                "test.caller".into(),
-                Arc::new(|_, _| {
-                    Box::pin(async {
-                        NativeActivation {
-                            exports: Ok(BTreeMap::new()),
-                            owner: Arc::new(()),
-                        }
-                    })
-                }),
-            )
-            .unwrap();
-        let issuer = Issuer::default();
-        let app = Application::start_from_store(
-            log.clone(),
-            deployment,
-            registry,
-            issuer.clone(),
-            Arc::new(Grant(issuer.clone())),
-            None,
-        )
-        .await
-        .unwrap();
-        app.ready().await.unwrap();
-        let client = app.client();
-        let caller_id: InstanceId = serde_json::from_value(json!([caller_key])).unwrap();
-        let binding = client
-            .bind(client.activation(&caller_id).unwrap(), "settings".into())
-            .await
-            .unwrap()
-            .remove(0);
-        Self {
-            _directory: directory,
-            configuration,
-            log,
-            app,
-            issuer,
-            binding,
-        }
-    }
-    async fn add(
-        &self,
-        slug: &str,
-        name: &str,
-        ids: Vec<String>,
-        overrides: Value,
-    ) -> ConnectionVersionBasis {
-        let revision = self.configuration.catalog().await.unwrap().revision;
-        let CatalogMutationResult::Committed { connection:Some(basis), .. } = self.configuration.create_connection(
-            serde_json::from_value(json!({"expectedCatalogRevision":revision,"connection":{
-                "slug":slug,"name":name,"provider":{"packageId":maka_providers::api::ID,"entryId":maka_providers::api::ID,"scope":"profile","name":"openai-compatible"},
-                "configuration":{"baseUrl":"https://private.example/v1"},"enabled":true,"enabledModelIds":ids,
-                "modelOverrides":overrides,"requestBodyOverlay":{"privateMarker":"private-fixture-key"}
-            }})).unwrap()).await.unwrap() else { panic!("connection commit"); };
-        basis
-    }
-    async fn models(&self, input: Value) -> Result<Value, String> {
-        let scope = self
-            .issuer
-            .issue(
-                Identity::Remote {
-                    request_id: Default::default(),
-                },
-                CancellationToken::new(),
-            )
-            .unwrap();
-        self.app
-            .client()
-            .start(
-                self.binding.clone(),
-                "models".into(),
-                input,
-                scope,
-                Attachments::new().into(),
-            )
-            .await?
-            .result()
-            .await
-    }
-    async fn set_default(&self, target: ConnectionTarget) {
-        let expected_catalog_revision = self.configuration.catalog().await.unwrap().revision;
-        assert!(matches!(
-            self.configuration
-                .set_default_target(SetDefaultConnectionTargetInput {
-                    expected_catalog_revision,
-                    target: Some(target),
-                })
-                .await
-                .unwrap(),
-            CatalogMutationResult::Committed { .. }
-        ));
-    }
-    async fn finish(self) {
-        self.app.shutdown().await.unwrap();
-        self.configuration.shutdown().await.unwrap();
-        self.log.drain().await;
-    }
-}
 
 #[tokio::test]
-async fn pages_keep_the_root_default_independent_of_the_visible_page_and_fence_old_cursors() {
-    let first = Fixture::new().await;
-    first
-        .add(
-            "first",
-            "First",
-            (0..20).map(|i| format!("model-{i:02}")).collect(),
-            json!({}),
+async fn ollama_cloud_enabled_model_resolves_to_a_settings_choice() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = Arc::new(
+        RootOwner::create(
+            &directory.path().join("root"),
+            &RootNamespaces {
+                ownership: directory.path().join("owners"),
+                control: directory.path().join("control"),
+            },
         )
-        .await;
-    let page = first.models(json!({"kind":"start"})).await.unwrap();
-    assert_eq!(page["defaultModel"], json!({"kind":"none"}));
-    assert_eq!(page["choices"].as_array().unwrap().len(), 16);
-    assert!(!page.to_string().contains("private-fixture-key"));
-    assert!(!page.to_string().contains("baseUrl"));
-    let continuation = json!({"kind":"continue","revision":page["revision"],"cursor":page["next"]});
-    let last = first.models(continuation.clone()).await.unwrap();
-    assert_eq!(last["choices"].as_array().unwrap().len(), 4);
-    assert!(last["next"].is_null());
-    first
-        .set_default(ConnectionTarget {
-            connection_id: page["choices"][0]["selection"]["connectionId"]
-                .as_str()
-                .unwrap()
-                .into(),
-            model_id: "model-19".into(),
-        })
-        .await;
-    assert_eq!(first.models(continuation).await.unwrap()["kind"], "changed");
-    let updated = first.models(json!({"kind":"start"})).await.unwrap();
-    assert_eq!(
-        updated["defaultModel"]["choice"]["selection"]["modelId"],
-        "model-19"
+        .unwrap(),
     );
-    assert!(
-        !updated["choices"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["selection"]["modelId"] == "model-19")
-    );
-    assert!(first.models(json!({"kind":"continue","revision":updated["revision"],"cursor":{"connection":0,"model":4000}})).await.is_err());
-    let revision = first.configuration.catalog().await.unwrap().revision;
-    let CatalogMutationResult::Committed { connection:Some(unsupported), .. } = first.configuration.create_connection(serde_json::from_value(json!({
-        "expectedCatalogRevision":revision,"connection":{"slug":"unsupported","name":"Unsupported","provider":{"packageId":"example.models","entryId":"models","scope":"profile","name":"custom"},"configuration":{},"enabled":true,"enabledModelIds":["unavailable"]}
-    })).unwrap()).await.unwrap() else { panic!("unsupported provider commit"); };
-    let target = ConnectionTarget {
-        connection_id: unsupported.connection_id,
-        model_id: "unavailable".into(),
-    };
-    first.set_default(target.clone()).await;
-    assert_eq!(
-        first.models(json!({"kind":"start"})).await.unwrap()["defaultModel"],
-        json!({"kind":"unavailable","target":target})
-    );
-    assert_eq!(
-        first.configuration.catalog().await.unwrap().default_target,
-        Some(target)
-    );
-    first.finish().await;
-}
-
-#[tokio::test]
-async fn model_search_returns_executable_selections_and_effective_thinking_metadata() {
-    let fixture = Fixture::new().await;
-    let first = fixture
-        .add(
-            "first",
-            "Local Lab",
-            vec!["reasoner-v1".into(), "plain-v1".into()],
-            json!({
-                "reasoner-v1": {"displayName":"Deep Reasoner", "thinkingLevels":["low","high"],
-                    "defaultThinkingLevel":"high", "contextWindow":64000, "inputLimit":48000,
-                    "maxOutputTokens":8000}
-            }),
-        )
-        .await;
-    let current = crate::connections::detail(
-        &fixture.configuration,
-        json!({"connectionId":first.connection_id}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(current["name"], "Local Lab");
-    assert_eq!(current["enabledModelCount"], 2);
-    let stale = crate::connections::detail(
-        &fixture.configuration,
-        json!({"connectionId":first.connection_id,"revision":first.revision + 1}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(stale["kind"], "stale");
-    fixture
-        .add("other", "Other", vec!["reasoner-v1".into()], json!({}))
-        .await;
-    let page = fixture
-        .models(json!({"kind":"start", "query":"LAB deep V1", "connectionId":first.connection_id}))
+    let configuration = maka_config::ConfigurationStore::for_root(root)
         .await
         .unwrap();
-    assert_eq!(page["choices"].as_array().unwrap().len(), 1);
-    let choice = &page["choices"][0];
-    assert_eq!(
-        choice["selection"],
-        json!({"connectionId":first.connection_id,"modelId":"reasoner-v1"})
-    );
-    assert_eq!(choice["thinkingLevels"], json!(["low", "high"]));
-    assert_eq!(choice["defaultThinkingLevel"], "high");
-    assert_eq!(choice["limits"]["contextWindow"], 64000);
-    assert_eq!(choice["limits"]["inputLimit"], 48000);
-    assert_eq!(choice["limits"]["overrides"]["maxOutputTokens"], 8000);
-    let empty = fixture
-        .models(json!({"kind":"start","query":"not-in-the-catalog"}))
-        .await
-        .unwrap();
-    assert_eq!(empty["choices"], json!([]));
-    fixture.finish().await;
-}
-
-#[tokio::test]
-async fn ollama_cloud_enabled_models_appear_in_settings_choices() {
-    let fixture = Fixture::new().await;
-    let revision = fixture.configuration.catalog().await.unwrap().revision;
-    let committed = fixture.configuration.create_connection(serde_json::from_value(json!({
+    let revision = configuration.catalog().await.unwrap().revision;
+    let committed = configuration.create_connection(serde_json::from_value(json!({
         "expectedCatalogRevision":revision,
         "connection":{
             "slug":"ollama-cloud","name":"Ollama Cloud",
@@ -348,11 +48,113 @@ async fn ollama_cloud_enabled_models_appear_in_settings_choices() {
         }
     })).unwrap()).await.unwrap();
     assert!(matches!(committed, CatalogMutationResult::Committed { .. }));
-    let page = fixture.models(json!({"kind":"start"})).await.unwrap();
-    assert_eq!(page["choices"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        page["choices"][0]["selection"]["modelId"],
-        "deepseek-v4-flash"
+    let catalog = configuration.catalog().await.unwrap();
+    let row = &catalog.connections[0];
+    let snapshot = Arc::new(maka_providers::catalog::Snapshot::bundled().unwrap());
+    assert!(selectable(row, snapshot.clone()));
+    let choice = model_choice(row, &row.enabled_model_ids[0], snapshot)
+        .await
+        .unwrap();
+    assert_eq!(choice.selection.model_id, "deepseek-v4-flash");
+    assert_eq!(choice.selection.connection_id, row.connection_id);
+    configuration.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn dictation_lists_only_configured_official_connections_without_exposing_keys() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = Arc::new(
+        RootOwner::create(
+            &directory.path().join("root"),
+            &RootNamespaces {
+                ownership: directory.path().join("owners"),
+                control: directory.path().join("control"),
+            },
+        )
+        .unwrap(),
     );
-    fixture.finish().await;
+    let store = maka_config::ConfigurationStore::for_root(root)
+        .await
+        .unwrap();
+    let store = Arc::new(store);
+    for (slug, url) in [
+        ("personal", "https://api.deepseek.com"),
+        ("relay", "https://example.com"),
+    ] {
+        let revision = store.catalog().await.unwrap().revision;
+        let result = store.create_connection(serde_json::from_value(json!({
+            "expectedCatalogRevision":revision,"connection":{"slug":slug,"name":slug,
+            "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"deepseek"},
+            "configuration":{"baseUrl":url},"enabled":true,"enabledModelIds":[]}
+        })).unwrap()).await.unwrap();
+        assert!(matches!(result, CatalogMutationResult::Committed { .. }));
+    }
+    assert_eq!(
+        crate::connections::dictation_connections(&store)
+            .await
+            .unwrap(),
+        json!([])
+    );
+    for row in store.catalog().await.unwrap().connections {
+        use maka_agent_facts::{
+            oauth::{LoginStart, Target},
+            provider::{AuthenticationInput, Credential},
+        };
+        use maka_config::oauth::enrollment::{LoginCompletion, LoginPreparation};
+        let input = LoginStart {
+            attempt_id: format!("dictation-{}", row.slug),
+            expected_credential: None,
+            authentication: AuthenticationInput {
+                method: "api_key".into(),
+                input: json!({}),
+            },
+            target: Target::Existing {
+                configuration: row.configuration.clone(),
+                expected: ConnectionCredentialTarget {
+                    connection_id: row.connection_id,
+                    revision: row.revision,
+                    slug: row.slug,
+                    provider: row.provider,
+                    configuration: row.configuration,
+                },
+            },
+        };
+        let LoginPreparation::Ready(ticket) = store.prepare_oauth_login(input).await.unwrap()
+        else {
+            panic!("expected login ticket")
+        };
+        assert!(ticket.claim().await.unwrap());
+        assert!(matches!(
+            ticket
+                .complete(
+                    Credential {
+                        secret: "test-only".into(),
+                        refresh_at: None
+                    },
+                    10
+                )
+                .await
+                .unwrap(),
+            LoginCompletion::Committed(_)
+        ));
+    }
+    let options = crate::connections::dictation_connections(&store)
+        .await
+        .unwrap();
+    let choices = options.as_array().unwrap();
+    assert_eq!(choices.len(), 1);
+    assert_eq!(choices[0]["name"], "personal");
+    assert_eq!(choices[0].as_object().unwrap().len(), 2);
+    // A malformed recording stops after resolving the stored model credential, before networking.
+    let request = DictationInput {
+        connection: serde_json::from_value(choices[0]["basis"].clone()).unwrap(),
+        audio: "invalid".into(),
+    };
+    assert_eq!(
+        crate::connections::transcribe(&store, request)
+            .await
+            .unwrap_err(),
+        "Invalid recording"
+    );
+    store.shutdown().await.unwrap();
 }

@@ -148,6 +148,7 @@ in a heading, an icon before a title. In Rust, `accordion()`, `accordion_item()`
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
 | `reveal` | `.reveal(..)` | `boolean` | `false` | Opens and closes with a reveal, as `Collapsible`'s: the panel clips its content and its height springs from zero to the content's own and back, critically damped (about 265 ms, no overshoot), and the items after it move along. With reduced motion it opens and closes at once. |
+| `revealSpring` | `.reveal_spring(..)` | `{ stiffness?, damping?, mass? }` (Rust `Spring`) | none | The spring the reveal moves on, as `Collapsible`'s `revealSpring`: the options of `AnimatedValue.spring` with its defaults, the critically damped spring above without it. Used only with `reveal`; with reduced motion the panel still opens and closes at once. |
 | `keepMounted` | `.keep_mounted(..)` | `boolean` | `false` | The content stays in the tree while the item is closed, out of sight, of the keyboard focus and of screen readers: a video keeps its place, a web view its page. Without it the content leaves the tree as the panel closes (once the reveal has closed it) and comes back as it was. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers call the region: usually the item's title, as its header says it. |
 | `children` | `.child(..)` | `JSX.Element` | none | The content. |

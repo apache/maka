@@ -20,7 +20,12 @@
 import { effect, inputAction, keymap, signal, Text, View } from 'nsh';
 import type { InputRef, JSX } from 'nsh';
 import { Button, Input } from 'nsh/base';
-import type { ComposerViewInput, UiActivation, UiEmbeddedViewProps } from '@maka-agent/plugin-sdk';
+import type {
+  ComposerIntake,
+  ComposerViewInput,
+  UiActivation,
+  UiEmbeddedViewProps,
+} from '@maka-agent/plugin-sdk';
 
 function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX.Element>) {
   const input = props.input;
@@ -40,8 +45,10 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
     blocked() ||
     composing() ||
     !!input.session()?.blockedReason() ||
-    (!input.session()?.draft().trim() && !input.session()?.attachments.files().length);
-  const intake = (uris: string[] | null) => {
+    (!input.session()?.draft().trim() &&
+      !input.session()?.attachments.files().length &&
+      !input.session()?.quotes().length);
+  const intake = async (source: ComposerIntake | (() => Promise<ComposerIntake>)) => {
     const session = input.session();
     const node = editor();
     if (!session || !node || blocked() || composing()) return;
@@ -68,13 +75,14 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
       node.setSelection(caret, caret);
     };
     try {
-      if (uris) session.attachments.dropFiles(uris, insert);
-      else session.attachments.pasteClipboard(insert);
+      const selected = typeof source === 'function' ? await source() : source;
+      if (input.session() === session) session.attachments.intake(selected, insert);
     } catch (error) {
       session.attachments.reportError(error);
     }
   };
-  const drop = (event: { uris: string[] }) => intake(event.uris);
+  const drop = (event: { uris: string[] }) =>
+    intake({ kind: 'paste', uris: event.uris, files: [] });
   input.dropFiles?.(drop);
   return (
     <View style={{ padding: 16, gap: 8, flexShrink: 0 }}>
@@ -130,8 +138,19 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                 }}
                 onPaste={(event) => {
                   if (input.session() !== session) return;
-                  if (event.uris.length) drop(event);
-                  else if (!event.text && !event.files.length) intake(null);
+                  if (event.uris.length || event.files.length)
+                    void intake(async () => ({
+                      kind: 'paste',
+                      uris: event.uris,
+                      files: await Promise.all(
+                        event.files.map(async (file) => ({
+                          name: file.name,
+                          mime: file.type,
+                          data: new Uint8Array(await file.arrayBuffer()),
+                        })),
+                      ),
+                    }));
+                  else if (!event.text) intake({ kind: 'clipboard' });
                 }}
                 onFileDrop={(event) => {
                   if (input.session() === session) drop(event);
@@ -149,6 +168,21 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                 uploadLabel="Upload selected file"
                 uploadingLabel="Uploading…"
               />
+              <Each of={session.quotes()}>
+                {(quote, index) => (
+                  <View style={{ padding: 8, gap: 4 }}>
+                    <Text>{quote().label ?? 'Quote'}</Text>
+                    <Text style={{ numberOfLines: 3 }}>{quote().text}</Text>
+                    <Button
+                      accessibilityLabel="Remove quote"
+                      disabled={blocked()}
+                      onPress={() => session.removeQuote(index())}
+                    >
+                      <Text>Remove quote</Text>
+                    </Button>
+                  </View>
+                )}
+              </Each>
               <Each of={session.attachments.files()} key={(file) => file.id}>
                 {(file) => (
                   <View style={{ flexDirection: 'row', gap: 8 }}>
@@ -204,22 +238,23 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                   <Text>Attach</Text>
                 </Button>
                 <Button
-                  accessibilityLabel={session.invocation() ? 'Queue message' : 'Send message'}
+                  accessibilityLabel={session.run() ? 'Queue message' : 'Send message'}
                   disabled={sendDisabled()}
                   onPress={inputAction(session.sendRendered, {
                     owner: session.sessionId,
                     text: session.draft(),
                     backend: session.backend(),
                     attachments: session.attachments.ids(),
+                    quotes: session.quotes(),
                   })}
                 >
-                  <Text>{session.invocation() ? 'Queue message' : 'Send message'}</Text>
+                  <Text>{session.run() ? 'Queue message' : 'Send message'}</Text>
                 </Button>
-                <If when={session.invocation() !== null}>
+                <If when={session.run() !== null}>
                   <Button
                     accessibilityLabel="Stop response"
                     disabled={session.stopping()}
-                    onPress={inputAction(session.stop, session.invocation())}
+                    onPress={inputAction(session.stop, session.run())}
                   >
                     <Text>Stop</Text>
                   </Button>

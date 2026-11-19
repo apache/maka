@@ -13,11 +13,17 @@ pub(crate) struct SystemConfig {
     /// Read by QuickJS's host only: nothing updates on the web (`nsh/updater`).
     #[cfg_attr(not(feature = "js-core"), allow(dead_code))]
     pub(crate) updater: Option<std::sync::Arc<dyn nsh_core::runtime::UpdaterHost>>,
+    /// The core's address, which every VM reads (`UrlScheme.url()`).
+    pub(crate) app_url: nsh_core::url_scheme::AppUrlCell,
     pub(crate) data_dir: Option<std::path::PathBuf>,
     pub(crate) paths: nsh_core::access::TrustedPaths,
     pub(crate) wake: std::sync::Arc<dyn Fn() + Send + Sync>,
     /// The embedding app's side of `nsh/host`.
     pub(crate) host: std::rc::Rc<dyn nsh_core::host_channel::HostBridge>,
+    /// `<Each>` leaves the rows the core may cull unrendered until they
+    /// come near (`EngineConfig::content_culling`).
+    #[cfg_attr(not(feature = "js-core"), allow(dead_code))]
+    pub(crate) lazy_rows: bool,
 }
 
 #[cfg(not(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32"))))]
@@ -116,8 +122,10 @@ mod imp {
             host.set_refuse_connections(system.refuse_connections);
             host.set_filesystem(system.filesystem);
             host.set_updater(system.updater);
+            host.set_app_url(system.app_url);
             host.set_system_wake(system.wake);
             host.set_host_bridge(system.host);
+            host.set_lazy_rows(system.lazy_rows);
             host.set_stop_flag(stop.clone());
             let exit_requested = Rc::new(Cell::new(false));
             let request = exit_requested.clone();
@@ -264,6 +272,10 @@ mod imp {
             self.host.bind_list(list, binds);
         }
 
+        pub(crate) fn set_lazy_rows(&self, lazy: bool) {
+            self.host.set_lazy_rows(lazy);
+        }
+
         pub(crate) fn host_event(&self, name: &str, data: nsh_core::JsonValue) {
             self.host.host_event(name, data);
         }
@@ -330,6 +342,10 @@ mod imp {
             self.host.set_fps_enabled(enabled);
         }
 
+        pub(crate) fn set_perf_stats(&self, stats: Option<&nsh_core::platform::PerfStats>) {
+            self.host.set_perf_stats(stats);
+        }
+
         pub(crate) fn set_tokens(&self, tokens: Arc<nsh_core::element::Tokens>) {
             self.host.set_tokens(tokens);
         }
@@ -356,6 +372,10 @@ mod imp {
 
         pub(crate) fn collect_garbage(&self) {
             self.host.collect_garbage();
+        }
+
+        pub(crate) fn heap_usage(&self) -> (u64, u64) {
+            self.host.heap_usage()
         }
 
         pub(crate) fn fatal(&self) -> Option<String> {
@@ -443,6 +463,10 @@ mod stub {
             match *self {}
         }
 
+        pub(crate) fn set_lazy_rows(&self, _: bool) {
+            match *self {}
+        }
+
         pub(crate) fn host_event(&self, _: &str, _: nsh_core::JsonValue) {
             match *self {}
         }
@@ -503,6 +527,10 @@ mod stub {
             match *self {}
         }
 
+        pub(crate) fn set_perf_stats(&self, _: Option<&nsh_core::platform::PerfStats>) {
+            match *self {}
+        }
+
         pub(crate) fn set_tokens(&self, _: Arc<nsh_core::element::Tokens>) {
             match *self {}
         }
@@ -528,6 +556,10 @@ mod stub {
         }
 
         pub(crate) fn collect_garbage(&self) {
+            match *self {}
+        }
+
+        pub(crate) fn heap_usage(&self) -> (u64, u64) {
             match *self {}
         }
 

@@ -220,6 +220,12 @@ export const toneColor = (tone: Tone) => (tone === "neutral" ? colors.muted : co
 /** The tint of a tone. */
 export const toneTint = (tone: Tone) => (tone === "neutral" ? colors.raised : tints[tone]);
 
+/** A tone's tint as `toneTint` shows it on `base` (default the card), but
+ * opaque: for what overlaps, such as stacked avatars, where a translucent
+ * tint would let what is under it show through. */
+export const solidTint = (tone: Tone, base: string = colors.surface) =>
+  tone === "neutral" ? colors.raised : `color-mix(in srgb, ${toneColor(tone)} ${isDark() ? 16 : 10}%, ${base})`;
+
 /** The monospaced family, for code (API names, identifiers). Figures use
  * the system font with tabular numbers instead. */
 export const mono = "monospace";
@@ -296,9 +302,9 @@ export const hovered = (): ViewStyle => ({ backgroundColor: alpha(colors.text, 0
 export const ghostFill = () => (terminal ? token("secondary") : "transparent");
 
 /**
- * The keyboard focus (`focusStyle`): the edge turns the theme's muted olive
- * `ring` and a 3-point halo of it lies around the view (`offset` moves the
- * halo out from the edge).
+ * The keyboard focus (`focusVisibleStyle`: not after a click or a tap): the
+ * edge turns the theme's muted olive `ring` and a 3-point halo of it lies
+ * around the view (`offset` moves the halo out from the edge).
  */
 export const focusRing = (offset = 0): ViewStyle => ({
   borderColor: token("ring"),

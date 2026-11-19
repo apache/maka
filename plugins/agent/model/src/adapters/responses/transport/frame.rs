@@ -17,7 +17,6 @@
  * under the License.
  */
 
-use super::error;
 use maka_agent_facts::model::error::ModelError;
 use maka_agent_facts::model::error::ProviderFailureReason;
 use maka_agent_ports::model::Frame;
@@ -35,7 +34,7 @@ impl ReadError {
     pub fn into_error(self) -> super::super::Error {
         match self {
             Self::CleanupUnconfirmed => super::super::Error::CleanupUnconfirmed,
-            Self::Cancelled => error("Responses WebSocket cancelled"),
+            Self::Cancelled => super::super::Error::Cancelled,
             Self::Interrupted(message) => super::super::Error::Interrupted(message),
             Self::Invalid(message) => super::super::Error::Invalid(message),
         }

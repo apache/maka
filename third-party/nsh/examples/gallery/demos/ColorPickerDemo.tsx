@@ -1,259 +1,132 @@
-import { type JSX, signal, Text, View } from "nsh";
-import { type ColorChannel, ColorArea, ColorEyeDropper, ColorField, ColorPicker, ColorSlider, type ColorSpace, ColorSwatch } from "nsh/base";
-import { platform } from "nsh";
-import { Card, colors, DemoPage, focusRing, Icon, mono, Segmented, TERMINAL_COLUMN, TERMINAL_ROW, terminal } from "../ui";
+import { Image, type InputStyle, type JSX, signal, Text, View } from "nsh";
+import { type ColorChannel, ColorField, type ColorFormat, ColorPicker, ColorSlider, ColorSwatch } from "nsh/base";
+import { Card, colorChecker, ColorPanel, ColorPopover, colorSliderLook, colors, DemoPage, density, Inset, inputLook, LastEvent, mono, photoUrl, TERMINAL_COLUMN, TERMINAL_ROW, terminal } from "../ui";
 
 // `nsh/base`'s `ColorPicker` holds the color and its parts read and change
-// it; the layout and every look are the app's. A color picked on the
-// saturation and brightness area, the hue and alpha sliders under it, then
-// the channels of the space the user picks, each a slider and its number;
-// the whole color typed in any CSS form; a palette of swatches. The second
-// card adjusts a theme token in OKLCH, a row per channel. In a terminal
-// every slider is one row of its colors (the picker's terminal form, so no
-// track or thumb looks), the numbers a column at the end of their rows, the
-// whole color on a row of its own under the sliders, swatches two Cells
-// wide.
+// it; the layout and every look are the app's, here the gallery's shared
+// ones (`look/color.tsx`), arranged as ReUI's color picker: a picker in
+// place with the opacity and preset swatches; a labelled field whose
+// outline trigger opens the picker in a popover; a banner's overlay, its
+// opacity included, written as rgb(); and a theme token adjusted in OKLCH,
+// a row per channel.
 
-const pointer = platform.desktop;
-const thumb = "rounded-full border-2 border-white";
-const thumbStyle = { boxShadow: "0 0 0 1px rgba(0,0,0,0.25), 0 1px 3px rgba(0,0,0,0.3)" };
+const SWATCHES = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899"];
 
-/** The channels of each space, as the sliders' labels name them. */
-const spaces: Record<ColorSpace, { channel: ColorChannel; label: string }[]> = {
-  rgb: [
-    { channel: "red", label: "R" },
-    { channel: "green", label: "G" },
-    { channel: "blue", label: "B" },
-  ],
-  hsl: [
-    { channel: "hue", label: "H" },
-    { channel: "saturation", label: "S" },
-    { channel: "lightness", label: "L" },
-  ],
-  hsb: [
-    { channel: "hue", label: "H" },
-    { channel: "saturation", label: "S" },
-    { channel: "brightness", label: "B" },
-  ],
-  oklch: [
-    { channel: "lightness", label: "L" },
-    { channel: "chroma", label: "C" },
-    { channel: "hue", label: "H" },
-  ],
-};
-
-const palette = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899", "#0f172a80"];
+/** A field's label over it and its description under it, as the form's fields have them. */
+function Labelled(props: { label: string; description: string; children: JSX.Element }) {
+  return (
+    <View style={{ gap: terminal ? 0 : 6 }}>
+      <Text style={{ fontSize: 13, fontWeight: "500", color: colors.text }}>{props.label}</Text>
+      {props.children}
+      <Text style={{ fontSize: density.note, color: colors.muted }}>{props.description}</Text>
+    </View>
+  );
+}
 
 /** A channel's letter: two Cells in a terminal, then a Cell before the slider. */
 const LABEL = terminal ? 2 * TERMINAL_COLUMN : 14;
 
-/** In a terminal, what starts where the sliders do: after a blank as wide as
- * a channel's letter and the Cell after it (a terminal's margins come in
- * steps of Cells, so the blank is a box, as the letter is). */
-function UnderSliders(props: { children: JSX.Element }) {
-  return terminal ? (
-    <View style={{ flexDirection: "row", gap: TERMINAL_COLUMN }}>
-      <View style={{ width: LABEL, height: TERMINAL_ROW }} />
-      <View style={{ flex: 1 }}>{props.children}</View>
-    </View>
-  ) : (
-    props.children
-  );
+/** `inputLook`'s class and style for a `ColorField` (its edge's states are classes), read where they are drawn so they follow the theme. */
+function fieldOf(style: InputStyle) {
+  const look = inputLook({ style });
+  return {
+    get class() {
+      return look.class;
+    },
+    get style() {
+      return look.style;
+    },
+  };
 }
 
-/** A track and its thumb, `h` points high; half a thumb free at each end
- * keeps the thumb inside the slider, where it takes presses. A terminal's
- * slider is one row of its colors: no looks of the parts. */
-const track = (h: number) => (terminal ? {} : {
-  class: `h-[${h + 8}px] justify-center px-[${(h + 6) / 2}px]`,
-  trackClass: `h-[${h}px] rounded-full`,
-  thumbClass: `w-[${h + 6}px] h-[${h + 6}px] ${thumb}`,
-  thumbStyle,
-  fillThumb: true,
-});
-
-/** A number's field: a terminal's is the number alone, right-aligned in six
- * Cells on its slider's row (five for `262.9`, one for the caret). */
-const fieldStyle = terminal
-  ? { width: 6 * TERMINAL_COLUMN, height: TERMINAL_ROW }
-  : {
-      width: 64,
-      height: 28,
-      paddingHorizontal: 8,
-      borderRadius: 6,
-      borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.field,
-    };
+/** A number's field: the form's text field, 64 wide, the number right-aligned in tabular figures; a terminal's is the number alone in six Cells. */
+const channelField = () =>
+  terminal
+    ? { style: { width: 6 * TERMINAL_COLUMN, height: TERMINAL_ROW }, class: "text-[13px] text-right text-foreground" }
+    : fieldOf({ width: 64, paddingHorizontal: 8, textAlign: "right", fontVariant: ["tabular-nums"] });
 
 /** A channel's row: its letter, its slider, its number. */
-function Channel(props: { space: ColorSpace; channel: ColorChannel; label: string; name: string }) {
+function Channel(props: { channel: ColorChannel; label: string; name: string }) {
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: terminal ? TERMINAL_COLUMN : 10 }}>
-      <Text style={{ width: LABEL, fontSize: 13, color: colors.muted, fontFamily: mono }}>{props.label}</Text>
-      <ColorSlider
-        colorSpace={props.space}
-        channel={props.channel}
-        accessibilityLabel={props.name}
-        style={{ flex: 1 }}
-        {...track(10)}
-      />
-      <ColorField
-        colorSpace={props.space}
-        channel={props.channel}
-        accessibilityLabel={`${props.name} value`}
-        style={fieldStyle}
-        class="text-[13px] font-mono text-right text-foreground"
-        focusStyle={focusRing()}
-      />
+      <Text style={{ width: LABEL, fontSize: 13, color: colors.muted }}>{props.label}</Text>
+      <ColorSlider colorSpace="oklch" channel={props.channel} accessibilityLabel={props.name} {...colorSliderLook({ style: { flex: 1 } })} />
+      <ColorField colorSpace="oklch" channel={props.channel} accessibilityLabel={`${props.name} value`} {...channelField()} />
     </View>
   );
 }
 
-const names: Record<ColorChannel, string> = {
-  red: "Red",
-  green: "Green",
-  blue: "Blue",
-  hue: "Hue",
-  saturation: "Saturation",
-  lightness: "Lightness",
-  brightness: "Brightness",
-  chroma: "Chroma",
-  alpha: "Alpha",
-};
-
 export function ColorPickerDemo() {
-  const color = signal("#3b82f6ff");
-  const text = signal("#3b82f6");
-  const space = signal<ColorSpace>("hsb");
-  const primary = signal("oklch(54.6% 0.215 262.9)");
   const last = signal("—");
 
-  function Picker() {
+  function Fill() {
+    const color = signal("#6366f1ff");
+    const format = signal<ColorFormat>("hex");
     return (
-      <Card icon="styles" title="ColorPicker" subtitle="An area, sliders of any space, a field and swatches">
+      <Card icon="styles" title="Fill color" subtitle="In place: opacity, the format's fields and presets">
         <ColorPicker
           value={color()}
-          onChange={({ value, formatted }) => {
-            color.set(value);
-            text.set(formatted);
-          }}
+          format={format()}
+          onChange={({ value }) => color.set(value)}
           onChangeEnd={({ formatted }) => last.set(`Picked ${formatted}`)}
-          style={{ gap: terminal ? TERMINAL_ROW : 12 }}
         >
-          {terminal ? (
-            // Eight rows of Cells across the card.
-            <ColorArea accessibilityLabel="Saturation and brightness" style={{ height: 8 * TERMINAL_ROW }} />
-          ) : (
-            <ColorArea
-              accessibilityLabel="Saturation and brightness"
-              style={{ height: pointer ? 160 : 200 }}
-              panelClass="rounded-lg"
-              thumbClass={`w-[18px] h-[18px] ${thumb}`}
-              thumbStyle={thumbStyle}
-              fillThumb
-            />
-          )}
-          {/* In a terminal the swatch stretches to the two sliders' rows beside it. */}
-          <View style={{ flexDirection: "row", alignItems: terminal ? "stretch" : "center", gap: terminal ? TERMINAL_COLUMN : 12 }}>
-            <ColorSwatch
-              accessibilityLabel="Current color"
-              style={
-                terminal
-                  ? { width: LABEL }
-                  : { width: 36, height: 36, borderRadius: 18, borderWidth: 1, borderColor: colors.border }
-              }
-              checkerboardColor="#d4d4d8"
-            />
-            <View style={{ flex: 1, gap: terminal ? 0 : 8 }}>
-              <ColorSlider colorSpace="hsb" channel="hue" accessibilityLabel="Hue" {...track(12)} />
-              <ColorSlider testID="alpha" channel="alpha" accessibilityLabel="Alpha" checkerboardColor="#d4d4d8" {...track(12)} />
-            </View>
-          </View>
-          {/* A terminal's tabs as wide as their words, over the sliders' column. */}
-          <UnderSliders>
-            <View style={{ alignItems: terminal ? "flex-start" : "stretch" }}>
-              <Segmented
-                options={[
-                  { value: "rgb", label: "RGB" },
-                  { value: "hsl", label: "HSL" },
-                  { value: "hsb", label: "HSB" },
-                  { value: "oklch", label: "OKLCH" },
-                ]}
-                value={space()}
-                onChange={(next) => space.set(next)}
-                fill
-              />
-            </View>
-          </UnderSliders>
-          {() =>
-            spaces[space()].map((c) => (
-              <Channel space={space()} channel={c.channel} label={c.label} name={`${space().toUpperCase()} ${names[c.channel]}`} />
-            ))
-          }
-          <UnderSliders>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <ColorField
-                accessibilityLabel="Color"
-                placeholder="#rrggbb, rgb(), hsl(), oklch() or a name"
-                style={
-                  terminal
-                    ? { flex: 1, height: TERMINAL_ROW }
-                    : {
-                        flex: 1,
-                        height: 32,
-                        paddingHorizontal: 10,
-                        borderRadius: 6,
-                        borderWidth: 1,
-                        borderColor: colors.border,
-                        backgroundColor: colors.field,
-                      }
-                }
-                class="text-[13px] font-mono text-foreground"
-                focusStyle={focusRing()}
-              />
-              {/* The system's eyedropper (macOS, browsers with one); hidden where there is none. */}
-              <ColorEyeDropper
-                accessibilityLabel="Pick a color from the screen"
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 6,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                  backgroundColor: colors.field,
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-                class="disabled:hidden active:opacity-70"
-              >
-                <Icon name="pipette" size={16} tint={colors.text} />
-              </ColorEyeDropper>
-            </View>
-          </UnderSliders>
-          <UnderSliders>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-              {palette.map((c) => (
-                <ColorSwatch
-                  color={c}
-                  // Two Cells by one row in a terminal, a Cell apart.
-                  style={terminal ? { width: 2 * TERMINAL_COLUMN, height: TERMINAL_ROW } : { width: 24, height: 24, borderRadius: 6, borderWidth: 1, borderColor: colors.border }}
-                  selectedStyle={terminal ? undefined : { borderWidth: 2, borderColor: colors.text }}
-                  checkerboardColor="#d4d4d8"
-                  checkerboardSize={6}
-                />
-              ))}
-            </View>
-          </UnderSliders>
+          <ColorPanel name="Fill color" value={color()} format={format()} onFormatChange={(f) => format.set(f)} alpha swatches={SWATCHES} />
         </ColorPicker>
-        <UnderSliders>
-          <Text style={{ fontSize: 13, color: colors.muted, fontFamily: mono }}>{text()}</Text>
-        </UnderSliders>
+      </Card>
+    );
+  }
+
+  function Accent() {
+    const color = signal("#0ea5e9ff");
+    const format = signal<ColorFormat>("hex");
+    return (
+      <Card icon="styles" title="Accent color" subtitle="A field whose trigger opens the picker">
+        <Labelled label="Accent color" description="Used for links, focus rings and primary buttons.">
+          <ColorPopover
+            name="Accent color"
+            value={color()}
+            format={format()}
+            onChange={(v) => color.set(v)}
+            onFormatChange={(f) => format.set(f)}
+            onChangeEnd={(formatted) => last.set(`Accent ${formatted}`)}
+          />
+        </Labelled>
+      </Card>
+    );
+  }
+
+  function Banner() {
+    // rgb(15 23 42 / 0.55): slate at 55%.
+    const overlay = signal("#0f172a8c");
+    const format = signal<ColorFormat>("rgb");
+    return (
+      <Card icon="styles" title="Banner overlay" subtitle="Its opacity too, written as rgb()" flush>
+        {/* The artwork under the overlay the picker sets: the headline stays readable as it darkens. */}
+        <View style={{ height: terminal ? 6 * TERMINAL_ROW : 160, justifyContent: "flex-end", padding: terminal ? 0 : 20, backgroundColor: colors.raised }}>
+          <Image src={photoUrl("sunrise")} style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, objectFit: "cover" }} />
+          <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: overlay() }} />
+          <Text style={{ fontSize: 11, fontWeight: "600", letterSpacing: 0.6, color: "white", opacity: 0.8 }}>NEW SEASON</Text>
+          <Text style={{ fontSize: 18, fontWeight: "600", color: "white" }}>Spring collection</Text>
+        </View>
+        <Inset>
+          <Labelled label="Banner overlay" description="Darken the artwork so the headline stays readable.">
+            <ColorPopover
+              name="Banner overlay"
+              value={overlay()}
+              format={format()}
+              alpha
+              onChange={(v) => overlay.set(v)}
+              onFormatChange={(f) => format.set(f)}
+              onChangeEnd={(formatted) => last.set(`Overlay ${formatted}`)}
+            />
+          </Labelled>
+        </Inset>
       </Card>
     );
   }
 
   function Token() {
+    const primary = signal("oklch(54.6% 0.215 262.9)");
     return (
       <Card icon="styles" title="Primary color" subtitle="A theme token adjusted in OKLCH">
         <ColorPicker
@@ -264,12 +137,17 @@ export function ColorPickerDemo() {
           style={{ gap: terminal ? 0 : 10 }}
         >
           <View style={{ flexDirection: "row", alignItems: "center", gap: terminal ? TERMINAL_COLUMN : 10, marginBottom: terminal ? TERMINAL_ROW : 0 }}>
-            <ColorSwatch accessibilityLabel="Primary" style={terminal ? { width: LABEL, height: TERMINAL_ROW } : { width: 28, height: 28, borderRadius: 6 }} />
+            <ColorSwatch
+              accessibilityLabel="Primary"
+              class={terminal ? undefined : "border border-foreground/10"}
+              style={terminal ? { width: LABEL, height: TERMINAL_ROW } : { width: 28, height: 28, borderRadius: 6 }}
+              {...colorChecker()}
+            />
             <Text style={{ flex: 1, fontSize: 13, color: colors.text, fontFamily: mono }}>{`--primary: ${primary()}`}</Text>
           </View>
-          {spaces.oklch.map((c) => (
-            <Channel space="oklch" channel={c.channel} label={c.label} name={`Primary ${names[c.channel]}`} />
-          ))}
+          <Channel channel="lightness" label="L" name="Primary Lightness" />
+          <Channel channel="chroma" label="C" name="Primary Chroma" />
+          <Channel channel="hue" label="H" name="Primary Hue" />
         </ColorPicker>
       </Card>
     );
@@ -278,10 +156,10 @@ export function ColorPickerDemo() {
   function Last() {
     return (
       <Card icon="system" title="Last event">
-        <Text style={{ fontSize: 13, color: colors.text, fontFamily: mono }}>{last()}</Text>
+        <LastEvent value={last()} hint="Pick a color" />
       </Card>
     );
   }
 
-  return <DemoPage cards={[Picker, Token, Last]} />;
+  return <DemoPage cards={[Fill, Accent, Banner, Token, Last]} />;
 }

@@ -3,7 +3,8 @@
 // a pick is a promise, which never throws: options out of range reject it
 // with a `RangeError`, and a pick the app may make waits for the user
 // (pending there; a picker the user cancels resolves it with no images).
-// `pickFiles` behaves the same. Its script checks each.
+// `pickFiles` behaves the same, `maxSize` (bytes) out of range rejecting it
+// too. Its script checks each.
 import { Text, View, signal } from "nsh";
 import { Picker, type PickedFile, type PickedImage } from "nsh";
 
@@ -12,12 +13,14 @@ function App() {
   const refused = signal("none");
   const files = signal("not picked");
   const filesRefused = signal("none");
+  const sizeRefused = signal("none");
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
       <Text>{`Picked: ${result()}`}</Text>
       <Text>{`Refused: ${refused()}`}</Text>
       <Text>{`Files: ${files()}`}</Text>
       <Text>{`Files refused: ${filesRefused()}`}</Text>
+      <Text>{`Size refused: ${sizeRefused()}`}</Text>
       <View
         testID="pick"
         onPress={() => {
@@ -40,14 +43,20 @@ function App() {
         testID="pick-files"
         onPress={() => {
           Picker.pickFiles({ multiple: true, limit: 0 }).catch((e: Error) => filesRefused.set(`rejected ${e.name}`));
+          Picker.pickFiles({ maxSize: -1 }).catch((e: Error) => sizeRefused.set(`rejected ${e.name}`));
           const pick = Picker.pickFiles({
             multiple: true,
             limit: 4,
             filters: [{ name: "Documents", extensions: ["pdf", "md"] }],
+            maxSize: 10 * 1024 * 1024,
           });
           files.set(typeof pick.then === "function" ? "pending" : "not a promise");
           pick.then(
-            (picked: PickedFile[]) => files.set(`${picked.length} files`),
+            (picked: PickedFile[]) => {
+              // A file past `maxSize` comes unread: its name and size only.
+              const unread = picked.filter((p) => p.status === "tooLarge" && p.file === null);
+              files.set(`${picked.length} files, ${unread.map((p) => `${p.name} ${p.type} ${p.size}`).join(", ")}`);
+            },
             (e) => files.set(`failed: ${e}`),
           );
         }}

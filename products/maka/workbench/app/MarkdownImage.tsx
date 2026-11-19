@@ -27,9 +27,7 @@ import { createText, errorText, UiError } from './text';
 import { tr } from './locale';
 import { C, captionTextStyle, controlFocusStyle } from './ui';
 
-type Reading = { stream: Awaited<ReturnType<typeof openFile>> | null };
-const openFile = (host: Host, sessionId: string, path: { bytesBase64: string }) =>
-  host.readFile({ sessionId, path });
+type Reading = { stream: Awaited<ReturnType<Host['readFile']>> | null };
 const close = async (reading: Reading | null) => {
   const stream = reading?.stream;
   if (reading) reading.stream = null;
@@ -67,12 +65,13 @@ export function MarkdownImageView(props: {
     void (async () => {
       await close(previous);
       if (!owns() || reading !== request) return;
-      const selected = host.markdownImageSource(target);
-      if (selected.kind === 'remote') {
+      const selected = await host.markdownSource(sessionId, target);
+      if (!owns() || reading !== request) return;
+      if (selected.kind !== 'disk') {
         source.set({ uri: selected.uri });
         return;
       }
-      const stream = await openFile(host, sessionId, selected.path);
+      const stream = await host.readFile({ sessionId, path: selected.path });
       if (!owns() || reading !== request) {
         await stream.close();
         return;
@@ -92,7 +91,7 @@ export function MarkdownImageView(props: {
         await close(request);
       }
     })().catch((reason) => {
-      if (owns() && reading === request) error.set(errorText(reason));
+      if (owns() && reading === request) error.set(errorText(reason, 'Image unavailable'));
     });
   };
   cleanup(() => {
@@ -153,7 +152,7 @@ export function MarkdownImageView(props: {
         <Text style={{ ...captionTextStyle, color: error() ? C.danger : C.muted }}>
           {name()}
           {' · '}
-          {error() ? `${tr('Image unavailable')}: ${error()}` : tr('Loading image…')}
+          {error() ? error() : tr('Loading image…')}
         </Text>
       </If>
       <If when={error() && !props.linked}>

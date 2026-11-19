@@ -9,28 +9,32 @@ use block2::RcBlock;
 use dispatch2::{DispatchQueue, MainThreadBound};
 use nsh_core::{MountBatch, Points, Size};
 use nsh_engine::{
-    App, ColorScheme, Edges, Engine, EngineConfig, Environment, Idiom, Lifecycle, MountSink, Policy,
+    App, ColorScheme, Edges, Engine, EngineConfig, Environment, Idiom, Lifecycle, MainThreadTask,
+    MountSink, Policy,
 };
 use objc2::{
     DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
     rc::{Retained, Weak},
-    runtime::{AnyObject, ProtocolObject},
+    runtime::ProtocolObject,
 };
 use objc2_core_foundation::{CGRect, CGSize};
 use objc2_foundation::{
     NSCurrentLocaleDidChangeNotification, NSNotification, NSNotificationCenter, NSNumber, NSObject,
-    NSObjectProtocol, NSOperationQueue, NSSystemTimeZoneDidChangeNotification, NSTimeZone, NSValue,
+    NSObjectProtocol, NSOperationQueue, NSSet, NSSystemTimeZoneDidChangeNotification, NSTimeZone,
+    NSValue,
 };
 use objc2_ui_kit::{
     NSValueUIGeometryExtensions, UIApplication, UIApplicationDidBecomeActiveNotification,
     UIApplicationDidEnterBackgroundNotification, UIApplicationState,
     UIApplicationWillEnterForegroundNotification, UIApplicationWillResignActiveNotification,
-    UIDevice, UIFont, UIFontTextStyleBody, UIKeyboardAnimationCurveUserInfoKey,
-    UIKeyboardAnimationDurationUserInfoKey, UIKeyboardFrameEndUserInfoKey,
-    UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIResponder,
-    UISceneActivationState, UISceneDidActivateNotification, UISceneDidEnterBackgroundNotification,
+    UIDevice, UIFocusAnimationCoordinator, UIFocusUpdateContext, UIFont, UIFontTextStyleBody,
+    UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
+    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification,
+    UIKeyboardWillHideNotification, UIPress, UIPressesEvent, UIResponder, UISceneActivationState,
+    UISceneDidActivateNotification, UISceneDidEnterBackgroundNotification,
     UISceneWillDeactivateNotification, UISceneWillEnterForegroundNotification, UITraitCollection,
-    UITraitEnvironment, UIUserInterfaceIdiom, UIUserInterfaceStyle, UIView, UIWindowScene,
+    UITraitEnvironment, UIUserInterfaceIdiom, UIUserInterfaceStyle, UIView, UIViewLayoutRegion,
+    UIViewLayoutRegionAdaptivityAxis, UIWindowScene,
 };
 
 use crate::{
@@ -80,6 +84,11 @@ impl MountSink for MainThreadSink {
                 mounter.request_frame();
             }
         });
+    }
+
+    fn run_on_main_thread(&self, task: MainThreadTask) {
+        // The main queue is serial: after the batches submitted before it.
+        DispatchQueue::main().exec_async(move || task.run());
     }
 
     fn hot_update_failed(&self) {
@@ -142,6 +151,9 @@ pub(crate) struct RootViewIvars {
     observers: RefCell<Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>>,
     /// Links that came before the engine started ([`Surface::url_scheme`]).
     url_schemes: RefCell<Vec<String>>,
+    /// Whether scroll views make their content's views only near their
+    /// viewport ([`Surface::set_content_culling`]).
+    content_culling: Cell<bool>,
     #[cfg(feature = "dev")]
     test_model: TestModel,
 }
@@ -160,7 +172,17 @@ define_class!(
             // SAFETY: calling the superclass implementation.
             let _: () = unsafe { msg_send![super(self), layoutSubviews] };
             let size = self.bounds().size;
-            if size.width <= 0.0 || size.height <= 0.0 || size == self.ivars().size.get() {
+            if size.width <= 0.0 || size.height <= 0.0 {
+                return;
+            }
+            if size == self.ivars().size.get() {
+                // UIKit updates the layout regions as it lays the view
+                // out: publish when they moved the safe area without a
+                // resize.
+                let published = self.ivars().environment.get().map(|env| env.safe_area);
+                if published.is_some_and(|safe| safe != self.safe_area()) {
+                    self.publish_environment();
+                }
                 return;
             }
             self.ivars().size.set(size);
@@ -205,6 +227,10 @@ define_class!(
             let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
             // Another window may be another scene, in another state.
             self.ivars().lifecycle.set(self.scene_state());
+            // Keys held through a window move lose their releases.
+            if let Some(target) = self.target() {
+                target.keyboard().clear();
+            }
             self.publish_environment();
             let Some(mounter) = self
                 .ivars()
@@ -254,13 +280,23 @@ define_class!(
             });
         }
 
+        /// The root owns the keyboard until a view or input takes it: a
+        /// hardware key with nothing focused reaches the surface (Tab then
+        /// moves to the first stop) instead of going to no responder.
+        #[unsafe(method(canBecomeFirstResponder))]
+        fn can_become_first_responder(&self) -> bool {
+            true
+        }
+
         /// Hardware keys no responder inside handled: the app's shortcuts
-        /// (`nsh/keymap`) take those they bind.
+        /// (`nsh/keymap`) take those they bind, then Tab with no focused
+        /// view moves to the first stop ([`crate::keyboard::root_tab`]).
         #[unsafe(method(pressesBegan:withEvent:))]
-        fn presses_began(&self, presses: &AnyObject, event: Option<&AnyObject>) {
-            let consumed = self
-                .target()
-                .is_some_and(|target| crate::keymap::root_began(&target, presses));
+        fn presses_began(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            let consumed = self.target().is_some_and(|target| {
+                crate::keymap::root_began(&target, presses)
+                    || crate::keyboard::root_tab(self, &target, presses)
+            });
             if !consumed {
                 // SAFETY: calling the superclass implementation.
                 let _: () = unsafe { msg_send![super(self), pressesBegan: presses, withEvent: event] };
@@ -268,7 +304,7 @@ define_class!(
         }
 
         #[unsafe(method(pressesEnded:withEvent:))]
-        fn presses_ended(&self, presses: &AnyObject, event: Option<&AnyObject>) {
+        fn presses_ended(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
             let consumed = self
                 .target()
                 .is_some_and(|target| crate::keymap::ended(&target, presses));
@@ -279,7 +315,7 @@ define_class!(
         }
 
         #[unsafe(method(pressesCancelled:withEvent:))]
-        fn presses_cancelled(&self, presses: &AnyObject, event: Option<&AnyObject>) {
+        fn presses_cancelled(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
             let consumed = self
                 .target()
                 .is_some_and(|target| crate::keymap::ended(&target, presses));
@@ -288,6 +324,29 @@ define_class!(
                 let _: () =
                     unsafe { msg_send![super(self), pressesCancelled: presses, withEvent: event] };
             }
+        }
+
+        /// UIKit's focus engine moved focus (its hardware Tab traversal
+        /// from the window's initial focus, or a request made after a
+        /// responder change): the focused focusable view becomes the first
+        /// responder, so it hears hardware keys. Inputs follow too; an
+        /// embedded native component keeps its own controls' behavior.
+        #[allow(deprecated)]
+        #[unsafe(method(didUpdateFocusInContext:withAnimationCoordinator:))]
+        fn did_update_focus(
+            &self,
+            context: &UIFocusUpdateContext,
+            coordinator: &UIFocusAnimationCoordinator,
+        ) {
+            // SAFETY: calling the superclass implementation.
+            let _: () = unsafe {
+                msg_send![
+                    super(self),
+                    didUpdateFocusInContext: context,
+                    withAnimationCoordinator: coordinator
+                ]
+            };
+            crate::keyboard::adopt_focus(context);
         }
     }
 );
@@ -299,6 +358,7 @@ impl RootView {
         app: App,
         options: SurfaceOptions,
     ) -> Retained<Self> {
+        let content_culling = options.content_culling;
         let this = Self::alloc(mtm).set_ivars(RootViewIvars {
             pending: RefCell::new(Some(app)),
             running: RefCell::new(None),
@@ -314,6 +374,7 @@ impl RootView {
             fonts: RefCell::new(Vec::new()),
             observers: RefCell::new(Vec::new()),
             url_schemes: RefCell::new(Vec::new()),
+            content_culling: Cell::new(content_culling),
             #[cfg(feature = "dev")]
             test_model: TestModel::default(),
         });
@@ -333,28 +394,64 @@ impl RootView {
         mounter.as_ref().map(|m| m.target().clone())
     }
 
+    /// The surface's safe area (`safe_area()`): UIKit's, and from iOS 26
+    /// on the corner a windowed iPad app's window controls cover, as an
+    /// inset of the whole leading edge. That inset comes from the safe-area
+    /// layout region adapted horizontally to the corners, which also pads
+    /// both sides alike for the display's rounded corners (9pt on an iPad
+    /// Pro 11-inch in full screen): only a side the region insets further
+    /// than the other, where the window controls are, takes it, so full
+    /// screen and iPhone keep the plain safe area.
+    fn safe_area(&self) -> Edges<Points> {
+        let mut insets = self.safeAreaInsets();
+        if os_version(self.mtm()).0 >= 26 {
+            let region = UIViewLayoutRegion::safeAreaLayoutRegionWithCornerAdaptation(
+                UIViewLayoutRegionAdaptivityAxis::Horizontal,
+            );
+            let corner = self.edgeInsetsForLayoutRegion(&region);
+            if corner.left > corner.right {
+                insets.left = insets.left.max(corner.left);
+            } else if corner.right > corner.left {
+                insets.right = insets.right.max(corner.right);
+            }
+        }
+        Edges {
+            top: Points(insets.top as f32),
+            right: Points(insets.right as f32),
+            bottom: Points(insets.bottom as f32),
+            left: Points(insets.left as f32),
+        }
+    }
+
     /// What JS sees through `windowSize()`, `safeArea()`, `keyboard()`...
     fn environment(&self) -> Environment {
         let size = self.bounds().size;
-        let insets = self.safeAreaInsets();
         let (keyboard_height, keyboard_duration) = self.ivars().keyboard.get();
         // SAFETY: plain getters.
-        let (style, body, scale) = unsafe {
+        let (style, body, scale, horizontal, vertical) = unsafe {
             let traits = self.traitCollection();
             (
                 traits.userInterfaceStyle(),
                 UIFont::preferredFontForTextStyle(UIFontTextStyleBody).pointSize(),
                 traits.displayScale(),
+                traits.horizontalSizeClass(),
+                traits.verticalSizeClass(),
             )
         };
+        let size_class = |value| match value {
+            objc2_ui_kit::UIUserInterfaceSizeClass::Compact => {
+                Some(nsh_core::platform::SizeClass::Compact)
+            }
+            objc2_ui_kit::UIUserInterfaceSizeClass::Regular => {
+                Some(nsh_core::platform::SizeClass::Regular)
+            }
+            _ => None,
+        };
         let mut env = Environment {
+            horizontal_size_class: size_class(horizontal),
+            vertical_size_class: size_class(vertical),
             window: Size::new(Points(size.width as f32), Points(size.height as f32)),
-            safe_area: Edges {
-                top: Points(insets.top as f32),
-                right: Points(insets.right as f32),
-                bottom: Points(insets.bottom as f32),
-                left: Points(insets.left as f32),
-            },
+            safe_area: self.safe_area(),
             // UIKit draws no title bar an app could hide.
             title_bar: Edges::default(),
             keyboard_height: Points(keyboard_height),
@@ -383,17 +480,31 @@ impl RootView {
             lifecycle: self.ivars().lifecycle.get(),
             // Only read for the web: iOS keys are always Apple's.
             apple_keyboard: true,
+            file_requests: true,
             // No host answers `nsh/host` here: an embedding app talks to its
             // apps through its own UI sets (`nsh/native`).
             host: false,
             // UIKit has no screen color sampler.
             screen_color: false,
+            // Drawings replayed into Core Graphics bitmaps
+            // ([`crate::canvas::Offscreen`]).
+            canvas_render: true,
+            // `UIActivityViewController` (`crate::share`).
+            share: true,
+            // `ASWebAuthenticationSession` (`crate::auth_session`).
+            auth_session: true,
             // The Speech framework fed by the microphone.
             speech: true,
             // The notification center.
             notifications: true,
             // AVAudioEngine and AVPlayer.
             audio: true,
+            web_evaluate: true,
+            // Download decisions and cancellations reach the web view
+            // (`nsh_platform_apple::web_download`).
+            webview_requests: true,
+            // wgpu on Metal, in builds with it, until it finds no GPU.
+            shaders: nsh_engine::shader::LINKED,
             // No file dialogs, file manager or trash (Catalyst included):
             // the default, so the core answers those requests.
             ..Environment::default()
@@ -510,6 +621,13 @@ impl RootView {
             };
             if ours {
                 view.ivars().lifecycle.set(state);
+                // The keys held in a surface that stopped taking input lose
+                // their releases; forget them without inventing one.
+                if state != Lifecycle::Active
+                    && let Some(target) = view.target()
+                {
+                    target.keyboard().clear();
+                }
                 view.publish_environment();
             }
         });
@@ -739,6 +857,7 @@ impl RootView {
             app,
             viewport,
             trace: self.ivars().options.trace,
+            content_culling: self.ivars().content_culling.get(),
             network: Some(crate::net::network()),
             websocket: None,
             refuse_connections: None,
@@ -751,8 +870,9 @@ impl RootView {
             header_heights: header_heights(mtm),
             limits: self.ivars().options.limits,
             ui_sets: crate::ui_sets(),
-            runtime: None,
-            data_dir: self.ivars().options.data_dir.clone(),
+            runtime: self.ivars().options.runtime.clone(),
+            support_dir: self.ivars().options.support_dir.clone(),
+            data_dir: None,
             cache: system_cache(self.ivars().options.cache.clone()),
             storage: self.ivars().options.storage.as_ref().map(|dir| {
                 nsh_engine::FileStorage::open(dir) as Arc<dyn nsh_engine::StorageBackend>
@@ -766,6 +886,7 @@ impl RootView {
             speech: None,
             audio: None,
             windows: None,
+            login_item: None,
         };
         // A test session's app: the test's storage, network and trace.
         #[cfg(feature = "dev")]
@@ -784,8 +905,11 @@ impl RootView {
             #[cfg(feature = "dev")]
             test_model: self.ivars().test_model.clone(),
         };
-        // The embedding app's theme overrides are in the first frame.
+        // The embedding app's theme overrides are in the first frame, and
+        // the links that came before are the app's address when its code
+        // first runs (`UrlScheme.url()`).
         let tokens = self.ivars().host_tokens.borrow().clone();
+        let links = std::mem::take(&mut *self.ivars().url_schemes.borrow_mut());
         let fonts = self.ivars().fonts.borrow().clone();
         let engine = match Engine::start_with(config, CoreTextEngine::default, sink, |control| {
             if tokens.is_some() {
@@ -793,6 +917,9 @@ impl RootView {
             }
             for font in fonts {
                 control.register_font(font);
+            }
+            for url in links {
+                send_url_scheme(control, url);
             }
         }) {
             Ok(engine) => engine,
@@ -821,18 +948,25 @@ impl RootView {
             access,
             self.ivars().options.components.clone(),
         );
+        installed.watch_scrolls(self.ivars().options.scroll_watchers.clone());
+        if self.ivars().options.handoff {
+            installed.hand_off();
+        }
         // The app's downloaded images go through its disk cache.
         installed.set_image_cache(engine.image_cache());
         if self.ivars().options.fps || nsh_engine::perf::enabled_by_env() {
             installed.measure();
         }
         *mounter.get(mtm).borrow_mut() = Some(installed);
-        let links = std::mem::take(&mut *self.ivars().url_schemes.borrow_mut());
-        for url in links {
-            send_url_scheme(&engine.control(), url);
-        }
         *self.ivars().running.borrow_mut() = Some(Running { engine, mounter });
         self.ivars().environment.set(Some(self.environment()));
+        // Take hardware keys only if the host has no focused responder.
+        // Defer so an autoFocus input mounted this turn keeps its focus.
+        if let Some(target) = self.target()
+            && let Some(window) = self.window()
+        {
+            target.restore_root_focus(Retained::into_super(self.retain()), window);
+        }
     }
 
     /// Stops the engine and removes all native views.
@@ -862,6 +996,7 @@ fn header_heights(mtm: MainThreadMarker) -> (Points, Points) {
 
 /// Options of a [`Surface`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SurfaceOptions {
     /// Log per-commit timings.
     pub trace: bool,
@@ -869,16 +1004,20 @@ pub struct SurfaceOptions {
     pub asset_base: Option<AssetBase>,
     /// The VM limits of the apps it runs.
     pub limits: nsh_engine::Limits,
+    /// The runtime for async tasks; `None` uses NSH's shared runtime.
+    /// The embedding app owns it and must keep it running until the view
+    /// stops. Dropping the view does not shut the runtime down.
+    pub runtime: Option<tokio::runtime::Handle>,
     /// What the embedding app grants the apps it runs at most (`None`: what
     /// each app declares).
     pub granted: Option<nsh_engine::Capabilities>,
-    /// Where the apps keep their data: each app in `<data_dir>/<app id>`
-    /// ([`nsh_engine::EngineConfig::data_dir`]). Default: `nsh` in the
+    /// Where the apps keep their data: each app in `<support_dir>/<app id>`
+    /// ([`nsh_engine::EngineConfig::support_dir`]). Default: `nsh` in the
     /// app's Application Support; `None`: nothing is kept.
-    pub data_dir: Option<std::path::PathBuf>,
+    pub support_dir: Option<std::path::PathBuf>,
     /// The directory the apps' storage (`nsh/storage`) is kept in
     /// (`storage.json` in it), overriding their own in
-    /// [`SurfaceOptions::data_dir`]; `None`: theirs.
+    /// [`SurfaceOptions::support_dir`]; `None`: theirs.
     pub storage: Option<std::path::PathBuf>,
     /// Where the apps keep their caches (the images they downloaded) and
     /// how much each keeps: by default `nsh` in the app's Caches
@@ -887,13 +1026,27 @@ pub struct SurfaceOptions {
     pub cache: nsh_engine::CacheOptions,
     /// The native components the apps can use (`nsh/native`).
     pub components: crate::component::Components,
+    /// The scroll views the embedding app watches by `nativeID`
+    /// ([`crate::AppView::watch_scroll`]).
+    pub scroll_watchers: crate::ScrollWatchers,
     /// The embedding app's channel with the apps (`nsh/host`): launch
     /// parameters, events and handlers of their calls and posts, one for
     /// every app the surface runs.
     pub host: nsh_engine::HostChannel,
     /// Logs the performance monitor's readings once a second (target
-    /// `nsh::perf`): frame rate, frame and commit costs, CPU, memory.
+    /// `nsh::fps`): frame rate, frame and commit costs, CPU, memory.
     pub fps: bool,
+    /// Gives the app's address (`UrlScheme.setUrl`) to the system as the
+    /// current `NSUserActivity`, so Handoff continues it on the user's other
+    /// devices (`nsh_platform_apple::handoff`). An address that is no web page needs
+    /// `<bundle id>.url` in the app's Info.plist `NSUserActivityTypes`.
+    /// False by default; the release runner sets it when the bundle declares
+    /// that type (`nsh.json` `"handoff": true`).
+    pub handoff: bool,
+    /// Scroll views make the views of their content only near their
+    /// viewport (true, the default), or all of it
+    /// ([`Surface::set_content_culling`]).
+    pub content_culling: bool,
 }
 
 impl Default for SurfaceOptions {
@@ -902,13 +1055,17 @@ impl Default for SurfaceOptions {
             trace: false,
             asset_base: None,
             limits: nsh_engine::Limits::default(),
+            runtime: None,
             granted: None,
-            data_dir: data_dir(),
+            support_dir: support_dir(),
             storage: None,
             cache: nsh_engine::CacheOptions::default(),
             components: crate::component::Components::default(),
+            scroll_watchers: crate::ScrollWatchers::default(),
             host: nsh_engine::HostChannel::default(),
             fps: false,
+            handoff: false,
+            content_culling: true,
         }
     }
 }
@@ -916,8 +1073,8 @@ impl Default for SurfaceOptions {
 /// Where apps NSH runs on iOS keep their data: `nsh` in the (embedding or
 /// standalone) app's Application Support, each app in a directory named by
 /// its id.
-fn data_dir() -> Option<std::path::PathBuf> {
-    nsh_engine::data_dir().map(|dir| dir.join("nsh"))
+fn support_dir() -> Option<std::path::PathBuf> {
+    nsh_engine::support_dir().map(|dir| dir.join("nsh"))
 }
 
 /// `cache` with [`nsh_engine::CacheLocation::System`] made iOS's: `nsh` in
@@ -1062,11 +1219,24 @@ impl Surface {
 
     /// Hands `url`, a link the system opened the app with, to the app's
     /// engine, whose core keeps it until the app listens (`UrlScheme`);
-    /// kept until the engine starts.
+    /// kept until the engine starts, which applies it before the app's code
+    /// first runs.
     pub(crate) fn url_scheme(&self, url: String) {
         match &*self.view.ivars().running.borrow() {
             Some(running) => send_url_scheme(&running.engine.control(), url),
             None => self.view.ivars().url_schemes.borrow_mut().push(url),
+        }
+    }
+
+    /// Whether scroll views make the views of their content only near
+    /// their viewport (the default), or all of it, for the running app and
+    /// the apps started later. Turned off, what is not made yet is made in
+    /// the next frames (to draw a whole scroll view, for a long
+    /// screenshot); turned on again, what is far away is given up.
+    pub fn set_content_culling(&self, enabled: bool) {
+        self.view.ivars().content_culling.set(enabled);
+        if let Some(running) = &*self.view.ivars().running.borrow() {
+            running.engine.control().set_content_culling(enabled);
         }
     }
 

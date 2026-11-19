@@ -25,8 +25,8 @@ pub fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let data_dir = options.data_dir.clone().or_else(nsh_engine::data_dir);
-    let launch = nsh_engine::updates::launch(bundle, &dir, data_dir.as_deref());
+    let support_dir = nsh_engine::support_dir();
+    let launch = nsh_engine::updates::launch(bundle, &dir, support_dir.as_deref());
     options.asset_base = Some(AssetBase::Directory(launch.assets));
     run(AppSource::Bundle(launch.bundle), options)
 }
@@ -41,33 +41,16 @@ pub fn run_rust(root: nsh_platform_linux::Root) -> std::process::ExitCode {
     run(nsh_platform_linux::AppSource::Rust(root), options)
 }
 
-/// Installs the logger and reads the package: its `nsh` directory (next
-/// to the executable, or `NSH_APP_DIR`: `nsh run` of a Rust app) and the
-/// window's options.
+/// Reads the package and installs the logger (unless the app has its
+/// own): its `nsh` directory (next to the executable, or `NSH_APP_DIR`:
+/// `nsh run` of a Rust app) and the window's options.
 #[cfg(target_os = "linux")]
 fn setup() -> Option<(std::path::PathBuf, nsh_platform_linux::AppOptions)> {
     use nsh_platform_linux::{AppOptions, Appearance, AssetBase, Limits};
 
-    struct Logger;
-    impl log::Log for Logger {
-        fn enabled(&self, m: &log::Metadata<'_>) -> bool {
-            m.level() <= log::Level::Warn || m.target() == "js" || DEVELOPMENT.get() == Some(&true)
-        }
-        fn log(&self, r: &log::Record<'_>) {
-            if self.enabled(r.metadata()) {
-                eprintln!("{} {}: {}", r.level(), r.target(), r.args());
-            }
-        }
-        fn flush(&self) {}
-    }
-    static LOGGER: Logger = Logger;
-    /// Run by `nsh run`: the app's own logs go to its terminal too.
-    static DEVELOPMENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // Run by `nsh run`: the app's own logs go to its terminal too.
     let development = std::env::var_os("NSH_APP_DIR");
-    let _ = DEVELOPMENT.set(development.is_some());
-    let _ = log::set_logger(&LOGGER);
-    log::set_max_level(log::LevelFilter::Info);
-
+    let developing = development.is_some();
     // The package directory holds the executable (a symlink to it, say in
     // ~/.local/bin, still finds it).
     let dir = match development {
@@ -82,6 +65,9 @@ fn setup() -> Option<(std::path::PathBuf, nsh_platform_linux::AppOptions)> {
         asset_base: Some(AssetBase::Directory(dir.join("assets"))),
         // An app on its own, not a module embedded in another app.
         limits: Limits::standalone(),
+        // The packaged app's login item: a Rust app `nsh run` runs in
+        // place has none, so it never registers a development build.
+        login_item: !developing,
         ..AppOptions::default()
     };
     let info = std::fs::read_to_string(dir.join("app.json"))
@@ -94,6 +80,11 @@ fn setup() -> Option<(std::path::PathBuf, nsh_platform_linux::AppOptions)> {
     if let Some(id) = field("id") {
         options.app_id = id;
     }
+    // `nsh.json` `"dataDir"`: the app's data directory (its storage, logs
+    // and `${dataDir}`) rather than the one under its id.
+    options.data_dir = field("dataDir")
+        .as_deref()
+        .and_then(nsh_engine::resolve_data_dir);
     if let Some(name) = field("name") {
         options.title = name;
     }
@@ -106,13 +97,43 @@ fn setup() -> Option<(std::path::PathBuf, nsh_platform_linux::AppOptions)> {
             .filter_map(|s| s.as_str().map(str::to_owned))
             .collect();
     }
+    // nsh.json `fileTypes`: the files it opens.
+    options.file_types = info
+        .as_ref()
+        .and_then(|info| info.get("fileTypes"))
+        .map(nsh_platform_linux::file_type::file_types_from_json)
+        .unwrap_or_default();
+    // nsh.json `singleInstance`: a second launch goes to this one.
+    options.single_instance = info
+        .as_ref()
+        .and_then(|info| info.get("singleInstance")?.as_bool())
+        .unwrap_or(false);
     // The window opens in the app's appearance (no flash of the system's).
     match field("appearance").as_deref() {
         Some("light") => options.appearance = Appearance::Light,
         Some("dark") => options.appearance = Appearance::Dark,
         _ => {}
     }
+    install_logger(developing, &options.app_id, options.data_dir.as_deref());
     Some((dir, options))
+}
+
+/// Installs the runners' logger (`nsh_engine::logging`): `RUST_LOG`'s
+/// levels or the default ones, the rolling file in the app's data
+/// directory, and standard error. An app that installed its own logger
+/// (from its native module, which runs first) keeps it, and its level.
+#[cfg(target_os = "linux")]
+fn install_logger(development: bool, app_id: &str, data_dir: Option<&std::path::Path>) {
+    let mut logging = nsh_engine::logging::LogOptions::default();
+    logging.development = development;
+    logging.directory = match data_dir {
+        Some(dir) => Some(dir.join("logs")),
+        None => nsh_engine::logging::log_dir(app_id),
+    };
+    logging.output = Some(Box::new(|r: &log::Record<'_>| {
+        eprintln!("{} {}: {}", r.level(), r.target(), r.args());
+    }));
+    nsh_engine::logging::install(logging);
 }
 
 #[cfg(target_os = "linux")]

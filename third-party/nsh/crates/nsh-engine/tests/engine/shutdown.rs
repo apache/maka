@@ -28,6 +28,7 @@ fn stop_spinning(code: &str) -> (Duration, Vec<String>) {
         app: nsh_engine::App::Js(Bundle::source(code.to_owned())),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -39,7 +40,7 @@ fn stop_spinning(code: &str) -> (Duration, Vec<String>) {
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -51,6 +52,8 @@ fn stop_spinning(code: &str) -> (Duration, Vec<String>) {
         speech: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     let errors = Arc::new(Mutex::new(Vec::new()));
     let engine = Engine::start(config, || ApproxTextEngine, Sink(errors.clone())).unwrap();

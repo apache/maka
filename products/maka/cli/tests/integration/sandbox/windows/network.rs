@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use maka_agent_facts::terminal::TerminalSize;
+use maka_plugin_core::terminal::TerminalSize;
 use maka_agent_facts::tools::ToolExecutor;
 use maka_process::{SHELL_NAME, ShellExecutor};
 use maka_sandbox::{

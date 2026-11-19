@@ -8,7 +8,8 @@ fn gpui_uses_its_workspaces_cargo_output_instead_of_a_stale_cli_sibling() {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
-    let dir = Directory(std::env::temp_dir().join(format!("nsh-cli-gpui-{}", std::process::id())));
+    let temp_root = std::env::temp_dir().canonicalize().unwrap();
+    let dir = Directory(temp_root.join(format!("nsh-cli-gpui-{}", std::process::id())));
     let root = &dir.0;
     fs::create_dir_all(root).unwrap();
     fs::write(root.join("nsh.json"), "{}").unwrap();

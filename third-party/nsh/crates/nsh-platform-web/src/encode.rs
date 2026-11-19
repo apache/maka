@@ -561,11 +561,21 @@ pub(crate) fn view_css(s: &ViewStyle) -> (String, Option<String>) {
         if p.has(TransitionProps::SHAPE) {
             props.extend(["border-radius", "outline-width"]);
         }
+        let easing = match t.spring {
+            // It times itself: its progress over the time it settles in.
+            Some(spring) => sampled_easing(|x| {
+                if x >= 1.0 {
+                    1.0
+                } else {
+                    spring.progress(x * spring.settle_ms())
+                }
+            }),
+            None => bezier(t.easing),
+        };
         let timing = format!(
-            "transition-duration:{}ms;transition-delay:{}ms;transition-timing-function:{};",
-            t.duration,
+            "transition-duration:{}ms;transition-delay:{}ms;transition-timing-function:{easing};",
+            t.run_ms(),
             t.delay,
-            bezier(t.easing)
         );
         let _ = write!(css, "transition-property:{};{timing}", props.join(","));
         // The overlay draws the border.
@@ -683,6 +693,11 @@ fn text_css(
     inherit_color: bool,
 ) -> String {
     let mut css = format!("font:{};", css_font(style));
+    // Hidden runs keep their place; the browser leaves them out of the
+    // selection's copy and of the accessibility tree.
+    if style.hidden {
+        css.push_str("visibility:hidden;");
+    }
     if !inherit_color {
         let _ = write!(css, "color:{};", css_color(style.color));
     }
@@ -763,8 +778,9 @@ fn props_json(p: &ViewProps) -> String {
     if let Some(l) = &a.label {
         let _ = write!(s, ",\"label\":{}", json_str(l));
     }
-    if let Some(h) = &a.hint {
-        let _ = write!(s, ",\"hint\":{}", json_str(h));
+    // `aria-description`: the description, then the hint.
+    if let Some(h) = a.help_text(None) {
+        let _ = write!(s, ",\"hint\":{}", json_str(&h));
     }
     // The role's JS name, which is ARIA's (`columnheader`, `treeitem`).
     let _ = write!(s, ",\"role\":{}", json_str(enum_name(&a.role)));
@@ -786,6 +802,9 @@ fn props_json(p: &ViewProps) -> String {
     if a.state.has_popup {
         s.push_str(",\"hasPopup\":true");
     }
+    if a.state.invalid {
+        s.push_str(",\"invalid\":true");
+    }
     if let Some(p) = a.state.pressed {
         let _ = write!(s, ",\"pressed\":{}", json_str(&kebab(&format!("{p:?}"))));
     }
@@ -794,6 +813,17 @@ fn props_json(p: &ViewProps) -> String {
     }
     if let Some(l) = a.level {
         let _ = write!(s, ",\"level\":{l}");
+    }
+    // The views it names (`aria-activedescendant`, `aria-controls`,
+    // `aria-describedby`).
+    if let Some(id) = a.active_descendant {
+        let _ = write!(s, ",\"activeDescendant\":{id}");
+    }
+    if let Some(id) = a.controls {
+        let _ = write!(s, ",\"controls\":{id}");
+    }
+    if let Some(id) = a.described_by {
+        let _ = write!(s, ",\"describedBy\":{id}");
     }
     if let Some(v) = &a.value {
         let n = |v: Option<f32>| v.map_or("null".to_owned(), |v| v.to_string());
@@ -818,6 +848,19 @@ fn props_json(p: &ViewProps) -> String {
     }
     if let Some(t) = &p.test_id {
         let _ = write!(s, ",\"testID\":{}", json_str(t));
+    }
+    // An overlay placed against its anchor: `overlays: "viewport"` draws
+    // it over the window (`syncFloats`).
+    if p.overlay_anchor.is_some() {
+        s.push_str(",\"anchored\":true");
+    }
+    // The HTML element the view is drawn as (`web={{ element }}`), and a
+    // link's target (`Link`'s `href`).
+    if let Some(tag) = p.web_element {
+        let _ = write!(s, ",\"element\":{}", json_str(enum_name(&tag)));
+    }
+    if let Some(h) = &p.href {
+        let _ = write!(s, ",\"href\":{}", json_str(h));
     }
     // Unset leaves it to the presses (`ViewProps::focus_stop`).
     if let Some(focusable) = p.focusable {
@@ -901,7 +944,7 @@ fn field_css(c: &InputConfig) -> String {
 fn behavior_json(b: &ScrollBehavior) -> String {
     let offsets: Vec<String> = b.snap_offsets.iter().map(|o| o.0.to_string()).collect();
     format!(
-        "{{\"paging\":{},\"snapInterval\":{},\"snapOffsets\":[{}],\"snapAlignment\":{},\"enabled\":{},\"bounces\":{},\"inset\":[{},{},{},{}],\"minZoom\":{},\"maxZoom\":{},\"bouncesZoom\":{},\"pinch\":{},\"centerContent\":{},\"refreshIndicator\":{}}}",
+        "{{\"paging\":{},\"snapInterval\":{},\"snapOffsets\":[{}],\"snapAlignment\":{},\"enabled\":{},\"bounces\":{},\"inset\":[{},{},{},{}],\"bar\":[{},{},{},{}],\"minZoom\":{},\"maxZoom\":{},\"bouncesZoom\":{},\"pinch\":{},\"centerContent\":{},\"refreshIndicator\":{}}}",
         b.paging,
         b.snap_interval.0,
         offsets.join(","),
@@ -912,6 +955,10 @@ fn behavior_json(b: &ScrollBehavior) -> String {
         b.content_inset.right.0,
         b.content_inset.bottom.0,
         b.content_inset.left.0,
+        b.scrollbar_inset.top.0,
+        b.scrollbar_inset.right.0,
+        b.scrollbar_inset.bottom.0,
+        b.scrollbar_inset.left.0,
         b.min_zoom,
         b.max_zoom,
         b.bounces_zoom,
@@ -932,11 +979,23 @@ fn transition_json(t: &Option<LayoutTransition>) -> String {
                 LayoutCurve::EaseIn => "ease-in".to_owned(),
                 LayoutCurve::EaseOut => "ease-out".to_owned(),
                 LayoutCurve::EaseInEaseOut | LayoutCurve::Keyboard => "ease-in-out".to_owned(),
-                LayoutCurve::Spring { damping } => spring_easing(damping),
+                LayoutCurve::FittedSpring { damping_ratio } => spring_easing(damping_ratio),
+                LayoutCurve::Bezier([x1, y1, x2, y2]) => {
+                    format!("cubic-bezier({x1}, {y1}, {x2}, {y2})")
+                }
+                // It times itself: its progress over the time it settles in,
+                // ending on its place.
+                LayoutCurve::Spring(spring) => sampled_easing(|x| {
+                    if x >= 1.0 {
+                        1.0
+                    } else {
+                        spring.progress(x * spring.settle_ms())
+                    }
+                }),
             };
             format!(
                 "{{\"duration\":{},\"delay\":{},\"easing\":{},\"property\":{}}}",
-                t.duration_ms,
+                t.run_ms(),
                 t.delay_ms,
                 json_str(&easing),
                 json_str(&kebab(&format!("{:?}", t.property)))
@@ -973,10 +1032,16 @@ fn spring(damping: f32, x: f32) -> f32 {
 /// Samples of the spring as a CSS `linear()` easing (piecewise linear,
 /// enough points that the overshoot keeps its shape).
 fn spring_easing(damping: f32) -> String {
+    sampled_easing(|x| spring(damping, x))
+}
+
+/// Samples of `curve` (progress at a fraction of the duration, from 0 to
+/// 1) as a CSS `linear()` easing.
+fn sampled_easing(curve: impl Fn(f32) -> f32) -> String {
     const SAMPLES: usize = 48;
     let mut out = String::from("linear(0");
     for i in 1..=SAMPLES {
-        let v = spring(damping, i as f32 / SAMPLES as f32);
+        let v = curve(i as f32 / SAMPLES as f32);
         let _ = write!(out, ",{}", (v * 1000.0).round() / 1000.0);
     }
     out.push(')');
@@ -1190,6 +1255,8 @@ pub(crate) fn encode(out: &mut Out, item: &MountItem) {
                 .num(options.fade_ms.unwrap_or(0.0))
                 // CSS's `object-position`; empty for the center.
                 .str(&object_position(options.position))
+                // `svg()`'s text color, for its `currentColor`.
+                .opt_str(options.current_color.map(css_color).as_deref())
                 .end();
         }
         MountItem::ScrollConfig {
@@ -1416,6 +1483,9 @@ fn encode_command(out: &mut Out, id: u32, command: &Command) {
                 .num(*end)
                 .end();
         }
+        Command::InsertText(text) => {
+            out.item("cmd").num(id).str("insertText").str(text).end();
+        }
         Command::Dialog(d) => {
             out.item("cmd").num(id).str("dialog").num(d.id);
             out.opt_str(d.title.as_deref())
@@ -1435,7 +1505,25 @@ fn encode_command(out: &mut Out, id: u32, command: &Command) {
                 push_str(&mut out.s, &kebab(&format!("{:?}", b.style)));
             }
             out.s.push(']');
-            out.bool(d.cancelable).bool(d.sheet).end();
+            out.bool(d.cancelable).bool(d.sheet);
+            // The text field: its text (null: none), placeholder, select
+            // all and required.
+            match d.input.as_ref().filter(|_| !d.sheet) {
+                Some(input) => out
+                    .str(&input.text)
+                    .opt_str(input.placeholder.as_deref())
+                    .bool(input.select_all)
+                    .bool(input.required),
+                None => out.raw("null"),
+            };
+            out.end();
+        }
+        Command::CloseDialog(dialog) => {
+            out.item("cmd")
+                .num(id)
+                .str("closeDialog")
+                .num(*dialog)
+                .end();
         }
         Command::SetJsResponder { block } => {
             out.item("cmd")
@@ -1454,6 +1542,8 @@ fn encode_command(out: &mut Out, id: u32, command: &Command) {
         }
         Command::Back => out.item("cmd").num(id).str("back").end(),
         Command::ExitApp => out.item("cmd").num(id).str("exitApp").end(),
+        Command::SetAppUrl(url) => out.item("cmd").num(id).str("setAppUrl").str(url).end(),
+        Command::PushAppUrl(url) => out.item("cmd").num(id).str("pushAppUrl").str(url).end(),
         Command::Announce(text) => out.item("cmd").num(id).str("announce").str(text).end(),
         Command::AccessibilityFocus => out.item("cmd").num(id).str("a11yFocus").end(),
         Command::Seek(t) => out.item("cmd").num(id).str("seek").num(*t).end(),
@@ -1470,6 +1560,17 @@ fn encode_command(out: &mut Out, id: u32, command: &Command) {
             out.bool(*animated).end();
         }
         Command::SetClipboard(text) => out.item("cmd").num(id).str("setClipboard").str(text).end(),
+        Command::SetClipboardItem(item) => {
+            out.item("cmd")
+                .num(id)
+                .str("setClipboardItem")
+                .str(&item.text);
+            match &item.html {
+                Some(html) => out.str(html),
+                None => out.raw("null"),
+            };
+            out.end();
+        }
         Command::Notification(command) => {
             use nsh_core::notifications::NotificationCommand as N;
             match command {
@@ -1499,6 +1600,9 @@ fn encode_command(out: &mut Out, id: u32, command: &Command) {
                     .str("closeNotification")
                     .str(name)
                     .end(),
+                // The page's own: a browser gives a page none an earlier
+                // load showed.
+                N::CloseAll => out.item("cmd").num(id).str("closeAllNotifications").end(),
                 N::SetBadge(count) => out.item("cmd").num(id).str("setBadge").num(*count).end(),
                 // Presses are reported as they come: a browser starts no
                 // page from one.
@@ -1518,6 +1622,18 @@ fn encode_command(out: &mut Out, id: u32, command: &Command) {
             .num(id)
             .str("pickScreenColor")
             .num(*request)
+            .end(),
+        // `navigator.share`; a page shares no local files, so a share with
+        // files says only that it has some (`nsh.js` refuses it).
+        Command::Share { id: request, sheet } => out
+            .item("cmd")
+            .num(id)
+            .str("share")
+            .num(*request)
+            .opt_str(sheet.title.as_deref())
+            .opt_str(sheet.text.as_deref())
+            .opt_str(sheet.url.as_deref())
+            .bool(!sheet.files.is_empty())
             .end(),
         Command::ReadClipboard {
             id: request,
@@ -1573,7 +1689,7 @@ fn encode_command(out: &mut Out, id: u32, command: &Command) {
         }
         // `nsh.js` `pickFiles`: the request, the limit, the extensions
         // offered as an input's `accept` (empty: any file), the largest file
-        // read.
+        // read (a larger one answers with its name and size only).
         Command::PickFiles {
             id: request,
             request: asked,
@@ -1589,7 +1705,7 @@ fn encode_command(out: &mut Out, id: u32, command: &Command) {
                 .num(*request)
                 .num(asked.limit)
                 .str(&accept)
-                .num(nsh_core::picker::MAX_PICKED_FILE_BYTES as f64)
+                .num(asked.size_limit() as f64)
                 .end();
         }
         // The id is written whole (`num` rounds); the page answers with
@@ -1607,6 +1723,15 @@ fn encode_command(out: &mut Out, id: u32, command: &Command) {
                 .raw(&args.to_string())
                 .end();
         }
+        // `nsh.js` `hostPost`: nothing comes back.
+        Command::HostPost { name, args } => {
+            out.item("cmd")
+                .num(id)
+                .str("hostPost")
+                .str(name)
+                .raw(&args.to_string())
+                .end();
+        }
         Command::ImageInfo { id: request, uri } => {
             out.item("cmd")
                 .num(id)
@@ -1615,9 +1740,55 @@ fn encode_command(out: &mut Out, id: u32, command: &Command) {
                 .str(uri)
                 .end();
         }
+        // `nsh.js` `renderCanvas`: the request, the drawing as an on-screen
+        // canvas's (`cv`), the image's size in pixels, pixels per point and
+        // the MIME type; the page answers with `nsh_canvas_image`.
+        Command::RenderCanvas {
+            id: request,
+            drawing,
+            width,
+            height,
+            scale,
+            format,
+        } => {
+            out.item("cmd")
+                .num(id)
+                .str("renderCanvas")
+                .num(*request)
+                .raw(&crate::canvas::encode(drawing))
+                .num(*width)
+                .num(*height)
+                .raw(&serde_json::Value::from(*scale).to_string())
+                .str(format.mime())
+                .end();
+        }
         // A browser's bars are the browser's; the browser's own developer
         // tools measure the page.
-        Command::StatusBar(_) | Command::PerfMonitor(_) => {}
+        Command::StatusBar(_) | Command::PerfMonitor(_) | Command::PerfMonitorMode(_) => {}
+        // The main window's title is the page's title (`nsh.js` writes it
+        // where the app is the page); the rest of a window is the browser's.
+        Command::Desktop(desktop) => match (id == nsh_core::ROOT_ID, &**desktop) {
+            (true, nsh_core::desktop::DesktopCommand::SetAttributes(attributes)) => {
+                if let Some(title) = &attributes.title {
+                    out.item("cmd").num(id).str("setTitle").str(title).end();
+                }
+            }
+            // While the app listens to quit requests, leaving the page asks
+            // the app first (`nsh.js` `deliverQuitRequest`).
+            (_, nsh_core::desktop::DesktopCommand::SetQuitOnRequest(quit)) => {
+                out.item("cmd")
+                    .num(id)
+                    .str("quitOnRequest")
+                    .bool(*quit)
+                    .end();
+            }
+            // The app's answer to the user leaving the page, while the page
+            // asks it.
+            (true, nsh_core::desktop::DesktopCommand::Quit) => {
+                out.item("cmd").num(id).str("quit").end();
+            }
+            _ => log::debug!("web: command {desktop:?} is not supported"),
+        },
         other => log::debug!("web: command {other:?} is not supported"),
     }
 }
@@ -1747,4 +1918,68 @@ fn base64(bytes: &[u8]) -> String {
         });
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use nsh_core::desktop::{DesktopCommand, WindowAttributes, WindowRequest};
+
+    use super::*;
+
+    fn commands(id: u32, command: DesktopCommand) -> String {
+        let mut out = Out::new();
+        encode_command(&mut out, id, &Command::Desktop(Box::new(command)));
+        out.finish()
+    }
+
+    #[test]
+    // WindowAttributes is non-exhaustive outside nsh-core.
+    #[allow(clippy::field_reassign_with_default)]
+    fn the_main_windows_title_is_the_pages() {
+        let mut attributes = WindowAttributes::default();
+        attributes.title = Some("Inbox".to_owned());
+        let set = || DesktopCommand::SetAttributes(Box::new(attributes.clone()));
+        assert_eq!(
+            commands(nsh_core::ROOT_ID, set()),
+            r#"[["cmd",1,"setTitle","Inbox"]]"#
+        );
+        // Another window's, other attributes and requests: the browser's.
+        assert_eq!(commands(nsh_core::ROOT_ID + 2, set()), "[]");
+        assert_eq!(
+            commands(
+                nsh_core::ROOT_ID,
+                DesktopCommand::SetAttributes(Box::default())
+            ),
+            "[]"
+        );
+        assert_eq!(
+            commands(
+                nsh_core::ROOT_ID,
+                DesktopCommand::Request(WindowRequest::Focus)
+            ),
+            "[]"
+        );
+    }
+
+    #[test]
+    fn listening_to_quit_requests_reaches_the_player() {
+        assert_eq!(
+            commands(nsh_core::ROOT_ID, DesktopCommand::SetQuitOnRequest(false)),
+            r#"[["cmd",1,"quitOnRequest",false]]"#
+        );
+        assert_eq!(
+            commands(nsh_core::ROOT_ID, DesktopCommand::SetQuitOnRequest(true)),
+            r#"[["cmd",1,"quitOnRequest",true]]"#
+        );
+    }
+
+    #[test]
+    fn the_apps_quit_reaches_the_player() {
+        assert_eq!(
+            commands(nsh_core::ROOT_ID, DesktopCommand::Quit),
+            r#"[["cmd",1,"quit"]]"#
+        );
+        // Restarting is the browser's (the user reloads).
+        assert_eq!(commands(nsh_core::ROOT_ID, DesktopCommand::Restart), "[]");
+    }
 }

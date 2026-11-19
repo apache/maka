@@ -23,9 +23,11 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+asyncband = { workspace = true, features = ["completion"] }
+thiserror.workspace = true
+rusqlite.workspace = true
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 rmcp = { version = "=3.8.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
-dunce = "1.0.5"
 tempfile.workspace = true
 fastrand.workspace = true
 unicode-normalization = "0.1.25"
@@ -36,6 +38,7 @@ maka-goal.workspace = true
 maka-session-recap.workspace = true
 maka-agent-facts.workspace = true
 maka-agent-ports.workspace = true
+maka-external-agent.workspace = true
 maka-tool-catalog.workspace = true
 maka-capabilities.workspace = true
 maka-files-native.workspace = true
@@ -51,15 +54,17 @@ base64 = "0.23.1"
 cap-std.workspace = true
 cap-fs-ext.workspace = true
 maka-agent-engine.workspace = true
+maka-agent-state.workspace = true
 maka-assistant.workspace = true
 maka-config.workspace = true
 maka-event-log.workspace = true
 maka-fs-tools.workspace = true
-maka-js-runtime.workspace = true
 maka-model.workspace = true
 maka-process.workspace = true
+maka-js-runtime.workspace = true
 maka-mcp.workspace = true
 maka-network.workspace = true
+reqwest.workspace = true
 maka-plugin-core.workspace = true
 maka-presentation.workspace = true
 maka-providers.workspace = true
@@ -72,6 +77,7 @@ maka-session-title.workspace = true
 maka-tools.workspace = true
 maka-web.workspace = true
 futures-util.workspace = true
+jiff.workspace = true
 jsonschema.workspace = true
 libc.workspace = true
 schemars.workspace = true
@@ -79,31 +85,16 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["codec"] }
 tokio-tungstenite.workspace = true
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 uuid.workspace = true
 
 [dev-dependencies]
-maka-agent-engine = { workspace = true, features = ["test-support"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
-maka-external-agent.workspace = true
 maka-packages.workspace = true
-sqlx.workspace = true
-maka-host-js.workspace = true
+maka-processes-native.workspace = true
 rusqlite = { workspace = true, features = ["functions"] }
 maka-settings-native.workspace = true
-maka-ui-support.workspace = true
-maka-transport.workspace = true
 tokio = { workspace = true, features = ["net", "io-util"] }
-
-maka-skills-native.workspace = true
-
-maka-acp-native.workspace = true
-
-maka-processes-native.workspace = true
-
-maka-interactions-native.workspace = true
-
-maka-decisions-api-native.workspace = true

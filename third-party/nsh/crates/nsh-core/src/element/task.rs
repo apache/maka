@@ -11,8 +11,7 @@
 
 use std::{
     cell::RefCell,
-    cmp::Reverse,
-    collections::{BinaryHeap, VecDeque},
+    collections::{BTreeMap, VecDeque},
     future::Future,
     pin::Pin,
     rc::{Rc, Weak},
@@ -64,8 +63,18 @@ impl Wake for TaskWaker {
 /// What a component or a task asks of the platform, applied by the core.
 pub(crate) enum Action {
     Command(NodeId, Command),
+    /// The keyboard focus back to node `to` as `from` closes, unless the
+    /// commit it goes out with moves it anywhere out of `from`
+    /// ([`super::ElementRef::focus_back`]).
+    FocusBack {
+        to: NodeId,
+        from: Option<NodeId>,
+    },
     /// A dialog; its answer resolves the slot.
-    Dialog(Dialog, Rc<RefCell<Output<i32>>>),
+    Dialog(Dialog, Rc<RefCell<Output<DialogReply>>>),
+    /// Close the dialog whose answer resolves the slot, answering it as
+    /// dismissed ([`DialogCloser::close`]).
+    CloseDialog(Rc<RefCell<Output<DialogReply>>>),
     /// The result of a module function JS waits for.
     Return(u32, super::JsResult),
     /// The pixel size of the image at the URI (its bytes stay loaded); the
@@ -79,6 +88,8 @@ pub(crate) enum Action {
     ),
     /// Reads the system clipboard; the answer resolves the slot.
     ReadClipboard(ClipboardRead),
+    /// Runs a function on the platform's main thread, after the commit.
+    MainThread(crate::main_thread::MainThreadTask),
     /// Registers a font (TrueType, OpenType, WOFF or WOFF2 data); its family
     /// name, or why it is no font, resolves the slot.
     RegisterFont(Vec<u8>, AnswerSlot<Result<String, String>>),
@@ -101,6 +112,12 @@ pub(crate) enum Action {
         args: crate::JsonValue,
         answer: AnswerSlot<Result<crate::JsonValue, super::JsError>>,
     },
+    /// Hands data to function `name` of the embedding app, with no answer
+    /// (`nsh/host`'s `post`).
+    HostPost {
+        name: String,
+        args: crate::JsonValue,
+    },
     /// Drops the slots of the host calls whose answers are gone (they
     /// timed out).
     ForgetHostCalls,
@@ -111,19 +128,87 @@ pub(crate) enum Action {
     /// Lets the user pick a color on the screen; the color (none when
     /// cancelled or not supported) resolves the slot.
     PickScreenColor(AnswerSlot<Option<crate::Hsla>>),
+    /// Shows the system's share sheet ([`crate::share`]); how it ended, or
+    /// why it could not share, resolves the slot.
+    Share(
+        crate::share::ShareRequest,
+        AnswerSlot<Result<crate::share::ShareOutcome, crate::share::ShareError>>,
+    ),
+    /// Whether the platform shows a share sheet and the app's capabilities
+    /// grant `share`.
+    ShareAvailable(AnswerSlot<bool>),
+    /// Opens a web sign-in session ([`crate::auth_session`]); how it ended,
+    /// or why it could not run, resolves the slot.
+    AuthSession(
+        crate::auth_session::AuthSessionRequest,
+        AnswerSlot<
+            Result<crate::auth_session::AuthSessionOutcome, crate::auth_session::AuthSessionError>,
+        >,
+    ),
+    /// Closes the app's waiting web sign-in session, answering it as
+    /// cancelled ([`crate::element::close_auth_session`]).
+    CloseAuthSession,
+    /// Renders a drawing offscreen into an image
+    /// ([`crate::canvas::render`]); the image's bytes, or why not, resolve
+    /// the slot.
+    RenderCanvas(
+        Box<crate::canvas::render::RenderRequest>,
+        AnswerSlot<Result<Vec<u8>, super::JsError>>,
+    ),
     /// A speech recognition session's request ([`crate::speech`]).
     Speech(SpeechAction),
     /// A notification's request ([`crate::notifications`]).
     Notification(NotificationAction),
+    /// Reads whether the app launches at login (`None`) or turns it on
+    /// (`Some(true)`) or off; whether it is on after it, or why it could
+    /// not be read or changed, resolves the slot.
+    LoginItem(
+        Option<bool>,
+        AnswerSlot<Result<bool, crate::desktop::LaunchAtLoginError>>,
+    ),
     /// The next link the system hands the app ([`crate::url_scheme`])
     /// resolves the slot, those that came before first.
     NextUrlSchemeOpen(AnswerSlot<String>),
+    /// The next files the system opens the app with
+    /// ([`crate::file_type`]) resolve the slot, all that came before at
+    /// once.
+    NextOpenFiles(AnswerSlot<Vec<std::path::PathBuf>>),
+    /// The next later launch of the app
+    /// ([`crate::single_instance::SecondInstance`]) resolves the slot, those
+    /// that came before first.
+    NextSecondInstance(AnswerSlot<crate::single_instance::SecondInstance>),
+    /// The next address move the app did not make
+    /// ([`crate::url_scheme::AppUrlChange`]) resolves the slot.
+    NextAppUrlChange(AnswerSlot<crate::url_scheme::AppUrlChange>),
+    /// The app's address resolves the slot ([`crate::url_scheme`]).
+    AppUrl(AnswerSlot<Option<String>>),
+    /// The app sets its address ([`crate::url_scheme`]), replacing the
+    /// history entry's or pushing one.
+    SetAppUrl(String, crate::url_scheme::HistoryBehavior),
     /// A sound's or a player's request ([`crate::audio`]).
     Audio(AudioAction),
     /// Whether a web view's ref gives its page trusted input here
     /// (`sendInput`): the platform delivers it and the app holds
     /// `webview.input`; the answer resolves the slot.
     WebInputAvailable(AnswerSlot<bool>),
+    /// Whether a web view's ref evaluates scripts here.
+    WebEvaluateAvailable(AnswerSlot<bool>),
+    /// Whether a web view shows a page here: the platform shows web views
+    /// and the app holds `webview`; the answer resolves the slot.
+    WebViewAvailable(AnswerSlot<bool>),
+    /// A decision on a download ([`crate::webview::downloads`]): the
+    /// destination to accept, a cancel, or a hand-over; its answer resolves
+    /// the slot.
+    DownloadDecision {
+        /// The web view's node.
+        node: NodeId,
+        /// The download's id.
+        id: String,
+        /// What the app decided.
+        decision: crate::webview::downloads::Decision,
+        /// Where the decision's answer goes.
+        answer: AnswerSlot<Result<(), String>>,
+    },
     /// A request on local paths for the platform
     /// ([`crate::file_dialog`]); its answer resolves the slot.
     FileRequest(crate::file_dialog::FileRequest, FileAnswer),
@@ -163,9 +248,36 @@ pub(crate) enum Action {
     /// Measures the node with the layout of the commit the action goes out
     /// with; the measurement resolves the slot.
     Measure(NodeId, AnswerSlot<Option<crate::Measurement>>),
+    /// Measures where the list's viewport starts among its rows with the
+    /// layout of the commit the action goes out with; the position
+    /// resolves the slot.
+    MeasureScrollPosition(NodeId, AnswerSlot<Option<crate::ListScrollPosition>>),
+    /// Evaluates a web view's script within a timeout, with its answer
+    /// kept by the core.
+    Evaluate(
+        NodeId,
+        String,
+        std::time::Duration,
+        crate::platform::web_evaluation::Slot,
+    ),
+    /// Rejects a request that exceeded its deadline.
+    WebEvaluationTimeout(u32),
+    /// An offscreen canvas render's deadline passed.
+    CanvasRenderTimeout(u32),
     /// How long the node's transitions run with the styles of the commit
     /// the action goes out with; the time resolves the slot.
     TransitionTime(NodeId, AnswerSlot<std::time::Duration>),
+    /// The text the node shows with the commit the action goes out with;
+    /// the text resolves the slot.
+    TextContent(NodeId, AnswerSlot<String>),
+    /// Presses what a pointer at the press's page position would inside
+    /// the node, with the layout of the commit the action goes out with;
+    /// whether a view took it resolves the slot.
+    PressAt(NodeId, crate::PressEvent, AnswerSlot<bool>),
+    /// Hovers what a pointer at the event's page position would inside
+    /// the node, with the layout of the last commit; `None`: the pointer
+    /// left.
+    HoverAt(NodeId, Option<crate::MouseEvent>),
 }
 
 /// What a speech recognition session asks of the core
@@ -216,6 +328,8 @@ pub(crate) enum NotificationAction {
     },
     /// Removes the notification called this.
     Close(String),
+    /// Removes every notification of the app's.
+    CloseAll,
     /// Sets the app's badge.
     SetBadge(u32),
     /// The id of the next notification pressed resolves the slot.
@@ -264,6 +378,9 @@ impl FileAnswer {
 pub(crate) enum ClipboardRead {
     /// The text (`""` when it holds none).
     Text(AnswerSlot<String>),
+    /// The text for `Clipboard.readText`: `None` when the person refused
+    /// the read (iOS's paste prompt answered with Don't Allow Paste).
+    CheckedText(AnswerSlot<Option<String>>),
     /// Whether it holds text.
     Has(AnswerSlot<bool>),
     /// The image (`None` when it holds none, or one over
@@ -276,6 +393,22 @@ pub(crate) enum ClipboardRead {
     HasImage(AnswerSlot<bool>),
     /// The `file:` URLs of the local files on it.
     Files(AnswerSlot<Vec<String>>),
+}
+
+/// One item to put on the system clipboard (`Clipboard.write`): the same
+/// content in several formats, as plain text and, for apps that paste
+/// formatting, as HTML. Named as GPUI's `ClipboardItem` and the DOM's,
+/// which also hold one item's representations; this one is a plain
+/// object of its formats (`{ text, html? }`).
+#[derive(Debug, Clone, Default, PartialEq, super::JsObject)]
+#[prop(exact)]
+#[non_exhaustive]
+pub struct ClipboardItem {
+    /// The content as plain text.
+    pub text: String,
+    /// The content as HTML (a fragment, as `text/html` on the web holds).
+    #[prop(skip_none)]
+    pub html: Option<String>,
 }
 
 /// An image read from the system clipboard (`Clipboard.readImage`).
@@ -376,17 +509,22 @@ pub(crate) struct Executor {
     derived: RefCell<super::animated::Derived>,
     /// The components' listeners of the back button.
     pub(crate) back: Rc<RefCell<super::back::BackListeners>>,
+    /// What runs as the app quits ([`super::desktop::on_app_quit`]).
+    pub(crate) quit: Rc<RefCell<super::quit::QuitListeners>>,
+    /// The quit listeners' work still running ([`crate::Core::start_quit`]).
+    pub(crate) quitting: Rc<std::cell::Cell<usize>>,
+    /// What hears the user ask to quit ([`super::desktop::on_quit_request`]).
+    pub(crate) quit_requests: Rc<RefCell<super::quit::QuitRequestListeners>>,
     /// The views' keyboard shortcuts.
     pub(crate) keys: Rc<RefCell<super::keys::ViewKeys>>,
     /// The views' menus' handlers.
     pub(crate) menus: Rc<RefCell<super::menus::ViewMenus>>,
     /// The views' watches of nodes they did not make.
     pub(crate) watches: Rc<RefCell<super::watch::Watches>>,
-    /// The timers tasks wait for ([`super::timer`]), soonest first: the core
-    /// fires them as they come due, and the engine's loop wakes for the
-    /// soonest, as it does for JS's timers.
-    timers: RefCell<BinaryHeap<Reverse<Timer>>>,
-    next_timer_seq: std::cell::Cell<u64>,
+    /// The timers tasks wait for ([`super::timer`]): the core fires them as
+    /// they come due, and the engine's loop wakes for the soonest, as it does
+    /// for JS's timers.
+    timers: Arc<Timers>,
     /// What waits for the app to answer the events emitted before it
     /// ([`super::after_answer`]).
     answers: RefCell<Answers>,
@@ -410,31 +548,63 @@ pub(crate) struct AfterAnswer {
     pub(crate) f: Box<dyn FnOnce()>,
 }
 
-/// A task's timer: when, and whom to wake (in the order they were made
-/// among timers due at once).
-struct Timer {
-    at: Instant,
-    seq: u64,
-    waker: Waker,
+/// The timers tasks wait for, soonest first (in the order they were made
+/// among timers due at once). Shared with the [`TimerKey`]s of the delays
+/// waiting (which are `Send`, as delays are), so a delay dropped before its
+/// time takes its timer and waker back at once, wherever it is dropped.
+#[derive(Default)]
+struct Timers(Mutex<TimerQueue>);
+
+#[derive(Default)]
+struct TimerQueue {
+    next_seq: u64,
+    wakers: BTreeMap<(Instant, u64), Waker>,
 }
 
-impl PartialEq for Timer {
-    fn eq(&self, other: &Self) -> bool {
-        (self.at, self.seq) == (other.at, other.seq)
+impl Timers {
+    fn queue(&self) -> std::sync::MutexGuard<'_, TimerQueue> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
-impl Eq for Timer {}
+/// A timer waiting in the executor ([`Executor::add_timer`]); dropping it
+/// takes the timer back.
+#[derive(Debug)]
+pub(crate) struct TimerKey {
+    timers: std::sync::Weak<Timers>,
+    key: (Instant, u64),
+}
 
-impl PartialOrd for Timer {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
+impl TimerKey {
+    /// Wakes `waker` instead when the timer fires (the delay was polled
+    /// again by another task's waker).
+    pub(crate) fn set_waker(&self, waker: &Waker) {
+        let Some(timers) = self.timers.upgrade() else {
+            return;
+        };
+        let old = {
+            let mut queue = timers.queue();
+            match queue.wakers.get_mut(&self.key) {
+                Some(kept) if !kept.will_wake(waker) => {
+                    Some(std::mem::replace(kept, waker.clone()))
+                }
+                _ => None,
+            }
+        };
+        // Dropped outside the lock.
+        drop(old);
     }
 }
 
-impl Ord for Timer {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (self.at, self.seq).cmp(&(other.at, other.seq))
+impl Drop for TimerKey {
+    fn drop(&mut self) {
+        let Some(timers) = self.timers.upgrade() else {
+            return;
+        };
+        let waker = timers.queue().wakers.remove(&self.key);
+        drop(waker);
     }
 }
 
@@ -444,31 +614,39 @@ impl Executor {
         self.derived.borrow_mut()
     }
 
-    /// Wakes `waker` at `at`.
-    pub(crate) fn add_timer(&self, at: Instant, waker: Waker) {
-        let seq = self.next_timer_seq.get();
-        self.next_timer_seq.set(seq + 1);
-        self.timers
-            .borrow_mut()
-            .push(Reverse(Timer { at, seq, waker }));
+    /// Wakes `waker` at `at`, unless the key is dropped first.
+    pub(crate) fn add_timer(&self, at: Instant, waker: Waker) -> TimerKey {
+        let mut queue = self.timers.queue();
+        let key = (at, queue.next_seq);
+        queue.next_seq += 1;
+        queue.wakers.insert(key, waker);
+        TimerKey {
+            timers: Arc::downgrade(&self.timers),
+            key,
+        }
     }
 
     /// When the soonest timer is due.
     pub(crate) fn next_timer(&self) -> Option<Instant> {
-        self.timers.borrow().peek().map(|Reverse(t)| t.at)
+        self.timers
+            .queue()
+            .wakers
+            .first_key_value()
+            .map(|(&(at, _), _)| at)
     }
 
     /// Wakes the timers due at `now`.
     pub(crate) fn fire_timers(&self, now: Instant) {
         let mut due = Vec::new();
         {
-            let mut timers = self.timers.borrow_mut();
-            while timers.peek().is_some_and(|Reverse(t)| t.at <= now) {
-                if let Some(Reverse(timer)) = timers.pop() {
-                    due.push(timer.waker);
-                }
+            let mut queue = self.timers.queue();
+            while let Some(timer) = queue.wakers.first_entry()
+                && timer.key().0 <= now
+            {
+                due.push(timer.remove());
             }
         }
+        // Woken outside the lock: a waker may drop delays.
         for waker in due {
             waker.wake();
         }
@@ -483,6 +661,12 @@ impl Executor {
 
     pub(crate) fn set_runtime(&self, runtime: Handle) {
         *self.runtime.borrow_mut() = Some(runtime);
+    }
+
+    /// The runtime tasks are polled in the context of, if one is set.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn runtime(&self) -> Option<Handle> {
+        self.runtime.borrow().clone()
     }
 
     pub(crate) fn set_notify(&self, notify: Notify) {
@@ -668,14 +852,69 @@ pub struct Answer<T> {
     slot: Rc<RefCell<Output<T>>>,
 }
 
-/// The answer to a dialog (`nsh_base::alert_dialog`): the index of the
-/// button pressed, -1 when it was dismissed.
-pub type DialogAnswer = Answer<i32>;
+/// The answer to a dialog (`nsh_base::alert_dialog`): the button pressed
+/// and the text of its text field.
+pub type DialogAnswer = Answer<DialogReply>;
+
+/// What the platform answered a dialog with ([`DialogAnswer`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DialogReply {
+    /// The index of the button pressed, -1 when it closed without one.
+    pub index: i32,
+    /// The text of its text field ([`crate::Dialog::input`]); `None`
+    /// without one, where the platform's alert has none, or when the app
+    /// closed it ([`DialogCloser`]).
+    pub value: Option<String>,
+}
+
+impl DialogReply {
+    /// Closed without a button or text.
+    pub fn dismissed() -> Self {
+        Self {
+            index: -1,
+            value: None,
+        }
+    }
+}
 
 impl<T> Answer<T> {
     pub(crate) fn new() -> (Self, Rc<RefCell<Output<T>>>) {
         let slot = Rc::new(RefCell::new(Output::default()));
         (Self { slot: slot.clone() }, slot)
+    }
+}
+
+impl Answer<DialogReply> {
+    /// What closes the dialog this answer waits for, kept apart from the
+    /// answer (which a task usually takes): see [`DialogCloser`].
+    pub fn closer(&self) -> DialogCloser {
+        DialogCloser {
+            slot: self.slot.clone(),
+        }
+    }
+}
+
+/// Closes a dialog the app showed (`nsh_base::alert_dialog`) without the
+/// user, as when what it asks about went away (the user went elsewhere):
+/// made by [`Answer::closer`].
+#[derive(Clone)]
+pub struct DialogCloser {
+    slot: Rc<RefCell<Output<DialogReply>>>,
+}
+
+impl std::fmt::Debug for DialogCloser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DialogCloser").finish_non_exhaustive()
+    }
+}
+
+impl DialogCloser {
+    /// Closes the dialog, as if the user dismissed it: its answer resolves
+    /// with -1 (and no text) now, and the platform takes it off the screen. Nothing
+    /// happens once it was answered, or outside the engine.
+    pub fn close(&self) {
+        super::ambient::act_if_running(Action::CloseDialog(self.slot.clone()));
     }
 }
 

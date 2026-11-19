@@ -8,11 +8,22 @@ applications need no JavaScript runtime. Ordinary pointer drags and title-bar
 dragging retain their existing behavior. The application decides how to consume
 dropped files.
 
+The web backend and the mobile backends deliver no file drags today. A browser
+gives a page only each item's kind and MIME type while a drag hovers (names and
+contents arrive at the drop, as `File`s, never as local paths), so a web drop
+would carry `File`s rather than `file:` URLs and needs its own payload design.
+
 ## Contract
 
-- `Interactive::on_file_drag_enter(listener)` and `on_file_drag_leave(listener)`
-  receive unit events for the active drop destination.
-- `Interactive::on_file_drop(listener)` receives `FileDropEvent { uris }`.
+- `Interactive::on_file_drag_enter(listener)` receives
+  `FileDragEvent { uris, mime_types }` for the active drop destination (unit
+  listeners still work); `on_file_drag_leave(listener)` receives a unit event.
+- `Interactive::on_file_drop(listener)` receives
+  `FileDropEvent { uris, mime_types, page_position }`.
+- `mime_types` is derived from each URL's file name in `nsh-core`
+  (`platform::file_mime_type`), when a payload is decoded for Rust or JS: the
+  platforms send only URLs, no file is read, and every backend reports the
+  same type for a name (`""` when the name says none, as `File.type`).
   URIs use `file:` URLs, preserving spaces and escaped filenames. Native code
   converts the platform's local file list; the app can use its existing URL
   parser to obtain paths. Arbitrary text and remote URLs are not file drops.

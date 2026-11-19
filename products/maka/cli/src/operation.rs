@@ -117,7 +117,7 @@ pub(crate) async fn observe(timeout: Duration, settings_stdin: bool) -> Result<(
         // input cannot leave a worker waiting on the caller after this deadline.
         let input = if settings_stdin {
             let bytes = crate::initialize::settings_input().await?;
-            crate::initialize::validate_settings_input(&bytes)?;
+            crate::initialize::validate_settings_input(&bytes).await?;
             Some(bytes)
         } else {
             None

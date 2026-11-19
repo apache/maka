@@ -253,6 +253,15 @@ Color stops are placed by percentages or lengths (`px`, `pt`, `rem`; plain numbe
 
 Colors mix between stops as in CSS: in the space a gradient names (`linear-gradient(in oklab, …)`; also `srgb`, `srgb-linear`, `xyz`, `oklch` with a hue method such as `longer hue`, and `hsl`), and otherwise in sRGB when every color is a hex, `rgb()`, `hsl()` or named color, and in Oklab when one is `oklch()`, `oklab()`, `lab()`, `lch()` or `color()`.
 
+`repeating-linear-gradient`, `repeating-radial-gradient` and `repeating-conic-gradient` repeat their stops past the last one, as in CSS: the distance from the first stop to the last is one period. They draw hatching, ruled lines and grids:
+
+```tsx
+// Diagonal hatching: a 1px line every 8px.
+<View style={{ backgroundImage: "repeating-linear-gradient(45deg, #d0d7de 0 1px, transparent 1px 8px)" }} />
+// A page grid: two ruled layers, one across and one down.
+<View style={{ backgroundImage: "repeating-linear-gradient(0deg, #eaeef2 0 1px, transparent 1px 24px), repeating-linear-gradient(90deg, #eaeef2 0 1px, transparent 1px 24px)" }} />
+```
+
 Text elements do not draw gradients on iOS.
 
 ## Filters and blending
@@ -377,13 +386,17 @@ function ProgressiveBlur(props: { radius: number; style: ViewStyle }) {
 }
 ```
 
+In Rust, use `.mask_linear(deg(90.0), [transparent_black(), black(), transparent_black()])` to fade both edges, `.mask_radial([black(), transparent_black()])` for a centered radial fade, and `.mask_none()` to clear it. Angles and stop vectors accept signals or closures; an empty stop vector clears the mask. Positions use `(color, percentage(0.2))` or `(color, px(12.0))`.
+
 A masked `backdropFilter` draws the blur alone, without the system material's tint, at its exact radius, on iOS and macOS too. Each layer blurs what the window shows on every frame, so keep the layers few and the area small. Linux and GPUI draw no `backdropFilter`, so give the region a fading `backgroundImage` where the text over it must stay readable.
+
+GPUI draws no `maskImage` yet: a masked view draws whole, so a fade made with a mask is a hard edge there.
 
 ## Outlines, opacity and visibility
 
 - `outlineWidth`, `outlineColor`, `outlineStyle`, `outlineOffset` (`.outline(..)`, `.outline_color(..)`, `.outline_dashed()`, `.outline_offset(..)`): a line outside the border that takes no space (negative offsets draw inside). `outlineStyle: "none"` (or `"hidden"`, `.outline_none()`) hides the outline whatever its width, as in CSS.
 - `opacity` (`.opacity(n)`): 0 to 1, applied to the view and its children.
-- `visibility: "hidden"` (`.invisible()` in Rust): the view is not drawn but keeps its space, and screen readers skip it and its subtree, as in a browser. `display: "none"` (`.hidden()`) removes it from layout.
+- `visibility: "hidden"` (`.invisible()` in Rust): the view is not drawn but keeps its space, and screen readers skip it and its subtree, as in a browser. On a span (a `Text` inside a `Text`) it hides the span's characters in place, and copies leave them out too ([Text element](../elements/text.md#hidden-spans)). `display: "none"` (`.hidden()`) removes it from layout.
 - `zIndex` (`.z_index(n)`): the order among siblings, also the native stacking order (stable for equal values).
 - `cursor` (`.cursor(..)`, `.cursor_pointer()`): the pointer shape over the view, for pointers and desktops.
 
@@ -414,7 +427,7 @@ Each is a property of its own, as with classes: a style's `scale` replaces a `sc
 
 Rust's `.perspective(..)` is CSS's `perspective` property, as Tailwind's `perspective-*`: it gives the view's children their depth, while the `perspective()` function of a `transform` applies to the view's own transform. `transformOrigin` takes keywords, percentages and lengths (`"top left"`, `"50% 0"`, `[10, 20]`; `.origin_top_left()`, `.transform_origin(..)` in Rust); the default is the center. Transforms do not affect layout: siblings are placed as if the view were untransformed.
 
-Android has no skew transforms.
+Android has no skew transforms. GPUI cannot turn an image's pixels: a rotated or skewed `Image` is drawn upright at its own size, centered where it would be.
 
 ## Transitions
 
@@ -456,7 +469,24 @@ view()
 | `transitionProperty` | What animates: `"all"`, or names separated by commas: colors (`"colors"`, `"backgroundColor"`, `"borderColor"`, ...), `"opacity"`, `"transform"` (every transform property), `"boxShadow"`, `"borderRadius"` / `"borderWidth"` | `.transition()`, `.transition_all()`, `.transition_colors()`, `.transition_opacity()`, `.transition_transform()`, `.transition_shadow()` |
 | `transitionDuration` | `300`, `"300ms"`, `"0.3s"` | `.duration(300.0)` |
 | `transitionDelay` | As the duration | `.delay(100.0)` |
-| `transitionTimingFunction` | `"linear"`, `"ease"`, `"ease-in"`, `"ease-out"`, `"ease-in-out"`, `"cubic-bezier(x1, y1, x2, y2)"` | `.ease_linear()`, `.ease_in()`, `.ease_out()`, `.ease_in_out()`, `.ease_bezier(x1, y1, x2, y2)` |
+| `transitionTimingFunction` | `"linear"`, `"ease"`, `"ease-in"`, `"ease-out"`, `"ease-in-out"`, `"cubic-bezier(x1, y1, x2, y2)"`, `"spring(stiffness, damping)"`, `"spring(stiffness, damping, mass)"` | `.ease_linear()`, `.ease_in()`, `.ease_out()`, `.ease_in_out()`, `.ease_bezier(x1, y1, x2, y2)`, `.ease_spring(Spring { .. })` |
+
+A `cubic-bezier()` whose `y` goes past 0..1 overshoots, as in CSS (`"cubic-bezier(0.3, 1.25, 0.6, 1)"`). `spring()` runs
+the transition on a spring's physics instead: its stiffness, its damping (the coefficient, not a ratio) and its mass
+(1 when left out), from rest. A spring times itself, lasting until it settles, so `transitionDuration` is not used;
+`"spring(620, 36)"` passes its target by about 4% and settles in about 380 ms. The class is `ease-spring-[620,36]`
+(`ease-spring-[620,36,1]` with the mass), and a popup's exit waits for its spring as for any transition.
+
+```rust tabs
+view()
+    .transition_transform()
+    .ease_spring(Spring { stiffness: 620.0, damping: 36.0, ..Spring::default() })
+    .scale(move || if open.get() { 1.0 } else { 0.95 })
+```
+
+```tsx tabs
+<View class="transition-transform ease-spring-[620,36]" style={{ scale: open() ? 1 : 0.95 }} />
+```
 
 Sizes and positions are layout, not style, and do not transition; animate layout changes with `LayoutAnimation` or drive values with native animations ([Animation](./animation.md)).
 
@@ -505,6 +535,7 @@ These keys and classes carry what native platforms do beyond CSS:
 | `textAlignVertical` | | Where text shorter than its `<Text>` box sits: `"top"` (the default), `"center"` or `"bottom"` |
 | `textAlign: "auto"` | | The text's natural side, by its direction (the default) |
 | `selectedStyle` | `selected:` | The style while `accessibilityState.selected` is `true` (a selected `Button`, a tab) |
+| `transitionTimingFunction: "spring(…)"` | `ease-spring-[…]` | Transitions on a spring's stiffness, damping and mass, lasting until it settles ([Transitions](#transitions)) |
 | | `ios:`, `android:`, `web:` | Classes for one platform (`ios:pt-2`) |
 
 Values that change also take numbers where CSS takes a string: `transform` as a list of steps, `translate` and `scale` as `[x, y]`, `boxShadow` and `textShadow` as layers.

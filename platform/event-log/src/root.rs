@@ -34,10 +34,7 @@ use std::{
 };
 
 pub const ROOT_MARKER: &str = ".maka-storage-root.json";
-pub const RUST_ROOT_MARKER: &str = ".maka-rust-runtime.json";
 pub const ROOT_DATABASE: &str = "runtime-rust.sqlite";
-const PROTOTYPE: &[u8] = b"{\"schemaVersion\":1,\"runtime\":\"rust-prototype\"}\n";
-const REMOUNT_STAGING: &str = ".maka-storage-root.next";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,7 +45,7 @@ pub struct RootNamespaces {
 
 impl RootNamespaces {
     pub fn for_current_account() -> io::Result<Self> {
-        let home = lock::account_home()?;
+        let home = maka_sandbox::account_home()?;
         #[cfg(target_os = "macos")]
         return Ok(Self {
             ownership: home.join("Library/Application Support/Maka/state-root-owners"),
@@ -68,26 +65,22 @@ impl RootNamespaces {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Marker {
-    schema_version: u8,
-    kind: String,
     root_id: String,
-    root_identity: Identity,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct Identity {
-    dev: String,
-    ino: String,
-}
+type MountedIdentity = (u64, u64);
 
 /// Owns the durable root lease. It cannot be cloned or fabricated.
 pub struct RootOwner {
+    capability_changes: tokio::sync::watch::Sender<()>,
+    pub(crate) operation_live: std::sync::Arc<crate::applications::operations::LiveOperations>,
     canonical_path: PathBuf,
     marker: Marker,
+    mounted_identity: MountedIdentity,
     control_directory: PathBuf,
-    control_identity: Identity,
+    control_identity: MountedIdentity,
     lock_path: PathBuf,
     durable_lease: File,
 }
@@ -111,91 +104,24 @@ impl RootLocation {
 
 /// Inspect only an existing native root. Never initialize, repair or acquire it.
 pub fn resolve(path: &Path) -> io::Result<RootLocation> {
-    let (canonical_path, marker) = inspect(path)?;
+    let (canonical_path, marker, _) = inspect(path)?;
     Ok(RootLocation {
         canonical_path,
         root_id: marker.root_id,
     })
 }
 
-/// Explicitly confirm an unchanged Linux directory after its filesystem was
-/// remounted. Equal inode numbers alone do not establish identity across volumes.
-/// A matching root is a read-only no-op, including while its Host is running.
-pub fn repair_after_remount(
-    path: &Path,
-    expected_root_id: &str,
-    namespaces: &RootNamespaces,
-) -> io::Result<()> {
-    let canonical_path = path.canonicalize()?;
-    let identity = directory_identity(&canonical_path)?;
-    check_layout(&canonical_path)?;
-    let previous = read_marker(&canonical_path)?;
-    if previous.root_id != expected_root_id
-        || directory_identity(&canonical_path)? != identity
-        || canonical_path.canonicalize()? != canonical_path
-    {
-        return Err(io::Error::other("root changed before remount confirmation"));
-    }
-    if previous.root_identity == identity {
-        return Ok(());
-    }
-    if !cfg!(target_os = "linux") || previous.root_identity.ino != identity.ino {
-        return Err(io::Error::other("root is not an unchanged Linux remount"));
-    }
-    let mut next = previous.clone();
-    next.root_identity = identity;
-    // Use the same ownership lock as normal Host startup, not executor.lock
-    // or FileLease: Linux OFD locks are distinct from flock.
-    let owner = RootOwner::acquire(canonical_path, next, namespaces, false)?;
-    let validate = || {
-        owner.check_directory()?;
-        owner.validate_leases()?;
-        if read_marker(&owner.canonical_path)? != previous {
-            return Err(io::Error::other(
-                "root marker changed during remount confirmation",
-            ));
-        }
-        owner.check_directory()
-    };
-    validate()?;
-    let staging = owner.canonical_path.join(REMOUNT_STAGING);
-    match staging.symlink_metadata() {
-        Ok(metadata) if metadata.is_file() => fs::remove_file(&staging)?,
-        Ok(_) => return Err(io::Error::other("remount staging is not a regular file")),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&staging)?;
-    file.write_all(&serde_json::to_vec(&owner.marker)?)?;
-    file.sync_all()?;
-    lock::stable(&file, &staging)?;
-    validate()?;
-    fs::rename(&staging, owner.canonical_path.join(ROOT_MARKER))?;
-    // On an uncertain rename/fsync result, stop. The next call re-reads the
-    // official marker; it never promotes or trusts an abandoned staging file.
-    File::open(&owner.canonical_path)?.sync_all()?;
-    owner.validate_current()
-}
-
-fn inspect(path: &Path) -> io::Result<(PathBuf, Marker)> {
+fn inspect(path: &Path) -> io::Result<(PathBuf, Marker, MountedIdentity)> {
     let canonical_path = path.canonicalize()?;
     let identity = directory_identity(&canonical_path)?;
     check_layout(&canonical_path)?;
     let marker = read_marker(&canonical_path)?;
-    if marker.root_identity != identity
-        || directory_identity(&canonical_path)? != identity
+    if directory_identity(&canonical_path)? != identity
         || canonical_path.canonicalize()? != canonical_path
     {
         return Err(io::Error::other("root identity collision"));
     }
-    Ok((canonical_path, marker))
+    Ok((canonical_path, marker, identity))
 }
 
 /// Verify an existing native root without taking its writer lease, or initialize an empty one.
@@ -220,6 +146,13 @@ pub fn prepare_directory(path: &Path) -> io::Result<PathBuf> {
 }
 
 impl RootOwner {
+    /// Invalidates capability reads in this live Root; never a grant or a physical proof.
+    pub fn capability_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.capability_changes.subscribe()
+    }
+    pub fn capability_source_changed(&self) {
+        self.capability_changes.send_modify(|_| {});
+    }
     /// Initialize a nonexistent or empty disposable directory. Never adopt existing state.
     pub fn create(path: &Path, namespaces: &RootNamespaces) -> io::Result<Self> {
         let path = prepare_directory(path)?;
@@ -229,22 +162,17 @@ impl RootOwner {
             ));
         }
         lock::private_directory(&path)?;
-        let identity = directory_identity(&path)?;
         let marker = Marker {
-            schema_version: 1,
-            kind: "interactive".into(),
             root_id: hex::encode(Sha256::digest(uuid::Uuid::new_v4().as_bytes())),
-            root_identity: identity,
         };
         publish(&path, ROOT_MARKER, &serde_json::to_vec(&marker)?)?;
-        publish(&path, RUST_ROOT_MARKER, PROTOTYPE)?;
         Self::open(&path, namespaces)
     }
 
-    /// Open only a marked Rust prototype root, rejecting legacy layouts before database access.
+    /// Open only a marked State Root, rejecting unmarked directories before database access.
     pub fn open(path: &Path, namespaces: &RootNamespaces) -> io::Result<Self> {
-        let (canonical_path, marker) = inspect(path)?;
-        let owner = Self::acquire(canonical_path, marker, namespaces, false)?;
+        let (canonical_path, marker, identity) = inspect(path)?;
+        let owner = Self::acquire(canonical_path, marker, identity, namespaces, false)?;
         owner.validate_current()?;
         Ok(owner)
     }
@@ -252,8 +180,8 @@ impl RootOwner {
     /// Acquire an existing Root without creating or repairing coordination state.
     /// Uses the same exclusive ownership protocol as ordinary startup.
     pub fn open_existing(path: &Path, namespaces: &RootNamespaces) -> io::Result<Self> {
-        let (canonical_path, marker) = inspect(path)?;
-        let owner = Self::acquire(canonical_path, marker, namespaces, true)?;
+        let (canonical_path, marker, identity) = inspect(path)?;
+        let owner = Self::acquire(canonical_path, marker, identity, namespaces, true)?;
         owner.validate_current()?;
         Ok(owner)
     }
@@ -261,6 +189,7 @@ impl RootOwner {
     fn acquire(
         canonical_path: PathBuf,
         marker: Marker,
+        mounted_identity: MountedIdentity,
         namespaces: &RootNamespaces,
         existing_only: bool,
     ) -> io::Result<Self> {
@@ -283,8 +212,13 @@ impl RootOwner {
         directory(&control_directory)?;
         let control_identity = directory_identity(&control_directory)?;
         Ok(Self {
+            capability_changes: tokio::sync::watch::channel(()).0,
+            operation_live: std::sync::Arc::new(
+                crate::applications::operations::LiveOperations::default(),
+            ),
             canonical_path,
             marker,
+            mounted_identity,
             control_directory,
             control_identity,
             lock_path,
@@ -297,9 +231,6 @@ impl RootOwner {
     }
     pub fn root_id(&self) -> &str {
         &self.marker.root_id
-    }
-    pub fn kind(&self) -> &str {
-        &self.marker.kind
     }
     pub fn control_directory(&self) -> &Path {
         &self.control_directory
@@ -328,18 +259,7 @@ impl RootOwner {
         if !metadata.is_dir() {
             return Err(io::Error::other("State Root handle must be a directory"));
         }
-        #[cfg(not(windows))]
-        let (dev, ino) = lock::identity(&metadata)?;
-        #[cfg(windows)]
-        let (dev, ino) = {
-            let identity = windows::file_identity(directory)?;
-            (identity.volume, identity.index)
-        };
-        let identity = Identity {
-            dev: dev.to_string(),
-            ino: ino.to_string(),
-        };
-        if identity != self.marker.root_identity {
+        if file_identity(directory, &metadata)? != self.mounted_identity {
             return Err(io::Error::other(
                 "State Root directory handle identity changed",
             ));
@@ -359,7 +279,7 @@ impl RootOwner {
 
     fn check_directory(&self) -> io::Result<()> {
         if self.canonical_path.canonicalize()? != self.canonical_path
-            || directory_identity(&self.canonical_path)? != self.marker.root_identity
+            || directory_identity(&self.canonical_path)? != self.mounted_identity
         {
             return Err(io::Error::other("root directory identity changed"));
         }
@@ -367,23 +287,25 @@ impl RootOwner {
     }
 }
 
-fn directory_identity(path: &Path) -> io::Result<Identity> {
+fn file_identity(_file: &File, _metadata: &fs::Metadata) -> io::Result<MountedIdentity> {
+    #[cfg(unix)]
+    return lock::identity(_metadata);
+    #[cfg(windows)]
+    {
+        let identity = windows::file_identity(_file)?;
+        Ok((identity.volume, identity.index))
+    }
+}
+
+fn directory_identity(path: &Path) -> io::Result<MountedIdentity> {
     let metadata = path.symlink_metadata()?;
     if !metadata.is_dir() {
         return Err(io::Error::other("State Root must be a directory"));
     }
-    #[cfg(not(windows))]
-    let (dev, ino) = lock::identity(&metadata)?;
+    #[cfg(unix)]
+    return lock::identity(&metadata);
     #[cfg(windows)]
-    let (dev, ino) = {
-        let file = windows::open_nofollow(path, false)?;
-        let identity = windows::file_identity(&file)?;
-        (identity.volume, identity.index)
-    };
-    Ok(Identity {
-        dev: dev.to_string(),
-        ino: ino.to_string(),
-    })
+    file_identity(&windows::open_nofollow(path, false)?, &metadata)
 }
 
 fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
@@ -405,9 +327,7 @@ fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
 
 fn read_marker(path: &Path) -> io::Result<Marker> {
     let marker: Marker = serde_json::from_slice(&read_bounded(&path.join(ROOT_MARKER))?)?;
-    if marker.schema_version != 1
-        || marker.kind != "interactive"
-        || marker.root_id.len() != 64
+    if marker.root_id.len() != 64
         || !marker
             .root_id
             .bytes()
@@ -419,11 +339,6 @@ fn read_marker(path: &Path) -> io::Result<Marker> {
 }
 
 fn check_layout(path: &Path) -> io::Result<()> {
-    if read_bounded(&path.join(RUST_ROOT_MARKER))? != PROTOTYPE {
-        return Err(io::Error::other(
-            "not a Rust prototype root; legacy state is unsupported",
-        ));
-    }
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -431,8 +346,6 @@ fn check_layout(path: &Path) -> io::Result<()> {
             name.to_str(),
             Some(
                 ROOT_MARKER
-                    | REMOUNT_STAGING
-                    | RUST_ROOT_MARKER
                     | ROOT_DATABASE
                     | "runtime-rust.sqlite-wal"
                     | "runtime-rust.sqlite-shm"

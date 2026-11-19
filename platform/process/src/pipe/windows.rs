@@ -115,7 +115,7 @@ impl Child {
     pub fn id(&self) -> u32 {
         self.pid
     }
-    pub fn terminate(&mut self) -> io::Result<()> {
+    pub async fn terminate(&mut self) -> io::Result<()> {
         if let Isolation::Mxc(owner) = &mut self.isolation {
             owner.terminate();
         }
@@ -147,7 +147,7 @@ impl Child {
             if let Isolation::Mxc(owner) = &mut self.isolation {
                 owner.finish().await?;
             }
-            self.terminate()?;
+            self.terminate().await?;
             while !self.job.is_empty()? {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }

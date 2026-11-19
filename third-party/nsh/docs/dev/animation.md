@@ -2,7 +2,7 @@
 
 - **Animation**: `createAnimatedValue()` → `timing` / `spring` / `decay` (return a Promise), `interpolate` (numbers, colors or
   `"deg"` / `"rad"` angles; `extrapolate` / `extrapolateLeft` / `extrapolateRight`: `clamp` (default) / `extend` / `identity`;
-  `easing`), `add/sub/mul/div/mod`, `diffClamp(min, max, { snap })`. A snapping `diffClamp` settles at its nearer bound
+  `easing`), `add/sub/mul/div/mod`, `diffClamp(min, max, { snap })` (bounds numbers or nodes, read each evaluation). A snapping `diffClamp` settles at its nearer bound
   in 200 ms, easing out, when the scroll view whose scroll value it follows (through any nodes) comes to rest
   (`Graph::settle`), at `max` only once its input reached `max`; scrolling that view again ends the settling where it
   is, and a snapping `diffClamp` it reads, settling too, moves its input without ending it. A snapping dependent
@@ -32,6 +32,16 @@
   `Easing.sample`, `Animated.sampleSpring` / `sampleDecay` return the curves from `nsh_core::animation::sample_easing` /
   `sample_driver` (the drivers' own code, stepped like frames, at most `MAX_SAMPLES`), so drawn curves are what runs;
   Rust components call `element::sample_easing` / `sample_spring` / `sample_decay` / `sample_decay_within`.
+  A driver's numbers are taken as given by the decoders and checked in `Running::new` (`driver.rs` `sanitized`): what
+  cannot move a value (stiffness or mass not above 0, a damping or target that is not finite, a NaN or infinite
+  duration) ends where it rests; negative damping is none (it oscillates, as an undamped spring does); a velocity that
+  is not finite is 0; an easing whose numbers are not finite is linear; a NaN delay is none (an infinite one waits, as
+  a sequence's `Delay` does); a NaN deceleration or bounce is 0, the clamps hold infinite ones; bounds that leave no
+  finite place (both NaN, or both the same infinity) are none (one NaN bound is the other, as `min` / `max` give it).
+  It warns once where an animation starts (`AnimationOp::Start`, `StartComposite`, `sample_driver`), not on each pass
+  of a loop. Numbers that still overflow on the way do not reach the views: an easing's frame moves linearly, and
+  otherwise the animation ends (a timing or spring at its target, a decay where it started). An overdamped spring is
+  two decaying exponentials (`spring`), which do not overflow.
   Bindable: `opacity`, `backgroundColor`, `borderColor` (all sides), a text's `color` (the whole text: iOS and Android draw
   it into a layer and paint over it in the color, `SourceIn` / `SRC_IN`), `translate` / `rotate` / `scale` (`[x, y]` per axis) and the steps of a `transform` list (a motion's,
   `createMotion`: `{ opacity, transform }`), and where views stick: a sticky view's `top` /
@@ -73,7 +83,11 @@
   StaggerFrom)` counts each item's intervals from the first, the last, the center (both middles of an even count at
   once) or an index; `Animated.stagger`'s `{ from }` and `Animation::stagger_from` use it. A `MotionSpec` is several
   `MotionChannel`s (opacity, then translations, rotations and scales, the order they bind in) through keyframes with
-  one timing, its `composite` a `Parallel` (stop together) over the channels' nodes; `start_values` is where an
+  one timing, its `composite` a `Parallel` (stop together) over the channels' nodes. With a `spring` (`MotionSpec::spring`,
+  JS `spring: { stiffness, damping, mass }`), each channel is one `Driver::Spring` to where its keyframes end (one
+  iteration, so `direction` still picks the end) with `velocity: None`, after a plain `Delay`: it starts from the
+  value and velocity the interrupted motion left (`Graph::start` replaces that run from its last frame), where
+  keyframes replay from their first; keyframes between, `duration`, easings and iterations are not used. `start_values` is where an
   entrance sets the values before its first frame (`createMotion`'s `initial` sets the others; `enter` wins on the
   channels it moves). `Motion::animation` / `motion.animation(..)` return the same tree as a composite, not started,
   so motions compose (`Animated.stagger(.., cards.map((m) => m.animation(..)))`); reduced motion is decided when it
@@ -96,13 +110,35 @@
   the core leads each run of frames with the layout animation it takes, an empty one for the rest
   (`core/layout_scope.rs`), as the platforms animate a frame with the last `MountItem::LayoutAnimation` before it.
   Insertions and removals are not scoped (their animations are decided per batch on iOS, Android and the web).
+  A list's rows under a turn's layout animation (`core/list_motion.rs`): the core's `ScrollBy` that keeps what shows
+  in place (an inverted list's distance from the end, the visible rows) applies at once on the platforms, and a
+  recycled cell's frame was another row's. So each list's commit leads a run of frames without animation (the rows
+  that stay where they showed when the turn began, moved by what the core scrolled the list since; the cells placed
+  for another row, with their content, at their new place) and, after the scroll, the turn's animation with the
+  rows' new frames, which they slide to. The engine keeps frames of one view apart in different runs
+  (`keep_last_sets`).
+- **A physical layout spring** (`LayoutCurve::Spring(Spring)`, `LayoutTransition::spring`): gpui-base's spring,
+  `Spring::new(response_ms)` (critically damped, the undamped period `response_ms`) or `Spring::from_stiffness(k)`
+  (a mass of 1, as Material 3 Expressive gives its springs), shaped by `.damping_ratio(ζ)`. It is the same `Spring`
+  the animation graph's spring driver takes (stiffness, a damping coefficient, mass); the constructors give the
+  coefficient from a ratio. `Spring::progress` is the closed form (underdamped, critically damped, overdamped) from
+  rest to the target, and `settle_ms` the time it stays within a thousandth of the target after: the curve times
+  itself, so `LayoutTransition::run_ms` (what the platforms time the animation by) is `settle_ms` for it and the
+  transition's `duration_ms` otherwise. The core's `transition.rs` (the desktops) and the web (a `linear()` easing of
+  its samples) follow `progress`; Android draws its samples piecewise linear (curve 6 of `Mounter.Transition`); iOS
+  gives the physics to `UISpringTimingParameters` in a `UIViewPropertyAnimator`, which settles by its own threshold,
+  a few milliseconds from `settle_ms`. JS names one by its physics: a `type: "spring"` phase with `stiffness`,
+  `damping` (the coefficient) or `mass`, the others `Animated.spring`'s defaults (170, 26, 1), decodes to
+  `LayoutTransition::spring` (`duration` and `springDamping` unused), in `configureNext` and `ViewRef.animateLayout`
+  alike (`js/animation.rs`); without them `type: "spring"` is `LayoutCurve::FittedSpring { damping_ratio }`, a
+  spring fitted to the given duration (React Native's `springDamping`).
 - **A view that follows another** (`View::follow(target)`, `core/follow.rs`; `nsh/base`'s `Tabs` indicator): its frame
   along its parent's main axis is the target's, placed by the core after layout, with no layout of its own and no
   JS. Following another element runs its `follow_transition` as a layout animation of its own frame alone (a scope of
   the follower's node in `core/layout_scope.rs`, without its ancestors' children: what changes around it in that
   commit changes at once); the first placement and a layout that moves the target place it at once, in the same
-  batch. The component decides the transition, `None` under reduced motion (`Tabs`: `spring_move`'s spring,
-  `LayoutCurve::Spring { damping: 0.85 }` over 362 ms). A follower hidden (`display: none`) forgets where it was, so
+  batch. The component decides the transition, `None` under reduced motion (`Tabs`:
+  `LayoutTransition::spring(Spring::new(280.0).damping_ratio(0.85))`, settled in 362 ms). A follower hidden (`display: none`) forgets where it was, so
   shown again it is placed at once. A target that changes size in the commit that makes it the target is followed
   to its new frame, animated once; a resize sends no layout animation item. With no follower the pass returns at
   once and `set_frame` notes nothing (`nothing_follows_while_no_view_follows_an_element`).
@@ -113,6 +149,15 @@
   draws the whole text in over its runs (`Live::text_color`, `transition::recolor`: when the text is one color before
   and after), the way it draws an animated `color`, so no frame typesets the text again; `nsh_core::animation::Animator` holds the graph with its bindings to views, gestures and scroll views
   and hands each bound view its `AnimValues`.
+- **Style transitions on a spring** (`Transition::spring`: `transitionTimingFunction: "spring(k, c, m)"`, the class
+  `ease-spring-[k,c,m]`, `Styled::ease_spring`): the same `Spring` a layout spring takes, released at rest, lasting
+  `Spring::settle_ms` (`Transition::run_ms`, which `transition::restyle` / `recolor`, the exit's
+  `ElementRef::transition_time` and the platforms time by; `transitionDuration` is not used). The desktops step
+  `Spring::progress` (`Curve::Physical`); iOS gives the physics to a `CASpringAnimation` per layer property (sublayer
+  paths through `animate_geometry` too; implicit sublayer animations take a curve, `SPRING_CURVE`, without the
+  overshoot); Android interpolates the closed form in `Effects.transitionInterpolator` over the settle time it is
+  sent; the web a CSS `linear()` of its samples. Keyframes take no spring. A `cubic-bezier()` whose `y` leaves 0..1
+  overshoots everywhere (nothing clamps `y`; colors and opacity clamp their values, as CSS does).
 - **Mobile backends**: style transitions are the platform's (Core Animation on iOS, `ValueAnimator`s in
   `Mounter.java` on Android), and a view's first style does not transition (the desktops' `transition::restyle` skips it,
   iOS waits for a view it has styled before, Android for one with a style to transition from). A text's color follows the same rules as on the desktops and is drawn the same way,
@@ -164,7 +209,7 @@ maps to what:
 | `Sequence` | `Animated.sequence` / `Animation::sequence` (each step starts at the exact end of the one before) |
 | `Stagger` / `StaggerOrigin` (first, last, center, index) | `Animated.stagger(ms, list, { from })` / `Animation::stagger_from`, `StaggerFrom` |
 | `Presence` / `PresencePhase` (keeps content mounted while it exits) | `createMotion({ enter })` / `motion().entering(..)` for entrances, `await play(exit)` then removing the view for exits. Gap: no presence component that keeps a removed view mounted through its exit |
-| `MotionReveal` (measured vertical reveal, clipped) | `nsh/base`'s `Collapsible` `reveal`: a clip view between zero and the content's height whose change is a layout animation of the frames it moves (`ElementRef::animate_layout`; a critically damped spring of `spring_control`'s time), the content kept until it has closed (`docs/dev/components.md` "Children, slots and rows"). Heights are not bindable to animated values, so a reveal is a layout animation, not a progress the app drives; no reveal element of its own yet |
+| `MotionReveal` (measured vertical reveal, clipped) | `nsh/base`'s `Collapsible` `reveal`: a clip view between zero and the content's height whose change is a layout animation of the frames it moves (`ElementRef::animate_layout`; a critically damped spring of `spring_control`'s time, or the app's `revealSpring`), the content kept until it has closed (`docs/dev/components.md` "Children, slots and rows"). Heights are not bindable to animated values, so a reveal is a layout animation, not a progress the app drives; no reveal element of its own yet |
 | Reduced motion (transitions and springs snap) | Motions land at their end; the low-level `Animated` / `timing` / `keyframes` play as written and apps choose with `reduce_motion()` |
 | `MotionTransform` (translation, scale, rotation, opacity bundle) | A `Motion`'s channels (opacity, translate X / Y, rotate, rotate X / Y, scale, scale X / Y), bound with `style={m.style}` / `bind_motion` |
 
@@ -183,3 +228,7 @@ bound as `AnimationProp::CanvasArg`, as a canvas drawing's are, so they move it 
 
 Layered CSS gradients, `filter: blur()`, `maskImage` and `mixBlendMode` moved by motions and animated values, and
 Canvas drawings bound to animated values, remain the tools for fills built from shapes.
+
+Foreground blur transitions use the same style timing on macOS; see
+[macos.md](macos.md#foreground-blur-transitions-on-macos) for the wrapper View
+contract, layer implementation and validation limits.

@@ -91,7 +91,7 @@ function App() {
               onConfirm={({ value }) => log(`Confirmed ${value.length} labels`)}
               onOpenChange={opened((next) => labelsOpen.set(next))}
               accessibilityLabel="Labels"
-              {...comboboxLook(() => labelsOpen())}
+              {...comboboxLook(() => labelsOpen(), { filled: () => labels().length > 0 })}
               placeholder={labelTitle() ?? "Add labels"}
               triggerButton={<ComboToggle open={labelsOpen()} />}
               empty={<ListboxEmpty label="No label matches" />}

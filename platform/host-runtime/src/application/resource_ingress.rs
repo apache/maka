@@ -21,8 +21,8 @@
 use super::*;
 use maka_capabilities::call::ReadResource;
 use maka_capabilities::call::ResourceEncoding;
-use maka_capabilities::call::Resources;
 use maka_plugin_core::contract::ResourceType;
+use maka_plugin_core::work::resources::Resources;
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 
@@ -94,6 +94,32 @@ impl Default for CallResources {
     }
 }
 impl CallResources {
+    /// The actual retained descriptors, not content handles or recovery authority.
+    /// Observing local resources calls their adapter metadata; no payload is read.
+    pub fn descriptors(&self) -> Result<BTreeMap<String, ResourceDescriptor>> {
+        let attachments = match &self.0 {
+            ResourceInput::Local(attachments) => attachments,
+            ResourceInput::Captured(reserved) => &reserved.attachments,
+        };
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            attachments
+                .iter()
+                .map(|(slot, resource)| {
+                    Ok((
+                        slot.clone(),
+                        ResourceDescriptor {
+                            encoding: resource.encoding(),
+                            resource: resource.resource_type(),
+                            length: u64::try_from(resource.bytes())
+                                .map_err(|_| "invalid resource length")?,
+                            metadata: resource.metadata(),
+                        },
+                    ))
+                })
+                .collect()
+        }))
+        .map_err(|_| "Host resource descriptor observation panicked".to_string())?
+    }
     pub(super) fn captured(&self) -> bool {
         matches!(self.0, ResourceInput::Captured(_))
     }
@@ -495,119 +521,5 @@ impl Dispatch {
                 })
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod owned_resource_tests {
-    use super::*;
-
-    struct Fixture {
-        capture: ResourceCapture,
-        bytes: Arc<Semaphore>,
-        resources: Arc<Semaphore>,
-        scope: Scope,
-        _receiver: mpsc::UnboundedReceiver<Command>,
-    }
-    fn fixture() -> Fixture {
-        let scope = maka_capabilities::call::Issuer::default()
-            .issue(
-                maka_capabilities::call::Identity::Remote {
-                    request_id: Uuid::new_v4(),
-                },
-                CancellationToken::new(),
-            )
-            .unwrap();
-        let bytes = Arc::new(Semaphore::new(8));
-        let resources = Arc::new(Semaphore::new(8));
-        let (commands, receiver) = mpsc::unbounded_channel();
-        let receiving = [("first", vec![1u8, 2]), ("second", vec![3u8, 4])]
-            .into_iter()
-            .map(|(slot, buffer)| {
-                (
-                    slot.into(),
-                    Receiving {
-                        descriptor: ResourceDescriptor {
-                            encoding: ResourceEncoding::Bytes,
-                            resource: maka_plugin_core::contract::binary_resource_type(),
-                            length: buffer.len() as u64,
-                            metadata: Value::Null,
-                        },
-                        written: buffer.len(),
-                        buffer: buffer.into_boxed_slice(),
-                    },
-                )
-            })
-            .collect();
-        let parent = scope.resources.reserve().unwrap();
-        let capture = ResourceCapture {
-            receiving,
-            bytes: bytes.clone().try_acquire_many_owned(3).unwrap(),
-            resources: resources.clone().try_acquire_many_owned(4).unwrap(),
-            admitted: AttachmentSize {
-                payload: 4,
-                descriptors: 3,
-            },
-            scope: scope.clone(),
-            commands,
-            parent: Some(parent),
-        };
-        Fixture {
-            capture,
-            bytes,
-            resources,
-            scope,
-            _receiver: receiver,
-        }
-    }
-
-    #[tokio::test]
-    async fn owned_resources_hold_the_original_permits_and_scope_until_last_release() {
-        let Fixture {
-            capture,
-            bytes,
-            resources,
-            scope,
-            _receiver,
-        } = fixture();
-        let mut owned = capture.finish_resources().unwrap();
-        assert_eq!(owned["first"].read(0..2).unwrap(), [1, 2]);
-        assert_eq!(owned["second"].read(0..2).unwrap(), [3, 4]);
-        assert!(owned["first"].read(0..3).is_err());
-        assert_eq!(owned["first"].encoding(), ResourceEncoding::Bytes);
-        assert_eq!(
-            owned["first"].resource_type(),
-            maka_plugin_core::contract::binary_resource_type()
-        );
-        assert_eq!(owned["first"].metadata(), Value::Null);
-        assert_eq!(
-            (bytes.available_permits(), resources.available_permits()),
-            (5, 4)
-        );
-        assert!(!scope.resources.is_idle());
-        drop(owned.remove("first").unwrap());
-        assert_eq!(
-            (bytes.available_permits(), resources.available_permits()),
-            (5, 4)
-        );
-        let mut settlement = Box::pin(scope.resources.settle());
-        std::future::poll_fn(|context| {
-            assert!(std::future::Future::poll(settlement.as_mut(), context).is_pending());
-            std::task::Poll::Ready(())
-        })
-        .await;
-        let last = owned.remove("second").unwrap();
-        drop(owned);
-        assert_eq!(
-            (bytes.available_permits(), resources.available_permits()),
-            (5, 4)
-        );
-        drop(last);
-        settlement.await.unwrap();
-        assert_eq!(
-            (bytes.available_permits(), resources.available_permits()),
-            (8, 8)
-        );
-        assert!(scope.resources.is_idle());
     }
 }

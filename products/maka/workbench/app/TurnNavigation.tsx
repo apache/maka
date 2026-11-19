@@ -17,35 +17,132 @@
  * under the License.
  */
 
+import type { HistoryRowAddress, HistoryOrder } from '../../../../packages/plugin-sdk/src/index.js';
 import { textTooltip } from './ui';
-import { Canvas, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
+import {
+  Canvas,
+  computed,
+  effect,
+  List,
+  PanResponder,
+  reduceMotion,
+  signal,
+  Text,
+  View,
+} from 'nsh';
 import type { ListRef } from 'nsh';
 import { Button, Tooltip } from 'nsh/base';
-import { pixelRatio, reduceMotion, platform, windowSize } from 'nsh';
+import { pixelRatio, platform, windowSize } from 'nsh';
 import { host as nativeHost } from 'maka/host';
-import type { Position } from './history';
-import { C, controlStyle, captionTextStyle, isDark } from './ui';
+
+import { C, controlStyle, captionTextStyle, richTooltipStyle, tooltipTextStyle } from './ui';
 import { Icon } from './Icon';
 import { tr } from './locale';
 
-// The pixel renderer draws desktop views but still receives mouse input in terminal cells.
-const cellInput = platform.idiom !== 'terminal' && nativeHost.uiScaleSupported;
-// Cell input rounds by half a 16 / scale row; include the two-point stroke.
+// The pixel terminal uses a desktop renderer but still needs cell-sized targets.
+const pixelTerminal = () => nativeHost.uiScaleSupported;
 const markPitch = computed(() => {
   if (platform.idiom === 'terminal') return 16;
-  if (!cellInput) return 12;
+  if (!pixelTerminal()) return 10;
+  // Cell input rounds by half a 16 / scale row; include the two-point stroke.
   pixelRatio();
   windowSize();
   return Math.max(24, 16 / nativeHost.uiScaleFactor + 2);
 });
-const railInset = platform.idiom === 'terminal' ? 0 : 6;
-const railMargin = 32;
-export const railWidth = () => {
-  if (platform.idiom === 'terminal') return 24;
-  return cellInput ? markPitch() : 26;
-};
+const fadeHeight = 40;
+export const railWidth = () =>
+  platform.idiom === 'terminal' ? 24 : pixelTerminal() ? markPitch() : 36;
+const markerScale = [1, 20 / 26, 14 / 26, 10 / 26];
 
-function RailFade(props: { bottom: boolean }) {
+function TurnMark(props: {
+  active: boolean;
+  busy: boolean;
+  distance: number;
+  interacting: boolean;
+}) {
+  const active = () => props.active && !props.interacting;
+  if (platform.idiom === 'terminal')
+    return (
+      <Text
+        accessibilityElementsHidden
+        style={[
+          {
+            width: railWidth(),
+            height: markPitch(),
+            lineHeight: markPitch(),
+            textAlign: 'center',
+            color: props.active ? C.text : C.line,
+          },
+          { pointerEvents: 'none' },
+        ]}
+      >
+        {props.busy ? '◌' : props.active ? '●' : '━'}
+      </Text>
+    );
+  if (pixelTerminal())
+    return (
+      <Canvas
+        accessibilityElementsHidden
+        style={[{ width: railWidth(), height: markPitch() }, { pointerEvents: 'none' }]}
+        draw={(cx) => {
+          const end = railWidth() - 1;
+          const y = markPitch() / 2;
+          cx.strokeStyle = props.active ? C.text : C.line;
+          cx.lineWidth = 2;
+          cx.lineCap = 'round';
+          cx.beginPath();
+          if (props.busy) cx.arc(end - 5, y, 3, 0, Math.PI * 2);
+          else {
+            cx.moveTo(end - (props.active ? 20 : 12), y);
+            cx.lineTo(end, y);
+          }
+          cx.stroke();
+        }}
+      />
+    );
+  return (
+    <View
+      accessibilityElementsHidden
+      style={[
+        {
+          width: railWidth(),
+          height: markPitch(),
+          alignItems: 'flex-end',
+          justifyContent: 'center',
+          paddingRight: 6,
+        },
+        { pointerEvents: 'none' },
+      ]}
+    >
+      <If
+        when={props.busy}
+        else={
+          <View
+            class={
+              reduceMotion()
+                ? undefined
+                : 'transition-transform duration-160 ease-[cubic-bezier(.18,.82,.24,1)]'
+            }
+            style={{
+              width: 26,
+              height: 2,
+              backgroundColor: props.distance === 0 || active() ? C.text : C.secondary,
+              opacity: props.distance === 0 ? 1 : active() ? 0.6 : 0.4,
+              transformOrigin: 'right',
+              transform: [{ scaleX: markerScale[props.distance] ?? 6 / 26 }],
+            }}
+          />
+        }
+      >
+        <View
+          style={{ width: 6, height: 6, borderRadius: 3, borderWidth: 1, borderColor: C.text }}
+        />
+      </If>
+    </View>
+  );
+}
+
+function RailFade(props: { bottom: boolean; height: number }) {
   return (
     <Canvas
       accessibilityElementsHidden
@@ -56,127 +153,113 @@ function RailFade(props: { bottom: boolean }) {
           top: props.bottom ? undefined : 0,
           bottom: props.bottom ? 0 : undefined,
           width: railWidth(),
-          height: 24,
+          height: props.height,
         },
         { pointerEvents: 'none' },
       ]}
       draw={(cx) => {
-        const fade = cx.createLinearGradient(0, 0, 0, 24);
+        const fade = cx.createLinearGradient(0, 0, 0, props.height);
         fade.addColorStop(0, props.bottom ? `${C.panel}00` : C.panel);
         fade.addColorStop(1, props.bottom ? C.panel : `${C.panel}00`);
         cx.fillStyle = fade;
-        cx.fillRect(0, 0, railWidth(), 24);
+        cx.fillRect(0, 0, railWidth(), props.height);
       }}
     />
   );
 }
 
 export type TurnNavigationItem = {
-  turnId: string;
+  turnKey: string;
   label: string;
+  order: HistoryOrder;
   anchor:
-    | { kind: 'loaded'; position: Position }
+    | { kind: 'loaded'; position: HistoryRowAddress }
     | {
         kind: 'landmark';
         through: number;
-        position: Position;
-        lastPosition: Position;
+        position: HistoryRowAddress;
+        lastPosition: HistoryRowAddress;
       };
 };
 
 function NavigationMark(props: {
   item(): TurnNavigationItem;
   active: boolean;
-  distance: number;
-  preview(): string;
-  hover(): void;
-  leave(): void;
   busy: boolean;
-  navigate(item: TurnNavigationItem): void;
+  distance: number;
+  interacting: boolean;
+  select(item: TurnNavigationItem): void;
+  hover(key: string | null): void;
+  preview?(item: TurnNavigationItem): Promise<string>;
 }) {
+  const opened = signal(false);
+  const previewText = signal('');
+  const cardWidth = () => Math.min(300, Math.max(0, windowSize().width - 32));
+  effect(() => {
+    const item = props.item();
+    previewText.set('');
+    if (!opened() || !props.preview || props.busy) return;
+    let current = true;
+    void props.preview(item).then(
+      (text) => {
+        if (current) previewText.set(text.trim());
+      },
+      (error) => console.warn('Could not load the anchor preview:', error),
+    );
+    return () => {
+      current = false;
+    };
+  });
   return (
-    <View onMouseEnter={props.hover} onMouseLeave={props.leave}>
+    <View
+      onMouseEnter={() => props.hover(props.item().turnKey)}
+      onMouseLeave={() => props.hover(null)}
+      style={{ height: markPitch(), width: railWidth() }}
+    >
       <Button
         accessibilityLabel={tr('Jump to turn: {label}', {
           label: props.item().label || tr('Recorded turn'),
         })}
         tooltip={
           <Tooltip
-            placement={cellInput ? 'left' : 'right'}
-            delay={0}
-            offset={12}
+            placement="left"
+            delay={150}
+            offset={8}
             margin={16}
+            onOpenChange={({ open }) => opened.set(open)}
             style={{
-              width: Math.min(248, Math.max(0, windowSize().width - 32)),
+              ...richTooltipStyle(),
+              width: cardWidth(),
+              maxWidth: cardWidth(),
               maxHeight: 100,
-              paddingHorizontal: 12,
-              paddingVertical: 10,
-              borderRadius: 8,
-              backgroundColor: C.surface,
-              borderWidth: 1,
-              borderColor: C.line,
               pointerEvents: 'none',
             }}
           >
-            <Text
-              style={[
-                { ...captionTextStyle, color: C.text, fontWeight: '500' },
-                { numberOfLines: 1 },
-              ]}
-            >
-              {props.item().label || tr('Recorded turn')}
+            <Text style={[{ ...tooltipTextStyle(), fontWeight: '500' }, { numberOfLines: 3 }]}>
+              {previewText() || props.item().label || tr('Recorded turn')}
             </Text>
-            <If when={props.preview()}>
-              <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 2 }]}>
-                {props.preview()}
-              </Text>
-            </If>
             <If when={props.busy}>
-              <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Navigating…')}</Text>
+              <Text style={{ ...tooltipTextStyle(), color: C.muted }}>{tr('Navigating…')}</Text>
             </If>
           </Tooltip>
         }
         selected={props.active}
-        onPress={inputAction(props.navigate, props.item())}
+        onPress={() => props.select(props.item())}
         style={{
           height: markPitch(),
           width: railWidth(),
-          alignItems: cellInput ? 'flex-end' : 'flex-start',
-          paddingLeft: platform.idiom === 'terminal' || cellInput ? 0 : 7,
+          borderRadius: 4,
+          alignItems: 'center',
           justifyContent: 'center',
         }}
-        focusStyle={{ backgroundColor: C.raised }}
+        focusVisibleStyle={{ backgroundColor: C.cardRaised }}
       >
-        <If when={platform.idiom === 'terminal'}>
-          <Text style={{ color: props.active ? C.text : C.line }}>
-            {props.busy ? '◌' : props.active ? '●' : '━'}
-          </Text>
-        </If>
-        <If when={platform.idiom !== 'terminal'}>
-          <View
-            style={{
-              height: 2,
-              width: cellInput ? 12 : ([19, 14, 9][props.distance] ?? 6),
-              borderRadius: 1,
-              backgroundColor: cellInput
-                ? props.active
-                  ? C.text
-                  : C.line
-                : isDark()
-                  ? props.active || props.distance === 0
-                    ? '#ffffff'
-                    : C.muted
-                  : props.distance === 0
-                    ? '#383b43'
-                    : props.active
-                      ? '#72757d'
-                      : '#b3b5ba',
-              transitionProperty: 'width',
-              transitionDuration: reduceMotion() ? 0 : 150,
-              transitionTimingFunction: 'ease-out',
-            }}
-          />
-        </If>
+        <TurnMark
+          active={props.active}
+          busy={props.busy}
+          distance={props.distance}
+          interacting={props.interacting}
+        />
       </Button>
     </View>
   );
@@ -184,97 +267,139 @@ function NavigationMark(props: {
 
 /** Host landmarks and the loaded window retain one native, independently scrolling rail. */
 export function TurnNavigation(props: {
-  visible?(): ReadonlySet<string>;
-  preview?(turnId: string): string;
   items(): readonly TurnNavigationItem[];
   active(): string | null;
+  visible?(): ReadonlySet<string>;
   busy(): string | null;
-  navigate(item: TurnNavigationItem): void;
+  preview?(item: TurnNavigationItem): Promise<string>;
+  navigate(item: TurnNavigationItem, mode: 'select' | 'scrub'): void;
   cancel(): void;
 }) {
-  const hovered = signal<string | null>(null);
-  const hoveredIndex = computed(() => props.items().findIndex((item) => item.turnId === hovered()));
   const height = signal(0);
-  const offset = signal(0);
-  const contentHeight = computed(() => props.items().length * markPitch() + railInset * 2);
+  const edgeFade = signal({ top: 0, bottom: 0 });
+  const hovered = signal<string | null>(null);
+  const scrubbed = signal<string | null>(null);
+  let offset = 0;
+  let pageY = 0;
+  const contentHeight = computed(() => props.items().length * markPitch());
   const frameHeight = computed(() => {
-    // Bound the instrument's geometry, never its item count or history source.
-    const available = Math.min(420, Math.max(0, height() - railMargin * 2));
+    if (platform.idiom === 'terminal') {
+      const available = Math.min(640, height() * 0.7);
+      return Math.min(contentHeight(), Math.floor(available / markPitch()) * markPitch());
+    }
+    // The reference uses 70vh, measured against the whole window.
+    // Leave room below the rail for its cancel button.
     return Math.min(
       contentHeight(),
-      platform.idiom === 'terminal' ? Math.floor(available / markPitch()) * markPitch() : available,
+      640,
+      windowSize().height * 0.7,
+      Math.max(0, height() - 2 * (markPitch() + 8)),
     );
   });
   const activeIndex = computed(() => {
     const active = props.active();
-    return props.items().findIndex((item) => item.turnId === active);
+    const visible = props.visible?.();
+    return props.items().findIndex((item) => item.turnKey === active || visible?.has(item.turnKey));
+  });
+  const hoveredIndex = computed(() => {
+    const key = scrubbed() ?? hovered();
+    return key === null ? -1 : props.items().findIndex((item) => item.turnKey === key);
   });
   let rail: ListRef | undefined;
-  const followActive = () => {
+  effect(() => {
     const index = activeIndex();
-    if (
-      rail &&
-      contentHeight() > frameHeight() &&
-      frameHeight() > 0 &&
-      props.active() !== null &&
-      index >= 0
-    )
+    const frame = frameHeight();
+    const pitch = markPitch();
+    if (!rail || index < 0 || frame < pitch || scrubbed() !== null) return;
+    const start = index * pitch;
+    const current = offset;
+    if (start < current || start + pitch > current + frame)
       rail.scrollToIndex({
         index,
-        viewPosition: 0.5,
+        viewPosition: start < current ? 0 : 1,
         animated: false,
         automatic: true,
       });
+  });
+  const scrubItem = (y: number) => {
+    const local = Math.max(0, Math.min(frameHeight() - 1, y - pageY));
+    const index = Math.floor((offset + local) / markPitch());
+    return props.items()[Math.max(0, Math.min(index, props.items().length - 1))];
   };
-  effect(() => {
-    // A splice may retain the same active index: refresh its one native target too.
-    props.items();
-    frameHeight();
-    followActive();
+  const scrub = (y: number) => {
+    const item = scrubItem(y);
+    if (!item || scrubbed() === item.turnKey) return;
+    scrubbed.set(item.turnKey);
+    props.navigate(item, 'scrub');
+  };
+  const pan = PanResponder.create({
+    onMoveShouldSetPanResponderCapture: (_, { dx, dy }) =>
+      Math.abs(dy) >= 4 && Math.abs(dy) >= Math.abs(dx),
+    onPanResponderGrant: ({ pageY }) => {
+      props.cancel();
+      scrub(pageY);
+    },
+    onPanResponderMove: ({ pageY }) => scrub(pageY),
+    onPanResponderRelease: (event) => {
+      const item = scrubItem(event.pageY);
+      if (item) props.navigate(item, 'select');
+      scrubbed.set(null);
+    },
+    onPanResponderTerminate: () => scrubbed.set(null),
   });
   return (
     <View
       onLayout={({ bounds: frame }) => height.set(frame.size.height)}
       style={{ width: railWidth(), minHeight: 0, justifyContent: 'center' }}
     >
-      <View style={{ width: railWidth(), height: frameHeight() }}>
+      <View
+        style={{ width: railWidth(), height: frameHeight() }}
+        {...(platform.idiom !== 'terminal' && !pixelTerminal() ? pan.panHandlers : {})}
+      >
         <List
-          ref={rail}
+          ref={(node) => {
+            rail = node;
+          }}
           testID="turn-navigation"
           accessibilityLabel={tr('Turn navigation')}
           each={props.items()}
-          keyExtractor={(item) => item.turnId}
+          keyExtractor={(item) => item.turnKey}
           estimatedItemSize={markPitch()}
           scrollbar={false}
-          contentStyle={{ paddingVertical: railInset }}
-          onScrollIntent={() => props.cancel()}
-          onScroll={(event) => offset.set(event.offset.y)}
+          onLayout={async () => {
+            const measured = await rail?.measure();
+            if (measured) pageY = measured.pagePosition.y;
+          }}
+          onScroll={(event) => {
+            offset = event.offset.y;
+            edgeFade.set({
+              top: Math.min(fadeHeight, Math.max(0, offset)),
+              bottom: Math.min(
+                fadeHeight,
+                Math.max(0, event.contentSize.height - event.size.height - offset),
+              ),
+            });
+          }}
           style={{ flex: 1, minHeight: 0 }}
         >
           {(item, index) => (
             <NavigationMark
               item={item}
-              active={
-                platform.idiom === 'terminal'
-                  ? props.active() === item().turnId
-                  : (props.visible?.().has(item().turnId) ?? props.active() === item().turnId)
-              }
-              distance={hoveredIndex() < 0 ? Infinity : Math.abs(index() - hoveredIndex())}
-              preview={() => props.preview?.(item().turnId) ?? ''}
-              hover={() => hovered.set(item().turnId)}
-              leave={() => {
-                if (hovered() === item().turnId) hovered.set(null);
-              }}
-              busy={props.busy() === item().turnId}
-              navigate={props.navigate}
+              active={(props.visible?.().has(item().turnKey) ?? false) || activeIndex() === index()}
+              busy={props.busy() === item().turnKey}
+              preview={props.preview}
+              distance={hoveredIndex() < 0 ? Infinity : Math.abs(hoveredIndex() - index())}
+              interacting={hoveredIndex() >= 0}
+              hover={(key) => hovered.set(key)}
+              select={(item) => props.navigate(item, 'select')}
             />
           )}
         </List>
-        <If when={platform.idiom !== 'terminal' && offset() > 0}>
-          <RailFade bottom={false} />
+        <If when={platform.idiom !== 'terminal' && edgeFade().top > 0}>
+          <RailFade bottom={false} height={edgeFade().top} />
         </If>
-        <If when={platform.idiom !== 'terminal' && offset() + frameHeight() < contentHeight()}>
-          <RailFade bottom />
+        <If when={platform.idiom !== 'terminal' && edgeFade().bottom > 0}>
+          <RailFade bottom height={edgeFade().bottom} />
         </If>
         <If when={props.busy()}>
           <Button

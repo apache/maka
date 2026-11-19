@@ -24,7 +24,12 @@ import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/p
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { generateNotices, verifyNotices, verifyReviewedNotices } from './notices.mjs';
+import {
+  cargoLicenseRecord,
+  generateNotices,
+  verifyNotices,
+  verifyReviewedNotices,
+} from './notices.mjs';
 import { buildCli, rustTarget } from './build-cli.mjs';
 import { nativeCliTargets } from './pack-cli.mjs';
 
@@ -272,4 +277,93 @@ test('generation and PR coverage retain all five Cargo platforms', async (t) => 
   delete manifest.components[`cargo:windows@1.0.0 ${registry}`];
   await json('products/maka/cli/notices.json', manifest);
   await assert.rejects(verifyReviewedNotices(root, options), /cargo:windows@1.0.0/);
+});
+
+test('nested data licenses retain the package license from its pinned upstream root', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-nested-notice-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const nested = join(root, 'src', 'emoji_picker');
+  await mkdir(nested, { recursive: true });
+  await writeFile(join(nested, 'emoji.LICENSE.txt'), text);
+  const provenance = { repository: 'https://github.com/longbridge/nsh', revision: 'a'.repeat(40) };
+  const record = await cargoLicenseRecord(
+    root,
+    {
+      name: 'nsh-base',
+      version: '0.5.0',
+      license: 'Apache-2.0',
+      authors: [],
+      manifest_path: join(root, 'Cargo.toml'),
+    },
+    {},
+    provenance,
+  );
+  assert.deepEqual(
+    record.files.map(({ path }) => path),
+    ['src/emoji_picker/emoji.LICENSE.txt'],
+  );
+  assert.equal(record.texts[0].content, text);
+  assert.deepEqual(record.upstream, { repository: 'longbridge/nsh', revision: 'a'.repeat(40) });
+  const declared = await cargoLicenseRecord(
+    root,
+    {
+      name: 'data',
+      version: '1.0.0',
+      license: 'MIT',
+      authors: [],
+      manifest_path: join(root, 'Cargo.toml'),
+      license_file: join(nested, 'emoji.LICENSE.txt'),
+    },
+    {},
+    provenance,
+  );
+  assert.equal(declared.upstream, undefined);
+});
+
+test('vendored records use each manifest origin and exclude untracked Maka additions', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-vendor-origins-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const vendor = join(root, 'third-party', 'nsh');
+  const fork = { repository: 'https://github.com/M4n5ter/nsh', revision: 'a'.repeat(40) };
+  const current = { repository: 'https://github.com/longbridge/nsh', revision: 'b'.repeat(40) };
+  const metadata = {
+    ...fork,
+    files: { 'crates/base/Cargo.toml': 'hash', 'third-party/sixel/Cargo.toml': 'hash' },
+    file_sources: { 'crates/base/Cargo.toml': current, 'third-party/sixel/Cargo.toml': fork },
+  };
+  const metadataPath = join(vendor, 'upstream.json');
+  const base = join(vendor, 'crates', 'base');
+  const sixel = join(vendor, 'third-party', 'sixel');
+  await mkdir(join(base, 'src'), { recursive: true });
+  await mkdir(sixel, { recursive: true });
+  await writeFile(join(base, 'src', 'emoji.LICENSE.txt'), text);
+  await writeFile(join(sixel, 'LICENSE'), text);
+  await writeFile(metadataPath, JSON.stringify(metadata));
+  const pkg = (name, directory) => ({
+    name,
+    version: '0.5.0',
+    license: 'Apache-2.0',
+    authors: [],
+    manifest_path: join(directory, 'Cargo.toml'),
+  });
+  const updated = await cargoLicenseRecord(root, pkg('base', base), {});
+  assert.ok(updated.id.includes(`${current.repository}#${current.revision}`));
+  assert.ok(updated.texts[0].source.includes(`${current.repository}#${current.revision}`));
+  assert.deepEqual(updated.upstream, { repository: 'longbridge/nsh', revision: current.revision });
+  const retained = await cargoLicenseRecord(root, pkg('sixel', sixel), {});
+  assert.ok(retained.id.includes(`${fork.repository}#${fork.revision}`));
+  assert.equal(
+    await cargoLicenseRecord(root, pkg('terminal', join(vendor, 'crates', 'terminal')), {}),
+    undefined,
+  );
+  delete metadata.file_sources['crates/base/Cargo.toml'];
+  await writeFile(metadataPath, JSON.stringify(metadata));
+  await assert.rejects(
+    cargoLicenseRecord(root, pkg('base', base), {}),
+    /Missing pinned file source for crates\/base\/Cargo.toml/,
+  );
+  delete metadata.file_sources;
+  await writeFile(metadataPath, JSON.stringify(metadata));
+  const singleOrigin = await cargoLicenseRecord(root, pkg('base', base), {});
+  assert.ok(singleOrigin.id.includes(`${fork.repository}#${fork.revision}`));
 });

@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex};
 
 use nsh_base::{accordion, accordion_header, accordion_item, accordion_panel, accordion_trigger};
 use nsh_core::{
-    AccessibilityRole, LayoutCurve, MountItem, NodeId, Size, element::Root, platform::Os,
+    AccessibilityRole, LayoutCurve, MountItem, NodeId, Size,
+    element::{Root, Spring},
+    platform::Os,
     prelude::*,
 };
 use nsh_engine::EngineConfig;
@@ -24,6 +26,8 @@ struct HarnessProps {
     disabled: bool,
     reveal: bool,
     keep_mounted: bool,
+    /// The panels' reveal spring: the default's without one.
+    spring: Option<Spring>,
     /// The values open at first.
     open: Vec<String>,
 }
@@ -48,7 +52,7 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
     );
     let changes = signal(0u32);
     let pressed = signal("none");
-    let (reveal, keep_mounted) = (props.reveal, props.keep_mounted);
+    let (reveal, keep_mounted, spring) = (props.reveal, props.keep_mounted, props.spring);
     let item = move |(id, title, disabled): (&'static str, &'static str, bool)| {
         accordion_item()
             .value(id)
@@ -61,6 +65,7 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
             .child(
                 accordion_panel()
                     .reveal(reveal)
+                    .reveal_spring(spring)
                     .keep_mounted(keep_mounted)
                     .accessibility_label(title)
                     .child(view().h(px(30.0)).child(text(format!("{title} details")))),
@@ -149,11 +154,17 @@ fn start(props: HarnessProps, reduce_motion: bool) -> App {
     App { app, seen }
 }
 
-/// Whether `items` animate the commit's frames with the reveal's spring.
+/// Whether `items` animate the commit's frames with the reveal's default
+/// spring.
 fn reveals(items: &[MountItem]) -> bool {
+    reveals_on(items, Spring::new(180.0))
+}
+
+/// Whether `items` animate the commit's frames with `spring`.
+fn reveals_on(items: &[MountItem], spring: Spring) -> bool {
     items.iter().any(|i| {
         matches!(i, MountItem::LayoutAnimation(a)
-            if a.update.is_some_and(|u| u.curve == LayoutCurve::Spring { damping: 1.0 }))
+            if a.update.is_some_and(|u| u.curve == LayoutCurve::Spring(spring)))
     })
 }
 
@@ -396,6 +407,40 @@ fn a_reveal_springs_the_panel_and_keeps_the_content_until_it_has_closed() {
         "out once closed: {removed:#?}"
     );
     assert!(!any_layout_animation(&removed));
+}
+
+#[test]
+fn a_reveal_moves_on_the_apps_spring() {
+    // Settles in about 384 ms, where the default settles in about 265.
+    let spring = Spring {
+        stiffness: 620.0,
+        damping: 36.0,
+        ..Spring::default()
+    };
+    let mut app = start(
+        HarnessProps {
+            reveal: true,
+            spring: Some(spring),
+            ..HarnessProps::default()
+        },
+        false,
+    );
+    let opened = app.toggle("Shipping");
+    assert!(reveals_on(&opened, spring), "opens on it: {opened:#?}");
+    assert!(!reveals(&opened), "not on the default");
+    let closed = app.toggle("Shipping");
+    assert!(reveals_on(&closed, spring), "closes on it");
+    app.run_for(std::time::Duration::from_millis(300)).unwrap();
+    let removes = |items: &[MountItem]| {
+        items
+            .iter()
+            .any(|i| matches!(i, MountItem::Remove { .. } | MountItem::Delete { .. }))
+    };
+    let closing = app.take();
+    assert!(!removes(&closing), "kept while its spring has not settled");
+    app.run_for(std::time::Duration::from_millis(100)).unwrap();
+    let removed = app.take();
+    assert!(removes(&removed), "out once it has: {removed:#?}");
 }
 
 #[test]

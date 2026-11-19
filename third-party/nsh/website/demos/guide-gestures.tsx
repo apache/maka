@@ -102,12 +102,12 @@ function App() {
         onPress={() => add("active:")}
         class={
           desktop
-            ? "h-8 items-center justify-center rounded-lg bg-[#0f8a55] px-3 transition motion-reduce:transition-none hover:bg-[#12a368] active:scale-95 active:bg-[#0b6b42] dark:bg-[#45d49a] dark:hover:bg-[#5be0a9] dark:active:bg-[#2fae7b]"
-            : "flex-1 items-center rounded-xl bg-[#0f8a55] p-3.5 transition motion-reduce:transition-none hover:bg-[#12a368] active:scale-95 active:bg-[#0b6b42] dark:bg-[#45d49a] dark:hover:bg-[#5be0a9] dark:active:bg-[#2fae7b]"
+            ? "h-8 items-center justify-center rounded-lg bg-up px-3 transition motion-reduce:transition-none hover:opacity-90 active:scale-95 active:opacity-75"
+            : "flex-1 items-center rounded-xl bg-up p-3.5 transition motion-reduce:transition-none hover:opacity-90 active:scale-95 active:opacity-75"
         }
-        focusStyle={focusRing()}
+        focusVisibleStyle={focusRing()}
       >
-        <Text class={desktop ? "text-[13px] font-semibold text-white dark:text-[#0c0d0f]" : "font-semibold text-white dark:text-[#0c0d0f]"}>active:</Text>
+        <Text class={desktop ? "text-[13px] font-semibold text-background" : "font-semibold text-background"}>active:</Text>
       </View>
     </View>
   );
@@ -118,7 +118,7 @@ function App() {
         onPress={() => dot.update((n) => n + 1)}
         style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: ui().down, margin: 12 }}
         hoverStyle={{ opacity: 0.88 }}
-        focusStyle={focusRing()}
+        focusVisibleStyle={focusRing()}
         activeStyle={{ opacity: 0.7 }}
       />
       <Text style={{ flex: 1, color: ui().text }}>
@@ -132,7 +132,7 @@ function App() {
         onPress={() => under.update((n) => n + 1)}
         style={{ flex: 1, borderRadius: 12, backgroundColor: tint(ui().up, 0.14), alignItems: "center", justifyContent: "center" }}
         hoverStyle={{ opacity: 0.88 }}
-        focusStyle={focusRing()}
+        focusVisibleStyle={focusRing()}
         activeStyle={{ opacity: 0.7 }}
       >
         <Text style={{ color: ui().up }}>Under an overlay: {under()}</Text>

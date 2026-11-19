@@ -21,8 +21,15 @@
 //! - `--background` runs the app in the background: its window shows, but
 //!   the app never becomes the active one, so the keyboard stays with the
 //!   app in use (what `nsh test` passes unless told `--foreground`).
+//! - `--activation-policy accessory` runs a menu bar app, with no Dock icon
+//!   or menu bar (`nsh run` and `nsh test` pass the app's `nsh.json`
+//!   `macos.activationPolicy`); `regular`, the default, has both.
+//!   `--background` takes precedence.
 //! - `--name <name>` names the app (the menu bar, the window title; `nsh
 //!   run` passes the app's name), "nsh" by default.
+//! - `--icon <png>` gives the app its icon in the Dock and the app switcher
+//!   (`nsh run` and `nsh test` pass the app's `nsh.json` `"icon"` for
+//!   macOS); the executable's own otherwise.
 //! - `--app-id <id>` sets the application id (`com.example.app`); `nsh run`
 //!   passes the app's (`nsh.json` `"id"`). The app's data (`Storage` of `nsh`)
 //!   is kept under the id its bundle carries, in the system's data
@@ -40,7 +47,8 @@ pub fn main() -> std::process::ExitCode {
     use std::{env, path::PathBuf};
 
     use nsh_platform_macos::{
-        AppOptions, AppSource, AssetBase, Bundle, Limits, WindowDisplay, dev, run_app,
+        ActivationPolicy, AppOptions, AppSource, AssetBase, Bundle, Limits, WindowDisplay, dev,
+        run_app,
     };
 
     dev::init_logging();
@@ -86,10 +94,11 @@ pub fn main() -> std::process::ExitCode {
                     options.title = name;
                 }
             }
+            "--icon" => options.icon = args.next().map(PathBuf::from),
             // The performance monitor over the app.
             "--fps" => options.fps = true,
-            // Where apps keep their data (`nsh test --target` gives each app
-            // a fresh one); the system's data directory otherwise.
+            // The app's data directory (`nsh test --target` gives each app a
+            // fresh one); the one under its id in the system's otherwise.
             "--data-dir" => {
                 options.data_dir = args.next().map(std::path::PathBuf::from);
                 // Its caches too (downloaded images): a test's app starts with none.
@@ -108,6 +117,12 @@ pub fn main() -> std::process::ExitCode {
             "--keep-window-size" => options.keep_size = true,
             // A test's app never takes the keyboard from the app in use.
             "--background" => options.background = true,
+            // Before the window shows: a menu bar app never shows in the Dock.
+            "--activation-policy" => match args.next().as_deref() {
+                Some("regular") => options.activation_policy = ActivationPolicy::Regular,
+                Some("accessory") => options.activation_policy = ActivationPolicy::Accessory,
+                _ => log::warn!("--activation-policy takes `regular` or `accessory`"),
+            },
             // One-based, as `nsh run` / `nsh test --display` count them.
             "--display" => match args.next().as_deref() {
                 Some("secondary") => options.display = Some(WindowDisplay::Secondary),

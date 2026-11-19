@@ -28,10 +28,11 @@ use super::{
 };
 use crate::{
     input,
+    link_hint::{HintAt, link_hint},
     rich_editor::{
         model::{DomOutputSpec, Mark, Node, utf16_len},
         state::{Decoration, DecorationKind},
-        tables::{CellSelection, TableRole, table_role},
+        tables::{TableRole, table_role},
     },
     theme,
 };
@@ -53,6 +54,29 @@ pub(crate) fn part<E: Element>(el: E, rv: &Rv, part: Part) -> E {
                 .styles
                 .with(|s| s.part(part).cloned().unwrap_or_default())
         })
+}
+
+/// `el` with the classes and styles of each part of `list`, in order.
+pub(crate) fn parts<E: Element>(el: E, rv: &Rv, list: &'static [Part]) -> E {
+    let props = rv.props;
+    el.app_class(move || {
+        props.classes.with(|c| {
+            let joined: Vec<&str> = list
+                .iter()
+                .filter_map(|p| c.part(*p).map(|s| s.as_str()))
+                .collect();
+            (!joined.is_empty()).then(|| SharedString::from(joined.join(" ")))
+        })
+    })
+    .inline_style(move || {
+        props.styles.with(|s| {
+            Style::from_decls(
+                list.iter()
+                    .filter_map(|p| s.part(*p))
+                    .flat_map(|s| s.decls().iter().cloned()),
+            )
+        })
+    })
 }
 
 /// A box of the content, absolutely placed.
@@ -77,28 +101,48 @@ pub(crate) fn render(rv: Rv) -> impl IntoElement {
         &rv,
         Part::Root,
     );
+    // An unpadded box around the scroll view and the sink, so padding on
+    // the root insets both together and the sink stays in the viewport's
+    // coordinates. Both use `flex_auto` so an editor without a height is as
+    // tall as its document, and past its `max-height` it scrolls.
     root.child(
-        scroll()
-            .element_ref(&rv.scroll)
-            .focusable(false)
-            .flex_1()
-            .on_press(move || focus_rv.focus())
-            .on_scroll(move |e: &ScrollEvent| {
-                scroll_rv.scroll_y.set(e.offset.y);
-                scroll_rv.scrolled.set(e.offset.y);
-                scroll_rv.viewport.set(e.size);
-            })
-            .on_layout(move |b: &Bounds<Points>| layout_rv.viewport.set(b.size))
-            .child(content(rv.clone())),
+        view()
+            .relative()
+            .flex_auto()
+            .overflow_hidden()
+            .child(
+                scroll()
+                    .element_ref(&rv.scroll)
+                    .focusable(false)
+                    .on_press(move || focus_rv.focus())
+                    .flex_auto()
+                    // The editor's own taps keep its keyboard (Android's scroll
+                    // views dismiss it on a tap otherwise).
+                    .keyboard_taps(KeyboardTaps::Always)
+                    .on_scroll(move |e: &ScrollEvent| {
+                        scroll_rv.scroll_y.set(e.offset.y);
+                        scroll_rv.scrolled.set(e.offset.y);
+                        scroll_rv.viewport.set(e.size);
+                    })
+                    .on_layout(move |b: &Bounds<Points>| {
+                        layout_rv.viewport.set(b.size);
+                        // The viewport moving moves the content on the page
+                        // with no layout of the content's own.
+                        layout_rv.place();
+                    })
+                    .child(content(rv.clone())),
+            )
+            .child(sink(rv)),
     )
-    .child(sink(rv))
 }
 
 /// The content box: what presses and drags select in.
 fn content(rv: Rv) -> impl IntoElement {
     let desktop = is_desktop();
     let (down, tap, mov, up, end) = (rv.clone(), rv.clone(), rv.clone(), rv.clone(), rv.clone());
+    let (long, lift, armed, sweep) = (rv.clone(), rv.clone(), rv.clone(), rv.clone());
     let over = rv.clone();
+    let claim = rv.clone();
     let placed = rv.clone();
     let height = rv.content_height;
     part(
@@ -110,13 +154,19 @@ fn content(rv: Rv) -> impl IntoElement {
                 placed.place();
             })
             .relative()
+            .min_h(relative(1.0))
             .cursor(Cursor::Text),
         &rv,
         Part::Content,
     )
     .on(EventKind::PressDown, move |p: &EventPayload| {
-        if let (true, EventPayload::Press(e)) = (desktop, p) {
-            down.press(e.position, e.page_position, e.modifiers, e.clicks.max(1));
+        match (desktop, p) {
+            // A checkbox's press is its own: the caret stays where it is.
+            (true, EventPayload::Press(e)) if !down.on_checkbox(e.position) => {
+                down.press(e.position, e.page_position, e.modifiers, e.clicks.max(1))
+            }
+            (false, _) => down.touch_down(),
+            _ => {}
         }
     })
     // Where the pointer is, for drags the app starts from a page point.
@@ -130,69 +180,145 @@ fn content(rv: Rv) -> impl IntoElement {
             return;
         }
         if let EventPayload::Press(e) = p {
-            tap.press(e.position, e.page_position, e.modifiers, e.clicks.max(1));
+            tap.tap(e.position, e.page_position, e.modifiers, e.clicks.max(1));
         }
     })
-    // The mouse selects as it drags (a finger scrolls).
+    // A long press selects the word under the finger (touch screens; the
+    // mouse drags instead).
+    .when(!desktop, |v| {
+        v.on(EventKind::LongPress, move |p: &EventPayload| {
+            if let EventPayload::Press(e) = p {
+                long.long_press(e.position, e.page_position);
+            }
+        })
+        .on(EventKind::PressUp, move |_: &EventPayload| lift.touch_up())
+    })
+    // The mouse selects as it drags; a finger scrolls, unless a long press
+    // armed its sweep, which selects by words.
+    // Not from a task's checkbox: a responder granted after the pointer
+    // moved takes the press from the view under it, and a hand moves as it
+    // clicks, so the checkbox would miss presses.
     .claim_touches(TouchClaim::on_start().ask(move |request: &ClaimRequest| {
-        if desktop {
+        let page = request.event.page;
+        let on_checkbox = claim
+            .page_shift()
+            .is_some_and(|shift| claim.on_checkbox(Point::new(page.x + shift.x, page.y + shift.y)));
+        if desktop && !on_checkbox {
             request.claim();
         }
     }))
-    .keep_touches(desktop)
-    .on_responder_move(move |e: &ResponderEvent| mov.drag_to(e.page))
-    .on_responder_release(move |_: &ResponderEvent| up.release())
-    .on_responder_terminate(move |_: &ResponderEvent| end.release())
-    .child(selection_rects(rv.clone()))
-    .child(blocks(rv.clone(), DOC))
+    .claim_touches(TouchClaim::on_move().ask(move |request: &ClaimRequest| {
+        if !desktop && armed.sweep_armed() {
+            request.claim();
+        }
+    }))
+    .keep_touches(true)
+    .on_responder_grant(move |_: &ResponderEvent| {
+        if !desktop {
+            sweep.begin_sweep();
+        }
+    })
+    .on_responder_move(move |e: &ResponderEvent| match desktop {
+        true => mov.drag_to(e.page),
+        false => mov.sweep_to(e.page),
+    })
+    .on_responder_release(move |_: &ResponderEvent| match desktop {
+        true => up.release(),
+        false => up.end_sweep(),
+    })
+    .on_responder_terminate(move |_: &ResponderEvent| match desktop {
+        true => end.release(),
+        false => end.end_sweep(),
+    })
+    // Keep the intrinsic extent separate from the content box, whose
+    // min-height fills the viewport. In particular, a parent must be able
+    // to shrink an overestimated height and discover offscreen blocks
+    // without progressively enlarging the editor.
+    .child(
+        view()
+            .flex_shrink_0()
+            .on_layout({
+                let extent = rv.clone();
+                move |bounds: &Bounds<Points>| {
+                    // Root blocks are now relative to this wrapper, including
+                    // padding on Part::Content, rather than directly to content.
+                    extent.set_inset(DOC, bounds.origin);
+                    if extent.document_size.get_untracked() != bounds.size {
+                        extent.document_size.set(bounds.size);
+                    }
+                }
+            })
+            .child(blocks(rv.clone(), DOC)),
+    )
     .child(table::controls(rv.clone()))
     .child(gap_cursor(rv.clone()))
     .child(drop_cursor(rv.clone()))
     .child(caret(rv.clone()))
-    .children(bubble_menu(rv))
+    // The touch selection's handles take touches of their own.
+    .child(super::touch::handles(rv.clone()))
+    .child(content_layer(rv.clone()))
+    .child(bubble_menu(rv))
+}
+
+/// The app's layer over the document (`contentLayer`): a box over the
+/// whole content box, after everything the editor draws, so it scrolls
+/// with the text. The box takes no press; what the app puts in it does.
+fn content_layer(rv: Rv) -> impl IntoElement {
+    let props = rv.props;
+    when(
+        move || props.content_layer.get().is_some(),
+        move || {
+            view()
+                .absolute()
+                .inset(px(0.0))
+                .pointer_events(PointerEvents::BoxNone)
+                .child(props.content_layer.place(|slot| slot))
+        },
+    )
 }
 
 /// The app's bubble menu: an overlay against an empty box over the
 /// selection, which scrolls with the text, so the menu follows it.
-fn bubble_menu(rv: Rv) -> [AnyElement; 2] {
-    let anchor = element_ref();
+fn bubble_menu(rv: Rv) -> impl IntoElement {
     let props = rv.props;
-    let place = move || {
-        rv.sel_rev.get();
-        rv.layout_rev.get();
-        rv.doc_rev.get();
-        let b = rv.selection_box().unwrap_or_default();
-        let at = |key: StyleKey, value: Points| {
-            let value = key.number_value(value.0);
-            (key, value.unwrap_or(PropertyValue::Default))
-        };
-        Style::from_decls(
-            [
-                at(StyleKey::Left, b.origin.x),
-                at(StyleKey::Top, b.origin.y),
-                at(StyleKey::Width, b.size.width),
-                at(StyleKey::Height, b.size.height),
-            ]
-            .map(|(key, value)| StyleDecl::Set(key, value)),
-        )
-    };
-    let box_ = view()
-        .element_ref(&anchor)
-        .absolute()
-        .pointer_events(PointerEvents::None)
-        .inline_style(place);
-    let menu = when(
+    when(
         move || props.bubble_menu.get().is_some(),
         move || {
-            overlay()
+            let rv = rv.clone();
+            let anchor = element_ref();
+            let place = move || {
+                rv.sel_rev.get();
+                rv.layout_rev.get();
+                rv.doc_rev.get();
+                let b = rv.selection_box().unwrap_or_default();
+                let at = |key: StyleKey, value: Points| {
+                    let value = key.number_value(value.0);
+                    (key, value.unwrap_or(PropertyValue::Default))
+                };
+                Style::from_decls(
+                    [
+                        at(StyleKey::Left, b.origin.x),
+                        at(StyleKey::Top, b.origin.y),
+                        at(StyleKey::Width, b.size.width),
+                        at(StyleKey::Height, b.size.height),
+                    ]
+                    .map(|(key, value)| StyleDecl::Set(key, value)),
+                )
+            };
+            let box_ = view()
+                .element_ref(&anchor)
+                .absolute()
+                .pointer_events(PointerEvents::None)
+                .inline_style(place);
+            let menu = overlay()
                 .anchor_content(&anchor)
                 .placement(props.bubble_menu_placement)
                 .align(Align::Center)
                 .offset(props.bubble_menu_offset)
-                .child(props.bubble_menu.place(|slot| slot))
+                .child(props.bubble_menu.place(|slot| slot));
+            [box_.into_element(), menu.into_element()]
         },
-    );
-    [box_.into_element(), menu.into_element()]
+    )
 }
 
 /// The blocks of container `parent`, by id.
@@ -249,15 +375,20 @@ fn block(rv: Rv, item: ReadSignal<BlockItem>) -> AnyElement {
             .child(crate::terminal::rule_line())
             .into_element();
     }
-    let (class_rv, style_rv, layout_rv) = (rv.clone(), rv.clone(), rv.clone());
+    let (class_rv, layout_rv) = (rv.clone(), rv.clone());
+    let active = rv.watch_block(id);
     let wrapper = view()
         .on_layout(move |b: &Bounds<Points>| layout_rv.set_frame(id, Some(parent), *b))
         .app_class(move || {
             let it = item.get();
+            let (selected, focused) = active.get();
             class_rv.deco_rev.get();
-            let selected = node_selected(&class_rv, &it);
-            let focused = node_focused(&class_rv, &it);
-            let decorations = node_decoration_classes(&class_rv, &it);
+            let decorations = if class_rv.decorations.borrow().is_empty() {
+                Vec::new()
+            } else {
+                class_rv.doc_rev.get();
+                node_decoration_classes(&class_rv, &it)
+            };
             props.classes.with(|c| {
                 let mut list = parts::node_classes(c, &it.node);
                 list.extend(decorations);
@@ -272,8 +403,7 @@ fn block(rv: Rv, item: ReadSignal<BlockItem>) -> AnyElement {
         })
         .inline_style(move || {
             let it = item.get();
-            let selected = node_selected(&style_rv, &it);
-            let focused = node_focused(&style_rv, &it);
+            let (selected, focused) = active.get();
             props.styles.with(|s| {
                 let mut list = parts::node_styles(s, &it.node);
                 if selected && let Some(style) = s.part(Part::SelectedNode) {
@@ -317,17 +447,25 @@ fn block(rv: Rv, item: ReadSignal<BlockItem>) -> AnyElement {
     // A task item is a row: its checkbox, then its content (Tiptap's
     // `<label><input></label><div>`), so the checkbox is inside the item
     // and takes presses.
+    // The content's holder is not the item's origin: the blocks in it are
+    // framed in the holder, so its offset is noted (`Geometry::insets`).
+    let inset_rv = rv.clone();
+    let holder = move |content: Option<AnyElement>| {
+        view()
+            .flex_1()
+            .min_w(px(0.0))
+            .on_layout(move |b: &Bounds<Points>| inset_rv.set_inset(id, b.origin))
+            .children(content)
+    };
     if task {
         return wrapper
             .flex_row()
             .child(task_checkbox(rv, item))
-            .child(view().flex_1().min_w(px(0.0)).children(content))
+            .child(holder(content))
             .into_element();
     }
     if marked && terminal {
-        return wrapper
-            .child(view().flex_1().min_w(px(0.0)).children(content))
-            .into_element();
+        return wrapper.child(holder(content)).into_element();
     }
     wrapper.children(content).into_element()
 }
@@ -348,28 +486,60 @@ fn render_kind(node: &Node) -> Option<&str> {
     node.ty().spec().extra.get("render")?.as_str()
 }
 
-/// An image node's `Image`: its `src`, `alt` (what screen readers say)
-/// and, when set, its `width` and `height` in points.
+/// An image node's `Image`: its `src` (a URL, a file path or `file:` URL,
+/// a `data:` URI, as `Image` takes them), `alt` (what screen readers say)
+/// and its `width` and `height` in points. A side it leaves out follows
+/// the image's natural size once known ([`image_box`]).
 fn image_of(node: &Node) -> AnyElement {
     let attrs = node.attrs();
-    let src = attrs.get("src").and_then(Value::as_str).unwrap_or_default();
-    let mut el = image(src.to_owned());
-    if let Some(alt) = attrs.get("alt").and_then(Value::as_str) {
-        el = el.label(alt.to_owned());
-    }
+    let src = attrs
+        .get("src")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     let number = |key: &str| {
         attrs.get(key).and_then(|v| {
             v.as_f64()
                 .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                .map(|n| n as f32)
         })
     };
-    if let Some(w) = number("width") {
-        el = el.w(px(w as f32));
+    let (width, height) = (number("width"), number("height"));
+    // Its natural size, for the sides it leaves out (an image has no size
+    // of its own in layout: one without both sides showed nothing).
+    let natural = signal(None::<(f32, f32)>);
+    if (width.is_none() || height.is_none()) && !src.is_empty() {
+        let src = src.clone();
+        spawn(async move {
+            if let Ok(size) = image_size(src).await {
+                natural.set(Some((size.width.0 as f32, size.height.0 as f32)));
+            }
+        });
     }
-    if let Some(h) = number("height") {
-        el = el.h(px(h as f32));
+    let mut el = image(src);
+    if let Some(alt) = attrs.get("alt").and_then(Value::as_str) {
+        el = el.label(alt.to_owned());
     }
-    el.into_element()
+    let size = move || image_box(width, height, natural.get());
+    el.w(move || px(size().0))
+        .h(move || px(size().1))
+        .into_element()
+}
+
+/// The size an image node shows at, in points: the `width` and `height`
+/// it asks for; a side it leaves out from the other and the aspect ratio
+/// of its `natural` size; its natural size (a pixel a point, as a browser
+/// takes it) when it asks for neither. A side that cannot be known yet is
+/// 0.
+fn image_box(width: Option<f32>, height: Option<f32>, natural: Option<(f32, f32)>) -> (f32, f32) {
+    let natural = natural.filter(|(w, h)| *w > 0.0 && *h > 0.0);
+    let aspect = natural.map(|(w, h)| w / h);
+    match (width, height) {
+        (Some(w), Some(h)) => (w, h),
+        (Some(w), None) => (w, aspect.map_or(0.0, |a| w / a)),
+        (None, Some(h)) => (aspect.map_or(0.0, |a| h * a), h),
+        (None, None) => natural.unwrap_or_default(),
+    }
 }
 
 /// A task item's checkbox, before the item's content: unstyled
@@ -400,38 +570,13 @@ fn task_checkbox(rv: Rv, item: ReadSignal<BlockItem>) -> impl IntoElement {
             crate::checkbox()
                 .checked(checked)
                 .disabled(move || !props.editable.get())
-                .on_change(move |next: &bool| press_rv.set_checked(item.get_untracked().pos, *next))
+                .on_change(move |next: &bool| {
+                    if let Some(pos) = press_rv.block_pos(item.get_untracked().id) {
+                        press_rv.set_checked(pos, *next);
+                    }
+                })
                 .size_full(),
         )
-}
-
-/// Whether the block takes the `focusedNode` part: the editor has the
-/// focus and the selection is in the block, as `focusMode` picks
-/// (Tiptap's focus extension).
-fn node_focused(rv: &Rv, it: &BlockItem) -> bool {
-    if !rv.focused.get() || !rv.props.editable.get() {
-        return false;
-    }
-    rv.sel_rev.get();
-    let mode = rv.props.focus_mode.get();
-    let state = rv.st.borrow();
-    let sel = state.selection();
-    let (from, to) = (sel.from(), sel.to());
-    let end = it.pos + it.node.node_size();
-    let inside = if from == to {
-        it.pos < from && end > from
-    } else {
-        it.pos < to && end > from
-    };
-    if !inside {
-        return false;
-    }
-    let depth = |pos: usize| state.doc().resolve(pos).map(|r| r.depth).unwrap_or(0);
-    match mode.as_deref() {
-        Some("shallowest") => depth(it.pos) == 0,
-        Some("deepest") => depth(it.pos) + 1 == depth(from).max(1),
-        _ => true,
-    }
 }
 
 /// What marks the children of a node whose spec's `extra.listMarker` is
@@ -444,8 +589,9 @@ enum ListMarker {
 
 /// The marker kind of `it`'s parent, if it marks its children.
 fn list_marker(rv: &Rv, it: &BlockItem) -> Option<ListMarker> {
+    let pos = rv.block_pos(it.id)?;
     let state = rv.st.borrow();
-    let at = state.doc().resolve(it.pos).ok()?;
+    let at = state.doc().resolve(pos).ok()?;
     marker_kind(at.parent())
 }
 
@@ -464,8 +610,9 @@ fn marker_kind(node: &Node) -> Option<ListMarker> {
 /// right-aligned to the list's widest and a space follows the marker, so
 /// the items' content lines up after it.
 fn marker_text(rv: &Rv, it: &BlockItem, terminal: bool) -> Option<String> {
+    let pos = rv.block_pos(it.id)?;
     let state = rv.st.borrow();
-    let at = state.doc().resolve(it.pos).ok()?;
+    let at = state.doc().resolve(pos).ok()?;
     let list = at.parent();
     match marker_kind(list)? {
         ListMarker::Ordered => {
@@ -639,22 +786,17 @@ fn first_line_class(class: &str) -> bool {
         || matches!(utility, "italic" | "not-italic")
 }
 
-/// Whether a node selection holds the block (subscribes to the
-/// selection).
-fn node_selected(rv: &Rv, it: &BlockItem) -> bool {
-    rv.sel_rev.get();
-    let state = rv.st.borrow();
-    state.selection().as_node().is_some() && state.selection().from() == it.pos
-}
-
 /// The classes node decorations give the block (`class` of their
 /// attributes).
 fn node_decoration_classes(rv: &Rv, it: &BlockItem) -> Vec<String> {
-    let end = it.pos + it.node.node_size();
+    let Some(pos) = rv.block_pos(it.id) else {
+        return Vec::new();
+    };
+    let end = pos + it.node.node_size();
     rv.decorations
         .borrow()
         .iter()
-        .filter(|d| d.from == it.pos && d.to == end)
+        .filter(|d| d.from == pos && d.to == end)
         .filter_map(|d| match &d.kind {
             DecorationKind::Node { attrs } => class_of(attrs),
             _ => None,
@@ -675,6 +817,7 @@ enum Piece {
     /// Text with its marks and its inline decorations' classes.
     Text {
         text: String,
+        source_bytes: std::ops::Range<usize>,
         marks: Vec<Mark>,
         classes: Vec<String>,
     },
@@ -716,6 +859,7 @@ fn inline_of(
     // Where inline decorations start and end, and widgets sit.
     let mut cuts: Vec<usize> = Vec::new();
     let mut inline: Vec<(usize, usize, Option<String>)> = Vec::new();
+    let mut replacements = Vec::new();
     // A widget's class, or the composition's text.
     let mut widgets: Vec<(usize, i32, Result<Option<String>, String>)> = Vec::new();
     for d in decorations {
@@ -726,6 +870,11 @@ fn inline_of(
                 let (a, b) = (d.from.max(start) - start, d.to.min(end) - start);
                 cuts.extend([a, b]);
                 inline.push((a, b, class_of(attrs)));
+            }
+            DecorationKind::Replacement(glyph) if d.from < end && d.to > start && d.from < d.to => {
+                let (a, b) = (d.from.max(start) - start, d.to.min(end) - start);
+                cuts.extend([a, b]);
+                replacements.push((a, b, *glyph));
             }
             DecorationKind::Widget { side, .. } if d.from >= start && d.from <= end => {
                 let at = d.from - start;
@@ -794,28 +943,46 @@ fn inline_of(
                 points.sort_unstable();
                 points.dedup();
                 let mut from = offset;
+                let mut byte_offset = 0;
+                let units: Vec<u16> = text.encode_utf16().collect();
                 for to in points.into_iter().chain([offset + len]) {
                     emit_widgets(&mut out, &mut text_at, from, true);
-                    let piece = utf16_slice(text, from - offset, to - offset);
+                    let source = if from == offset && to == offset + len {
+                        text.to_owned()
+                    } else {
+                        String::from_utf16_lossy(&units[from - offset..to - offset]).to_owned()
+                    };
+                    let piece_offset = byte_offset;
+                    byte_offset += source.len();
+                    let replacement = replacements.iter().find(|(a, b, _)| *a <= from && *b >= to);
+                    let (piece, rendered_len) = match replacement {
+                        Some((_, _, Some(glyph))) => {
+                            (Some(glyph.to_string()), glyph.len_utf16() as u32)
+                        }
+                        Some((_, _, None)) => (None, 0),
+                        None => (Some(source), (to - from) as u32),
+                    };
                     let classes = inline
                         .iter()
                         .filter(|(a, b, _)| *a <= from && *b >= to)
                         .filter_map(|(_, _, c)| c.clone())
                         .collect();
-                    let n = (to - from) as u32;
                     out.map.runs.push(Run {
                         doc: from,
                         doc_len: to - from,
                         text: text_at,
-                        text_len: n,
+                        text_len: rendered_len,
                         side: 0,
                     });
-                    text_at += n;
-                    out.pieces.push(Piece::Text {
-                        text: piece,
-                        marks: child.marks().to_vec(),
-                        classes,
-                    });
+                    text_at += rendered_len;
+                    if let Some(piece) = piece {
+                        out.pieces.push(Piece::Text {
+                            text: piece,
+                            source_bytes: piece_offset..byte_offset,
+                            marks: child.marks().to_vec(),
+                            classes,
+                        });
+                    }
                     from = to;
                 }
             }
@@ -857,12 +1024,6 @@ fn inline_of(
     out
 }
 
-/// Code units `from..to` of `text`.
-fn utf16_slice(text: &str, from: usize, to: usize) -> String {
-    let units: Vec<u16> = text.encode_utf16().collect();
-    String::from_utf16_lossy(&units[from.min(units.len())..to.min(units.len())])
-}
-
 /// A textblock's text, its lines and frame reported to the geometry
 /// (`owner`: the box its frame is in).
 fn text_block(rv: Rv, item: ReadSignal<BlockItem>, owner: u64) -> impl IntoElement {
@@ -871,9 +1032,19 @@ fn text_block(rv: Rv, item: ReadSignal<BlockItem>, owner: u64) -> impl IntoEleme
     let content = computed(move || {
         inline_rv.deco_rev.get();
         let it = item.get();
-        let start = it.pos + 1;
-        let decorations = inline_rv.decorations_in(start, start + it.node.content().size());
-        let composition = inline_rv.composition.get();
+        let composition = inline_rv.composition.get().filter(|text| !text.is_empty());
+        let has_decos = !inline_rv.decorations.borrow().is_empty();
+        let start = if has_decos || composition.is_some() {
+            inline_rv.doc_rev.get();
+            inline_rv.block_pos(id).unwrap_or(0) + 1
+        } else {
+            1
+        };
+        let decorations = if has_decos {
+            inline_rv.decorations_in(start, start + it.node.content().size())
+        } else {
+            Vec::new()
+        };
         let head = composition
             .as_ref()
             .map(|_| inline_rv.st.borrow().selection().head());
@@ -885,6 +1056,12 @@ fn text_block(rv: Rv, item: ReadSignal<BlockItem>, owner: u64) -> impl IntoEleme
             |n| inline_rv.leaf_text(n),
         );
         if let Some(geo) = inline_rv.geo.borrow_mut().texts.get_mut(&id) {
+            // Its views moved within it: they report their widths anew.
+            // A move of the whole block (an edit in another) keeps them;
+            // its spans are not drawn again.
+            if geo.map != inline.map {
+                geo.widths.clear();
+            }
             geo.map = inline.map.clone();
         }
         inline
@@ -894,18 +1071,17 @@ fn text_block(rv: Rv, item: ReadSignal<BlockItem>, owner: u64) -> impl IntoEleme
         let it = item.get();
         placeholder_text(&ph_rv, &it)
     });
-    let (frame_rv, lines_rv, spans_rv) = (rv.clone(), rv.clone(), rv);
-    text("")
-        .on_layout(move |b: &Bounds<Points>| frame_rv.set_text_frame(id, owner, *b))
+    let (frame_rv, lines_rv, spans_rv, sel_rv) = (rv.clone(), rv.clone(), rv.clone(), rv);
+    // The text's box: its selection boxes, then the text over them.
+    let text = text("")
         .on(EventKind::TextLayout, move |p: &EventPayload| {
-            if let EventPayload::TextLayout(lines) = p {
-                lines_rv.set_lines(id, lines.clone());
+            if let EventPayload::TextLayout { lines, layout } = p {
+                lines_rv.set_text_layout(id, lines.clone(), layout.clone());
             }
         })
         .child(dynamic(move || {
             let inline = content.get();
-            let start = item.get_untracked().pos + 1;
-            let mut list = spans(&spans_rv, inline.pieces.clone(), start);
+            let mut list = spans(&spans_rv, inline.pieces.clone(), id);
             if inline.pieces == [Piece::Filler]
                 && let Some(label) = placeholder.get()
             {
@@ -919,7 +1095,12 @@ fn text_block(rv: Rv, item: ReadSignal<BlockItem>, owner: u64) -> impl IntoEleme
                 );
             }
             list
-        }))
+        }));
+    view()
+        .relative()
+        .on_layout(move |b: &Bounds<Points>| frame_rv.set_text_frame(id, owner, *b))
+        .child(selection_rects(sel_rv, id))
+        .child(text)
 }
 
 /// The placeholder of an empty textblock that shows one (Tiptap's
@@ -945,6 +1126,9 @@ fn placeholder_text(rv: &Rv, it: &BlockItem) -> Option<String> {
     let include_children = props.include_children.get();
     let only_current = props.show_only_current.get();
     let composing = rv.composition.with(Option::is_some);
+    if only_current || composing || !include_children {
+        rv.doc_rev.get();
+    }
     if only_current || composing {
         rv.sel_rev.get();
     }
@@ -964,10 +1148,11 @@ fn placeholder_text(rv: &Rv, it: &BlockItem) -> Option<String> {
             return None;
         }
     }
-    if !include_children && state.doc().resolve(it.pos).ok()?.depth != 0 {
+    let pos = rv.block_pos(it.id)?;
+    if !include_children && state.doc().resolve(pos).ok()?.depth != 0 {
         return None;
     }
-    let inside = |pos: usize| pos >= it.pos && pos <= it.pos + it.node.node_size();
+    let inside = |at: usize| at >= pos && at <= pos + it.node.node_size();
     if only_current && !inside(state.selection().anchor()) {
         return None;
     }
@@ -977,14 +1162,18 @@ fn placeholder_text(rv: &Rv, it: &BlockItem) -> Option<String> {
     Some(label)
 }
 
-/// The spans of a textblock's pieces.
-fn spans(rv: &Rv, pieces: Vec<Piece>, start: usize) -> Vec<AnyElement> {
+/// The spans of textblock `id`'s pieces.
+fn spans(rv: &Rv, pieces: Vec<Piece>, id: u64) -> Vec<AnyElement> {
     let props = rv.props;
+    // Inline leaves by their order in the block: a node view's key that
+    // typing before it does not change.
+    let mut leaves = 0usize;
     pieces
         .into_iter()
         .map(|piece| match piece {
             Piece::Text {
                 text: t,
+                source_bytes,
                 marks,
                 classes,
             } => {
@@ -992,9 +1181,26 @@ fn spans(rv: &Rv, pieces: Vec<Piece>, start: usize) -> Vec<AnyElement> {
                     .iter()
                     .find_map(|m| rv.mark_view(m.ty().name()).map(|v| (m, v)))
                 {
-                    return view.create(mark, &t);
+                    return view.create_piece(mark, &t, source_bytes, &classes);
                 }
                 let style_marks = marks.clone();
+                // The built-in link mark's destination, shown while the
+                // pointer rests on it, as `TextView`'s links show theirs (a
+                // terminal links the text itself). Hover only: the span
+                // takes no presses, so the editor's touches still place the
+                // caret, select and open the link (`handleClickLink`). An
+                // app's `MarkView` of a mark here renders the piece itself,
+                // above, and owns its hint.
+                let hint = (!crate::terminal::is_terminal())
+                    .then(|| link_destination(&marks))
+                    .flatten()
+                    .map(|(href, title)| {
+                        link_hint(
+                            move || Some(href.clone()),
+                            move || title.clone(),
+                            HintAt::Pointer,
+                        )
+                    });
                 text(t)
                     .app_class(move || {
                         props.classes.with(|c| {
@@ -1015,9 +1221,14 @@ fn spans(rv: &Rv, pieces: Vec<Piece>, start: usize) -> Vec<AnyElement> {
                             parts::merge(&list)
                         })
                     })
+                    .when_some(hint, |t, hint| t.child(hint))
                     .into_element()
             }
-            Piece::Leaf { node, offset, text } => leaf(rv, node, start + offset, text),
+            Piece::Leaf { node, offset, text } => {
+                leaves += 1;
+                let key = SharedString::from(format!("i{id}.{leaves}"));
+                leaf(rv, node, (id, offset), text, key)
+            }
             Piece::Widget { class } => view()
                 .app_class(class.map(SharedString::from))
                 .into_element(),
@@ -1029,10 +1240,40 @@ fn spans(rv: &Rv, pieces: Vec<Piece>, start: usize) -> Vec<AnyElement> {
         .collect()
 }
 
+/// The destination and title of the built-in link mark (`link`, Tiptap's
+/// `Link`) among `marks`, when it has a destination.
+fn link_destination(marks: &[Mark]) -> Option<(SharedString, Option<SharedString>)> {
+    let link = marks.iter().find(|m| m.ty().name() == "link")?;
+    let attr = |name: &str| {
+        link.attrs()
+            .get(name)
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| SharedString::from(s.to_owned()))
+    };
+    Some((attr("href")?, attr("title")))
+}
+
+/// The box of an inline view or image at `offset` in textblock `id`'s
+/// content: it reports its width, which its attachment character stands
+/// for when the geometry places the caret and finds the position at a
+/// point.
+fn inline_box(rv: &Rv, el: View, (id, offset): (u64, usize)) -> View {
+    let width_rv = rv.clone();
+    el.on_layout(move |b: &Bounds<Points>| width_rv.set_inline_width(id, offset, *b))
+}
+
 /// An inline leaf: its one-character text (a line break), its node view,
 /// the text it is drawn as (`drawn`, [`Rv::leaf_text`]), else a box of its
-/// part.
-fn leaf(rv: &Rv, node: Node, pos: usize, drawn: Option<String>) -> AnyElement {
+/// part. Its position is its textblock's current one plus its offset: an
+/// edit in a block before it moves it without drawing it again.
+fn leaf(
+    rv: &Rv,
+    node: Node,
+    at: (u64, usize),
+    drawn: Option<String>,
+    key: SharedString,
+) -> AnyElement {
     let props = rv.props;
     let classes_node = node.clone();
     let styled = move |el: View| {
@@ -1050,21 +1291,51 @@ fn leaf(rv: &Rv, node: Node, pos: usize, drawn: Option<String>) -> AnyElement {
         })
     };
     if let Some(view) = rv.node_view(node.ty().name()) {
-        let get_pos: Rc<dyn Fn() -> Option<usize>> = Rc::new(move || Some(pos));
+        let (block_id, offset) = at;
+        let live = Rc::new(Cell::new(true));
+        let get_pos: Rc<dyn Fn() -> Option<usize>> = {
+            let live = live.clone();
+            let pos_rv = rv.clone();
+            Rc::new(move || {
+                live.get()
+                    .then(|| Some(pos_rv.block_pos(block_id)? + 1 + offset))?
+            })
+        };
+        let selected = signal(false);
+        {
+            let rv = rv.clone();
+            effect(move || {
+                let is_sel = match rv.node_sel_pos.get() {
+                    Some(sel_pos) => {
+                        rv.doc_rev.get();
+                        rv.block_pos(block_id)
+                            .is_some_and(|p| p + 1 + offset == sel_pos)
+                    }
+                    None => false,
+                };
+                selected.set(is_sel);
+            });
+        }
+        cleanup(move || live.set(false));
         let cx = NodeViewCx::new(
             rv.session.clone(),
             get_pos,
             signal(node.clone()).read_only(),
-            signal(false).read_only(),
+            selected.read_only(),
             signal(Vec::new()).read_only(),
             None,
-        );
+        )
+        .rendered_at(rv.cx.__host(), key, rv.doc_rev.read_only());
         let el = view.create(&cx, &node);
         cleanup(move || view.destroy());
-        return styled(view_box()).child(el).into_element();
+        return inline_box(rv, styled(view_box()), at)
+            .child(el)
+            .into_element();
     }
     if render_kind(&node) == Some("image") {
-        return styled(view_box()).child(image_of(&node)).into_element();
+        return inline_box(rv, styled(view_box()), at)
+            .child(image_of(&node))
+            .into_element();
     }
     if let Some(drawn) = drawn {
         let (class_node, style_node) = (node.clone(), node);
@@ -1106,17 +1377,23 @@ fn node_view_block(rv: Rv, item: ReadSignal<BlockItem>, view: Arc<dyn NodeView>)
     let first = item.get_untracked();
     let id = first.id;
     let node = signal(first.node.clone());
-    let selected = signal(false);
+    let active = rv.watch_block(id);
+    let selected = signal(active.get_untracked().0);
     let decorations = signal(Vec::<Decoration>::new());
     let generation = signal(0u64);
-    let pos = Rc::new(Cell::new(Some(first.pos)));
+    let live = Rc::new(Cell::new(true));
     {
-        let (rv, view, pos) = (rv.clone(), view.clone(), pos.clone());
+        let (rv, view) = (rv.clone(), view.clone());
         effect(move || {
             let it = item.get();
             rv.deco_rev.get();
-            pos.set(Some(it.pos));
-            let list = rv.decorations_in(it.pos, it.pos + it.node.node_size());
+            let list = if rv.decorations.borrow().is_empty() {
+                Vec::new()
+            } else {
+                rv.doc_rev.get();
+                let pos = rv.block_pos(id).unwrap_or(0);
+                rv.decorations_in(pos, pos + it.node.node_size())
+            };
             let current = node.get_untracked();
             if !it.node.ptr_eq(&current) {
                 if !untracked(|| view.update(&it.node, &list)) {
@@ -1128,27 +1405,27 @@ fn node_view_block(rv: Rv, item: ReadSignal<BlockItem>, view: Arc<dyn NodeView>)
         });
     }
     {
-        let rv = rv.clone();
         effect(move || {
-            let it = item.get();
-            selected.set(node_selected(&rv, &it));
+            selected.set(active.get().0);
         });
     }
     {
-        let pos = pos.clone();
-        cleanup(move || pos.set(None));
+        let live = live.clone();
+        cleanup(move || live.set(false));
     }
     dynamic(move || {
         generation.get();
         let rv = rv.clone();
         let view = view.clone();
-        let pos = pos.clone();
+        let live = live.clone();
         untracked(move || {
             let current = node.get_untracked();
             let content = view
                 .editable_content_slot()
                 .then(|| slot(rv.clone(), item, id, &current));
-            let get_pos: Rc<dyn Fn() -> Option<usize>> = Rc::new(move || pos.get());
+            let pos_rv = rv.clone();
+            let get_pos: Rc<dyn Fn() -> Option<usize>> =
+                Rc::new(move || live.get().then(|| pos_rv.block_pos(id))?);
             let cx = NodeViewCx::new(
                 rv.session.clone(),
                 get_pos,
@@ -1156,6 +1433,11 @@ fn node_view_block(rv: Rv, item: ReadSignal<BlockItem>, view: Arc<dyn NodeView>)
                 selected.read_only(),
                 decorations.read_only(),
                 content,
+            )
+            .rendered_at(
+                rv.cx.__host(),
+                SharedString::from(format!("b{id}")),
+                rv.doc_rev.read_only(),
             );
             let el = view.create(&cx, &current);
             let destroyed = view.clone();
@@ -1193,24 +1475,15 @@ fn slot(rv: Rv, item: ReadSignal<BlockItem>, id: u64, node: &Node) -> AnyElement
         .into_element()
 }
 
-/// The selection's boxes.
-fn selection_rects(rv: Rv) -> impl IntoElement {
+/// The selection's boxes in textblock `id`, in its text's box. Drawn in
+/// the block, under its text and over its background: a block with a
+/// background of its own (a code block) would hide boxes drawn under all
+/// the blocks.
+fn selection_rects(rv: Rv, id: u64) -> impl IntoElement {
+    let rects = rv.watch_selection_rects(id);
     dynamic(move || {
-        rv.sel_rev.get();
-        rv.layout_rev.get();
-        rv.doc_rev.get();
-        let (from, to, text) = {
-            let state = rv.st.borrow();
-            let s = state.selection();
-            // Selected cells are painted in the cells (`selectedCell`).
-            let cells = s.as_custom::<CellSelection>().is_some();
-            (s.from(), s.to(), s.as_node().is_none() && !cells)
-        };
-        if from == to || !text {
-            return Vec::new();
-        }
-        let rects = rv.geo.borrow().range_rects(from, to);
         rects
+            .get()
             .into_iter()
             .map(|b| {
                 part(
@@ -1349,7 +1622,13 @@ fn sink(rv: Rv) -> impl IntoElement {
         computed(move || {
             rv.sel_rev.get();
             rv.layout_rev.get();
-            let caret = rv.caret_rect().unwrap_or_default();
+            // A selected block atom has no caret: the sink is at its box, or
+            // the platform would scroll the page to the editor's top as
+            // it focuses the sink.
+            let caret = rv
+                .caret_rect()
+                .or_else(|| rv.node_selection_box())
+                .unwrap_or_default();
             let size = rv.viewport.get();
             // At the bottom of the caret's line: input methods open their
             // candidates under the field's line, which would cover the
@@ -1377,6 +1656,7 @@ fn sink(rv: Rv) -> impl IntoElement {
         rv.clone(),
         rv.clone(),
     );
+    let menu = rv.clone();
     let value = rv.sink_value;
     input()
         .element_ref(&rv.input)
@@ -1414,6 +1694,10 @@ fn sink(rv: Rv) -> impl IntoElement {
         })
         .on_key_press(move |k: &str| key.sink_key(k))
         .on_paste(move |p: &PasteEvent| paste.paste_event(p))
+        // The touch selection's edit menu, which the sink opens.
+        .on(EventKind::EditAction, move |p: &EventPayload| {
+            menu.edit_action(p)
+        })
         .on_focus(move || focus.focus_changed(true))
         .on_blur(move || blur.focus_changed(false))
 }
@@ -1449,6 +1733,44 @@ impl Rv {
         self.layout_rev.update(|r| *r += 1);
     }
 
+    /// The width of the inline view or image at `offset` in textblock
+    /// `id`'s content (see `TextGeo::widths`).
+    fn set_inline_width(&self, id: u64, offset: usize, frame: Bounds<Points>) {
+        let mut geo = self.geo.borrow_mut();
+        let Some(text) = geo.texts.get_mut(&id) else {
+            return;
+        };
+        if text.widths.get(&offset) == Some(&frame) {
+            return;
+        }
+        text.widths.insert(offset, frame);
+        drop(geo);
+        self.refresh_block_selection_rects(id);
+        // Every inline view of a block reports its width as an edit before
+        // them moves them (their offsets are new): the geometry follows once
+        // for all of them, not once per view.
+        if self.widths_pending.replace(true) {
+            return;
+        }
+        let (pending, layout_rev) = (self.widths_pending.clone(), self.layout_rev);
+        spawn(async move {
+            pending.set(false);
+            layout_rev.update(|r| *r += 1);
+        });
+    }
+
+    /// Where block `id`'s children start in its box (see
+    /// `Geometry::insets`).
+    fn set_inset(&self, id: u64, origin: Point<Points>) {
+        let mut geo = self.geo.borrow_mut();
+        if geo.insets.get(&id) == Some(&origin) {
+            return;
+        }
+        geo.insets.insert(id, origin);
+        drop(geo);
+        self.layout_rev.update(|r| *r += 1);
+    }
+
     /// Textblock `id`'s text frame, in box `owner`.
     fn set_text_frame(&self, id: u64, owner: u64, frame: Bounds<Points>) {
         let mut geo = self.geo.borrow_mut();
@@ -1461,6 +1783,7 @@ impl Rv {
         text.frame = frame;
         text.owner = Some(owner);
         drop(geo);
+        self.refresh_block_selection_rects(id);
         self.layout_rev.update(|r| *r += 1);
     }
 
@@ -1500,11 +1823,26 @@ impl Rv {
         None
     }
 
-    /// Textblock `id`'s lines.
-    fn set_lines(&self, id: u64, lines: Vec<nsh_core::TextLine>) {
-        if let Some(text) = self.geo.borrow_mut().texts.get_mut(&id) {
+    /// Textblock `id`'s laid-out text.
+    fn set_text_layout(
+        &self,
+        id: u64,
+        lines: Vec<nsh_core::TextLine>,
+        layout: nsh_core::TextLayout,
+    ) {
+        {
+            let mut geo = self.geo.borrow_mut();
+            let Some(text) = geo.texts.get_mut(&id) else {
+                return;
+            };
+            if text.lines == lines {
+                return;
+            }
             text.lines = lines;
+            text.layout = Some(layout);
+            text.laid_len = Some(text.map.len);
         }
+        self.refresh_block_selection_rects(id);
         self.layout_rev.update(|r| *r += 1);
     }
 }
@@ -1515,6 +1853,19 @@ mod tests {
 
     use super::*;
     use crate::rich_editor::extensions::starter;
+
+    #[test]
+    fn an_image_takes_the_sides_it_leaves_out_from_its_natural_size() {
+        let natural = Some((400.0, 200.0));
+        assert_eq!(image_box(Some(30.0), Some(40.0), natural), (30.0, 40.0));
+        assert_eq!(image_box(Some(100.0), None, natural), (100.0, 50.0));
+        assert_eq!(image_box(None, Some(100.0), natural), (200.0, 100.0));
+        assert_eq!(image_box(None, None, natural), (400.0, 200.0));
+        // Unknown yet (or never: it failed): what it asks for, else 0.
+        assert_eq!(image_box(Some(100.0), None, None), (100.0, 0.0));
+        assert_eq!(image_box(None, None, None), (0.0, 0.0));
+        assert_eq!(image_box(None, None, Some((0.0, 10.0))), (0.0, 0.0));
+    }
 
     #[test]
     fn decorations_split_text_and_widgets_take_a_unit() {
@@ -1545,6 +1896,34 @@ mod tests {
         // Position 4 (offset 3) is after the widget that sticks before it.
         assert_eq!(inline.map.to_text(3), 4);
         assert_eq!(inline.map.len, 6);
+    }
+
+    #[test]
+    fn replaced_syntax_keeps_the_click_position_in_source_units() {
+        let schema = starter::schema();
+        let block = schema
+            .node_from_json(&json!({"type": "paragraph", "content": [
+                {"type": "text", "text": "- 👋 **字**啊"}
+            ]}))
+            .unwrap();
+        let inline = inline_of(
+            &block,
+            1,
+            &[
+                Decoration::replace_char(1, '•'),
+                Decoration::conceal(6, 8),
+                Decoration::conceal(9, 11),
+            ],
+            None,
+            |_| None,
+        );
+        assert!(
+            matches!(&inline.pieces[0], Piece::Text { text, source_bytes, .. } if text == "•" && *source_bytes == (0..1))
+        );
+        assert_eq!(inline.map.len, 7);
+        assert_eq!(inline.map.to_doc(1), 1);
+        assert_eq!(inline.map.to_text(9), 6);
+        assert_eq!(inline.map.to_doc(6), 10);
     }
 
     #[test]

@@ -9,6 +9,8 @@ use crate::ui::{colors, radius};
 #[component]
 pub(crate) fn FileDrop() -> impl IntoElement {
     let hovering = signal(false);
+    let offered = signal(0usize);
+    let images = signal(false);
     let files = signal(Vec::<String>::new());
     view()
         .flex_1()
@@ -35,7 +37,11 @@ pub(crate) fn FileDrop() -> impl IntoElement {
                         colors::SURFACE
                     }
                 })
-                .on_file_drag_enter(move || hovering.set(true))
+                .on_file_drag_enter(move |event: &FileDragEvent| {
+                    offered.set(event.uris.len());
+                    images.set(event.mime_types.iter().all(|t| t.starts_with("image/")));
+                    hovering.set(true);
+                })
                 .on_file_drag_leave(move || hovering.set(false))
                 .on_file_drop(move |event: &FileDropEvent| {
                     files.set(event.uris.clone());
@@ -50,12 +56,15 @@ pub(crate) fn FileDrop() -> impl IntoElement {
                         .py(px(10.0)),
                 )
                 .child(
-                    text(move || {
-                        if hovering.get() {
-                            "Release to attach"
-                        } else {
-                            "Files dropped anywhere on this card are attached"
+                    text(move || match (hovering.get(), offered.get()) {
+                        (true, 1) if images.get() => "Release to attach 1 image".to_string(),
+                        (true, n) if n > 1 && images.get() => {
+                            format!("Release to attach {n} images")
                         }
+                        (true, 1) => "Release to attach 1 item".to_string(),
+                        (true, n) if n > 1 => format!("Release to attach {n} items"),
+                        (true, _) => "Release to attach".to_string(),
+                        _ => "Files dropped anywhere on this card are attached".to_string(),
                     })
                     .text_size(px(13.0))
                     .text_color(colors::MUTED),

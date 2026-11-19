@@ -16,7 +16,10 @@ use std::sync::{
 
 use nsh_base::{tab, tabs};
 use nsh_core::{
-    Color, LayoutCurve, MountItem, NodeId, Size, element::Root, platform::Os, prelude::*,
+    Color, LayoutCurve, MountItem, NodeId, Size,
+    element::{Root, Spring},
+    platform::Os,
+    prelude::*,
 };
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
@@ -190,6 +193,49 @@ fn the_arrows_do_nothing_while_the_focus_is_outside_the_list() {
     app.wait_for("text:presses:0").unwrap();
 }
 
+/// A named list: screen readers say the list's name as they enter it, and
+/// its tabs stay elements of their own.
+#[component]
+fn NamedTabs() -> impl IntoElement {
+    tabs()
+        .accessibility_label("Sections")
+        .child(tab().selected(true).child(text("One")))
+        .child(
+            tab()
+                .accessibility_description("Delete closes it")
+                .child(text("Two")),
+        )
+}
+
+#[test]
+fn a_list_takes_the_name_the_app_gives_it() {
+    let app = start::<NamedTabs>();
+    let screen = app.screen();
+    assert_eq!(screen.count("role:tablist[Sections]"), Ok(1));
+    assert_eq!(screen.count("role:tablist[Sections] >> role:tab"), Ok(2));
+    // A list the app does not name is not called that.
+    let app = start::<TabsScreen>();
+    assert_eq!(app.screen().count("role:tablist"), Ok(1));
+    assert_eq!(app.screen().count("role:tablist[Sections]"), Ok(0));
+}
+
+#[test]
+fn a_tab_hands_its_description_to_screen_readers() {
+    let app = start::<NamedTabs>();
+    let screen = app.screen();
+    assert_eq!(
+        screen.accessibility_description("role:tab[Two]"),
+        Ok(Some("Delete closes it".to_owned()))
+    );
+    // The description is said after the name, never folded into it.
+    assert_eq!(screen.count("role:tab[Two]"), Ok(1));
+    assert_eq!(
+        screen.accessibility_description("role:tab[One]"),
+        Ok(None),
+        "a tab without one has none"
+    );
+}
+
 /// Tabs without a list are stops of their own, as before.
 #[component]
 fn LooseTabs() -> impl IntoElement {
@@ -215,6 +261,42 @@ fn a_tab_outside_a_list_is_a_stop_of_its_own() {
     app.press_key("tab").unwrap();
     app.press_key("enter").unwrap();
     app.wait_for("text:pressed:second").unwrap();
+}
+
+/// Three tabs, each inside views of the app's (one inside two), the first
+/// selected.
+#[component]
+fn WrappedTabs() -> impl IntoElement {
+    let selected = signal(0usize);
+    let section = move |i: usize| {
+        tab()
+            .selected(move || selected.get() == i)
+            .on_press(move |_: &()| selected.set(i))
+            .child(text(NAMES[i]))
+    };
+    view()
+        .child(view().on_press(|| {}).child(text("Before")))
+        .child(
+            tabs()
+                .flex_row()
+                .child(view().child(section(0)))
+                .child(view().child(view().child(section(1))))
+                .child(view().p(px(4.0)).child(section(2))),
+        )
+        .child(text(move || format!("selected:{}", NAMES[selected.get()])))
+}
+
+#[test]
+fn tabs_inside_views_of_the_list_are_its_tabs() {
+    let mut app = start::<WrappedTabs>();
+    app.press_key("tab").unwrap();
+    app.press_key("tab").unwrap();
+    app.press_key("right").unwrap();
+    app.wait_for("text:selected:Two").unwrap();
+    app.press_key("right").unwrap();
+    app.wait_for("text:selected:Three").unwrap();
+    app.press_key("right").unwrap();
+    app.wait_for("text:selected:One").unwrap();
 }
 
 #[derive(Clone, PartialEq, Props)]
@@ -490,7 +572,7 @@ fn a_selection_moves_only_the_indicator_with_a_spring() {
     assert_eq!(frame_of(&pressed, id), Some([158.0, 28.0, 100.0, 2.0]));
     assert_eq!(
         motion_of(&pressed, id),
-        Some(LayoutCurve::Spring { damping: 0.85 })
+        Some(LayoutCurve::Spring(Spring::new(280.0).damping_ratio(0.85)))
     );
     // Its frame alone moves, after its one layout animation; the rest is
     // the two tabs' states (selected, the focus stop).
@@ -509,7 +591,7 @@ fn a_selection_moves_only_the_indicator_with_a_spring() {
     assert_eq!(frame_of(&back, id), Some([10.0, 28.0, 60.0, 2.0]));
     assert_eq!(
         motion_of(&back, id),
-        Some(LayoutCurve::Spring { damping: 0.85 })
+        Some(LayoutCurve::Spring(Spring::new(280.0).damping_ratio(0.85)))
     );
 }
 
@@ -609,7 +691,7 @@ fn with_no_tab_selected_the_indicator_is_hidden_and_shows_at_once() {
     assert_eq!(frame_of(&moved, id), Some([158.0, 28.0, 100.0, 2.0]));
     assert_eq!(
         motion_of(&moved, id),
-        Some(LayoutCurve::Spring { damping: 0.85 })
+        Some(LayoutCurve::Spring(Spring::new(280.0).damping_ratio(0.85)))
     );
 }
 
@@ -625,7 +707,7 @@ fn with_several_tabs_selected_the_indicator_is_on_the_first() {
     assert_eq!(frame_of(&pressed, id), Some([10.0, 28.0, 60.0, 2.0]));
     assert_eq!(
         motion_of(&pressed, id),
-        Some(LayoutCurve::Spring { damping: 0.85 })
+        Some(LayoutCurve::Spring(Spring::new(280.0).damping_ratio(0.85)))
     );
 }
 
@@ -645,7 +727,10 @@ fn a_tab_that_grows_as_it_is_selected_takes_the_indicator_animated_once() {
     let animated: Vec<_> = moved.iter().filter(|m| m.1.is_some()).collect();
     assert_eq!(
         animated,
-        [&(id, Some(LayoutCurve::Spring { damping: 0.85 }))],
+        [&(
+            id,
+            Some(LayoutCurve::Spring(Spring::new(280.0).damping_ratio(0.85)))
+        )],
         "the indicator's frame alone springs, once; the tabs resize at once: {moved:?}"
     );
     let springs = (pressed.iter().flatten())

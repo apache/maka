@@ -24,6 +24,7 @@ fn config(app: App) -> EngineConfig {
         app,
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         refuse_connections: None,
         websocket: None,
@@ -34,7 +35,7 @@ fn config(app: App) -> EngineConfig {
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -47,6 +48,8 @@ fn config(app: App) -> EngineConfig {
         chunk_loader: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     }
 }
 
@@ -511,6 +514,7 @@ fn js_reads_the_files_the_app_ships_with_fetch() {
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
     })
     .unwrap();
     // SAFETY: compiled just now by this runtime.

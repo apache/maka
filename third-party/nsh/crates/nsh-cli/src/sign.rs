@@ -151,7 +151,7 @@ pub(crate) fn publish(options: PublishOptions<'_>) -> anyhow::Result<()> {
         nsh_js::Strip::Source
     };
     let mut built =
-        crate::build::compile_release(&entry, strip).map_err(|e| e.into_error(&entry))?;
+        crate::build::compile_release(&entry, strip, config).map_err(|e| e.into_error(&entry))?;
     crate::ui::done(format!(
         "built {} {}",
         crate::ui::path(&entry),

@@ -24,7 +24,7 @@ import type {
   SettingsLoginPrompt,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Host } from './host';
-import { errorText, message, UiError } from './text';
+import { ActionPending, errorText, message, UiError } from './text';
 import { settingsRejection, settingsValue, type SettingsOperations } from './settingsOperations';
 
 export type LoginAction = { editor: number; input: SettingsCredentialLogin };
@@ -111,7 +111,7 @@ export function createConnectionLogin(
         let saved = false;
         for (;;) {
           const event = await mutation.next();
-          if (!event) throw new UiError('Checking action status…');
+          if (!event) throw new ActionPending();
           if (event.kind === 'not_dispatched') {
             if (alive) operations.notice.set(message('Sign-in cancelled before it started.'));
             return;
@@ -150,7 +150,10 @@ export function createConnectionLogin(
               '{result} Its original request could not finish its resource cleanup.',
               {
                 result: failure
-                  ? errorText(failure)
+                  ? errorText(
+                      failure,
+                      'Sign-in failed. Check the provider and network, then try again.',
+                    )
                   : message(saved ? 'Sign-in was saved.' : 'Sign-in cancelled.'),
               },
             );
@@ -164,7 +167,7 @@ export function createConnectionLogin(
             await owner.discover(action);
           } catch (reason) {
             throw new UiError('Signed in, but models could not be loaded. {reason}', {
-              reason: errorText(reason),
+              reason: errorText(reason, 'Could not load models.'),
             });
           }
         }

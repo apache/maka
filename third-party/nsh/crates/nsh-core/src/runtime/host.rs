@@ -9,7 +9,11 @@
 //! in time rejects (`ETIMEDOUT`, [`DEFAULT_TIMEOUT`]); its answer, when it
 //! comes, is dropped. The host's own error rejects with its message
 //! (`ERR_NSH_HOST_ERROR`); every side builds these errors with
-//! [`crate::host_channel`]'s functions. The host's events and
+//! [`crate::host_channel`]'s functions. A post
+//! ([`crate::Command::HostPost`]) has no answer: a wrong or refused name
+//! throws at once, and without a host it is dropped (`nsh-js` and the
+//! browser's `host.js` call it only where the environment has one, and
+//! only without a native SDK channel). The host's events and
 //! `available()` are `nsh-js`'s (`platform_modules.rs`): its listeners are
 //! JS functions.
 
@@ -17,7 +21,7 @@ use std::{future::Future, task::Poll, time::Duration};
 
 use crate::{
     JsonValue,
-    element::{JsError, JsObject, module},
+    element::{CallCx, JsError, JsObject, System, module},
     host_channel::timed_out,
 };
 
@@ -35,7 +39,8 @@ pub(crate) struct HostCallOptions {
 }
 
 /// The app embedding NSH: `host.call(name, args)` calls one of its
-/// functions (granted by `capabilities.host` in nsh.json).
+/// functions and `host.post(name, args)` hands it data (granted by
+/// `capabilities.host` in nsh.json).
 #[module]
 pub(crate) struct Host;
 
@@ -87,5 +92,21 @@ impl Host {
             crate::element::forget_host_calls();
             Err(timed_out(&name, timeout))
         })
+    }
+
+    /// Hands `args` to the host's function `name`, without an answer, where
+    /// the platform has a host (elsewhere the post is dropped): a wrong name
+    /// throws a `TypeError`, one `capabilities.host` does not grant
+    /// `ERR_ACCESS_DENIED`.
+    pub(crate) fn post(
+        name: String,
+        args: Option<JsonValue>,
+        sys: System,
+        cx: CallCx,
+    ) -> Result<(), JsError> {
+        crate::host_channel::check_call(&sys.access, &name)?;
+        let args = args.unwrap_or_default();
+        cx.start(async move { crate::element::host_post(name, args) });
+        Ok(())
     }
 }

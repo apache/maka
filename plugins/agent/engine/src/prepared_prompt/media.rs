@@ -182,8 +182,6 @@ pub(super) struct MediaView {
     peak: usize,
     _directory: Arc<maka_model::DirectoryLease>,
     materialization: tokio::sync::Mutex<Materialization>,
-    #[cfg(test)]
-    decoded_jobs: std::sync::atomic::AtomicUsize,
 }
 impl MediaView {
     pub(super) fn peak_bytes(&self) -> usize {
@@ -252,7 +250,7 @@ impl MediaView {
         if !changed {
             return Ok(None);
         }
-        let identity = crate::runner::digest(&(
+        let identity = crate::digest(&(
             &self.identity,
             works
                 .iter()
@@ -269,8 +267,6 @@ impl MediaView {
             peak: self.peak,
             _directory: self._directory.clone(),
             materialization: tokio::sync::Mutex::new(Materialization::ImagesPending),
-            #[cfg(test)]
-            decoded_jobs: std::sync::atomic::AtomicUsize::new(0),
         })))
     }
     pub(super) async fn materialize(
@@ -313,9 +309,6 @@ impl MediaView {
                     let mut output = original;
                     let limits = self.limits.clone();
                     let cancelled = cancellation.clone();
-                    #[cfg(test)]
-                    self.decoded_jobs
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     // The arena worker is physically awaited even after cancellation; its
                     // directory lease owns the complete decoder/encoder peak until drain.
                     let (range, output) = self
@@ -324,7 +317,10 @@ impl MediaView {
                             // Keep the typed codec result inside the arena result so the
                             // worker cannot flatten cancellation or writer errors.
                             let _lease = lease;
-                            let image = codec::decode(&encoded, &plan).map_err(io::Error::other)?;
+                            let image = match codec::decode(&encoded, &plan) {
+                                Ok(image) => image,
+                                Err(error) => return Ok(Err(RunError::InvalidImage(error))),
+                            };
                             loop {
                                 let start = writer.position();
                                 if let Err(error) = image.write_image(
@@ -335,7 +331,7 @@ impl MediaView {
                                         cancellation: &cancelled,
                                     },
                                 ) {
-                                    return Ok(Err(error));
+                                    return Ok(Err(RunError::preparation(error)));
                                 }
                                 let range = start..writer.position();
                                 if limits
@@ -345,7 +341,7 @@ impl MediaView {
                                     return Ok(Ok((range, output)));
                                 }
                                 let Some(next) = smaller_geometry(original, output, &limits) else {
-                                    return Ok(Err(io::Error::other(
+                                    return Ok(Err(failure(
                                         "whole image cannot satisfy the selected route's image byte limit and minimum dimensions",
                                     )));
                                 };
@@ -353,8 +349,7 @@ impl MediaView {
                             }
                         })
                         .await
-                        .map_err(RunError::Preparation)?
-                        .map_err(RunError::preparation)?;
+                        .map_err(RunError::Preparation)??;
                     item.pending
                         .0
                         .set(MaterializedImage {
@@ -586,8 +581,7 @@ pub(super) async fn prepare(
             &read.buffer.as_ref()[..read.bytes_read],
             budget.clone(),
         )
-        .await
-        .map_err(failure)?;
+        .await?;
         drop(read);
         let output = geometry(probe.geometry, &limits)?;
         let length = media
@@ -672,8 +666,7 @@ pub(super) async fn prepare(
     if works.is_empty() {
         return Ok(());
     }
-    let identity =
-        crate::runner::digest(&(prompt.body.identity(), &provider.image_input, 2000u32))?;
+    let identity = crate::digest(&(prompt.body.identity(), &provider.image_input, 2000u32))?;
     let view = Arc::new(MediaView {
         works,
         base: base.clone(),
@@ -687,8 +680,6 @@ pub(super) async fn prepare(
         peak,
         _directory: Arc::new(directory),
         materialization: tokio::sync::Mutex::new(Materialization::ImagesPending),
-        #[cfg(test)]
-        decoded_jobs: std::sync::atomic::AtomicUsize::new(0),
     });
     install(prompt, view.clone());
     prompt.resident_bytes = add(prompt.resident_bytes, directory_bytes)?;
@@ -714,12 +705,7 @@ fn install(prompt: &mut PreparedPrompt, view: Arc<MediaView>) {
             )
         })
         .collect();
-    let mapped = source::mapped(
-        view.base.clone(),
-        Arc::new(replacements),
-        view.identity.clone(),
-        view.clone(),
-    );
+    let mapped = source::mapped(view.base.clone(), Arc::new(replacements), view.clone());
     let normalization = prompt.body.normalization().cloned();
     let original_body = prompt.body.clone();
     prompt.body = maka_model::prompt::Prompt::from_recipes(
@@ -785,8 +771,6 @@ pub(super) async fn fit_request(
         super::wire::compile(prompt, language, provider, options, tools, cancellation).await?;
     }
 }
-#[cfg(test)]
-mod tests;
 
 /// JPEG metadata can precede SOF by more than one work buffer. Walk marker
 /// segments without retaining EXIF/ICC payloads or imposing a header-size cap.
@@ -794,18 +778,17 @@ async fn probe_source(
     source: &SourceBytes,
     initial: &[u8],
     budget: Arc<dyn SourceBudget>,
-) -> Result<codec::ImageProbe, String> {
+) -> Result<codec::ImageProbe, RunError> {
     match codec::probe(initial) {
         Ok(probe) => return Ok(probe),
-        Err(error) if !initial.starts_with(&[0xff, 0xd8]) => return Err(error),
+        Err(error) if !initial.starts_with(&[0xff, 0xd8]) => {
+            return Err(RunError::InvalidImage(error));
+        }
         Err(_) => {}
     }
     let mut input = HeaderStream {
         cursor: source.open(budget.clone()),
-        buffer: budget
-            .allocate(32 * 1024)
-            .await
-            .map_err(|error| error.to_string())?,
+        buffer: budget.allocate(32 * 1024).await.map_err(failure)?,
         position: 0,
         used: 0,
         eof: false,
@@ -813,7 +796,9 @@ async fn probe_source(
     input.skip(2).await?;
     loop {
         if input.byte().await? != 0xff {
-            return Err("JPEG header marker is missing".into());
+            return Err(RunError::InvalidImage(
+                "JPEG header marker is missing".into(),
+            ));
         }
         let marker = loop {
             let marker = input.byte().await?;
@@ -822,20 +807,24 @@ async fn probe_source(
             }
         };
         if marker == 0xda || marker == 0xd9 {
-            return Err("JPEG dimensions are missing before pixel data".into());
+            return Err(RunError::InvalidImage(
+                "JPEG dimensions are missing before pixel data".into(),
+            ));
         }
         if marker == 0x01 || (0xd0..=0xd8).contains(&marker) {
             continue;
         }
         let length = u16::from_be_bytes([input.byte().await?, input.byte().await?]);
         if length < 2 {
-            return Err("JPEG header segment has an invalid length".into());
+            return Err(RunError::InvalidImage(
+                "JPEG header segment has an invalid length".into(),
+            ));
         }
         if (0xc0..=0xcf).contains(&marker) && !matches!(marker, 0xc4 | 0xc8 | 0xcc) {
             let mut header = budget
                 .allocate(usize::from(length) + 4)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(failure)?;
             header.as_mut()[..6].copy_from_slice(&[
                 0xff,
                 0xd8,
@@ -847,7 +836,8 @@ async fn probe_source(
             input
                 .copy(&mut header.as_mut()[6..usize::from(length) + 4])
                 .await?;
-            return codec::probe(&header.as_ref()[..usize::from(length) + 4]);
+            return codec::probe(&header.as_ref()[..usize::from(length) + 4])
+                .map_err(RunError::InvalidImage);
         }
         input.skip(usize::from(length) - 2).await?;
     }
@@ -860,37 +850,37 @@ struct HeaderStream {
     eof: bool,
 }
 impl HeaderStream {
-    async fn fill(&mut self) -> Result<(), String> {
+    async fn fill(&mut self) -> Result<(), RunError> {
         if self.position < self.used {
             return Ok(());
         }
         if self.eof {
-            return Err("image header ended before dimensions".into());
+            return Err(RunError::InvalidImage(
+                "image header ended before dimensions".into(),
+            ));
         }
         // A cursor returns its supplied work buffer. A temporary empty buffer
         // only transfers ownership across the awaited bounded read.
         let buffer = std::mem::replace(&mut self.buffer, ChargedBuffer::new(Vec::new(), ()));
-        let read = self
-            .cursor
-            .read_chunk(buffer)
-            .await
-            .map_err(|error| error.to_string())?;
+        let read = self.cursor.read_chunk(buffer).await.map_err(failure)?;
         self.buffer = read.buffer;
         self.position = 0;
         self.used = read.bytes_read;
         self.eof = read.eof;
         if self.used == 0 {
-            return Err("image header made no progress".into());
+            return Err(RunError::InvalidImage(
+                "image header made no progress".into(),
+            ));
         }
         Ok(())
     }
-    async fn byte(&mut self) -> Result<u8, String> {
+    async fn byte(&mut self) -> Result<u8, RunError> {
         self.fill().await?;
         let value = self.buffer.as_ref()[self.position];
         self.position += 1;
         Ok(value)
     }
-    async fn skip(&mut self, mut bytes: usize) -> Result<(), String> {
+    async fn skip(&mut self, mut bytes: usize) -> Result<(), RunError> {
         while bytes != 0 {
             self.fill().await?;
             let count = bytes.min(self.used - self.position);
@@ -899,7 +889,7 @@ impl HeaderStream {
         }
         Ok(())
     }
-    async fn copy(&mut self, mut output: &mut [u8]) -> Result<(), String> {
+    async fn copy(&mut self, mut output: &mut [u8]) -> Result<(), RunError> {
         while !output.is_empty() {
             self.fill().await?;
             let count = output.len().min(self.used - self.position);

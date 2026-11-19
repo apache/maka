@@ -437,14 +437,8 @@ pub(crate) struct Shell {
     /// (`HT*`, 0 for none), the one pressed.
     pub(crate) hover: Cell<u32>,
     pub(crate) pressed: Cell<u32>,
-    /// The mouse is tracked for `WM_NCMOUSELEAVE`.
-    pub(crate) nc_tracking: Cell<bool>,
     /// The window is inactive (its caption buttons dim).
     pub(crate) inactive: Cell<bool>,
-    /// The mouse is over a view of the app's title bar that is not the
-    /// client area (`windowControl`, `windowDrag`): the views hear it move
-    /// there.
-    pub(crate) view_hover: Cell<bool>,
     /// Inside the system's move or resize loop.
     pub(crate) sizing: Cell<bool>,
     /// Alt+F4 was pressed, for the `WM_CLOSE` it makes.
@@ -461,6 +455,9 @@ pub(crate) struct Shell {
     pub(crate) closing: Cell<bool>,
     /// The title bar's area last reported (windows of the app's own).
     pub(crate) title_bar: Cell<Option<Edges<Points>>>,
+    /// The material is the zoomed one's ([`set_material`]): square
+    /// corners, no border over the screen's edges.
+    pub(crate) zoomed_material: Cell<bool>,
 }
 
 impl Shell {
@@ -472,9 +469,7 @@ impl Shell {
             disabled_owner: Cell::new(None),
             hover: Cell::new(0),
             pressed: Cell::new(0),
-            nc_tracking: Cell::new(false),
             inactive: Cell::new(false),
-            view_hover: Cell::new(false),
             sizing: Cell::new(false),
             close_key: Cell::new(false),
             close_command: Cell::new(None),
@@ -482,6 +477,7 @@ impl Shell {
             tab_deleted: Cell::new(false),
             closing: Cell::new(false),
             title_bar: Cell::new(None),
+            zoomed_material: Cell::new(false),
         }
     }
 
@@ -621,6 +617,11 @@ pub(crate) fn sync(surface: &Surface, hwnd: HWND, before: Option<Attrs>, after: 
     }) && (before.is_some() || after.backdrop != Backdrop::None || after.frameless())
     {
         set_material(hwnd, &after);
+        // The background a composed window clears to follows its backdrop
+        // ([`crate::surface::Surface::transparent`]).
+        if before.is_some_and(|b| b.backdrop != after.backdrop) {
+            surface.invalidate();
+        }
     }
     if before.is_none() {
         set_color_scheme(surface, hwnd, Appearance::System);
@@ -710,18 +711,20 @@ pub(crate) fn clamped(size: (i32, i32), attrs: &Attrs, scale: f32) -> (i32, i32)
 }
 
 fn set_level(hwnd: HWND, level: WindowLevel) {
-    // SAFETY: a plain call on a live window.
-    let _ = unsafe {
-        SetWindowPos(
-            hwnd,
-            Some(level_order(level)),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        )
+    let order = level_order(level);
+    let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+    // SAFETY: plain calls and a query on a live window.
+    let topmost = unsafe {
+        if order == HWND_TOPMOST {
+            // HWND_TOPMOST alone was seen to do nothing under the foreground window; cause unknown.
+            let _ = SetWindowPos(hwnd, Some(HWND_TOP), 0, 0, 0, 0, flags);
+        }
+        let _ = SetWindowPos(hwnd, Some(order), 0, 0, 0, 0, flags);
+        GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0 != 0
     };
+    if topmost != (order == HWND_TOPMOST) {
+        log::warn!("window: level {level:?} did not take (topmost: {topmost})");
+    }
 }
 
 /// Shows the window's taskbar button, or takes it away. The taskbar
@@ -751,16 +754,37 @@ fn set_tab(hwnd: HWND, show: bool) {
     }
 }
 
+/// The window's material is the bare one's while it is zoomed
+/// ([`set_material`]).
+///
+/// - A frameless window's client area is the monitor's then: the extended
+///   frame's border would run along the screen's edges and the rounded
+///   corners would cut them (a system-framed window hides both beyond the
+///   monitor, which a frameless one has no room for).
+/// - A window with its title bar hidden over a backdrop has its frame
+///   extended into the whole client area, and zoomed, DWM draws its own
+///   caption buttons there, laid out for a maximized caption: a couple of
+///   pixels off the ones drawn over the app ([`crate::chrome::draw`]),
+///   both showing wherever the app lets the backdrop through. Without the
+///   non-client rendering DWM draws none; the backdrop stays.
+///
+/// A zoomed window has no use for its shadow or rounded corners either.
+fn bare_when_zoomed(attrs: &Attrs) -> bool {
+    attrs.frameless() || (attrs.hidden_title_bar() && attrs.backdrop != Backdrop::None)
+}
+
 /// The system backdrop (Windows 11 22H2's Mica and Acrylic; nothing
 /// before), the shadow of a frameless window and its corners.
 fn set_material(hwnd: HWND, attrs: &Attrs) {
     let frameless = attrs.frameless();
     let backdrop = attrs.backdrop != Backdrop::None;
+    // SAFETY: a plain query on a live window.
+    let zoomed = bare_when_zoomed(attrs) && unsafe { IsZoomed(hwnd) }.as_bool();
     // A frameless window's shadow is the frame's, extended by a pixel;
     // a backdrop shows through the whole client area.
     let margin = if backdrop {
         -1
-    } else if frameless && attrs.shadow && !attrs.transparent {
+    } else if frameless && attrs.shadow && !attrs.transparent && !zoomed {
         1
     } else {
         0
@@ -775,8 +799,8 @@ fn set_material(hwnd: HWND, attrs: &Attrs) {
     // No shadow and square corners: a frameless window without a shadow
     // (or see-through) is only what the app draws.
     let bare = frameless && (!attrs.shadow || attrs.transparent);
-    let policy: i32 = if bare { 1 } else { 0 };
-    let corners: i32 = if bare { 1 } else { 0 };
+    let policy: i32 = if bare || zoomed { 1 } else { 0 };
+    let corners: i32 = if bare || zoomed { 1 } else { 0 };
     let set = |attribute, value: &i32| {
         // SAFETY: an i32-sized attribute value.
         unsafe {
@@ -794,6 +818,23 @@ fn set_material(hwnd: HWND, attrs: &Attrs) {
     let _ = set(DWMWA_WINDOW_CORNER_PREFERENCE, &corners);
     // SAFETY: a plain call with a local structure.
     let _ = unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) };
+    if let Some(shell) = crate::window::shell(hwnd) {
+        shell.zoomed_material.set(zoomed);
+    }
+}
+
+/// A window was maximized or restored (`WM_SIZE`): its material follows
+/// the zoom state, which [`set_material`] only saw when its attributes
+/// changed.
+pub(crate) fn zoom_changed(hwnd: HWND) {
+    let Some(shell) = crate::window::shell(hwnd) else {
+        return;
+    };
+    // SAFETY: a plain query on a live window.
+    let zoomed = bare_when_zoomed(&shell.attrs()) && unsafe { IsZoomed(hwnd) }.as_bool();
+    if shell.zoomed_material.get() != zoomed {
+        set_material(hwnd, &shell.attrs());
+    }
 }
 
 /// The window's frame dark or light: its own scheme, else the app's.
@@ -878,7 +919,7 @@ pub(crate) fn request(hwnd: HWND, request: &WindowRequest) -> bool {
                     crate::window::show(hwnd);
                 }
                 if crate::window::shell(hwnd).is_none_or(|s| s.attrs().focusable) {
-                    let _ = SetForegroundWindow(hwnd);
+                    crate::window::set_foreground(hwnd);
                 }
             }
             WindowRequest::Close => return false,
@@ -957,6 +998,23 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn a_hidden_window_takes_and_leaves_the_topmost_levels() {
+        let surface = Surface::new(Default::default());
+        let hwnd = crate::window::create(&surface, "NSH level", (320, 240), None, false).unwrap();
+        // SAFETY: a plain query on the test's own window.
+        let topmost =
+            || unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST.0 != 0;
+        for level in [WindowLevel::Floating, WindowLevel::AboveDock] {
+            set_level(hwnd, level);
+            assert!(topmost(), "{level:?} makes the window topmost");
+            set_level(hwnd, WindowLevel::Normal);
+            assert!(!topmost(), "normal after {level:?} takes topmost away");
+        }
+        // SAFETY: the test's own window, destroyed once.
+        let _ = unsafe { DestroyWindow(hwnd) };
+    }
 
     #[test]
     fn kinds_have_their_styles() {
@@ -1041,6 +1099,20 @@ mod tests {
             WS_POPUP.0 | WS_SYSMENU.0 | WS_VISIBLE.0 | WS_MAXIMIZE.0 | WS_DISABLED.0
         );
         assert_eq!(ex, WS_EX_TOOLWINDOW.0 | WS_EX_NOREDIRECTIONBITMAP.0);
+    }
+
+    #[test]
+    fn a_hidden_title_bar_over_a_backdrop_goes_bare_when_zoomed() {
+        let mut attrs = Attrs::of_kind(WindowKind::Normal);
+        assert!(!bare_when_zoomed(&attrs), "the system's title bar");
+        attrs.title_bar.style = TitleBarStyle::Hidden;
+        assert!(!bare_when_zoomed(&attrs), "hidden, over no backdrop");
+        attrs.backdrop = Backdrop::Window;
+        assert!(bare_when_zoomed(&attrs), "hidden, over a backdrop");
+        attrs.title_bar.style = TitleBarStyle::Default;
+        assert!(!bare_when_zoomed(&attrs), "the system's, over a backdrop");
+        attrs.frame = WindowFrameStyle::None;
+        assert!(bare_when_zoomed(&attrs), "frameless");
     }
 
     #[test]

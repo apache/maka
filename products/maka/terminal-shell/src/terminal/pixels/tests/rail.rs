@@ -48,12 +48,13 @@ struct RailHost {
 #[class]
 impl RailHost {
     #[getter]
-    pub fn system_locale(&self) -> String {
-        "en".into()
-    }
-    #[getter]
     pub fn ui_scale_supported(&self) -> bool {
         true
+    }
+
+    #[getter]
+    pub fn system_locale(&self) -> String {
+        "en".into()
     }
     #[getter]
     pub fn ui_scale_factor(&self) -> f32 {
@@ -69,7 +70,14 @@ pub(super) fn every_visible_turn_mark_can_be_clicked_with_cell_coordinates() {
             .join("tests/fixtures/turn-navigation.tsx"),
         minify: false,
         split: false,
-        ui_sets: vec![nsh_base::registry().into(), host.into()],
+        ui_sets: nsh_base::registry()
+            .sets()
+            .into_iter()
+            .map(Into::into)
+            .chain(std::iter::once(host.into()))
+            .collect(),
+        asset_root_from: Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")),
+        ..Default::default()
     })
     .unwrap();
     check_marks(&bundle.code);
@@ -254,7 +262,7 @@ fn check_marks(source: &str) {
                 for frame in frames.borrow_mut().drain(..) {
                     let width = frame.size().width.0 as usize;
                     let preview = frame.pixels().as_chunks::<4>().0.iter().enumerate().any(
-                        |(index, pixel)| index % width < width - 48 && pixel[..3] == [32, 33, 35],
+                        |(index, pixel)| index % width < width - 48 && pixel[..3] == [42, 43, 46],
                     );
                     if preview == visible {
                         return;

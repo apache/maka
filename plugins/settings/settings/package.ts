@@ -39,6 +39,7 @@ export default {
         setup: one(sdk.contracts.settingsSetup),
         agent: one(sdk.contracts.agent),
         skills: { contract: sdk.contracts.skillLibrary, cardinality: { kind: 'optional' } },
+        web: { contract: sdk.contracts.workspaceWeb, cardinality: { kind: 'optional' } },
         management: one(sdk.contracts.deploymentManager),
         receipts: one(sdk.contracts.receiptReader),
       },
@@ -48,18 +49,18 @@ export default {
           kind: 'settings',
           title: { fallback: 'General', translations: { 'zh-CN': '常规', 'zh-TW': '一般' } },
         },
-        'quick-tools': {
-          kind: 'settings',
-          title: {
-            fallback: 'Quick Tools',
-            translations: { 'zh-CN': '快捷工具', 'zh-TW': '快捷工具' },
-          },
-        },
         connections: {
           kind: 'settings',
           title: {
-            fallback: 'Connections & models',
-            translations: { 'zh-CN': '连接与模型', 'zh-TW': '連線與模型' },
+            fallback: 'Models',
+            translations: { 'zh-CN': '模型', 'zh-TW': '模型' },
+          },
+        },
+        subagents: {
+          kind: 'settings',
+          title: {
+            fallback: 'Subagents',
+            translations: { 'zh-CN': '子 Agent', 'zh-TW': '子 Agent' },
           },
         },
         skills: {
@@ -73,11 +74,11 @@ export default {
             translations: { 'zh-CN': 'MCP 服务器', 'zh-TW': 'MCP 伺服器' },
           },
         },
-        'external-agents': {
+        'web-search': {
           kind: 'settings',
           title: {
-            fallback: 'External agents',
-            translations: { 'zh-CN': '外部 Agent', 'zh-TW': '外部 Agent' },
+            fallback: 'Web search',
+            translations: { 'zh-CN': '网页搜索', 'zh-TW': '網頁搜尋' },
           },
         },
         network: {
@@ -86,7 +87,17 @@ export default {
         },
         plugins: {
           kind: 'settings',
-          title: { fallback: 'Plugins', translations: { 'zh-CN': '插件', 'zh-TW': '外掛' } },
+          title: {
+            fallback: 'Installed plugins',
+            translations: { 'zh-CN': '已安装插件', 'zh-TW': '已安裝外掛' },
+          },
+        },
+        marketplace: {
+          kind: 'settings',
+          title: {
+            fallback: 'Plugin marketplace',
+            translations: { 'zh-CN': '插件市场', 'zh-TW': '外掛市集' },
+          },
         },
         appearanceTextSize: {
           kind: 'command',

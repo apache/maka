@@ -101,6 +101,7 @@ test('independent UI bundles retain user choices and restore untouched startup p
   reads.get('appearance-theme').resolve('light');
   reads.get('appearance-text-size').resolve('1.15');
   reads.get('appearance-palette').resolve('sage');
+  reads.get('appearance-tray-icon').resolve('tile');
   reads.get('appearance-custom-palette').resolve(
     JSON.stringify({
       hue: 20,
@@ -112,6 +113,7 @@ test('independent UI bundles retain user choices and restore untouched startup p
   await root.appearance.whenIdle();
   assert.equal(root.appearance.theme(), 'dark');
   assert.equal(settings.appearance.textSize(), 1.15);
+  assert.equal(root.appearance.trayIcon(), 'tile');
   assert.equal(root.appearance.palette(), 'custom');
   assert.deepEqual(root.appearance.recipe(), { hue: 280, tint: 0.3, accent: '#ff0000' });
   assert.equal(fixture.themes.at(-1), 'dark');

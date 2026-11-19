@@ -341,6 +341,10 @@ mod imp {
         /// the last snapshot ([`NshView::changed`]). A cell: GTK's signals
         /// call `changed` while the state may be borrowed.
         pub(crate) damage: std::cell::Cell<(bool, bool)>,
+        /// The screen reader's focus is on it while the keyboard focus is
+        /// elsewhere (`setAccessibilityFocus` on a view that takes no
+        /// keyboard focus: [`crate::access::focus`]).
+        pub(crate) reader_focus: std::cell::Cell<bool>,
     }
 
     impl Default for NshView {
@@ -349,6 +353,7 @@ mod imp {
                 state: RefCell::new(ViewState::new(0, ViewKind::View)),
                 resized: RefCell::new(None),
                 damage: Default::default(),
+                reader_focus: Default::default(),
             }
         }
     }
@@ -372,6 +377,20 @@ mod imp {
     // their widgets are not in their rows' order, and the widgets' order
     // is the order they paint in, so it stays.
     impl AccessibleImpl for NshView {
+        // AT-SPI's `focusable` and `focused` states, and the `focused`
+        // event GTK sends as they change: the screen reader's focus, which
+        // GTK otherwise only knows as the keyboard focus.
+        fn platform_state(&self, state: gtk::AccessiblePlatformState) -> bool {
+            match state {
+                gtk::AccessiblePlatformState::Focusable | gtk::AccessiblePlatformState::Focused
+                    if self.reader_focus.get() =>
+                {
+                    true
+                }
+                _ => self.parent_platform_state(state),
+            }
+        }
+
         fn first_accessible_child(&self) -> Option<gtk::Accessible> {
             match self.obj().reading_children() {
                 Some(kids) => kids.first().map(|w| w.clone().upcast()),
@@ -620,9 +639,21 @@ impl NshView {
         view
     }
 
+    /// Puts the screen reader's focus on it or takes it off, for GTK to
+    /// report as its accessible `focused` state ([`crate::access::focus`]);
+    /// whether it had it.
+    pub(crate) fn set_reader_focus(&self, on: bool) -> bool {
+        self.imp().reader_focus.replace(on)
+    }
+
     /// Its state.
     pub(crate) fn state(&self) -> Ref<'_, ViewState> {
         self.imp().state.borrow()
+    }
+
+    /// Read-only native queries can arrive while a batch is changing this view.
+    pub(crate) fn try_state(&self) -> Result<Ref<'_, ViewState>, std::cell::BorrowError> {
+        self.imp().state.try_borrow()
     }
 
     /// Its state, to change. Call [`NshView::changed`] or

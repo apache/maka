@@ -22,6 +22,7 @@ use maka_agent_facts::input::MessageInput;
 
 pub(super) fn project(
     id: &str,
+    run_id: maka_agent_facts::durable::RunId,
     turn: &str,
     ts: u64,
     content: &MessageInput,
@@ -29,6 +30,8 @@ pub(super) fn project(
 ) -> Result<Message, ProjectionError> {
     Ok(Message {
         id: id.into(),
+        run_id,
+        model: None,
         turn_id: turn.into(),
         ts,
         content: Content::User {

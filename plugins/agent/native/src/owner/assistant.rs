@@ -81,7 +81,7 @@ fn read(directory: &Dir, agents: bool) -> Vec<WorkspaceInstruction> {
 impl Owner {
     /// Capture once at message acceptance. Recovery replays the persisted basis.
     /// Native CLIs own their rule files; omit the workspace to capture only Maka preferences.
-    pub(super) async fn capture_behavior(
+    async fn capture_base_behavior(
         &self,
         workspace: Option<&Workspace>,
         snapshot: &RuntimePolicySnapshot,
@@ -96,31 +96,35 @@ impl Owner {
             workspace_instructions: snapshot.policy.workspace_instructions.enabled,
         };
         let (global_instruction, instructions) = if preferences.workspace_instructions {
-            let workspace = workspace.cloned();
+            let project = match workspace {
+                Some(workspace) => Some(
+                    workspace::open_workspace(
+                        &self.workspace_roots,
+                        workspace,
+                        &self.managed_worktrees,
+                    )
+                    .await?,
+                ),
+                None => None,
+            };
             let home = self.instruction_home.clone();
             tokio::task::spawn_blocking(move || {
                 let mut global_instruction = String::new();
-                if let Some(home) = &home {
-                    if let Ok(source) = global_instructions::selected(home)
-                        && let Ok(Some(text)) = global_instructions::read_selected(home, source)
-                    {
-                        global_instruction = parse_instruction_files([(
-                            InstructionFile::Agents,
-                            String::from_utf8_lossy(&text).into_owned(),
-                        )])
-                        .pop()
-                        .map(|instruction| instruction.text)
-                        .unwrap_or_default();
-                    }
+                if let Some(home) = &home
+                    && let Ok(source) = global_instructions::selected(home)
+                    && let Ok(Some(text)) = global_instructions::read_selected(home, source)
+                {
+                    global_instruction = parse_instruction_files([(
+                        InstructionFile::Agents,
+                        String::from_utf8_lossy(&text).into_owned(),
+                    )])
+                    .pop()
+                    .map(|instruction| instruction.text)
+                    .unwrap_or_default();
                 }
-                let Some(workspace) = workspace else {
+                let Some(project) = project else {
                     return Ok((global_instruction, String::new()));
                 };
-                let project = maka_fs_tools::workspace::open_directory(
-                    Path::new(&workspace.path),
-                    &workspace.identity,
-                )
-                .map_err(|_| "agent_workspace_unavailable")?;
                 let global = home
                     .and_then(|home| home.open_dir(".maka").ok())
                     .map(|directory| read(&directory, false))
@@ -150,5 +154,38 @@ impl Owner {
         }
         prompt.validate().map_err(|_| "agent_prompt_invalid")?;
         Ok(Some(prompt))
+    }
+}
+
+impl Owner {
+    pub(super) async fn capture_behavior(
+        &self,
+        workspace: Option<&Workspace>,
+        snapshot: &RuntimePolicySnapshot,
+        language: Language,
+        preset: Option<&maka_agent_api::preset::AppliedPreset>,
+    ) -> Result<Option<SystemPrompt>, String> {
+        let mut prompt = self
+            .capture_base_behavior(workspace, snapshot, language)
+            .await?;
+        if let Some(preset) = preset.filter(|p| !p.instruction.is_empty()) {
+            let prompt = prompt.get_or_insert_with(|| {
+                let mut source = self.revision.clone();
+                source.kind = SourceKind::PromptSection;
+                SystemPrompt {
+                    text: String::new(),
+                    policy_revision: snapshot.revision,
+                    sources: vec![source],
+                }
+            });
+            prompt.text.push_str(match language {
+                Language::ZhCn => "\n\n# 会话角色说明\n在当前任务的明确要求不与之冲突的前提下，遵循以下角色设定：\n\n",
+                Language::ZhTw => "\n\n# 會話角色說明\n在目前任務的明確要求不與之衝突的前提下，遵循以下角色設定：\n\n",
+                Language::En => "\n\n# Session role\nFollow these role instructions unless the user's explicit requirements for the current task conflict with them.\n\n",
+            });
+            prompt.text.push_str(&preset.instruction);
+            prompt.validate().map_err(|_| "agent_prompt_invalid")?;
+        }
+        Ok(prompt)
     }
 }

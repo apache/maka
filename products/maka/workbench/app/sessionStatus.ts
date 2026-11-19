@@ -23,28 +23,22 @@ import type {
   AgentSessionActivity,
 } from '../../../../packages/plugin-sdk/src/index.js';
 
-export type ConversationStatus = AgentRunState | 'loading' | 'idle' | 'failed';
+export type ConversationStatus =
+  | AgentRunState
+  | 'loading'
+  | 'idle'
+  | 'failed'
+  | 'waiting'
+  | 'blocked';
 
-export const sessionStatusCaption: Record<
-  AgentSessionActivity | 'loading' | 'stopping' | 'failed',
-  string
-> = {
+export const sessionStatusCaption: Record<AgentSessionActivity, string> = {
   get working() {
     return tr('Working');
   },
   get waiting() {
     return tr('Waiting for you');
   },
-  get loading() {
-    return tr('Loading session…');
-  },
-  get stopping() {
-    return tr('Stopping…');
-  },
   get idle() {
     return tr('Idle');
-  },
-  get failed() {
-    return tr('Failed');
   },
 };

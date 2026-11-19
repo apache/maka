@@ -132,6 +132,7 @@ impl Mounter {
                 if let Some(view) = self.get(*id) {
                     crate::text_input::removing(surface, view);
                     crate::selectable_view::touched(surface, view);
+                    crate::input::removed(surface, view);
                     // A removal animation detaches the view when it ends.
                     if !crate::transition::removing(surface, view, self.layout_animation.as_ref()) {
                         self.detach(surface, view);
@@ -144,6 +145,7 @@ impl Mounter {
                 if let Some(view) = self.views.remove(id) {
                     crate::text_input::removing(surface, &view);
                     crate::selectable_view::touched(surface, &view);
+                    crate::input::removed(surface, &view);
                     crate::native::deleted(surface, &view);
                     crate::shader::deleted(surface, &view);
                     // A removal animation detaches the view when it ends.
@@ -205,6 +207,7 @@ impl Mounter {
                 crate::input::style_changed(view);
                 crate::transition::style_changed(surface, view, &old);
                 crate::access::style_changed(view, &old);
+                crate::key_focus::changed(view);
                 view.moved();
             }
             MountItem::Text {
@@ -228,7 +231,7 @@ impl Mounter {
                     view.state_mut().events = *events;
                     crate::file_drop::events_changed(surface, view);
                     crate::input::events_changed(surface, view);
-                    crate::access::events_changed(view);
+                    crate::access::events_changed(surface, view);
                 }
             }
             MountItem::Image {
@@ -334,7 +337,8 @@ impl Mounter {
                 view.state_mut().props = props.clone();
                 crate::input::props_changed(surface, view);
                 crate::selectable_view::props_changed(surface, view);
-                crate::access::props_changed(view);
+                crate::access::props_changed(surface, view);
+                crate::key_focus::changed(view);
             }
             MountItem::LayoutAnimation(a) => self.layout_animation = Some(*a),
             MountItem::Input { id, config } => {
@@ -426,6 +430,11 @@ impl Mounter {
                     crate::text_input::set_selection(view, *start, *end);
                 }
             }
+            Command::InsertText(text) => {
+                if let Some(view) = view {
+                    crate::text_input::insert_text(view, text);
+                }
+            }
             Command::ScrollTo { y, .. } if view.is_some_and(|v| v.kind() == ViewKind::Input) => {
                 crate::text_input::scroll_to(view.expect("an input"), *y);
             }
@@ -446,7 +455,7 @@ impl Mounter {
             // mounter again while a batch is applied.
             Command::AccessibilityFocus => {
                 if let Some(view) = view {
-                    view.grab_focus();
+                    crate::access::focus(surface, view);
                 }
             }
             Command::ImageInfo { .. } => crate::image::command(surface, id, command),
@@ -460,6 +469,7 @@ impl Mounter {
             | Command::InjectJavaScript(_)
             | Command::PostMessage(_)
             | Command::Load(_)
+            | Command::WebViewRequest(_)
             | Command::Seek(_)
             | Command::Native { .. } => {
                 if let Some(view) = view {

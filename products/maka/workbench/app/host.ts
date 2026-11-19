@@ -18,12 +18,14 @@
  */
 
 import { UiError } from './text';
+import { immutableAsset } from './immutableAsset';
 import { tr } from './locale';
 import { host as nativeHost } from 'maka/host';
 import { context } from 'nsh';
 import type { ApplicationHost, CapturedFile, ScopedHost } from 'maka/host';
 import type {
   AgentFileKind,
+  AgentSessionKind,
   ClientDraft,
   ClientDraftEdit,
   ClientOperation,
@@ -32,6 +34,7 @@ import type {
   SystemPermissionGrant,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import type { UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
+import type { ComposerIntake } from '../../../../packages/plugin-sdk/src/composer-view.js';
 
 // Native JSON results have Rust-owned shapes. Project the shared API while
 // retaining the admitted native Host object and its original request custody.
@@ -44,6 +47,7 @@ type Services = {
   authentication: ServiceMethods['settingsAuthentication'];
   setup: ServiceMethods['settingsSetup'];
   management: ServiceMethods['deploymentManager'];
+  web: ServiceMethods['workspaceWeb'];
   terminal: ServiceMethods['terminal'];
 };
 type Endpoint = keyof Services;
@@ -162,24 +166,55 @@ export function createHost(application: UiHost) {
     };
   }
 
+  async function markdownSource(sessionId: string, target: string) {
+    const link = nativeHost.markdownLink(target);
+    if (link.kind === 'attachment') {
+      const read = { sessionId, source: { kind: 'artifact' as const, id: link.id }, offset: 0 };
+      return {
+        kind: 'image' as const,
+        uri: nativeHost.assetUri(immutableAsset('attachment-image', read)),
+      };
+    }
+    if (link.kind === 'remote') return link;
+    const path = await query('agent', 'resolveFileLink', { sessionId, pathBytes: link.pathBytes });
+    return {
+      kind: 'disk' as const,
+      path,
+      line: link.line,
+      endLine: link.endLine,
+      column: link.column,
+    };
+  }
+
   // Local journal methods serialize these actual Rust DTOs. Their receipt business
   // values remain unknown and continue through the application's existing guards.
   return {
     assetUri: (uri: string) => nativeHost.assetUri(uri),
-    markdownImageSource(target: string) {
-      const source = nativeHost.markdownImageSource(target);
-      return source.kind === 'workspace'
-        ? { kind: 'workspace' as const, path: { bytesBase64: source.path } }
-        : source;
-    },
-    async openLink(target: string) {
-      const link = await nativeHost.openLink(target);
-      return link === null
-        ? null
-        : {
-            path: { bytesBase64: link.path },
-            parent: link.parent == null ? null : { bytesBase64: link.parent },
-          };
+    markdownSource,
+    openBrowser: (target: string) => nativeHost.openBrowser(target),
+    async openLink(target: string, sessionId: string) {
+      const source = await markdownSource(sessionId, target);
+      if (source.kind === 'remote') {
+        await nativeHost.openBrowser(source.uri);
+        return null;
+      }
+      if (source.kind === 'image') return source;
+      if ('absolute' in source.path) {
+        const stream = await readFile({ sessionId, path: source.path });
+        try {
+          const file = await stream.readFile();
+          if (file.kind !== 'image') throw new UiError('This file is not a supported image.');
+          return { kind: 'image' as const, uri: file.uri };
+        } finally {
+          await stream.close();
+        }
+      }
+      return {
+        path: source.path,
+        line: source.line ?? undefined,
+        endLine: source.endLine ?? undefined,
+        column: source.column ?? undefined,
+      };
     },
     query,
     get systemPermissionWindow() {
@@ -199,12 +234,9 @@ export function createHost(application: UiHost) {
       nativeHost.systemPermissionActions(sessionId, requestId),
     systemPermissionAction: (sessionId: string, requestId: string, action: string) =>
       nativeHost.systemPermissionAction(sessionId, requestId, action),
-    stageFiles: (files: string[]) => nativeHost.stageFiles(files),
-    stageDroppedFiles: (files: string[]) => nativeHost.stageDroppedFiles(files),
+    stageIntake: (input: ComposerIntake) => nativeHost.stageIntake(input),
     recentWorkspaces: () => nativeHost.recentWorkspaces(),
-    setRecentWorkspace: (path: string, remember: boolean) =>
-      nativeHost.setRecentWorkspace(path, remember),
-    stageClipboard: () => nativeHost.stageClipboard(),
+    setRecentWorkspace: (path: string) => nativeHost.setRecentWorkspace(path),
     hasService: (endpoint: string) => nativeHost.hasService(endpoint),
     refresh: () => nativeHost.refresh(),
     subscribe,
@@ -217,6 +249,9 @@ export function createHost(application: UiHost) {
     },
     pathLabel(path: unknown) {
       return nativeHost.pathLabel(path);
+    },
+    async saveFile(input: Input<'agent', 'saveFile'>, text: string) {
+      return attempt(await nativeHost.control('saveFile', input, text));
     },
     async control(method: string, input: unknown) {
       return attempt(await nativeHost.control(method, input));
@@ -253,6 +288,17 @@ export function createHost(application: UiHost) {
 }
 
 export type Host = ReturnType<typeof createHost>;
+export async function searchSessions(host: Host, kind: AgentSessionKind, query: string) {
+  const page = await host.query('agent', 'list', {
+    kind,
+    filter: 'all',
+    scope: { kind: 'all' },
+    position: { kind: 'start' },
+    titleQuery: query,
+  });
+  return page.sessions;
+}
+
 const hostContext = context<Host | null>(null);
 export const HostProvider = hostContext.Provider;
 export function useHost(): Host {
@@ -284,6 +330,8 @@ export async function confirmSend(scope: ScopedHost, id: string) {
 export const pendingSends = (scope: ScopedHost) => scope.pending() as Promise<SendOperation[]>;
 export const retrySend = (scope: ScopedHost, id: string, selection: unknown) =>
   scope.retrySend(id, selection) as Promise<string>;
+export const restoreSend = (scope: ScopedHost, id: string, revision: number) =>
+  scope.restoreSend(id, revision) as Promise<SavedDraft>;
 export const dismissSend = (scope: ScopedHost, id: string) =>
   scope.dismissSend(id) as Promise<void>;
 export type SendDelivery = 'accepted' | 'delivered' | 'cancelled' | 'unknown';
@@ -312,8 +360,12 @@ export async function terminalMutation<M extends Method<'terminal', 'mutation'>>
   if (!object(observed) || !object(observed.reply)) throw new Error('Invalid terminal receipt.');
   const reply = observed.reply as unknown as OperationReply;
   if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
-    throw new UiError('This action could not be completed.');
-  return reply.receipt.outcome.value as Output<'terminal', M>;
+    throw new Error(
+      `Terminal ${method}: no returned result (${reply.receipt.kind === 'recorded' ? reply.receipt.outcome.kind : reply.receipt.kind})`,
+    );
+  if (reply.receipt.outcome.result.kind === 'failure')
+    throw new Error(reply.receipt.outcome.result.diagnostic);
+  return reply.receipt.outcome.result.value as Output<'terminal', M>;
 }
 export const pendingTerminals = (scope: ScopedHost) =>
   scope.pendingTerminals() as Promise<ClientOperation[]>;

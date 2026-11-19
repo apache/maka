@@ -35,6 +35,7 @@ impl Fixture {
             minify: false,
             split: false,
             ui_sets: vec![],
+            ..Default::default()
         })
     }
 }

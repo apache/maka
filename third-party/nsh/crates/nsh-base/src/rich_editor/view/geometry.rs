@@ -9,8 +9,7 @@
 
 use std::{collections::HashMap, rc::Rc};
 
-use nsh_core::{TextLine, prelude::*};
-use unicode_segmentation::UnicodeSegmentation;
+use nsh_core::{TextLayout, TextLayoutQueries, TextLine, TextPosition, prelude::*};
 
 use crate::rich_editor::state::Affinity;
 
@@ -98,15 +97,22 @@ pub(crate) struct TextGeo {
     pub(crate) map: InlineMap,
     /// The lines of its text, in the text's box.
     pub(crate) lines: Vec<TextLine>,
+    pub(crate) layout: Option<TextLayout>,
+    /// The rendered length `lines` were laid out for: while it differs
+    /// from `map.len`, the lines are those of the text before an edit.
+    pub(crate) laid_len: Option<u32>,
     /// The text's frame in its block's box.
     pub(crate) frame: Bounds<Points>,
     /// The box the frame is in (the block's own, else a node view's
     /// content slot).
     pub(crate) owner: Option<u64>,
+    /// The box of each inline view and image in its text (in the text's
+    /// box, where the text engine placed it), by its offset in the
+    /// textblock's content: what its attachment character stands for on a
+    /// line. Relative to the block, so an edit in another block leaves
+    /// them in place.
+    pub(crate) widths: HashMap<usize, Bounds<Points>>,
 }
-
-/// Measures a text in a font (the platform's measurer, captured).
-pub(crate) type Measure = Rc<dyn Fn(&str, &str) -> Points>;
 
 /// The geometry of a rendered document.
 #[derive(Default)]
@@ -114,15 +120,19 @@ pub(crate) struct Geometry {
     /// Each block's frame in its parent's box, and its parent; `None` for
     /// a frame measured in the content box directly (a content slot).
     pub(crate) frames: HashMap<u64, (Option<u64>, Bounds<Points>)>,
+    /// Where a block's children start in its box, when they sit in a
+    /// holder that is not the block's own origin (a task item's content,
+    /// after its checkbox): their frames are in the holder, not the block.
+    pub(crate) insets: HashMap<u64, Point<Points>>,
     /// The textblocks, by block id.
     pub(crate) texts: HashMap<u64, TextGeo>,
+    /// Textblock ids ordered by `TextGeo::start`.
+    pub(crate) text_order: Vec<(usize, u64)>,
     /// The atoms and node views edited as units, by block id: their
     /// position.
     pub(crate) atoms: HashMap<u64, usize>,
-    /// The font measuring within a line (relative widths only).
-    pub(crate) font: String,
-    /// Captured on the view's engine thread, independent of runtime entry.
-    pub(crate) measure: Option<Measure>,
+    /// The surface's queries on the same layout used to place glyphs and attachments.
+    pub(crate) queries: Option<Rc<dyn TextLayoutQueries>>,
 }
 
 /// The caret's height in the font's ascender and descender: about one em
@@ -139,13 +149,6 @@ pub(crate) enum Hit {
 }
 
 impl Geometry {
-    fn measure_text(&self, text: &str) -> Points {
-        self.measure.as_ref().map_or_else(
-            || measure_text(&self.font, text),
-            |measure| measure(&self.font, text),
-        )
-    }
-
     /// Block `id`'s top left in the content box.
     pub(crate) fn origin(&self, id: u64) -> Option<Point<Points>> {
         let mut at = Point::default();
@@ -159,7 +162,13 @@ impl Geometry {
             at.x += frame.origin.x;
             at.y += frame.origin.y;
             id = match parent {
-                Some(p) => Some(*p),
+                Some(p) => {
+                    if let Some(inset) = self.insets.get(p) {
+                        at.x += inset.x;
+                        at.y += inset.y;
+                    }
+                    Some(*p)
+                }
                 None => return Some(at),
             };
             guard += 1;
@@ -182,10 +191,31 @@ impl Geometry {
 
     /// The textblock holding position `pos` (its content's range).
     pub(crate) fn text_at(&self, pos: usize) -> Option<u64> {
-        self.texts
-            .iter()
-            .find(|(_, g)| pos >= g.start && pos <= g.start + g.map.size)
-            .map(|(id, _)| *id)
+        if self.text_order.len() != self.texts.len() {
+            return self
+                .texts
+                .iter()
+                .find(|(_, g)| pos >= g.start && pos <= g.start + g.map.size)
+                .map(|(id, _)| *id);
+        }
+        let idx = self.text_order.partition_point(|&(start, _)| start <= pos);
+        let &(_, id) = self.text_order.get(idx.checked_sub(1)?)?;
+        let g = self.texts.get(&id)?;
+        (pos >= g.start && pos <= g.start + g.map.size).then_some(id)
+    }
+
+    /// Whether the textblock whose content starts at `start` and is `size`
+    /// long in the document is laid out as it is now: its render has that
+    /// content, its text has its frame, and its lines are that render's.
+    /// Before that [`Self::caret_rect`] answers from the text before the
+    /// edit, or for a new block with a box one point high at its corner.
+    pub(crate) fn text_current(&self, start: usize, size: usize) -> bool {
+        self.texts.values().any(|g| {
+            g.start == start
+                && g.owner.is_some()
+                && g.map.size == size
+                && g.laid_len == Some(g.map.len)
+        })
     }
 
     /// The caret's box at `pos`: as high as its line, without width.
@@ -193,17 +223,19 @@ impl Geometry {
         let id = self.text_at(pos)?;
         let (origin, geo) = self.text_box(id)?;
         let t = geo.map.to_text(pos - geo.start);
-        let (x, y, h) = match line_of(&geo.lines, t, affinity) {
-            Some(i) => {
-                let line = &geo.lines[i];
-                (line.x + self.x_in_line(line, t), line.y, line.height)
-            }
-            None => (px(0.0), px(0.0), geo.frame.size.height.max(px(1.0))),
-        };
-        Some(Bounds::new(
-            Point::new(origin.x + x, origin.y + y),
-            Size::new(px(0.0), h),
-        ))
+        let position = text_position(t, affinity);
+        let mut b = self
+            .laid_text(geo)
+            .and_then(|(queries, layout)| queries.caret(layout, position))
+            .unwrap_or_else(|| {
+                Bounds::new(
+                    Point::default(),
+                    Size::new(px(0.0), geo.frame.size.height.max(px(1.0))),
+                )
+            });
+        b.origin.x += origin.x;
+        b.origin.y += origin.y;
+        Some(b)
     }
 
     /// The drawn caret at `pos`: about the font's em tall (the ascender
@@ -233,104 +265,118 @@ impl Geometry {
         ))
     }
 
-    /// The boxes covering `from..to`, one per line of each textblock it
-    /// crosses (through a line's end where it goes on).
-    pub(crate) fn range_rects(&self, from: usize, to: usize) -> Vec<Bounds<Points>> {
+    /// The boxes of `from..to` in textblock `id`, in its text's box: one
+    /// per line it crosses (through a line's end where it goes on), none
+    /// when the range misses the block.
+    pub(crate) fn text_range_rects(&self, id: u64, from: usize, to: usize) -> Vec<Bounds<Points>> {
         let mut out = Vec::new();
-        let mut ids: Vec<(&u64, &TextGeo)> = self.texts.iter().collect();
-        crate::sort::sort_by_key(&mut ids, |(_, g)| g.start);
-        for (id, geo) in ids {
-            let (start, end) = (geo.start, geo.start + geo.map.size);
-            if end < from || start > to {
-                continue;
-            }
-            let Some((origin, _)) = self.text_box(*id) else {
-                continue;
-            };
-            let a = geo.map.to_text(from.max(start) - start);
-            let b = geo.map.to_text(to.min(end) - start);
-            for line in &geo.lines {
-                if line.end < a || line.start > b {
-                    continue;
-                }
-                let x0 = if a > line.start {
-                    self.x_in_line(line, a)
+        let Some(geo) = self.texts.get(&id) else {
+            return out;
+        };
+        let (start, end) = (geo.start, geo.start + geo.map.size);
+        if end < from || start > to {
+            return out;
+        }
+        let a = geo.map.to_text(from.max(start) - start);
+        let b = geo.map.to_text(to.min(end) - start);
+        if let Some((queries, layout)) = self.laid_text(geo) {
+            queries.ranges(layout, a..b, &mut out);
+            if to > end
+                && let Some(mut caret) =
+                    queries.caret(layout, text_position(b, Affinity::Downstream))
+            {
+                caret.size.width = px(4.0);
+                let caret_right = caret.origin.x + caret.size.width;
+                if let Some(last) = out.iter_mut().rev().find(|b| {
+                    b.origin.y == caret.origin.y
+                        && b.origin.x <= caret_right
+                        && caret.origin.x <= b.origin.x + b.size.width
+                }) {
+                    *last = last.union(&caret);
                 } else {
-                    px(0.0)
-                };
-                let through =
-                    to > end || b > line.end || (b == line.end && to > start + geo.map.to_doc(b));
-                let x1 = if b < line.end || (b == line.end && !through) {
-                    self.x_in_line(line, b)
-                } else {
-                    line.width + px(4.0)
-                };
-                if x1 <= x0 && !(through && a <= line.end) {
-                    continue;
+                    out.push(caret);
                 }
-                out.push(Bounds::new(
-                    Point::new(origin.x + line.x + x0, origin.y + line.y),
-                    Size::new((x1 - x0).max(px(4.0)), line.height),
-                ));
             }
-            if geo.lines.is_empty() && from <= start && to > end {
-                out.push(Bounds::new(
-                    origin,
-                    Size::new(px(4.0), geo.frame.size.height),
-                ));
-            }
+        } else if from <= start && to > end {
+            out.push(Bounds::new(
+                Point::default(),
+                Size::new(px(4.0), geo.frame.size.height),
+            ));
         }
         out
     }
 
-    /// Where `x` of a line falls: the nearest boundary between graphemes.
-    fn offset_in_line(&self, line: &TextLine, x: Points) -> u32 {
-        if x <= px(0.0) || line.text.is_empty() {
-            return line.start;
-        }
-        if x >= line.width {
-            return line.end;
-        }
-        let full = self.measure_text(&line.text).max(px(1.0));
-        let mut best = (line.start, Points(f32::MAX));
-        let mut units = 0u32;
-        let mut boundaries = vec![(0u32, 0usize)];
-        for g in line.text.graphemes(true) {
-            units += g.encode_utf16().count() as u32;
-            boundaries.push((units, 0));
-        }
-        let mut byte = 0usize;
-        for (i, g) in line.text.graphemes(true).enumerate() {
-            byte += g.len();
-            boundaries[i + 1].1 = byte;
-        }
-        for (u, b) in boundaries {
-            let w = if b == 0 {
-                px(0.0)
-            } else {
-                line.width * (self.measure_text(&line.text[..b]).0 / full.0)
-            };
-            let d = Points((w - x).0.abs());
-            if d < best.1 {
-                best = (line.start + u, d);
-            }
-        }
-        best.0.min(line.end)
+    fn laid_text<'a>(
+        &'a self,
+        geo: &'a TextGeo,
+    ) -> Option<(&'a dyn TextLayoutQueries, &'a TextLayout)> {
+        Some((self.queries.as_deref()?, geo.layout.as_ref()?))
     }
 
-    /// The x of text offset `t` in a line (from the line's left).
-    fn x_in_line(&self, line: &TextLine, t: u32) -> Points {
-        if t <= line.start || line.text.is_empty() {
-            return px(0.0);
+    /// Whether the content point `at` is in a block's box before where its
+    /// children start: on a task item's checkbox, or under it.
+    pub(crate) fn before_holder(&self, at: Point<Points>) -> bool {
+        self.insets.iter().any(|(id, inset)| {
+            let (Some(origin), Some((_, frame))) = (self.origin(*id), self.frames.get(id)) else {
+                return false;
+            };
+            at.x >= origin.x
+                && at.x < origin.x + inset.x
+                && at.y >= origin.y
+                && at.y < origin.y + frame.size.height
+        })
+    }
+
+    /// The textblock ids whose content overlaps `from..=to`, in document order.
+    pub(crate) fn text_ids_in(&self, from: usize, to: usize) -> Vec<u64> {
+        if self.text_order.len() != self.texts.len() {
+            let mut ids: Vec<(&u64, &TextGeo)> = self
+                .texts
+                .iter()
+                .filter(|(_, g)| g.start + g.map.size >= from && g.start <= to)
+                .collect();
+            crate::sort::sort_by_key(&mut ids, |(_, g)| g.start);
+            return ids.into_iter().map(|(id, _)| *id).collect();
         }
-        if t >= line.end {
-            return line.width;
+        let first = self
+            .text_order
+            .partition_point(|&(start, _)| start < from)
+            .saturating_sub(1);
+        let end_idx = self.text_order.partition_point(|&(start, _)| start <= to);
+        self.text_order[first.min(end_idx)..end_idx]
+            .iter()
+            .filter_map(|&(_, id)| {
+                let g = self.texts.get(&id)?;
+                (g.start + g.map.size >= from && g.start <= to).then_some(id)
+            })
+            .collect()
+    }
+
+    /// The box of the inline view or image at `pos` (content box): from
+    /// the caret before it, as wide as its view and as high as its line.
+    pub(crate) fn inline_rect(&self, pos: usize) -> Option<Bounds<Points>> {
+        let id = self.text_at(pos)?;
+        let geo = self.texts.get(&id)?;
+        let width = geo.widths.get(&pos.checked_sub(geo.start)?)?.size.width;
+        let b = self.caret_rect(pos, Affinity::Downstream)?;
+        Some(Bounds::new(b.origin, Size::new(width, b.size.height)))
+    }
+
+    /// The boxes covering `from..to`, one per line of each textblock it
+    /// crosses (through a line's end where it goes on).
+    pub(crate) fn range_rects(&self, from: usize, to: usize) -> Vec<Bounds<Points>> {
+        let mut out = Vec::new();
+        for id in self.text_ids_in(from, to) {
+            let Some((origin, _)) = self.text_box(id) else {
+                continue;
+            };
+            out.extend(
+                self.text_range_rects(id, from, to)
+                    .into_iter()
+                    .map(|b| Bounds::new(origin + b.origin, b.size)),
+            );
         }
-        let units: Vec<u16> = line.text.encode_utf16().collect();
-        let k = ((t - line.start) as usize).min(units.len());
-        let prefix = String::from_utf16_lossy(&units[..k]);
-        let full = self.measure_text(&line.text).max(px(1.0));
-        line.width * (self.measure_text(&prefix).0 / full.0)
+        out
     }
 
     /// The place at `p` (content box): an atom it is on, else the nearest
@@ -393,23 +439,17 @@ impl Geometry {
         let (_, _, id) = best?;
         let (origin, geo) = self.text_box(id)?;
         let local = Point::new(p.x - origin.x, p.y - origin.y);
-        if geo.lines.is_empty() {
-            return Some(Hit::Text(geo.start, Affinity::Downstream));
-        }
-        let index = geo
-            .lines
-            .iter()
-            .position(|l| local.y < l.y + l.height)
-            .unwrap_or(geo.lines.len() - 1);
-        let line = &geo.lines[index];
-        let t = self.offset_in_line(line, local.x - line.x);
-        // The end of a wrapped line shows on that line.
-        let affinity = if t == line.end && index + 1 < geo.lines.len() {
+        let hit = self
+            .laid_text(geo)
+            .map_or_else(TextPosition::default, |(queries, layout)| {
+                queries.hit(layout, local)
+            });
+        let affinity = if hit.affinity == nsh_core::Affinity::Upstream {
             Affinity::Upstream
         } else {
             Affinity::Downstream
         };
-        Some(Hit::Text(geo.start + geo.map.to_doc(t), affinity))
+        Some(Hit::Text(geo.start + geo.map.to_doc(hit.offset), affinity))
     }
 
     /// The line `pos` shows on in its textblock, and how many lines the
@@ -444,6 +484,14 @@ impl Geometry {
     }
 }
 
+fn text_position(offset: u32, affinity: Affinity) -> TextPosition {
+    let affinity = match affinity {
+        Affinity::Upstream => nsh_core::Affinity::Upstream,
+        Affinity::Downstream => nsh_core::Affinity::Downstream,
+    };
+    TextPosition::new(offset, affinity)
+}
+
 /// The line text offset `t` shows on.
 fn line_of(lines: &[TextLine], t: u32, affinity: Affinity) -> Option<usize> {
     if lines.is_empty() {
@@ -468,6 +516,218 @@ fn line_of(lines: &[TextLine], t: u32, affinity: Affinity) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A task item's content holds its blocks after the checkbox: their
+    /// frames are in the holder, so the holder's offset is part of where
+    /// they are (the caret and the selection of a task's text).
+    #[test]
+    fn a_holders_inset_is_part_of_its_children_origin() {
+        let mut geo = Geometry::default();
+        let at =
+            |x: f32, y: f32| Bounds::new(Point::new(px(x), px(y)), Size::new(px(100.0), px(20.0)));
+        geo.frames.insert(1, (Some(DOC), at(0.0, 40.0)));
+        geo.frames.insert(2, (Some(1), at(0.0, 0.0)));
+        assert_eq!(geo.origin(2), Some(Point::new(px(0.0), px(40.0))));
+        geo.insets.insert(1, Point::new(px(24.0), px(0.0)));
+        assert_eq!(geo.origin(2), Some(Point::new(px(24.0), px(40.0))));
+        // The item itself is in its own parent's box: no inset of its own.
+        assert_eq!(geo.origin(1), Some(Point::new(px(0.0), px(40.0))));
+    }
+
+    /// The checkbox is in the item's box before its content: a press there
+    /// is the checkbox's, wherever the item is in the document.
+    #[test]
+    fn a_point_before_a_holder_is_on_the_items_checkbox() {
+        let mut geo = Geometry::default();
+        let at =
+            |x: f32, y: f32| Bounds::new(Point::new(px(x), px(y)), Size::new(px(100.0), px(20.0)));
+        geo.frames.insert(1, (Some(DOC), at(10.0, 40.0)));
+        geo.frames.insert(2, (Some(DOC), at(10.0, 60.0)));
+        geo.insets.insert(1, Point::new(px(24.0), px(0.0)));
+        let on = |x: f32, y: f32| geo.before_holder(Point::new(px(x), px(y)));
+        assert!(on(10.0, 40.0) && on(33.0, 59.0));
+        // The item's text, the margin beside it, and a block without a
+        // holder are not.
+        assert!(!on(34.0, 50.0) && !on(9.0, 50.0) && !on(20.0, 70.0));
+    }
+
+    struct LineQueries;
+    impl TextLayoutQueries for LineQueries {
+        fn hit(&self, layout: &TextLayout, point: Point<Points>) -> TextPosition {
+            let xs = layout.downcast::<Vec<f32>>().unwrap();
+            let index = xs
+                .windows(2)
+                .take_while(|w| point.x.0 > (w[0] + w[1]) / 2.0)
+                .count();
+            text_position(index as u32, Affinity::Downstream)
+        }
+        fn caret(&self, layout: &TextLayout, position: TextPosition) -> Option<Bounds<Points>> {
+            let x = layout
+                .downcast::<Vec<f32>>()?
+                .get(position.offset as usize)?;
+            Some(Bounds::new(
+                Point::new(px(*x), px(0.0)),
+                Size::new(px(0.0), px(17.0)),
+            ))
+        }
+        fn ranges(
+            &self,
+            layout: &TextLayout,
+            range: std::ops::Range<u32>,
+            out: &mut Vec<Bounds<Points>>,
+        ) {
+            let xs = layout.downcast::<Vec<f32>>().unwrap();
+            let x = xs[range.start as usize];
+            out.push(Bounds::new(
+                Point::new(px(x), px(0.0)),
+                Size::new(px(xs[range.end as usize] - x), px(17.0)),
+            ));
+        }
+    }
+
+    /// "ab", an inline view 80 wide, "cd", in a font of 10 a character:
+    /// the view's character stands for its width, not a character's.
+    #[test]
+    fn an_inline_view_is_as_wide_as_its_view_on_its_line() {
+        let mut geo = Geometry {
+            queries: Some(Rc::new(LineQueries)),
+            ..Geometry::default()
+        };
+        geo.frames.insert(
+            7,
+            (
+                Some(DOC),
+                Bounds::new(Point::default(), Size::new(px(400.0), px(20.0))),
+            ),
+        );
+        let run = |doc, doc_len, text, text_len| Run {
+            doc,
+            doc_len,
+            text,
+            text_len,
+            side: 0,
+        };
+        geo.texts.insert(
+            7,
+            TextGeo {
+                start: 1,
+                laid_len: Some(5),
+                layout: Some(TextLayout(std::sync::Arc::new(vec![
+                    0.0_f32, 10., 20., 100., 110., 120.,
+                ]))),
+                map: InlineMap {
+                    runs: vec![run(0, 2, 0, 2), run(2, 1, 2, 1), run(3, 2, 3, 2)],
+                    size: 5,
+                    len: 5,
+                },
+                lines: vec![TextLine {
+                    text: "ab\u{FFFC}cd".into(),
+                    start: 0,
+                    end: 5,
+                    width: px(120.0),
+                    height: px(20.0),
+                    ..TextLine::default()
+                }],
+                frame: Bounds::new(Point::default(), Size::new(px(400.0), px(20.0))),
+                owner: None,
+                // The view is at position 3 (content offset 2), placed
+                // after `ab`.
+                widths: HashMap::from([(
+                    2,
+                    Bounds::new(Point::new(px(20.0), px(0.0)), Size::new(px(80.0), px(20.0))),
+                )]),
+            },
+        );
+        let x = |pos| {
+            geo.caret_rect(pos, Affinity::Downstream)
+                .map(|b| b.origin.x.0)
+        };
+        assert_eq!(x(1), Some(0.0));
+        assert_eq!(x(2), Some(10.0));
+        assert_eq!(x(3), Some(20.0), "before the view");
+        assert_eq!(x(4), Some(100.0), "after the view");
+        assert_eq!(x(5), Some(110.0));
+        let at = |x: f32| match geo.hit(Point::new(px(x), px(5.0))) {
+            Some(Hit::Text(pos, _)) => pos,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(at(19.0), 3);
+        assert_eq!(at(101.0), 4);
+        assert_eq!(at(108.0), 5);
+    }
+
+    #[test]
+    fn an_inline_view_stays_where_the_engine_placed_it() {
+        // An engine that reports the line as wide as its box (a test's):
+        // the view's own place still fixes the positions around it, so a
+        // point on it is not taken for the text before it.
+        let mut geo = Geometry {
+            queries: Some(Rc::new(LineQueries)),
+            ..Geometry::default()
+        };
+        let run = |doc, doc_len, text, text_len| Run {
+            doc,
+            doc_len,
+            text,
+            text_len,
+            side: 0,
+        };
+        geo.frames.insert(
+            7,
+            (
+                Some(DOC),
+                Bounds::new(Point::default(), Size::new(px(358.0), px(17.0))),
+            ),
+        );
+        geo.texts.insert(
+            7,
+            TextGeo {
+                start: 1,
+                laid_len: Some(9),
+                layout: Some(TextLayout(std::sync::Arc::new(vec![
+                    0.0_f32, 8., 16., 24., 31., 136., 144., 152., 160., 168.,
+                ]))),
+                map: InlineMap {
+                    runs: vec![run(0, 4, 0, 4), run(4, 1, 4, 1), run(5, 4, 5, 4)],
+                    size: 9,
+                    len: 9,
+                },
+                lines: vec![TextLine {
+                    text: "Buy \u{FFFC} now".into(),
+                    start: 0,
+                    end: 9,
+                    width: px(358.0),
+                    height: px(17.0),
+                    ..TextLine::default()
+                }],
+                frame: Bounds::new(Point::default(), Size::new(px(358.0), px(17.0))),
+                owner: None,
+                widths: HashMap::from([(
+                    4,
+                    Bounds::new(
+                        Point::new(px(31.0), px(0.0)),
+                        Size::new(px(105.0), px(17.0)),
+                    ),
+                )]),
+            },
+        );
+        let x = |pos| {
+            geo.caret_rect(pos, Affinity::Downstream)
+                .map(|b| b.origin.x.0)
+        };
+        assert_eq!(x(5), Some(31.0), "before the view");
+        assert_eq!(x(6), Some(136.0), "after the view");
+        assert_eq!(
+            geo.range_rects(5, 6)
+                .first()
+                .map(|b| (b.origin.x.0, b.size.width.0)),
+            Some((31.0, 105.0))
+        );
+        match geo.hit(Point::new(px(60.0), px(8.0))) {
+            Some(Hit::Text(pos, _)) => assert!(pos == 5 || pos == 6, "{pos}"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     fn map() -> InlineMap {
         // "ab", an atom, a widget before "cd".

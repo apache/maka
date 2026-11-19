@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Pure, disposable presentation of committed invocation facts. Model context is
+//! Pure, disposable presentation of committed execution facts. Model context is
 //! a separate projection; retaining interrupted text here never accepts it there.
 mod compact;
 mod executor;
@@ -30,16 +30,17 @@ pub use step::reasoning::display_text as reasoning_text;
 mod tools;
 pub use tools::project_tool_boundary;
 mod user;
+use maka_agent_facts::durable::ExecutionIdentity;
 use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::Invocation;
-use maka_agent_facts::event::InvocationInput;
+use maka_agent_facts::event::RunInput;
 use maka_agent_facts::event::StoredEvent;
 use maka_agent_facts::history::RowPosition;
 use maka_agent_facts::tool_output::ToolOutput;
 use message::timestamp;
 pub use message::tool_message_id;
 pub use message::{
-    Content, Hidden, Message, Thinking, ToolContent, ToolImage, ToolMetadata, TurnState, Visible,
+    Content, Hidden, Message, ModelIdentity, RunState, Thinking, ToolContent, ToolImage,
+    ToolMetadata, Visible,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -66,28 +67,30 @@ pub struct Row {
 enum State {
     Vacant,
     Compact {
-        invocation: Invocation,
+        execution: ExecutionIdentity,
         started_at: u64,
     },
     Active {
-        invocation: Invocation,
+        execution: ExecutionIdentity,
         step: Option<Box<step::Step>>,
     },
-    Ended,
+    Ended {
+        execution: ExecutionIdentity,
+    },
     Poisoned,
 }
 
-pub struct InvocationView {
+pub struct RunView {
     executor: Option<executor::Execution>,
     executor_orders: std::collections::BTreeMap<String, RowPosition>,
     state: State,
     last_sequence: u64,
     tools: tools::Tools,
-    summary_step: Option<String>,
+    summary_attempt: Option<ModelIdentity>,
     summary_start: Option<compact::SummaryStart>,
 }
 
-impl Default for InvocationView {
+impl Default for RunView {
     fn default() -> Self {
         Self {
             executor: None,
@@ -95,18 +98,18 @@ impl Default for InvocationView {
             state: State::Vacant,
             last_sequence: 0,
             tools: tools::Tools::new(),
-            summary_step: None,
+            summary_attempt: None,
             summary_start: None,
         }
     }
 }
 
-impl InvocationView {
+impl RunView {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Input is one invocation's strictly ordered, committed facts, with gaps
+    /// Input is one execution's strictly ordered, committed facts, with gaps
     /// permitted for other sessions. Never feed the same fact twice.
     pub fn push(&mut self, stored: &StoredEvent) -> Result<Vec<Row>, ProjectionError> {
         self.push_with_tool_output(stored, None)
@@ -154,6 +157,22 @@ impl InvocationView {
         }
         .validate()
         .map_err(|_| ProjectionError::OutOfRange)?;
+        if let State::Ended { execution } = &self.state {
+            if execution.run_id != event.execution.run_id
+                || execution.session_id != event.execution.session_id
+            {
+                return Err(ProjectionError::Invalid("late fact belongs to another Run"));
+            }
+            let messages = match &event.fact {
+                Fact::ToolSettled { .. } => self.tools.boundary(event, ts, resolved)?,
+                Fact::ToolOperationObserved { .. }
+                | Fact::ToolNotified { .. }
+                | Fact::ToolYielded { .. } => tool_observation(event, ts),
+                _ => return Err(ProjectionError::Invalid("new action after terminal Run")),
+            };
+            self.last_sequence = stored.sequence;
+            return rows(stored.sequence, messages);
+        }
         if let Some(messages) = self.compact(event, ts)? {
             self.last_sequence = stored.sequence;
             return rows(stored.sequence, messages);
@@ -165,13 +184,15 @@ impl InvocationView {
                     return Err(ProjectionError::Invalid("import inside execution"));
                 }
                 messages.extend(import::project(event, record, ts)?);
-                self.state = State::Ended;
+                self.state = State::Ended {
+                    execution: event.execution.clone(),
+                };
             }
-            Fact::InvocationOpened { input, .. } => {
+            Fact::RunOpened { input, .. } => {
                 if !matches!(self.state, State::Vacant) {
-                    return Err(ProjectionError::Invalid("duplicate invocation opening"));
+                    return Err(ProjectionError::Invalid("duplicate execution opening"));
                 }
-                if let InvocationInput::Message {
+                if let RunInput::Message {
                     content,
                     source_messages,
                     ..
@@ -184,7 +205,8 @@ impl InvocationView {
                         for source in source_messages {
                             messages.push(user::project(
                                 &source.message.message_id,
-                                &event.invocation.turn_id,
+                                event.execution.run_id,
+                                &event.execution.turn_id,
                                 ts,
                                 &source.message.content,
                                 source.message.origin.as_ref(),
@@ -197,34 +219,39 @@ impl InvocationView {
                             } else {
                                 &event.id
                             },
-                            &event.invocation.turn_id,
+                            event.execution.run_id,
+                            &event.execution.turn_id,
                             ts,
                             content,
                             None,
                         )?);
                     }
                 } else if input.inherited_claim().is_none() {
-                    return Err(ProjectionError::Unsupported("Code invocation"));
+                    return Err(ProjectionError::Unsupported("Code execution"));
                 }
                 messages.push(Message {
                     id: format!("{}:state", event.id),
-                    turn_id: event.invocation.turn_id.clone(),
+                    run_id: event.execution.run_id,
+                    model: None,
+                    turn_id: event.execution.turn_id.clone(),
                     ts,
-                    content: Content::TurnState {
-                        state: TurnState::Running,
+                    content: Content::RunState {
+                        state: RunState::Running,
                     },
                 });
                 self.state = State::Active {
-                    invocation: event.invocation.clone(),
+                    execution: event.execution.clone(),
                     step: None,
                 };
             }
             fact => {
-                let State::Active { invocation, step } = &mut self.state else {
-                    return Err(ProjectionError::Invalid("fact outside active invocation"));
+                let State::Active { execution, step } = &mut self.state else {
+                    return Err(ProjectionError::Invalid("fact outside active execution"));
                 };
-                if *invocation != event.invocation {
-                    return Err(ProjectionError::Invalid("invocation identity changed"));
+                if execution.run_id != event.execution.run_id
+                    || execution.session_id != event.execution.session_id
+                {
+                    return Err(ProjectionError::Invalid("execution identity changed"));
                 }
                 match fact {
                     Fact::ExecutorStarted { binding, .. } => {
@@ -238,7 +265,7 @@ impl InvocationView {
                             output
                         {
                             self.executor_orders.insert(
-                                executor_message_id(&event.invocation.invocation_id, message_id),
+                                executor_message_id(event.execution.run_id, message_id),
                                 RowPosition {
                                     source_sequence: stored.sequence,
                                     item_index: 0,
@@ -254,10 +281,8 @@ impl InvocationView {
                             output
                             && emitted.is_empty()
                         {
-                            self.executor_orders.remove(&executor_message_id(
-                                &event.invocation.invocation_id,
-                                message_id,
-                            ));
+                            self.executor_orders
+                                .remove(&executor_message_id(event.execution.run_id, message_id));
                         }
                         messages.extend(emitted);
                     }
@@ -279,7 +304,8 @@ impl InvocationView {
                         }
                         messages.push(user::project(
                             &message.message_id,
-                            &event.invocation.turn_id,
+                            event.execution.run_id,
+                            &event.execution.turn_id,
                             ts,
                             &message.content,
                             message.origin.as_ref(),
@@ -287,6 +313,7 @@ impl InvocationView {
                     }
                     Fact::ModelRequested {
                         step_id,
+                        attempt_id,
                         model_id,
                         item_acceptance,
                         ..
@@ -295,31 +322,44 @@ impl InvocationView {
                             return Err(ProjectionError::Invalid("overlapping model steps"));
                         }
                         *step = Some(Box::new(step::Step::new(
-                            step_id.clone(),
+                            ModelIdentity {
+                                step_id: *step_id,
+                                attempt_id: *attempt_id,
+                            },
                             model_id.clone(),
                             *item_acceptance,
                         )));
                     }
                     Fact::ModelObserved {
                         step_id,
+                        attempt_id,
                         event: observation,
                     } => {
                         let step = step
                             .as_mut()
                             .ok_or(ProjectionError::Invalid("observation without request"))?;
-                        step.check_id(step_id)?;
+                        step.check_id(*step_id, *attempt_id)?;
                         if let maka_agent_facts::model::recorded::ModelObservation::Part(record) =
                             observation
                         {
                             step.observe(event, record);
-                            if step.item_acceptance {
+                            let obligation = matches!(
+                                record.part.as_ref(),
+                                maka_agent_facts::model::ModelPart::ToolCall { .. }
+                                    | maka_agent_facts::model::ModelPart::ToolResult { .. }
+                            );
+                            if step.item_acceptance || obligation {
                                 if let Some(text) = step.text(event, record, false)? {
                                     messages.push(text);
                                 } else {
                                     messages.extend(self.tools.accept_item(
                                         event,
                                         message::capture_time(record.started_at)?,
-                                        step_id,
+                                        maka_agent_facts::durable::AgentStepLink {
+                                            run: event.execution.run_id,
+                                            step: *step_id,
+                                            attempt: *attempt_id,
+                                        },
                                         &record.message_id,
                                         record.part.as_ref(),
                                         step.anchor(),
@@ -329,11 +369,15 @@ impl InvocationView {
                             }
                         }
                     }
-                    Fact::ModelCompleted { step_id, output } => {
+                    Fact::ModelCompleted {
+                        step_id,
+                        attempt_id,
+                        output,
+                    } => {
                         let completed = step
                             .take()
                             .ok_or(ProjectionError::Invalid("completion without request"))?;
-                        completed.check_id(step_id)?;
+                        completed.check_id(*step_id, *attempt_id)?;
                         let parts = output
                             .parts
                             .iter()
@@ -349,13 +393,8 @@ impl InvocationView {
                                 )
                             })
                             .map(|part| part.message_id.as_str());
-                        for (source, part) in output.parts.iter().zip(&parts) {
-                            if completed.item_acceptance
-                                && matches!(
-                                    source,
-                                    maka_agent_facts::model::recorded::CompletionPart::Ref(_)
-                                )
-                            {
+                        for part in &parts {
+                            if completed.presented(part.ordinal) {
                                 continue;
                             }
                             if let Some(text) = completed.text(event, part, false)? {
@@ -364,7 +403,11 @@ impl InvocationView {
                                 messages.extend(self.tools.accept_item(
                                     event,
                                     message::capture_time(part.started_at)?,
-                                    step_id,
+                                    maka_agent_facts::durable::AgentStepLink {
+                                        run: event.execution.run_id,
+                                        step: *step_id,
+                                        attempt: *attempt_id,
+                                    },
                                     &part.message_id,
                                     part.part.as_ref(),
                                     anchor,
@@ -377,7 +420,12 @@ impl InvocationView {
                         {
                             messages.push(Message {
                                 id: event.id.clone(),
-                                turn_id: invocation.turn_id.clone(),
+                                run_id: execution.run_id,
+                                model: Some(ModelIdentity {
+                                    step_id: *step_id,
+                                    attempt_id: *attempt_id,
+                                }),
+                                turn_id: execution.turn_id.clone(),
                                 ts,
                                 content: Content::TokenUsage {
                                     input,
@@ -391,6 +439,7 @@ impl InvocationView {
                     }
                     Fact::ModelInterrupted {
                         step_id,
+                        attempt_id,
                         status,
                         diagnostic,
                         partial,
@@ -399,19 +448,14 @@ impl InvocationView {
                         let interrupted = step
                             .take()
                             .ok_or(ProjectionError::Invalid("interruption without request"))?;
-                        interrupted.check_id(step_id)?;
+                        interrupted.check_id(*step_id, *attempt_id)?;
                         if let Some(partial) = partial {
                             for source in &partial.parts {
                                 let part = interrupted.resolve(source)?;
-                                if interrupted.item_acceptance
-                                    && matches!(
-                                        source,
-                                        maka_agent_facts::model::recorded::CompletionPart::Ref(_)
-                                    )
-                                {
+                                if interrupted.presented(part.ordinal) {
                                     continue;
                                 }
-                                messages.extend(interrupted.text(
+                                if let Some(text) = interrupted.text(
                                     event,
                                     part,
                                     !matches!(
@@ -419,7 +463,23 @@ impl InvocationView {
                                         maka_agent_facts::event::ModelInterruption::Cancelled
                                             | maka_agent_facts::event::ModelInterruption::Steered
                                     ),
-                                )?);
+                                )? {
+                                    messages.push(text);
+                                } else {
+                                    messages.extend(self.tools.accept_item(
+                                        event,
+                                        message::capture_time(part.started_at)?,
+                                        maka_agent_facts::durable::AgentStepLink {
+                                            run: event.execution.run_id,
+                                            step: *step_id,
+                                            attempt: *attempt_id,
+                                        },
+                                        &part.message_id,
+                                        part.part.as_ref(),
+                                        interrupted.anchor(),
+                                        interrupted.model(),
+                                    )?);
+                                }
                             }
                         }
                         if let Some(message) = diagnostic
@@ -431,7 +491,12 @@ impl InvocationView {
                         {
                             messages.push(Message {
                                 id: event.id.clone(),
-                                turn_id: invocation.turn_id.clone(),
+                                run_id: execution.run_id,
+                                model: Some(ModelIdentity {
+                                    step_id: *step_id,
+                                    attempt_id: *attempt_id,
+                                }),
+                                turn_id: execution.turn_id.clone(),
                                 ts,
                                 content: Content::ModelInterruption {
                                     message: message.clone(),
@@ -439,43 +504,43 @@ impl InvocationView {
                             });
                         }
                     }
-                    Fact::InvocationEnded { outcome } => {
+                    Fact::RunEnded { outcome } => {
                         if let Some(executor) = self.executor.take() {
                             messages.extend(executor.finish(event, ts));
                         }
                         if step.take().is_some()
-                            && matches!(
-                                outcome,
-                                maka_agent_facts::event::InvocationOutcome::Completed
-                                    | maka_agent_facts::event::InvocationOutcome::HandoffPaused { .. }
-                            )
+                            && matches!(outcome, maka_agent_facts::event::RunOutcome::Completed)
                         {
                             return Err(ProjectionError::Invalid(
                                 "completion with unfinished model",
                             ));
                         }
-                        if let Some(state) = TurnState::from_outcome(outcome, ts) {
+                        if let Some(state) = RunState::from_outcome(outcome, ts) {
                             messages.push(Message {
                                 id: event.id.clone(),
-                                turn_id: invocation.turn_id.clone(),
+                                run_id: execution.run_id,
+                                model: None,
+                                turn_id: execution.turn_id.clone(),
                                 ts,
-                                content: Content::TurnState { state },
+                                content: Content::RunState { state },
                             });
                         }
-                        self.state = State::Ended;
+                        self.state = State::Ended {
+                            execution: event.execution.clone(),
+                        };
                     }
                     Fact::ToolDispatched { .. }
                     | Fact::ToolSettled { .. }
                     | Fact::ToolRejected { .. } => {
                         messages.extend(self.tools.boundary(event, ts, resolved)?);
                     }
-                    Fact::InvocationOpened { .. } | Fact::MessageImported { .. } => unreachable!(),
+                    Fact::RunOpened { .. } | Fact::MessageImported { .. } => unreachable!(),
                     Fact::ContextCheckpointRecorded { .. }
                     | Fact::ContextCompactionWaiting
-                    | Fact::ToolResultArchived { .. }
-                    | Fact::ToolOperationObserved { .. }
+                    | Fact::ToolResultArchived { .. } => {}
+                    Fact::ToolOperationObserved { .. }
                     | Fact::ToolNotified { .. }
-                    | Fact::ToolYielded { .. } => {}
+                    | Fact::ToolYielded { .. } => messages.extend(tool_observation(event, ts)),
                 }
             }
         }
@@ -486,7 +551,7 @@ impl InvocationView {
                 row.order = order;
             }
         }
-        if matches!(self.state, State::Ended) {
+        if matches!(self.state, State::Ended { .. }) {
             self.executor_orders.clear();
         }
         Ok(rows)
@@ -524,6 +589,32 @@ fn rows(source_sequence: u64, messages: Vec<Message>) -> Result<Vec<Row>, Projec
 }
 
 /// Native message IDs are local to one execution, unlike public presentation IDs.
-pub fn executor_message_id(invocation: &str, message: &str) -> String {
-    format!("executor:{}:{invocation}:{message}", invocation.len())
+pub fn executor_message_id(run: maka_agent_facts::durable::RunId, message: &str) -> String {
+    format!("executor:{run}:{message}")
+}
+
+fn tool_observation(event: &maka_agent_facts::event::RuntimeEvent, ts: u64) -> Vec<Message> {
+    let content = match &event.fact {
+        Fact::ToolOperationObserved {
+            operation_id,
+            observation,
+        } => Content::ToolOperationObserved {
+            tool_use_id: tool_message_id(event.execution.run_id, operation_id),
+            observation: observation.clone(),
+        },
+        Fact::ToolNotified {
+            operation_id,
+            text,
+            model_text,
+        } => Content::ToolNotification {
+            tool_use_id: tool_message_id(event.execution.run_id, operation_id),
+            text: text.clone(),
+            model_text: model_text.clone(),
+        },
+        Fact::ToolYielded { operation_id } => Content::ToolYielded {
+            tool_use_id: tool_message_id(event.execution.run_id, operation_id),
+        },
+        _ => unreachable!("tool observation fact"),
+    };
+    vec![message::message(event, ts, event.id.clone(), content)]
 }

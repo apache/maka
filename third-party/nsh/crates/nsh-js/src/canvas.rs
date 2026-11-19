@@ -38,6 +38,8 @@ use crate::{
     reactive::{self, Native, arg},
 };
 
+mod offscreen;
+
 type JsValue = qjs::JSValue;
 type JsContext = qjs::JSContext;
 
@@ -178,6 +180,8 @@ pub(crate) struct Canvases {
     classes: Cell<Option<Classes>>,
     /// Prototypes (owned): context, path, gradient.
     protos: Cell<[JsValue; 3]>,
+    /// `OffscreenCanvas`'s class and prototype.
+    offscreen: offscreen::OffscreenClass,
 }
 
 impl Default for Canvases {
@@ -185,6 +189,7 @@ impl Default for Canvases {
         Canvases {
             classes: Cell::new(None),
             protos: Cell::new([UNDEFINED; 3]),
+            offscreen: Default::default(),
         }
     }
 }
@@ -192,6 +197,7 @@ impl Default for Canvases {
 impl Canvases {
     /// Frees the values held (the state is unregistered).
     pub(crate) fn free_all(&mut self, raw: *mut JsContext) {
+        self.offscreen.free_all(raw);
         for p in self.protos.replace([UNDEFINED; 3]) {
             // SAFETY: owned values; no JS runs from here on.
             unsafe { qjs::JS_FreeValue(raw, p) };
@@ -231,6 +237,10 @@ struct Recording {
     /// Closed contexts: what `draw` recorded, for hit tests afterwards
     /// (`isPointInPath` in a press handler).
     drawn: Option<Rc<Vec<Rec>>>,
+    /// `OffscreenCanvas` contexts: what lets a clear of the whole canvas
+    /// drop what it recorded before (none on `<Canvas draw>`'s, whose
+    /// recordings end with the callback).
+    reuse: Option<Box<offscreen::Reuse>>,
 }
 
 /// The drawing state: the properties set, by name (owned values).
@@ -451,6 +461,7 @@ fn new_recording(cx: *mut JsContext, class: qjs::JSClassID) -> JsValue {
                 size: UNDEFINED,
                 closed: false,
                 drawn: None,
+                reuse: None,
             }));
             qjs::JS_SetOpaque(obj, data as *mut c_void);
         }
@@ -478,9 +489,23 @@ fn rc_str(cx: *mut JsContext, v: JsValue) -> Rc<str> {
     }
 }
 
+/// What one call's arguments may hold in [`to_rec`]: arrays of
+/// [`crate::dom::MAX_ARRAY_ITEMS`] items in all.
+fn items_budget() -> i64 {
+    i64::from(crate::dom::MAX_ARRAY_ITEMS)
+}
+
 /// A JS value as a record (borrowed); the animated values it holds are added
-/// to `used` (owned dups).
-fn to_rec(cx: *mut JsContext, v: JsValue, used: &mut Vec<JsValue>, depth: u32) -> Rec {
+/// to `used` (owned dups). `budget` is the array items left to read of
+/// [`crate::dom::MAX_ARRAY_ITEMS`] ([`items_budget`]), nested arrays counted
+/// together: an array nested in itself multiplies its length at each level.
+fn to_rec(
+    cx: *mut JsContext,
+    v: JsValue,
+    used: &mut Vec<JsValue>,
+    depth: u32,
+    budget: &mut i64,
+) -> Rec {
     // SAFETY: inline checks and reads of a live value; values got are freed.
     unsafe {
         let tag = qjs::JS_VALUE_GET_TAG(v);
@@ -514,11 +539,31 @@ fn to_rec(cx: *mut JsContext, v: JsValue, used: &mut Vec<JsValue>, depth: u32) -
         qjs::JS_FreeValue(cx, nv);
         if qjs::JS_IsArray(v) {
             let mut len: i64 = 0;
-            qjs::JS_GetLength(cx, v, &mut len);
-            let mut items = Vec::with_capacity(len.clamp(0, 1 << 16) as usize);
-            for i in 0..len.max(0) {
+            if qjs::JS_GetLength(cx, v, &mut len) != 0 {
+                qjs::JS_FreeValue(cx, qjs::JS_GetException(cx));
+                return Rec::Null;
+            }
+            // Read natively, where the time budget cannot interrupt: a
+            // sparse array is as long as it says.
+            let len = len.max(0);
+            if len > *budget {
+                // Once per call (-1: warned): the arrays after it read as
+                // nothing too.
+                if *budget >= 0 {
+                    log::warn!(
+                        target: "js",
+                        "canvas: an array of {len} items was ignored (more than {} in all)",
+                        crate::dom::MAX_ARRAY_ITEMS
+                    );
+                    *budget = -1;
+                }
+                return Rec::Null;
+            }
+            *budget -= len;
+            let mut items = Vec::with_capacity(len.min(1 << 16) as usize);
+            for i in 0..len {
                 let item = qjs::JS_GetPropertyInt64(cx, v, i);
-                items.push(to_rec(cx, item, used, depth + 1));
+                items.push(to_rec(cx, item, used, depth + 1, budget));
                 qjs::JS_FreeValue(cx, item);
             }
             return Rec::List(Rc::new(items));
@@ -545,13 +590,16 @@ fn record(cx: *mut JsContext, this: JsValue, code: i32, args: &[JsValue]) -> JsV
         if r.closed {
             return UNDEFINED;
         }
+        let start = r.out.len();
         r.out.push(Rec::Num(code as f64));
         let mut used = Vec::new();
+        let mut budget = items_budget();
         for &a in args {
-            let rec = to_rec(cx, a, &mut used, 0);
+            let rec = to_rec(cx, a, &mut used, 0, &mut budget);
             (*p).out.push(rec);
         }
         (*p).used.append(&mut used);
+        offscreen::recorded(cx, &mut *p, start);
     }
     UNDEFINED
 }
@@ -603,17 +651,20 @@ unsafe extern "C" fn record_method(
             return UNDEFINED;
         }
         r.out.reserve(m.params.len() + 1);
+        let start = r.out.len();
         r.out.push(Rec::Num(m.code as f64));
         let mut used = Vec::new();
+        let mut budget = items_budget();
         for (i, param) in m.params.iter().enumerate() {
             let a = arg(argc, argv, i);
             let rec = match param.default {
                 Some(default) if is_undefined(a) => literal(default),
-                _ => to_rec(cx, a, &mut used, 0),
+                _ => to_rec(cx, a, &mut used, 0, &mut budget),
             };
             (*p).out.push(rec);
         }
         (*p).used.append(&mut used);
+        offscreen::recorded(cx, &mut *p, start);
     }
     UNDEFINED
 }
@@ -1034,7 +1085,7 @@ fn point_in(cx: *mut JsContext, this: JsValue, a: &[JsValue], stroke: bool) -> J
     };
     let path = path.and_then(|p| {
         let mut used = Vec::new();
-        let rec = to_rec(cx, p, &mut used, 0);
+        let rec = to_rec(cx, p, &mut used, 0, &mut items_budget());
         free_values(cx, used);
         let list = RecList(Rc::new(vec![Rec::Num(CV_STROKE as f64), rec]));
         match decode(&list, 0, 2).ok()?.ops.pop()? {
@@ -1452,6 +1503,42 @@ pub(crate) const EXPORTS: &[Item] = &[
   addPath(path: Path2D): void;
 }
 export interface Path2D extends CanvasPath {}"#,
+        ),
+    ),
+    (
+        "OffscreenCanvas",
+        Export::Value(offscreen::constructor_function),
+        Ts::class(
+            "A canvas of its own size with no view: draw with its 2D context (the same\nas `<Canvas draw>` gets), then `convertToBlob()` renders what it drew into\nan image natively, as a canvas of that size draws it on screen. Rejects\nwith `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` where the platform renders no\noffscreen canvases, and with `ERR_NSH_QUOTA_EXCEEDED` for an image over\n16384 pixels a side.",
+            r#" {
+  #private;
+  /** A canvas `width` × `height` points. */
+  constructor(width: number, height: number);
+  /** Its width in points. */
+  readonly width: number;
+  /** Its height in points. */
+  readonly height: number;
+  /** Its 2D context, the same object each time; `null` for other kinds. */
+  getContext(contextId: "2d"): CanvasRenderingContext2D;
+  getContext(contextId: string): CanvasRenderingContext2D | null;
+  /**
+   * Renders what the context drew into an image: PNG (any `type` it does not
+   * encode gives PNG, as in browsers), `scale` pixels per point (the screen's
+   * by default). Animated values draw at 0. Rejects with
+   * `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` where the platform renders none
+   * (`nsh test`'s headless runs among them), `ERR_NSH_QUOTA_EXCEEDED` for an
+   * image over 16384 pixels a side or 64 megapixels or past 16 renders at
+   * once, `ETIMEDOUT` when the platform has not answered in 30 seconds.
+   */
+  convertToBlob(options?: ImageEncodeOptions): Promise<Blob>;
+}
+/** How `OffscreenCanvas.convertToBlob` encodes. */
+export interface ImageEncodeOptions {
+  /** The MIME type: `"image/png"` (the default). */
+  type?: string;
+  /** Pixels per point; the screen's by default. */
+  scale?: number;
+}"#,
         ),
     ),
     (

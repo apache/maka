@@ -18,22 +18,18 @@ pub(crate) type KeyHandler = Rc<dyn Fn(&str)>;
 pub(crate) const FIRST_ID: u32 = 1 << 31;
 
 /// A view's binding: what the platform matches, the keystroke as written
-/// (what the handler gets) and the handler.
+/// (what the handler gets), the handler and the window it was bound in.
 pub(crate) struct ViewKey {
     pub(crate) binding: KeyBinding,
     pub(crate) within: Option<RefTarget>,
+    /// The dialog root of the window of the app's own whose tree bound
+    /// it; `None` outside one (the window is then where its owner's
+    /// component is: [`ViewKeys::bindings`]).
+    pub(crate) window: Option<super::ElementRef>,
+    /// The owner it was bound under.
+    pub(crate) owner: super::Owner,
     pub(crate) text: Rc<str>,
     pub(crate) handler: KeyHandler,
-}
-
-impl ViewKey {
-    pub(crate) fn scoped_binding(&self) -> Option<KeyBinding> {
-        let mut binding = self.binding;
-        if let Some(target) = &self.within {
-            binding.within = Some(target.node()?);
-        }
-        Some(binding)
-    }
 }
 
 /// The views' bindings, oldest first (the newest that may fire wins).
@@ -43,6 +39,9 @@ pub(crate) struct ViewKeys {
     pub(crate) list: Vec<ViewKey>,
     /// The list changed since the core last made the table.
     pub(crate) changed: bool,
+    /// The last table left out a binding whose window was not mounted
+    /// yet: the core makes it again once it is.
+    pub(crate) unplaced: bool,
 }
 
 impl ViewKeys {
@@ -53,6 +52,8 @@ impl ViewKeys {
         within: Option<RefTarget>,
         text: Rc<str>,
         handler: KeyHandler,
+        window: Option<super::ElementRef>,
+        owner: super::Owner,
     ) -> u32 {
         let id = FIRST_ID + self.next;
         self.next += 1;
@@ -64,6 +65,8 @@ impl ViewKeys {
             within,
             text,
             handler,
+            window,
+            owner,
         });
         self.changed = true;
         id
@@ -79,6 +82,42 @@ impl ViewKeys {
             target.unwatch_keys();
         }
         Some(removed)
+    }
+
+    /// The bindings as the platform matches them, each in its window's
+    /// root node; those of a window not mounted yet are left out (and
+    /// [`Self::unplaced`] set). One bound outside a window's own context
+    /// is in the window `window_of` gives for its owner: a component JS
+    /// placed in a window of its own sees no such context, yet its keys
+    /// are that window's.
+    pub(crate) fn bindings(
+        &mut self,
+        mut window_of: impl FnMut(super::Owner) -> crate::NodeId,
+    ) -> Vec<KeyBinding> {
+        let mut unplaced = false;
+        let bindings = self
+            .list
+            .iter()
+            .filter_map(|k| {
+                let window = match k.window {
+                    None => window_of(k.owner),
+                    Some(element) => match element.node() {
+                        Some(node) => node,
+                        None => {
+                            unplaced = true;
+                            return None;
+                        }
+                    },
+                };
+                let mut binding = k.binding;
+                if let Some(target) = &k.within {
+                    binding.within = Some(target.node()?);
+                }
+                Some(binding.in_window(window))
+            })
+            .collect();
+        self.unplaced = unplaced;
+        bindings
     }
 
     /// Binding `id`'s keystroke as written and its handler.

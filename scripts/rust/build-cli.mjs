@@ -138,7 +138,16 @@ export function desktopShell(platform) {
 }
 
 /** The desktop's identity; the shell gives its window the same application id. */
-const desktopApp = { id: 'org.apache.maka.desktop', name: 'Maka' };
+const desktopApp = {
+  id: 'org.apache.maka.desktop',
+  name: 'Maka',
+  extra: [
+    [
+      'NSMicrophoneUsageDescription',
+      'Maka uses the microphone to transcribe speech into your message draft.',
+    ],
+  ],
+};
 
 /**
  * The identity the Host runs under on macOS, so privacy grants belong to it
@@ -227,10 +236,13 @@ async function stageHostBundle(hostShell, contents) {
   signBundle(dirname(host), hostApp.id);
 }
 
+// Ad-hoc signatures change with every build, so macOS forgets privacy grants;
+// a stable local identity keeps them.
 function signBundle(bundle, id) {
+  const identity = process.env.MAKA_CODESIGN_IDENTITY || '-';
   execFileSync(
     '/usr/bin/codesign',
-    ['--force', '--sign', '-', '--identifier', id, '--timestamp=none', bundle],
+    ['--force', '--sign', identity, '--identifier', id, '--timestamp=none', bundle],
     { stdio: 'pipe' },
   );
   execFileSync(

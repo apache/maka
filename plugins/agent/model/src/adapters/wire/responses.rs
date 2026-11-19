@@ -401,6 +401,7 @@ async fn encode_message(
                     } => {
                         if provider_executed == Some(true) {
                             if store
+                                && plaintext.is_none()
                                 && let Some(id) =
                                     string_field(&provider_options, &[namespace, "itemId"], &budget)
                                         .await?
@@ -501,8 +502,50 @@ async fn encode_message(
                         ));
                     }
                     AssistantRecipe::ToolResult(result) => {
-                        if plaintext.is_none()
-                            && !store
+                        if let Some(marker) = field(
+                            &result.provider_options,
+                            &["openai", "responsesHostedItems"],
+                            &budget,
+                        )
+                        .await?
+                            && marker.kind == recipe::json::JsonKind::Bool
+                            && recipe::json::bool_value(&marker.source, budget.clone())
+                                .await
+                                .map_err(failure)?
+                            && let ToolOutputRecipe::Json(value)
+                            | ToolOutputRecipe::ErrorJson(value) = &result.output
+                        {
+                            let mut accepted =
+                                recipe::json::ArrayCursor::open(value.clone(), budget.clone())
+                                    .await
+                                    .map_err(failure)?;
+                            let references = store && plaintext.is_none();
+                            let mut first = true;
+                            while let Some(entry) = accepted.next().await.map_err(failure)? {
+                                if references
+                                    && let Some(id) =
+                                        recipe::json::field(&entry.source, &["id"], budget.clone())
+                                            .await
+                                            .map_err(failure)?
+                                            .filter(|id| id.kind == recipe::json::JsonKind::String)
+                                {
+                                    if first {
+                                        first = false;
+                                        continue; // The original call already emitted its reference.
+                                    }
+                                    items.push(item(vec![
+                                        literal(b"{\"type\":\"item_reference\",\"id\":"),
+                                        F::Raw(id.source),
+                                        literal(b"}"),
+                                    ]));
+                                } else {
+                                    items.push(item(vec![F::Raw(entry.source)]));
+                                }
+                                first = false;
+                            }
+                            continue;
+                        }
+                        if (plaintext.is_some() || !store)
                             && let Some(replay) = field(
                                 &result.provider_options,
                                 &["openai", "responsesReplay"],

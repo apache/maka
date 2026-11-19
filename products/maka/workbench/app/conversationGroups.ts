@@ -43,11 +43,9 @@ export type ConversationGroup<Project> = {
   nested: ReadonlySet<string>;
 };
 
-/**
- * The browser's groups: pinned conversations first, then each workspace in
- * the order of its latest loaded conversation, then, when `withEmpty`, the
- * active projects with none loaded.
- */
+const PROJECT_SESSION_LIMIT = 6;
+
+/** Pinned conversations, registered projects in catalog order, then other workspaces. */
 export function groupConversations<Project extends Listable>(
   sessions: readonly Groupable[],
   projects: readonly Project[],
@@ -85,24 +83,87 @@ export function groupConversations<Project extends Listable>(
     for (const project of byProject.values())
       if (!project.archived && !groups.has(`project:${project.reference.id}`))
         add(`project:${project.reference.id}`, false, project, null);
-  return [...groups.values()].map(({ members, ...group }) => {
+  const ordered = [];
+  const pinned = groups.get('pinned');
+  if (pinned) ordered.push(pinned);
+  for (const project of byProject.values()) {
+    const group = groups.get(`project:${project.reference.id}`);
+    if (group) ordered.push(group);
+  }
+  for (const group of groups.values()) {
+    if (!group.pinned && !group.project) ordered.push(group);
+  }
+  return ordered.map(({ members, ...group }) => {
     const { order, nested } = nestCreated(members);
     return { ...group, sessions: order, nested };
   });
 }
 
+export function projectSessionLimit(group: ConversationGroup<unknown>): number {
+  return group.key.startsWith('project:') ? PROJECT_SESSION_LIMIT : group.sessions.length;
+}
+
+// A family this large folds behind one row; folding a smaller one would save
+// at most a row.
+const FOLDED_FAMILY_SIZE = 3;
+
 /**
- * The conversations in the order the browser lists them: a collapsed group's
- * are left out, except `current`, so stepping from it still has neighbors.
+ * The group's conversations that created at least three listed under them,
+ * each with those conversations in list order.
+ */
+export function foldableFamilies(group: ConversationGroup<unknown>): Map<string, string[]> {
+  const families = new Map<string, string[]>();
+  let parent: string | null = null;
+  for (const id of group.sessions) {
+    if (!group.nested.has(id)) parent = id;
+    else if (parent !== null) {
+      const members = families.get(parent);
+      if (members) members.push(id);
+      else families.set(parent, [id]);
+    }
+  }
+  for (const [id, members] of families)
+    if (members.length < FOLDED_FAMILY_SIZE) families.delete(id);
+  return families;
+}
+
+/**
+ * The group's conversations without those folded under their creator; a
+ * family is folded while its creator is in `folded`.
+ */
+export function unfoldedSessions(
+  group: ConversationGroup<unknown>,
+  folded: ReadonlySet<string>,
+  current: string | null = null,
+): string[] {
+  const hidden = new Set<string>();
+  for (const [parent, members] of foldableFamilies(group))
+    if (folded.has(parent)) for (const id of members) if (id !== current) hidden.add(id);
+  return hidden.size ? group.sessions.filter((id) => !hidden.has(id)) : group.sessions;
+}
+
+/**
+ * Step through the visible conversations, keeping a hidden current row as a
+ * starting point. Without `foldedFamilies`, as in the terminal, nothing folds.
  */
 export function browserOrder(
   groups: readonly ConversationGroup<unknown>[],
   collapsed: ReadonlySet<string>,
   current: string | null,
+  expandedProjects?: ReadonlySet<string>,
+  foldedFamilies?: ReadonlySet<string>,
 ): string[] {
-  return groups.flatMap((group) =>
-    collapsed.has(group.key) ? group.sessions.filter((id) => id === current) : group.sessions,
-  );
+  return groups.flatMap((group) => {
+    const sessions = foldedFamilies
+      ? unfoldedSessions(group, foldedFamilies, current)
+      : group.sessions;
+    const limit = collapsed.has(group.key)
+      ? 0
+      : expandedProjects && !expandedProjects.has(group.key)
+        ? projectSessionLimit(group)
+        : sessions.length;
+    return sessions.filter((id, index) => index < limit || id === current);
+  });
 }
 
 /** Resolve creation through an owned workspace, never a display path. */
@@ -113,7 +174,7 @@ export function groupWorkspace(
   if (group.project) {
     const project = group.project;
     if (project.archived || !project.available || !project.path) return null;
-    return { kind: 'project', project: project.reference, path: project.path };
+    return { kind: 'project', projectId: project.reference.id, path: project.path };
   }
   const sessionId = group.sessions[0];
   return sessionId ? { kind: 'session', sessionId } : null;

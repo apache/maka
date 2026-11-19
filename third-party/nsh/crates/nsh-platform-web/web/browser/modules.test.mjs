@@ -54,3 +54,26 @@ test("refresh adds what a gate registered after the start to the same namespace"
   modules.dispose();
   values.dispose();
 });
+
+test("a list's scroll position is measured as a view is, naming what it measures", async () => {
+  const values = new Values();
+  const calls = [];
+  const invoke = (op, args) => {
+    if (op === 200) return [];
+    calls.push([op, args]);
+  };
+  const modules = createModules(invoke, values, () => true, () => {});
+  const node = {};
+  const view = modules.measure(node);
+  const list = modules.measure(node, "scrollPosition");
+  assert.deepEqual(calls.map(([op, [receiver, args]]) => [op, receiver, args]), [
+    [315, node, []],
+    [315, node, ["scrollPosition"]],
+  ]);
+  modules.reply(calls[1][1][2], true, { index: 3, offset: 12 });
+  assert.deepEqual(await list, { index: 3, offset: 12 });
+  modules.reply(calls[0][1][2], true, null);
+  assert.equal(await view, null);
+  modules.dispose();
+  values.dispose();
+});

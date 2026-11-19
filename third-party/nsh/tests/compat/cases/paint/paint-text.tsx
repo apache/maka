@@ -2,7 +2,8 @@
 // keys as the platform receives them, on a text and on the nested texts
 // (spans) inside one, and the layout the size keys make: font family,
 // size, style and variants, letter spacing, line height, alignment (across,
-// `start` and `end` following the direction, and down), decorations, transforms and the writing direction.
+// `start` and `end` following the direction, and down), decorations, transforms, the writing direction
+// and hidden spans.
 import { Text, View } from "nsh";
 
 function App() {
@@ -152,6 +153,13 @@ function App() {
         <Text style={{ color: "#007aff" }}>
           outer <Text style={{ fontSize: 16 }}>inner</Text>
         </Text>
+      </Text>
+      {/* A hidden span keeps its characters and their place: both lay out alike. */}
+      <Text testID="hidden-span" style={{ alignSelf: "flex-start" }}>
+        Seen <Text style={{ visibility: "hidden" }}>unseen</Text> words
+      </Text>
+      <Text testID="shown-span" style={{ alignSelf: "flex-start" }}>
+        Seen <Text style={{ visibility: "visible" }}>unseen</Text> words
       </Text>
     </View>
   );

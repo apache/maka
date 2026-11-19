@@ -41,7 +41,7 @@ struct TextSpan {
 }
 
 /// Projects one ACP prompt turn into committed public executor observations.
-pub(crate) struct Projection {
+pub struct Projection {
     session_id: String,
     invocation_id: String,
     tools: BTreeMap<String, Tool>,
@@ -56,7 +56,7 @@ impl Projection {
     pub(crate) fn session_id(&self) -> &str {
         &self.session_id
     }
-    pub(crate) fn new(session_id: String, invocation_id: String) -> Self {
+    pub fn new(session_id: String, invocation_id: String) -> Self {
         Self {
             session_id,
             invocation_id,
@@ -69,7 +69,7 @@ impl Projection {
         }
     }
 
-    pub(crate) fn last_body_message_id(&self) -> Option<String> {
+    pub fn last_body_message_id(&self) -> Option<String> {
         self.last_body.clone()
     }
 
@@ -121,7 +121,7 @@ impl Projection {
         Ok(())
     }
 
-    async fn close_message(&mut self, sink: &dyn OutputSink) -> Result<(), Error> {
+    pub async fn close_message(&mut self, sink: &dyn OutputSink) -> Result<(), Error> {
         if let Some(span) = &self.span {
             emit(
                 sink,
@@ -140,6 +140,16 @@ impl Projection {
 
     pub(crate) fn take_config_options(&mut self) -> Option<Vec<acp::SessionConfigOption>> {
         self.config_options.take()
+    }
+
+    pub async fn update_json(
+        &mut self,
+        notification: serde_json::Value,
+        sink: &dyn OutputSink,
+    ) -> Result<(), Error> {
+        let notification = serde_json::from_value(notification)
+            .map_err(|error| Error::Invalid(format!("Invalid ACP session update: {error}")))?;
+        self.update(notification, sink).await
     }
 
     pub(crate) async fn update(
@@ -280,11 +290,7 @@ impl Projection {
     }
 
     /// Only a confirmed normal finish completes the open text span.
-    pub(crate) async fn finish(
-        &mut self,
-        sink: &dyn OutputSink,
-        completed: bool,
-    ) -> Result<(), Error> {
+    pub async fn finish(&mut self, sink: &dyn OutputSink, completed: bool) -> Result<(), Error> {
         self.finished = true;
         if completed {
             self.close_message(sink).await?;
@@ -327,7 +333,12 @@ fn tool_text(content: Vec<acp::ToolCallContent>) -> Result<String, Error> {
     let mut text = String::new();
     for part in content {
         let part = match part {
-            acp::ToolCallContent::Content(content) => content_text(content.content)?,
+            acp::ToolCallContent::Content(content) => match content.content {
+                acp::ContentBlock::ResourceLink(resource) => {
+                    format!("{} ({})", resource.name, resource.uri)
+                }
+                content => content_text(content)?,
+            },
             acp::ToolCallContent::Diff(diff) => format!(
                 "File: {}\nBefore:\n{}\nAfter:\n{}",
                 diff.path.display(),
@@ -381,6 +392,7 @@ pub(crate) async fn emit_result(
             tool_call_id: id,
             text: text.into(),
             is_error,
+            details: None,
         },
     )
     .await
@@ -455,6 +467,71 @@ mod tests {
         );
         assert!(matches!(&events[3], Output::ToolStart { .. }));
         assert!(matches!(&events[8], Output::ToolStart { .. }));
+    }
+
+    #[tokio::test]
+    async fn resource_link_tool_result_preserves_reference_and_allows_turn_completion() {
+        let sink = Sink::default();
+        let mut projection = Projection::new("s".into(), "turn".into());
+        for update in [
+            serde_json::json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "search",
+                "title": "MCP Tool sites_search",
+                "status": "in_progress",
+                "rawInput": {"query": "twitter", "limit": 100}
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "search",
+                "status": "completed",
+                "rawOutput": "file:///missing/output.txt",
+                "content": [
+                    {"type": "content", "content": {"type": "text", "text": "Output stored at:"}},
+                    {"type": "content", "content": {
+                        "type": "resource_link",
+                        "uri": "file:///missing/output.txt",
+                        "name": "mcp_tool_output"
+                    }}
+                ]
+            }),
+            serde_json::json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "answer"}
+            }),
+        ] {
+            projection
+                .update_json(
+                    serde_json::json!({"sessionId": "s", "update": update}),
+                    &sink,
+                )
+                .await
+                .unwrap();
+        }
+        projection.finish(&sink, true).await.unwrap();
+        let events = sink.0.lock().unwrap();
+        let results: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Output::ToolResult { text, is_error, .. } => Some((text.as_str(), *is_error)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            results,
+            [(
+                "Output stored at:\nmcp_tool_output (file:///missing/output.txt)",
+                false
+            )]
+        );
+        assert!(events.iter().any(|event| matches!(event,
+            Output::OutputDelta { text, .. } if text == "answer"
+        )));
+        assert!(matches!(events.last(), Some(Output::MessageEnd { .. })));
+        assert_eq!(
+            projection.last_body_message_id().as_deref(),
+            Some("4:turn:message:0")
+        );
     }
 
     #[tokio::test]

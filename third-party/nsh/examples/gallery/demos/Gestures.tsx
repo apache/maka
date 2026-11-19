@@ -4,7 +4,7 @@ const pointer = platform.desktop;
 import { Animated, createAnimatedValue, Easing } from "nsh";
 import { PanResponder } from "nsh";
 import { Icon, type IconName } from "../icons";
-import { alpha, Badge, Button, Caption, Card, colors, DemoPage, density, finish, hint, IconTile, isDark, mono, Press, radius, Row, Stat, terminal, tints } from "../ui";
+import { alpha, Badge, Button, Caption, Card, colors, DemoPage, density, finish, hint, IconTile, mono, Press, radius, Row, Stat, terminal, tints } from "../ui";
 
 /** The dots of a matrix `step` apart along `length`, centered: as far from either end, at least 8. */
 function along(length: number, step: number): number[] {
@@ -39,8 +39,9 @@ const stage = () =>
     ...finish.track,
   }) as const;
 
-/** The highlight and shadow of a small colored knob (call in a reactive scope). */
-const knob = () => (isDark() ? { boxShadow: "inset 0 1px 0 rgba(255,255,255,0.35), 0 3px 10px rgba(0,0,0,0.45)" } : finish.knob);
+/** The drop under a small colored knob (call in a reactive scope): a
+ * switch knob's (`finish.knob`), its fill left to the knob's own color. */
+const knob = () => ({ boxShadow: finish.knob.boxShadow });
 
 /** A plain label with the API it uses, in code type. */
 function Api(props: { label: string; api: string }) {
@@ -134,7 +135,7 @@ function Ball() {
     },
   });
   return (
-    <Card icon="scroll" title="PanResponder" subtitle="Positions go through JS; the page does not scroll" right={<Badge label={state().label} tone={state().tone} />}>
+    <Card icon="scroll" title="PanResponder" subtitle="Positions through JS; the page stays put" right={<Badge label={state().label} tone={state().tone} />}>
       <View style={{ ...stage(), height: 200 }}>
         <Dots />
         <View
@@ -156,7 +157,7 @@ function Ball() {
             scale: grab.interpolate({ inputRange: [0, 1], outputRange: [1, 1.15] }),
           }}
         >
-          <View style={{ width: 18, height: 18, borderRadius: 9, backgroundColor: "rgba(19,22,12,0.35)" }} />
+          <View style={{ width: 18, height: 18, borderRadius: 9, backgroundColor: alpha(colors.onAccent, 0.35) }} />
         </View>
       </View>
       <Caption label="Position" note={`${Math.round(pos().x)}, ${Math.round(pos().y)}`} />
@@ -182,7 +183,7 @@ function TouchPad() {
     );
   };
   return (
-    <Card icon="system" title="Touch events" subtitle={hint("Start, move, end and cancel, for every finger", "Start, move, end and cancel, for the mouse and every finger")} right={<Badge label={`${fingers().length} down`} tone={fingers().length ? "accent" : "neutral"} />}>
+    <Card icon="system" title="Touch events" subtitle={hint("Start, move, end and cancel, per finger", "Start, move, end, cancel: mouse and fingers")} right={<Badge label={`${fingers().length} down`} tone={fingers().length ? "accent" : "neutral"} />}>
       <View
         onTouchStart={note("start")}
         onTouchMove={note("move")}
@@ -247,7 +248,7 @@ function PressEvents() {
     }
   };
   return (
-    <Card icon="components" title="Press events" subtitle="In, press, long press and out; native feedback" right={<Badge label={`${count()}`} />}>
+    <Card icon="components" title="Press events" subtitle="In, press, long press, out; native feedback" right={<Badge label={`${count()}`} />}>
       <View
         onPressDown={() => fire("pressIn")}
         onPressUp={() => fire("pressOut")}
@@ -371,7 +372,7 @@ function HitSlop() {
   breathe.start();
   cleanup(() => breathe.stop());
   return (
-    <Card icon="search" title="Hit slop" subtitle={hint("A 12 pt dot that takes taps 30 pt around it", "A 12 pt dot that takes clicks 30 pt around it")} right={<Badge label={`${taps()} taps`} tone={taps() ? "accent" : "neutral"} />}>
+    <Card icon="search" title="Hit slop" subtitle={hint("A 12 pt dot that takes taps 30 pt around it", "A 12 pt dot taking clicks 30 pt around it")} right={<Badge label={`${taps()} taps`} tone={taps() ? "accent" : "neutral"} />}>
       <View style={{ ...stage(), height: 140, alignItems: "center", justifyContent: "center" }}>
         <Dots />
         <View
@@ -471,6 +472,28 @@ function Hover() {
   );
 }
 
+/** A wheel over a canvas: Control + wheel zooms, the wheel pans, and the page around does not scroll (desktops, web). */
+function WheelPad() {
+  const zoom = signal(1);
+  const pan = signal({ x: 0, y: 0 });
+  return (
+    <Card icon="gestures" title="Wheel" subtitle="Control + wheel zooms, the wheel pans" right={<Badge label={`${Math.round(zoom() * 100)}%`} tone="neutral" />}>
+      <View
+        testID="wheel-pad"
+        onWheel={(e) => {
+          const unit = e.deltaMode === "lines" ? 16 : 1;
+          if (e.modifiers.control) zoom.update((z) => Math.min(4, Math.max(0.25, z * (1 - (e.delta.y * unit) / 200))));
+          else pan.update((p) => ({ x: p.x - e.delta.x * unit, y: p.y - e.delta.y * unit }));
+        }}
+        style={{ ...stage(), height: 120, overflow: "hidden", alignItems: "center", justifyContent: "center" }}
+      >
+        <View style={{ width: 48, height: 48, borderRadius: 10, backgroundColor: colors.accent, transform: [{ translateX: pan().x }, { translateY: pan().y }, { scale: zoom() }] }} />
+      </View>
+      <Api label="Wheel over a view" api="onWheel" />
+    </Card>
+  );
+}
+
 /** Elements labelled for VoiceOver / TalkBack. */
 function Accessibility() {
   const last = signal("");
@@ -506,5 +529,5 @@ function Accessibility() {
 }
 
 export function Gestures() {
-  return <DemoPage cards={[Transformable, Ball, Hover, TouchPad, PressEvents, HitSlop, PointerEvents, Accessibility]} />;
+  return <DemoPage cards={[Transformable, Ball, Hover, WheelPad, TouchPad, PressEvents, HitSlop, PointerEvents, Accessibility]} />;
 }

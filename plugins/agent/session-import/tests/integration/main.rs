@@ -18,6 +18,6 @@
  */
 
 mod catalog;
-mod claude;
+
 mod codex;
 mod opencode;

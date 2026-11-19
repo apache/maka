@@ -1,6 +1,7 @@
 [env]
 # One deployment target for Rust and the C code (QuickJS) of every Apple
-# target; `nsh package` writes the same `MinimumOSVersion`.
+# target; `nsh package` writes the same `MinimumOSVersion` (`IOS_MINIMUM` in
+# crates/nsh-cli/src/apple.rs) unless the app raises it.
 IPHONEOS_DEPLOYMENT_TARGET = "15.0"
 
 [alias]

@@ -24,6 +24,101 @@ use serde_json::json;
 use std::sync::Arc;
 
 #[tokio::test]
+async fn replacing_a_usage_key_retires_its_reading_without_changing_inference_authority() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        ConfigurationStore::for_root(super::support::root(directory.path()))
+            .await
+            .unwrap(),
+    );
+    let provider = json!({"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"tencent-token-plan-enterprise"});
+    let configuration = json!({"baseUrl":"https://tokenhub.tencentmaas.com/plan/v3"});
+    let CatalogMutationResult::Committed { connection: Some(connection), .. } = store
+        .create_connection(serde_json::from_value(json!({
+            "expectedCatalogRevision": 0,
+            "connection": {
+                "slug":"token-plan","name":"Token Plan","provider":provider,"configuration":configuration,
+                "enabled":true,"enabledModelIds":[]
+            }
+        })).unwrap()).await.unwrap() else { panic!("connection creation failed") };
+    let target = ConnectionCredentialTarget {
+        connection_id: connection.connection_id.clone(),
+        revision: connection.revision,
+        slug: "token-plan".into(),
+        provider: serde_json::from_value(provider).unwrap(),
+        configuration,
+    };
+    let mut input = SetCredentialInput {
+        locator: CredentialLocator::Connection {
+            connection_id: connection.connection_id.clone(),
+            kind: ConnectionCredentialKind::Usage,
+        },
+        expected: None,
+        expected_connection: Some(target.clone()),
+        secret: r#"{"accessKeyId":"ak-fixture","secretAccessKey":"first","teamId":"team-first"}"#
+            .into(),
+    };
+    let CredentialMutationResult::Committed { status, .. } =
+        store.set_credential(input.clone(), 1).await.unwrap()
+    else {
+        panic!("usage key did not commit")
+    };
+    let observed = store
+        .observe_usage(connection.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        observed.access_key().unwrap().unwrap().team_id.as_deref(),
+        Some("team-first")
+    );
+    assert!(
+        store
+            .usage_observation_current(&observed, true)
+            .await
+            .unwrap()
+    );
+
+    let saved = status.basis().unwrap();
+    input.expected = Some(CredentialIdentityBasis {
+        credential_id: saved.credential_id,
+        revision: saved.revision,
+    });
+    input.secret =
+        r#"{"accessKeyId":"ak-fixture","secretAccessKey":"second","teamId":"team-second"}"#.into();
+    assert!(matches!(
+        store.set_credential(input, 2).await.unwrap(),
+        CredentialMutationResult::Committed { .. }
+    ));
+    assert!(
+        !store
+            .usage_observation_current(&observed, true)
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .usage_observation_current(&observed, false)
+            .await
+            .unwrap()
+    );
+    assert!(store.provider_credential(target).await.unwrap().is_none());
+    assert_eq!(
+        store
+            .observe_usage(connection)
+            .await
+            .unwrap()
+            .unwrap()
+            .access_key()
+            .unwrap()
+            .unwrap()
+            .team_id
+            .as_deref(),
+        Some("team-second")
+    );
+}
+
+#[tokio::test]
 async fn catalog_and_vault_keep_independent_cas_and_private_material_across_reopen() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("root");

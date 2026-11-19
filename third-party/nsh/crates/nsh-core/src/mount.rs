@@ -87,6 +87,11 @@ pub struct WebProps {
     /// ([`crate::web_resource`]). Read when the platform makes the web
     /// view, as `incognito`.
     pub url_schemes: Vec<crate::web_resource::WebUrlScheme>,
+    /// Internal: an `on_download` or `on_download_pending` listener asks
+    /// the platform to hold every download for the core. Read by the
+    /// web view's backend.
+    #[doc(hidden)]
+    pub defer_downloads: bool,
 }
 
 impl Default for WebProps {
@@ -103,6 +108,7 @@ impl Default for WebProps {
             back_forward_gestures: false,
             incognito: false,
             url_schemes: Vec::new(),
+            defer_downloads: false,
         }
     }
 }
@@ -196,8 +202,17 @@ pub struct ScrollBehavior {
     pub enabled: bool,
     /// It overscrolls past its edges.
     pub bounces: bool,
+    /// A tap at the top of the window scrolls it to its top (iOS:
+    /// `UIScrollView.scrollsToTop`).
+    pub scrolls_to_top: bool,
     /// Room around the content.
     pub content_inset: EdgeInsets,
+    /// How far the scroll indicator keeps from each edge of the view: its
+    /// track runs between the top and bottom insets (a horizontal view's:
+    /// left and right), and it moves in from the right (bottom) edge by
+    /// the right (bottom) one. Platforms add the room they keep for the
+    /// keyboard to the bottom.
+    pub scrollbar_inset: EdgeInsets,
     /// Whether taps dismiss the keyboard.
     pub keyboard_taps: KeyboardTaps,
     /// A fling moves one snap point at most (`disableIntervalMomentum`).
@@ -236,7 +251,9 @@ impl Default for ScrollBehavior {
             deceleration: 0.0,
             enabled: true,
             bounces: true,
+            scrolls_to_top: true,
             content_inset: EdgeInsets::default(),
+            scrollbar_inset: EdgeInsets::default(),
             keyboard_taps: KeyboardTaps::Never,
             one_step: false,
             min_zoom: 1.0,
@@ -400,6 +417,11 @@ pub struct ScreenConfig {
     pub large_title: bool,
     /// The content extends under the header.
     pub header_transparent: bool,
+    /// The hairline under the header (iOS).
+    pub header_shadow_visible: bool,
+    /// A transparent header shows its background once the content scrolls
+    /// under it (iOS).
+    pub header_background_on_scroll: bool,
     /// The system tab bar leaves while this page is on top.
     pub hides_bottom_bar_when_pushed: bool,
     /// Color of the back button and bar buttons.
@@ -437,6 +459,10 @@ pub struct ScreenConfig {
     pub left_system_item: Option<crate::HeaderSystemItem>,
     /// As `right_symbol`, in the leading slot, pressing `left`.
     pub left_symbol: Option<Arc<str>>,
+    /// Trailing UIKit bar buttons (`ios={{ headerRightItems }}`); a
+    /// non-empty list wins over `right_system_item` / `right_symbol` and
+    /// leaves `right`'s view out of the iOS bar. Empty is unset.
+    pub right_items: Vec<crate::HeaderItem>,
     /// Custom title view.
     pub title_view: Option<NodeId>,
     /// The app's header (`header`): on a platform without a native header
@@ -457,6 +483,8 @@ impl Default for ScreenConfig {
             header_visible: true,
             large_title: false,
             header_transparent: false,
+            header_shadow_visible: true,
+            header_background_on_scroll: false,
             hides_bottom_bar_when_pushed: false,
             tint_color: None,
             background_color: None,
@@ -472,6 +500,7 @@ impl Default for ScreenConfig {
             right_symbol: None,
             left_system_item: None,
             left_symbol: None,
+            right_items: Vec::new(),
             title_view: None,
             header_view: None,
             header_height: Points::ZERO,
@@ -485,7 +514,7 @@ impl Default for ScreenConfig {
 /// transparent layer over the whole window (no card, scrim, shadow or
 /// background; `presentation` is ignored), and what shows is the app's
 /// popup and backdrop, which the runtime renders inside it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModalConfig {
     /// How it appears.
     pub animation: ModalAnimation,
@@ -513,6 +542,20 @@ pub struct ModalConfig {
     /// window, not the main one). For a window's own root: the window
     /// holding its node. The core works it out from where the node is.
     pub window: NodeId,
+    /// iOS sheets: the heights it rests at (`detents`); empty for the
+    /// system's full height.
+    pub detents: Vec<crate::SheetDetent>,
+    /// iOS sheets: the detent the app keeps it at (`detent`); applied when
+    /// it changes.
+    pub detent: Option<crate::SheetDetent>,
+    /// iOS sheets: the detent it opens at without [`Self::detent`]
+    /// (`defaultDetent`); `None` for the smallest.
+    pub default_detent: Option<crate::SheetDetent>,
+    /// iOS sheets: the system's grabber shows (`grabber`).
+    pub grabber: bool,
+    /// iOS sheets: up to this detent what is behind is not dimmed and
+    /// takes touches (`largestUndimmedDetent`).
+    pub largest_undimmed_detent: Option<crate::SheetDetent>,
 }
 
 impl Default for ModalConfig {
@@ -526,6 +569,11 @@ impl Default for ModalConfig {
             close_on_backdrop_press: true,
             close_on_swipe: true,
             window: crate::ROOT_ID,
+            detents: Vec::new(),
+            detent: None,
+            default_detent: None,
+            grabber: false,
+            largest_undimmed_detent: None,
         }
     }
 }
@@ -562,11 +610,14 @@ pub struct InputConfig {
     pub return_key: ReturnKeyType,
     /// Automatic capitalization.
     pub auto_capitalize: AutoCapitalize,
-    /// Autocorrection.
+    /// The system's corrections: spelling, smart quotes and dashes, text
+    /// replacement.
     pub auto_correct: bool,
     /// Several lines (return inserts a line break).
     pub multiline: bool,
-    /// Maximum length in UTF-16 units.
+    /// The most characters the user's edits leave (`maxLength`), counted
+    /// as Unicode scalar values ([`crate::text_edit::char_len`]); an
+    /// insertion is cut by [`crate::text_edit::clip_chars`].
     pub max_length: Option<u32>,
     /// The user can edit the text.
     pub editable: bool,
@@ -617,6 +668,19 @@ impl InputConfig {
             None => SubmitBehavior::Submit,
         }
     }
+
+    /// A password shown as plain text: the input holds a password
+    /// ([`InputConfig::auto_fill`] `current-password` or `new-password`)
+    /// but is not `secure`, as after a "show password" toggle. Platforms
+    /// type it as it is: Android's visible password keyboard, iOS's ASCII
+    /// keyboard, never capitalized, suggested or corrected.
+    pub fn visible_password(&self) -> bool {
+        !self.secure
+            && matches!(
+                self.auto_fill,
+                crate::ops::AutoFill::Password | crate::ops::AutoFill::NewPassword
+            )
+    }
 }
 
 impl Default for InputConfig {
@@ -662,9 +726,15 @@ pub struct ImageOptions {
     /// `fadeDuration` in milliseconds; the platform's default when `None`
     /// (React Native: 300 on Android, none on iOS).
     pub fade_ms: Option<f32>,
+    /// Desktop: retain decoded pixels while replacing a nonempty source.
+    pub retain_previous: bool,
     /// `objectPosition`: where the image sits in its box once the resize
     /// mode has sized it ([`crate::ResizeMode::fit`]).
     pub position: crate::style::ObjectPosition,
+    /// The color an SVG source's `currentColor` paints with: the element's
+    /// text color, for an `svg()` the platform draws as an image (the web
+    /// runtime); `None` for an image, whose `currentColor` stays the SVG's.
+    pub current_color: Option<crate::style::Color>,
 }
 
 /// One instruction for the platform backend.
@@ -739,11 +809,13 @@ pub enum MountItem {
     },
     /// The area the view's descendants cover outside its bounds, in its
     /// own coordinates (it contains the bounds), while overflow is visible;
-    /// `None` when they stay inside. UIKit and Android only look for the
-    /// target of a touch inside a view's bounds: platforms look in the
-    /// descendants of views with an area too, so children placed outside
-    /// their parent (a dropdown under its field) can be touched. Sent only
-    /// when it changes; from layout frames (transforms are not included).
+    /// `None` when they stay inside. It takes in the descendants' hit
+    /// slop. UIKit and Android only look for the target of a touch inside a
+    /// view's bounds: platforms look in the descendants of views with an
+    /// area too, so children placed outside their parent (a dropdown under
+    /// its field) and the slop reaching out of it can be touched. Sent only
+    /// when it changes; from layout frames and hit slop (transforms are not
+    /// included).
     Overflow {
         /// View.
         id: NodeId,
@@ -848,7 +920,8 @@ pub enum MountItem {
     Keymap(std::sync::Arc<crate::keymap::Keymap>),
     /// The sticky cells of a list (replaces the previous set): each one
     /// is translated along the main axis by `clamp(offset - start, 0,
-    /// end - start)` on every scroll, natively.
+    /// end - start)` on every scroll, natively. The set is in the order
+    /// the cells stack, bottom to top (a built-in scroll bar last).
     StickyCells {
         /// The list.
         id: NodeId,

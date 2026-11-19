@@ -1,8 +1,8 @@
 //! `AlertDialog`: the platform's alert or action sheet (UIAlertController,
-//! AlertDialog, a list dialog on Android).
+//! AlertDialog, a list dialog on Android), optionally with a text field.
 
 use nsh_core::{
-    element::{Dialog, DialogButton, DialogButtonStyle},
+    element::{Dialog, DialogButton, DialogButtonStyle, DialogInput},
     prelude::*,
 };
 
@@ -31,6 +31,63 @@ pub struct AlertDialogOptions {
     /// A press outside it closes it without an action (default: false for
     /// an alert, true for an action sheet).
     pub close_on_backdrop_press: Option<bool>,
+    /// A text field in the alert, its text reported as `value` (an alert
+    /// only: `show` rejects it in an action sheet). Return chooses the
+    /// last `"default"` action. Where the platform's alert has no text
+    /// field (Windows, Linux, the terminal, GPUI), the alert shows without
+    /// one and `value` is `null`.
+    pub input: Option<AlertDialogInput>,
+}
+
+/// The text field of an [`AlertDialog`] (`input`), focused when it shows.
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct AlertDialogInput {
+    /// The text it starts with (default: empty).
+    #[prop(default)]
+    pub default_value: SharedString,
+    /// Shown while it is empty.
+    pub placeholder: Option<SharedString>,
+    /// The starting text is selected as the field takes the focus, so
+    /// typing replaces it (default: false, the caret after it).
+    #[prop(default)]
+    pub select_text_on_focus: bool,
+    /// While it is empty, every action but the `"cancel"` ones is disabled
+    /// and return chooses none (default: false).
+    #[prop(default)]
+    pub required: bool,
+}
+
+impl AlertDialogInput {
+    /// An empty text field.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The text it starts with.
+    pub fn default_value(mut self, value: impl Into<SharedString>) -> Self {
+        self.default_value = value.into();
+        self
+    }
+
+    /// Shown while it is empty.
+    pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    /// Selects the starting text as the field takes the focus, so typing
+    /// replaces it.
+    pub fn select_text_on_focus(mut self, select: bool) -> Self {
+        self.select_text_on_focus = select;
+        self
+    }
+
+    /// Disables every action but the cancel ones while it is empty.
+    pub fn required(mut self, required: bool) -> Self {
+        self.required = required;
+        self
+    }
 }
 
 /// One action of an [`AlertDialog`].
@@ -52,6 +109,9 @@ pub struct AlertDialogAction {
 pub struct AlertDialogResult {
     /// The chosen action's `id`, or `null` when it closed without one.
     pub action: Option<SharedString>,
+    /// The text of its `input` as it closed, `null` without one (or where
+    /// the platform's alert has no text field, or when the app closed it).
+    pub value: Option<SharedString>,
 }
 
 /// What an [`AlertDialogAction`] means.
@@ -89,9 +149,10 @@ pub enum AlertDialogPresentation {
 
 #[module]
 impl AlertDialog {
-    /// Shows the dialog and resolves with `{ action }`: the chosen
-    /// action's `id`, or `null` when it closed without an action. Rejects
-    /// with a `TypeError` without actions (a bug of the app's).
+    /// Shows the dialog and resolves with `{ action, value }`: the chosen
+    /// action's `id`, or `null` when it closed without an action, and the
+    /// text of its `input`. Rejects with a `TypeError` without actions, or
+    /// with an `input` in an action sheet (bugs of the app's).
     pub async fn show(options: AlertDialogOptions) -> Result<AlertDialogResult, JsError> {
         options.show().await.map_err(JsError::Type)
     }
@@ -102,6 +163,12 @@ impl AlertDialog {
 /// answer awaited in a task:
 ///
 /// ```ignore
+/// let rename = alert_dialog()
+///     .title("Rename")
+///     .input(AlertDialogInput::new().default_value("Trip").select_text_on_focus(true).required(true))
+///     .cancel("cancel", "Cancel")
+///     .action("rename", "Rename")
+///     .show();
 /// let answer = alert_dialog()
 ///     .title("Delete the photo?")
 ///     .description("This cannot be undone.")
@@ -174,39 +241,104 @@ impl AlertDialogOptions {
         self
     }
 
+    /// A text field in the alert, its text the answer's `value`; return
+    /// chooses the last regular action (not in an action sheet:
+    /// [`show`](Self::show) answers an error).
+    pub fn input(mut self, input: AlertDialogInput) -> Self {
+        self.input = Some(input);
+        self
+    }
+
     /// Shows the dialog now; the answer, to await in a task, is
-    /// `{ action }`: the chosen action's `id`, or `None` when it closed
-    /// without an action. An error without actions.
-    pub fn show(self) -> impl Future<Output = Result<AlertDialogResult, String>> + 'static {
-        let shown = (!self.actions.is_empty()).then(|| {
-            let sheet = self.presentation == AlertDialogPresentation::ActionSheet;
-            let cancelable = self.close_on_escape.unwrap_or(sheet)
-                || self.close_on_backdrop_press.unwrap_or(sheet);
-            nsh_core::element::dialog(Dialog {
-                id: 0,
-                title: self.title.as_ref().map(|t| t.to_string()),
-                message: self.description.as_ref().map(|m| m.to_string()),
-                buttons: self
-                    .actions
-                    .iter()
-                    .map(|a| DialogButton {
-                        text: a.label.to_string(),
-                        style: a.role.into(),
-                    })
-                    .collect(),
-                cancelable,
-                sheet,
+    /// `{ action, value }`: the chosen action's `id`, or `None` when it
+    /// closed without an action, and the text of its input. An error
+    /// without actions, or with an input in an action sheet. Its
+    /// [`closer`](AlertDialogAnswer::closer) takes the dialog off the screen
+    /// without the user.
+    pub fn show(self) -> AlertDialogAnswer {
+        let sheet = self.presentation == AlertDialogPresentation::ActionSheet;
+        let shown = if self.actions.is_empty() {
+            Err("AlertDialog.show: `actions` is empty")
+        } else if sheet && self.input.is_some() {
+            Err("AlertDialog.show: `input` needs `presentation: \"alert\"`")
+        } else {
+            Ok({
+                let cancelable = self.close_on_escape.unwrap_or(sheet)
+                    || self.close_on_backdrop_press.unwrap_or(sheet);
+                nsh_core::element::dialog(Dialog {
+                    id: 0,
+                    title: self.title.as_ref().map(|t| t.to_string()),
+                    message: self.description.as_ref().map(|m| m.to_string()),
+                    buttons: self
+                        .actions
+                        .iter()
+                        .map(|a| DialogButton {
+                            text: a.label.to_string(),
+                            style: a.role.into(),
+                        })
+                        .collect(),
+                    cancelable,
+                    sheet,
+                    input: self.input.as_ref().map(|input| {
+                        let mut field = DialogInput::new(input.default_value.to_string())
+                            .select_all(input.select_text_on_focus)
+                            .required(input.required);
+                        field.placeholder = input.placeholder.as_ref().map(|p| p.to_string());
+                        field
+                    }),
+                })
             })
-        });
-        async move {
-            let index = shown.ok_or("AlertDialog.show: `actions` is empty")?.await;
-            Ok(AlertDialogResult {
-                action: usize::try_from(index)
-                    .ok()
-                    .and_then(|i| self.actions.get(i))
-                    .map(|a| a.id.clone()),
-            })
+        };
+        AlertDialogAnswer {
+            shown,
+            actions: self.actions,
         }
+    }
+}
+
+/// What [`show`](AlertDialogOptions::show) returns: the dialog's answer,
+/// to await in a task (`{ action }`, the chosen action's `id`, or `None`
+/// when it closed without one), and its [`closer`](Self::closer).
+#[must_use = "an answer does nothing unless awaited"]
+#[derive(Debug)]
+pub struct AlertDialogAnswer {
+    /// Why [`show`](AlertDialogOptions::show) refused the options.
+    shown: Result<DialogAnswer, &'static str>,
+    actions: Vec<AlertDialogAction>,
+}
+
+impl AlertDialogAnswer {
+    /// What closes the dialog without the user, as when what it asks about
+    /// went away (the user went elsewhere): kept apart from the answer,
+    /// which a task takes. Closing it answers `{ action: None }` at once
+    /// and takes the dialog off the screen; closing an answered one does
+    /// nothing. `None` when the options were refused.
+    pub fn closer(&self) -> Option<DialogCloser> {
+        self.shown.as_ref().ok().map(DialogAnswer::closer)
+    }
+}
+
+impl Future for AlertDialogAnswer {
+    type Output = Result<AlertDialogResult, String>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.get_mut();
+        let shown = match this.shown.as_mut() {
+            Ok(shown) => shown,
+            Err(error) => return std::task::Poll::Ready(Err((*error).to_owned())),
+        };
+        std::pin::Pin::new(shown).poll(cx).map(|reply| {
+            Ok(AlertDialogResult {
+                action: usize::try_from(reply.index)
+                    .ok()
+                    .and_then(|i| this.actions.get(i))
+                    .map(|a| a.id.clone()),
+                value: reply.value.map(SharedString::from),
+            })
+        })
     }
 }
 
@@ -242,7 +374,47 @@ mod tests {
                 presentation: AlertDialogPresentation::ActionSheet,
                 close_on_escape: Some(false),
                 close_on_backdrop_press: None,
+                input: None,
             }
+        );
+    }
+
+    #[test]
+    fn the_input_builder_sets_the_fields_tsx_passes() {
+        let options = alert_dialog().input(
+            AlertDialogInput::new()
+                .default_value("Trip")
+                .placeholder("Name")
+                .select_text_on_focus(true)
+                .required(true),
+        );
+        assert_eq!(
+            options.input,
+            Some(AlertDialogInput {
+                default_value: "Trip".into(),
+                placeholder: Some("Name".into()),
+                select_text_on_focus: true,
+                required: true,
+            })
+        );
+    }
+
+    #[test]
+    fn an_input_in_an_action_sheet_is_an_error() {
+        let mut shown = std::pin::pin!(
+            alert_dialog()
+                .action_sheet()
+                .input(AlertDialogInput::new())
+                .action("save", "Save")
+                .show()
+        );
+        assert!(shown.closer().is_none(), "never shown");
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert_eq!(
+            shown.as_mut().poll(&mut cx),
+            std::task::Poll::Ready(Err(
+                "AlertDialog.show: `input` needs `presentation: \"alert\"`".to_owned()
+            ))
         );
     }
 

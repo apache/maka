@@ -78,33 +78,50 @@ pub(super) struct SlotTarget {
 /// `attrs` of a slot's element as (the holder's, the target's): the
 /// styles and what shapes the holder's box stay on the holder.
 pub(super) fn split(attrs: &Attrs) -> (Attrs, Attrs) {
+    let (holder_rare, target_rare) = match &attrs.rare {
+        Some(r) => (
+            crate::element::builder::RareAttrs {
+                animated: r.animated.clone(),
+                inset_padding: r.inset_padding,
+                inset_margin: r.inset_margin,
+                src: r.src.clone(),
+                drawing: r.drawing.clone(),
+                selectable_view: r.selectable_view,
+                continues_text: r.continues_text,
+                render: r.render.clone(),
+                ..Default::default()
+            }
+            .boxed(),
+            crate::element::builder::RareAttrs {
+                accessible: r.accessible,
+                hint: r.hint.clone(),
+                description: r.description.clone(),
+                value: r.value.clone(),
+                element_ref: r.element_ref.clone(),
+                bound: r.bound.clone(),
+                projected_states: r.projected_states,
+                projected_data: r.projected_data.clone(),
+                projected_active: r.projected_active,
+                ..Default::default()
+            }
+            .boxed(),
+        ),
+        None => (None, None),
+    };
     let target = Attrs {
         disabled: attrs.disabled,
-        accessible: attrs.accessible,
         label: attrs.label.clone(),
-        hint: attrs.hint.clone(),
         role: attrs.role,
         state: attrs.state,
-        value: attrs.value.clone(),
         pointer_events: attrs.pointer_events,
         props: attrs.props.clone(),
-        element_ref: attrs.element_ref.clone(),
-        bound: attrs.bound.clone(),
-        projected_states: attrs.projected_states,
-        projected_data: attrs.projected_data.clone(),
+        rare: target_rare,
         ..Attrs::default()
     };
     let holder = Attrs {
         inline: attrs.inline.clone(),
-        animated: attrs.animated.clone(),
         class: attrs.class.clone(),
-        inset_padding: attrs.inset_padding,
-        inset_margin: attrs.inset_margin,
-        src: attrs.src.clone(),
-        drawing: attrs.drawing.clone(),
-        selectable_view: attrs.selectable_view,
-        continues_text: attrs.continues_text,
-        render: attrs.render.clone(),
+        rare: holder_rare,
         ..Attrs::default()
     };
     (holder, target)
@@ -123,11 +140,33 @@ pub(super) fn merged(js: &Attrs, own: &Attrs) -> Attrs {
             })
             .cloned(),
     );
+    let rare = if js.rare.is_none() && own.rare.is_none() {
+        None
+    } else {
+        let empty = crate::element::builder::RareAttrs::default();
+        let jr = js.rare.as_deref().unwrap_or(&empty);
+        let or = own.rare.as_deref().unwrap_or(&empty);
+        let mut data = or.projected_data.clone();
+        data.extend(&jr.projected_data);
+        data.sort_unstable();
+        data.dedup();
+        crate::element::builder::RareAttrs {
+            accessible: or.accessible.or(jr.accessible),
+            hint: or.hint.clone().or_else(|| jr.hint.clone()),
+            description: or.description.clone().or_else(|| jr.description.clone()),
+            value: or.value.clone().or_else(|| jr.value.clone()),
+            element_ref: or.element_ref.clone(),
+            bound: or.bound.clone(),
+            projected_states: or.projected_states | jr.projected_states,
+            projected_data: data,
+            projected_active: or.projected_active.or(jr.projected_active),
+            ..Default::default()
+        }
+        .boxed()
+    };
     Attrs {
         disabled: own.disabled || js.disabled,
-        accessible: own.accessible.or(js.accessible),
         label: own.label.clone().or_else(|| js.label.clone()),
-        hint: own.hint.clone().or_else(|| js.hint.clone()),
         role: if own.role == AccessibilityRole::None {
             js.role
         } else {
@@ -142,24 +181,15 @@ pub(super) fn merged(js: &Attrs, own: &Attrs) -> Attrs {
             pressed: own.state.pressed.or(js.state.pressed),
             current: own.state.current.or(js.state.current),
             has_popup: own.state.has_popup || js.state.has_popup,
+            invalid: own.state.invalid || js.state.invalid,
         },
-        value: own.value.clone().or_else(|| js.value.clone()),
         pointer_events: if own.pointer_events == PointerEvents::default() {
             js.pointer_events
         } else {
             own.pointer_events
         },
         props,
-        element_ref: own.element_ref.clone(),
-        bound: own.bound.clone(),
-        projected_states: own.projected_states | js.projected_states,
-        projected_data: {
-            let mut data = own.projected_data.clone();
-            data.extend(&js.projected_data);
-            data.sort_unstable();
-            data.dedup();
-            data
-        },
+        rare,
         ..Attrs::default()
     }
 }
@@ -170,15 +200,45 @@ fn absorb(js: &mut Attrs, prop: &Prop) -> bool {
     use AccessibilityProp as A;
     match prop {
         Prop::Native(crate::NativeProp::Disabled(d)) => js.disabled = *d,
-        Prop::Accessibility(A::Accessible(v)) => js.accessible = *v,
+        Prop::Accessibility(A::Accessible(v)) => {
+            if v.is_some() || js.rare.is_some() {
+                js.rare_mut().accessible = *v;
+            }
+        }
         Prop::Accessibility(A::Label(v)) => js.label = v.clone().map(SharedString::from),
-        Prop::Accessibility(A::Hint(v)) => js.hint = v.clone().map(SharedString::from),
+        Prop::Accessibility(A::Hint(v)) => {
+            if v.is_some() || js.rare.is_some() {
+                js.rare_mut().hint = v.clone().map(SharedString::from);
+            }
+        }
+        Prop::Accessibility(A::Description(v)) => {
+            if v.is_some() || js.rare.is_some() {
+                js.rare_mut().description = v.clone().map(SharedString::from);
+            }
+        }
         Prop::Accessibility(A::Role(v)) => js.role = *v,
         Prop::Accessibility(A::State(v)) => js.state = *v,
-        Prop::Accessibility(A::Value(v)) => js.value = v.clone(),
+        Prop::Accessibility(A::Value(v)) => {
+            if v.is_some() || js.rare.is_some() {
+                js.rare_mut().value = v.clone();
+            }
+        }
         Prop::PointerEvents(v) => js.pointer_events = *v,
-        Prop::ProjectedStates(v) => js.projected_states = *v,
-        Prop::ProjectedData(v) => js.projected_data = v.to_vec(),
+        Prop::ProjectedStates(v) => {
+            if *v != 0 || js.rare.is_some() {
+                js.rare_mut().projected_states = *v;
+            }
+        }
+        Prop::ProjectedData(v) => {
+            if !v.is_empty() || js.rare.is_some() {
+                js.rare_mut().projected_data = v.to_vec();
+            }
+        }
+        Prop::ProjectedActive(v) => {
+            if v.is_some() || js.rare.is_some() {
+                js.rare_mut().projected_active = *v;
+            }
+        }
         p if crate::element::host::reset(p).is_some() => {
             crate::element::host::set_in(&mut js.props, p.clone())
         }
@@ -253,18 +313,16 @@ impl<M: TextEngine> Core<M> {
         else {
             return false;
         };
-        let (mut rest, side) = split(new);
+        let (mut rest, mut side) = split(new);
         let (mut old_rest, old_side) = split(old);
         let before = merged(&old_side, &target.own);
         let after = merged(&side, &target.own);
         // Its own ref goes with the rest: the combination carries the
         // component's.
-        target.js = Attrs {
-            element_ref: None,
-            ..side
-        };
-        rest.element_ref = new.element_ref.clone();
-        old_rest.element_ref = old.element_ref.clone();
+        side.set_element_ref(None);
+        target.js = side;
+        rest.set_element_ref(new.element_ref().cloned());
+        old_rest.set_element_ref(old.element_ref().cloned());
         self.apply_attrs_over(id, &rest, &old_rest, app);
         self.apply_attrs(id, &after, &before);
         true
@@ -327,19 +385,36 @@ impl<M: TextEngine> Core<M> {
         let node = &self.nodes[key as usize];
         let mut js = Attrs {
             disabled: node.states & state::DISABLED != 0,
-            projected_states: node.projected,
-            projected_data: node.data.to_vec(),
             ..Attrs::default()
         };
+        let active_group = node.parts.as_ref().and_then(|p| p.active_group());
+        if node.projected != 0 || !node.data.is_empty() || active_group.is_some() {
+            let r = js.rare_mut();
+            r.projected_states = node.projected;
+            r.projected_data = node.data.to_vec();
+            r.projected_active = active_group;
+        }
         if let Some(props) = &node.props {
             let a = &props.accessibility;
-            js.accessible = a.accessible;
             js.label = a.label.clone().map(SharedString::from);
-            js.hint = a.hint.clone().map(SharedString::from);
             js.role = a.role;
             js.state = a.state;
-            js.value = a.value.clone();
             js.pointer_events = props.pointer_events;
+            let description = self
+                .own_description(key)
+                .unwrap_or_else(|| a.description.clone());
+            if a.accessible.is_some()
+                || a.hint.is_some()
+                || description.is_some()
+                || a.value.is_some()
+            {
+                let r = js.rare_mut();
+                r.accessible = a.accessible;
+                r.hint = a.hint.clone().map(SharedString::from);
+                // Its own, not the text of an element describing it.
+                r.description = description.map(SharedString::from);
+                r.value = a.value.clone();
+            }
             if props.focusable.is_some() {
                 js.props.push(Prop::Focusable(props.focusable));
             }

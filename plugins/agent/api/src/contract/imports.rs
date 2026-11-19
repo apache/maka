@@ -235,7 +235,7 @@ pub enum ImportChange {
         title: String,
     },
 }
-#[derive(Serialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "AgentImportResult")]
 pub enum ImportResult {

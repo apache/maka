@@ -18,7 +18,7 @@
  */
 
 use futures_util::future::BoxFuture;
-use maka_agent_facts::event::Invocation;
+use maka_agent_facts::durable::ExecutionIdentity;
 use maka_agent_facts::executor::ExecutorId;
 use maka_agent_facts::executor::Output;
 use maka_agent_facts::input::MessageInput;
@@ -116,10 +116,12 @@ pub struct Query {
     pub cursor: Option<Cursor>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
+    pub task_id: maka_agent_facts::durable::ExternalTaskId,
     pub language: maka_agent_facts::language::Language,
-    pub invocation: Invocation,
+    pub execution: ExecutionIdentity,
     pub conversation_key: String,
     pub content: MessageInput,
     pub cwd: String,
@@ -148,6 +150,15 @@ pub enum Outcome {
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
+    #[error("external task Root observation retired")]
+    ObservationRetired,
+    #[error("{diagnostic}")]
+    Blocked {
+        reason: Box<maka_agent_facts::durable::BlockerKind>,
+        diagnostic: String,
+    },
+    #[error("external task isolation unavailable: {0}")]
+    IsolationUnavailable(String),
     #[error("executor outcome is unknown")]
     Unknown,
     #[error("executor registration retired")]
@@ -174,7 +185,7 @@ pub struct Context {
     pub cancellation: CancellationToken,
     pub output: Arc<dyn OutputSink>,
     /// Issued by the embedding Host after admission, never reconstructed from
-    /// Request.invocation. Absent in embedders without system capabilities.
+    /// Request.execution. Absent in embedders without system capabilities.
     pub call: Option<maka_capabilities::call::Scope>,
 }
 pub trait Provider: Send + Sync {
@@ -185,11 +196,6 @@ pub trait Provider: Send + Sync {
     ) -> BoxFuture<'static, Result<Outcome, Error>>;
 }
 
-/// Captures one admitted backend without requiring a contribution registry.
-/// Implementations must retain the original execution owner through settlement.
-pub trait Backend: Send {
-    fn admit_execution(&self, request: Request) -> Result<Admitted, Error>;
-}
 pub struct Admitted {
     pub identity: maka_agent_facts::executor::Binding,
     pub execution: Box<dyn Execution>,
@@ -197,23 +203,60 @@ pub struct Admitted {
 pub trait Execution: Send {
     fn execute(
         self: Box<Self>,
-        execution: Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
+        custody: Arc<dyn maka_plugin_core::work::WorkCustody>,
         output: Arc<dyn OutputSink>,
         cancellation: CancellationToken,
     ) -> BoxFuture<'static, Settlement>;
 }
 
+/// Physical evidence from the same original Root owner, never private job EOF.
+pub trait RootSettlementOwner: Send + Sync {
+    fn original_root_cleanup(&self) -> maka_plugin_core::operation::OperationCleanup;
+    fn original_root_cleanup_signal(self: Arc<Self>) -> BoxFuture<'static, ()>;
+}
+impl RootSettlementOwner for () {
+    fn original_root_cleanup_signal(self: Arc<Self>) -> BoxFuture<'static, ()> {
+        Box::pin(std::future::pending())
+    }
+    fn original_root_cleanup(&self) -> maka_plugin_core::operation::OperationCleanup {
+        maka_plugin_core::operation::OperationCleanup::Confirmed
+    }
+}
+impl<T: RootSettlementOwner + ?Sized + 'static> RootSettlementOwner for Arc<T> {
+    fn original_root_cleanup_signal(self: Arc<Self>) -> BoxFuture<'static, ()> {
+        (*self).clone().original_root_cleanup_signal()
+    }
+    fn original_root_cleanup(&self) -> maka_plugin_core::operation::OperationCleanup {
+        (**self).original_root_cleanup()
+    }
+}
+
 /// Keep this value alive until the Host commits the terminal execution fact.
 pub struct Settlement {
     pub result: Result<Outcome, Error>,
-    _lease: Box<dyn Send>,
+    /// This caller's actual Root resources, independent of provider job cleanup.
+    pub root_cleanup: maka_plugin_core::operation::OperationCleanup,
+    _lease: Arc<dyn RootSettlementOwner>,
 }
 impl Settlement {
+    pub fn original_root_cleanup_signal(&self) -> BoxFuture<'static, ()> {
+        self._lease.clone().original_root_cleanup_signal()
+    }
+    pub fn observe_root_cleanup(&mut self) {
+        if self.root_cleanup != maka_plugin_core::operation::OperationCleanup::Confirmed {
+            self.root_cleanup = self._lease.original_root_cleanup();
+        }
+    }
     /// The actual admitted owner remains alive through the canonical terminal commit.
-    pub fn new(result: Result<Outcome, Error>, owner: impl Send + 'static) -> Self {
+    pub fn new(
+        result: Result<Outcome, Error>,
+        root_cleanup: maka_plugin_core::operation::OperationCleanup,
+        owner: impl RootSettlementOwner + 'static,
+    ) -> Self {
         Self {
             result,
-            _lease: Box::new(owner),
+            root_cleanup,
+            _lease: Arc::new(owner),
         }
     }
 }

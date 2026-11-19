@@ -21,6 +21,7 @@ import { signal } from 'nsh';
 import { computerPermissionMessages } from './locale-computer-permissions';
 import { goalMessages } from './locale-goal';
 import { composerMessages } from './locale-composer';
+import { roomMessages } from './locale-rooms';
 import type { DisplayText, LanguagePreference } from '../../../../packages/plugin-sdk/src/index.js';
 import { createCopy, languageIndex, resolveLocale } from '../../../../plugins/shared/locale.js';
 import { host as nativeHost } from 'maka/host';
@@ -32,22 +33,38 @@ import { recallMessages } from './locale-recall';
 import { pluginMessages } from './locale-plugins';
 import { configurationMessages } from './locale-configuration';
 import { externalAgentMessages } from './locale-external-agents';
+import { toolActivityMessages } from './locale-tool-activity';
+import { sessionToolMessages } from './locale-tool-sessions';
+import { deploymentToolMessages } from './locale-tool-deployment';
+import { automationMessages } from './locale-automation';
+import { nativeToolMessages } from './locale-tool-native';
+import { discoveryMessages } from './locale-discovery';
+
+import { subagentMessages } from './locale-subagents';
 
 const nativeLocale = nativeHost.systemLocale;
 export const currentLocale = signal(resolveLocale('auto', nativeLocale));
 let observedRevision = -1;
 const copy = createCopy({
   ...commonMessages,
+  ...subagentMessages,
   ...computerPermissionMessages,
   ...goalMessages,
   ...conversationMessages,
   ...composerMessages,
+  ...roomMessages,
   ...settingsMessages,
   ...workspaceMessages,
   ...recallMessages,
   ...pluginMessages,
   ...configurationMessages,
   ...externalAgentMessages,
+  ...toolActivityMessages,
+  ...sessionToolMessages,
+  ...deploymentToolMessages,
+  ...nativeToolMessages,
+  ...automationMessages,
+  ...discoveryMessages,
 });
 export type MessageKey = keyof ReturnType<typeof copy>;
 
@@ -66,6 +83,20 @@ export function tr(key: MessageKey, values?: Readonly<Record<string, string | nu
     : message.replace(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g, (placeholder, name: string) =>
         name in values ? String(values[name]) : placeholder,
       );
+}
+
+/** A plugin's name and description in the interface's language, as its manifest translates them. */
+export function localizedPresentation<T extends { displayName: string; description: string }>(
+  presentation: T & { localizations?: { [locale: string]: T | undefined } },
+): T {
+  const locale = currentLocale();
+  const translations = presentation.localizations;
+  return (
+    translations?.[locale] ??
+    translations?.[locale.split('-')[0]!] ??
+    translations?.[(['en', 'zh-CN', 'zh-TW'] as const)[languageIndex(locale)]] ??
+    presentation
+  );
 }
 
 /** Honor authored DisplayText translations; opaque custom titles keep their fallback. */

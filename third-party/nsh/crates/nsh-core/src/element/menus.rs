@@ -1,6 +1,7 @@
 //! Menus of views ([`super::desktop::set_application_menu`],
 //! [`super::desktop::popup_menu`]; TS: `Menu.setApplicationMenu`,
-//! `Menu.popup`).
+//! `Menu.popup`) and trailing iOS header bar buttons
+//! ([`super::host::Screen::header_right_items`]).
 //!
 //! A view's menu is decoded into [`crate::desktop::MenuItem`]s with an id
 //! per item that has a handler, the handlers kept here by id. The platform
@@ -8,10 +9,17 @@
 //! handler itself and leaves the others to JS. Views' item ids start at
 //! [`FIRST_ID`], above any JS gives, so the two never meet. A context menu
 //! closing is reported to both sides: each settles the one it showed.
+//! Header bar buttons use the same ids and the same `Menu` event; each
+//! binding of a page's items keeps a generation so replacing the items or
+//! the page going away drops its handlers.
 
 use std::rc::Rc;
 
 use super::task::AnswerSlot;
+use crate::{
+    desktop::Shortcut,
+    geometry::{Bounds, Points},
+};
 
 /// A menu item's handler.
 pub(crate) type MenuHandler = Rc<dyn Fn()>;
@@ -32,8 +40,33 @@ pub(crate) struct ViewMenus {
     pub(crate) popup: Vec<(u32, MenuHandler)>,
     /// Counts the context menus shown, as `app_generation`.
     pub(crate) popup_generation: u64,
+    /// Trailing header bar button handlers: (generation, handlers). Each
+    /// page's binding of `header_right_items` holds one generation.
+    pub(crate) header: Vec<(u64, Vec<(u32, MenuHandler)>)>,
+    /// Counts header bindings, as `app_generation`.
+    pub(crate) header_generation: u64,
     /// Settles the context menu shown, once the platform reports it closed.
     pub(crate) closed: Option<AnswerSlot<()>>,
+    /// The tray's menu handlers.
+    pub(crate) tray: Vec<(u32, MenuHandler)>,
+    /// The tray click's id and handler.
+    pub(crate) tray_click: Option<(u32, TrayClickHandler)>,
+    /// Counts the trays set, as `app_generation`.
+    pub(crate) tray_generation: u64,
+    /// The global shortcuts registered.
+    pub(crate) globals: Vec<Global>,
+}
+
+/// The tray click's handler, given the icon's frame on the screen.
+pub(crate) type TrayClickHandler = Rc<dyn Fn(Option<Bounds<Points>>)>;
+
+/// A global shortcut a view registered.
+pub(crate) struct Global {
+    pub(crate) id: u32,
+    pub(crate) shortcut: Shortcut,
+    pub(crate) on_press: MenuHandler,
+    /// Settled with whether the system took it, once it says.
+    pub(crate) registered: Option<AnswerSlot<bool>>,
 }
 
 impl ViewMenus {
@@ -49,8 +82,53 @@ impl ViewMenus {
         self.app
             .iter()
             .chain(&self.popup)
+            .chain(&self.tray)
+            .chain(self.header.iter().flat_map(|(_, handlers)| handlers))
             .find(|(i, _)| *i == id)
             .map(|(_, h)| h.clone())
+            .or_else(|| {
+                self.globals
+                    .iter()
+                    .find(|g| g.id == id)
+                    .map(|g| g.on_press.clone())
+            })
+    }
+
+    /// The tray click's handler, when `id` is its.
+    pub(crate) fn tray_click(&self, id: u32) -> Option<TrayClickHandler> {
+        self.tray_click
+            .as_ref()
+            .filter(|(i, _)| *i == id)
+            .map(|(_, h)| h.clone())
+    }
+
+    /// Settles global shortcut `id`'s registration; one the system refused
+    /// is forgotten.
+    pub(crate) fn registered(&mut self, id: u32, registered: bool) {
+        let Some(index) = self.globals.iter().position(|g| g.id == id) else {
+            return;
+        };
+        if let Some(slot) = self.globals[index].registered.take() {
+            slot.borrow_mut().deliver(registered);
+        }
+        if !registered {
+            self.globals.remove(index);
+        }
+    }
+
+    /// Keeps `handlers` for a header binding; returns its generation so a
+    /// cleanup can drop them when the binding is replaced or the page goes.
+    pub(crate) fn push_header(&mut self, handlers: Vec<(u32, MenuHandler)>) -> u64 {
+        self.header_generation += 1;
+        let generation = self.header_generation;
+        self.header.push((generation, handlers));
+        generation
+    }
+
+    /// Drops the header handlers of `generation`, if they are still this
+    /// binding's (a later binding of the same page has another).
+    pub(crate) fn take_header(&mut self, generation: u64) {
+        self.header.retain(|(g, _)| *g != generation);
     }
 
     /// Settles the context menu shown, if there is one.

@@ -25,9 +25,11 @@ publish.workspace = true
 [dependencies]
 maka-session-state.workspace = true
 maka-agent-facts.workspace = true
+maka-plugin-core.workspace = true
 jsonschema.workspace = true
 serde.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 tokio-util.workspace = true

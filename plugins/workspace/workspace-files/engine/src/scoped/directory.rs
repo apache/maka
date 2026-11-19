@@ -18,7 +18,7 @@
  */
 
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::fs::{Dir, File, Metadata, OpenOptions, ReadDir};
+use cap_std::fs::{Dir, File, OpenOptions};
 use maka_sandbox::filesystem::{Access, Compiled};
 use std::{
     io,
@@ -62,13 +62,6 @@ impl Directory {
         Ok(())
     }
 
-    pub(crate) fn check_read(&self, relative: &Path) -> io::Result<()> {
-        if self.policy.is_none() {
-            return Ok(());
-        }
-        self.resolve(relative).map(|_| ())
-    }
-
     fn resolve(&self, relative: &Path) -> io::Result<PathBuf> {
         // Parent components must retain real symlink/.. semantics; the canonical
         // capability path below is the authority for that spelling.
@@ -99,65 +92,6 @@ impl Directory {
     fn open_resolved(&self, resolved: &Path, options: &OpenOptions) -> io::Result<File> {
         let (parent, name) = self.parent(resolved)?;
         parent.open_with(name, options.clone().follow(FollowSymlinks::No))
-    }
-
-    pub(crate) fn identity(&self) -> io::Result<String> {
-        crate::directory::identity(&self.inner).map(String::from)
-    }
-
-    pub(crate) fn open_dir(&self, relative: impl AsRef<Path>) -> io::Result<Self> {
-        let relative = relative.as_ref();
-        let resolved = if self.policy.is_some() {
-            self.resolve(relative)?
-        } else {
-            self.inner.canonicalize(nonempty(relative))?
-        };
-        let inner = if self.policy.is_some() {
-            walk(&self.inner, &resolved)?
-        } else {
-            self.inner.open_dir(nonempty(relative))?
-        };
-        Ok(Self::new(
-            inner,
-            self.path.join(resolved),
-            self.policy.clone(),
-        ))
-    }
-
-    pub(crate) fn read_dir(&self, relative: impl AsRef<Path>) -> io::Result<ReadDir> {
-        self.open_dir(relative)?.inner.entries()
-    }
-
-    pub(crate) fn canonicalize(&self, relative: impl AsRef<Path>) -> io::Result<PathBuf> {
-        if self.policy.is_some() {
-            self.resolve(relative.as_ref())
-        } else {
-            self.inner.canonicalize(nonempty(relative.as_ref()))
-        }
-    }
-
-    pub(crate) fn metadata(&self, relative: impl AsRef<Path>) -> io::Result<Metadata> {
-        let relative = relative.as_ref();
-        if self.policy.is_none() {
-            return self.inner.metadata(relative);
-        }
-        let resolved = self.resolve(relative)?;
-        let (parent, name) = self.parent(&resolved)?;
-        let metadata = parent.symlink_metadata(name)?;
-        if metadata.is_symlink() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "filesystem path changed during authorization",
-            ));
-        }
-        Ok(metadata)
-    }
-
-    pub(crate) fn symlink_metadata(&self, relative: impl AsRef<Path>) -> io::Result<Metadata> {
-        if self.policy.is_some() {
-            self.check_read(relative.as_ref())?;
-        }
-        self.inner.symlink_metadata(relative)
     }
 
     /// Writes already refuse every symlink and parent component. Retain the

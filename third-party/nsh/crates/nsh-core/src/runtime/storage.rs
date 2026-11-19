@@ -22,7 +22,8 @@ impl Storage {
     }
 
     /// Sets `key` to `value`; rejects with `ERR_NSH_QUOTA_EXCEEDED` when
-    /// the storage would be full (the value is not set).
+    /// the storage would be full or the device refuses the value (the
+    /// browser's own quota, storage the user blocked): the value is not set.
     pub(crate) async fn set_item(key: String, value: String) -> Result<(), JsError> {
         with_storage(|s| s.set(key, value))
             .map_err(|full| JsError::Error(full.to_string()).with_code(codes::QUOTA_EXCEEDED))

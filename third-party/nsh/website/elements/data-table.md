@@ -10,7 +10,7 @@ demo: el-data-table
 `DataTable` shows rows and columns as a spreadsheet does and scrolls both ways over any number of either. Only the
 cells in view are made, so a table of a million rows and ten thousand columns scrolls as a small one does. Rows,
 columns or cells select, with the pointer and the keyboard; columns have fixed widths, resize with a drag of their
-edge, move with a drag of their title, stay at the left while the others scroll, and sort. Titles can sit under group
+edge, move with a drag of their title, stay at the left or the right while the others scroll, and sort. Titles can sit under group
 labels, and a cell or a title can be drawn by the app.
 
 `DataTable` supplies layout, alignment, virtualization and interaction. The app gives its parts their padding,
@@ -77,7 +77,7 @@ booleans and strings show as text. Rust gives the rows a field at a time, each o
 | `fitPadding` | Extra room for the app's padding, icons or badges, added to the widest title or cell text when fitting the column. |
 | `align` | `"start"` (the default), `"center"` or `"end"`, for numbers. Cells and title alike. |
 | `sortable` | Its title has a sort button that asks for a sort (see [Sorting](#sorting)). |
-| `fixed` | It stays at the left while the other columns scroll under it. Fixed columns lead the others, in their order. |
+| `fixed` | Where it stays while the other columns scroll under it: `true` or `"left"` at the left, leading the others; `"right"` at the right, after them (right after the scrolling columns while they fit, at the table's right edge once they overflow it). Fixed columns keep their order. |
 | `resizable`, `movable` | Whether a drag of its edge resizes it and a drag of its title moves it. Default the table's `resizableColumns` and `movableColumns`. |
 | `selectable` | Whether it takes part in selection. A column of buttons or checkboxes sets `false`. Default `true`. |
 | `cellClass` | Classes of the column's cells, after the `cell` part's: paddings or alignment of one column. |
@@ -150,10 +150,40 @@ Three switches decide what a press selects, as in gpui-component:
 | `cellSelectable` (default `false`) | A cell; the row header (shown by default with it) selects rows | `{ row, column }` |
 
 With `cellSelectable` and the row header hidden (`rowHeader={false}`), pressing the selected cell again selects its
-row. A press with Shift or the platform's command key held selects a row only while `selectOnModifierPress` (default
-`true`), so an app that keeps its own multi-row selection handles those presses itself: `onRowPress` reports every
-press of the body with its row, the column under the pointer, the clicks in a row and the modifier keys held. A column whose `selectable` is
-`false` selects neither itself nor its cells.
+row. While `selectOnModifierPress` is true (the default), a press with Shift or the platform's command key held
+selects the row, cell or title, as a press without the key does. An app that keeps its own selection of several rows,
+cells or columns sets it false: the table keeps the selection it had, and the press is reported. `onRowPress` reports
+every press of the body, with its row, the column under the pointer, the clicks in a row and the modifier keys held.
+`onColumnPress` reports a press of a title the same way (`{ column, clicks, shift, control, alt, platform }`),
+including a column whose `selectable` is false. The sort button reports `onSortChange`, and a drag that moved the
+column reports `onColumnMove`.
+
+`cellClasses` lists classes for individual cells, each by its data row and its index among `columns` (the same
+numbers `onRowPress` reports), drawn after the part's classes and the column's `cellClass`. The cell's text stays
+the table's. A column the app selected takes its look from that column's `headerClass` and `cellClass`. A column
+whose `selectable` is false selects neither itself nor its cells; a press of its title is still reported.
+
+```tsx
+<DataTable
+  columns={columns.map((column, i) =>
+    pickedColumns.includes(i)
+      ? { ...column, headerClass: "bg-primary/10", cellClass: "bg-primary/10" }
+      : column,
+  )}
+  data={rows}
+  rowSelectable={false}
+  columnSelectable={false}
+  cellSelectable={false}
+  selectOnModifierPress={false}
+  cellClasses={pickedCells.map((cell) => ({ ...cell, class: "bg-primary/15" }))}
+  onRowPress={(event) => pickCell(event)}
+  onColumnPress={(event) => pickColumn(event)}
+  class="flex-1"
+/>
+```
+
+The arrow keys, Escape and `copy()` keep acting on the table's own selection. The app copies a set it keeps from its
+own data.
 
 Rows count from 0 in the data, and a column is its index among `columns`, whatever order the user moved them to.
 `onSelectionChange` reports what the user selected (`null` for nothing). The `selection` prop sets the selection from
@@ -208,7 +238,7 @@ title shows it. Because the app owns the order, sorting works the same over a mi
 A drag of a column's trailing edge resizes it within its `minWidth` and `maxWidth`, and `onColumnResize({ key, width })`
 reports every step. Pressing the edge twice in a row fits the column to its widest text and title. A drag of a title moves the column, and a line shows where it will drop; `onColumnMove` reports
 `{ key, from, to, order }`, `order` being the `key`s of all the columns in the order shown. Fixed columns stay among
-the fixed ones. `resizableColumns` and `movableColumns` turn both off for the table, and a column's `resizable` and
+the ones fixed at their side. `resizableColumns` and `movableColumns` turn both off for the table, and a column's `resizable` and
 `movable` win over them.
 
 ## Live data
@@ -234,7 +264,9 @@ scroll, however long, changes texts and places only.
 
 `renderCell` draws the cells of the app's own where a column is not just text (a badge, a button). It is called for the
 cells in view only, with a `DataTableCell`: `row`, `column`, `key`, `text` (what the table would show) and `selected`.
-The app looks up its own data by `row`. `renderHeaderCell` draws a title across its cell, told a `DataTableHeaderCell`:
+The app looks up its own data by `row`. The views it draws take presses and the pointer as views outside the table do:
+`onPress`, `hover:` classes, `onMouseEnter` / `onMouseMove` / `onMouseLeave`, and with `classes.row` set to `"group"`
+the `group-hover:` classes of the row under the pointer. `renderHeaderCell` draws a title across its cell, told a `DataTableHeaderCell`:
 `column`, `key`, `title`, `sort` (the direction, or none) and `selected`.
 
 ```tsx
@@ -253,6 +285,10 @@ The app looks up its own data by `row`. `renderHeaderCell` draws a title across 
   class="flex-1"
 />
 ```
+
+A view with `onPress` in a cell (a copy button) gets the presses on it, and the table then neither selects the row nor
+reports `onRowPress`; a press elsewhere in the cell selects as usual. Such a view gets `onPress`, without hover or
+pressed styles.
 
 `fontFamily` and `fontSize` (default `14`) set the font of the cells, which the table also measures texts in to fit
 columns.
@@ -328,18 +364,19 @@ parts provide the table's structure and alignment; their classes supply the appe
 | `cellColumnSelected` | The cells of the selected column, after `cell` |
 | `rowHeader` | The row header cells, the row numbers |
 | `rowHeaderCorner` | The corner above the row headers |
-| `fixedEdge` | The line at the fixed columns' trailing edge, over the columns that scroll under them |
+| `fixedEdge` | The line between the fixed columns and the columns that scroll under them: at the trailing edge of those at the left, the leading edge of those at the right |
 | `empty` | The box of the `empty` slot |
 
 ## Props
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
-| `columns` | `.columns(..)` | `DataTableColumn[]` | `[]` | The columns, left to right. Fixed ones lead. |
+| `columns` | `.columns(..)` | `DataTableColumn[]` | `[]` | The columns, left to right. Those fixed at the left lead, those fixed at the right close. |
 | `data` | `.data(..)` | `Row[]` | `[]` | The rows: objects by column `key`, or arrays by position. |
 | `rowCount` | `.row_count(..)` | `number` | the rows held | How many rows there are in all. |
 | `dataStart` | `.data_start(..)` | `number` | `0` | The row of the first row of `data`. |
 | `rowClasses` | `.row_classes(..)` | `string[]` | `[]` | Classes of the rows given, by their place in `data`: a row's own look, with no call into JS per row. |
+| `cellClasses` | `.cell_classes(..)` | `DataTableCellClass[]` | `[]` | Classes of single cells, by data row and column index, after the part's and the column's `cellClass`. The cell's text stays the table's. |
 | `rowHeight` | `.row_height(..)` | `number` | `32` | The height of a body row, in points; in a terminal a row is one Cell. |
 | `headerHeight` | `.header_height(..)` | `number` | the row height | The height of a title row; in a terminal a title row is one Cell. |
 | `groups` | `.groups(..)` | `DataTableColumnGroup[][]` | `[]` | Labels above the columns, lowest level first. |
@@ -347,7 +384,7 @@ parts provide the table's structure and alignment; their classes supply the appe
 | `rowSelectable` | `.row_selectable(..)` | `boolean` | `true` | Presses and keys select rows. |
 | `columnSelectable` | `.column_selectable(..)` | `boolean` | `true` | A title's press selects its column, and the horizontal keys move between columns. |
 | `cellSelectable` | `.cell_selectable(..)` | `boolean` | `false` | Presses and keys select cells. |
-| `selectOnModifierPress` | `.select_on_modifier_press(..)` | `boolean` | `true` | A press with Shift or the command key held selects a row. |
+| `selectOnModifierPress` | `.select_on_modifier_press(..)` | `boolean` | `true` | A press with Shift or the command key held selects the row, cell or title. |
 | `selection` | `.selection(..)` | `DataTableSelection` | | What is selected, when the app sets it. |
 | `loopSelection` | `.loop_selection(..)` | `boolean` | `true` | The arrow keys go around the ends. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers call the table. |
@@ -377,6 +414,7 @@ parts provide the table's structure and alignment; their classes supply the appe
 |---|---|---|
 | `onSelectionChange` | `.on_selection_change(\|selection: &Option<DataTableSelection>\| ..)` | The user changed the selection: `{ selection }`, a `{ row?, column? }` or `null`. |
 | `onRowPress` | `.on_row_press(\|event: &DataTablePress\| ..)` | A row or cell was pressed: `{ row, column?, clicks, shift, control, alt, platform }`. |
+| `onColumnPress` | `.on_column_press(\|event: &DataTableColumnPress\| ..)` | A title was pressed: `{ column, clicks, shift, control, alt, platform }`. |
 | `onDoublePress` | `.on_double_press(\|target: &DataTableTarget\| ..)` | A row, cell or title was pressed twice: `{ target }`, a `{ row?, column? }`. |
 | `onContextMenu` | `.on_context_menu(\|event: &DataTableContextMenu\| ..)` | A context menu was asked for: `{ row?, column?, x, y }`, the point in the root view. |
 | `onSortChange` | `.on_sort_change(\|sort: &Option<DataTableSort>\| ..)` | A sort button was pressed: `{ sort }`, the next sort `{ key, direction }` or `null`. |
@@ -391,3 +429,16 @@ parts provide the table's structure and alignment; their classes supply the appe
 - [Editor](./editor.md) and [DiffView](./diff-view.md): the other data-heavy base components.
 - [Menu](./menu.md): the menu to open from `onContextMenu`.
 - [`nsh/base`](../modules/nsh-base.md): the other base components.
+
+### Fixed columns in Rust
+
+`nsh_base::data_table::ColumnFixed` follows GPUI Kit's column-side naming. `None` (the default) scrolls normally;
+`Left` and `Right` pin the column to that side. TS uses `false`, `"left"` and `"right"`,
+with `true` retained as a shorthand for `"left"`.
+
+```rust
+use nsh_base::{DataTableColumn, data_table::ColumnFixed};
+
+let mut actions = DataTableColumn::default();
+actions.fixed = ColumnFixed::Right;
+```

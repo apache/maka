@@ -25,7 +25,7 @@ use crate::{
     Command, pipe, pty,
     windows::{checked, job::Job, owned},
 };
-use maka_agent_facts::terminal::TerminalSize;
+use maka_plugin_core::terminal::TerminalSize;
 use maka_sandbox::windows::{WriteCapability, WriteToken};
 use std::{
     fs::File,

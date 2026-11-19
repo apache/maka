@@ -51,7 +51,6 @@ pub(crate) struct Decoder {
     pub mcp_calls: BTreeMap<String, output::ToolCall>,
     pub server_calls: BTreeMap<String, String>,
     pub json_answer: bool,
-    pub has_search_results: bool,
 }
 impl Decoder {
     pub fn new(options: Options) -> Self {
@@ -60,7 +59,6 @@ impl Decoder {
             mcp_calls: BTreeMap::new(),
             server_calls: BTreeMap::new(),
             json_answer: false,
-            has_search_results: false,
         }
     }
     pub fn name(&self, provider: &str) -> String {
@@ -78,7 +76,7 @@ impl Decoder {
         caller: Option<Caller>,
         toolset: Option<String>,
         hosted: bool,
-    ) -> Option<output::ToolCall> {
+    ) -> output::ToolCall {
         let mut extensions = caller_metadata(caller.as_ref());
         let mut dynamic = false;
         let name = if let Some(toolset) = toolset {
@@ -86,7 +84,6 @@ impl Decoder {
             extensions = metadata(json!({"toolsetName":toolset}));
             self.name(&toolset)
         } else if hosted {
-            self.server_calls.insert(id.clone(), name.clone());
             match name.as_str() {
                 "code_execution" | "bash_code_execution" | "text_editor_code_execution" => {
                     dynamic = self.options.implicit_code_execution;
@@ -104,23 +101,34 @@ impl Decoder {
                     input = json!({});
                     self.name(&name)
                 }
-                _ => return None,
+                _ => {
+                    let ns = extensions
+                        .get_or_insert_with(BTreeMap::new)
+                        .entry("anthropic".to_owned())
+                        .or_insert_with(|| json!({}));
+                    ns["type"] = json!("server-tool-use");
+                    name
+                }
             }
         } else {
             self.name(&name)
         };
-        Some(output::ToolCall {
+        if hosted {
+            self.server_calls.insert(id.clone(), name.clone());
+        }
+        output::ToolCall {
             id,
             name,
             input: input.to_string(),
             provider_executed: hosted,
             dynamic,
             extensions,
-        })
+        }
     }
     pub fn block(
         &mut self,
         block: Block,
+        part_index: usize,
         next_id: &mut dyn FnMut() -> String,
     ) -> Result<Vec<Part>> {
         let mut parts = Vec::new();
@@ -140,10 +148,11 @@ impl Decoder {
                     extensions,
                 });
                 for citation in citations {
-                    if !(citation.is_web_search() && self.has_search_results)
-                        && let Some(source) = citation.source(&self.options.documents, next_id)
-                    {
-                        parts.push(Part::Source(source));
+                    if let Some(source) = citation.source(&self.options.documents, next_id) {
+                        parts.push(Part::Source {
+                            source,
+                            anchor: Some(output::CitationAnchor::BlockEnd { part: part_index }),
+                        });
                     }
                 }
             }
@@ -188,9 +197,8 @@ impl Decoder {
                         citations: Vec::new(),
                         extensions: None,
                     });
-                } else if let Some(call) =
-                    self.tool_call(id, name, input, caller, toolset_name, false)
-                {
+                } else {
+                    let call = self.tool_call(id, name, input, caller, toolset_name, false);
                     parts.push(Part::ToolCall(call));
                 }
             }
@@ -200,16 +208,15 @@ impl Decoder {
                 input,
                 caller,
             } => {
-                if let Some(call) = self.tool_call(
+                let call = self.tool_call(
                     id,
                     name,
                     Value::Object(input.unwrap_or_default()),
                     caller,
                     None,
                     true,
-                ) {
-                    parts.push(Part::ToolCall(call));
-                }
+                );
+                parts.push(Part::ToolCall(call));
             }
             Block::McpToolUse {
                 id,
@@ -284,14 +291,16 @@ impl Decoder {
                     caller_metadata(result.caller.as_ref()),
                 ));
                 if let wire::Search::Results(results) = result.content {
-                    self.has_search_results |= !results.is_empty();
                     for result in results {
-                        parts.push(Part::Source(output::Source::Url {
-                            id: next_id(),
-                            url: result.url,
-                            title: result.title,
-                            extensions: metadata(json!({"pageAge":result.page_age})),
-                        }));
+                        parts.push(Part::Source {
+                            source: output::Source::Url {
+                                id: next_id(),
+                                url: result.url,
+                                title: result.title,
+                                extensions: metadata(json!({"pageAge":result.page_age})),
+                            },
+                            anchor: None,
+                        });
                     }
                 }
             }
@@ -354,6 +363,34 @@ impl Decoder {
                     None,
                 ));
             }
+            Block::ServerResult {
+                kind,
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                let name = self
+                    .server_calls
+                    .get(&tool_use_id)
+                    .filter(|_| kind == "tool_result" || kind.ends_with("_result"))
+                    .ok_or_else(|| {
+                        Error::invalid(
+                            "Unrecognized result without a matching server tool call.",
+                            json!({"type":kind,"tool_use_id":tool_use_id}),
+                        )
+                    })?;
+                let mut options = json!({"serverResultType":kind});
+                if let Some(flag) = is_error {
+                    options["serverResultError"] = json!(flag);
+                }
+                parts.push(self.result(
+                    tool_use_id,
+                    name,
+                    content,
+                    is_error.unwrap_or(false),
+                    metadata(options),
+                ));
+            }
             Block::ContainerUpload { file_id } => parts.push(Part::Custom {
                 kind: "anthropic.container_upload".into(),
                 extensions: metadata(json!({"fileId":file_id})),
@@ -374,8 +411,12 @@ impl Decoder {
         extensions: Extensions,
     ) -> Part {
         Part::ToolResult(output::ToolResult {
+            name: self
+                .server_calls
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| self.name(name)),
             id,
-            name: self.name(name),
             value,
             is_error,
             dynamic: false,
@@ -426,7 +467,6 @@ pub fn decode(
     let message: wire::Message = serde_json::from_value(raw.clone())
         .map_err(|e| Error::invalid(e.to_string(), raw.clone()))?;
     let mut decoder = Decoder::new(options);
-    decoder.has_search_results = message.content.iter().any(|block|matches!(block, Block::WebSearchToolResult(wire::Hosted { content: wire::Search::Results(results), .. }) if !results.is_empty()));
     let mut parts = Vec::new();
     for block in message.content {
         if !wire::validate_block(&block, wire::Phase::Complete) {
@@ -435,7 +475,7 @@ pub fn decode(
                 raw,
             ));
         }
-        parts.extend(decoder.block(block, next_id)?);
+        parts.extend(decoder.block(block, parts.len(), next_id)?);
     }
     let finish = finish::finish(
         message.usage,

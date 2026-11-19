@@ -48,6 +48,16 @@ pub struct Descriptor {
     /// Presentation metadata; authorization remains the provider's decision.
     pub anonymous: bool,
     pub discovery: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_authentication: Option<UsageAuthentication>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageAuthentication {
+    Provider,
+    AccessKey,
+    TeamAccessKey,
 }
 
 impl Descriptor {
@@ -73,6 +83,8 @@ impl Descriptor {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Resolve {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     pub connection: Connection,
     pub model: ModelInfo,
     pub overrides: Option<ModelOverride>,

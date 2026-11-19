@@ -192,14 +192,6 @@ impl ToolCatalog {
         self.clone()
     }
 
-    /// Describe a narrower embedding boundary without changing the registered identity.
-    pub fn with_description(mut self, name: &str, description: &str) -> Self {
-        if let Some(entry) = Arc::make_mut(&mut self.entries).get_mut(name) {
-            Arc::make_mut(&mut Arc::make_mut(entry).definition).description = description.into();
-        }
-        self
-    }
-
     pub fn definitions(&self) -> impl Iterator<Item = &ToolDefinition> {
         self.entries.values().map(|entry| entry.definition.as_ref())
     }
@@ -219,7 +211,7 @@ impl ToolCatalog {
         self.filtered(|_, entry| entry.nesting == ToolNesting::Nestable)
     }
 
-    pub(super) fn direct_only(&self) -> Self {
+    pub fn direct_only(&self) -> Self {
         self.select(|name| self.entries[name].nesting == ToolNesting::DirectOnly)
     }
 
@@ -340,6 +332,16 @@ impl ToolCatalog {
 
     pub fn contains(&self, name: &str) -> bool {
         self.entries.contains_key(name)
+    }
+
+    pub fn is_prepared_by(&self, name: &str, preparer: &Arc<dyn crate::ToolPreparer>) -> bool {
+        self.entries.get(name).is_some_and(|entry| {
+            entry.definition.provider.is_none()
+                && matches!(
+                    &entry.handler,
+                    crate::ToolHandler::Prepared(current) if Arc::ptr_eq(current, preparer)
+                )
+        })
     }
 
     pub(crate) fn always_visible(&self, name: &str) -> bool {

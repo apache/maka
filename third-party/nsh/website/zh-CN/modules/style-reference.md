@@ -307,7 +307,7 @@ view().p_4().rounded(px(12.0)).bg(white()).shadow([
 | 键 | 类型 | Rust | 说明 |
 |---|---|---|---|
 | `opacity` | `number \| AnimatedNode` | `.opacity(o)`、`.bind_opacity(&value)` | 0（不可见）到 1。接受原生动画值。 |
-| `visibility` | `"visible" \| "hidden" \| "collapse"` | | 隐藏的视图仍占据布局空间（与 `display: "none"` 不同）。 |
+| `visibility` | `"visible" \| "hidden" \| "collapse"` | | 隐藏的视图仍占据布局空间（与 `display: "none"` 不同）。用在 span 上时，它的字符原地占位，复制和屏幕阅读器都会略过。 |
 | `overflow` | `"visible" \| "hidden"` | `.overflow_hidden()` | `"hidden"` 将子元素裁剪到视图边界（含圆角）。 |
 | `backfaceVisibility` | `"visible" \| "hidden"` | `.backface_hidden()`、`.backface_visible()` | `"hidden"`：3D 旋转转到背面时不可见。 |
 | `verticalAlign` | `"baseline" \| "text-top" \| "text-bottom" \| "middle"` | `.align_baseline()`、`.align_text_top()`、`.align_text_bottom()`、`.align_middle()` | `<Text>` 中的视图或图片在所在行中的位置，与 CSS 的 `vertical-align` 一致：底边落在基线上（默认）、顶边或底边对齐文本字体的顶部或底部，或中心位于基线上方半个 x 高度处。所在行会撑高以容纳它。 |
@@ -361,7 +361,7 @@ const angle = createAnimatedValue(0);
 |---|---|---|---|
 | `filter` | `string` | `.blur(r)`、`.brightness(…)`、`.contrast(…)`、`.grayscale(…)`、`.hue_rotate(…)`、`.invert(…)`、`.saturate(…)`、`.sepia(…)` | 作用于视图及其内容的 CSS 滤镜：`brightness()`、`contrast()`、`grayscale()`、`hue-rotate()`、`invert()`、`saturate()`、`sepia()`、`opacity()`、`blur()`、`drop-shadow()`。 |
 | `backdropFilter` | `string` | `.backdrop_blur(r)`、`.backdrop_brightness(…)` 等 | 作用于视图背后内容的 CSS 滤镜，例如毛玻璃效果 `"blur(10px)"`。 |
-| `maskImage` | `string` | | 一个 CSS 渐变，它的 alpha 决定视图绘制多少：不透明处完全绘制，透明处完全不绘制：`linear-gradient(...)`、`radial-gradient(...)`、`conic-gradient(...)`。遮罩视图绘制的一切，包括它的背景滤镜。 此时模糊不带系统材质的色调。Windows 和 GPUI 上不绘制。 |
+| `maskImage` | `string` | `.mask_linear(angle, stops)`、`.mask_radial(stops)`、`.mask_none()` | 一个 CSS 渐变，它的 alpha 决定视图绘制多少：不透明处完全绘制，透明处完全不绘制：`linear-gradient(...)`、`radial-gradient(...)`、`conic-gradient(...)`。遮罩视图绘制的一切，包括它的背景滤镜。 此时模糊不带系统材质的色调。Windows 和 GPUI 上不绘制。 |
 | `glassEffect` | `"none" \| "regular" \| "clear"` | `.glass_effect(GlassEffect::Regular)` | 在 iOS 26、macOS 26 及更高版本中，于视图内容背后绘制 Liquid Glass。`"regular"` 使用标准材质，`"clear"` 从背景获取的颜色更少，默认值为 `"none"`。配合 `backdropFilter`，可在更早的 iOS 版本及其他平台上显示模糊效果。 |
 | `mixBlendMode` | `"normal" \| "multiply" \| "screen" \| "overlay" \| "darken" \| "lighten" \| "color-dodge" \| "color-burn" \| "hard-light" \| "soft-light" \| "difference" \| "exclusion" \| "hue" \| "saturation" \| "color" \| "luminosity" \| "plus-darker" \| "plus-lighter"` | `.mix_blend_mode(mode)` | 视图与背后内容的混合方式。 |
 
@@ -380,7 +380,7 @@ const angle = createAnimatedValue(0);
 | `transitionProperty` | `string` | `.transition()`、`.transition_all()`、`.transition_colors()`、`.transition_opacity()`、`.transition_shadow()`、`.transition_transform()`、`.transition_none()` | 参与动画的属性，用逗号分隔：`"all"`、`"colors"`（`color`、`backgroundColor`、`borderColor` 等）、`"opacity"`、`"transform"`（所有变换属性）、`"boxShadow"`、`"borderRadius"`、`"borderWidth"`，或 `"none"`。 |
 | `transitionDuration` | `number \| "${number}ms" \| "${number}s"` | `.duration(ms)` | 数字表示毫秒，也可写 `"150ms"` / `"0.2s"`。 |
 | `transitionDelay` | `number \| "${number}ms" \| "${number}s"` | `.delay(ms)` | 过渡开始前的延迟。 |
-| `transitionTimingFunction` | `"linear" \| "ease" \| "ease-in" \| "ease-out" \| "ease-in-out" \| "cubic-bezier(...)"` | `.ease_linear()`、`.ease_in()`、`.ease_out()`、`.ease_in_out()`、`.ease_bezier(…)` | 缓动曲线。 |
+| `transitionTimingFunction` | `"linear" \| "ease" \| "ease-in" \| "ease-out" \| "ease-in-out" \| "cubic-bezier(...)" \| "spring(...)"` | `.ease_linear()`、`.ease_in()`、`.ease_out()`、`.ease_in_out()`、`.ease_bezier(…)`、`.ease_spring(…)` | 缓动曲线（`cubic-bezier()` 的 `y` 超出 0..1 时会越过目标），或 NSH 的 `spring(stiffness, damping[, mass])`：弹簧自己决定时长，持续到稳定为止，不使用 `transitionDuration`。 |
 
 ```rust tabs
 view()

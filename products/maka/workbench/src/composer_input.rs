@@ -17,9 +17,11 @@
  * under the License.
  */
 
-//! The message composer owns plain source text; inline skill nodes only
-//! determine its presentation and native editing boundaries.
+//! The composer edits Markdown source. Formatting changes what the editor
+//! draws; references also define native editing boundaries.
 
+pub(crate) mod file;
+mod markdown;
 mod message;
 mod model;
 
@@ -52,6 +54,8 @@ pub(crate) struct ComposerInputProps {
     pub value_count: Prop<u32>,
     #[prop(default)]
     pub read_only: Prop<bool>,
+    #[prop(default)]
+    pub open_session_references: Prop<bool>,
     #[prop(default)]
     pub placeholder: Prop<String>,
     #[prop(default)]
@@ -205,6 +209,11 @@ pub(crate) struct ComposerKey {
     pub key: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, JsObject)]
+pub(crate) struct ComposerSessionReference {
+    pub session_id: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Event)]
 pub(crate) enum ComposerInputEvent {
     #[args(event)]
@@ -217,6 +226,8 @@ pub(crate) enum ComposerInputEvent {
     Submit(ComposerSubmit),
     #[args(event)]
     Key(ComposerKey),
+    #[args(event)]
+    OpenSessionReference(ComposerSessionReference),
     Focus,
     Blur,
     #[args(event)]
@@ -281,44 +292,70 @@ impl ComposerInputApi {
     }
 }
 
-struct SkillView(ComposerInputProps);
+const TOKEN_LINE_HEIGHT: Points = px(16.0);
 
-impl NodeView for SkillView {
+struct ReferenceView(ComposerInputProps, Scope<ComposerInputEvent>);
+
+impl NodeView for ReferenceView {
     fn create(&self, _cx: &NodeViewCx, node: &Node) -> AnyElement {
         let props = self.0;
         let name = node.attrs()["name"]
             .as_str()
-            .expect("a skill node's name is text")
-            .to_owned();
+            .expect("a composer token's name is text");
+        let is_session = node.ty().name() == "session";
+        let label = name.to_owned();
+        let icon_size = 13.0;
         let icon = if nsh_base::terminal::is_terminal() {
             text("📖").into_element()
         } else {
             canvas(move || {
                 Painter::new()
-                    .scale(14.0 / 24.0, 14.0 / 24.0)
+                    .scale(icon_size / 24.0, icon_size / 24.0)
                     .stroke_color(Hsla::from(props.token_color.get()))
                     .line_width(2.0)
                     .line_cap(LineCap::Round)
                     .line_join(LineJoin::Round)
                     .stroke_svg(&props.token_icon.get())
             })
-            .w(px(14.0))
-            .h(px(14.0))
+            .w(px(icon_size))
+            .h(px(icon_size))
             .into_element()
         };
         let chip = view()
             .flex_row()
             .items_center()
+            .align_text_bottom()
             .gap(px(4.0))
-            .px(px(6.0))
+            .px(move || px(if props.read_only.get() { 0.0 } else { 4.0 }))
             .rounded(px(4.0))
-            .bg(move || AdaptiveColor::from(Hsla::from(props.token_background_color.get())))
+            .bg(move || {
+                if props.read_only.get() {
+                    AdaptiveColor::TRANSPARENT
+                } else {
+                    AdaptiveColor::from(Hsla::from(props.token_background_color.get()))
+                }
+            })
             .text_color(move || AdaptiveColor::from(Hsla::from(props.token_color.get())))
-            .pointer_events(PointerEvents::None)
-            .child(icon)
-            .child(text(name))
-            .into_element();
-        message::attachment(node, chip)
+            .when(!is_session, |chip| chip.child(icon))
+            .child(text(label.clone()).line_height(TOKEN_LINE_HEIGHT));
+        let chip = if is_session && props.read_only.get() && props.open_session_references.get() {
+            let (_, id) = model::session_reference(node.attrs()["source"].as_str().unwrap());
+            let session_id = id.to_owned();
+            let cx = self.1;
+            chip.cursor(Cursor::Pointer)
+                .role(AccessibilityRole::Link)
+                .label(label)
+                .on_press(move |_: &()| {
+                    cx.emit(ComposerInputEvent::OpenSessionReference(
+                        ComposerSessionReference {
+                            session_id: session_id.clone(),
+                        },
+                    ));
+                })
+        } else {
+            chip.pointer_events(PointerEvents::None)
+        };
+        message::attachment(node, chip.into_element())
     }
 }
 
@@ -402,17 +439,7 @@ impl PluginSpec for ComposerBehavior {
                 .emit(ComposerInputEvent::Submit(ComposerSubmit { text: source }));
             return true;
         }
-        if event.mod_key && !event.alt && event.key.eq_ignore_ascii_case("z") {
-            return if event.shift {
-                redo(state, Some(dispatch))
-            } else {
-                undo(state, Some(dispatch))
-            };
-        }
-        if event.mod_key && !event.alt && event.key.eq_ignore_ascii_case("y") {
-            return redo(state, Some(dispatch));
-        }
-        false
+        history_key(state, event, dispatch)
     }
 
     fn handle_paste(
@@ -540,11 +567,17 @@ pub(crate) fn ComposerInput(
             props,
             events: events.clone(),
         }),
+        Arc::new(markdown::Formatting::new(
+            props.read_only,
+            props.token_color,
+        )),
         history(Default::default()),
     ];
     let session = EditorSession::new(
         state(&schema, &initial, plugins.clone(), &source(props)),
-        NodeViews::new().with("skill", Arc::new(SkillView(props))),
+        NodeViews::new()
+            .with("skill", Arc::new(ReferenceView(props, cx)))
+            .with("session", Arc::new(ReferenceView(props, cx))),
     );
     cx.methods(ComposerInputApi {
         session: session.clone(),
@@ -627,4 +660,22 @@ fn source(props: ComposerInputProps) -> message::Source {
         id: props.source_id.get(),
         offset: props.source_offset.get(),
     }
+}
+
+fn history_key(
+    state: &EditorState,
+    event: &KeyEvent,
+    dispatch: &mut dyn FnMut(Transaction),
+) -> bool {
+    if event.mod_key && !event.alt && event.key.eq_ignore_ascii_case("z") {
+        return if event.shift {
+            redo(state, Some(dispatch))
+        } else {
+            undo(state, Some(dispatch))
+        };
+    }
+    if event.mod_key && !event.alt && event.key.eq_ignore_ascii_case("y") {
+        return redo(state, Some(dispatch));
+    }
+    false
 }

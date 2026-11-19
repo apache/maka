@@ -163,6 +163,12 @@ An input is **uncontrolled** without a value: it keeps its own text, starting at
 > [!NOTE]
 > A controlled input never loses keystrokes. Every native edit carries an edit count, and a `value` coming back from JS is applied only if it answers the latest edit. If JS is slow and the user has typed more in the meantime, the stale value is dropped instead of overwriting the newer text.
 
+### Hardware keys and the input
+
+An `Input` owns the keys that edit it. Its platform applies them natively, together with the input method that composes text, and an ancestor's `onKeyDown` / `onKeyUp` listener or `captureKeys` rule changes nothing: it never intercepts typing, caret movement, selection or the editing commands, and it cannot take a key the system gives the field. Raw hardware keys (`onKeyDown` / `onKeyUp`, `captureKeys`) are for custom-rendered surfaces, not for extending a text field; use `onKeyPress`, `onChange` and `onSubmit` for the field's own text ([keyboard](../elements/keyboard.md#hardware-keys-on-custom-views)).
+
+A form control nested in a capturing view keeps that boundary too: only the keys the control does not own (for example a function key, or Tab when the control does not take it) reach the capture rule, and they are reported with `defaultPrevented` as the policy decided for that transition.
+
 ## Props
 
 In Rust, each prop is a method of `input()` named in snake case (`.placeholder(..)`, `.masked(true)`, `.max_length(6)`, `.return_key_type(ReturnKeyType::Next)`, `.selected_range((0, 4))`), with these names of their own: `.keyboard_type(KeyboardType::Email)` and the other `KeyboardType` variants, `.auto_fill(AutoFill::Email)` for `autoComplete`, `.keyboard_appearance(..)` and `.input_accessory(..)` for the `ios={{ … }}` props. Each event is an `on_` method: `.on_change(|text: &str| ..)`, `.on_submit(|text: &str| ..)`, `.on_focus(..)`, `.on_blur(..)`, `.on_selection_change(|s: &Selection| ..)`, `.on_key_press(|key: &str| ..)`, `.on_content_size_change(|size: &Size<Points>| ..)`.
@@ -176,10 +182,10 @@ In Rust, each prop is a method of `input()` named in snake case (`.placeholder(.
 | `keyboardType` | `KeyboardType` | `"default"` | The keyboard layout. |
 | `returnKeyType` | `ReturnKeyType` | `"default"` | The return key's label. |
 | `autoCapitalize` | `"none" \| "sentences" \| "words" \| "characters"` | `"sentences"` | Automatic capitalization. |
-| `autoCorrect` | `boolean` | `true` | The system's corrections. |
+| `autoCorrect` | `boolean` | `true` | The system's corrections: spelling and, on iOS and macOS, smart quotes, dashes and text replacement. Turn it off for code and identifiers. |
 | `autoComplete` | `AutoComplete` | | What the input holds, for autofill. |
 | `multiline` | `boolean` | `false` | Several lines; return inserts a line break unless `submitBehavior` says otherwise. |
-| `maxLength` | `number` | | The most characters the user can enter. |
+| `maxLength` | `number` | | The most characters the user can enter, counted as Unicode code points on every platform: an emoji such as 😀 or a rare CJK character counts once. A longer paste goes in cut to what fits, as in a browser, never inside a character such as an emoji with its skin tone. |
 | `readonly` | `boolean` | `false` | The user can select and copy the text but not change it. |
 | `autoFocus` | `boolean` | `false` | Focused when it appears. |
 | `submitBehavior` | `"submit" \| "blurAndSubmit" \| "newline"` | single line `"blurAndSubmit"`, multiline `"newline"` | What return does: submit and keep the focus, submit and unfocus, or insert a line break (multiline only). |
@@ -249,6 +255,8 @@ The keyboard type (`.keyboard_type(..)`, TSX `keyboardType`) picks the layout:
 On iOS, `.keyboard_appearance(KeyboardAppearance::Dark)` (TSX `ios={{ keyboardAppearance: "dark" }}`; or light, default) gives the keyboard a light or dark look regardless of the system's appearance, for a dark app in light mode. Android's keyboards always follow the system's theme.
 
 Autofill (`.auto_fill(AutoFill::Email)`, TSX `autoComplete`) tells the system what the field holds, so it can offer saved names, addresses, passwords and one-time codes from messages. Rust's `AutoFill` has a variant per kind (`Name`, `GivenName`, `FamilyName`, `Email`, `Tel`, `Username`, `Password`, `NewPassword`, `OneTimeCode`, `StreetAddress`, `PostalCode`, `Country`, `CreditCardNumber`, `Url`, `Birthdate`, ..., and `Off`). TSX takes these values: `"name"`, `"given-name"`, `"family-name"`, `"email"`, `"tel"`, `"username"`, `"current-password"`, `"new-password"`, `"one-time-code"`, `"street-address"`, `"postal-code"`, `"country"`, `"cc-number"`, `"cc-exp"`, `"cc-csc"`, `"url"`, `"birthdate-full"` and others, or `"off"`; iOS's own names (`"emailAddress"`, `"oneTimeCode"`, ...) are accepted too, in `autoComplete` or `ios={{ textContentType }}`.
+
+A password field that is not masked, as after a "show password" toggle, is a password shown as plain text: with `autoComplete` `"current-password"` or `"new-password"` (`AutoFill::Password`, `AutoFill::NewPassword`) and `masked` off, it gets Android's visible password keyboard and iOS's ASCII keyboard, and no platform capitalizes, suggests or corrects it, whatever `autoCapitalize` and `autoCorrect` say. Toggling `masked` is all a reveal button needs.
 
 ```rust tabs
 use nsh_core::element::AutoFill;
@@ -362,8 +370,9 @@ An input's ref has:
 | `focus()` | `focus()` | Focuses the input and shows the keyboard. |
 | `blur()` | `blur()` | Unfocuses it. |
 | `set_selection(start, end)` | `setSelection(start, end?)` | Selects `start..end` (UTF-16 units); a caret when they are equal (TSX: without `end`). |
+| `insert_text(text)` | `insertText(text)` | Inserts `text` in place of the selection as the user's edit: one step of the input's undo history, reported by `onChange`; Linux, the web and headless tests only ([pasting](#pasting-images-and-files)). |
 
-On macOS and the web, `focus()` and `blur()` on the ref of a view that takes presses move the keyboard focus as Tab does ([keyboard focus](../elements/index.md#keyboard-focus)).
+On macOS, the web and Android, `focus()` and `blur()` on the ref of a view that takes presses move the keyboard focus as Tab does ([keyboard focus](../elements/index.md#keyboard-focus)); on Android the view is focusable in touch mode for that focus session, and a default button is touch-neutral again once it blurs.
 
 `dismiss_keyboard()` in Rust and `Keyboard.dismiss()` from `nsh` in TSX unfocus whichever input has focus:
 
@@ -521,6 +530,46 @@ Images and files are never inserted, since an input holds text. With `pasteBehav
 nothing, and the app decides what a paste does: send a long text as an attachment, or insert a cleaned-up version.
 The input decides at once, from the prop, because the system asks it on the spot.
 
+The event then comes before anything is inserted, so the app can allow the paste, cancel it or rewrite it. The
+ref's `insertText` (Rust `insert_text`) puts the text it allows in place of the selection as the user's edit:
+`maxLength` and the line rules apply, `onChange` reports it, and on Linux and the web it is one step of the input's
+undo history, so Ctrl+Z takes it out again. A new `value` replaces the text instead.
+
+`insertText` inserts text on Linux, the web and in headless tests (`nsh test`); on macOS, Windows, iOS, Android
+and GPUI it does nothing yet and logs a warning, so the example below is for apps on Linux and the web. Use it with
+`pasteBehavior="report"`: with `"insert"`, the default, the input has inserted the paste already and `insertText`
+inserts it a second time. While an input method is composing, `insertText` inserts nothing and logs a warning.
+
+```rust tabs
+let field = element_ref();
+
+input()
+    .element_ref(&field)
+    .paste_behavior(PasteBehavior::Report)
+    .on_paste(move |e: &PasteEvent| {
+        // Pasted secrets are dropped; other text goes in trimmed.
+        if !e.text.starts_with("sk-") {
+            field.insert_text(e.text.trim());
+        }
+    })
+```
+
+```tsx tabs
+import type { InputRef } from "nsh";
+import { Input } from "nsh/base";
+
+let field: InputRef | undefined;
+
+<Input
+  ref={(r) => (field = r)}
+  pasteBehavior="report"
+  onPaste={(e) => {
+    // Pasted secrets are dropped; other text goes in trimmed.
+    if (!e.text.startsWith("sk-")) field?.insertText(e.text.trim());
+  }}
+/>;
+```
+
 ```rust tabs
 let attachments = signal(Vec::<PastedFile>::new());
 
@@ -553,7 +602,8 @@ const attachments = signal<File[]>([]);
 
 Upload a pasted file as any `File`, with `fetch` and `FormData` (`form.append("image", file)`); its bytes stay
 native until they are sent. On Android, keyboards that insert images (GIFs, stickers) report them the same way. On
-Linux the clipboard is read asynchronously, so the event may come after the `onChange` of the text it inserts.
+Linux the clipboard is read asynchronously, so with `"insert"` the event may come after the `onChange` of the text it
+inserts; with `"report"` it always comes first.
 Masked inputs on macOS keep AppKit's own paste and report nothing.
 
 ## Multiline inputs that grow
@@ -701,6 +751,9 @@ function ChatScreen() {
 Padding (`.pb_keyboard()`) shrinks the content above while the background reaches the bottom of the screen; a bottom margin (`marginBottom: "env(keyboard-inset-height)"`, `.mb_keyboard()`) ends the whole view at the top of the keyboard. `calc(env(keyboard-inset-height) + <length>)` (Rust `.pb_keyboard_plus(..)`, `.mb_keyboard_plus(..)`) adds a length, such as minus the height of a tab bar below the view.
 
 The full height suits a view that reaches the bottom of the surface, as a screen's content does. On an Android host whose window resizes for the keyboard, the window itself shrinks and the variable is 0. See [Keyboard](../elements/keyboard.md).
+
+Overlays keep clear of the keyboard on their own: a [Sheet](../elements/sheet.md#the-software-keyboard) at the bottom,
+a drawer, and the menus, selects and date pickers a phone shows as sheets end at the keyboard's top and move with it.
 
 ### The keyboard accessor
 

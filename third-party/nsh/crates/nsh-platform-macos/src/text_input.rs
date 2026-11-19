@@ -15,6 +15,12 @@
 //! configured line height, its extra space split above and below the text
 //! ([`LineBox`]), as the caret is as tall as a line fragment.
 //!
+//! A scaled or translated ancestor requires hosting the pad above its
+//! layer transform so AppKit's geometry matches the drawn editor. Rounded
+//! clips from intervening ancestors are copied into the pad's coordinates
+//! for drawing and picking. Placement and clips follow scrolling and zoom
+//! without ending the edit ([`sync`]).
+//!
 //! The fields are subclasses ([`define_field!`]) only to hear what AppKit
 //! tells a field's delegate's delegate: AppKit edits a field with the
 //! window's shared field editor, whose delegate is the field, so the
@@ -34,9 +40,12 @@
 //! natively and reported as `onCompositionChange`: as it starts and
 //! changes (AppKit tells only of the selection then: marking text sends no
 //! `textDidChange:`), and as it ends, after the `onChangeText` of the
-//! committed text. A value from JS that comes during a composition waits for its
+//! committed text. Meanwhile the core measures the input with what it
+//! shows, the composition included (`EngineControl::input_composing`). A value from JS that comes during a composition waits for its
 //! end: setting the text then would end the input method's session and
-//! commit what it composes.
+//! commit what it composes. Leaving the input commits the composition, as
+//! a browser's blur does ([`commit_marked`]): what was composed stays and
+//! is reported before the composition ends.
 //!
 //! Focus follows desktop habits: Tab moves between fields (the window
 //! recalculates its key view loop), Escape leaves the field, and clicking
@@ -58,6 +67,7 @@ use nsh_core::{
     geometry::{Point, Size, px},
     platform::Os,
     tailwind::state,
+    text_edit::{char_len, clip_chars},
 };
 use objc2::{
     AnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
@@ -70,14 +80,17 @@ use objc2_app_kit::{
     NSDraggingInfo, NSEvent, NSEventModifierFlags, NSEventType, NSFocusRingType,
     NSFontAttributeName, NSForegroundColorAttributeName, NSLineBreakMode, NSMutableParagraphStyle,
     NSParagraphStyleAttributeName, NSPasteboard, NSResponder, NSScrollView, NSSecureTextField,
-    NSText, NSTextAlignment, NSTextDelegate, NSTextField, NSTextFieldDelegate, NSTextInputClient,
-    NSTextView, NSTextViewDelegate, NSValidatedUserInterfaceItem, NSView, NSWritingDirection,
+    NSSpellChecker, NSText, NSTextAlignment, NSTextDelegate, NSTextField, NSTextFieldDelegate,
+    NSTextInputClient, NSTextStorage, NSTextView, NSTextViewDelegate, NSValidatedUserInterfaceItem,
+    NSView, NSWritingDirection,
 };
-use objc2_core_foundation::{CGFloat, CGSize};
+use objc2_core_foundation::{CGAffineTransform, CGFloat, CGPoint, CGRect, CGSize};
+use objc2_core_graphics::CGPath;
 use objc2_foundation::{
-    NSAttributedString, NSDictionary, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRange,
-    NSRect, NSString,
+    NSArray, NSAttributedString, NSDictionary, NSNotification, NSObject, NSObjectProtocol, NSPoint,
+    NSRange, NSRect, NSString, NSUndoManager,
 };
+use objc2_quartz_core::{CALayer, CAShapeLayer};
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -97,10 +110,26 @@ enum Editor {
     Area {
         scroller: Retained<NSScrollView>,
         view: Retained<NSTextView>,
+        /// Retained because `NSTextView.textStorage` is an assign property.
+        storage: Retained<NSTextStorage>,
     },
 }
 
 impl Editor {
+    /// Clears this editor's undo records without changing another input's history.
+    fn clear_undo(
+        &self,
+        fallback: Option<&Retained<NSUndoManager>>,
+    ) -> Option<Retained<NSUndoManager>> {
+        let Editor::Area { view, storage, .. } = self else {
+            return None;
+        };
+        let manager = view.undoManager().or_else(|| fallback.cloned())?;
+        // SAFETY: AppKit registers text undo operations with the text storage as target.
+        unsafe { manager.removeAllActionsWithTarget(storage) };
+        Some(manager)
+    }
+
     /// The view hosted in the input's view.
     fn host(&self) -> Retained<NSView> {
         match self {
@@ -138,7 +167,8 @@ impl Editor {
     }
 
     fn text(&self) -> String {
-        self.ns_text().to_string()
+        let string = self.ns_text();
+        input_text(&string, NSRange::new(0, string.length()))
     }
 
     /// The text an input method is composing in the editor (its marked
@@ -161,7 +191,7 @@ impl Editor {
         {
             return None;
         }
-        Some(string.substringWithRange(range).to_string())
+        Some(input_text(&string, range))
     }
 
     fn is_empty(&self) -> bool {
@@ -177,8 +207,7 @@ impl Editor {
 
     /// The caret at the selection's end in `target`'s coordinates, while
     /// the editor edits: where the text system draws its insertion point.
-    fn caret(&self, target: &NSView) -> Option<Bounds<Points>> {
-        let editing = self.editing()?;
+    fn caret(editing: &NSText, target: &NSView) -> Option<Bounds<Points>> {
         let text_view = editing.downcast_ref::<NSTextView>()?;
         let window = text_view.window()?;
         let range = text_view.selectedRange();
@@ -239,9 +268,22 @@ impl Editor {
     }
 }
 
+/// A pad hosted above the transforms around its input ([`lifted`]): the
+/// view it is hosted on, the frame it takes there and the opacity the
+/// views it left give it.
+struct Lift {
+    host: objc2::rc::Weak<NSView>,
+    /// The child the pad is raised above (its transformed ancestor).
+    anchor: objc2::rc::Weak<NSView>,
+    rect: Bounds<Points>,
+    alpha: f32,
+}
+
 /// The native side of an input view ([`crate::view::ViewState::input`]).
 pub(crate) struct InputState {
     editor: RefCell<Editor>,
+    /// Retains a manager when available for cleanup after editor detachment.
+    undo_manager: RefCell<Option<Retained<NSUndoManager>>>,
     /// Hears the editors (their `delegate` is weak).
     delegate: Retained<InputDelegate>,
     /// Fills the view and holds the editor ([`InputPad`]).
@@ -255,6 +297,12 @@ pub(crate) struct InputState {
     focus_pending: Cell<bool>,
     /// Content box; the whole view until the core sends one.
     content: Cell<Option<Bounds<Points>>>,
+    /// Where the pad is hosted while the transforms above the input cannot
+    /// show an AppKit view where it is ([`lifted`]); `None` while it is
+    /// hosted on the input's own view.
+    lift: RefCell<Option<Lift>>,
+    /// Clips copied from the ancestors the lifted pad left behind.
+    clips: RefCell<Vec<PadClip>>,
     /// User edits reported to the engine.
     count: Cell<u32>,
     /// A change made here, not by the user, is being applied.
@@ -359,6 +407,7 @@ impl Ctx {
         }
         let count = input.count.get() + 1;
         input.count.set(count);
+        input.remember_undo_manager();
         let text = input.editor.borrow().text();
         input.known.borrow_mut().clone_from(&text);
         // A composition that starts or changes is reported before the text
@@ -425,6 +474,14 @@ impl Ctx {
                 input.apply_value(&value, count);
             }
         }
+        // The core measures what the input shows meanwhile (the marked text
+        // is in the editor's text), so a composition that wraps a line
+        // grows the input before it commits.
+        if let Some((surface, view, _)) = self.get() {
+            let shown = composing.then(|| input.editor.borrow().text());
+            let id = view.id();
+            surface.control(|c| c.input_composing(id, shown));
+        }
         self.send(EventKind::CompositionChange, || {
             EventPayload::Map(vec![
                 ("composing", PayloadValue::Bool(composing)),
@@ -435,55 +492,88 @@ impl Ctx {
 
     /// The caret or selection may have moved.
     fn selection_changed(&self) {
-        let Some((_, view, input)) = self.get() else {
+        let Some((surface, view, input)) = self.get() else {
             return;
         };
         // A programmatic change is reported once, where it ends.
         if input.applying.get() || input.focusing.get() {
             return;
         }
+        let (id, selection, caret) = {
+            let state = view.state();
+            (
+                state.id,
+                state.events.contains(EventKind::SelectionChange),
+                state.events.contains(EventKind::CaretMove),
+            )
+        };
+        // Native selection notifications also arrive while focus is moving.
+        // Without either listener, there is no geometry or selection to report.
+        if !selection && !caret {
+            return;
+        }
         let editor = input.editor.borrow().clone();
+        let Some(editing) = editor.editing() else {
+            return;
+        };
         // A field's editor selects its text as editing ends: no change of
-        // the user's.
-        if let Editor::Line { field, .. } = &editor
-            && !field.currentEditor().is_some_and(|e| {
-                e.window()
-                    .and_then(|w| w.firstResponder())
-                    .is_some_and(|r| std::ptr::eq(&*r, &**e as &NSResponder))
-            })
+        // the user's. Keep this editor for all queries in the notification.
+        if matches!(editor, Editor::Line { .. })
+            && !editing
+                .window()
+                .and_then(|w| w.firstResponder())
+                .is_some_and(|r| std::ptr::eq(&*r, &*editing as &NSResponder))
         {
             return;
         }
-        if view.state().events.contains(EventKind::SelectionChange)
-            && let Some(range) = editor.selection()
-            && input.selection.replace(range) != range
-        {
-            self.send(EventKind::SelectionChange, || {
-                EventPayload::Map(vec![
-                    ("start", PayloadValue::Number(range.0 as f64)),
-                    ("end", PayloadValue::Number(range.1 as f64)),
-                ])
-            });
+        if selection {
+            let range = editing.selectedRange();
+            let range = (
+                range.location as u32,
+                (range.location + range.length) as u32,
+            );
+            if input.selection.replace(range) != range {
+                surface.event(
+                    id,
+                    EventKind::SelectionChange,
+                    EventPayload::Map(vec![
+                        ("start", PayloadValue::Number(range.0 as f64)),
+                        ("end", PayloadValue::Number(range.1 as f64)),
+                    ]),
+                );
+            }
         }
-        self.caret_moved();
+        if caret {
+            Self::report_caret(&surface, &view, &input, &editing);
+        }
     }
 
     /// `onCaretMove` if the caret moved: with the selection, or as the text
     /// view scrolled or the input was laid out again. Only an editor that
     /// edits has a caret.
     fn caret_moved(&self) {
-        let Some((_, view, input)) = self.get() else {
+        let Some((surface, view, input)) = self.get() else {
             return;
         };
         if !view.state().events.contains(EventKind::CaretMove) {
             return;
         }
-        let editor = input.editor.borrow().clone();
-        let Some(caret) = editor.caret(view.ns()) else {
+        let editing = input.editor.borrow().editing();
+        if let Some(editing) = editing {
+            Self::report_caret(&surface, &view, &input, &editing);
+        }
+    }
+
+    /// Reports geometry from the editor already resolved for this callback.
+    fn report_caret(surface: &Surface, view: &NshView, input: &InputState, editing: &NSText) {
+        // The pad's space is the input view's, while the pad may be hosted
+        // above the transforms around it.
+        let Some(caret) = Editor::caret(editing, &input.pad) else {
             return;
         };
         if input.caret.replace(caret) != caret {
-            self.send(EventKind::CaretMove, || EventPayload::caret(caret));
+            let id = view.state().id;
+            surface.event(id, EventKind::CaretMove, EventPayload::caret(caret));
         }
     }
 
@@ -521,9 +611,12 @@ impl Ctx {
             return;
         };
         if focused {
-            input.style_editor();
+            let editor = input.style_editor();
             if let Some((start, end)) = input.pending_selection.take() {
                 input.editor.borrow().select(start, end);
+            }
+            if let Some(editor) = editor {
+                input.align_editor(&editor);
             }
         }
         if !focused {
@@ -542,6 +635,11 @@ impl Ctx {
         enter_changing(&surface);
         set_focused(&surface, &view, focused);
         if focused {
+            // AppKit receives input clicks outside the drawn-text pointer path.
+            // Programmatic focus (Find, dialogs) preserves the selection.
+            if crate::view::pressing(view.ns().mtm()) {
+                crate::text::clear(&surface);
+            }
             // The scroll views around show the field, as on phones.
             crate::scroll::reveal(&surface, &view);
         }
@@ -656,7 +754,7 @@ impl Ctx {
         // Until `changed` reports the edit, the composition it changes is
         // not looked at (the editor may unmark before it replaces).
         input.editing.set(true);
-        let mut text = replacement.to_string();
+        let mut text = input_text(replacement, NSRange::new(0, replacement.length()));
         if text.is_empty() {
             if range.length > 0 {
                 self.key_press("Backspace");
@@ -673,8 +771,14 @@ impl Ctx {
         let max = input.config.borrow().max_length;
         let fit = match max {
             Some(max) => {
-                let kept = text_view.string().length().saturating_sub(range.length);
-                clip_utf16(&text, (max as usize).saturating_sub(kept))
+                // `maxLength` counts characters: those the edit keeps.
+                let string = text_view.string();
+                let all = string.length();
+                let start = range.location.min(all);
+                let end = range.location.saturating_add(range.length).min(all);
+                let kept = char_len(&input_text(&string, NSRange::new(0, start)))
+                    + char_len(&input_text(&string, NSRange::new(end, all - end)));
+                clip_chars(&text, (max as usize).saturating_sub(kept))
             }
             None => &text[..],
         };
@@ -808,7 +912,7 @@ pub(crate) fn tab(surface: &Surface, from: &NSView, backward: bool) -> bool {
     let Some(window) = from.window() else {
         return false;
     };
-    let scope = crate::navigation::focus_scope(surface);
+    let scope = crate::navigation::focus_scope_of(surface, &window);
     // A window that recalculates its loop does so only in its own
     // `selectNextKeyView:`: the views' links are empty until then.
     window.recalculateKeyViewLoop();
@@ -832,11 +936,11 @@ pub(crate) fn tab(surface: &Surface, from: &NSView, backward: bool) -> bool {
         // A text view's clip view comes right before it in the loop and
         // gives the focus back to it: skip the views around `from`.
         if next.isDescendantOf(&scope)
-            && if crate::view::is_ours(&next) {
+            && (if crate::view::is_ours(&next) {
                 NshView::from_ns(&next).is_some_and(|view| crate::input::is_key_stop(&view))
             } else {
-                crate::view::enclosing(&next).is_some_and(|owner| owner.can_reach())
-            }
+                held_seen(&next)
+            })
             && !from.isDescendantOf(&next)
         {
             return window.makeFirstResponder(Some(&next));
@@ -844,6 +948,20 @@ pub(crate) fn tab(surface: &Surface, from: &NSView, backward: bool) -> bool {
         at = next;
     }
     false
+}
+
+/// Whether a view of the key view loop that is not ours (an input's field,
+/// a hosted view) shows to the keyboard: the view of ours holding it does
+/// ([`NshView::seen_by_keys`]).
+fn held_seen(view: &NSView) -> bool {
+    let mut at = crate::view::superview(view);
+    while let Some(ns) = at {
+        if let Some(view) = NshView::from_ns(&ns) {
+            return view.seen_by_keys();
+        }
+        at = crate::view::superview(&ns);
+    }
+    true
 }
 
 /// Defines a field class: `NSTextField` or `NSSecureTextField` that tells
@@ -886,6 +1004,57 @@ macro_rules! define_field {
                         .is_none_or(|(_, view, _)| view.can_reach())
                 }
 
+                // A combo box's field is the combo box, as WebKit's is: the
+                // element VoiceOver is on while the list is open, named and
+                // expanded as the input, its selected child the input's
+                // active descendant, its linked element the list
+                // ([`crate::access::combobox_field`]).
+                #[unsafe(method_id(accessibilityRole))]
+                fn accessibility_role(&self) -> Option<Retained<NSString>> {
+                    match self.combobox() {
+                        Some(_) => Some(NSString::from_str("AXComboBox")),
+                        // Forwarding this override to AppKit exposes AXUnknown,
+                        // for secure fields too. Both have the text-field role.
+                        None => Some(NSString::from_str("AXTextField")),
+                    }
+                }
+
+                #[unsafe(method_id(accessibilityLabel))]
+                fn accessibility_label(&self) -> Option<Retained<NSString>> {
+                    match self.combobox() {
+                        Some(field) => field.label.map(|l| NSString::from_str(&l)),
+                        // SAFETY: NSTextField's own label.
+                        None => unsafe { msg_send![super(self), accessibilityLabel] },
+                    }
+                }
+
+                #[unsafe(method(isAccessibilityExpanded))]
+                fn is_accessibility_expanded(&self) -> bool {
+                    match self.combobox() {
+                        Some(field) => field.expanded,
+                        // SAFETY: NSTextField's own state.
+                        None => unsafe { msg_send![super(self), isAccessibilityExpanded] },
+                    }
+                }
+
+                #[unsafe(method_id(accessibilitySelectedChildren))]
+                fn accessibility_selected_children(&self) -> Option<Retained<NSArray>> {
+                    match self.combobox().and_then(|f| f.active) {
+                        Some(active) => Some(NSArray::from_retained_slice(&[active])),
+                        // SAFETY: NSTextField's own answer.
+                        None => unsafe { msg_send![super(self), accessibilitySelectedChildren] },
+                    }
+                }
+
+                #[unsafe(method_id(accessibilityLinkedUIElements))]
+                fn accessibility_linked_ui_elements(&self) -> Option<Retained<NSArray>> {
+                    match self.combobox().and_then(|f| f.controls) {
+                        Some(list) => Some(NSArray::from_retained_slice(&[list])),
+                        // SAFETY: NSTextField's own answer.
+                        None => unsafe { msg_send![super(self), accessibilityLinkedUIElements] },
+                    }
+                }
+
                 #[unsafe(method(becomeFirstResponder))]
                 fn become_first_responder(&self) -> bool {
                     // AppKit selects the whole text as the field takes the
@@ -903,6 +1072,18 @@ macro_rules! define_field {
                         cx.focus_changed(true);
                     }
                     ok
+                }
+
+                /// Its field editor is about to end editing: what an input
+                /// method composes there is committed first.
+                #[unsafe(method(textShouldEndEditing:))]
+                fn text_should_end_editing(&self, text: &NSText) -> bool {
+                    if let Some(editor) = text.downcast_ref::<NSTextView>() {
+                        commit_marked(editor);
+                    }
+                    // SAFETY: NSTextField's own handling (it implements
+                    // NSTextDelegate).
+                    unsafe { msg_send![super(self), textShouldEndEditing: text] }
                 }
 
                 #[unsafe(method(textDidEndEditing:))]
@@ -979,6 +1160,19 @@ macro_rules! define_field {
     };
 }
 
+/// What a field of an input answers for its view.
+trait FieldOf {
+    /// The input view's combo box, when the field is one.
+    fn combobox(&self) -> Option<crate::access::ComboboxField>;
+}
+
+impl<T: objc2::DefinedClass<Ivars = OnceCell<Ctx>>> FieldOf for T {
+    fn combobox(&self) -> Option<crate::access::ComboboxField> {
+        let (_, view, _) = self.ivars().get()?.get()?;
+        crate::access::combobox_field(&view)
+    }
+}
+
 define_field!(
     TextField,
     "NshTextField",
@@ -1025,6 +1219,17 @@ macro_rules! define_text_view {
 
             impl $name {
                 $($methods)*
+
+                /// The Edit menu's Copy (Cmd+C): the editor's own selection,
+                /// else the text selected around the input while it keeps
+                /// the focus (a chat's messages above its composer).
+                #[unsafe(method(copy:))]
+                fn copy(&self, sender: Option<&AnyObject>) {
+                    if !copies_selection_around(self, $surface(self)) {
+                        // SAFETY: NSTextView's own method.
+                        let _: () = unsafe { msg_send![super(self), copy: sender] };
+                    }
+                }
 
                 #[unsafe(method(draggingEntered:))]
                 fn dragging_entered(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
@@ -1164,8 +1369,31 @@ define_text_view!(
             ok
         }
 
+        /// Scrolls the selection into view once AppKit laid the text out
+        /// ([`reveal_caret_later`]).
+        #[unsafe(method(nshRevealSelection))]
+        fn reveal_selection(&self) {
+            let range = self.selectedRange();
+            // SAFETY: NSTextView's TextKit 2 objects and their methods, when
+            // it has them (nil otherwise: TextKit 1 lays out as it scrolls).
+            unsafe {
+                let manager: Option<Retained<AnyObject>> = msg_send![self, textLayoutManager];
+                if let Some(manager) = manager {
+                    let content: Option<Retained<AnyObject>> = msg_send![&manager, textContentManager];
+                    if let Some(content) = content {
+                        let all: Option<Retained<AnyObject>> = msg_send![&content, documentRange];
+                        if let Some(all) = all {
+                            let _: () = msg_send![&manager, ensureLayoutForRange: &*all];
+                        }
+                    }
+                }
+            }
+            self.scrollRangeToVisible(range);
+        }
+
         #[unsafe(method(resignFirstResponder))]
         fn resign_first_responder(&self) -> bool {
+            commit_marked(self);
             // SAFETY: NSTextView's own method.
             let ok: bool = unsafe { msg_send![super(self), resignFirstResponder] };
             if ok && let Some(cx) = self.ivars().get() {
@@ -1210,11 +1438,16 @@ define_text_view!(
         }
 
         /// Paste is offered for images and files too while the app
-        /// listens.
+        /// listens; Copy for text selected around the input.
         #[unsafe(method(validateUserInterfaceItem:))]
         fn validate(&self, item: &ProtocolObject<dyn NSValidatedUserInterfaceItem>,
         ) -> objc2::runtime::Bool {
             if item.action() == Some(sel!(paste:)) && self.ivars().get().is_some_and(Ctx::pastes_more) {
+                return objc2::runtime::Bool::YES;
+            }
+            if item.action() == Some(sel!(copy:))
+                && copy_falls_through(self, area_surface(self).as_deref())
+            {
                 return objc2::runtime::Bool::YES;
             }
             // SAFETY: NSTextView's own method.
@@ -1226,6 +1459,22 @@ define_text_view!(
 /// The surface of text area `area`, for its drags.
 fn area_surface(area: &TextArea) -> Option<Rc<Surface>> {
     area.ivars().get()?.surface.upgrade()
+}
+
+/// Whether a copy in `text_view` takes the text selected in `surface`
+/// instead: the editor has nothing of its own selected, and the surface
+/// has a selection (an input keeps the focus while text around it is
+/// selected).
+fn copy_falls_through(text_view: &NSTextView, surface: Option<&Surface>) -> bool {
+    text_view.selectedRange().length == 0 && surface.is_some_and(crate::text::can_copy)
+}
+
+/// A copy in `text_view` (an input's editor): copies the text selected
+/// around it, if [`copy_falls_through`]. False if the editor copies its
+/// own.
+fn copies_selection_around(text_view: &NSTextView, surface: Option<Rc<Surface>>) -> bool {
+    let surface = surface.as_deref();
+    copy_falls_through(text_view, surface) && surface.is_some_and(crate::text::copy)
 }
 
 /// An in-process paste that waits for any unsettled focus-triggering engine
@@ -1254,7 +1503,15 @@ pub(crate) fn paste(
     window: &objc2_app_kit::NSWindow,
     content: &nsh_core::PasteEvent,
 ) -> Result<(), String> {
-    use objc2_app_kit::{NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting};
+    with_focused(window, |text_view, cx| paste_from(text_view, &cx, content))?
+}
+
+/// Runs `f` with the text view that edits the focused input and its
+/// context: an error when no input of the app has the focus.
+fn with_focused<R>(
+    window: &objc2_app_kit::NSWindow,
+    f: impl FnOnce(&NSTextView, Ctx) -> R,
+) -> Result<R, String> {
     let responder = window.firstResponder().ok_or("no input has the focus")?;
     let object: &AnyObject = &responder;
     let (text_view, cx): (&NSTextView, Option<Ctx>) =
@@ -1273,7 +1530,64 @@ pub(crate) fn paste(
         } else {
             return Err("no input of the app has the focus".into());
         };
-    let cx = cx.ok_or("the focused input is gone")?;
+    Ok(f(text_view, cx.ok_or("the focused input is gone")?))
+}
+
+/// The input focused in `window` leaves the tree
+/// ([`crate::input::removed`]): its focus is reported gone now, so the end
+/// of its editing says nothing to it.
+pub(crate) fn taken_out(window: &objc2_app_kit::NSWindow) {
+    let _ = with_focused(window, |_, cx| {
+        if let Some((surface, view, input)) = cx.get()
+            && input.focused.replace(false)
+        {
+            set_focused(&surface, &view, false);
+        }
+    });
+}
+
+/// The input that has the keyboard focus, if one of the app's has it.
+#[cfg(feature = "dev")]
+pub(crate) fn test_focused(window: &objc2_app_kit::NSWindow) -> Option<nsh_core::NodeId> {
+    with_focused(window, |_, cx| cx.get().map(|(_, view, _)| view.id()))
+        .ok()
+        .flatten()
+}
+
+/// A test's input method (`nsh test --target macos`): composes `text` in
+/// the focused input as one does, marked text at the caret in place of
+/// what it composed; an empty `text` ends the composition with nothing
+/// committed.
+#[cfg(feature = "dev")]
+pub(crate) fn test_compose(window: &objc2_app_kit::NSWindow, text: &str) -> Result<(), String> {
+    with_focused(window, |text_view, _| {
+        let marked = NSString::from_str(text);
+        let caret = NSRange::new(marked.length(), 0);
+        let replace = NSRange::new(objc2_foundation::NSNotFound as usize, 0);
+        // SAFETY: NSTextInputClient's methods, which NSTextView implements,
+        // with a string and ranges inside it.
+        unsafe {
+            let _: () = msg_send![
+                text_view,
+                setMarkedText: &*marked,
+                selectedRange: caret,
+                replacementRange: replace
+            ];
+            if text.is_empty() {
+                let _: () = msg_send![text_view, unmarkText];
+            }
+        }
+    })
+}
+
+/// [`test_paste`]'s paste into `text_view`, the editor of `cx`.
+#[cfg(any(feature = "dev", feature = "terminal"))]
+fn paste_from(
+    text_view: &NSTextView,
+    cx: &Ctx,
+    content: &nsh_core::PasteEvent,
+) -> Result<(), String> {
+    use objc2_app_kit::{NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting};
     let board = NSPasteboard::pasteboardWithUniqueName();
     board.clearContents();
     let mut items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = Vec::new();
@@ -1370,11 +1684,16 @@ define_text_view!(
         }
 
         /// Paste is offered for images and files too while the app
-        /// listens.
+        /// listens; Copy for text selected around the input.
         #[unsafe(method(validateUserInterfaceItem:))]
         fn validate(&self, item: &ProtocolObject<dyn NSValidatedUserInterfaceItem>,
         ) -> objc2::runtime::Bool {
             if item.action() == Some(sel!(paste:)) && field_ctx(self).is_some_and(|cx| cx.pastes_more()) {
+                return objc2::runtime::Bool::YES;
+            }
+            if item.action() == Some(sel!(copy:))
+                && copy_falls_through(self, editor_surface(self).as_deref())
+            {
                 return objc2::runtime::Bool::YES;
             }
             // SAFETY: NSTextView's own method.
@@ -1510,10 +1829,20 @@ impl InputPad {
         ) else {
             return;
         };
+        // A press the editor can't take where it fell still focuses it: a
+        // click in the input must never leave it without the focus.
+        let focus = || {
+            if !window.firstResponder().is_some_and(|r| {
+                r.downcast_ref::<NSView>()
+                    .is_some_and(|r| r.isDescendantOf(&editor))
+            }) {
+                window.makeFirstResponder(Some(&editor));
+            }
+        };
         let p = self.convertPoint_fromView(event.locationInWindow(), None);
         let f = editor.frame();
         if f.size.width < 2.0 || f.size.height < 2.0 {
-            return;
+            return focus();
         }
         let inside = NSPoint::new(
             p.x.clamp(f.origin.x + 1.0, f.origin.x + f.size.width - 1.0),
@@ -1523,7 +1852,7 @@ impl InputPad {
         let at = self.convertPoint_toView(inside, Some(&outer));
         let me: &NSView = self;
         let Some(target) = self.hitTest(at).filter(|t| &**t != me) else {
-            return;
+            return focus();
         };
         // The window gives the focus to what a press hits before it sends
         // the press, and a field only edits a press once it has the focus
@@ -1545,7 +1874,7 @@ impl InputPad {
             event.clickCount(),
             event.pressure(),
         );
-        let Some(moved) = moved else { return };
+        let Some(moved) = moved else { return focus() };
         target.mouseDown(&moved);
         // The editor tracked the press to the release at its real point,
         // beside the text, so a click selected from the caret to the
@@ -1647,6 +1976,23 @@ define_class!(
 );
 
 impl InputState {
+    fn clear_undo(&self, editor: &Editor) {
+        let fallback = self.undo_manager.borrow().clone();
+        if let Some(manager) = editor.clear_undo(fallback.as_ref()) {
+            *self.undo_manager.borrow_mut() = Some(manager);
+        }
+    }
+
+    fn remember_undo_manager(&self) {
+        let editor = self.editor.borrow();
+        let Editor::Area { view, .. } = &*editor else {
+            return;
+        };
+        if let Some(manager) = view.undoManager() {
+            *self.undo_manager.borrow_mut() = Some(manager);
+        }
+    }
+
     fn update_placeholder(&self) {
         let editor = self.editor.borrow();
         let shown = matches!(&*editor, Editor::Area { .. })
@@ -1663,6 +2009,7 @@ impl InputState {
         let old_len = editor.ns_text().length() as u32;
         let caret = editor.selection().map(|(_, end)| end);
         self.applying.set(true);
+        self.clear_undo(&editor);
         editor.set_text(text);
         if let Some(caret) = caret {
             let len = utf16_len(text) as u32;
@@ -1695,16 +2042,57 @@ impl InputState {
         )
     }
 
+    /// The window shares its field editor, including its clip view's scroll
+    /// origin. Restore the idle cell's text origin on focus, after any
+    /// pending selection, unless that would hide a visible caret. Do not
+    /// reset scrolling while the user edits.
+    fn align_editor(&self, view: &NSTextView) {
+        let editor = self.editor.borrow();
+        let Editor::Line { field, .. } = &*editor else {
+            return;
+        };
+        if !matches!(
+            view.alignment(),
+            NSTextAlignment::Left | NSTextAlignment::Natural | NSTextAlignment::Justified
+        ) {
+            return;
+        }
+        // SAFETY: AppKit's getter on the main thread.
+        let Some(clip) = (unsafe { view.superview() }) else {
+            return;
+        };
+        let rest = clip.frame().origin.x + view.frame().origin.x + view.textContainerOrigin().x;
+        let bounds = clip.bounds();
+        let from = bounds.origin.x;
+        if (rest - from).abs() <= 0.25 {
+            return;
+        }
+        // AppKit selects all on focus: show the start of that selection.
+        // Only a pending caret or partial selection needs a layout query.
+        let selection = view.selectedRange();
+        let selects_all = selection.location == 0 && selection.length == view.string().length();
+        if !selects_all && let Some(caret) = Editor::caret(view, field) {
+            // AppKit's clip extends slightly past the borderless field.
+            // Use its viewport rather than the field's narrower bounds.
+            let viewport = field.convertRect_fromView(bounds, Some(&clip));
+            let shown = |x: f64| {
+                (viewport.origin.x..=viewport.origin.x + viewport.size.width - 1.0).contains(&x)
+            };
+            let x = f64::from(caret.origin.x.0);
+            if shown(x) && !shown(x + from - rest) {
+                return;
+            }
+        }
+        // SAFETY: the field editor is hosted in AppKit's clip view.
+        let _: () = unsafe { msg_send![&clip, scrollToPoint: NSPoint::new(rest, bounds.origin.y)] };
+    }
+
     /// Caret and selection colors of the view that edits now (the window's
     /// field editor is shared, so a field sets them when it takes the
     /// focus).
-    fn style_editor(&self) {
-        let Some(editor) = self.editor.borrow().editing() else {
-            return;
-        };
-        let Ok(view) = editor.downcast::<NSTextView>() else {
-            return;
-        };
+    fn style_editor(&self) -> Option<Retained<NSTextView>> {
+        let editor = self.editor.borrow().editing()?;
+        let view = editor.downcast::<NSTextView>().ok()?;
         let config = self.config.borrow();
         let caret = if config.caret_hidden {
             NSColor::clearColor()
@@ -1725,6 +2113,7 @@ impl InputState {
             NSDictionary::from_slices(&[key], &[AsRef::<AnyObject>::as_ref(&*selection)]);
         // SAFETY: valid text attributes.
         unsafe { view.setSelectedTextAttributes(&attributes) };
+        Some(view)
     }
 
     /// Focuses the input's editor with the caret at the end (unless an
@@ -1738,9 +2127,8 @@ impl InputState {
         };
         if editor.focused()
             || self.cx.get().is_none_or(|(_, view, _)| !view.can_reach())
-            || surface.is_some_and(|surface| {
-                !responder.isDescendantOf(&crate::navigation::focus_scope(surface))
-            })
+            || surface
+                .is_some_and(|surface| !crate::navigation::in_focus_scope(surface, &responder))
         {
             return;
         }
@@ -1786,6 +2174,7 @@ pub(crate) fn create(surface: &Rc<Surface>, view: &NshView) {
         }
         InputState {
             editor: RefCell::new(new_editor(mtm, &cx, &delegate, false, false)),
+            undo_manager: RefCell::new(None),
             delegate,
             pad: InputPad::create(mtm),
             placeholder,
@@ -1793,6 +2182,8 @@ pub(crate) fn create(surface: &Rc<Surface>, view: &NshView) {
             configured: Cell::new(false),
             focus_pending: Cell::new(false),
             content: Cell::new(None),
+            lift: RefCell::new(None),
+            clips: RefCell::new(Vec::new()),
             count: Cell::new(0),
             applying: Cell::new(false),
             clipping: Cell::new(false),
@@ -1841,6 +2232,10 @@ fn new_editor(
         };
         // SAFETY: the class is a subclass of NSTextView.
         let view: Retained<NSTextView> = unsafe { Retained::cast_unchecked(area) };
+        // SAFETY: initWithFrame creates a text system; retaining its storage
+        // here keeps the target alive through undo cleanup.
+        let storage = unsafe { view.textStorage() }
+            .expect("NSTextView's frame initializer creates a text storage");
         view.setMinSize(CGSize::new(0.0, size.height));
         view.setMaxSize(CGSize::new(CGFloat::MAX, CGFloat::MAX));
         view.setVerticallyResizable(true);
@@ -1891,7 +2286,11 @@ fn new_editor(
                     );
             }
         }
-        Editor::Area { scroller, view }
+        Editor::Area {
+            scroller,
+            view,
+            storage,
+        }
     } else {
         let field = if secure {
             SecureField::create(mtm, cx.clone())
@@ -1918,6 +2317,77 @@ fn new_editor(
     }
 }
 
+impl Drop for InputState {
+    fn drop(&mut self) {
+        let fallback = self.undo_manager.get_mut().clone();
+        self.editor.get_mut().clear_undo(fallback.as_ref());
+        // A pad hosted above the transforms around its input would outlive
+        // it there.
+        if let Some(lift) = self.lift.get_mut().take()
+            && let Some(host) = lift.host.load()
+            && let Some(host) = NshView::from_ns(&host)
+            && !host.forget_native(&self.pad)
+        {
+            // This drop runs inside a state update; the host's own state is
+            // in use, so its tracked entry is removed at the next sync.
+            FORGOTTEN.with(|q| {
+                q.borrow_mut().push((host, Retained::from(&*self.pad)));
+            });
+        }
+        self.pad.removeFromSuperview();
+    }
+}
+
+thread_local! {
+    /// Pads dropped while their host's state was in use ([`InputState`]'s
+    /// drop): their tracked entries are removed at the next [`sync`].
+    static FORGOTTEN: RefCell<Vec<(NshView, Retained<NSView>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Warms AppKit's text system once per process, a while after `surface`
+/// first showed and when it does not animate
+/// ([`crate::surface::when_idle`]): the first `NSTextView` (and
+/// `NSScrollView`) of a process sets up TextKit (its classes, the system
+/// font's cascade, the layout machinery), about 10 ms of the main thread
+/// that would otherwise hold the frame that mounts the first multi-line
+/// input. Nearly every app has inputs, so this is paid by an idle moment
+/// instead of a page's first frame. Process-wide, as what it warms is.
+pub(crate) fn warm_later(surface: &Surface) {
+    thread_local! {
+        static SCHEDULED: Cell<bool> = const { Cell::new(false) };
+    }
+    if !SCHEDULED.replace(true) {
+        crate::surface::when_idle(surface, warm_text);
+    }
+}
+
+fn warm_text() {
+    let mtm = MainThreadMarker::new().expect("main queue");
+    let scroller =
+        NSScrollView::initWithFrame(NSScrollView::alloc(mtm), ns_rect(0.0, 0.0, 100.0, 40.0));
+    scroller.setHasVerticalScroller(true);
+    let text = NSTextView::initWithFrame(NSTextView::alloc(mtm), ns_rect(0.0, 0.0, 100.0, 40.0));
+    text.setRichText(false);
+    text.setAllowsUndo(true);
+    text.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(13.0)));
+    text.setString(&NSString::from_str("Aa"));
+    scroller.setDocumentView(Some(&text));
+    // SAFETY: NSTextView's TextKit 2 objects and their methods, when it has
+    // them (nil otherwise).
+    unsafe {
+        let manager: Option<Retained<AnyObject>> = msg_send![&text, textLayoutManager];
+        if let Some(manager) = manager {
+            let content: Option<Retained<AnyObject>> = msg_send![&manager, textContentManager];
+            if let Some(content) = content {
+                let all: Option<Retained<AnyObject>> = msg_send![&content, documentRange];
+                if let Some(all) = all {
+                    let _: () = msg_send![&manager, ensureLayoutForRange: &*all];
+                }
+            }
+        }
+    }
+}
+
 /// `Input`.
 pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig) {
     let Some(input) = view.state().input.clone() else {
@@ -1932,6 +2402,7 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
     if swap {
         let old = input.editor.borrow().clone();
         let text = old.text();
+        input.clear_undo(&old);
         let focused = input.focused.get();
         if focused {
             input.cx.unfocus();
@@ -1985,6 +2456,7 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
         Editor::Area {
             scroller,
             view: text,
+            ..
         } => {
             // A built-in bar of the app's takes the indicator's place; the
             // text still scrolls with the wheel, the keys and the caret.
@@ -1995,8 +2467,22 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
             text.setBaseWritingDirection(direction);
             text.setEditable(config.editable);
             text.setSelectable(true);
-            text.setContinuousSpellCheckingEnabled(config.auto_correct);
-            text.setAutomaticSpellingCorrectionEnabled(config.auto_correct);
+            // Never in a password shown as plain text.
+            let correct = config.auto_correct && !config.visible_password();
+            text.setContinuousSpellCheckingEnabled(correct);
+            text.setAutomaticSpellingCorrectionEnabled(correct);
+            // Smart quotes, dashes and text replacement are the system's
+            // corrections too: off with `autoCorrect`, else the user's
+            // settings (Keyboard › Text Input), so typed code stays as typed.
+            text.setAutomaticQuoteSubstitutionEnabled(
+                correct && NSSpellChecker::isAutomaticQuoteSubstitutionEnabled(),
+            );
+            text.setAutomaticDashSubstitutionEnabled(
+                correct && NSSpellChecker::isAutomaticDashSubstitutionEnabled(),
+            );
+            text.setAutomaticTextReplacementEnabled(
+                correct && NSSpellChecker::isAutomaticTextReplacementEnabled(),
+            );
             let line = LineBox::new(config.style.line_height.0 as CGFloat, natural_height(&font));
             text.setDefaultParagraphStyle(Some(&paragraph(line, align)));
             // The space above the first line and below the last.
@@ -2032,7 +2518,12 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
             .set(surface.focus_generation.get().wrapping_add(1));
     }
     if editor.focused() {
-        input.style_editor();
+        let _ = input.style_editor();
+        // A new font or paragraph style lays the text out again from
+        // estimates: keep the line being edited in view.
+        if let Editor::Area { view, .. } = &editor {
+            reveal_caret_later(view);
+        }
     }
     input.update_placeholder();
     let first = !input.configured.replace(true);
@@ -2046,6 +2537,15 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
     }
 }
 
+/// Clears text undo records before a deleted input's editor can be released.
+pub(crate) fn deleted(view: &NshView) {
+    let Some(input) = view.state().input.clone() else {
+        return;
+    };
+    let editor = input.editor.borrow().clone();
+    input.clear_undo(&editor);
+}
+
 /// Reports how far a multiline input's text scrolled while a built-in bar
 /// takes the place of its indicator (`InputConfig::replaced`).
 fn report_scroll(surface: &Surface, view: &NshView, input: &InputState) {
@@ -2055,6 +2555,7 @@ fn report_scroll(surface: &Surface, view: &NshView, input: &InputState) {
     let Editor::Area {
         scroller,
         view: text,
+        ..
     } = &*input.editor.borrow()
     else {
         return;
@@ -2096,6 +2597,7 @@ pub(crate) fn scroll_to(view: &NshView, y: Points, animated: bool) {
     let Editor::Area {
         scroller,
         view: text,
+        ..
     } = &*input.editor.borrow()
     else {
         return;
@@ -2327,26 +2829,153 @@ pub(crate) fn cancel_auto_focus(view: &NshView) {
     }
 }
 
-/// Places the pad over the whole view and the editor (and a text view's
-/// placeholder) in it at the content box (`crate::native::resized` keeps
-/// the pad at the view's size).
-fn place(view: &NshView, input: &InputState) {
-    let frame = view.state().frame;
-    let bounds = Bounds {
-        origin: Point {
-            x: Points(0.0),
-            y: Points(0.0),
-        },
-        size: Size {
-            width: frame.size.width,
-            height: frame.size.height,
-        },
+/// The input view's frame changed (`crate::view::NshView::place`): places
+/// the editor again, or hides it while the view has no area.
+pub(crate) fn resized(view: &NshView) {
+    let Some(input) = view.state().input.clone() else {
+        return;
     };
-    let content = input.content.get().unwrap_or(bounds);
-    if content.size.width.0 <= 0.0 || content.size.height.0 <= 0.0 {
+    place(view, &input);
+}
+
+/// One display frame: the views above an input can move, scale or fade (a
+/// camera, an animation, a layout) without the input's own frame changing,
+/// and the pad is hosted above them ([`lifted`]). Walks only the branches
+/// that hold inputs.
+pub(crate) fn sync(surface: &Rc<Surface>) {
+    let forgotten = FORGOTTEN.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    if !forgotten.is_empty() {
+        let mut again = Vec::new();
+        for (host, view) in forgotten {
+            if !host.forget_native(&view) {
+                again.push((host, view));
+            }
+        }
+        if !again.is_empty() {
+            FORGOTTEN.with(|q| q.borrow_mut().extend(again));
+        }
+    }
+    let roots = std::iter::once(surface.root.clone()).chain(crate::window::roots(surface));
+    for root in roots {
+        sync_view(&root);
+    }
+}
+
+fn sync_view(view: &NshView) {
+    // Clone before placing: hosting the pad reaches AppKit, which may end
+    // an edit (and change this view's state) before it returns.
+    let input = view.state().input.clone();
+    if let Some(input) = input {
+        let bounds = bounds_of(view.state().frame);
+        let content = input.content.get().unwrap_or(bounds);
+        let around = surroundings(view, bounds, content);
+        set_hidden(&input, around.hidden);
+        if !around.hidden {
+            place_pad(view, &input, bounds, around.lifted);
+        }
+    }
+    if view.state().input_count == 0 {
         return;
     }
-    view.set_native(&input.pad, bounds);
+    for child in view.child_views() {
+        sync_view(&child);
+    }
+}
+
+/// The view's own box (its content space starts at its top left).
+fn bounds_of(frame: Bounds<Points>) -> Bounds<Points> {
+    Bounds {
+        origin: Point::new(Points(0.0), Points(0.0)),
+        size: frame.size,
+    }
+}
+
+/// What the views around an input say about its pad, from one walk of its
+/// ancestors: whether it should not show (no area, its window or `hidden`
+/// anywhere above it, since the pad is hosted above those layers and AppKit
+/// hides nothing for it), and the lift its transforms ask for, if any.
+struct Surroundings {
+    hidden: bool,
+    lifted: Option<Lifted>,
+}
+
+fn surroundings(view: &NshView, bounds: Bounds<Points>, content: Bounds<Points>) -> Surroundings {
+    let empty = |r: Bounds<Points>| r.size.width.0 <= 0.0 || r.size.height.0 <= 0.0;
+    if empty(bounds) || empty(content) {
+        return Surroundings {
+            hidden: true,
+            lifted: None,
+        };
+    }
+    if view.ns().window().is_none() || view.ns().isHiddenOrHasHiddenAncestor() {
+        return Surroundings {
+            hidden: true,
+            lifted: None,
+        };
+    }
+    let mut hidden = false;
+    let mut host = None;
+    let mut anchor = None;
+    let mut at = Some(view.clone());
+    while let Some(v) = at {
+        if v.state().style.hidden {
+            hidden = true;
+        }
+        if v.state().transform().is_some() {
+            host = v.parent_view();
+            anchor = Some(v.clone());
+        }
+        at = v.parent_view();
+    }
+    let lifted = match (host, anchor) {
+        (Some(host), Some(anchor)) => lifted(view, host, anchor),
+        _ => None,
+    };
+    Surroundings { hidden, lifted }
+}
+
+fn set_hidden(input: &InputState, hidden: bool) {
+    if input.pad.isHidden() != hidden {
+        input.pad.setHidden(hidden);
+    }
+}
+
+/// `view` is leaving its parent (`crate::view::NshView::unparent`): a pad
+/// hosted above it is not in its subtree and would stay where it was, so
+/// hide it. A sync places it again once it is attached somewhere.
+pub(crate) fn left(view: &NshView) {
+    // Hiding reaches AppKit, which may end the edit before it returns.
+    let input = view.state().input.clone();
+    if let Some(input) = input {
+        set_hidden(&input, true);
+    }
+    if view.state().input_count == 0 {
+        return;
+    }
+    for child in view.child_views() {
+        left(&child);
+    }
+}
+
+/// Places the pad over the whole view and the editor (and a text view's
+/// placeholder) in it at the content box (`crate::native::resized` keeps
+/// the pad at the view's size). While the view or its content box has no
+/// area (a `display: none` subtree lays its views out at a zero frame) the
+/// pad is hidden: it does not clip, so the editor would keep drawing at its
+/// last frame.
+fn place(view: &NshView, input: &InputState) {
+    let bounds = bounds_of(view.state().frame);
+    let content = input.content.get().unwrap_or(bounds);
+    let around = surroundings(view, bounds, content);
+    set_hidden(input, around.hidden);
+    // Only zero area skips hosting (a `display: none` subtree lays its
+    // views out at a zero frame). A view that only hides keeps its editor
+    // hosted, so showing it again needs no new frame or content.
+    let empty = |r: Bounds<Points>| r.size.width.0 <= 0.0 || r.size.height.0 <= 0.0;
+    if empty(bounds) || empty(content) {
+        return;
+    }
+    place_pad(view, input, bounds, around.lifted);
     let pad = &input.pad;
     let host = |sub: &NSView, r: Bounds<Points>| {
         if crate::view::superview(sub).as_deref() != Some(&**pad) {
@@ -2366,7 +2995,8 @@ fn place(view: &NshView, input: &InputState) {
         // they were added.
         window.setAutorecalculatesKeyViewLoop(true);
     }
-    match &*input.editor.borrow() {
+    let editor = input.editor.borrow();
+    match &*editor {
         Editor::Line { field, .. } => {
             // One line, centered in the box as UIKit centers it; a box
             // shorter than the line grows around its center. The cell
@@ -2387,7 +3017,7 @@ fn place(view: &NshView, input: &InputState) {
             };
             host(field, rect);
         }
-        Editor::Area { scroller, view } => {
+        Editor::Area { scroller, view, .. } => {
             // The placeholder goes first: hosted views stack in order. A
             // label insets its text as a field does; it starts where the
             // editor's first line of text does.
@@ -2400,7 +3030,359 @@ fn place(view: &NshView, input: &InputState) {
                 ),
             };
             host(&input.placeholder, label);
+            let before = scroller.frame().size;
             host(scroller, content);
+            if scroller.frame().size != before && editor.focused() {
+                reveal_caret_later(view);
+            }
+        }
+    }
+}
+
+/// Keeps the caret of a multiline input being edited in view as the input
+/// is resized or its text styled again, as typing keeps it: an input that grows with its text (a
+/// paste past its maximum height) kept its old offset, the line being
+/// edited out of view until the next key. Its text may not be laid out yet
+/// (TextKit 2 lays it out lazily, from estimates: a paste scrolls to an
+/// estimate of the caret), so on the next turn of the run loop the text is
+/// laid out and the selection revealed.
+fn reveal_caret_later(view: &NSTextView) {
+    // SAFETY: the text view answers the selector (`TextArea`'s
+    // `nshRevealSelection`), which takes no argument.
+    unsafe {
+        let _: () = msg_send![
+            view,
+            performSelector: sel!(nshRevealSelection),
+            withObject: std::ptr::null::<AnyObject>(),
+            afterDelay: 0.0f64
+        ];
+    }
+}
+
+/// A pad's place above the transforms around its input ([`lifted`]).
+struct Lifted {
+    host: NshView,
+    /// The transformed ancestor the pad is raised directly above.
+    anchor: NshView,
+    rect: Bounds<Points>,
+    /// The opacity the views it left give it.
+    alpha: f32,
+    clips: Vec<PadClip>,
+}
+
+/// One ancestor's rounded clip, mapped into the pad's natural space.
+#[derive(PartialEq)]
+struct PadClip {
+    size: Size<Points>,
+    radii: nsh_core::CornerRadii,
+    transform: CGAffineTransform,
+}
+
+/// The pad's host and frame while the transforms around the input make
+/// AppKit's own geometry wrong, or `None` while they do not. `host` and
+/// `anchor` are the parent and the highest transformed view around the
+/// input, found by [`surroundings`].
+///
+/// AppKit places a hosted view from its superview's geometry and ignores
+/// the layer transforms above it: under a scaled or translated ancestor
+/// the field editor draws at the untransformed place (the box stays blank
+/// when that is off the window) and a press there misses. Hosting the pad
+/// directly above the highest transformed view, in its parent's container,
+/// at the box those transforms show and with its natural bounds, gives
+/// AppKit geometry that already carries the scale: text rasterizes at the
+/// scale it shows at, the field editor and the caret follow, and presses
+/// land where they show. Siblings stacked over that view stay over the pad.
+fn lifted(view: &NshView, host: NshView, anchor: NshView) -> Option<Lifted> {
+    let mut alpha = 1.0;
+    let mut at = Some(view.clone());
+    loop {
+        let v = at?;
+        if v == host {
+            break;
+        }
+        // Picking a pad above the input would skip what gates it where it
+        // was: `pointerEvents: none`, `visibility: hidden`, an animating-out
+        // view or a screen under the top one.
+        if !v.can_target() {
+            return None;
+        }
+        alpha *= v.state().opacity();
+        at = v.parent_view();
+    }
+    // Where it draws, from the frames, transforms and scroll offsets
+    // between it and the host, animated ones included.
+    let size = view.state().frame.size;
+    let (w, h) = (size.width.0 as f64, size.height.0 as f64);
+    if !(w > 0.0 && h > 0.0) {
+        return None;
+    }
+    let m = map_of(view, &host)?;
+    let w_scale = m[2][2];
+    if !w_scale.is_finite() || w_scale.abs() < 1e-9 {
+        return None;
+    }
+    // Only a scale and a translation: a rotated or skewed box is not what a
+    // bounds/frame pair shows, and a perspective one is not a rectangle at
+    // all.
+    let tolerance = 1e-4 * (m[0][0].abs().max(m[1][1].abs()) * w_scale.abs()).max(1e-4);
+    if m[0][1].abs() > tolerance
+        || m[1][0].abs() > tolerance
+        || m[0][2].abs() > 1e-6
+        || m[1][2].abs() > 1e-6
+    {
+        return None;
+    }
+    let (sx, sy) = (m[0][0] / w_scale, m[1][1] / w_scale);
+    let (x, y) = (m[2][0] / w_scale, m[2][1] / w_scale);
+    if !(sx > 0.0 && sy > 0.0) || !sx.is_finite() || !sy.is_finite() {
+        return None;
+    }
+    // The relocated pad no longer inherits these masks. Carry each rounded
+    // viewport into its natural coordinates; nested masks intersect without
+    // flattening rounded corners to a bounding rectangle. The host's own
+    // clip still applies because the pad lives in its container.
+    let mut clips = Vec::new();
+    let mut at = view.parent_view();
+    while let Some(v) = at {
+        if v == host {
+            break;
+        }
+        let s = v.state();
+        if s.clips() {
+            let c = map_of(&v, &host)?;
+            if c[0][2].abs() > 1e-6 || c[1][2].abs() > 1e-6 || c[2][2].abs() < 1e-9 {
+                return None;
+            }
+            let cw = c[2][2];
+            clips.push(PadClip {
+                size: s.frame.size,
+                radii: s.style.radii().fit(s.frame.size),
+                transform: CGAffineTransform {
+                    a: c[0][0] / cw / sx,
+                    b: c[0][1] / cw / sy,
+                    c: c[1][0] / cw / sx,
+                    d: c[1][1] / cw / sy,
+                    tx: (c[2][0] / cw - x) / sx,
+                    ty: (c[2][1] / cw - y) / sy,
+                },
+            });
+        }
+        drop(s);
+        at = v.parent_view();
+    }
+    Some(Lifted {
+        host,
+        anchor,
+        rect: Bounds {
+            origin: Point::new(px(x as f32), px(y as f32)),
+            size: Size::new(px((sx * w) as f32), px((sy * h) as f32)),
+        },
+        alpha,
+        clips,
+    })
+}
+
+/// Rebuilds masks only when clipping geometry changes, not on idle frames.
+fn clip_pad(input: &InputState, clips: Vec<PadClip>) {
+    if *input.clips.borrow() == clips {
+        return;
+    }
+    input.pad.setWantsLayer(true);
+    let layer = input.pad.layer().expect("a layer-backed input pad");
+    let mut mask: Option<Retained<CALayer>> = None;
+    for clip in &clips {
+        let path = crate::decor::rounded(
+            CGRect::new(
+                CGPoint::ZERO,
+                CGSize::new(clip.size.width.0 as f64, clip.size.height.0 as f64),
+            ),
+            clip.radii,
+        );
+        // SAFETY: the path and affine transform live through the copy.
+        let path = unsafe { CGPath::new_copy_by_transforming_path(Some(&path), &clip.transform) };
+        let shape = CAShapeLayer::new();
+        shape.setPath(path.as_deref());
+        // SAFETY: fresh layers, retained by their mask owner, without a superlayer.
+        unsafe { shape.setMask(mask.as_deref()) };
+        mask = Some(Retained::into_super(shape));
+    }
+    // SAFETY: mask layers belong only to this pad.
+    unsafe { layer.setMask(mask.as_deref()) };
+    *input.clips.borrow_mut() = clips;
+}
+
+/// A lifted pad's copied clips also gate picking; Core Animation masks do
+/// not participate in AppKit hit testing.
+pub(crate) fn pad_contains(view: &NSView, point: NSPoint) -> bool {
+    if view.downcast_ref::<InputPad>().is_none() {
+        return true;
+    }
+    let mut mask = view.layer().and_then(|l| l.mask());
+    while let Some(layer) = mask {
+        if let Some(shape) = layer.downcast_ref::<CAShapeLayer>() {
+            let path = shape.path();
+            // SAFETY: a retained path and no additional transform.
+            if !unsafe { CGPath::contains_point(path.as_deref(), std::ptr::null(), point, false) } {
+                return false;
+            }
+        }
+        mask = layer.mask();
+    }
+    true
+}
+
+/// The 2D transform from `view`'s content space to `host`'s: frames,
+/// transforms and the scroll offsets and zooms of the containers between
+/// them, composed as a row-vector projective matrix (`[x y 1] · m`).
+fn map_of(view: &NshView, host: &NshView) -> Option<[[f64; 3]; 3]> {
+    type Map = [[f64; 3]; 3];
+    fn mul(a: &Map, b: &Map) -> Map {
+        let mut m = [[0.0; 3]; 3];
+        for (i, row) in m.iter_mut().enumerate() {
+            for (j, slot) in row.iter_mut().enumerate() {
+                *slot = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+            }
+        }
+        m
+    }
+    let mut total: Map = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let mut at = view.clone();
+    while at != *host {
+        if let Some(transform) = at.state().transform() {
+            let m = &transform.0;
+            total = mul(
+                &total,
+                &[
+                    [m[0], m[1], m[3]],
+                    [m[4], m[5], m[7]],
+                    [m[12], m[13], m[15]],
+                ],
+            );
+        }
+        let frame = at.ns().frame();
+        total = mul(
+            &total,
+            &[
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [frame.origin.x, frame.origin.y, 1.0],
+            ],
+        );
+        let parent = at.parent_view()?;
+        // A child's frame is in its parent's container; a scroll view's
+        // offset and zoom put the container in the parent's space.
+        let (offset, zoom) = crate::input::container_offset(&parent);
+        let (z, ox, oy) = (zoom as f64, offset.0 as f64, offset.1 as f64);
+        total = mul(
+            &total,
+            &[[z, 0.0, 0.0], [0.0, z, 0.0], [-ox * z, -oy * z, 1.0]],
+        );
+        at = parent;
+    }
+    Some(total)
+}
+
+/// Places the pad itself: over the input's view, or above the transforms
+/// around it ([`lifted`]). Moving it between superviews keeps the focus
+/// and the selection: a camera that starts or stops transforming must not
+/// end the edit.
+fn place_pad(
+    view: &NshView,
+    input: &InputState,
+    bounds: Bounds<Points>,
+    mut target: Option<Lifted>,
+) {
+    let clips = target
+        .as_mut()
+        .map(|l| std::mem::take(&mut l.clips))
+        .unwrap_or_default();
+    clip_pad(input, clips);
+    // The pad's bounds are the input view's space, so its editor and
+    // placeholder stay at the core's content box whatever the transforms
+    // above show.
+    let size = input.pad.bounds().size;
+    if size.width != bounds.size.width.0 as CGFloat
+        || size.height != bounds.size.height.0 as CGFloat
+    {
+        input
+            .pad
+            .setBounds(ns_rect(0.0, 0.0, bounds.size.width.0, bounds.size.height.0));
+    }
+    let (host, rect, alpha) = match &target {
+        Some(l) => (l.host.clone(), l.rect, l.alpha),
+        None => (view.clone(), bounds, 1.0),
+    };
+    let same = {
+        let current = input.lift.borrow();
+        match (&*current, &target) {
+            (None, None) => true,
+            (Some(l), Some(lifted)) => {
+                l.host
+                    .load()
+                    .is_some_and(|v| std::ptr::eq(&*v, lifted.host.ns()))
+                    && l.anchor
+                        .load()
+                        .is_some_and(|v| std::ptr::eq(&*v, lifted.anchor.ns()))
+            }
+            _ => false,
+        }
+    };
+    if same {
+        if let Some(lifted) = &target {
+            let mut current = input.lift.borrow_mut();
+            if let Some(current) = current.as_mut() {
+                if current.rect != rect {
+                    host.set_raised(&input.pad, rect, lifted.anchor.ns());
+                    current.rect = rect;
+                }
+                if (current.alpha - alpha).abs() > 1e-4 {
+                    input.pad.setAlphaValue(alpha as CGFloat);
+                    current.alpha = alpha;
+                }
+            }
+        } else {
+            let frame = input.pad.frame();
+            let placed = crate::view::superview(&input.pad).as_deref() == Some(view.ns())
+                && frame.origin.x == bounds.origin.x.0 as CGFloat
+                && frame.origin.y == bounds.origin.y.0 as CGFloat
+                && frame.size.width == bounds.size.width.0 as CGFloat
+                && frame.size.height == bounds.size.height.0 as CGFloat;
+            if !placed {
+                view.set_native(&input.pad, bounds);
+            }
+            if input.pad.alphaValue() != 1.0 {
+                input.pad.setAlphaValue(1.0);
+            }
+        }
+        return;
+    }
+    // Another host: move it, and put the field editor back if the move
+    // took the focus off the window.
+    let (focused, selection) = {
+        let editor = input.editor.borrow();
+        (editor.focused(), editor.selection())
+    };
+    if let Some(old) = input.lift.borrow_mut().take()
+        && let Some(old) = old.host.load().and_then(|v| NshView::from_ns(&v))
+    {
+        old.remove_native(&input.pad);
+    }
+    match &target {
+        Some(l) => host.set_raised(&input.pad, rect, l.anchor.ns()),
+        None => host.set_native(&input.pad, rect),
+    }
+    input.pad.setAlphaValue(alpha as CGFloat);
+    *input.lift.borrow_mut() = target.map(|l| Lift {
+        host: objc2::rc::Weak::new(l.host.ns()),
+        anchor: objc2::rc::Weak::new(l.anchor.ns()),
+        rect: l.rect,
+        alpha: l.alpha,
+    });
+    let editor = input.editor.borrow().clone();
+    if focused && !editor.focused() {
+        input.focus_editor(view.surface().as_ref());
+        if let Some((start, end)) = selection {
+            editor.select(start, end);
         }
     }
 }
@@ -2470,6 +3452,21 @@ pub(crate) fn accessory(_surface: &Rc<Surface>, _parent: &NshView, child: &NshVi
     log::debug!("input accessory {} is not shown on macOS", child.id());
 }
 
+/// The element VoiceOver is on while `view` has the keyboard focus: an
+/// input's editor (its field, or its text view), else the view.
+pub(crate) fn accessibility_element(view: &NshView) -> Retained<NSView> {
+    let editor = view
+        .state()
+        .input
+        .as_ref()
+        .map(|i| i.editor.borrow().clone());
+    match editor {
+        Some(Editor::Line { field, .. }) => Retained::into_super(Retained::into_super(field)),
+        Some(Editor::Area { view, .. }) => Retained::into_super(Retained::into_super(view)),
+        None => objc2::Message::retain(view.ns()),
+    }
+}
+
 /// `focus()`.
 pub(crate) fn focus(view: &NshView) {
     let input = view.state().input.clone();
@@ -2501,6 +3498,26 @@ pub(crate) fn blur_all(surface: &Rc<Surface>) {
     if !has_pending(surface) {
         disarm(surface);
     }
+}
+
+/// Commits what an input method composes in `view` (its marked text) as
+/// the editor loses the focus, as a browser's blur does: the input method
+/// drops its session and the composed text is inserted as its commit
+/// inserts it, so the input reports the text before the composition's end.
+/// AppKit would unmark it in place, which the input hears of as a
+/// selection change while the text is being replaced, and so ended the
+/// composition first.
+fn commit_marked(view: &NSTextView) {
+    if !view.hasMarkedText() {
+        return;
+    }
+    let range = view.markedRange();
+    let composed = view.string().substringWithRange(range);
+    if let Some(context) = view.inputContext() {
+        context.discardMarkedText();
+    }
+    // SAFETY: an NSString over the marked range, which is in the text.
+    unsafe { view.insertText_replacementRange(&composed, range) };
 }
 
 /// Ends editing and gives the keyboard focus to the root `window` shows.
@@ -2576,22 +3593,24 @@ fn utf16_len(s: &str) -> usize {
     s.chars().map(char::len_utf16).sum()
 }
 
-/// The longest prefix of `s` that fits in `max` UTF-16 units, cut between
-/// characters.
-fn clip_utf16(s: &str, max: usize) -> &str {
-    let mut units = 0;
-    for (i, c) in s.char_indices() {
-        units += c.len_utf16();
-        if units > max {
-            return &s[..i];
-        }
+/// The editor's UTF-16 range as the text an app receives.
+fn input_text(string: &NSString, range: NSRange) -> String {
+    // Input methods can leave an unpaired surrogate in their text or marked
+    // range. NSString's UTF8String is null then, so its Display conversion
+    // cannot be used. Read UTF-16 without changing the native composition.
+    let mut units = vec![0; range.length];
+    // SAFETY: The caller supplies a range within the string. The buffer has
+    // room for every UTF-16 unit, and its pointer is non-null when empty too.
+    unsafe {
+        string.getCharacters_range(std::ptr::NonNull::new(units.as_mut_ptr()).unwrap(), range);
     }
-    s
+    String::from_utf16_lossy(&units)
 }
 
 /// The focused input of `surface` and the `NSTextView` currently editing it.
 fn focused_editor(surface: &Surface) -> Option<(NshView, Rc<InputState>, Retained<NSTextView>)> {
-    let responder = surface.root.ns().window()?.firstResponder()?;
+    let window = crate::window::key_root(surface).ns().window()?;
+    let responder = window.firstResponder()?;
     let object: &AnyObject = &responder;
     let cx = if let Some(area) = object.downcast_ref::<TextArea>() {
         area.ivars().get().cloned()
@@ -2612,7 +3631,7 @@ fn focused_editor(surface: &Surface) -> Option<(NshView, Rc<InputState>, Retaine
         || !view.can_reach()
         || !view
             .ns()
-            .isDescendantOf(&crate::navigation::focus_scope(surface))
+            .isDescendantOf(&crate::navigation::focus_scope_of(surface, &window))
     {
         return None;
     }
@@ -2780,9 +3799,6 @@ pub(crate) fn arm(surface: &Surface) {
         focus.armed = true;
         focus.after = after;
     });
-    if !surface.terminal.get() {
-        crate::keymap::ensure_monitor(surface);
-    }
 }
 
 pub(crate) fn disarm(surface: &Surface) {
@@ -2792,7 +3808,6 @@ pub(crate) fn disarm(surface: &Surface) {
             focus.armed = false;
         }
     });
-    crate::keymap::sync_monitor(surface);
 }
 
 pub(crate) fn maybe_disarm(surface: &Surface) {
@@ -3200,7 +4215,7 @@ pub(crate) fn terminal_caret(surface: &Surface) -> Option<Bounds<Points>> {
     let mounter = surface.mounter.borrow();
     let view = mounter.views.get(&id)?;
     let input = view.state().input.clone()?;
-    input.editor.borrow().caret(surface.root.ns())
+    Editor::caret(input.editor.borrow().editing()?.as_ref(), surface.root.ns())
 }
 
 /// Reads a focused editor without exposing secure input content.
@@ -3240,6 +4255,7 @@ fn terminal_cancel_input(input: &InputState) {
     {
         text.unmarkText();
     }
+    input.clear_undo(&editor);
     editor.set_text(&input.known.borrow());
     if !editor.select(
         range.location as u32,
@@ -3364,6 +4380,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn input_text_preserves_unicode_and_replaces_incomplete_surrogates() {
+        let string = NSString::from_str("a😀かな");
+        for (range, expected) in [
+            (NSRange::new(0, 5), "a😀かな"),
+            (NSRange::new(1, 2), "😀"),
+            (NSRange::new(1, 1), "�"),
+            (NSRange::new(2, 1), "�"),
+            (NSRange::new(3, 2), "かな"),
+            (NSRange::new(5, 0), ""),
+        ] {
+            assert_eq!(input_text(&string, range), expected);
+        }
+    }
+
+    #[test]
+    fn input_text_accepts_an_edit_with_unpaired_surrogates() {
+        let mut units = [0x306b, 0xd800, 0x307b, 0xdc00];
+        // SAFETY: The initialized buffer contains units.len() UTF-16 units.
+        // NSString accepts unpaired surrogates, as AppKit's editor does.
+        let string = unsafe {
+            NSString::initWithCharacters_length(
+                NSString::alloc(),
+                std::ptr::NonNull::new(units.as_mut_ptr()).unwrap(),
+                units.len(),
+            )
+        };
+        assert_eq!(input_text(&string, NSRange::new(0, 4)), "に�ほ�");
+    }
+
+    #[test]
     fn single_line_placeholder_matches_native_editor_metrics() {
         let font = objc2_app_kit::NSFont::systemFontOfSize(16.0);
         for line_height in [0.0, 16.0, 24.0, 32.0] {
@@ -3429,13 +4475,7 @@ mod tests {
     }
 
     #[test]
-    fn max_length_clipping() {
-        assert_eq!(clip_utf16("hello", 3), "hel");
-        assert_eq!(clip_utf16("hello", 9), "hello");
-        assert_eq!(clip_utf16("hello", 0), "");
-        // A pair is never split.
-        assert_eq!(clip_utf16("a😀", 2), "a");
-        assert_eq!(clip_utf16("a😀", 3), "a😀");
+    fn utf16_length() {
         assert_eq!(utf16_len("a😀"), 3);
     }
 

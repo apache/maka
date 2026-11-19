@@ -51,6 +51,10 @@ use crate::{
     view::NshView,
 };
 
+// CIFilter is used through Objective-C; link its framework for class registration.
+#[link(name = "CoreImage", kind = "framework")]
+unsafe extern "C" {}
+
 /// Backdrop blurs sit below the background.
 const BACKDROP_Z: CGFloat = -1024.0 - 0.5;
 /// Shadows sit below the background and the children.
@@ -112,6 +116,7 @@ pub(crate) struct Visual {
     gradients: Vec<Retained<CAGradientLayer>>,
     outline: Option<Retained<CAShapeLayer>>,
     veil: Option<Retained<CALayer>>,
+    foreground_blur: Option<(Retained<AnyObject>, Points)>,
     backdrop: Option<Backdrop>,
     /// `maskImage`'s layer, held so it is not rebuilt every frame.
     mask_image: Option<Retained<CAGradientLayer>>,
@@ -522,6 +527,7 @@ impl Visual {
             gradients,
             outline,
             veil,
+            foreground_blur,
             backdrop,
             mask_image,
         } = self;
@@ -530,6 +536,7 @@ impl Visual {
             && gradients.is_empty()
             && outline.is_none()
             && veil.is_none()
+            && foreground_blur.is_none()
             && backdrop.is_none()
             && mask_image.is_none()
     }
@@ -544,10 +551,12 @@ impl Visual {
         style: &ViewStyle,
         local: CGRect,
         radii: CornerRadii,
-        text: bool,
+        kind: crate::decor::Kind,
         filled: bool,
     ) {
+        let text = kind == crate::decor::Kind::Text;
         let effects = style.effects.as_deref();
+        self.set_foreground_blur(layer, style, kind);
         let shadows = effects.map_or(&[][..], |e| &e.box_shadows[..]);
         let outer: Vec<&BoxShadow> = shadows
             .iter()
@@ -680,8 +689,10 @@ impl Visual {
             mask.setPath(Some(&path));
         }
         resize(casters, shadows.len(), holder, CAShapeLayer::new);
-        // The box, which the mask hides.
-        let content = rounded(local, radii);
+        // The box, which the mask hides, a point in from its edge: the mask's
+        // edge is antialiased, and along the rounded corners its partly
+        // covered pixels showed the opaque stand-in as a dark arc.
+        let content = rounded(grow(local, -1.0), grown(radii, px(-1.0)));
         // CSS order is top first; later sublayers draw on top.
         for (l, s) in casters.iter().zip(shadows.iter().rev()) {
             let shape = grow(local, s.spread.0 as CGFloat);
@@ -859,6 +870,62 @@ impl Visual {
                 kCALineCapButt
             }
         });
+    }
+
+    /// Filters the already decoded layer tree; no image requests or bitmap baking.
+    fn set_foreground_blur(
+        &mut self,
+        layer: &CALayer,
+        style: &ViewStyle,
+        kind: crate::decor::Kind,
+    ) {
+        // Image owns its baked blur-before-color pipeline.
+        let radius = if kind == crate::decor::Kind::Image {
+            Points::ZERO
+        } else {
+            style
+                .effects
+                .as_deref()
+                .map_or(Points::ZERO, |e| nsh_core::blur_radius(&e.filters))
+        };
+        if radius <= Points::ZERO {
+            if self.foreground_blur.take().is_some() {
+                // SAFETY: this Visual owns the foreground filter list.
+                unsafe { layer.setFilters(None) };
+            }
+            return;
+        }
+        if self
+            .foreground_blur
+            .as_ref()
+            .is_some_and(|(_, old)| *old == radius)
+        {
+            return;
+        }
+        // SAFETY: Core Image is linked above; CIFilter's documented factory and
+        // inputRadius KVC take NSString and NSNumber. CALayer supplies inputImage
+        // from its composited content, including child image layers.
+        unsafe {
+            let filter = self.foreground_blur.get_or_insert_with(|| {
+                let class = AnyClass::get(c"CIFilter").expect("Core Image CIFilter");
+                let filter: Option<Retained<AnyObject>> =
+                    msg_send![class, filterWithName: ns_string!("CIGaussianBlur")];
+                let filter = filter.expect("Core Image CIGaussianBlur");
+                let _: () = msg_send![&*filter, setName: ns_string!("nshForegroundBlur")];
+                (filter, Points::ZERO)
+            });
+            if filter.1 == Points::ZERO {
+                let _: () = msg_send![&*filter.0,
+                    setValue: &*NSNumber::new_f64(radius.0 as f64),
+                    forKey: ns_string!("inputRadius")];
+                layer.setFilters(Some(&NSArray::from_slice(&[&*filter.0])));
+            } else {
+                let _: () = msg_send![layer,
+                    setValue: &*NSNumber::new_f64(radius.0 as f64),
+                    forKeyPath: ns_string!("filters.nshForegroundBlur.inputRadius")];
+            }
+            filter.1 = radius;
+        }
     }
 
     /// `brightness()` below 1: a black veil over the view (exact for opaque
@@ -1286,6 +1353,43 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn foreground_blur_updates_and_removes_the_layer_filter() {
+        let style = |filter: &str| {
+            let mut style = nsh_core::Style::default();
+            style
+                .set("filter", nsh_core::StyleValue::Str(filter))
+                .unwrap();
+            style.view
+        };
+        let layer = CALayer::new();
+        let mut visual = Visual::default();
+        visual.set_foreground_blur(&layer, &style("none"), crate::decor::Kind::View);
+        assert!(layer.filters().is_none());
+        visual.set_foreground_blur(&layer, &style("blur(18px)"), crate::decor::Kind::View);
+        let filters = layer.filters().unwrap();
+        assert_eq!(filters.len(), 1);
+        assert!(layer.backgroundFilters().is_none());
+        for (filter, expected) in [("blur(9px)", 9.0), ("blur(3px) blur(5px)", 8.0)] {
+            visual.set_foreground_blur(&layer, &style(filter), crate::decor::Kind::View);
+            // SAFETY: this named CIFilter's documented numeric inputRadius.
+            let radius: Retained<NSNumber> = unsafe {
+                msg_send![&layer, valueForKeyPath: ns_string!("filters.nshForegroundBlur.inputRadius")]
+            };
+            assert_eq!(radius.doubleValue(), expected, "{filter}");
+        }
+        visual.set_foreground_blur(&layer, &style("none"), crate::decor::Kind::View);
+        assert!(layer.filters().is_none());
+        assert!(visual.is_empty());
+        visual.set_foreground_blur(
+            &layer,
+            &style("blur(18px) brightness(2)"),
+            crate::decor::Kind::Image,
+        );
+        assert!(layer.filters().is_none());
+        assert!(visual.is_empty());
+    }
+
     /// The view style that asks for `radius`'s backdrop blur.
     fn blur_style(radius: f32) -> ViewStyle {
         ViewStyle {
@@ -1298,6 +1402,37 @@ mod tests {
             })),
             ..ViewStyle::default()
         }
+    }
+
+    /// An outer shadow under a background that does not hide it is masked
+    /// to everything but the box; its caster's opaque stand-in content
+    /// stays a point inside the box, clear of the mask's antialiased edge
+    /// (its rounded corners showed it as a dark arc).
+    #[test]
+    fn a_masked_shadow_keeps_its_stand_in_inside_the_box() {
+        use objc2_core_graphics::CGPath;
+
+        let layer = CALayer::new();
+        let local = CGRect::new(CGPoint::ZERO, CGSize::new(120.0, 64.0));
+        let radii = CornerRadii::all(px(14.0));
+        let shadow = BoxShadow {
+            offset_x: px(0.0),
+            offset_y: px(1.0),
+            blur: px(2.0),
+            spread: px(0.0),
+            color: Color(0x0000_0014),
+            inset: false,
+        };
+        let mut visual = Visual::default();
+        visual.set_shadows(&layer, &[&shadow], local, radii, false);
+        let (_, casters) = visual.shadows.as_ref().expect("a shadow holder");
+        let content = casters[0].path().expect("the stand-in content");
+        let bounds = CGPath::bounding_box(Some(&*content));
+        assert_eq!(bounds, grow(local, -1.0));
+        assert!(
+            casters[0].fillColor().is_some(),
+            "masked: the stand-in is drawn"
+        );
     }
 
     /// `macos={{ backdrop }}` wins over glass and the blur; glass wins over

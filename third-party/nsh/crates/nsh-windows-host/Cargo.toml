@@ -3,6 +3,7 @@ name = "nsh-windows-host"
 description = "Development host app (Win32) that runs a nsh bundle on Windows."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true
@@ -15,6 +16,7 @@ workspace = true
 log.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+nsh-base.workspace = true
 nsh-platform-windows = { workspace = true, features = ["dev"] }
 nsh-dev.workspace = true
 nsh-engine = { workspace = true, features = ["js"] }

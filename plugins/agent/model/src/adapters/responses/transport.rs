@@ -63,6 +63,15 @@ struct Idle {
 }
 
 impl ResponsesLane {
+    pub fn fallback_availability(
+        &self,
+    ) -> maka_agent_facts::model::retry_transport::FallbackAvailability {
+        use maka_agent_facts::model::retry_transport::FallbackAvailability;
+        match &*self.0.lock().unwrap() {
+            Lane::Primary { .. } => FallbackAvailability::WarmIdlePrimary,
+            Lane::Fresh | Lane::Busy | Lane::Fallback => FallbackAvailability::Unavailable,
+        }
+    }
     pub fn retry_transport_phase(&self) -> RetryTransportPhase {
         match &*self.0.lock().unwrap() {
             Lane::Fallback => RetryTransportPhase::Fallback,
@@ -104,21 +113,22 @@ impl ResponsesLane {
         }
     }
 
-    fn acquire(&self, route: u64) -> Option<(PrimaryLease, Option<Idle>)> {
+    fn acquire(&self, route: u64) -> Result<Option<(PrimaryLease, Option<Idle>)>> {
         let mut lane = self.0.lock().unwrap();
         let idle = match &mut *lane {
             Lane::Fresh => None,
             Lane::Primary { idle, .. } => idle.take(),
-            Lane::Busy | Lane::Fallback => return None,
+            Lane::Busy => return Err(error("Responses primary transport is already active")),
+            Lane::Fallback => return Ok(None),
         };
         *lane = Lane::Busy;
-        Some((
+        Ok(Some((
             PrimaryLease {
                 lane: Some(self.clone()),
                 route,
             },
             idle,
-        ))
+        )))
     }
 }
 
@@ -134,16 +144,14 @@ impl PrimaryLease {
             idle,
         };
     }
-
-    fn fallback(mut self) {
-        let lane = self.lane.take().expect("active Responses lane lease");
-        *lane.0.lock().unwrap() = Lane::Fallback;
-    }
 }
 impl Drop for PrimaryLease {
     fn drop(&mut self) {
         if let Some(lane) = self.lane.take() {
-            *lane.0.lock().unwrap() = Lane::Fallback;
+            *lane.0.lock().unwrap() = Lane::Primary {
+                route: self.route,
+                idle: None,
+            };
         }
     }
 }
@@ -186,7 +194,7 @@ impl Exchange {
         // Cancellation drops the in-flight connect/send future and its socket.
         tokio::select! {
             biased;
-            _ = self.cancellation.cancelled() => Err(error("Responses WebSocket cancelled")),
+            _ = self.cancellation.cancelled() => Err(super::Error::Cancelled),
             result = self.start_inner(url, headers, body) => result,
         }
     }
@@ -204,9 +212,7 @@ impl Exchange {
         if active.is_some() {
             return Err(error("Responses WebSocket request already active"));
         }
-        let Some((lease, mut idle)) = self.lane.acquire(route) else {
-            // No caller may submit a shortened request without owning the
-            // matching baseline. Ordinary concurrent full requests use HTTP.
+        let Some((lease, mut idle)) = self.lane.acquire(route)? else {
             return Ok(Some(Prepared::new(body, None)?.full));
         };
         // Reconstruct before rejecting an old socket: store:false state cannot
@@ -224,27 +230,34 @@ impl Exchange {
         }
         let reuse = idle.is_some();
         if !reuse && self.transport.deferred(route, Instant::now()) {
-            lease.fallback();
-            return Ok(Some(prepared.full));
+            lease.complete(None);
+            return Err(super::Error::Interrupted("Responses WebSocket route is deferred before dispatch; fallback requires explicit selection".into()));
         }
         let mut connection = match idle {
             Some(idle) => idle,
-            None => match connect::open(self.network.as_ref(), &url, &headers).await? {
-                Some(socket) => Idle {
+            None => {
+                let socket = connect::open(self.network.as_ref(), &url, &headers)
+                    .await
+                    .map_err(|cause| {
+                        if !matches!(
+                            cause,
+                            super::Error::Cancelled
+                                | super::Error::CleanupUnconfirmed
+                                | super::Error::LocalAuthorization(_)
+                        ) && !self.cancellation.is_cancelled()
+                        {
+                            self.transport.defer(route, Instant::now());
+                        }
+                        cause
+                    })?;
+                Idle {
                     socket,
                     url,
                     headers,
                     network: self.network.identity(),
                     baseline: None,
-                },
-                _ => {
-                    if !self.cancellation.is_cancelled() {
-                        self.transport.defer(route, Instant::now());
-                    }
-                    lease.fallback();
-                    return Ok(Some(prepared.full));
                 }
-            },
+            }
         };
         let body = if reuse {
             prepared.delta.as_ref().unwrap_or(&prepared.full)
@@ -252,24 +265,42 @@ impl Exchange {
             &prepared.full
         };
         let text = body.clone().websocket();
-        connection.socket.send_text(text).await.map_err(|cause| {
-            if !self.cancellation.is_cancelled() {
-                self.transport.defer(route, Instant::now());
-            }
-            match cause {
-                maka_agent_facts::model::error::ModelError::Provider(failure)
-                    if failure.reason()
-                        == maka_agent_facts::model::error::ProviderFailureReason::Network =>
+        self.network
+            .send_text(connection.socket.clone(), text)
+            .await
+            .map_err(|cause| {
+                if !matches!(
+                    &cause,
+                    maka_agent_ports::model::Error::Cancelled
+                        | maka_agent_ports::model::Error::CleanupUnconfirmed
+                        | maka_agent_ports::model::Error::LocalAuthorization(_)
+                ) && !self.cancellation.is_cancelled()
                 {
-                    // The engine owns recovery from canonical history. This
-                    // transport never resends an uncertain response.create.
-                    super::Error::Interrupted(failure.message().into())
+                    self.transport.defer(route, Instant::now());
                 }
-                cause => {
-                    super::Error::Transport(format!("Responses WebSocket send failed: {cause}"))
+                match cause {
+                    maka_agent_facts::model::error::ModelError::LocalAuthorization(cause) => {
+                        super::Error::LocalAuthorization(cause)
+                    }
+                    maka_agent_facts::model::error::ModelError::Cancelled => {
+                        super::Error::Cancelled
+                    }
+                    maka_agent_facts::model::error::ModelError::CleanupUnconfirmed => {
+                        super::Error::CleanupUnconfirmed
+                    }
+                    maka_agent_facts::model::error::ModelError::Provider(failure)
+                        if failure.reason()
+                            == maka_agent_facts::model::error::ProviderFailureReason::Network =>
+                    {
+                        // The engine owns recovery from canonical history. This
+                        // transport never resends an uncertain response.create.
+                        super::Error::Interrupted(failure.message().into())
+                    }
+                    cause => {
+                        super::Error::Transport(format!("Responses WebSocket send failed: {cause}"))
+                    }
                 }
-            }
-        })?;
+            })?;
         connection.baseline = prepared.cache(&self.transport.cache);
         *active = Some(Active { connection, lease });
         Ok(None)
@@ -311,11 +342,7 @@ impl Exchange {
                 }
                 // A retry gets a fresh socket and full request. Only the caller
                 // can select fallback after exhausting its stream retry budget.
-                if reconnect {
-                    lease.complete(None);
-                } else {
-                    lease.fallback();
-                }
+                lease.complete(None);
                 Err(error.into_error())
             }
         }

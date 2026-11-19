@@ -8,13 +8,14 @@
 //! - [`stagger_delay`]: the delay of each item of a staggered group,
 //!   counted from the first, the last, the center or any item.
 //! - [`MotionSpec`]: several channels of a view ([`MotionChannel`]: opacity and
-//!   the parts of its transform) through keyframes with one timing, and
-//!   the ready-made ones ([`MotionPreset`]: entrances, exits, attention
-//!   seekers and loops). The values are the app's: a motion has no look,
-//!   it only moves what the app styled.
+//!   the parts of its transform) through keyframes with one timing, or each
+//!   on one spring to where its keyframes end, and the ready-made ones
+//!   ([`MotionPreset`]: entrances, exits, attention seekers and loops). The
+//!   values are the app's: a motion has no look, it only moves what the app
+//!   styled.
 
 use super::ops::{Composite, Driver, Easing, NodeId};
-use crate::TransformKind;
+use crate::{TransformKind, element::Spring};
 
 /// One keyframe of a value: where it is at `offset` (0..=1 of an
 /// iteration) and the easing of the segment that starts there.
@@ -517,8 +518,8 @@ impl MotionChannel {
     }
 }
 
-/// Several channels of a view through keyframes, played with one timing:
-/// a preset ([`MotionPreset`]) or the app's own.
+/// Several channels of a view through keyframes, played with one timing
+/// or one spring: a preset ([`MotionPreset`]) or the app's own.
 #[derive(Debug, Clone, PartialEq, Default)]
 #[non_exhaustive]
 pub struct MotionSpec {
@@ -526,6 +527,14 @@ pub struct MotionSpec {
     pub tracks: Vec<(MotionChannel, Vec<Keyframe>)>,
     /// How they play.
     pub timing: KeyframeTiming,
+    /// Plays each channel on this spring instead of through its keyframes:
+    /// from where the value is, keeping its velocity, to where the
+    /// keyframes end ([`keyframe_ends`] of one iteration), after the
+    /// timing's delay. The first keyframe is where the motion starts a
+    /// view that enters ([`MotionSpec::start_values`]); the keyframes
+    /// between, the duration, easings and iterations are not used, nor the
+    /// spring's own velocity (each channel keeps its own).
+    pub spring: Option<Spring>,
 }
 
 impl MotionSpec {
@@ -534,6 +543,7 @@ impl MotionSpec {
         Self {
             tracks: Vec::new(),
             timing,
+            spring: None,
         }
     }
 
@@ -562,6 +572,24 @@ impl MotionSpec {
         self
     }
 
+    /// Playing each channel on `spring` ([`MotionSpec::spring`]).
+    pub fn spring(mut self, spring: Spring) -> Self {
+        self.spring = Some(spring);
+        self
+    }
+
+    /// Where a channel through `frames` lands.
+    fn end(&self, frames: &[Keyframe]) -> Option<f32> {
+        let timing = match self.spring {
+            Some(_) => KeyframeTiming {
+                iterations: Some(1),
+                ..self.timing
+            },
+            None => self.timing,
+        };
+        keyframe_ends(frames, &timing).map(|(_, end)| end)
+    }
+
     /// The tree that plays it on the channels' value nodes (`nodes`, by
     /// [`MotionChannel::index`]). `reduced`: the user asked for less motion,
     /// so it lands where it ends at once, without moving.
@@ -570,7 +598,7 @@ impl MotionSpec {
         for (channel, frames) in &self.tracks {
             let node = nodes[channel.index()];
             if reduced {
-                let Some((_, end)) = keyframe_ends(frames, &self.timing) else {
+                let Some(end) = self.end(frames) else {
                     continue;
                 };
                 children.push(Composite::Run {
@@ -583,13 +611,36 @@ impl MotionSpec {
                         frame_rate: self.timing.frame_rate,
                     },
                 });
+            } else if let Some(spring) = self.spring {
+                let Some(to) = self.end(frames) else {
+                    continue;
+                };
+                children.push(Composite::Run {
+                    node,
+                    driver: Driver::Spring {
+                        to,
+                        stiffness: spring.stiffness,
+                        damping: spring.damping,
+                        mass: spring.mass,
+                        velocity: None,
+                        frame_rate: spring.frame_rate.or(self.timing.frame_rate),
+                    },
+                });
             } else {
                 children.push(keyframes(node, frames, &self.timing));
             }
         }
-        Composite::Parallel {
+        let all = Composite::Parallel {
             children,
             stop_together: true,
+        };
+        // The delay of keyframes is theirs (it holds their first frame); a
+        // spring waits with the values left where they are.
+        match self.spring {
+            Some(_) if !reduced && self.timing.delay_ms > 0.0 => {
+                Composite::Sequence(vec![Composite::Delay(self.timing.delay_ms), all])
+            }
+            _ => all,
         }
     }
 
@@ -1052,6 +1103,115 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The spring of csp's motions: about 380 ms to settle, 2.8 % over.
+    fn csp_spring() -> Spring {
+        Spring {
+            stiffness: 620.0,
+            damping: 36.0,
+            ..Spring::default()
+        }
+    }
+
+    #[test]
+    fn a_spring_motion_springs_each_channel_to_where_it_ends() {
+        let spec = MotionPreset::FadeInUp.spec().spring(csp_spring());
+        let nodes = [2, 4, 6, 8, 10, 12, 14, 16, 18];
+        let Composite::Parallel { children, .. } = spec.composite(&nodes, false) else {
+            panic!()
+        };
+        let targets: Vec<_> = children
+            .iter()
+            .map(|child| match child {
+                Composite::Run {
+                    node,
+                    driver:
+                        Driver::Spring {
+                            to,
+                            stiffness,
+                            velocity: None,
+                            ..
+                        },
+                } => (*node, *to, *stiffness),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(targets, [(2, 1.0, 620.0), (6, 0.0, 620.0)]);
+        // Starts from where the value is (no jump to the first keyframe),
+        // passes its end a little and settles there.
+        let track = MotionSpec::default()
+            .values(MotionChannel::Opacity, [0.0, 10.0])
+            .spring(csp_spring());
+        let mut nodes = [0; 9];
+        nodes[MotionChannel::Opacity.index()] = 2;
+        let (values, f) = run(
+            track.composite(&nodes, false),
+            5.0,
+            &[0.0, 120.0, 200.0, 1000.0],
+        );
+        assert_eq!(values[0], 5.0);
+        assert!(values[1] > 5.0 && values[1] < 10.0, "{values:?}");
+        assert!(values[2] > 10.0, "{values:?}");
+        assert_eq!(values[3], 10.0);
+        assert!(f.iter().any(|f| f.animation == 10 && f.finished), "{f:?}");
+        // Its delay leaves the value where it is.
+        let delayed = track.clone().timing(|t| t.delay(100.0));
+        let (values, _) = run(delayed.composite(&nodes, false), 5.0, &[0.0, 90.0, 200.0]);
+        assert_eq!(values[..2], [5.0, 5.0]);
+        assert!(values[2] > 5.0, "{values:?}");
+        // Less motion: it lands at once, as keyframes do.
+        let (values, _) = run(track.composite(&nodes, true), 5.0, &[0.0]);
+        assert_eq!(values, [10.0]);
+    }
+
+    #[test]
+    fn an_interrupted_spring_motion_goes_on_from_its_value_and_velocity() {
+        let mut nodes = [0; 9];
+        nodes[MotionChannel::TranslateY.index()] = 2;
+        let to = |end: f32| {
+            MotionSpec::default()
+                .values(MotionChannel::TranslateY, [100.0, end])
+                .spring(csp_spring())
+                .composite(&nodes, false)
+        };
+        let mut g = Graph::default();
+        value(&mut g, 2, 100.0);
+        let mut f = Vec::new();
+        let start = |g: &mut Graph, animation, spec, f: &mut Vec<Finished>| {
+            g.apply(
+                AnimationOp::StartComposite {
+                    animation,
+                    key: 12,
+                    spec,
+                },
+                f,
+            )
+        };
+        start(&mut g, 10, to(0.0), &mut f);
+        let mut now = 0.0;
+        while now < 80.0 {
+            g.tick(now / 1000.0, &mut f);
+            now += 10.0;
+        }
+        let before = g.value(2).unwrap();
+        assert!(before < 100.0 && before > 0.0, "{before}");
+        // Sent back while it falls: it goes on from there, still falling
+        // for a moment, rather than jumping to its first keyframe.
+        start(&mut g, 11, to(100.0), &mut f);
+        g.tick(now / 1000.0, &mut f);
+        let at_once = g.value(2).unwrap();
+        g.tick((now + 10.0) / 1000.0, &mut f);
+        let next = g.value(2).unwrap();
+        assert!((at_once - before).abs() < 15.0, "{before} {at_once}");
+        assert!(next < before, "{before} {at_once} {next}");
+        assert!(f.iter().any(|f| f.animation == 10 && !f.finished), "{f:?}");
+        for _ in 0..100 {
+            now += 10.0;
+            g.tick(now / 1000.0, &mut f);
+        }
+        assert_eq!(g.value(2), Some(100.0));
+        assert!(f.iter().any(|f| f.animation == 11 && f.finished), "{f:?}");
     }
 
     #[test]

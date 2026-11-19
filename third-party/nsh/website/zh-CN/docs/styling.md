@@ -253,6 +253,15 @@ view()
 
 色标之间的颜色与 CSS 一样混合：在渐变指定的色彩空间中（`linear-gradient(in oklab, …)`；还有 `srgb`、`srgb-linear`、`xyz`、可带色相方法（如 `longer hue`）的 `oklch` 以及 `hsl`）；未指定时，若所有颜色都是十六进制、`rgb()`、`hsl()` 或具名颜色，则在 sRGB 中混合，若有颜色是 `oklch()`、`oklab()`、`lab()`、`lch()` 或 `color()`，则在 Oklab 中混合。
 
+`repeating-linear-gradient`、`repeating-radial-gradient` 和 `repeating-conic-gradient` 与 CSS 一样，在最后一个色标之后重复：从第一个色标到最后一个色标的距离为一个周期。可以用来画斜线阴影、横线和网格：
+
+```tsx
+// 斜线阴影：每 8px 一条 1px 的线。
+<View style={{ backgroundImage: "repeating-linear-gradient(45deg, #d0d7de 0 1px, transparent 1px 8px)" }} />
+// 网格：横向和纵向各一层。
+<View style={{ backgroundImage: "repeating-linear-gradient(0deg, #eaeef2 0 1px, transparent 1px 24px), repeating-linear-gradient(90deg, #eaeef2 0 1px, transparent 1px 24px)" }} />
+```
+
 在 iOS 上，文本元素不绘制渐变。
 
 ## 滤镜与混合
@@ -368,13 +377,17 @@ function ProgressiveBlur(props: { radius: number; style: ViewStyle }) {
 }
 ```
 
+在 Rust 中，用 `.mask_linear(deg(90.0), [transparent_black(), black(), transparent_black()])` 让两侧渐隐，`.mask_radial([black(), transparent_black()])` 从中心径向渐隐，`.mask_none()` 清除遮罩。角度和色标向量接受信号或闭包；空色标向量清除遮罩。位置使用 `(color, percentage(0.2))` 或 `(color, px(12.0))`。
+
 带遮罩的 `backdropFilter` 只绘制模糊本身，不带系统材质的色调，半径也是精确的，iOS 和 macOS 同样如此。每一层在每帧都要模糊窗口内容，所以层数要少、面积要小。Linux 和 GPUI 不绘制 `backdropFilter`，如果上面的文字必须清晰可读，请给这块区域加上渐隐的 `backgroundImage`。
+
+GPUI 目前不绘制 `maskImage`：带遮罩的视图会完整绘制，用遮罩做的渐隐在 GPUI 上是硬边。
 
 ## 轮廓线、不透明度与可见性
 
 - `outlineWidth`、`outlineColor`、`outlineStyle`、`outlineOffset`（`.outline(..)`、`.outline_color(..)`、`.outline_dashed()`、`.outline_offset(..)`）：边框之外、不占空间的一条线（负偏移会画在内侧）。与 CSS 一样，`outlineStyle: "none"`（或 `"hidden"`，`.outline_none()`）会隐藏轮廓，无论宽度是多少。
 - `opacity`（`.opacity(n)`）：0 到 1，作用于视图及其子视图。
-- `visibility: "hidden"`（Rust 中为 `.invisible()`）：视图不绘制，但保留所占空间；与浏览器中一样，屏幕阅读器也会跳过它及其子树。`display: "none"`（`.hidden()`）则将它移出布局。
+- `visibility: "hidden"`（Rust 中为 `.invisible()`）：视图不绘制，但保留所占空间；与浏览器中一样，屏幕阅读器也会跳过它及其子树。用在 span（`Text` 里的 `Text`）上时，它让 span 的字符原地隐藏，复制时也会略过（[Text 元素](../elements/text.md#隐藏片段)）。`display: "none"`（`.hidden()`）则将它移出布局。
 - `zIndex`（`.z_index(n)`）：在兄弟视图中的顺序，也是原生的层叠顺序（值相同时保持稳定）。
 - `cursor`（`.cursor(..)`、`.cursor_pointer()`）：鼠标指针在视图上的形状，用于指针设备和桌面平台。
 
@@ -405,7 +418,7 @@ view().origin_top_left().rotate(deg(30.0))
 
 Rust 的 `.perspective(..)` 是 CSS 的 `perspective` 属性，与 Tailwind 的 `perspective-*` 相同：它给视图的子视图景深；而 `transform` 中的 `perspective()` 函数作用于视图自身的变换。`transformOrigin` 接受关键字、百分比和长度（`"top left"`、`"50% 0"`、`[10, 20]`；Rust 中的 `.origin_top_left()`、`.transform_origin(..)`），默认为中心。变换不影响布局：兄弟视图的位置按视图未变换时计算。
 
-Android 不支持斜切（skew）变换。
+Android 不支持斜切（skew）变换。GPUI 无法旋转图片的像素：旋转或斜切的 `Image` 按自身尺寸正放绘制，中心位于原本的位置。
 
 ## 过渡
 
@@ -447,7 +460,20 @@ view()
 | `transitionProperty` | 要动画的属性：`"all"`，或用逗号分隔的名称：颜色（`"colors"`、`"backgroundColor"`、`"borderColor"` 等）、`"opacity"`、`"transform"`（所有变换属性）、`"boxShadow"`、`"borderRadius"` / `"borderWidth"` | `.transition()`、`.transition_all()`、`.transition_colors()`、`.transition_opacity()`、`.transition_transform()`、`.transition_shadow()` |
 | `transitionDuration` | `300`、`"300ms"`、`"0.3s"` | `.duration(300.0)` |
 | `transitionDelay` | 同时长 | `.delay(100.0)` |
-| `transitionTimingFunction` | `"linear"`、`"ease"`、`"ease-in"`、`"ease-out"`、`"ease-in-out"`、`"cubic-bezier(x1, y1, x2, y2)"` | `.ease_linear()`、`.ease_in()`、`.ease_out()`、`.ease_in_out()`、`.ease_bezier(x1, y1, x2, y2)` |
+| `transitionTimingFunction` | `"linear"`、`"ease"`、`"ease-in"`、`"ease-out"`、`"ease-in-out"`、`"cubic-bezier(x1, y1, x2, y2)"`、`"spring(stiffness, damping)"`、`"spring(stiffness, damping, mass)"` | `.ease_linear()`、`.ease_in()`、`.ease_out()`、`.ease_in_out()`、`.ease_bezier(x1, y1, x2, y2)`、`.ease_spring(Spring { .. })` |
+
+`y` 超出 0..1 的 `cubic-bezier()` 会越过目标再回来，与 CSS 一致（`"cubic-bezier(0.3, 1.25, 0.6, 1)"`）。`spring()` 则让过渡按弹簧的物理运动：刚度、阻尼（系数，不是阻尼比）和质量（省略时为 1），从静止开始。弹簧自己决定时长，持续到它稳定为止，因此不使用 `transitionDuration`；`"spring(620, 36)"` 越过目标约 4%，约 380 ms 稳定。对应的类是 `ease-spring-[620,36]`（带质量时为 `ease-spring-[620,36,1]`），弹出层的离开同样会等它的弹簧播放完毕。
+
+```rust tabs
+view()
+    .transition_transform()
+    .ease_spring(Spring { stiffness: 620.0, damping: 36.0, ..Spring::default() })
+    .scale(move || if open.get() { 1.0 } else { 0.95 })
+```
+
+```tsx tabs
+<View class="transition-transform ease-spring-[620,36]" style={{ scale: open() ? 1 : 0.95 }} />
+```
 
 尺寸和位置属于布局而不是样式，不会产生过渡；要为布局变化做动画，使用 `LayoutAnimation`，或用原生动画驱动数值（[动画](./animation.md)）。
 
@@ -496,6 +522,7 @@ view()
 | `textAlignVertical` | | 文字比 `<Text>` 的框矮时的位置：`"top"`（默认）、`"center"` 或 `"bottom"` |
 | `textAlign: "auto"` | | 文字的自然一侧，由其方向决定（默认） |
 | `selectedStyle` | `selected:` | `accessibilityState.selected` 为 `true` 时的样式（选中的 `Button`、标签页） |
+| `transitionTimingFunction: "spring(…)"` | `ease-spring-[…]` | 让过渡按弹簧的刚度、阻尼和质量运动，持续到它稳定为止（[过渡](#过渡)） |
 | | `ios:`、`android:`、`web:` | 只在某个平台生效的类（`ios:pt-2`） |
 
 会变化的值在 CSS 只接受字符串的地方也接受数字：`transform` 可以写成步骤列表，`translate` 和 `scale` 写成 `[x, y]`，`boxShadow` 和 `textShadow` 写成各层。

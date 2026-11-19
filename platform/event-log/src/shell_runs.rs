@@ -19,10 +19,10 @@
 
 use crate::{EventLog, StoreError};
 mod query;
-use maka_agent_facts::shell_run::ShellOutcome;
-use maka_agent_facts::shell_run::ShellPatch;
-use maka_agent_facts::shell_run::ShellRun;
-use maka_agent_facts::shell_run::ShellState;
+use maka_plugin_core::shell_run::ShellOutcome;
+use maka_plugin_core::shell_run::ShellPatch;
+use maka_plugin_core::shell_run::ShellRun;
+use maka_plugin_core::shell_run::ShellState;
 pub use query::ShellResourcePage;
 use rusqlite::{OptionalExtension, params};
 
@@ -45,7 +45,7 @@ impl From<&ShellRun> for ShellChange {
 impl EventLog {
     /// A terminal orphan is still an unknown effect, not proof of native cleanup.
     pub async fn has_unsettled_shells(&self, session: &str) -> Result<bool, StoreError> {
-        maka_agent_facts::interaction::entity_id(session).map_err(invalid)?;
+        maka_plugin_core::shell_run::resource_id(session).map_err(invalid)?;
         let session = session.to_owned();
         self.connection
             .read(move |connection| unsettled(connection, &session))
@@ -256,21 +256,21 @@ pub(crate) fn unsettled(
 pub(crate) fn unsettled_outside(
     connection: &rusqlite::Connection,
     session: &str,
-    current_run: Option<&str>,
+    current_work: Option<&str>,
 ) -> Result<bool, StoreError> {
     Ok(connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM shell_runs WHERE session_id = ?
          AND (json_extract(record_json, '$.state.outcome.kind') = 'orphaned'
            OR (active = 1 AND (?2 IS NULL OR
-             json_extract(record_json, '$.sourceRunId') IS NOT ?2))))",
-        params![session, current_run],
+             json_extract(record_json, '$.sourceWorkId') IS NOT ?2))))",
+        params![session, current_work],
         |row| row.get(0),
     )?)
 }
 
 fn ids(session: &str, id: &str) -> Result<(), StoreError> {
-    maka_agent_facts::interaction::entity_id(session).map_err(invalid)?;
-    maka_agent_facts::interaction::entity_id(id).map_err(invalid)
+    maka_plugin_core::shell_run::resource_id(session).map_err(invalid)?;
+    maka_plugin_core::shell_run::resource_id(id).map_err(invalid)
 }
 
 fn invalid(message: impl Into<String>) -> StoreError {

@@ -21,8 +21,8 @@ use maka_agent_ports::provider::Context;
 use maka_agent_ports::provider::Error;
 use maka_agent_ports::provider::authentication::Authenticate;
 use maka_agent_ports::provider::authentication::Credential;
-use maka_capabilities::http::Method;
 use maka_capabilities::http::Request;
+use maka_plugin_core::http::Method;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -141,7 +141,7 @@ pub(super) async fn authenticate(
     if request.method != "chatgpt" {
         return Err(Error::Invalid("unknown authentication method".into()));
     }
-    super::configuration(&request.connection)?;
+    super::configuration(&request.connection.configuration)?;
     let interaction = context.interaction.as_ref().ok_or(Error::Unavailable)?;
     if context.cancellation.is_cancelled() {
         return Err(Error::Cancelled);

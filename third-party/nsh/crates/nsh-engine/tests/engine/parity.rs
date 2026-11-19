@@ -90,6 +90,7 @@ mount(() => <Text>{{shown()}}</Text>);
             minify: false,
             split: false,
             ui_sets: Vec::new(),
+            ..Default::default()
         })
         .unwrap();
         let mut paths = nsh_core::access::TrustedPaths::default();
@@ -106,11 +107,13 @@ mount(() => <Text>{{shown()}}</Text>);
             app: nsh_engine::App::Js(bundle),
             viewport: Size::new(nsh_core::geometry::px(400.0), nsh_core::geometry::px(300.0)),
             trace: false,
+            content_culling: false,
             network,
             websocket: None,
             refuse_connections: None,
             filesystem: None,
             windows: None,
+            login_item: None,
             assets: None,
             chunk_loader: None,
             environment: Environment {
@@ -121,7 +124,7 @@ mount(() => <Text>{{shown()}}</Text>);
             limits: nsh_engine::Limits::default(),
             ui_sets: Vec::new(),
             runtime: None,
-            data_dir: Some(root.join("data")),
+            support_dir: Some(root.join("data")),
             cache: nsh_engine::CacheOptions::off(),
             storage: None,
             clock: Default::default(),
@@ -132,6 +135,7 @@ mount(() => <Text>{{shown()}}</Text>);
             picker: None,
             speech: None,
             audio: None,
+            data_dir: None,
         };
         let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
         Self {
@@ -319,7 +323,8 @@ report({
   run: typeof process.run,
 });
 "##,
-        serde_json::json!({}),
+        // `os.homedir()` is told only to apps granted `homeDir` (#1499).
+        serde_json::json!({ "homeDir": true }),
         None,
         |_| {},
     );

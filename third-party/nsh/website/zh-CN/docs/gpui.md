@@ -23,6 +23,7 @@ GPUI 用自己方式绘制的地方，见[差异](#差异)。
 - **文字在引擎线程上排版**，使用 GPUI 的文字系统（应用自己的字体），由 NSH 断行；主线程只绘制字形。
 - **每次提交一次跳转。** 引擎运行在自己的线程上；每次提交是发往 GPUI 主线程的一个闭包，由它通知视图重绘。
 - **输入**来自 GPUI 的鼠标、滚动、按键和输入法事件；命中测试、按压、响应者系统、滚动和文本编辑与 Windows 后端是同一套逻辑。
+  可缩放的滚动视图用触控板捏合以指针为中心缩放，缩放后可以双向滚动。
 
 ## 环境要求
 
@@ -76,7 +77,8 @@ GStreamer 的 base、good 插件（Debian / Ubuntu：`libwebkit2gtk-4.1-0`、`li
 ## 嵌入 GPUI 应用
 
 `nsh-platform-gpui` crate（来自 NSH 仓库）为 Rust GPUI 应用提供 `AppView`：一个以 GPUI 视图（`Entity<AppView>`）形式存在的
-NSH 引擎，填满父元素给它的空间。每个 `AppView` 相互独立，可以同时运行多个。它运行一个 Rust 根组件，即你的 crate 的根组件：
+NSH 引擎，填满父元素给它的空间。每个 `AppView` 相互独立，可以同时运行多个。和其他平台 crate 一样，它默认开启运行时的全部可选功能；只嵌入部分应用的
+GPUI 应用可以[从二进制中去掉部分功能](./project-structure.md#从二进制中去掉部分功能)。它运行一个 Rust 根组件，即你的 crate 的根组件：
 
 ```rust
 use gpui::{AppContext, WindowOptions};
@@ -111,7 +113,9 @@ view.load(App::Js(Bundle::source(code)));
 `AssetBase::Http`）。字节码 bundle（`bundle.nshc`）用 `unsafe { Bundle::bytecode(bytes) }`（或同样是 unsafe 的
 `Bundle::read_trusted(path)`）加载：QuickJS 字节码是受信任的输入，只应从你自己应用的文件中加载。
 
-- `open_app_window(source, options, cx)` 在运行中的 GPUI 应用里打开一个带 `AppView` 的窗口。
+- `open_app_window(source, options, cx)` 在运行中的 GPUI 应用里打开一个带 `AppView` 的窗口，并带上应用 nsh.json
+  中 `window` 的设置。设置了 `"defaultVisible": false` 时，它在 macOS 和 Windows 上以隐藏状态打开，等应用显示它时才显示
+  （[主窗口](../modules/nsh-desktop.md#主窗口)）；在 Linux 上 GPUI 打开窗口时就会显示它。
 - `run_app(source, options)` 启动 GPUI，在一个窗口中运行一个应用直到窗口关闭（开发宿主就是这样做的）。
 - `AppView::register_component(name, factory)` 在加载前注册你自己的原生组件（[原生组件](./native-components.md)）。
 - `AppOptions::cache`（或 `AppView::set_cache`，作用于之后加载的应用）设置应用保存缓存（[下载的图片](./images-and-assets.md#磁盘缓存)）的位置和每种缓存的大小：`CacheOptions { location, images }`，`CacheLocation::System`（默认）、`Dir(path)` 或 `Off`，`CachePolicy::Default`（256 MiB）、`MaxSize(ByteSize::mib(n))` 或 `Off`。
@@ -121,6 +125,7 @@ view.load(App::Js(Bundle::source(code)));
 - `AppView::connect_dev_server(url, cx)`（feature `dev`）从 `nsh dev` 加载应用，边改边重新加载，错误浮层显示在视图上；`AppView::on_error` 照样收到应用的错误。
 - `AppView::on_app_error(|error| …)` 接收应用的错误：`error.kind`（应用加载失败、未捕获的异常、VM 已停止），`error.is_fatal()` 表示该应用不会再执行任何 JS，`error.message`、`error.stack`，以及 `error.package`（它来自的签名包的 id 和 build 号）。`AppView::on_error` 以文本形式收到同样的错误。
 - `AppView::set_locale(locale, cx)` 和 `AppView::set_font_scale(scale, cx)` 用你的应用的语言和文字大小代替系统的设置（`None` 恢复跟随系统）：`locale()`、`Intl`、`fontScale()` 和文字立即跟随（[设备与环境](./device-and-environment.md#在嵌入它的应用中)）。
+- `AppView::set_theme_overrides(Some(json), cx)` 把你的应用的品牌加在应用的[主题](./tailwind.md#主题-token)之上：格式与 `nsh.json` 的 `"theme"` 相同的主题文件，其中的 token 在浅色和深色模式下都覆盖应用的同名 token，应用的其他 token 保持不变；`bg-primary` 等类名立即更新样式，之后加载的应用一开始就使用它（`None` 恢复应用自己的主题；无法解析的文件返回错误，不做任何改动）。用 `set_theme` / `set_theme_json` 给了整套主题时，覆盖压在那套主题的 token 之上，两者改动其一时另一个保持不变。
 - `AppView::run_package(&package)` 运行来自 `verify_package` 或 `load_package` 的[签名包](./signed-packages.md)；你的应用判定它健康之后，用 `accept_package` 记录它。
 - `set_ui_sets(sets)` 设置每个引擎提供的 UI 套件：NSH 的（`nsh_base::registry()`）和你的 crate 的（`my_app::registry()`，由
   `#[native_module]` 生成；[用 Rust 开发](./rust.md)），也用来提供你的应用自己的套件：应用通过
@@ -131,7 +136,8 @@ view.load(App::Js(Bundle::source(code)));
 
 与原生桌面后端在绘制或行为上的不同之处：
 
-- **变换**：旋转、斜切和透视的视图，其背景、边框和阴影会随之变换，但文字保持直立，图片、视频和画布按其边界绘制。
+- **变换**：旋转、斜切和透视的视图，其背景、边框、阴影和图片会随之变换（转动中的照片在每个新角度重新绘制，单色 SVG 图标由 GPU
+  旋转），画布跟随旋转和斜切；文字保持直立，视频按其边界绘制。
 - **不透明度**作用于每种颜色而不是整组，因此半透明视图中相互重叠的子视图会彼此透出；图片的不透明度（淡入、半透明视图）以
   十六分之一为级变化。
 - **圆角裁剪**（带圆角的 `overflow: "hidden"`）会让子视图的背景和图片跟随圆角，但文字、边框、视频和原生组件按矩形裁剪。
@@ -139,7 +145,6 @@ view.load(App::Js(Bundle::source(code)));
   绘制为圆形圆角。
 - **画布文字**是近似的：旋转时保持直立，`maxWidth` 下缩小字号而不是压窄，渐变以单一颜色绘制，`strokeText` 绘制为填充，阴影
   不模糊，合成操作和 `clearRect` 对它不起作用。
-- **滚动视图**不支持缩放（`zoomTo` 和缩放相关属性被忽略）。
 - **视频**在 Linux 上播放（GStreamer）；在 macOS 和 Windows 上显示占位内容并报告 `onError`。
 - **Web 视图**是位于 NSH 在该位置所绘制一切内容之上的原生视图。Linux 上需要 X11（见[环境要求](#环境要求)）；在 Xwayland
   下页面一直是黑的（日志中有 "Failed to create GBM buffer"）时，请用 `WEBKIT_DISABLE_DMABUF_RENDERER=1` 运行应用。macOS 和

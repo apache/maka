@@ -114,6 +114,50 @@ pub(crate) extern "C" fn nsh_browser_test_file_drop_events() -> u32 {
         .into_raw()
 }
 
+/// Touch points keep the pointer fields the native JS host gives them
+/// (`pointerType`, `pressure`, `tiltX`, `tiltY`): a mouse, a pen and a finger.
+#[unsafe(no_mangle)]
+pub(crate) extern "C" fn nsh_browser_test_touch_events() -> u32 {
+    use nsh_core::{
+        EventPayload, PointerType, TouchEvent, TouchPhase, TouchPoint, keymap::Modifiers,
+    };
+
+    use super::{bindings::Bindings, events, values::Value};
+    let host = Bindings::new();
+    let pointers = [
+        (PointerType::Mouse, 0.5, 0.0, 0.0),
+        (PointerType::Pen, 0.25, 30.0, -15.0),
+        (PointerType::Touch, 0.5, 0.0, 0.0),
+    ];
+    let events = pointers
+        .into_iter()
+        .map(|(pointer_type, pressure, tilt_x, tilt_y)| {
+            events::payload(
+                &host,
+                &EventPayload::Touch(Box::new(TouchEvent {
+                    phase: TouchPhase::Move,
+                    timestamp: 10.0,
+                    points: vec![TouchPoint {
+                        id: 1,
+                        target: 2,
+                        path: vec![2, 1],
+                        page: Point::new(Points(30.0), Points(40.0)),
+                        location: Point::new(Points(3.0), Points(4.0)),
+                        changed: true,
+                        pointer_type,
+                        pressure,
+                        tilt_x,
+                        tilt_y,
+                    }],
+                    activated: None,
+                    modifiers: Modifiers::default(),
+                })),
+            )
+            .unwrap()
+        });
+    Value::array(events).unwrap().into_raw()
+}
+
 /// A video's `onLoad` keeps the `{ duration, size }` of the native JS host.
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn nsh_browser_test_video_load_event() -> u32 {

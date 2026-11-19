@@ -4,7 +4,7 @@
 import { expect, open, test } from "nsh/test";
 
 // The leads of the demos after Checkbox.
-const RADIO = "A plan picker: one of a small set, a disabled plan";
+const RADIO = "Plans, delivery options as cards, a reading preference";
 const SWITCH = "Settings that take effect at once, one that needs another on";
 
 test("the sidebar's demos are one stop of Tab, whose Up and Down select the demos", async () => {

@@ -24,7 +24,8 @@ mod selections;
 mod sources;
 pub use references::{
     CaptureTime, DirectoryReference, InlineReference, InlineReferenceKind, QuoteRef,
-    SessionQuoteSource,
+    SessionQuoteSource, SessionReference, SessionReferenceKind, extract_session_references,
+    render_directory_references, render_quotes, render_session_references,
 };
 pub use selections::{Selections, validate_selections};
 pub use sources::{
@@ -34,14 +35,16 @@ pub use sources::{
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum InvocationInput {
-    Handoff {
-        claim: Box<crate::continuation::ContinuationClaim>,
-        pause: Box<crate::handoff::HandoffPause>,
+pub enum RunInput {
+    HistorySource {
+        source: crate::durable::ContentRef,
     },
     Continuation {
         claim: Box<crate::continuation::ContinuationClaim>,
         request_fingerprint: String,
+    },
+    CheckpointHandoff {
+        source: crate::durable::RunId,
     },
     ContextCompact {
         request_fingerprint: String,
@@ -57,7 +60,7 @@ pub enum InvocationInput {
     },
 }
 
-impl InvocationInput {
+impl RunInput {
     pub fn request_fingerprint(&self) -> Option<&str> {
         match self {
             Self::Message {
@@ -71,24 +74,24 @@ impl InvocationInput {
             | Self::ContextCompact {
                 request_fingerprint,
             } => Some(request_fingerprint),
-            Self::Handoff { .. } | Self::Code { .. } => None,
+            Self::CheckpointHandoff { .. } | Self::Code { .. } | Self::HistorySource { .. } => None,
         }
     }
 
     pub fn inherited_claim(&self) -> Option<&crate::continuation::ContinuationClaim> {
         match self {
-            Self::Continuation { claim, .. } | Self::Handoff { claim, .. } => Some(claim),
+            Self::Continuation { claim, .. } => Some(claim),
             _ => None,
         }
     }
 
     pub fn validate_inheritance(
         &self,
-        target: &crate::event::Invocation,
+        target: &crate::durable::ExecutionIdentity,
     ) -> Result<(), &'static str> {
         match self {
             Self::Continuation { claim, .. } => claim.validate(target),
-            Self::Handoff { claim, pause } => pause.validate_claim(claim, target),
+            Self::HistorySource { source } => source.validate(),
             _ => Ok(()),
         }
     }
@@ -112,6 +115,19 @@ pub struct MessageInput {
 }
 
 impl MessageInput {
+    pub fn has_content(&self) -> bool {
+        !self.text.trim().is_empty()
+            || self
+                .attachments
+                .as_ref()
+                .is_some_and(|files| !files.is_empty())
+            || self
+                .quotes
+                .iter()
+                .flatten()
+                .any(|quote| !quote.text.trim().is_empty())
+    }
+
     /// Opaque Rust-host admission identity; never derived from a UI projection.
     pub fn content_digest(&self) -> Result<String, serde_json::Error> {
         use sha2::{Digest, Sha256};
@@ -126,6 +142,7 @@ impl MessageInput {
             .chain(self.display_text.as_deref())
             .chain(self.quotes.iter().flatten().flat_map(|quote| {
                 std::iter::once(quote.text.as_str())
+                    .chain(quote.source_message_id.as_deref())
                     .chain(quote.label.as_deref())
                     .chain(quote.source_turn_id.as_deref())
                     .chain(quote.source.iter().flat_map(|source| {
@@ -223,37 +240,5 @@ pub fn validate_receipts(receipts: &[InputReceipt]) -> Result<(), &'static str> 
 impl From<&str> for MessageInput {
     fn from(text: &str) -> Self {
         text.to_owned().into()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::composition::{SourceKind, SourceRevision};
-
-    #[test]
-    fn input_receipts_accept_complete_payloads_and_validate_source_kind() {
-        let mut receipts: Vec<_> = (0..4096)
-            .map(|index| InputReceipt {
-                source: SourceRevision {
-                    kind: SourceKind::Input,
-                    name: format!("provider-{}", index % 64),
-                    package_id: "example".into(),
-                    entry_id: "entry".into(),
-                    activation: "activation".into(),
-                    revision: format!("revision-{index}"),
-                },
-                receipt: serde_json::json!({"message": index / 64}),
-            })
-            .collect();
-        validate_receipts(&receipts).unwrap();
-        receipts[0].source.kind = SourceKind::Tool;
-        assert_eq!(
-            validate_receipts(&receipts),
-            Err("invalid input preparation source")
-        );
-        receipts[0].source.kind = SourceKind::Input;
-        receipts[0].receipt = serde_json::json!("x".repeat(1024 * 1024));
-        validate_receipts(&receipts).unwrap();
     }
 }

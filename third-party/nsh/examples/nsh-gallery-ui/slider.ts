@@ -24,8 +24,9 @@ export const sliderValueStyle = (): TextStyle => ({ color: alpha(colors.text, 0.
  * sunk into the surface and a round thumb on it: a 6-point rail and a
  * 14-point thumb with a pointer (a 20-point band around the rail takes
  * presses), 8 and 20 on a touch screen (a 32-point band). Under the pointer the thumb lightens, the
- * keyboard's focus rings the rail in the theme's `ring`, a disabled slider
- * fades to 35% (transitions still with reduced motion).
+ * keyboard's focus rings the thumb in the theme's `ring` (not after a press
+ * or a drag), a disabled slider fades to 50% (transitions still with reduced
+ * motion).
  *
  * Only what never changes is here, so the spread reads no signal: a spread
  * is evaluated where the slider is made, and a signal read there would make
@@ -41,12 +42,11 @@ export function sliderLook(o: SliderLookOptions = {}) {
   const band = vertical
     ? `${pointer ? "w-5" : "w-8"} ${pointer ? "h-32" : "h-36"} items-center ${pointer ? "py-[7px]" : "py-[10px]"}`
     : `${pointer ? "h-5" : "h-8"} justify-center ${pointer ? "px-[7px]" : "px-[10px]"}`;
-  const focus = "focus-within:ring-2 focus-within:ring-ring/50 focus-within:ring-offset-2 focus-within:ring-offset-card";
   const fade = "transition duration-150 motion-reduce:transition-none";
   return {
     class: o.value ? "flex-row items-center gap-2" : undefined,
-    trackClass: `${band} ${o.value ? "flex-1" : ""} cursor-pointer ${fade} disabled:opacity-35 disabled:cursor-not-allowed`,
-    indicatorClass: `${vertical ? (pointer ? "w-1.5" : "w-2") + " h-full" : pointer ? "h-1.5" : "h-2"} rounded-full ${focus}`,
+    trackClass: `${band} ${o.value ? "flex-1" : ""} cursor-pointer ${fade} disabled:opacity-50 disabled:cursor-not-allowed`,
+    indicatorClass: `${vertical ? (pointer ? "w-1.5" : "w-2") + " h-full" : pointer ? "h-1.5" : "h-2"} rounded-full`,
     get indicatorStyle(): ViewStyle {
       return {
         backgroundColor: colors.track,
@@ -54,9 +54,10 @@ export function sliderLook(o: SliderLookOptions = {}) {
       };
     },
     rangeClass: "rounded-full",
-    // `focus:` has the platform report the thumb's keyboard focus, which the
-    // rail's `focus-within:` ring follows, and drops its default outline.
-    thumbClass: `rounded-full ${fade} hover:brightness-105 active:brightness-95 focus:outline-none disabled:brightness-100`,
+    // The keyboard's ring on the thumb that has the focus (`focus-visible:`:
+    // not after a press or a drag). An outline, which the knob's shadow in
+    // `thumbStyle` leaves alone.
+    thumbClass: `rounded-full ${fade} hover:brightness-105 active:brightness-95 focus-visible:outline-3 focus-visible:outline-ring/50 disabled:brightness-100`,
     get thumbStyle(): ViewStyle {
       return { width: thumb, height: thumb, borderWidth: 1, ...finish.knob };
     },

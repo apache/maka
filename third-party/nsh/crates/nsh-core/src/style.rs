@@ -158,6 +158,52 @@ pub enum FamilyName<'a> {
     Named(&'a str),
 }
 
+/// Scans a quoted `fontFamily` item after its opening `quote`: returns the
+/// unescaped, trimmed family name (borrowing when no `\` escape appears) and
+/// the slice after the closing quote (or `""` if unclosed).
+fn unquote_family(body: &str, quote: char) -> (std::borrow::Cow<'_, str>, &str) {
+    let mut escaped = false;
+    let mut has_escapes = false;
+    let mut end = body.len();
+    let mut after = "";
+    for (i, c) in body.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            has_escapes = true;
+        } else if c == quote {
+            end = i;
+            after = &body[i + c.len_utf8()..];
+            break;
+        }
+    }
+    let raw = &body[..end];
+    if !has_escapes {
+        return (std::borrow::Cow::Borrowed(raw.trim()), after);
+    }
+    let mut decoded = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some(next) => decoded.push(next),
+                None => decoded.push('\\'),
+            }
+        } else {
+            decoded.push(c);
+        }
+    }
+    let trimmed = decoded.trim();
+    if trimmed.len() == decoded.len() {
+        (std::borrow::Cow::Owned(decoded), after)
+    } else {
+        (std::borrow::Cow::Owned(trimmed.to_owned()), after)
+    }
+}
+
 /// The families of a `fontFamily` value, most preferred first, as CSS lists
 /// them: names separated by commas, each trimmed and unquoted
 /// (`"Inter, \"Noto Sans SC\", sans-serif"`), the generic families as
@@ -165,32 +211,82 @@ pub enum FamilyName<'a> {
 /// (`'ACME, Inc'`), and is always a family's name: a quoted `"serif"` names a
 /// family called serif, as in CSS. Text is set in the first family a
 /// platform has, and a character that family lacks in the next that has it.
+/// This borrowed iterator preserves the input slices; platform lookup uses
+/// [`for_each_font_family`] to decode escapes into temporary storage.
+#[inline]
 pub fn font_families(value: &str) -> impl Iterator<Item = FamilyName<'_>> {
     let mut rest = value;
-    std::iter::from_fn(move || {
-        loop {
-            rest = rest.trim_start();
-            if rest.is_empty() {
-                return None;
+    std::iter::from_fn(
+        #[inline(always)]
+        move || {
+            loop {
+                rest = rest.trim_start();
+                if rest.is_empty() {
+                    return None;
+                }
+                let (family, quoted) = if let Some(q @ ('"' | '\'')) = rest.chars().next() {
+                    // To the closing quote (or the end, unclosed); what follows it
+                    // up to the next comma is not part of the name.
+                    let body = &rest[1..];
+                    let end = body.find(q).unwrap_or(body.len());
+                    let after = body.get(end + 1..).unwrap_or("");
+                    rest = after.find(',').map_or("", |i| &after[i + 1..]);
+                    (body[..end].trim(), true)
+                } else {
+                    let end = rest.find(',').unwrap_or(rest.len());
+                    let name = rest[..end].trim_end();
+                    rest = rest.get(end + 1..).unwrap_or("");
+                    (name, false)
+                };
+                if family.is_empty() {
+                    continue;
+                }
+                return Some(match family {
+                    name if quoted => FamilyName::Named(name),
+                    "system-ui" | "sans-serif" | "ui-sans-serif" | "-apple-system"
+                    | "BlinkMacSystemFont" => FamilyName::System,
+                    "serif" | "ui-serif" => FamilyName::Serif,
+                    "monospace" | "ui-monospace" => FamilyName::Monospace,
+                    "ui-rounded" => FamilyName::Rounded,
+                    name => FamilyName::Named(name),
+                });
             }
-            let (family, quoted) = if let Some(q @ ('"' | '\'')) = rest.chars().next() {
-                // To the closing quote (or the end, unclosed); what follows it
-                // up to the next comma is not part of the name.
-                let body = &rest[1..];
-                let end = body.find(q).unwrap_or(body.len());
-                let after = body.get(end + 1..).unwrap_or("");
-                rest = after.find(',').map_or("", |i| &after[i + 1..]);
-                (body[..end].trim(), true)
-            } else {
-                let end = rest.find(',').unwrap_or(rest.len());
-                let name = rest[..end].trim_end();
-                rest = rest.get(end + 1..).unwrap_or("");
-                (name, false)
-            };
-            if family.is_empty() {
+        },
+    )
+}
+
+/// Resolves font names while temporary decoded storage is alive. Intended
+/// for platform font lookup; only quoted backslash escapes allocate.
+#[doc(hidden)]
+#[inline]
+pub fn for_each_font_family(value: &str, mut resolve: impl FnMut(FamilyName<'_>)) {
+    if value.is_empty() {
+        return;
+    }
+    let mut rest = value;
+    loop {
+        rest = trim_family_start(rest);
+        if rest.is_empty() {
+            return;
+        }
+        let (family, quoted) = if let Some(q @ ('"' | '\'')) = rest.chars().next() {
+            let body = &rest[1..];
+            let end = body.find(q).unwrap_or(body.len());
+            if body.as_bytes()[..end].contains(&b'\\') {
+                rest = resolve_escaped_family(body, q, &mut resolve);
                 continue;
             }
-            return Some(match family {
+            let after = body.get(end + 1..).unwrap_or("");
+            rest = after.find(',').map_or("", |i| &after[i + 1..]);
+            (trim_family_start(trim_family_end(&body[..end])), true)
+        } else {
+            let end = rest.find(',').unwrap_or(rest.len());
+            let name = trim_family_end(&rest[..end]);
+            rest = rest.get(end + 1..).unwrap_or("");
+            (name, false)
+        };
+        if !family.is_empty() {
+            resolve(match family {
                 name if quoted => FamilyName::Named(name),
                 "system-ui" | "sans-serif" | "ui-sans-serif" | "-apple-system"
                 | "BlinkMacSystemFont" => FamilyName::System,
@@ -200,7 +296,118 @@ pub fn font_families(value: &str) -> impl Iterator<Item = FamilyName<'_>> {
                 name => FamilyName::Named(name),
             });
         }
-    })
+    }
+}
+
+// Font names are normally ASCII; preserve Unicode whitespace at either edge.
+#[inline]
+fn trim_family_start(value: &str) -> &str {
+    let value = value.trim_ascii_start();
+    if value
+        .as_bytes()
+        .first()
+        .is_some_and(|b| !b.is_ascii() || *b == 0x0b)
+    {
+        value.trim_start()
+    } else {
+        value
+    }
+}
+
+#[inline]
+fn trim_family_end(value: &str) -> &str {
+    let value = value.trim_ascii_end();
+    if value
+        .as_bytes()
+        .last()
+        .is_some_and(|b| !b.is_ascii() || *b == 0x0b)
+    {
+        value.trim_end()
+    } else {
+        value
+    }
+}
+
+#[cold]
+fn resolve_escaped_family<'a>(
+    body: &'a str,
+    quote: char,
+    resolve: &mut impl FnMut(FamilyName<'_>),
+) -> &'a str {
+    let (name, after) = unquote_family(body, quote);
+    if !name.is_empty() {
+        resolve(FamilyName::Named(&name));
+    }
+    after.find(',').map_or("", |i| &after[i + 1..])
+}
+
+/// Whether `name` is a CSS generic family (CSS Fonts 4) or system font keyword
+/// that stays bare unless originally quoted.
+pub(crate) fn is_css_generic_keyword(name: &str) -> bool {
+    const KEYWORDS: [&str; 15] = [
+        "serif",
+        "sans-serif",
+        "monospace",
+        "cursive",
+        "fantasy",
+        "system-ui",
+        "ui-serif",
+        "ui-sans-serif",
+        "ui-monospace",
+        "ui-rounded",
+        "math",
+        "emoji",
+        "fangsong",
+        "-apple-system",
+        "BlinkMacSystemFont",
+    ];
+    KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(name))
+}
+
+/// Formats a `fontFamily` value as a CSS family list: generic keywords stay
+/// bare and named families are quoted and CSS-escaped (`"SF Mono", "Menlo",
+/// monospace`, or `""` when `value` names no family), so a list embedded in a
+/// CSS `font` shorthand round-trips through [`for_each_font_family`] and
+/// [`crate::canvas::CanvasFont::parse`] with commas, quotes and backslashes
+/// intact (`'ACME, Inc'`, `'A"B'`).
+pub fn css_font_families(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    let mut rest = value;
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        let (family, quoted) = if let Some(q @ ('"' | '\'')) = rest.chars().next() {
+            let (name, after) = unquote_family(&rest[q.len_utf8()..], q);
+            rest = after.find(',').map_or("", |i| &after[i + 1..]);
+            (name, true)
+        } else {
+            let end = rest.find(',').unwrap_or(rest.len());
+            let name = rest[..end].trim_end();
+            rest = rest.get(end + 1..).unwrap_or("");
+            (std::borrow::Cow::Borrowed(name), false)
+        };
+        if family.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str(", ");
+        }
+        if !quoted && is_css_generic_keyword(&family) {
+            out.push_str(&family);
+        } else {
+            out.push('"');
+            for c in family.chars().filter(|c| !c.is_control()) {
+                if c == '"' || c == '\\' {
+                    out.push('\\');
+                }
+                out.push(c);
+            }
+            out.push('"');
+        }
+    }
+    out
 }
 
 /// Lines drawn through or under text (`textDecorationLine`).
@@ -514,6 +721,9 @@ pub struct ViewStyle {
     pub transform: Transform,
     /// `tintColor`: recolors an image's opaque pixels.
     pub tint_color: Option<Color>,
+    /// `accentColor`: the color a system control shows its state in (a
+    /// switch's track when on); the control's own when `None`.
+    pub accent_color: Option<Color>,
     /// Android's material shadow: the node's `android={{ elevation }}` prop,
     /// not a style.
     pub elevation: Points,
@@ -838,38 +1048,44 @@ impl ViewStyle {
 
 impl Default for ViewStyle {
     fn default() -> Self {
-        Self {
-            background_color: Color::TRANSPARENT,
-            border_radius: Points::ZERO,
-            corner_radius: Corners {
-                top_left: None,
-                top_right: None,
-                bottom_right: None,
-                bottom_left: None,
-            },
-            continuous_corners: false,
-            borders: Borders::NONE,
-            opacity: 1.0,
-            overflow_hidden: false,
-            transform: Transform::IDENTITY,
-            tint_color: None,
-            elevation: Points::ZERO,
-            transform_origin: TransformOrigin::CENTER,
-            object_position: ObjectPosition::CENTER,
-            backface_hidden: false,
-            effects: None,
-            blend_mode: BlendMode::Normal,
-            backdrop_material: BackdropMaterial::UltraThin,
-            glass_effect: GlassEffect::None,
-            glass_tint_color: None,
-            macos_backdrop: None,
-            outline: Outline::NONE,
-            hidden: false,
-            cursor: Cursor::Auto,
-            transition: None,
-            animation: None,
-        }
+        Self::DEFAULT
     }
+}
+
+impl ViewStyle {
+    /// [`Default::default`], as a constant.
+    pub(crate) const DEFAULT: Self = Self {
+        background_color: Color::TRANSPARENT,
+        border_radius: Points::ZERO,
+        corner_radius: Corners {
+            top_left: None,
+            top_right: None,
+            bottom_right: None,
+            bottom_left: None,
+        },
+        continuous_corners: false,
+        borders: Borders::NONE,
+        opacity: 1.0,
+        overflow_hidden: false,
+        transform: Transform::IDENTITY,
+        tint_color: None,
+        accent_color: None,
+        elevation: Points::ZERO,
+        transform_origin: TransformOrigin::CENTER,
+        object_position: ObjectPosition::CENTER,
+        backface_hidden: false,
+        effects: None,
+        blend_mode: BlendMode::Normal,
+        backdrop_material: BackdropMaterial::UltraThin,
+        glass_effect: GlassEffect::None,
+        glass_tint_color: None,
+        macos_backdrop: None,
+        outline: Outline::NONE,
+        hidden: false,
+        cursor: Cursor::Auto,
+        transition: None,
+        animation: None,
+    };
 }
 
 /// A shadow behind text (`textShadow`, `text-shadow-*`).
@@ -915,6 +1131,9 @@ pub struct TextStyle {
     /// A line-height length relative to this node's font size (`em` or
     /// a percentage), resolved before inheritance.
     pub line_height_em: Option<f32>,
+    /// The font size relative to the inherited font size (`"0.875em"`,
+    /// `"87.5%"`), resolved before inheritance; overrides `font_size`.
+    pub font_size_em: Option<f32>,
     /// Line height as a multiple of the font size (`"1.5"`),
     /// inherited as a multiple.
     pub line_height_multiple: Option<f32>,
@@ -952,6 +1171,40 @@ pub struct TextStyle {
     pub selection_color: Option<Color>,
     /// `caretColor`: an input's caret (not inherited).
     pub caret_color: Option<Color>,
+}
+
+impl TextStyle {
+    /// [`Default::default`], as a constant.
+    pub(crate) const DEFAULT: Self = Self {
+        color: None,
+        font_size: None,
+        font_weight: None,
+        line_height: None,
+        text_align: None,
+        text_align_physical: false,
+        font_family: None,
+        italic: None,
+        letter_spacing: None,
+        letter_spacing_em: None,
+        line_height_em: None,
+        font_size_em: None,
+        line_height_multiple: None,
+        decoration: None,
+        decoration_style: None,
+        decoration_thickness: None,
+        underline_offset: None,
+        decoration_color: None,
+        transform: None,
+        shadow_color: None,
+        shadow_offset: None,
+        shadow_radius: None,
+        font_variant: None,
+        writing_direction: None,
+        align_vertical: None,
+        placeholder_color: None,
+        selection_color: None,
+        caret_color: None,
+    };
 }
 
 impl TextStyle {
@@ -1600,12 +1853,12 @@ style_keys! {
     OutlineColor = "outlineColor": View "ColorValue",
     OutlineStyle = "outlineStyle": View "\"solid\" | \"dashed\" | \"dotted\" | \"none\" | \"hidden\"",
     OutlineOffset = "outlineOffset": View "number" "Distance from the border edge (negative: inside).",
-    Visibility = "visibility": View "\"visible\" | \"hidden\" | \"collapse\"" "Hidden views keep their space.",
+    Visibility = "visibility": View "\"visible\" | \"hidden\" | \"collapse\"" "Hidden views keep their space. On a nested text (a span), its characters keep their place, are not drawn, and are left out of copies and screen readers.",
     Cursor = "cursor": View "\"auto\" | \"default\" | \"context-menu\" | \"alias\" | \"copy\" | \"cell\" | \"pointer\" | \"text\" | \"vertical-text\" | \"wait\" | \"progress\" | \"help\" | \"crosshair\" | \"move\" | \"all-scroll\" | \"grab\" | \"grabbing\" | \"not-allowed\" | \"no-drop\" | \"zoom-in\" | \"zoom-out\" | \"col-resize\" | \"e-resize\" | \"w-resize\" | \"ew-resize\" | \"row-resize\" | \"n-resize\" | \"s-resize\" | \"ns-resize\" | \"ne-resize\" | \"nw-resize\" | \"se-resize\" | \"sw-resize\" | \"nesw-resize\" | \"nwse-resize\" | \"none\"" "The pointer over the view (pointers and desktops).",
     TransitionProperty = "transitionProperty": View "string" "The properties that animate when they change (`\"opacity, transform\"`, `\"all\"`, `\"colors\"`).",
     TransitionDuration = "transitionDuration": View "number | `${number}ms` | `${number}s`" "Milliseconds as a number, or `\"150ms\"` / `\"0.2s\"`.",
     TransitionDelay = "transitionDelay": View "number | `${number}ms` | `${number}s`",
-    TransitionTimingFunction = "transitionTimingFunction": View "\"linear\" | \"ease\" | \"ease-in\" | \"ease-out\" | \"ease-in-out\" | `cubic-bezier(${string})`",
+    TransitionTimingFunction = "transitionTimingFunction": View "\"linear\" | \"ease\" | \"ease-in\" | \"ease-out\" | \"ease-in-out\" | `cubic-bezier(${string})` | `spring(${string})`" "CSS's keywords and `cubic-bezier(x1, y1, x2, y2)` (a `y` outside 0..1 overshoots), or NSH's `spring(stiffness, damping)` / `spring(stiffness, damping, mass)`: a spring's physics (a mass of 1 by default) that times itself, lasting until it settles, so `transitionDuration` is not used.",
     AnimationName = "animationName": View "\"none\" | \"spin\" | \"ping\" | \"pulse\" | \"bounce\"" "A built-in keyframe animation, run natively.",
     AnimationDuration = "animationDuration": View "number | `${number}ms` | `${number}s`",
     AnimationDelay = "animationDelay": View "number | `${number}ms` | `${number}s`",
@@ -1657,6 +1910,7 @@ style_keys! {
     BorderStyle = "borderStyle": View "\"solid\" | \"dashed\" | \"dotted\" | \"none\" | \"hidden\"" "`none` and `hidden`: no border whatever the widths (they take no space).",
     BorderCurve = "borderCurve": View "\"circular\" | \"continuous\"" "`continuous`: corners whose curvature eases into the edges (iOS app icons).",
     TintColor = "tintColor": Image "ColorValue" "Recolors a template image.",
+    AccentColor = "accentColor": View "ColorValue" "CSS's `accent-color`: the color a system control shows its state in (`accent-*`), a switch's track when on; the control's own color when unset. Set on the control itself (not inherited).",
     ObjectFit = "objectFit": View "\"fill\" | \"contain\" | \"cover\" | \"none\" | \"scale-down\"" "CSS's `object-fit`: how an image or a video fits its box. Images cover it by default, videos are contained in it.",
     ObjectPosition = "objectPosition": Image "string" "Where the image sits in its box once `objectFit` has sized it, as CSS's `object-position`: keywords, percentages and lengths (`\"top\"`, `\"left bottom\"`, `\"25% 75%\"`, `\"right 10px bottom 20%\"`). A covering image is cropped around it. Default the center.",
     BackfaceVisibility = "backfaceVisibility": View "\"visible\" | \"hidden\"" "`\"hidden\"`: invisible while turned away (3D rotations).",
@@ -1668,7 +1922,7 @@ style_keys! {
     Opacity = "opacity": View "number | AnimatedNode",
     Overflow = "overflow": View "\"visible\" | \"hidden\"",
     Color = "color": Text "ColorValue | AnimatedNode",
-    FontSize = "fontSize": Text "number",
+    FontSize = "fontSize": Text "number | `${number}em` | `${number}%`" "Points, or relative to the inherited font size as CSS's `em` and percentages (`\"0.875em\"`, `\"87.5%\"`), so a span scales with its paragraph.",
     FontWeight = "fontWeight": Text "\"normal\" | \"bold\" | number | `${number}`" "`\"normal\"` (400), `\"bold\"` (700) or 100–900.",
     LineHeight = "lineHeight": Text "number",
     FontFamily = "fontFamily": Text "string" "A system family or the name an imported font (`import Inter from \"./Inter.ttf\"`) evaluates to, or a list of them as CSS writes it, most preferred first (`\"Brand, 'Noto Sans SC', sans-serif\"`): characters the first lacks come from the next that has them.",
@@ -1693,7 +1947,7 @@ style_keys! {
     TextOverflow = "textOverflow": Text "\"ellipsis\" | \"clip\" | \"ellipsis-start\" | \"ellipsis-middle\"" "CSS's `text-overflow`: how a clamped `<Text>` is cut, with an ellipsis at its end (the default), clipped, or with the ellipsis at its start or in its middle.",
     UserSelect = "userSelect": View "\"auto\" | \"none\" | \"text\"" "CSS's `user-select`: whether a `<Text>` can be selected (`\"text\"`) or not (`\"none\"`); a view's reaches the texts in it; `\"auto\"` leaves it to the view around it, else to the platform.",
     PointerEvents = "pointerEvents": View "\"auto\" | \"none\" | \"box-none\" | \"box-only\"" "CSS's `pointer-events`: `\"none\"` takes no touches, for the view and the views in it unless one says `\"auto\"`; `\"box-none\"` takes none on the view itself, only on the views in it; `\"box-only\"` takes them on the view itself, never on the views in it.",
-    VerticalAlign = "verticalAlign": View "\"baseline\" | \"text-top\" | \"text-bottom\" | \"middle\"" "Where a view or image inside a `<Text>` sits in its line (CSS `vertical-align`, `align-*`): its bottom on the baseline (the default), its top or bottom at the top or bottom of the text's font, or its middle half the font's x height above the baseline. The line grows to hold it.",
+    VerticalAlign = "verticalAlign": View "\"baseline\" | \"text-top\" | \"text-bottom\" | \"middle\"" "Where a view or image inside a `<Text>` sits in its line (CSS `vertical-align`, `align-*`): on the baseline (the default; a view with text in it by the baseline of its first line of text, as an `inline-flex` box, else by its bottom edge, as an image), its top or bottom at the top or bottom of the text's font, or its middle half the font's x height above the baseline. The line grows to hold it.",
 }
 
 /// A style property value as read from JS.
@@ -1820,6 +2074,8 @@ pub enum PropertyValue {
     FontFamily(Option<FontFamily>),
     /// `letterSpacing`: points, or ems of the font size.
     LetterSpacing(Option<Points>, Option<OrderedFloat<f32>>),
+    /// `fontSize`: points, or a multiple of the inherited font size.
+    FontSize(Option<Points>, Option<OrderedFloat<f32>>),
     /// `textDecorationLine`.
     TextDecoration(Option<TextDecoration>),
     /// `fontVariant`.
@@ -1849,6 +2105,8 @@ pub enum PropertyValue {
     Ms(OrderedFloat<f32>),
     /// A timing function's cubic Bézier control points.
     Easing([OrderedFloat<f32>; 4]),
+    /// `transitionTimingFunction`'s `spring(stiffness, damping, mass)`.
+    Spring(crate::element::Spring),
     /// `animationName`.
     Keyframes(Option<Keyframes>),
     /// `animationIterationCount` (`None`: forever).
@@ -2563,6 +2821,37 @@ fn timing_function(v: StyleValue<'_>) -> Result<[f32; 4], StyleError> {
     })
 }
 
+/// `spring(stiffness, damping)` or `spring(stiffness, damping, mass)`, NSH's
+/// timing function past CSS's: `None` for any other value, an error for a
+/// spring that cannot settle (a stiffness, damping or mass that is not
+/// positive).
+fn spring_function(s: &str) -> Option<Result<crate::element::Spring, StyleError>> {
+    let args = s.trim().strip_prefix("spring(")?.strip_suffix(')')?;
+    let n: Option<Vec<f32>> = args.split(',').map(css::number).collect();
+    let spring = match n.as_deref() {
+        Some(&[stiffness, damping]) => (stiffness, damping, 1.0),
+        Some(&[stiffness, damping, mass]) => (stiffness, damping, mass),
+        _ => return Some(Err(StyleError::InvalidValue)),
+    };
+    Some(spring_of(spring).ok_or(StyleError::InvalidValue))
+}
+
+/// A spring of `(stiffness, damping, mass)` that settles: each positive
+/// and finite.
+pub(crate) fn spring_of(
+    (stiffness, damping, mass): (f32, f32, f32),
+) -> Option<crate::element::Spring> {
+    [stiffness, damping, mass]
+        .iter()
+        .all(|v| v.is_finite() && *v > 0.0)
+        .then(|| crate::element::Spring {
+            stiffness,
+            damping,
+            mass,
+            ..crate::element::Spring::default()
+        })
+}
+
 /// `transitionProperty`: CSS property names, mapped to the groups that
 /// transition natively.
 fn transition_properties(s: &str) -> Option<TransitionProps> {
@@ -2590,9 +2879,10 @@ fn transition_properties(s: &str) -> Option<TransitionProps> {
             "border-radius" | "borderRadius" | "border-width" | "borderWidth" => {
                 TransitionProps::SHAPE
             }
+            "filter" => TransitionProps::FILTER,
             // Properties that do not animate natively.
-            "filter" | "backdrop-filter" | "display" | "visibility" | "content-visibility"
-            | "overlay" | "pointer-events" => 0,
+            "backdrop-filter" | "display" | "visibility" | "content-visibility" | "overlay"
+            | "pointer-events" => 0,
             _ => return None,
         };
     }
@@ -2743,6 +3033,10 @@ impl StyleKey {
             (K::PaddingStart | K::PaddingEnd, len) => PropertyValue::OptLp(Some(len.lp()?)),
             (K::LineHeight, Len::Px(n)) => PropertyValue::LineHeight(LineHeight::Points(px(n))),
             (K::LineHeight, Len::Pct(f)) => PropertyValue::LineHeight(LineHeight::Em(f)),
+            (K::FontSize, Len::Px(n)) => PropertyValue::FontSize(Some(px(n)), None),
+            (K::FontSize, Len::Pct(f)) if f >= 0.0 => {
+                PropertyValue::FontSize(None, Some(OrderedFloat(f)))
+            }
             (key, Len::Px(n)) => key.number_value(n)?,
             _ => return Err(StyleError::InvalidValue),
         })
@@ -2893,6 +3187,7 @@ impl StyleKey {
             | K::BorderBottomColor
             | K::BorderLeftColor
             | K::TintColor
+            | K::AccentColor
             | K::GlassTintColor
             | K::OutlineColor
             | K::Color
@@ -2907,8 +3202,11 @@ impl StyleKey {
             | K::BorderTopLeftRadius
             | K::BorderTopRightRadius
             | K::BorderBottomRightRadius
-            | K::BorderBottomLeftRadius
-            | K::FontSize => PropertyValue::OptPoints(opt_points(value)?),
+            | K::BorderBottomLeftRadius => PropertyValue::OptPoints(opt_points(value)?),
+            K::FontSize => {
+                let (points, em) = font_size(value)?;
+                PropertyValue::FontSize(points, em.map(of))
+            }
             K::BorderRadius => PropertyValue::Points(px(number(value, 0.0)?)),
             K::BorderStyle | K::OutlineStyle => {
                 // `none` (and `hidden`) draws and lays out no line whatever
@@ -3157,9 +3455,11 @@ impl StyleKey {
             | K::TransitionDelay
             | K::AnimationDuration
             | K::AnimationDelay => PropertyValue::Ms(of(duration(value)?)),
-            K::TransitionTimingFunction | K::AnimationTimingFunction => {
-                PropertyValue::Easing(timing_function(value)?.map(of))
-            }
+            K::TransitionTimingFunction => match keyword(value)?.and_then(spring_function) {
+                Some(spring) => PropertyValue::Spring(spring?),
+                None => PropertyValue::Easing(timing_function(value)?.map(of)),
+            },
+            K::AnimationTimingFunction => PropertyValue::Easing(timing_function(value)?.map(of)),
             K::AnimationName => PropertyValue::Keyframes(match keyword(value)? {
                 None | Some("none") => None,
                 Some("spin") => Some(Keyframes::Spin),
@@ -3236,6 +3536,28 @@ fn transform_value(
 /// classes write, are a multiple of the font size (`"1.5"`), a multiple
 /// of the element's own font size (`"1.5em"`, `"150%"`), points
 /// (`"20px"`) or the font's own (`"normal"`).
+/// `fontSize`: points (a number or a length), or ems / a percentage of
+/// the inherited font size.
+fn font_size(value: StyleValue<'_>) -> Result<(Option<Points>, Option<f32>), StyleError> {
+    Ok(match value {
+        StyleValue::Str(s) if s.ends_with('%') || (s.ends_with("em") && !s.ends_with("rem")) => {
+            let n = if let Some(n) = s.strip_suffix('%') {
+                css::number(n).map(|n| n / 100.0)
+            } else {
+                css::number(&s[..s.len() - 2])
+            }
+            .filter(|n| *n >= 0.0)
+            .ok_or(StyleError::InvalidValue)?;
+            (None, Some(n))
+        }
+        StyleValue::Str(s) => (
+            Some(px(css::length(s).ok_or(StyleError::InvalidValue)?)),
+            None,
+        ),
+        v => (opt_points(v)?, None),
+    })
+}
+
 fn line_height(value: StyleValue<'_>) -> Result<LineHeight, StyleError> {
     Ok(match value {
         StyleValue::Null | StyleValue::Str("normal") => LineHeight::Normal,
@@ -3409,6 +3731,7 @@ impl Style {
             duration: 0.0,
             delay: 0.0,
             easing: Transition::EASE,
+            spring: None,
         })
     }
 
@@ -3673,6 +3996,7 @@ impl Style {
             }
             (K::BorderCurve, V::Bool(v)) => self.view.continuous_corners = *v,
             (K::TintColor, V::Color(c)) => self.view.tint_color = *c,
+            (K::AccentColor, V::Color(c)) => self.view.accent_color = *c,
             (K::GlassTintColor, V::Color(c)) => self.view.glass_tint_color = *c,
             (K::ObjectFit, V::ObjectFit(v)) => self.pending.object_fit = *v,
             (K::ObjectPosition, V::ObjectPosition(v)) => self.view.object_position = *v,
@@ -3699,7 +4023,10 @@ impl Style {
             (K::Stroke, V::Paint(v)) => self.paint.stroke = *v,
             (K::StrokeWidth, V::OptPoints(v)) => self.paint.stroke_width = *v,
             (K::StrokeDasharray, V::Dashes(v)) => self.paint.stroke_dasharray = v.clone(),
-            (K::FontSize, V::OptPoints(v)) => self.text.font_size = *v,
+            (K::FontSize, V::FontSize(points, em)) => {
+                self.text.font_size = *points;
+                self.text.font_size_em = em.map(|n| n.0);
+            }
             (K::FontWeight, V::FontWeight(v)) => self.text.font_weight = *v,
             (K::LineHeight, V::LineHeight(v)) => {
                 let t = &mut self.text;
@@ -3803,7 +4130,12 @@ impl Style {
             (K::TransitionDuration, V::Ms(ms)) => self.transition_mut().duration = ms.0,
             (K::TransitionDelay, V::Ms(ms)) => self.transition_mut().delay = ms.0,
             (K::TransitionTimingFunction, V::Easing(e)) => {
-                self.transition_mut().easing = e.map(|n| n.0)
+                let t = self.transition_mut();
+                t.easing = e.map(|n| n.0);
+                t.spring = None;
+            }
+            (K::TransitionTimingFunction, V::Spring(spring)) => {
+                self.transition_mut().spring = Some(*spring)
             }
             (K::AnimationName, V::Keyframes(keyframes)) => {
                 // An animation already running (a class's) keeps its
@@ -3908,11 +4240,37 @@ mod tests {
         assert_eq!(font_families(" , ").count(), 0);
     }
 
-    /// A quoted name keeps its commas and is a family's name even when it
-    /// spells a generic family, as in CSS.
+    #[test]
+    fn family_names_remain_copy_and_borrowed() {
+        fn is_copy<T: Copy>() {}
+        is_copy::<FamilyName<'_>>();
+        let name = String::from("Inter");
+        let FamilyName::Named(borrowed) = font_families(&name).next().unwrap() else {
+            panic!("expected named family");
+        };
+        assert_eq!(borrowed.as_ptr(), name.as_ptr());
+    }
+
+    #[test]
+    fn decoded_families_keep_whitespace_semantics() {
+        for input in [
+            "\u{2003}Inter\u{2003}, serif",
+            "\u{000b}Inter\u{000b}, serif",
+            "'\u{2003}Inter\u{000b}', serif",
+        ] {
+            assert_eq!(decoded_families(input), decoded_families("Inter, serif"));
+        }
+    }
+
+    fn decoded_families(value: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for_each_font_family(value, |family| out.push(format!("{family:?}")));
+        out
+    }
+
     #[test]
     fn quoted_family_names_keep_their_commas() {
-        use super::{FamilyName, font_families};
+        use super::{FamilyName, css_font_families, font_families};
         assert_eq!(
             font_families("'ACME, Inc', serif").collect::<Vec<_>>(),
             [FamilyName::Named("ACME, Inc"), FamilyName::Serif]
@@ -3928,7 +4286,51 @@ mod tests {
         // An unclosed quote runs to the end.
         assert_eq!(
             font_families("Inter, 'Noto, Sans").collect::<Vec<_>>(),
-            [FamilyName::Named("Inter"), FamilyName::Named("Noto, Sans")]
+            [FamilyName::Named("Inter"), FamilyName::Named("Noto, Sans"),]
+        );
+        assert_eq!(
+            css_font_families("SF Mono, Menlo, PingFang SC, monospace"),
+            "\"SF Mono\", \"Menlo\", \"PingFang SC\", monospace"
+        );
+        assert_eq!(
+            css_font_families("'ACME, Inc', serif"),
+            "\"ACME, Inc\", serif"
+        );
+        assert_eq!(css_font_families(" , "), "");
+
+        assert_eq!(
+            decoded_families(r#"'A\\B', monospace"#),
+            [r#"Named("A\\B")"#, "Monospace"]
+        );
+        assert_eq!(
+            decoded_families(r#""A\"B", serif"#),
+            [r#"Named("A\"B")"#, "Serif"]
+        );
+
+        // Quotes and backslashes inside family names round-trip identically
+        // through css_font_families -> CanvasFont::parse -> text_style -> for_each_font_family.
+        for raw in [
+            "'A\"B', serif",
+            "\"A\\\"B\", serif",
+            "'A\\\\B', monospace",
+            "a\\b, sans-serif",
+            "'Quote\\'s, Back\\\\slash', ui-rounded",
+        ] {
+            let expected = decoded_families(raw);
+            let css_list = css_font_families(raw);
+            assert_eq!(decoded_families(&css_list), expected, "{raw}");
+            let shorthand = format!("13px {css_list}");
+            let parsed = crate::canvas::CanvasFont::parse(&shorthand).expect("valid CSS font");
+            let text_family = parsed.text_style().font_family.expect("has font_family");
+            assert_eq!(decoded_families(&text_family.name()), expected, "{raw}");
+        }
+        assert_eq!(
+            font_families("'A\"B', serif").collect::<Vec<_>>(),
+            [FamilyName::Named("A\"B"), FamilyName::Serif]
+        );
+        assert_eq!(
+            font_families("'A\\\\B', monospace").collect::<Vec<_>>(),
+            [FamilyName::Named("A\\\\B"), FamilyName::Monospace]
         );
     }
 
@@ -4062,6 +4464,33 @@ mod tests {
             ),
             (None, None, None)
         );
+    }
+
+    #[test]
+    fn font_size_takes_ems_and_percentages() {
+        let mut s = Style::default();
+        s.set("fontSize", StyleValue::Number(16.0)).unwrap();
+        assert_eq!(
+            (s.text.font_size, s.text.font_size_em),
+            (Some(px(16.0)), None)
+        );
+        s.set("fontSize", StyleValue::Str("0.875em")).unwrap();
+        assert_eq!((s.text.font_size, s.text.font_size_em), (None, Some(0.875)));
+        s.set("fontSize", StyleValue::Str("150%")).unwrap();
+        assert_eq!(s.text.font_size_em, Some(1.5));
+        s.set("fontSize", StyleValue::Str("20px")).unwrap();
+        assert_eq!(
+            (s.text.font_size, s.text.font_size_em),
+            (Some(px(20.0)), None)
+        );
+        assert!(s.set("fontSize", StyleValue::Str("-1em")).is_err());
+        // Rust's `text_size(relative(..))` writes the same value.
+        let rel = StyleKey::FontSize
+            .length_value(crate::geometry::relative(0.5).into())
+            .unwrap();
+        assert_eq!(rel, PropertyValue::FontSize(None, Some(OrderedFloat(0.5))));
+        s.set("fontSize", StyleValue::Null).unwrap();
+        assert_eq!((s.text.font_size, s.text.font_size_em), (None, None));
     }
 
     #[test]
@@ -4609,8 +5038,52 @@ mod tests {
                 assert_eq!(t.duration, 300.0);
                 assert_eq!(t.delay, 50.0);
                 assert_eq!(t.easing, [0.0, 0.0, 1.0, 1.0]);
+                assert_eq!(t.spring, None);
             },
         );
+    }
+
+    #[test]
+    fn transitions_take_a_spring_and_curves_that_overshoot() {
+        use StyleValue::Str;
+        let mut s = Style::default();
+        s.set("transitionTimingFunction", Str("spring(620, 36)"))
+            .unwrap();
+        let t = s.view.transition.unwrap();
+        let spring = t.spring.expect("a spring");
+        assert_eq!(
+            (spring.stiffness, spring.damping, spring.mass),
+            (620.0, 36.0, 1.0)
+        );
+        // It times itself: about 380 ms whatever the duration says.
+        assert!((t.run_ms() - 383.8).abs() < 1.0, "{}", t.run_ms());
+        s.set("transitionTimingFunction", Str("spring(992, 45, 2)"))
+            .unwrap();
+        assert_eq!(s.view.transition.unwrap().spring.unwrap().mass, 2.0);
+        for bad in [
+            "spring(620)",
+            "spring(620, 0)",
+            "spring(-1, 36)",
+            "spring(a, b)",
+        ] {
+            assert!(
+                s.set("transitionTimingFunction", Str(bad)).is_err(),
+                "{bad}"
+            );
+        }
+        // Keyframes have no spring.
+        assert!(
+            s.set("animationTimingFunction", Str("spring(620, 36)"))
+                .is_err()
+        );
+        // A Bézier's y past 0..1 is kept: it overshoots.
+        s.set(
+            "transitionTimingFunction",
+            Str("cubic-bezier(0.3, 1.25, 0.6, 1)"),
+        )
+        .unwrap();
+        let t = s.view.transition.unwrap();
+        assert_eq!((t.easing, t.spring), ([0.3, 1.25, 0.6, 1.0], None));
     }
 
     #[test]

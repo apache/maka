@@ -63,7 +63,7 @@ Rust 代码用 Rust 标准库和 crates.io 完成同样的工作，作为应用�
 | `code` | 含义 |
 |---|---|
 | `ERR_ACCESS_DENIED` | 应用的 `capabilities` 未授权此调用。错误带有 `permission`，即该能力在 `nsh.json` 中的键（`"fs"`、`"process"`、`"network"`），以及 `resource`，即所请求的对象：路径、命令（`process.exit` 为 `"exit"`）、socket 的 `"host:port"` 或 WebSocket 的 URL |
-| `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` | 该调用属于其他平台：文件在桌面和浏览器中运行，进程在桌面上运行，TCP socket 在原生宿主上运行，`os.homedir()` 在配置了主目录的宿主上运行 |
+| `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` | 该调用属于其他平台：文件在原生宿主和浏览器中运行，进程在桌面上运行，TCP socket 在原生宿主上运行，`os.homedir()` 在配置了主目录的宿主上运行 |
 | `ERR_NSH_QUOTA_EXCEEDED` | 运行时的某项限制已用尽：进行中的操作或数据、子进程、socket、WebSocket、等待发送的字节、监听器 |
 | `ETIMEDOUT` | 调用超时：`run` 的 `timeoutMs`、连接、WebSocket 的握手、写入或关闭 |
 | `ENOENT`、`EEXIST`、`EACCES`、`ECONNREFUSED` 等 | 操作系统的结果，采用 Node 的错误码；`EACCES` 和 `EPERM` 表示操作系统拒绝访问文件，与应用的能力授权无关 |
@@ -87,7 +87,7 @@ async function loadSettings(): Promise<string> {
 
 ## 系统元数据与日志
 
-`os.platform(): string` 和 `os.arch(): string` 返回实际原生宿主的系统与架构，`process.platform` 和 `process.arch` 的值与之相同。它们是 Rust 的 `std::env::consts::OS` 和 `ARCH` 的名称，与 gpui-shell 一致：系统为 `"macos"`、`"windows"`、`"linux"`、`"ios"`、`"android"`，架构为 `"aarch64"`、`"x86_64"`，应用直接与它们比较（`process.platform === "macos"`）。`os.EOL: string` 是宿主的换行符。`os.homedir(): string` 返回配置为绝对路径的宿主主目录；宿主未配置主目录时抛出 `code` 为 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` 的错误。返回目录路径只是元数据，文件操作仍需要 `fs.read` / `fs.write` 授权。
+`os.platform(): string` 和 `os.arch(): string` 返回实际原生宿主的系统与架构，`process.platform` 和 `process.arch` 的值与之相同。它们是 Rust 的 `std::env::consts::OS` 和 `ARCH` 的名称，与 gpui-shell 一致：系统为 `"macos"`、`"windows"`、`"linux"`、`"ios"`、`"android"`，架构为 `"aarch64"`、`"x86_64"`，应用直接与它们比较（`process.platform === "macos"`）。`os.EOL: string` 是宿主的换行符。`os.homedir(): string` 返回配置为绝对路径的宿主主目录；宿主未配置主目录时抛出 `code` 为 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` 的错误。声明了能力的应用需要 `"homeDir": true`（[能力](../docs/sandbox-and-capabilities.md#homedir)），否则调用会抛出 `code` 为 `ERR_ACCESS_DENIED` 的错误。返回目录路径只是元数据，文件操作仍需要 `fs.read` / `fs.write` 授权。
 
 浏览器应用读取的 `process.env` 是空对象，`os.homedir()` 在浏览器中抛出 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`；主目录路径与环境变量属于原生宿主。
 
@@ -99,7 +99,8 @@ async function loadSettings(): Promise<string> {
 
 ## 文件
 
-`fs/promises` 在桌面宿主（macOS、Windows 和 Linux）上读写原生文件，在浏览器中通过 Origin Private File System（OPFS）读写应用私有文件。每个路径在操作开始前都按 `capabilities.fs` 检查：`readFile`、`readdir`、`stat`、`lstat`、`readlink` 和 `exists` 使用 `read` 根目录，`writeFile`、`mkdir`、`rename`、`unlink` 和 `rmdir` 使用 `write` 根目录。所有失败都拒绝 Promise：授权范围之外的路径在任何磁盘操作之前以 `code` 为 `ERR_ACCESS_DENIED` 的错误拒绝（`permission` 为 `"fs"`，`resource` 为应用所写的路径）。
+`fs/promises` 在原生宿主（macOS、Windows、Linux、iOS 和 Android）上读写原生文件，在浏览器中通过 Origin Private File System（OPFS）读写应用私有文件。每个路径在操作开始前都按 `capabilities.fs` 检查：`readFile`、`readdir`、`stat`、`lstat`、`readlink` 和 `exists` 使用 `read` 根目录，`writeFile`、`mkdir`、`rename`、`unlink` 和 `rmdir` 使用 `write` 根目录。所有失败都拒绝 Promise：授权范围之外的路径在任何磁盘操作之前以 `code` 为 `ERR_ACCESS_DENIED` 的错误拒绝（`permission` 为 `"fs"`，`resource` 为应用所写的路径）。图片、视频和声音显示的本地文件也按同样的 `read` 根目录检查（见
+[沙箱](../docs/sandbox-and-capabilities.md#network)）。
 
 ```json
 {
@@ -185,9 +186,11 @@ child.on("exit", ({ code, signal }) => console.log("done", code, signal));
 
 全局 `fetch` 保留 NSH 的流式 HTTP 实现，按 `network.hosts` 或 `network.http` 检查每次请求与重定向。WebSocket 支持 `ws:` / `wss:`、文本及二进制消息、事件监听器与关闭握手。WebSocket 握手是一次 HTTP GET，因此全局 `WebSocket` 与 `websocket` 模块的 `connect` 都使用 HTTP 授权：`ws` 按 `http`、`wss` 按 `https` 以 GET 检查（规则也可以在 `schemes` 中列出 `ws` / `wss`）。NSH 在开始连接前检查初始的规范化 URL。原生握手连接该 URL 并拒绝重定向；浏览器 WebSocket 的重定向与连接策略由浏览器控制。两种 API 都拒绝带有凭据或片段的 URL。每个 VM 的两种 API 合计最多 32 个 WebSocket，两者的单条消息都最多 8 MiB。
 
+在原生宿主上，`connect(url, { headers })` 接受额外的握手请求头，包括应用显式提供的 `Cookie` 和 `Authorization`。URL 仍需相同的网络授权。`Proxy-Authorization` 和握手控制头（`Host`、`Connection`、`Upgrade` 以及所有 `Sec-WebSocket-*` 请求头）以 `TypeError` 拒绝，非法的头名或头值也一样。浏览器拒绝所有自定义握手请求头。
+
 未授权的 URL 在任何连接开始之前就被拒绝。全局 `WebSocket` 像浏览器报告连接失败那样报告它：构造函数返回 socket，随后 socket 触发 `error` 和 `close`（code 为 1006，`wasClean` 为 `false`），因此应用在构造函数之后设置的处理函数会收到这两个事件。模块的 `connect` 以 `ERR_ACCESS_DENIED` 拒绝（`permission` 为 `"network"`，`resource` 为该 URL）。第 33 个 WebSocket 以 `ERR_NSH_QUOTA_EXCEEDED` 抛出（构造函数）或拒绝（`connect`），格式错误的 URL 为 `SyntaxError`（构造函数）或 `TypeError`（`connect`）。
 
-全局 `WebSocket` 的发送队列最多 8 条消息、缓冲总量最多 8 MiB（`bufferedAmount`），超出任一项时 `send()` 抛出 `ERR_NSH_QUOTA_EXCEEDED`；socket 进入关闭过程后，`send()` 丢弃其数据，与浏览器一致。握手和每次写入超时为 30 秒，关闭时最多等待 5 秒对端的关闭帧。消息到达时即以 `message` 事件交付。
+全局 `WebSocket` 与浏览器一样，先缓冲要发送的数据，再由连接写出：缓冲总量最多 8 MiB（`bufferedAmount`）、最多 1024 条消息，因此同一轮中连续的多次 `send()` 会按顺序排队；超出任一项时 `send()` 抛出 `ERR_NSH_QUOTA_EXCEEDED`；socket 进入关闭过程后，`send()` 丢弃其数据，与浏览器一致。握手和每次写入超时为 30 秒，关闭时最多等待 5 秒对端的关闭帧。消息到达时即以 `message` 事件交付。
 
 `websocket` 模块的 `WebSocketConnection` 最多同时有 8 个待完成操作（读、写、关闭），尚未发出的写入合计最多 8 MiB；超过任一上限的 `write()` 以 `ERR_NSH_QUOTA_EXCEEDED` 拒绝，超过 8 MiB 的消息以 `RangeError`（`code` 为 `ERR_OUT_OF_RANGE`）拒绝。同一时间只能有一个 `read()` 等待，第二个以 `TypeError` 拒绝。到达后尚未读取的消息等待应用读取，消息的流量跟随应用的读取：有八条消息或 8 MiB 等待读取时，连接暂停从网络读取，对端的发送也随之等待；应用读取后连接恢复读取。解析、连接与握手合计、每次写入和关闭的超时均为 30 秒。
 

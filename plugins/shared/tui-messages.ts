@@ -80,6 +80,7 @@ export const tui_anonymous_credential: Message = [
   '未保存凭据；此服务支持匿名连接。',
   '未儲存憑據；此服務支援匿名連線。',
 ];
+export const tui_choose_model: Message = ['Choose a model', '选择模型', '選擇模型'];
 export const tui_settings_decisions_api: Message = ['Decisions API', '决策 API', '決策 API'];
 export const tui_decisions_api_help: Message = [
   'Evaluate structured questions with a configured Decisions API service. Enabling it permits requests to the saved endpoint within this installation’s network permissions.',

@@ -25,17 +25,30 @@
 //! - When the request fails (no network) or the server answers `5xx`, a
 //!   stale entry is served anyway, unless it said `must-revalidate` or
 //!   `no-cache`.
+//! - A download that ends at a redirect it did not follow drops the entry
+//!   and serves nothing: one the app may not load ([`Fetched::refused`],
+//!   or the `3xx` a backend leaves unfollowed for it) led to the entry too.
+//! - An entry keeps the redirects its download followed
+//!   ([`Fetched::redirects`]). Before a copy is served, fresh or stale,
+//!   they are checked against what the app may load now
+//!   ([`Access::media_redirect`]): an entry one of them is refused for is
+//!   dropped and is a miss, so the request that follows fails as a first
+//!   one would. What an app may load can narrow after a copy was stored
+//!   (its capabilities, the embedding app's grant). A `304` serves the
+//!   copy on disk after the same check, and its request's redirects
+//!   replace the stored ones: where the copy was last confirmed. A copy
+//!   whose redirects cannot be kept whole is not stored.
 //!
 //! Entries are keyed by URL alone: image sources carry no request headers,
 //! and a loader sends the same ones for every image, so whatever a
 //! response varies on (`Vary`) is the same for all of its requests.
 //!
 //! **Storage**: one file per entry in the cache's directory, named by a
-//! digest of its URL, holding the URL, the policy's dates and headers, the
-//! body and a checksum of all of them. A file is written whole under a
-//! temporary name and renamed into place, so readers (other threads,
-//! surfaces or processes on the same directory) see a complete entry or
-//! none, without locks. An entry that does not read back whole (truncated,
+//! digest of its URL, holding the URL, the redirects it came through, the
+//! policy's dates and headers, the body and a checksum of all of them. A
+//! file is written whole under a temporary name and renamed into place, so
+//! readers (other threads, surfaces or processes on the same directory)
+//! see a complete entry or none, without locks. An entry that does not read back whole (truncated,
 //! a checksum or URL mismatch, an unknown format) is deleted and is a miss.
 //! The cache is bounded in bytes: past its limit the least recently used
 //! entries (by file modification time, which a hit refreshes) are deleted
@@ -58,13 +71,14 @@ use std::{
 };
 
 use super::ImageData;
-use crate::ByteSize;
+use crate::{ByteSize, access::Access};
 
 /// The size a disk cache is bounded to unless its embedder says otherwise.
 pub const DEFAULT_DISK_CACHE_SIZE: ByteSize = ByteSize::mib(256);
 
-/// What a file starts with: the format and its version.
-const MAGIC: &[u8; 8] = b"NSHIMG1\n";
+/// What a file starts with: the format and its version. Version 1 kept no
+/// redirects: its entries are an unknown format, deleted as they are read.
+const MAGIC: &[u8; 8] = b"NSHIMG2\n";
 
 /// The longest header read back (an entry with a longer one is corrupt).
 const MAX_HEADER: usize = 64 << 10;
@@ -194,6 +208,15 @@ pub struct Fetched {
     pub headers: CacheHeaders,
     /// The body (empty for a `304`).
     pub body: Vec<u8>,
+    /// Why the download ended at a redirect it did not follow, the app not
+    /// being allowed to load where it led ([`Fetched::refused`]); `None` for
+    /// a response the loader read to its end.
+    pub refusal: Option<String>,
+    /// The URLs the download was redirected to, in order, each absolute
+    /// (empty: the URL asked for answered itself). The disk cache keeps
+    /// them with the copy and checks them again before it serves it
+    /// ([`Fetched::redirected`]).
+    pub redirects: Vec<String>,
 }
 
 impl Fetched {
@@ -203,6 +226,28 @@ impl Fetched {
             status,
             headers,
             body,
+            refusal: None,
+            redirects: Vec::new(),
+        }
+    }
+
+    /// `self`, reached through `redirects`: the URL of every redirect the
+    /// loader followed, in order, each absolute. A loader that follows
+    /// redirects reports them, or the disk cache serves the copy to an app
+    /// that may no longer load where it came from.
+    pub fn redirected(mut self, redirects: Vec<String>) -> Self {
+        self.redirects = redirects;
+        self
+    }
+
+    /// A download that ended at a redirect (`status`) the app may not
+    /// follow, for `refusal`: the disk cache drops the copy it held for the
+    /// URL, which came through that redirect too, and serves nothing.
+    pub fn refused(status: u16, refusal: impl Into<String>) -> Self {
+        Self {
+            status,
+            refusal: Some(refusal.into()),
+            ..Self::default()
         }
     }
 }
@@ -322,36 +367,42 @@ impl DiskCache {
         self.0.max_size
     }
 
-    /// What it holds for `url`. Blocking.
-    pub fn lookup(&self, url: &str) -> Lookup {
-        self.lookup_at(url, now())
+    /// What it holds for `url` that `access` may still load: a copy that
+    /// came through a redirect `access` refuses is dropped, and a miss.
+    /// Blocking.
+    pub fn lookup(&self, url: &str, access: &Access) -> Lookup {
+        self.lookup_at(url, access, now())
     }
 
     /// Ends the request for `url` that a [`Lookup`] started: stores, updates
     /// or drops the entry as the policy says, and returns the bytes to show
     /// (the response's, or the cached ones for a `304`, or a stale copy when
-    /// the request failed and it may be served), or the error. Blocking.
+    /// the request failed and it may be served), or the error. A stale
+    /// copy that came through a redirect `access` refuses is dropped rather
+    /// than served. Blocking.
     pub fn complete(
         &self,
         url: &str,
+        access: &Access,
         response: Result<Fetched, String>,
     ) -> Result<ImageData, String> {
-        self.complete_at(url, response, now())
+        self.complete_at(url, access, response, now())
     }
 
-    /// Gets `url`'s bytes through the cache: a fresh entry, or `fetch`
-    /// (blocking; given the conditional headers to send, none on a miss)
-    /// then [`DiskCache::complete`].
+    /// Gets `url`'s bytes through the cache: a fresh entry `access` may
+    /// still load, or `fetch` (blocking; given the conditional headers to
+    /// send, none on a miss) then [`DiskCache::complete`].
     pub fn load(
         &self,
         url: &str,
+        access: &Access,
         fetch: impl FnOnce(&[(&'static str, String)]) -> Result<Fetched, String>,
     ) -> Result<ImageData, String> {
-        let lookup = self.lookup(url);
+        let lookup = self.lookup(url, access);
         if let Lookup::Fresh(bytes) = lookup {
             return Ok(bytes);
         }
-        self.complete(url, fetch(&lookup.request_headers()))
+        self.complete(url, access, fetch(&lookup.request_headers()))
     }
 
     /// Drops `url`'s entry.
@@ -370,13 +421,24 @@ impl DiskCache {
         *self.0.size.lock().unwrap_or_else(|e| e.into_inner()) = Some(0);
     }
 
-    fn lookup_at(&self, url: &str, now: u64) -> Lookup {
+    fn lookup_at(&self, url: &str, access: &Access, now: u64) -> Lookup {
         let path = self.path(url);
         let Some(meta) = self.read_meta(&path, url) else {
             return Lookup::Miss;
         };
+        // Not revalidated either: a `304` would serve the body that came
+        // from where the app may not load.
+        if self.refused(url, access, &meta.redirects).is_some() {
+            return Lookup::Miss;
+        }
         if now < meta.fresh_until {
             return match self.read(&path, url) {
+                // Checked again: another handle may have replaced the file
+                // since its header was read, with a copy that came another
+                // way.
+                Some((meta, _)) if self.refused(url, access, &meta.redirects).is_some() => {
+                    Lookup::Miss
+                }
                 Some((_, body)) => {
                     touch(&path);
                     Lookup::Fresh(body.into())
@@ -399,17 +461,29 @@ impl DiskCache {
     fn complete_at(
         &self,
         url: &str,
+        access: &Access,
         response: Result<Fetched, String>,
         now: u64,
     ) -> Result<ImageData, String> {
         let response = match response {
             Ok(response) => response,
-            Err(error) => return self.stale(url).ok_or(error),
+            Err(error) => return self.stale(url, access).ok_or(error),
         };
+        // A redirect the app may not load: the copy held for `url` came
+        // through it too, so it is not served, now or offline later.
+        if let Some(refusal) = response.refusal {
+            self.remove(url);
+            return Err(refusal);
+        }
         match response.status {
             200 | 203 => {
-                let Fetched { headers, body, .. } = response;
-                self.store(url, &headers, &body, now);
+                let Fetched {
+                    headers,
+                    body,
+                    redirects,
+                    ..
+                } = response;
+                self.store(url, &redirects, &headers, &body, now);
                 Ok(body.into())
             }
             304 => {
@@ -417,10 +491,18 @@ impl DiskCache {
                 let (meta, body) = self
                     .read(&path, url)
                     .ok_or_else(|| "HTTP 304 without a cached copy".to_owned())?;
+                // The copy the `304` answers for is the one on disk now,
+                // which another handle may have stored since the lookup:
+                // served only if it came a way the app may load.
+                if let Some(refusal) = self.refused(url, access, &meta.redirects) {
+                    return Err(refusal);
+                }
                 let headers = meta.headers.updated(&response.headers);
                 let policy = Policy::of(&headers, now);
                 if policy.store {
-                    self.write(url, &headers, &policy, &body);
+                    // The redirects of this request: each was checked as
+                    // it was followed.
+                    self.write(url, &response.redirects, &headers, &policy, &body);
                 } else {
                     self.remove(url);
                 }
@@ -429,8 +511,15 @@ impl DiskCache {
             }
             // Shown, never stored (`206`, `204`, ...).
             200..=299 => Ok(response.body.into()),
-            status @ 500..=599 => self.stale(url).ok_or_else(|| format!("HTTP {status}")),
-            status @ 300..=399 => Err(format!("redirect refused (HTTP {status})")),
+            status @ 500..=599 => self
+                .stale(url, access)
+                .ok_or_else(|| format!("HTTP {status}")),
+            // A redirect left unfollowed (how iOS and Android end at one
+            // the app may not load): as above.
+            status @ 300..=399 => {
+                self.remove(url);
+                Err(format!("redirect refused (HTTP {status})"))
+            }
             status => {
                 self.remove(url);
                 Err(format!("HTTP {status}"))
@@ -439,27 +528,69 @@ impl DiskCache {
     }
 
     /// The stored copy of `url` when it may be served stale (the request
-    /// failed).
-    fn stale(&self, url: &str) -> Option<ImageData> {
+    /// failed) and `access` may still load it.
+    fn stale(&self, url: &str, access: &Access) -> Option<ImageData> {
         let (meta, body) = self.read(&self.path(url), url)?;
-        if meta.strict {
+        if self.refused(url, access, &meta.redirects).is_some() || meta.strict {
             return None;
         }
         log::debug!("image cache: serving {url} stale");
         Some(body.into())
     }
 
-    fn store(&self, url: &str, headers: &CacheHeaders, body: &[u8], now: u64) {
+    /// Why `access` refuses one of `redirects`, the hops `url`'s entry came
+    /// through, if it does: the entry is dropped then. The check is the one
+    /// a download makes of each hop as it follows it.
+    fn refused(&self, url: &str, access: &Access, redirects: &[String]) -> Option<String> {
+        let mut from = url;
+        for hop in redirects {
+            if let Err(refusal) = access.media_redirect(from, hop) {
+                log::debug!("image cache: dropping {url}: {refusal}");
+                self.remove(url);
+                return Some(refusal);
+            }
+            from = hop;
+        }
+        None
+    }
+
+    fn store(
+        &self,
+        url: &str,
+        redirects: &[String],
+        headers: &CacheHeaders,
+        body: &[u8],
+        now: u64,
+    ) {
         let policy = Policy::of(headers, now);
         if !policy.store || body.len() as u64 > self.0.max_bytes / 8 {
             self.remove(url);
             return;
         }
-        self.write(url, headers, &policy, body);
+        self.write(url, redirects, headers, &policy, body);
     }
 
-    fn write(&self, url: &str, headers: &CacheHeaders, policy: &Policy, body: &[u8]) {
-        let header = encode_header(url, headers, policy);
+    fn write(
+        &self,
+        url: &str,
+        redirects: &[String],
+        headers: &CacheHeaders,
+        policy: &Policy,
+        body: &[u8],
+    ) {
+        // A hop that does not read back as it was written (a URL holds no
+        // control character) cannot be kept, and a copy without all of its
+        // hops cannot be checked: nothing is stored.
+        if redirects.iter().any(|hop| hop.contains(char::is_control)) {
+            self.remove(url);
+            return;
+        }
+        let header = encode_header(url, redirects, headers, policy);
+        // Nor an entry whose header would not read back (many long hops).
+        if header.len() > MAX_HEADER {
+            self.remove(url);
+            return;
+        }
         let mut crc = crc32fast::Hasher::new();
         crc.update(&header);
         crc.update(body);
@@ -696,12 +827,19 @@ impl Policy {
 #[derive(Debug)]
 struct Meta {
     url: String,
+    /// The redirects its download followed, in order.
+    redirects: Vec<String>,
     fresh_until: u64,
     strict: bool,
     headers: CacheHeaders,
 }
 
-fn encode_header(url: &str, headers: &CacheHeaders, policy: &Policy) -> Vec<u8> {
+fn encode_header(
+    url: &str,
+    redirects: &[String],
+    headers: &CacheHeaders,
+    policy: &Policy,
+) -> Vec<u8> {
     let mut text = String::new();
     let mut line = |name: &str, value: &str| {
         // Values never hold line breaks (HTTP forbids them); a URL is one
@@ -714,6 +852,9 @@ fn encode_header(url: &str, headers: &CacheHeaders, policy: &Policy) -> Vec<u8> 
         }
     };
     line("url", url);
+    for hop in redirects {
+        line("via", hop);
+    }
     line("fresh", &policy.fresh_until.to_string());
     line("strict", if policy.strict { "1" } else { "0" });
     for (name, value) in [
@@ -734,6 +875,7 @@ fn encode_header(url: &str, headers: &CacheHeaders, policy: &Policy) -> Vec<u8> 
 fn decode_header(bytes: &[u8]) -> Option<Meta> {
     let text = std::str::from_utf8(bytes).ok()?;
     let mut url = None;
+    let mut redirects = Vec::new();
     let mut fresh_until = None;
     let mut strict = None;
     let mut pairs = Vec::new();
@@ -741,6 +883,7 @@ fn decode_header(bytes: &[u8]) -> Option<Meta> {
         let (name, value) = line.split_once('\t')?;
         match name {
             "url" => url = Some(value.to_owned()),
+            "via" => redirects.push(value.to_owned()),
             "fresh" => fresh_until = Some(value.parse().ok()?),
             "strict" => strict = Some(value == "1"),
             _ => pairs.push((name, value)),
@@ -748,6 +891,7 @@ fn decode_header(bytes: &[u8]) -> Option<Meta> {
     }
     Some(Meta {
         url: url?,
+        redirects,
         fresh_until: fresh_until?,
         strict: strict?,
         headers: CacheHeaders::from_pairs(pairs),

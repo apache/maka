@@ -162,6 +162,25 @@ suggest a starting point.
 `footer` is content below the rows, in a part of its own (`footerClass`, `footerStyle`): an action ("Manage tags"),
 a count, a hint. It stays in place while the rows scroll.
 
+## Entrance and exit
+
+On the desktops the popup comes and goes with your transitions, as a [Popover](./popover.md#entrance-and-exit)'s:
+`popupStartingClass` is its look in its first frame, and the `transition-*` classes of `popupClass` carry it to its own
+look; `popupEndingClass` is its look once closed, which it keeps, taking no presses, while those transitions run, and
+`onClose` follows. The keyboard focus is back on the input as it closes, unless the choice's `onChange` focused another
+view (the next field of a form), which keeps it. Opened again on its way out, it returns to its look from where it is.
+`popupStartingStyle` and `popupEndingStyle` do the same with inline styles. When the user asks for less motion it
+appears and goes at once; the sheet of touch screens slides in and out on its own.
+
+```tsx
+<Combobox
+  items={items}
+  popupClass="rounded-lg bg-popover p-1 shadow-md transition-all duration-150 ease-out"
+  popupStartingClass="opacity-0 -translate-y-1"
+  popupEndingClass="opacity-0"
+/>
+```
+
 ## Props
 
 | Prop | Rust | Type | Default | Description |
@@ -179,11 +198,14 @@ a count, a hint. It stays in place while the rows scroll.
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What the choice is about, for screen readers. |
 | `placement`, `align`, `offset`, `margin` | `.placement(..)`, ... | as `Select`'s | `"bottom"`, `"start"`, 0, 0 | Desktops: where the popup goes against the field. |
 | `popupClass`, `popupStyle` | `.popup_class(..)`, `.popup_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The popup (desktops) or the sheet (touch screens). |
+| `popupStartingClass`, `popupStartingStyle` | `.popup_starting_class(..)`, `.popup_starting_style(..)` | `string`, `StyleProp<ViewStyle>` | none | Desktops: the popup's look in its first frame, over its own: its transitions run from it. |
+| `popupEndingClass`, `popupEndingStyle` | `.popup_ending_class(..)`, `.popup_ending_style(..)` | `string`, `StyleProp<ViewStyle>` | none | Desktops: the popup's look once closed, over its own: it stays while its transitions run. |
 | `backdropClass`, `backdropStyle` | `.backdrop_class(..)`, `.backdrop_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The backdrop behind the sheet. |
 | `listClass`, `listStyle` | `.list_class(..)`, `.list_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The list, the scroll view of the rows. |
 | `itemClass`, `itemStyle` | `.item_class(..)`, `.item_style(..)` | `string`, `StyleProp<TextStyle>` | none | Each item's row: `focus:` while highlighted, `selected:` while selected, `disabled:` while it cannot be. |
 | `groupClass`, `groupStyle` | `.group_class(..)`, `.group_style(..)` | `string`, `StyleProp<ViewStyle>` | none | Each section's header. |
 | `inputClass`, `inputStyle` | `.input_class(..)`, `.input_style(..)` | `string`, `StyleProp<InputStyle>` | none | The input: `focus:` while it edits, `disabled:` with the combobox. |
+| `inputTestID` | `.input_test_id(..)` | `string` | none | The id UI tests find the input by (`id:` in `nsh/test`), as `testID` names the combobox's own view. |
 | `footerClass`, `footerStyle` | `.footer_class(..)`, `.footer_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The footer, below the rows. |
 | `clearButtonClass`, `clearButtonStyle` | `.clear_button_class(..)`, `.clear_button_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The clear button (`cleanable`). |
 | `clearButton` | `.clear_button(..)` | `JSX.Element` | none | The content of the clear button. |
@@ -217,7 +239,7 @@ They come in this order: `onChange` for a choice, or `onCancel` for a close with
 |---|---|---|
 | The field | the combobox's view, a row | `class`, `style` |
 | The prefix | the field, first | the app's own element (`prefix`) |
-| The input | the field, after the prefix | `inputClass`, `inputStyle`, `placeholder` |
+| The input | the field, after the prefix | `inputClass`, `inputStyle`, `placeholder`, `inputTestID` |
 | The clear button | the field, after the input (`cleanable`, while an item is selected) | `clearButtonClass`, `clearButtonStyle`; its content `clearButton` |
 | The trigger button | the field, after the clear button | the app's own element (`triggerButton`) |
 | The suffix | the field, last | the app's own element (`suffix`) |
@@ -231,11 +253,12 @@ They come in this order: `onChange` for a choice, or `onCancel` for a close with
 
 ## Keyboard
 
-The keys are a select's (see [Keyboard](./select.md#keyboard)) while the input keeps the focus, with these
-differences: letters and digits are typed into the input, which filters the list, rather than typeahead; Down and Up
-open the closed list; Return toggles the highlighted item with `multiple` and keeps the list open; Cmd+Return on a
-Mac (Ctrl+Return elsewhere) closes it and confirms. Tab and Shift+Tab close the open list and move the focus to the
-next or previous control. When the list closes otherwise on the desktops, the input keeps the focus.
+The keys are a select's (see [Keyboard](./select.md#keyboard)) while the input keeps the focus, with these differences:
+letters and digits are typed into the input, which filters the list, rather than typeahead; Down and Up open the closed
+list; Return toggles the highlighted item with `multiple` and keeps the list open; Cmd+Return on a Mac (Ctrl+Return
+elsewhere) closes it and confirms. Tab and Shift+Tab close the open list and move the focus to the next or previous
+control. When the list closes otherwise on the desktops, the input keeps the focus, unless the choice's `onChange` moved
+it to another view.
 
 ## Accessibility
 

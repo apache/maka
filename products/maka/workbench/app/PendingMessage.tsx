@@ -23,6 +23,7 @@ import type {
   ComposerSendStatus,
   ComposerSession,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import { MessageQuotes } from './MessageQuotes';
 import { Icon } from './Icon';
 import { LoadingIndicator } from './Loading';
 import { tr } from './locale';
@@ -36,10 +37,15 @@ import {
 } from './ui';
 
 export function PendingMessage(props: {
-  session: Pick<ComposerSession, 'connected' | 'retrySend' | 'checkSend' | 'dismissSend'>;
+  session: Pick<
+    ComposerSession,
+    'connected' | 'retrySend' | 'editSend' | 'checkSend' | 'dismissSend'
+  >;
   message: ComposerSendStatus;
 }) {
   const session = props.session;
+  const canEditInComposer = () =>
+    props.message.retryable && (props.message.text !== '' || props.message.attachments.length > 0);
   return (
     <View
       style={{
@@ -47,17 +53,28 @@ export function PendingMessage(props: {
         gap: platform.idiom === 'terminal' ? 8 : 6,
       }}
     >
+      <MessageQuotes quotes={() => props.message.quotes ?? []} />
       <If when={props.message.text !== ''}>
-        <Text style={[{ ...bodyTextStyle, color: C.text }, { userSelect: 'text' }]}>
+        <Text
+          style={[
+            { ...bodyTextStyle, color: C.text },
+            { numberOfLines: 4, userSelect: 'text' },
+          ]}
+        >
           {props.message.text}
         </Text>
       </If>
       <If when={props.message.attachments.length > 0}>
-        <Text style={[{ ...captionTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
+        <Text
+          style={[
+            { ...captionTextStyle, color: C.secondary },
+            { numberOfLines: 2, userSelect: 'text' },
+          ]}
+        >
           {props.message.attachments.map((file) => file.name).join(', ')}
         </Text>
       </If>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <If when={props.message.busy}>
           <LoadingIndicator color={C.muted} />
         </If>
@@ -65,6 +82,7 @@ export function PendingMessage(props: {
           style={{
             ...captionTextStyle,
             flex: 1,
+            minWidth: 160,
             color:
               props.message.state === 'failed' || props.message.state === 'unknown'
                 ? C.warning
@@ -73,6 +91,17 @@ export function PendingMessage(props: {
         >
           {props.message.detail}
         </Text>
+        <If when={canEditInComposer()}>
+          <Button
+            accessibilityLabel={tr('Edit message in composer')}
+            onPress={inputAction(session.editSend, props.message.id)}
+            style={controlStyle}
+            hoverStyle={{ backgroundColor: C.cardRaised }}
+            focusStyle={controlFocusStyle()}
+          >
+            <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Edit in composer')}</Text>
+          </Button>
+        </If>
         <If when={props.message.retryable}>
           <Button
             accessibilityLabel={tr('Retry message')}

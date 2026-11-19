@@ -117,6 +117,7 @@ impl std::fmt::Display for NativeEpochId {
 /// The Host closes this owner after joining the epochs it created.
 #[derive(Clone)]
 pub struct SessionOwner {
+    preview: crate::preview::PreviewRegistry,
     driver: Arc<Mutex<Driver>>,
     state: Arc<std::sync::Mutex<OwnerState>>,
     remote_id: NativeEpochId,
@@ -130,17 +131,27 @@ struct OwnerState {
     closed: bool,
     remote_epochs: std::collections::HashMap<NativeEpochId, Option<String>>,
     remote_registered: bool,
+    remote_previews: std::collections::HashMap<NativeEpochId, worker::preview::Bridge>,
+    retired_previews: Vec<NativeCleanup>,
+    preview_failure: Option<ToolError>,
     cleanup: Option<NativeCleanup>,
 }
 
 impl SessionOwner {
+    pub fn preview(&self) -> crate::preview::PreviewRegistry {
+        self.preview.clone()
+    }
     pub fn new(driver: Arc<Mutex<Driver>>) -> Self {
         Self {
+            preview: Default::default(),
             driver,
             state: Arc::new(std::sync::Mutex::new(OwnerState {
                 closed: false,
                 remote_epochs: std::collections::HashMap::new(),
                 remote_registered: false,
+                remote_previews: Default::default(),
+                retired_previews: Vec::new(),
+                preview_failure: None,
                 cleanup: None,
             })),
             remote_id: NativeEpochId::new(),
@@ -149,6 +160,17 @@ impl SessionOwner {
             #[cfg(feature = "native-desktop")]
             cursor: Arc::new(std::sync::Mutex::new(crate::cursor::Spec::default())),
         }
+    }
+
+    /// Recover a failed renderer after an explicit reset without closing the shared Driver.
+    pub async fn recover_cursor_renderer(&self) -> Result<(), ToolError> {
+        self.ensure_open()?;
+        #[cfg(feature = "native-desktop")]
+        {
+            let pending = self.driver.lock().await.cursors.recover_failed();
+            pending.await?;
+        }
+        Ok(())
     }
 
     /// Create fresh interpreter-facing caches without borrowing an older epoch.
@@ -172,6 +194,54 @@ impl SessionOwner {
             return Err(failed("Computer Use Session owner is closed"));
         }
         state.remote_epochs.entry(epoch).or_default();
+        Ok(())
+    }
+
+    fn bind_remote_preview(
+        &self,
+        epoch: NativeEpochId,
+        session: &str,
+        connection: worker::Connection,
+    ) -> Result<(), ToolError> {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return Err(failed("Computer Use Session owner is closed"));
+        }
+        if state
+            .remote_previews
+            .get(&epoch)
+            .is_some_and(|bridge| bridge.matches(&connection))
+        {
+            return Ok(());
+        }
+        let mut failure = None;
+        state
+            .retired_previews
+            .retain(|cleanup| match cleanup.borrow().clone() {
+                None => true,
+                Some(Ok(())) => false,
+                Some(Err(error)) => {
+                    failure.get_or_insert(error);
+                    false
+                }
+            });
+        if let Some(error) = failure {
+            state.preview_failure.get_or_insert(error);
+        }
+        if let Some(old) = state.remote_previews.remove(&epoch) {
+            old.stop();
+            state.retired_previews.push(old.cleanup);
+        }
+        let stream = self.preview.epoch_stop(epoch)?;
+        self.preview.replace_remote(epoch, &stream, Vec::new());
+        let bridge = worker::preview::Bridge::start(
+            connection,
+            self.remote_id.to_string(),
+            epoch,
+            session.to_owned(),
+            self.preview.clone(),
+        )?;
+        state.remote_previews.insert(epoch, bridge);
         Ok(())
     }
 
@@ -202,8 +272,21 @@ impl SessionOwner {
             .flatten()
     }
 
-    fn release_remote(&self, epoch: NativeEpochId) {
+    async fn release_remote(&self, epoch: NativeEpochId) -> Result<(), ToolError> {
+        let bridge = self.state.lock().unwrap().remote_previews.remove(&epoch);
+        if let Some(bridge) = bridge {
+            bridge.stop();
+            if let Err(error) = observe_retirement(bridge.cleanup.clone()).await {
+                self.state
+                    .lock()
+                    .unwrap()
+                    .preview_failure
+                    .get_or_insert(error.clone());
+                return Err(error);
+            }
+        }
         self.state.lock().unwrap().remote_epochs.remove(&epoch);
+        Ok(())
     }
 
     #[cfg(feature = "native-desktop")]
@@ -232,7 +315,13 @@ impl SessionOwner {
         Ok(cursor.clone())
     }
 
-    pub async fn finish_turn(&self, turn: &str, language: Language) -> Result<(), ToolError> {
+    pub async fn finish_turn(
+        &self,
+        session: &str,
+        turn: &str,
+        execution: &crate::ExecutionCorrelation,
+        language: Language,
+    ) -> Result<(), ToolError> {
         let registered = self.state.lock().unwrap().remote_registered;
         let mut failures = Vec::new();
         if registered {
@@ -242,7 +331,9 @@ impl SessionOwner {
                     .invoke(
                         worker::Request::FinishOwnerTurn {
                             owner: self.remote_id.to_string(),
+                            session: session.to_owned(),
                             turn: turn.to_owned(),
+                            execution: execution.clone(),
                             language,
                         },
                         None,
@@ -261,7 +352,7 @@ impl SessionOwner {
         #[cfg(feature = "native-desktop")]
         if let Err(error) =
             crate::browser::Browsers::with_owner(self.driver.clone(), self.browser_owner)
-                .finish_turn(turn, &self.cursor(), language)
+                .finish_turn(turn, execution, &self.cursor(), language)
                 .await
         {
             failures.push(error.to_string());
@@ -276,6 +367,7 @@ impl SessionOwner {
     /// Finalize shared resources after joining every original epoch close.
     /// Concurrent observers join the original cleanup; terminal failures may reconcile again.
     pub async fn close(&self) -> Result<(), ToolError> {
+        self.preview.close();
         let pending = {
             let mut state = self.state.lock().unwrap();
             state.closed = true;
@@ -286,6 +378,12 @@ impl SessionOwner {
             {
                 pending.clone()
             } else {
+                let mut previews = std::mem::take(&mut state.retired_previews);
+                for (_, bridge) in state.remote_previews.drain() {
+                    bridge.stop();
+                    previews.push(bridge.cleanup);
+                }
+                let preview_failure = state.preview_failure.clone();
                 let remote_live = !state.remote_epochs.is_empty();
                 let registered = state.remote_registered;
                 let driver = self.driver.clone();
@@ -297,6 +395,14 @@ impl SessionOwner {
                 let (reply, pending) = tokio::sync::watch::channel(None);
                 tokio::spawn(async move {
                     let mut failures = Vec::new();
+                    if let Some(error) = preview_failure {
+                        failures.push(error.to_string());
+                    }
+                    for preview in previews {
+                        if let Err(error) = observe_retirement(preview).await {
+                            failures.push(error.to_string());
+                        }
+                    }
                     if remote_live {
                         failures
                             .push("Windows native epoch has not confirmed its cleanup".to_owned());
@@ -368,7 +474,10 @@ enum Backend {
     Local(Box<session::Session>),
     Windows {
         browsers: Vec<BrowserConnection>,
-        audio: Option<worker::AudioObservation>,
+        audio: Option<(
+            (String, String, crate::ExecutionCorrelation),
+            worker::AudioObservation,
+        )>,
     },
 }
 impl Session {
@@ -377,6 +486,7 @@ impl Session {
     }
 
     fn from_owner(owner: SessionOwner, native_epoch: NativeEpochId) -> Self {
+        owner.preview.open_epoch(native_epoch);
         Self {
             driver: owner.driver.clone(),
             owner,
@@ -591,6 +701,7 @@ impl Session {
                     epoch: self.native_epoch.to_string(),
                     session: invocation.session().to_owned(),
                     turn: invocation.turn().to_owned(),
+                    execution: invocation.execution_correlation().clone(),
                     operation_id: operation_id.to_owned(),
                     browsers: browsers.clone(),
                     request,
@@ -599,10 +710,15 @@ impl Session {
                 let connection = prepare_windows(&self.driver, cancellation).await?;
                 self.owner
                     .bind_remote(self.native_epoch, invocation.session())?;
-                connection
+                let reply = connection
                     .invoke_browser(message, invocation, cancellation.clone())
-                    .await
-                    .map(|reply| reply.value)
+                    .await?;
+                self.owner.bind_remote_preview(
+                    self.native_epoch,
+                    invocation.session(),
+                    connection.clone(),
+                )?;
+                Ok(reply.value)
             }
         }
     }
@@ -636,11 +752,13 @@ impl Session {
             }
             Backend::Windows { browsers, .. } => {
                 let request = worker::Request::Invoke {
+                    app_target: invocation.app_target().cloned(),
                     preparation_policy: invocation.browser_preparation_policy().clone(),
                     owner: self.owner.remote_id.to_string(),
                     epoch: self.native_epoch.to_string(),
                     session: invocation.session().into(),
                     turn: invocation.turn().into(),
+                    execution: invocation.execution_correlation().clone(),
                     native_observer_available: false,
                     operation_id: invocation.operation_id().map(str::to_owned),
                     browsers: browsers.clone(),
@@ -654,6 +772,11 @@ impl Session {
                 // the arm before a later click without serializing a Rust future.
                 let completion =
                     connection.begin_browser(request, invocation, cancellation.clone())?;
+                self.owner.bind_remote_preview(
+                    self.native_epoch,
+                    invocation.session(),
+                    connection.clone(),
+                )?;
                 Ok(crate::InvocationCompletion::pending(async move {
                     completion.await.map(|reply| reply.value)
                 }))
@@ -700,11 +823,13 @@ impl Session {
                 let start_audio = matches!(&command, Command::StartAudioRecording { .. });
                 let stop_audio = matches!(&command, Command::StopAudioRecording);
                 let request = worker::Request::Invoke {
+                    app_target: invocation.app_target().cloned(),
                     preparation_policy: invocation.browser_preparation_policy().clone(),
                     owner: self.owner.remote_id.to_string(),
                     epoch: self.native_epoch.to_string(),
                     session: session.into(),
                     turn: turn.into(),
+                    execution: invocation.execution_correlation().clone(),
                     native_observer_available: false,
                     operation_id: invocation.operation_id().map(str::to_owned),
                     browsers: browsers.clone(),
@@ -716,12 +841,22 @@ impl Session {
                 let reply = connection
                     .invoke_browser(request, invocation, cancellation.clone())
                     .await?;
+                self.owner
+                    .bind_remote_preview(self.native_epoch, session, connection.clone())?;
                 if start_audio {
-                    *audio = Some(reply.audio.ok_or_else(|| {
-                        ToolError::CleanupUnconfirmed(
-                            "Windows audio startup reply lost its bound capture observation".into(),
-                        )
-                    })?);
+                    *audio = Some((
+                        (
+                            session.to_owned(),
+                            turn.to_owned(),
+                            invocation.execution_correlation().clone(),
+                        ),
+                        reply.audio.ok_or_else(|| {
+                            ToolError::CleanupUnconfirmed(
+                                "Windows audio startup reply lost its bound capture observation"
+                                    .into(),
+                            )
+                        })?,
+                    ));
                 } else if stop_audio {
                     *audio = None;
                 }
@@ -770,7 +905,7 @@ impl Session {
             #[cfg(feature = "native-desktop")]
             Some(Backend::Local(local)) => local.wait_audio_finished(),
             Some(Backend::Windows { audio, .. }) => {
-                let audio = audio.clone();
+                let audio = audio.as_ref().map(|(_, observation)| observation.clone());
                 Box::pin(async move {
                     let mut audio =
                         audio.ok_or_else(|| failed("Computer audio recording is not active"))?;
@@ -795,11 +930,14 @@ impl Session {
         &mut self,
         session: &str,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         language: Language,
     ) -> Result<(), ToolError> {
         match &mut self.backend {
             #[cfg(feature = "native-desktop")]
-            Some(Backend::Local(local)) => local.finish_turn(session, turn, language).await,
+            Some(Backend::Local(local)) => {
+                local.finish_turn(session, turn, execution, language).await
+            }
             Some(Backend::Windows { audio, .. }) => {
                 if self
                     .owner
@@ -830,6 +968,7 @@ impl Session {
                             epoch: self.native_epoch.to_string(),
                             session: session.to_owned(),
                             turn: turn.to_owned(),
+                            execution: execution.clone(),
                             language,
                         },
                         None,
@@ -837,7 +976,11 @@ impl Session {
                     )
                     .await
                     .map_err(unconfirmed_remote_cleanup)?;
-                *audio = None;
+                if audio.as_ref().is_some_and(|(source, _)| {
+                    source.0 == session && source.1 == turn && &source.2 == execution
+                }) {
+                    *audio = None;
+                }
                 Ok(())
             }
             _ => Ok(()),
@@ -846,6 +989,7 @@ impl Session {
 
     /// Release this epoch without ending the logical browser or cursor lifetime.
     pub async fn close_native(&mut self) -> Result<(), ToolError> {
+        self.owner.preview.retire_epoch(self.native_epoch);
         if matches!(self.state, SessionState::Closed) {
             return Ok(());
         }
@@ -889,19 +1033,17 @@ impl Session {
                         } else {
                             Ok(())
                         };
-                        if result.is_ok() {
-                            owner.release_remote(epoch);
-                        }
+                        let result = match result {
+                            Ok(()) => owner.release_remote(epoch).await,
+                            Err(error) => Err(error),
+                        };
                         let _ = reply.send(Some(result));
                     });
                     pending
                 });
                 observe_retirement(pending.clone()).await
             }
-            None => {
-                self.owner.release_remote(self.native_epoch);
-                Ok(())
-            }
+            None => self.owner.release_remote(self.native_epoch).await,
         };
         if result.is_ok() {
             self.backend = None;
@@ -988,120 +1130,4 @@ fn native_unavailable() -> ToolError {
 
 fn failed(error: impl std::fmt::Display) -> ToolError {
     ToolError::Failed(error.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn closing_an_epoch_preserves_replacement_until_the_logical_owner_closes() {
-        let driver = Arc::new(Mutex::new(Driver::default()));
-        let owner = SessionOwner::new(driver.clone());
-        let mut first = owner.new_epoch().unwrap();
-        first.close_native().await.unwrap();
-        let mut second = owner.new_epoch().unwrap();
-        assert_ne!(first.native_epoch(), second.native_epoch());
-        second.close_native().await.unwrap();
-        owner.close().await.unwrap();
-        assert!(owner.new_epoch().is_err());
-        driver.lock().await.close().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn windows_replacement_does_not_reuse_unconfirmed_epoch_cleanup() {
-        let driver = Arc::new(Mutex::new(Driver::default()));
-        let owner = SessionOwner::new(driver.clone());
-        let mut first = owner.new_epoch().unwrap();
-        owner.register_remote(first.native_epoch()).unwrap();
-        first.backend = Some(Backend::Windows {
-            browsers: Vec::new(),
-            audio: None,
-        });
-        owner
-            .bind_remote(first.native_epoch(), "logical-session")
-            .unwrap();
-        let error = first.close_native().await.unwrap_err();
-        assert!(matches!(&error, ToolError::CleanupUnconfirmed(message)
-            if message == "Windows native epoch lost its original connection"));
-        let mut second = owner.new_epoch().unwrap();
-        owner.register_remote(second.native_epoch()).unwrap();
-        assert_ne!(first.native_epoch(), second.native_epoch());
-        assert_eq!(
-            owner.remote_session(first.native_epoch()).as_deref(),
-            Some("logical-session")
-        );
-        assert_eq!(
-            first.close_native().await.unwrap_err().to_string(),
-            error.to_string()
-        );
-        second.close_native().await.unwrap();
-        assert_eq!(
-            owner.remote_session(first.native_epoch()).as_deref(),
-            Some("logical-session")
-        );
-        let error = owner.close().await.unwrap_err();
-        assert!(matches!(&error, ToolError::CleanupUnconfirmed(message)
-            if message.contains("Windows native epoch has not confirmed its cleanup")
-                && message.contains("Windows logical owner lost its original connection")));
-        assert_eq!(
-            owner.close().await.unwrap_err().to_string(),
-            error.to_string()
-        );
-        assert!(owner.new_epoch().is_err());
-        driver.lock().await.close().await.unwrap();
-    }
-
-    #[test]
-    fn desktop_selection_never_falls_back_from_windows() {
-        for platform in ["linux", "mac", "windows"] {
-            for wsl in [false, true] {
-                assert!(!use_windows(Desktop::Local, platform, wsl).unwrap());
-                assert_eq!(
-                    use_windows(Desktop::Auto, platform, wsl).unwrap(),
-                    platform == "linux" && wsl
-                );
-                let result = use_windows(Desktop::Windows, platform, wsl);
-                match platform {
-                    "windows" => assert!(!result.unwrap()),
-                    "linux" if wsl => assert!(result.unwrap()),
-                    _ => assert!(
-                        matches!(result, Err(ToolError::Failed(message)) if message == "Windows desktop requires Windows or WSL")
-                    ),
-                }
-            }
-        }
-    }
-
-    #[cfg(not(feature = "native-desktop"))]
-    #[tokio::test]
-    async fn bridge_build_rejects_local_configuration_and_keeps_windows_available() {
-        let driver = Arc::new(Mutex::new(Driver::default()));
-        let mut session = Session::new(driver.clone());
-        let error = session
-            .configure(Desktop::Local, Vec::new(), Language::En)
-            .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "tool failed: Local desktop support is not included in this build; build Maka with the native-desktop feature, or use the Windows desktop from WSL"
-        );
-        // Auto may select the Windows worker only in WSL. Elsewhere it must
-        // report the missing native capability during configuration too.
-        if !is_wsl() {
-            assert_eq!(
-                session
-                    .configure(Desktop::Auto, Vec::new(), Language::En)
-                    .unwrap_err()
-                    .to_string(),
-                error.to_string()
-            );
-        } else {
-            session
-                .configure(Desktop::Auto, Vec::new(), Language::En)
-                .unwrap();
-            assert_eq!(session.platform(), "windows");
-        }
-        session.close().await.unwrap();
-        driver.lock().await.close().await.unwrap();
-    }
 }

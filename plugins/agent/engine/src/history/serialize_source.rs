@@ -63,15 +63,35 @@ pub(crate) async fn message_async<'a>(
         cancellation,
         emit,
         media,
+        preserve_media: false,
     }
     .message(message)
     .await
 }
+
+pub(crate) async fn exact_message_async(
+    message: &MessageRecipe,
+    budget: &Arc<dyn SourceBudget>,
+    cancellation: &CancellationToken,
+    emit: &mut dyn AsyncEmit,
+) -> io::Result<()> {
+    Encoder {
+        budget,
+        cancellation,
+        emit,
+        media: &mut |_, _| Err(io::Error::other("exact serialization never labels media")),
+        preserve_media: true,
+    }
+    .message(message)
+    .await
+}
+
 struct Encoder<'a> {
     budget: &'a Arc<dyn SourceBudget>,
     cancellation: &'a CancellationToken,
     emit: &'a mut dyn AsyncEmit,
     media: &'a mut MediaLabel<'a>,
+    preserve_media: bool,
 }
 impl Encoder<'_> {
     async fn literal(&mut self, bytes: &[u8]) -> io::Result<()> {
@@ -171,6 +191,73 @@ impl Encoder<'_> {
         }
         Ok(())
     }
+    async fn exact_media_options(
+        &mut self,
+        media: &MediaSource,
+        options: &Option<JsonSource>,
+    ) -> io::Result<()> {
+        let Some(detail) = &media.detail else {
+            return self.options(options).await;
+        };
+        self.literal(b",\"providerOptions\":{").await?;
+        let mut comma = false;
+        let mut openai = false;
+        if let Some(options) = options {
+            let mut cursor = json::ObjectCursor::open(options.clone(), self.budget.clone()).await?;
+            while let Some(field) = cursor.next().await? {
+                if comma {
+                    self.literal(b",").await?;
+                }
+                self.text(&field.key).await?;
+                self.literal(b":").await?;
+                if json::text_eq(&field.key, "openai", self.budget.clone()).await? {
+                    self.exact_openai_options(Some(field.value.source), detail)
+                        .await?;
+                    openai = true;
+                } else {
+                    self.json(&field.value.source).await?;
+                }
+                comma = true;
+            }
+        }
+        if !openai {
+            if comma {
+                self.literal(b",").await?;
+            }
+            self.literal(b"\"openai\":").await?;
+            self.exact_openai_options(None, detail).await?;
+        }
+        self.literal(b"}").await
+    }
+    async fn exact_openai_options(
+        &mut self,
+        options: Option<JsonSource>,
+        detail: &TextSource,
+    ) -> io::Result<()> {
+        self.literal(b"{").await?;
+        let mut comma = false;
+        if let Some(options) = options {
+            let mut cursor = json::ObjectCursor::open(options, self.budget.clone()).await?;
+            while let Some(field) = cursor.next().await? {
+                if json::text_eq(&field.key, "imageDetail", self.budget.clone()).await? {
+                    continue;
+                }
+                if comma {
+                    self.literal(b",").await?;
+                }
+                self.text(&field.key).await?;
+                self.literal(b":").await?;
+                self.json(&field.value.source).await?;
+                comma = true;
+            }
+        }
+        if comma {
+            self.literal(b",").await?;
+        }
+        self.literal(b"\"imageDetail\":").await?;
+        self.text(detail).await?;
+        self.literal(b"}").await
+    }
     async fn contents(&mut self, source: &Arc<dyn RecipeSource<ContentRecipe>>) -> io::Result<()> {
         self.literal(b"[").await?;
         let mut cursor = source.open(0);
@@ -178,6 +265,27 @@ impl Encoder<'_> {
         while let Some(part) = cursor.next().await? {
             if index != 0 {
                 self.literal(b",").await?;
+            }
+            if let ContentRecipe::Media {
+                media,
+                provider_options,
+            } = &part
+                && self.preserve_media
+            {
+                self.literal(b"{\"type\":\"file\",\"mediaType\":").await?;
+                self.text(&media.media_type).await?;
+                self.literal(b",\"data\":{\"type\":\"data\",\"data\":\"")
+                    .await?;
+                self.transformed(
+                    media.bytes.clone(),
+                    maka_provider_protocol::json_stream::pull::Base64Encoder::new(),
+                )
+                .await?;
+                self.literal(b"\"}").await?;
+                self.exact_media_options(media, provider_options).await?;
+                self.literal(b"}").await?;
+                index += 1;
+                continue;
             }
             self.literal(b"{\"type\":\"text\",\"text\":").await?;
             match &part {

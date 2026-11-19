@@ -18,6 +18,8 @@
  */
 
 use super::*;
+use crate::storage::{StateChange, Storage};
+use maka_plugin_core::storage::{Mutation as StateMutation, Page, Record, Scan, Store};
 
 /// Actual request capabilities shared by native and JavaScript services.
 /// Imports and own exports are captured from the consumer activation, never
@@ -25,12 +27,14 @@ use super::*;
 pub struct Context {
     pub(super) stream: Option<subscriptions::Emitter>,
     pub(super) caller: Option<Caller>,
+    pub(super) native_context: Option<Arc<dyn std::any::Any + Send + Sync>>,
     pub(super) scope: Scope,
     pub(super) consumer: Activation,
     pub(super) requester: Activation,
     pub(super) operation: Option<RecoveryRef>,
     pub(super) operation_scope:
         Option<maka_event_log::applications::operations::OperationDispatchScope>,
+    pub(super) state: Result<Storage>,
     pub(super) attachments: Attachments,
     pub(super) imports: Arc<BTreeMap<String, Vec<Binding>>>,
     pub(super) exports: Arc<BTreeMap<String, Binding>>,
@@ -64,14 +68,74 @@ impl Context {
     ) -> Option<&maka_event_log::applications::operations::OperationDispatchScope> {
         self.operation_scope.as_ref()
     }
-    pub fn execution_custody(&self) -> Option<&Arc<dyn maka_agent_facts::tools::ExecutionCustody>> {
-        self.scope.execution()
+    pub fn work_custody(&self) -> Option<&Arc<dyn maka_plugin_core::work::WorkCustody>> {
+        self.scope.work_custody()
     }
+    /// Read the original local native caller's typed in-process context.
+    /// Method authorization and the domain capability's live checks still apply.
+    pub fn native_context<T: std::any::Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        if self.scope.cancellation.is_cancelled() {
+            return None;
+        }
+        self.native_context.as_ref()?.clone().downcast::<T>().ok()
+    }
+
     pub fn scope(&self) -> &Scope {
         &self.scope
     }
     pub fn attachments(&self) -> &Attachments {
         &self.attachments
+    }
+    /// Read this provider's captured package and instance data, including tombstones.
+    pub fn state_read(&self, key: String) -> Result<BoxFuture<'static, Result<Option<Record>>>> {
+        self.state_query(move |store| {
+            Box::pin(async move { store.read(key).await.map_err(|error| error.to_string()) })
+        })
+    }
+    pub fn state_scan(&self, query: Scan) -> Result<BoxFuture<'static, Result<Page>>> {
+        self.state_query(move |store| {
+            Box::pin(async move { store.scan(query).await.map_err(|error| error.to_string()) })
+        })
+    }
+    /// Pure preparation only. The original durable dispatch owns final validation
+    /// and the atomic data/receipt commit after the handler actually returns.
+    pub fn prepare_state(&self, mutations: Vec<StateMutation>) -> Result<StateChange> {
+        if self.scope.cancellation.is_cancelled() {
+            return Err("Host request was revoked".into());
+        }
+        if self.operation_scope.is_none() {
+            return Err("pure state completion requires a durable mutation".into());
+        }
+        self.state
+            .as_ref()
+            .map_err(Clone::clone)?
+            .prepare(mutations)
+            .map_err(|error| error.to_string())
+    }
+    fn state_query<T: Send + 'static>(
+        &self,
+        query: impl FnOnce(Storage) -> BoxFuture<'static, Result<T>> + Send + 'static,
+    ) -> Result<BoxFuture<'static, Result<T>>> {
+        if self.scope.cancellation.is_cancelled() {
+            return Err("Host request was revoked".into());
+        }
+        let store = self.state.clone()?;
+        let mut ticket = self
+            .scope
+            .resources
+            .reserve()
+            .map_err(|error| error.to_string())?;
+        let worker = tokio::spawn(async move {
+            ticket.start();
+            let result = query(store).await;
+            ticket.complete(Ok(()));
+            result
+        });
+        Ok(Box::pin(async move {
+            worker
+                .await
+                .map_err(|error| format!("state query worker disappeared: {error}"))?
+        }))
     }
     /// Enqueues work before returning its observer. Dropping that observer cannot
     /// acknowledge cleanup or cancel an accepted child. The parent waits for the
@@ -170,7 +234,10 @@ impl Context {
         input: Value,
         attachments: Attachments,
     ) -> Result<BoxFuture<'static, Result<Subscription>>> {
-        let scope = self.scope.child().map_err(|error| error.to_string())?;
+        let scope = self
+            .scope
+            .with_child_cancellation()
+            .map_err(|error| error.to_string())?;
         let guard = scope.cancellation.clone().drop_guard();
         let (reply, result) = oneshot::channel();
         self.enqueue_binding(
@@ -192,6 +259,8 @@ impl Context {
     /// The observer's outer Err is admission failure. Once accepted, business
     /// uncertainty is always an OperationReply with its original RecoveryRef.
     /// A clean refusal additionally requires this request Scope's real finish.
+    /// The caller supplies opaque recovery for its exact final request; the Host
+    /// persists it before final admission but never interprets it as authority.
     #[allow(clippy::too_many_arguments)]
     pub fn mutate(
         &self,
@@ -200,15 +269,24 @@ impl Context {
         method: String,
         input: Value,
         operation: Uuid,
+        recovery: Value,
         attachments: impl Into<CallResources>,
     ) -> Result<BoxFuture<'static, Result<OperationReply>>> {
-        let result =
-            self.begin_mutation(import, provider, method, input, operation, attachments)?;
+        let result = self.begin_mutation(
+            import,
+            provider,
+            method,
+            input,
+            operation,
+            recovery,
+            attachments,
+        )?;
         Ok(Box::pin(async move { Ok(result.await?.result().await) }))
     }
     /// Enqueues the same durable mutation and exposes its original progress
     /// reader. Final receipt and physical cleanup remain independent; dropping
     /// this observer cannot release the accepted request's parent Ticket.
+    #[allow(clippy::too_many_arguments)]
     pub fn begin_mutation(
         &self,
         import: &str,
@@ -216,6 +294,7 @@ impl Context {
         method: String,
         input: Value,
         operation: Uuid,
+        recovery: Value,
         attachments: impl Into<CallResources>,
     ) -> Result<BoxFuture<'static, Result<Mutation>>> {
         self.begin_mutation_binding(
@@ -223,6 +302,7 @@ impl Context {
             method,
             input,
             operation,
+            recovery,
             attachments.into(),
         )
     }
@@ -233,9 +313,11 @@ impl Context {
         method: String,
         input: Value,
         operation: Uuid,
+        recovery: Value,
         attachments: impl Into<CallResources>,
     ) -> Result<BoxFuture<'static, Result<OperationReply>>> {
-        let result = self.begin_mutation_target(target, method, input, operation, attachments)?;
+        let result =
+            self.begin_mutation_target(target, method, input, operation, recovery, attachments)?;
         Ok(Box::pin(async move { Ok(result.await?.result().await) }))
     }
     /// Observe progress and settlement of a selected service mutation.
@@ -245,6 +327,7 @@ impl Context {
         method: String,
         input: Value,
         operation: Uuid,
+        recovery: Value,
         attachments: impl Into<CallResources>,
     ) -> Result<BoxFuture<'static, Result<Mutation>>> {
         self.begin_mutation_binding(
@@ -252,6 +335,7 @@ impl Context {
             method,
             input,
             operation,
+            recovery,
             attachments.into(),
         )
     }
@@ -261,6 +345,7 @@ impl Context {
         method: String,
         input: Value,
         operation: Uuid,
+        recovery: Value,
         attachments: CallResources,
     ) -> Result<BoxFuture<'static, Result<Mutation>>> {
         let (reply, result) = oneshot::channel();
@@ -270,12 +355,32 @@ impl Context {
             input,
             attachments,
             self.scope.clone(),
-            CallKind::Mutation {
+            CallKind::PendingMutation {
                 operation,
-                confirmation: None,
+                recovery,
                 reply,
             },
         )?;
+        Ok(Box::pin(async move {
+            result
+                .await
+                .map_err(|_| "Host deployment is closed".to_string())?
+        }))
+    }
+    /// Observe this captured consumer's original caller intent across source revisions.
+    /// A missing intent is meaningful only after the Host's independent lookup gate.
+    /// The opaque recovery payload and reference never restore execution authority.
+    pub fn lookup_intent(
+        &self,
+        operation: Uuid,
+    ) -> Result<BoxFuture<'static, Result<Option<CallerIntent>>>> {
+        if self.scope.cancellation.is_cancelled() {
+            return Err("Host request was revoked".into());
+        }
+        let dispatch = self.dispatch.upgrade().ok_or("Host deployment is closed")?;
+        let ticket = self.scope.resources.reserve().map_err(|e| e.to_string())?;
+        let result =
+            dispatch.lookup_intent(self.consumer.clone(), operation, self.scope.clone(), ticket)?;
         Ok(Box::pin(async move {
             result
                 .await

@@ -39,6 +39,8 @@ final class TabBarComponent implements NshComponent {
 
     /** Material 3: the bar's height, the indicator's size, the icon's and the label's. */
     private static final float BAR_DP = 80, INDICATOR_W_DP = 64, INDICATOR_H_DP = 32, ICON_DP = 24, LABEL_SP = 12;
+    /** Material 3's badges: the small one's size, the large one's height and label size. */
+    private static final float DOT_DP = 6, BADGE_DP = 16, BADGE_SP = 11;
 
     private final Context context;
     private final NshComponentContext events;
@@ -115,7 +117,8 @@ final class TabBarComponent implements NshComponent {
             for (int i = 0; i < tabs.size(); i++) {
                 Object tab = tabs.get(i);
                 Map<?, ?> fields = tab instanceof Map ? (Map<?, ?>) tab : java.util.Collections.emptyMap();
-                Item item = new Item(context, i, string(fields.get("title")), string(fields.get("icon")));
+                Item item = new Item(context, i, string(fields.get("title")), string(fields.get("icon")),
+                        fields.get("badge") instanceof String ? (String) fields.get("badge") : null);
                 items.add(item);
                 bar.addView(item, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
             }
@@ -222,14 +225,31 @@ final class TabBarComponent implements NshComponent {
     }
 
     /** One tab: its icon in the active indicator, its label below. */
+    /**
+     * What TalkBack says for a badge: its text, or for a badge with no text
+     * the system's own words for it ("New notification", Material's
+     * numberless badge's, in the device's language; not in the public
+     * resources). Null for none.
+     */
+    private static String spokenBadge(String text) {
+        if (text == null) return null;
+        if (!text.isEmpty()) return text;
+        android.content.res.Resources system = android.content.res.Resources.getSystem();
+        int words = system.getIdentifier("notification_hidden_text", "string", "android");
+        return words != 0 ? system.getString(words) : null;
+    }
+
     private final class Item extends LinearLayout {
         final int index;
         final FrameLayout indicator;
         final ImageView icon;
         final TextView label;
+        /** Its badge, null when it has none. */
+        final TextView badge;
         final GradientDrawable pill = new GradientDrawable();
+        final GradientDrawable badgePill = new GradientDrawable();
 
-        Item(Context context, int index, String title, String iconName) {
+        Item(Context context, int index, String title, String iconName, String badgeText) {
             super(context);
             this.index = index;
             setOrientation(VERTICAL);
@@ -237,7 +257,10 @@ final class TabBarComponent implements NshComponent {
             setPadding(0, px(12), 0, px(16));
             setClickable(true);
             setFocusable(true);
-            setContentDescription(title);
+            // TalkBack says the badge with the title, as VoiceOver reads iOS's
+            // badge with the tab.
+            String spoken = spokenBadge(badgeText);
+            setContentDescription(spoken != null ? title + ", " + spoken : title);
             setOnClickListener(v -> {
                 // The bar shows the choice at once, as the system's does;
                 // the app follows it with `selectedIndex`.
@@ -255,13 +278,49 @@ final class TabBarComponent implements NshComponent {
             indicator.addView(icon, new FrameLayout.LayoutParams(px(ICON_DP), px(ICON_DP), Gravity.CENTER));
             addView(indicator, new LayoutParams(px(INDICATOR_W_DP), px(INDICATOR_H_DP)));
 
+            // Material 3's badges over the icon's top end: an empty text is
+            // the small badge (a dot at the icon's corner), any other the
+            // large one (a pill with the text from the icon's middle, cut
+            // with an ellipsis where the indicator ends).
+            if (badgeText != null) {
+                badge = new TextView(context);
+                badge.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+                badge.setBackground(badgePill);
+                FrameLayout.LayoutParams at;
+                if (badgeText.isEmpty()) {
+                    badgePill.setCornerRadius(px(DOT_DP / 2));
+                    at = new FrameLayout.LayoutParams(px(DOT_DP), px(DOT_DP), Gravity.TOP | Gravity.START);
+                    at.leftMargin = px((INDICATOR_W_DP + ICON_DP) / 2 - DOT_DP);
+                    at.topMargin = px((INDICATOR_H_DP - ICON_DP) / 2);
+                } else {
+                    badge.setText(badgeText);
+                    badge.setSingleLine(true);
+                    badge.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                    badge.setGravity(Gravity.CENTER);
+                    badge.setTextSize(TypedValue.COMPLEX_UNIT_SP, BADGE_SP);
+                    badge.setTypeface(TextLayouts.weighted(Typeface.DEFAULT, 500, false, 500, false));
+                    badge.setIncludeFontPadding(false);
+                    badge.setMinWidth(px(BADGE_DP));
+                    badge.setMaxWidth(px(INDICATOR_W_DP / 2));
+                    badge.setPadding(px(4), 0, px(4), 0);
+                    badgePill.setCornerRadius(px(BADGE_DP / 2));
+                    at = new FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT, px(BADGE_DP), Gravity.TOP | Gravity.START);
+                    at.leftMargin = px(INDICATOR_W_DP / 2);
+                    at.topMargin = px(2);
+                }
+                indicator.addView(badge, at);
+            } else {
+                badge = null;
+            }
+
             label = new TextView(context);
             label.setText(title);
             label.setSingleLine(true);
             label.setEllipsize(android.text.TextUtils.TruncateAt.END);
             label.setGravity(Gravity.CENTER);
             label.setTextSize(TypedValue.COMPLEX_UNIT_SP, LABEL_SP);
-            label.setTypeface(Typeface.create(Typeface.DEFAULT, 500, false));
+            label.setTypeface(TextLayouts.weighted(Typeface.DEFAULT, 400, false, 500, false));
             LayoutParams lp = new LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             lp.topMargin = px(4);
             addView(label, lp);
@@ -289,6 +348,11 @@ final class TabBarComponent implements NshComponent {
                     : iconColor;
             icon.setImageTintList(ColorStateList.valueOf(iconColor));
             label.setTextColor(labelColor);
+            if (badge != null) {
+                // Material 3's error and on-error colors.
+                badgePill.setColor(dark ? 0xfff2b8b5 : 0xffb3261e);
+                badge.setTextColor(dark ? 0xff601410 : 0xffffffff);
+            }
             // The press ripple, bounded by the indicator's pill.
             int ripple = (iconColor & 0x00ffffff) | 0x1f000000;
             indicator.setForeground(new RippleDrawable(ColorStateList.valueOf(ripple), null, pill.getConstantState().newDrawable()));

@@ -24,7 +24,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 #[derive(Clone, Default)]
-pub(crate) struct Evidence(Arc<AtomicBool>);
+pub struct Evidence(Arc<AtomicBool>);
 impl Evidence {
     pub fn confirmed(&self) -> bool {
         !self.0.load(Ordering::Acquire)

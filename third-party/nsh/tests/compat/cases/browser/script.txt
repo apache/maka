@@ -10,6 +10,16 @@ prop id:link accessibilityLabel In a browser
 prop id:link elevation 0
 prop id:link backdropMaterial ultraThin
 covers [props] web
+# props-view-web-element
+tap id:case-props-view-web-element
+expect Notes
+# The element each is in a document where `role` cannot say it; the
+# heading's is its role.
+prop id:article web.element article
+prop id:date web.element time
+prop id:paragraph web.element p
+prop id:heading role header
+covers [props] web.element
 # props-text-scaling
 tap id:case-props-text-scaling
 # twice the default.
@@ -40,18 +50,34 @@ covers [props] Popover.closeOnPressOutside
 # but kept 5 points from the top.
 tap text:DeskMenu
 expect DeskItem
-frame parent:parent:text:DeskItem 127 5 90 600
+frame parent:parent:parent:text:DeskItem 127 5 90 600
 covers [props] Menu.placement
 covers [props] Menu.align
 covers [props] Menu.offset
 covers [props] Menu.margin
+# Opened by a press, no item has the focus: a letter moves it to the item
+# it starts, which Return chooses.
+key d
+key enter
+expect Log: chose DeskItem
+absent DeskItem
 # A context menu where the secondary button went down, 3 points below it,
 # kept 9 points from the right edge.
 event text:RightClickArea onContextMenu pageX=390 pageY=200
 expect DeskCopy
-frame parent:parent:text:DeskCopy 291 203 90 40
+frame parent:parent:parent:text:DeskCopy 291 203 90 40
 covers [props] ContextMenu.offset
 covers [props] ContextMenu.margin
+# A context menu the app opens: below its trigger (200, 100, 120 × 30),
+# from its start, not at the window's corner.
+event text:DeskCopy onCancel
+absent DeskCopy
+tap text:ShowAppMenu
+expect ShownCopy
+frame parent:parent:parent:text:ShownCopy 200 130 90 40
+tap text:ShownCopy
+absent ShownCopy
+covers [props] ContextMenu.open
 # A tooltip after the pointer rested on its trigger for `delay`, gone when
 # the pointer leaves.
 event text:SlowTrigger onMouseEnter
@@ -113,21 +139,21 @@ covers [events] Popover.onPosition
 # A menu and its submenu, the same.
 tap text:MenuTrigger
 expect MenuNew
-style parent:parent:text:MenuNew opacity 0
-style parent:parent:text:MenuNew backgroundColor #ff0000ff
+style parent:parent:parent:text:MenuNew opacity 0
+style parent:parent:parent:text:MenuNew backgroundColor #ff0000ff
 expect Side: menu bottom
 wait 100
-nostyle parent:parent:text:MenuNew opacity
+nostyle parent:parent:parent:text:MenuNew opacity
 tap text:MenuShare
 expect MenuMail
-style parent:parent:text:MenuMail opacity 0
+style parent:parent:parent:text:MenuMail opacity 0
 wait 100
-nostyle parent:parent:text:MenuMail opacity
+nostyle parent:parent:parent:text:MenuMail opacity
 # Choosing an item closes both, each with its ending looks.
 tap text:MenuMail
-style parent:parent:text:MenuNew opacity 0.5
-style parent:parent:text:MenuNew backgroundColor #0000ffff
-style parent:parent:text:MenuMail opacity 0.5
+style parent:parent:parent:text:MenuNew opacity 0.5
+style parent:parent:parent:text:MenuNew backgroundColor #0000ffff
+style parent:parent:parent:text:MenuMail opacity 0.5
 expect MenuNew
 wait 500
 absent MenuNew
@@ -141,14 +167,14 @@ covers [events] Menu.onPosition
 # A context menu, the same.
 event text:LooksArea onContextMenu pageX=200 pageY=400
 expect CtxCopy
-style parent:parent:text:CtxCopy opacity 0
-style parent:parent:text:CtxCopy backgroundColor #ff0000ff
+style parent:parent:parent:text:CtxCopy opacity 0
+style parent:parent:parent:text:CtxCopy backgroundColor #ff0000ff
 expect Side: context bottom
 wait 100
-nostyle parent:parent:text:CtxCopy opacity
+nostyle parent:parent:parent:text:CtxCopy opacity
 tap text:CtxCopy
-style parent:parent:text:CtxCopy opacity 0.5
-style parent:parent:text:CtxCopy backgroundColor #0000ffff
+style parent:parent:parent:text:CtxCopy opacity 0.5
+style parent:parent:parent:text:CtxCopy backgroundColor #0000ffff
 wait 500
 absent CtxCopy
 expect Life: context closed
@@ -201,6 +227,64 @@ frame parent:scroll:label:Lime 20 368 150 30
 touch start text:Elsewhere 5 5
 touch end
 absent Lime
+# base-dropdown-looks
+tap id:case-base-dropdown-looks
+# A select's list is made with its starting looks and takes its own from
+# its first frame on; closed, it stays with its ending looks through its
+# 300 ms, then it is gone and closed.
+tap text:SelectTrigger
+expect Kiwi
+style parent:scroll:label:Kiwi opacity 0
+style parent:scroll:label:Kiwi backgroundColor #ff0000ff
+wait 100
+nostyle parent:scroll:label:Kiwi opacity
+nostyle parent:scroll:label:Kiwi backgroundColor
+expect Life: select open
+tap text:SelectTrigger
+style parent:scroll:label:Kiwi opacity 0.5
+style parent:scroll:label:Kiwi backgroundColor #0000ffff
+expect Kiwi
+wait 500
+absent Kiwi
+expect Life: select closed
+covers [props] Select.popupStartingClass
+covers [props] Select.popupStartingStyle
+covers [props] Select.popupEndingClass
+covers [props] Select.popupEndingStyle
+# A combobox's list, the same.
+tap text:ComboTrigger
+expect Lime
+style parent:scroll:label:Lime opacity 0
+style parent:scroll:label:Lime backgroundColor #ff0000ff
+wait 100
+nostyle parent:scroll:label:Lime opacity
+tap text:ComboTrigger
+style parent:scroll:label:Lime opacity 0.5
+style parent:scroll:label:Lime backgroundColor #0000ffff
+wait 500
+absent Lime
+expect Life: combobox closed
+covers [props] Combobox.popupStartingClass
+covers [props] Combobox.popupStartingStyle
+covers [props] Combobox.popupEndingClass
+covers [props] Combobox.popupEndingStyle
+# A date picker's calendar, the same.
+tap text:DateTrigger
+expect Someday
+style parent:parent:parent:label:Someday opacity 0
+style parent:parent:parent:label:Someday backgroundColor #ff0000ff
+wait 100
+nostyle parent:parent:parent:label:Someday opacity
+tap text:DateTrigger
+style parent:parent:parent:label:Someday opacity 0.5
+style parent:parent:parent:label:Someday backgroundColor #0000ffff
+wait 500
+absent Someday
+expect Life: date picker closed
+covers [props] DatePicker.popupStartingClass
+covers [props] DatePicker.popupStartingStyle
+covers [props] DatePicker.popupEndingClass
+covers [props] DatePicker.popupEndingStyle
 
 # The browser-JS backend shares the app's brands and preserves queued jobs.
 tap id:case-runtime-identities
@@ -281,8 +365,31 @@ absent StretchBody
 # not the icon's (which would put it at 32).
 tap id:icon-trigger
 expect IconItem
-frame parent:parent:text:IconItem 20 372 90 40
+frame parent:parent:parent:text:IconItem 20 372 90 40
 covers [props] Menu.trigger
 covers [props] Menu.offset
 tap id:icon-trigger
 absent IconItem
+# base-tooltip-grace-period-desktop
+tap id:case-base-tooltip-grace-period-desktop
+# A tooltip after the pointer rested on its trigger for its delay.
+event text:FirstTrigger onMouseEnter
+wait 700
+expect FirstTip
+# The pointer comes to the next trigger while that tooltip is still up:
+# its tooltip shows at once, though its delay is a minute. (The grace
+# period after the pointer left, 300 ms, ends before the next step: each
+# step waits 300 ms of quiet first; the Rust and gallery tests check it.)
+event text:GraceTrigger onMouseEnter
+expect GraceTip
+event text:FirstTrigger onMouseLeave
+absent FirstTip
+# A second after the pointer left that one, past the grace period, a
+# trigger waits for its delay.
+event text:GraceTrigger onMouseLeave
+absent GraceTip
+wait 1000
+event text:WaitTrigger onMouseEnter
+wait 500
+absent WaitTip
+event text:WaitTrigger onMouseLeave

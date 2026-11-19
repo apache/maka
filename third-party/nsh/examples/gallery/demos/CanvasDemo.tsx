@@ -1,6 +1,7 @@
 import { Canvas, type CanvasRenderingContext2D, cleanup, type GestureResponderEvent, Path2D, signal, Text, View } from "nsh";
 import { Animated, createAnimatedValue, Easing, type AnimatedValue } from "nsh";
 import logo from "../logo@2x.png";
+import mark from "../mark.svg";
 import { alpha, Button, Caption, Card, colors, DemoPage, Figure, finish, hint, isDark, Legend, type Palette, Segmented, Stat, terminal } from "../ui";
 
 const TAU = Math.PI * 2;
@@ -900,7 +901,32 @@ function Sketch() {
   );
 }
 
+// An SVG drawn into a canvas: the loader hands the canvas its rasterized
+// bitmap, so the drawing works like any other image and is crisp at the size
+// the SVG is rasterized for.
+
+function SvgImage() {
+  return (
+    <Card icon="image" title="SVG on a canvas" subtitle="An imported SVG drawn with drawImage">
+      <Canvas
+        style={{ height: 132 }}
+        draw={(cx, { width, height }) => {
+          cx.fillStyle = colors.raised;
+          cx.beginPath();
+          cx.roundRect(12, 12, width - 24, height - 24, 12);
+          cx.fill();
+          const scale = Math.min((width - 48) / 120, (height - 48) / 60);
+          const w = 120 * scale;
+          const h = 60 * scale;
+          cx.drawImage(mark, (width - w) / 2, (height - h) / 2, w, h);
+        }}
+      />
+      <Caption label="drawImage" note="SVG 120 × 60" />
+    </Card>
+  );
+}
+
 export function CanvasDemo() {
-  const cards = [Dial, AreaChart, Ridgeline, DotMatrix, Dumbbell, Clock, Glyphs, Compositing, Sketch];
+  const cards = [Dial, AreaChart, Ridgeline, DotMatrix, Dumbbell, Clock, Glyphs, Compositing, SvgImage, Sketch];
   return <DemoPage cards={cards} columns={3} />;
 }

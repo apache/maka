@@ -21,6 +21,8 @@ use crate::{
     contract::{SessionMcp, SessionMcpAttached},
     owner::Owner,
 };
+use futures_util::{FutureExt, future::BoxFuture};
+use maka_agent_api::session::ResolvedConfiguration;
 use maka_host_runtime::application::Context;
 use serde_json::Value;
 use std::sync::Arc;
@@ -38,21 +40,33 @@ impl Owner {
             .scope()
             .resources
             .reserve()
-            .map_err(|_| "agent_work_closed")?;
+            .map_err(|error| error.to_string())?;
         let owner = self.clone();
-        self.workers.spawn(async move {
+        let worker = self.workers.spawn(async move {
             ticket.start();
             let generation = crate::mcp::ClientGeneration::fresh();
-            let workspace = match owner.begin_session_mcp(&input.session_id, generation).await {
-                Ok(workspace) => workspace,
-                Err(error) => { ticket.complete(Ok(())); return Err(error); }
+            let configuration = match owner
+                .begin_session_mcp(&input.session_id, generation, &context)
+                .await
+            {
+                Ok(configuration) => configuration,
+                Err(error) => {
+                    ticket.complete(Ok(()));
+                    return Err(error);
+                }
             };
             let mut servers = None;
-            let operation: Result<Value, String> = async {
+            let mut cleanup_materials = Vec::new();
+            let operation = async {
+                let floor = owner
+                    .capture_sandbox(&configuration, context.scope().sandbox_floor())
+                    .await?;
+                if !input.servers.is_empty() {
+                    crate::mcp::require_compatible_floor(&floor).map_err(str::to_owned)?;
+                }
                 let startup = context.scope().cancellation.child_token();
                 let opening = crate::mcp::Servers::open_cancellable(
-                    &input.servers, owner.store.clone(), &owner.configuration,
-                    startup.clone(),
+                    &input.servers, &owner.configuration, startup.clone(),
                 );
                 tokio::pin!(opening);
                 let opened = tokio::select! {
@@ -63,25 +77,39 @@ impl Owner {
                 let opened = match opened {
                     Ok(servers) => Arc::new(servers),
                     Err(error) => {
-                        if !error.cleanup_confirmed {
-                            owner.mcp_projects.client_cleanup_failed(error.message.clone());
-                            ticket.record_failure(error.message.clone());
+                        if let Some(material) = error.material {
+                            cleanup_materials.push((error.message.clone(), material));
                         }
                         return Err(error.message);
                     }
                 };
                 servers = Some(opened.clone());
                 {
-                    let admission = owner.runs.session(&input.session_id).await;
-                    if admission.state().await.busy(&input.session_id) || owner.has_parked_invocation(&input.session_id).await? { return Err("agent_session_busy".into()); }
+                    let _ordered = owner.runs.session(&input.session_id).await;
+                    let busy = owner.runs.state().await.busy(&input.session_id);
+                    if busy { return Err("agent_session_busy".into()); }
+                    let _physical_fence = owner.store.try_session_work_fence(&input.session_id).await
+                        .map_err(|_| "agent_session_mcp_fence_unavailable")?.ok_or("agent_session_busy")?;
                     if owner.stop.is_cancelled() || context.scope().cancellation.is_cancelled() {
                         return Err("agent_session_mcp_cancelled".into());
                     }
                     let current = owner.mutable_session(&input.session_id).await?;
-                    if current.archived || current.configuration.workspace != workspace {
-                        return Err("agent_session_unavailable".into());
+                    if current.archived
+                        || current.configuration.workspace != configuration.workspace
+                        || current.configuration.binding != configuration.binding
+                        || current.configuration.permissions != configuration.permissions
+                        || current.configuration.boundary_revision != configuration.boundary_revision
+                    {
+                        return Err("agent_session_configuration_changed".into());
+                    }
+                    let floor = owner
+                        .capture_sandbox(&current.configuration, context.scope().sandbox_floor())
+                        .await?;
+                    if !input.servers.is_empty() {
+                        crate::mcp::require_compatible_floor(&floor).map_err(str::to_owned)?;
                     }
                     owner.mcp_projects.publish_client(&input.session_id, generation, opened.clone())?;
+                    owner.store.owned_root().map_err(|_| "agent_root_unavailable")?.capability_source_changed();
                 }
                 let ready = serde_json::to_value(SessionMcpAttached {
                     tools: opened.registrations.iter().map(|tool| tool.definition.name.clone()).collect(),
@@ -96,64 +124,59 @@ impl Owner {
                     _ = owner.stop.cancelled() => {},
                     _ = context.scope().cancellation.cancelled() => {},
                 }
-                Err("agent_session_mcp_closed".to_owned())
+                Err::<Value, String>("agent_session_mcp_closed".into())
             }.await;
-            let cleanup = owner.close_session_mcp(&input.session_id, generation, servers.as_deref()).await;
-            match &cleanup {
-                Ok(()) => ticket.complete(Ok(())),
+            let cleanup = owner.close_session_mcp(
+                &input.session_id, generation, servers.as_deref(), &mut cleanup_materials, &ticket,
+            ).await;
+            match cleanup {
+                Ok(()) => {
+                    ticket.complete(Ok(()));
+                    operation
+                }
                 Err(error) => {
                     owner.mcp_projects.client_cleanup_failed(error.clone());
-                    ticket.unconfirmed(error.clone(), servers);
+                    ticket.unconfirmed(error.clone(), (servers, cleanup_materials));
+                    Err(match operation {
+                        Err(operation) => format!("{operation}; MCP cleanup unconfirmed: {error}"),
+                        Ok(_) => error,
+                    })
                 }
             }
-            operation.and(cleanup.map(|()| Value::Null))
-        }).await.map_err(|_| "agent_session_mcp_owner_disappeared".to_owned())?
+        });
+        worker
+            .await
+            .map_err(|error| format!("agent_session_mcp_owner_disappeared: {error}"))?
     }
 
     async fn begin_session_mcp(
         self: &Arc<Self>,
         session: &str,
         generation: crate::mcp::ClientGeneration,
-    ) -> Result<crate::contract::Workspace, String> {
-        self.require_session(session).await?;
-        let store = self
-            .store
-            .session(session)
-            .await
-            .map_err(|error| error.to_string())?;
-        if let Some(generation) = self
-            .revoke_lost_checkpoint(session, &store)
-            .await
-            .map_err(|error| error.to_string())?
+        context: &Context,
+    ) -> Result<ResolvedConfiguration, String> {
+        let _ordered = self.runs.session(session).await;
         {
-            self.settle_session_mcp(session, generation).await?;
-        }
-        let admission = self.runs.session(session).await;
-        {
-            let runs = admission.state().await;
-            if runs.closing || self.stop.is_cancelled() {
+            let runs = self.runs.state().await;
+            if runs.closing
+                || self.stop.is_cancelled()
+                || context.scope().cancellation.is_cancelled()
+            {
                 return Err("agent_closed".into());
             }
-            if runs.busy(session) || runs.retained_cleanup.contains(session) {
+            if runs.busy(session) {
                 return Err("agent_session_busy".into());
             }
         }
         let current = self.mutable_session(session).await?;
-        if current.archived || self.has_parked_invocation(session).await? {
-            return Err("agent_session_unavailable".into());
-        }
-        if !self
+        let _physical_fence = self
             .store
-            .session(session)
+            .try_session_work_fence(session)
             .await
-            .map_err(|error| error.to_string())?
-            .message_queue(session)
-            .await
-            .map_err(|error| error.to_string())?
-            .entries
-            .is_empty()
-        {
-            return Err("agent_session_busy".into());
+            .map_err(|_| "agent_session_mcp_fence_unavailable")?
+            .ok_or("agent_session_busy")?;
+        if current.archived {
+            return Err("agent_session_unavailable".into());
         }
         crate::workspace::validate(
             &self.workspace_roots,
@@ -162,7 +185,83 @@ impl Owner {
         )
         .await?;
         self.mcp_projects.begin_client(session, generation)?;
-        Ok(current.configuration.workspace)
+        Ok(current.configuration)
+    }
+
+    async fn withdraw_session_mcp(
+        self: &Arc<Self>,
+        session: &str,
+        generation: crate::mcp::ClientGeneration,
+    ) -> Result<Option<BoxFuture<'static, Result<(), String>>>, String> {
+        let _ordered = self.runs.session(session).await;
+        if !self.mcp_projects.has_client(session, generation) {
+            return Ok(None);
+        }
+        self.mcp_projects.withdraw_client(session, generation);
+        self.store
+            .owned_root()
+            .map_err(|_| "agent_root_unavailable")?
+            .capability_source_changed();
+        let runs = self.runs.state().await;
+        if let Some(control) = runs
+            .controls
+            .get(session)
+            .filter(|control| control.basis.client_mcp == Some(generation))
+        {
+            let observed = (|| {
+                let access = control
+                    .access
+                    .upgrade()
+                    .ok_or("agent_original_work_custody_unavailable")?;
+                if access.execution() != &control.execution {
+                    return Err("agent_original_work_identity_changed".into());
+                }
+                self.store
+                    .observe_work_settlement(access.custody().as_ref(), session)
+                    .map_err(|error| error.to_string())
+            })();
+            control.cancellation.cancel();
+            let observer = observed?;
+            // The signal-only observer must not retain our local strong custody.
+            // Cancellation retires this activation; only explicit user control is Stop.
+            return Ok(Some(
+                async move { observer.wait().await.map_err(|error| error.to_string()) }.boxed(),
+            ));
+        }
+        if let Some(preparing) = runs.preparing.get(session) {
+            let run = preparing.run;
+            let cancellation = preparing.cancellation.clone();
+            let completion = preparing.completion.clone();
+            drop(runs);
+            let view = self
+                .durable
+                .frontier(run)
+                .await
+                .map_err(|error| error.to_string())?;
+            if view.spec.owner != self.run_owner() || view.spec.session_id != session {
+                return Err("agent_original_work_identity_changed".into());
+            }
+            let catalog = self
+                .mcp_projects
+                .catalog(view.spec.mcp_revision.as_deref())?;
+            if catalog.client_mcp != Some(generation) {
+                return Ok(None);
+            }
+            cancellation.cancel();
+            return Ok(Some(
+                async move {
+                    match completion.await {
+                        maka_plugin_core::operation::OperationCleanup::Confirmed => Ok(()),
+                        result => Err(format!("agent_execution_cleanup_unconfirmed: {result:?}")),
+                    }
+                }
+                .boxed(),
+            ));
+        }
+        if runs.retained_cleanup.contains_key(session) {
+            return Err("agent_execution_cleanup_unconfirmed".into());
+        }
+        Ok(None)
     }
 
     async fn close_session_mcp(
@@ -170,224 +269,43 @@ impl Owner {
         session: &str,
         generation: crate::mcp::ClientGeneration,
         servers: Option<&crate::mcp::Servers>,
+        materials: &mut Vec<(String, crate::mcp::CleanupMaterial)>,
+        ticket: &maka_plugin_core::work::resources::Ticket,
     ) -> Result<(), String> {
-        let settled = async {
-            let goal = self.goals.gate.lock().await;
-            let admission = self.runs.session(session).await;
-            if !self.mcp_projects.has_client(session, generation) {
-                return Ok(());
-            }
-            self.mcp_projects.withdraw_client(session, generation);
-            let control = admission
-                .state()
-                .await
-                .controls
-                .get(session)
-                .filter(|control| control.basis.client_mcp == Some(generation))
-                .cloned();
-            let mut settlement = control.as_ref().map(|control| {
-                control
-                    .settlement
-                    .as_ref()
-                    .expect("client MCP settlement")
-                    .subscribe()
-            });
-            if control.is_none()
-                && !self
-                    .store
-                    .session_is_available(session)
-                    .await
-                    .map_err(|error| error.to_string())?
-            {
-                return Ok(());
-            }
-            let invocation = match &control {
-                Some(control) => Some(control.invocation.invocation_id.clone()),
-                None => {
-                    let parked = self
-                        .store
-                        .session(session)
-                        .await
-                        .map_err(|error| error.to_string())?
-                        .activation_checkpoint(session)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    match parked {
-                        Some(parked)
-                            if client_generation(&parked.checkpoint.native_basis)?
-                                == Some(generation) =>
-                        {
-                            Some(parked.checkpoint.invocation.invocation_id)
-                        }
-                        _ => None,
-                    }
-                }
-            };
-            let stopped = if let Some(invocation) = invocation {
-                self.stop_run_id(session, &invocation, generation.interrupt(), &goal)
-                    .await
-                    .map(|_| ())
-            } else {
-                Ok(())
-            };
-            if let Some(control) = &control {
-                control.cancellation.cancel();
-            }
-            drop(admission);
-            drop(goal);
-            let settled = if let Some(settlement) = &mut settlement {
-                loop {
-                    if let Some(result) = settlement.borrow().clone() {
-                        break result;
-                    }
-                    if settlement.changed().await.is_err() {
-                        break Err("agent_execution_owner_disappeared".into());
-                    }
-                }
-            } else {
-                Ok(())
-            };
-            stopped.and(settled)?;
-            self.settle_session_mcp(session, generation).await
+        let withdrawn = self.withdraw_session_mcp(session, generation).await;
+        if let Err(error) = &withdrawn {
+            ticket.record_failure(error.clone());
+            self.mcp_projects.client_cleanup_failed(error.clone());
         }
-        .await;
-        // Even failed execution custody must still close the original MCP transport.
-        let closed = match servers {
-            Some(servers) => servers.close().await,
-            None => Ok(()),
-        };
-        let cleanup = settled.and(closed);
-        if cleanup.is_ok() {
-            self.mcp_projects.remove_client(session, generation);
-            self.mcp_projects.prune().await?;
-        }
-        cleanup
-    }
-    async fn settle_session_mcp(
-        self: &Arc<Self>,
-        session: &str,
-        generation: crate::mcp::ClientGeneration,
-    ) -> Result<(), String> {
-        if !self
-            .store
-            .session_is_available(session)
-            .await
-            .map_err(|error| error.to_string())?
+        // Close the original transport before waiting for its containing work.
+        if let Some(servers) = servers
+            && let Err(error) = servers.close().await
         {
-            return Ok(());
+            materials.push((error.message, error.material));
         }
-        let store = self
-            .store
-            .session(session)
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut changes = store
-            .subscribe_commits()
-            .map_err(|error| error.to_string())?;
-        loop {
-            let admission = self.runs.session(session).await;
-            let control = {
-                let runs = admission.state().await;
-                if runs.retained_cleanup.contains(session) {
-                    return Err("agent_execution_cleanup_unconfirmed".into());
-                }
-                runs.controls
-                    .get(session)
-                    .filter(|control| control.basis.client_mcp == Some(generation))
-                    .cloned()
-            };
-            let parked = match store
-                .activation_checkpoint(session)
-                .await
-                .map_err(|error| error.to_string())?
-            {
-                Some(parked) => {
-                    client_generation(&parked.checkpoint.native_basis)? == Some(generation)
-                }
-                None => false,
-            };
-            drop(admission);
-            if let Some(control) = control {
-                control.cancellation.cancel();
-                let mut settlement = control
-                    .settlement
-                    .as_ref()
-                    .expect("client MCP settlement")
-                    .subscribe();
-                loop {
-                    if let Some(result) = settlement.borrow().clone() {
-                        result?;
-                        break;
-                    }
-                    settlement
-                        .changed()
-                        .await
-                        .map_err(|_| "agent_execution_owner_disappeared")?;
-                }
-            } else if !parked || self.stop.is_cancelled() {
-                return Ok(());
-            } else {
-                #[cfg(test)]
-                if self
-                    .mcp_shutdown_at_parked_wait
-                    .swap(false, std::sync::atomic::Ordering::SeqCst)
-                {
-                    use futures_util::FutureExt;
-                    // Enter the next wait without historical hints masking shutdown.
-                    while let Some(changed) = changes.changed().now_or_never() {
-                        changed.expect("live MCP test subscription");
-                    }
-                    self.stop.cancel();
-                }
-                self.schedule_activations(crate::owner::now())
-                    .await
-                    .map_err(|error| error.to_string())?;
-                // Recovery may have acquired custody during the scan; recheck it on shutdown.
-                tokio::select! {
-                    _ = self.stop.cancelled() => {},
-                    changed = changes.changed() => changed.map_err(|error| error.to_string())?,
-                }
+        let mut failures = Vec::new();
+        for (cause, material) in materials.iter() {
+            if let Err(error) = material.closed().await {
+                let error = format!("MCP transport: {cause}; original cleanup: {error}");
+                ticket.record_failure(error.clone());
+                self.mcp_projects.client_cleanup_failed(error.clone());
+                failures.push(error);
             }
         }
-    }
-    pub(in crate::owner) async fn revoke_lost_client_mcp(
-        &self,
-    ) -> Result<(), maka_agent_engine::RunError> {
-        for session in self.store.activation_checkpoint_sessions().await? {
-            if !self.owns(&session) {
-                continue;
-            }
-            let store = self.store.session(&session).await?;
-            self.revoke_lost_checkpoint(&session, &store).await?;
+        let settled = match withdrawn {
+            Ok(Some(settlement)) => settlement.await,
+            Ok(None) => Ok(()),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = settled {
+            failures.push(format!("MCP original work: {error}"));
         }
+        if !failures.is_empty() {
+            return Err(failures.join("; "));
+        }
+        self.mcp_projects.remove_client(session, generation);
+        self.mcp_projects.prune().await?;
+        self.wake_notify.notify_one();
         Ok(())
-    }
-    async fn revoke_lost_checkpoint(
-        &self,
-        session: &str,
-        store: &maka_event_log::SessionStore,
-    ) -> Result<Option<crate::mcp::ClientGeneration>, maka_agent_engine::RunError> {
-        let Some(checkpoint) = store.activation_checkpoint(session).await? else {
-            return Ok(None);
-        };
-        if let Some(generation) = client_generation(&checkpoint.checkpoint.native_basis)
-            .map_err(maka_agent_engine::RunError::InvalidInput)?
-            && !self.mcp_projects.has_client(session, generation)
-        {
-            if !checkpoint.revoked {
-                store
-                    .stop_native_approvals(&checkpoint.checkpoint.invocation, crate::owner::now())
-                    .await?;
-            }
-            return Ok(Some(generation));
-        }
-        Ok(None)
-    }
-}
-
-fn client_generation(basis: &Value) -> Result<Option<crate::mcp::ClientGeneration>, String> {
-    match basis.get("client_mcp") {
-        Some(value) => serde_json::from_value(value.clone()).map_err(|error| error.to_string()),
-        None => Ok(None),
     }
 }

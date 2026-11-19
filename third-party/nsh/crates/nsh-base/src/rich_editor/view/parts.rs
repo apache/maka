@@ -90,6 +90,17 @@ pub struct RichEditorClasses {
     /// Where a dragged row or column drops.
     #[prop(skip_none)]
     pub table_drop_indicator: Option<SharedString>,
+    /// The knobs of the handles at the ends of a selection a touch made
+    /// (a 10 point dot in the theme's `primary`, above the start's line and
+    /// below the end's); the hit area around each is the editor's.
+    #[prop(skip_none)]
+    pub selection_handle: Option<SharedString>,
+    /// The start's knob, after `selectionHandle`.
+    #[prop(skip_none)]
+    pub selection_handle_start: Option<SharedString>,
+    /// The end's knob, after `selectionHandle`.
+    #[prop(skip_none)]
+    pub selection_handle_end: Option<SharedString>,
     /// The nodes' boxes, by type name (`paragraph`) or by type and
     /// attribute (`heading[level=2]`).
     #[prop(skip_none)]
@@ -153,6 +164,15 @@ pub struct RichEditorStyles {
     /// Where a dragged row or column drops.
     #[prop(skip_none)]
     pub table_drop_indicator: Option<PartStyle>,
+    /// The knobs of a touch selection's handles.
+    #[prop(skip_none)]
+    pub selection_handle: Option<PartStyle>,
+    /// The start's knob.
+    #[prop(skip_none)]
+    pub selection_handle_start: Option<PartStyle>,
+    /// The end's knob.
+    #[prop(skip_none)]
+    pub selection_handle_end: Option<PartStyle>,
     /// The nodes' boxes, by type name or type and attribute.
     #[prop(skip_none)]
     pub nodes: Option<PartStyles>,
@@ -211,6 +231,9 @@ pub(crate) enum Part {
     TableGrip,
     TableResizeHandle,
     TableDropIndicator,
+    SelectionHandle,
+    SelectionHandleStart,
+    SelectionHandleEnd,
 }
 
 impl RichEditorClasses {
@@ -232,6 +255,9 @@ impl RichEditorClasses {
             Part::TableGrip => self.table_grip.as_ref(),
             Part::TableResizeHandle => self.table_resize_handle.as_ref(),
             Part::TableDropIndicator => self.table_drop_indicator.as_ref(),
+            Part::SelectionHandle => self.selection_handle.as_ref(),
+            Part::SelectionHandleStart => self.selection_handle_start.as_ref(),
+            Part::SelectionHandleEnd => self.selection_handle_end.as_ref(),
         }
     }
 }
@@ -255,6 +281,9 @@ impl RichEditorStyles {
             Part::TableGrip => &self.table_grip,
             Part::TableResizeHandle => &self.table_resize_handle,
             Part::TableDropIndicator => &self.table_drop_indicator,
+            Part::SelectionHandle => &self.selection_handle,
+            Part::SelectionHandleStart => &self.selection_handle_start,
+            Part::SelectionHandleEnd => &self.selection_handle_end,
         };
         style.as_ref().map(|s| &s.0)
     }

@@ -15,7 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-
 [package]
 build = "build/main.rs"
 name = "maka-cli"
@@ -46,6 +45,26 @@ name = "integration"
 path = "tests/integration/main.rs"
 
 [[test]]
+name = "mainline_reopen"
+path = "tests/mainline_reopen.rs"
+
+[[test]]
+name = "journal_recovery"
+path = "tests/journal_recovery.rs"
+
+[[test]]
+name = "codemode_reopen"
+path = "tests/codemode_reopen.rs"
+
+[[test]]
+name = "external_jobs"
+path = "tests/external_jobs.rs"
+
+[[test]]
+name = "producer_reopen"
+path = "tests/producer_reopen.rs"
+
+[[test]]
 name = "native-desktop"
 path = "tests/native_desktop.rs"
 harness = false
@@ -55,19 +74,22 @@ required-features = ["desktop-tests"]
 nsh-platform-macos = { workspace = true, features = ["terminal"] }
 
 [dependencies]
+jiff.workspace = true
+maka-tools.workspace = true
 nsh-terminal.workspace = true
 maka-ui-build.workspace = true
 maka-code-runtime.workspace = true
 hex.workspace = true
 maka-agent-facts.workspace = true
+maka-agent-state.workspace = true
 maka-agent-ports.workspace = true
 maka-packages.workspace = true
 maka-product-native.workspace = true
+maka-providers.workspace = true
 maka-settings-native.workspace = true
 maka-schema.workspace = true
-maka-skills-api.workspace = true
-maka-workspace-api.workspace = true
 maka-agent-api.workspace = true
+maka-agent-native.workspace = true
 maka-host-js.workspace = true
 maka-transport.workspace = true
 maka-computer-use.workspace = true
@@ -107,18 +129,17 @@ maka-ui-build.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
-nsh-bundler.workspace = true
-nsh-core.workspace = true
-nsh-base.workspace = true
-maka-capabilities.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 crossterm.workspace = true
-maka-app-client.workspace = true
-maka-workbench.workspace = true
 nsh-engine.workspace = true
 nsh-platform-tui.workspace = true
 ratatui.workspace = true
+tokio-tungstenite.workspace = true
+nsh-core.workspace = true
+maka-capabilities.workspace = true
+maka-app-client.workspace = true
+maka-workbench.workspace = true
 log = "0.4.34"
-agent-client-protocol.workspace = true
 tokio-util = { workspace = true, features = ["compat"] }
 hyper = { version = "1.12.0", features = ["server", "http1"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
@@ -126,6 +147,9 @@ http-body-util = "0.1.5"
 futures-util.workspace = true
 libc.workspace = true
 tempfile.workspace = true
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+rustix = { version = "1.1.5", features = ["fs"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

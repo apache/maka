@@ -8,6 +8,8 @@
 //! answers every `Command::HostCall` with a `Host` `{ type: "reply" }`, as
 //! `nsh.js`'s `hostCall` does on the page: always, `ok: false` with the
 //! message when `call` throws, rejects or returns what is not JSON.
+//! Every `Command::HostPost` goes to its `post`, or to its `call` without
+//! one, the result and failures dropped, as `nsh.js`'s `hostPost` does.
 //! `player.hostEvent(event, payload)` sends `Host` `{ type: "event" }`;
 //! what is sent before the app's engine runs waits and reaches it in order
 //! once it does. The context has `console` (the log's target `js`, as the
@@ -32,6 +34,7 @@ use rquickjs::{CatchResultExt as _, Ctx, Function, Module, Object, Value};
 
 /// The page's host of one app: where its calls go, and where the host's
 /// replies and events go.
+#[derive(Clone)]
 pub(crate) struct PageHost {
     calls: Sender<Call>,
     target: Arc<Target>,
@@ -69,7 +72,16 @@ impl PageHost {
     /// The app's call `id` of the host's function `name` with `args`.
     pub(crate) fn call(&self, id: u64, name: &str, args: &JsonValue) {
         let _ = self.calls.send(Call {
-            id,
+            id: Some(id),
+            name: name.to_owned(),
+            args: args.clone(),
+        });
+    }
+
+    /// The app's post to the host's function `name` with `args`.
+    pub(crate) fn post(&self, name: &str, args: &JsonValue) {
+        let _ = self.calls.send(Call {
+            id: None,
             name: name.to_owned(),
             args: args.clone(),
         });
@@ -108,15 +120,17 @@ impl Target {
     }
 }
 
-/// A call the app made: `Command::HostCall`'s fields.
+/// A call the app made: `Command::HostCall`'s fields, or
+/// `Command::HostPost`'s without an id.
 struct Call {
-    id: u64,
+    id: Option<u64>,
     name: String,
     args: JsonValue,
 }
 
 /// What the module's context runs before the module: the timers and the
-/// player, and how calls are answered (as `nsh.js` `hostCall`).
+/// player, and how calls are answered and posts taken (as `nsh.js`
+/// `hostCall` and `hostPost`).
 const GLUE: &str = r#"
 (() => {
   const timers = new Map();
@@ -179,6 +193,12 @@ const GLUE: &str = r#"
     }
     __nshSend(reply);
   };
+  globalThis.__nshPost = async (name, args) => {
+    try {
+      const host = await ready;
+      await (typeof host.post === "function" ? host.post(name, JSON.parse(args)) : host.call(name, JSON.parse(args)));
+    } catch {}
+  };
 })();
 "#;
 
@@ -236,11 +256,18 @@ fn run(
                 // The app closed.
                 let Ok(call) = call else { return };
                 let answered = context.with(|cx| -> Result<(), String> {
-                    let f: Function = cx.globals().get("__nshCall").map_err(|e| e.to_string())?;
                     let args = call.args.to_string();
-                    f.call::<_, Value>((call.id as f64, call.name, args))
-                        .catch(&cx)
-                        .map_err(|e| e.to_string())?;
+                    let called = match call.id {
+                        Some(id) => cx
+                            .globals()
+                            .get::<_, Function>("__nshCall")
+                            .and_then(|f| f.call::<_, Value>((id as f64, call.name, args))),
+                        None => cx
+                            .globals()
+                            .get::<_, Function>("__nshPost")
+                            .and_then(|f| f.call::<_, Value>((call.name, args))),
+                    };
+                    called.catch(&cx).map_err(|e| e.to_string())?;
                     Ok(())
                 });
                 if let Err(err) = answered {

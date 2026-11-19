@@ -1,6 +1,6 @@
 //! The runtime's modules written in Rust: `nsh/android`'s `BackHandler`,
 //! `nsh/accessibility`'s commands, `nsh/device`'s `openUrl`, `nsh`'s
-//! `Image` and `WebView` functions, all of `nsh/clipboard`, `nsh/picker`, `nsh`'s
+//! `Image` and `WebView` functions, all of `nsh/clipboard`, `nsh/picker`, `nsh`'s `Share`,
 //! `Speech`, `UrlScheme`, `setFpsEnabled` and `nsh/storage`,
 //! `nsh/desktop`'s `Application`, the surface-independent `os` metadata,
 //! `net`'s sockets, `websocket`'s connections, `fs/promises`' files and
@@ -21,7 +21,8 @@ mod desktop;
 mod device;
 mod fonts;
 mod fps;
-mod fs;
+pub(crate) mod fs;
+mod haptics;
 mod host;
 mod image;
 mod net;
@@ -29,6 +30,7 @@ mod notifications;
 mod os;
 mod picker;
 mod process;
+mod share;
 mod speech;
 mod storage;
 mod updater;
@@ -61,6 +63,7 @@ pub fn registries() -> &'static [Registry] {
             .module::<accessibility::Accessibility>()
             .module::<clipboard::Clipboard>()
             .module::<picker::Picker>()
+            .module::<share::Share>()
             .module::<speech::Speech>()
             .class::<audio::Sound>()
             .class::<audio::AudioPlayer>()
@@ -75,7 +78,11 @@ pub fn registries() -> &'static [Registry] {
         let mut mobile = Registry::runtime("nsh/mobile");
         mobile
             .register::<crate::mobile::TabBar>()
-            .module::<android::BackHandler>();
+            .register::<crate::mobile::SegmentedControl>()
+            .register::<crate::mobile::Switch>()
+            .register::<crate::mobile::DateTimePicker>()
+            .module::<android::BackHandler>()
+            .module::<haptics::Haptics>();
         let mut os = Registry::runtime("os");
         os.module::<os::Os>();
         let mut process = Registry::runtime("process");

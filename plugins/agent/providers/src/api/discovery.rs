@@ -19,7 +19,7 @@
 
 use super::{ApiProvider, Configuration, authentication, effects, inventory};
 use crate::facts::{
-    adapter::AdapterKind,
+    adapter::RuntimeAdapter,
     discovery::{DiscoveryAuth, ModelDiscovery, ModelFilter, ModelProtocols, ResponseShape},
 };
 use effects::HeaderAuth;
@@ -41,7 +41,7 @@ pub(super) async fn discover(
     request: Discovery,
     context: Context,
 ) -> Result<Vec<ModelInfo>, Error> {
-    let configuration = Configuration::read(&request.connection)?;
+    let configuration = Configuration::read(&request.connection.configuration)?;
     let declaration = &provider.facts.model_discovery;
     if matches!(declaration, ModelDiscovery::Fallback { .. }) {
         return Ok(provider
@@ -64,14 +64,17 @@ pub(super) async fn discover(
         authentication::authorize(provider.facts.auth_kind, request.credential)?
     };
     let kind = if matches!(
-        provider.facts.runtime_adapter.kind,
-        AdapterKind::Anthropic { .. }
+        provider.facts.runtime_adapter,
+        RuntimeAdapter::Anthropic { .. }
     ) {
         HeaderAuth::Anthropic
     } else {
         HeaderAuth::Bearer
     };
-    let headers = effects::headers(kind, credentials, request.request_headers)?;
+    let mut headers = effects::headers(kind, credentials, request.request_headers)?;
+    if provider.id == "magpie" {
+        headers.insert("x-magpie-drawers".into(), "1".into());
+    }
     let client = InventoryClient { context, headers };
     let base = endpoint(&configuration.base_url)?;
     match declaration {
@@ -94,8 +97,8 @@ pub(super) async fn discover(
                 return Err(Error::Unavailable);
             }
             let mut url = base;
-            match &provider.facts.runtime_adapter.kind {
-                AdapterKind::Google { .. } => {
+            match &provider.facts.runtime_adapter {
+                RuntimeAdapter::Google {} => {
                     version(&mut url, "v1beta");
                     append(&mut url, "models");
                     let mut client = client;
@@ -106,11 +109,13 @@ pub(super) async fn discover(
                     let root = client.get(url).await?;
                     return normalize(names(rows(&root, "models")?, true));
                 }
-                AdapterKind::Anthropic { .. } => {
+                RuntimeAdapter::Anthropic { .. } => {
                     version(&mut url, "v1");
                     append(&mut url, "models");
                 }
-                AdapterKind::Openai { .. } | AdapterKind::OpenaiCompatible { .. } => {
+                RuntimeAdapter::OpenaiChat {}
+                | RuntimeAdapter::OpenaiResponses { .. }
+                | RuntimeAdapter::OpenaiCompatible { .. } => {
                     if let Some(path) = path {
                         url = url.join(path).map_err(|_| invalid())?;
                         if url.origin() != endpoint(&configuration.base_url)?.origin() {
@@ -138,7 +143,12 @@ pub(super) async fn discover(
                 !matches!(filter, Some(ModelFilter::LanguageModels))
                     || row.get("type").and_then(Value::as_str) == Some("language")
             });
-            let mut models = inventory::from_rows(provider.id, filtered).map_err(|_| invalid())?;
+            let mut models = inventory::from_rows(
+                provider.id,
+                provider.facts.runtime_adapter.wire()?,
+                filtered,
+            )
+            .map_err(|_| invalid())?;
             if matches!(filter, Some(ModelFilter::ToolCapable)) {
                 models.retain(|model| {
                     model
@@ -189,7 +199,7 @@ impl InventoryClient {
             &self.context,
             http::Request {
                 url: url.into(),
-                method: http::Method::Get,
+                method: maka_plugin_core::http::Method::Get,
                 headers: self.headers.clone().into_iter().collect(),
                 body: Default::default(),
             },

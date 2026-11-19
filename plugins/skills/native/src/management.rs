@@ -18,6 +18,9 @@
  */
 
 use super::*;
+
+#[cfg(test)]
+mod tests;
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::Dir;
 use maka_capabilities::filesystem::entries::{self, Operation};
@@ -575,6 +578,3 @@ impl Library {
         .await
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -1,7 +1,7 @@
 import { mount, signal, Text, View } from "nsh";
 import { reduceMotion } from "nsh";
 import { Animated, createAnimatedValue, Easing, LayoutAnimation } from "nsh";
-import { button, buttonText, desktop, focusRing, Inspector, Panel, size, Stage, ui, wide } from "./palette";
+import { button, buttonText, desktop, focusRing, Inspector, Panel, Stage, ui, wide } from "./palette";
 
 const TRACK = 250;
 // Read when they render, so they follow the theme.
@@ -72,7 +72,7 @@ function App() {
             transitionTimingFunction: "ease-in-out",
           }}
           hoverStyle={{ opacity: 0.88 }}
-          focusStyle={focusRing()}
+          focusVisibleStyle={focusRing()}
           activeStyle={{ opacity: 0.7 }}
         />
         <View class="size-10 rounded-full border-4 animate-spin motion-reduce:animate-none" style={{ borderColor: ui().border, borderTopColor: ui().accent }} />

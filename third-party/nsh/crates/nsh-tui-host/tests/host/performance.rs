@@ -19,7 +19,7 @@ use ratatui_core::{
 use ratatui_crossterm::CrosstermBackend;
 
 #[derive(Clone, Default)]
-struct Capture(Rc<RefCell<Vec<u8>>>);
+pub(super) struct Capture(pub(super) Rc<RefCell<Vec<u8>>>);
 impl Write for Capture {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.0.borrow_mut().extend_from_slice(bytes);
@@ -32,9 +32,9 @@ impl Write for Capture {
 
 // The exact Cell diff reaches both ratatui's in-memory backend and the real ANSI encoder.
 // Only the encoder's writer is substituted; nothing requires a TTY or terminal queries.
-struct MemoryTerminal {
-    screen: TestBackend,
-    ansi: CrosstermBackend<MeasuredWriter<Capture>>,
+pub(super) struct MemoryTerminal {
+    pub(super) screen: TestBackend,
+    pub(super) ansi: CrosstermBackend<MeasuredWriter<Capture>>,
 }
 impl Backend for MemoryTerminal {
     type Error = io::Error;
@@ -155,6 +155,7 @@ fn bench_terminal_scroll() {
                 .into_iter()
                 .map(Into::into)
                 .collect(),
+            ..Default::default()
         })
         .unwrap();
         let mut options = AppOptions::default();

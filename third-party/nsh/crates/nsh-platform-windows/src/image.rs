@@ -16,8 +16,8 @@
 //! the `image` crate. A view that grows past its bucket loads the next one.
 //! SVG images (sniffed from their bytes) are drawn by [`nsh_core::svg`] at
 //! the bucket's size; their picture keeps their intrinsic size in points,
-//! which they are laid out with and report. Canvases draw bitmaps only
-//! ([`load_bitmap`]).
+//! which they are laid out with and report. Canvases draw them as their
+//! rasterized bitmap ([`load_bitmap`]).
 //!
 //! A [`Frame`] keeps its pixels (premultiplied BGRA) and makes its Direct2D
 //! bitmap when first drawn, on each UI thread that draws it (a bitmap is a
@@ -32,8 +32,8 @@
 //! as on iOS.
 //!
 //! Animated GIF and WebP images decode every frame (composited, at most
-//! [`MAX_FRAMES`] and [`MAX_ANIMATION_BYTES`]: larger ones show their first
-//! frame) with its delay, as browsers and iOS time them (under 20ms: 100ms),
+//! [`MAX_FRAMES`]; past [`MAX_ANIMATION_BYTES`] they decode smaller until
+//! they fit) with its delay, as browsers and iOS time them (under 20ms: 100ms),
 //! and play their loop count. A view advances its frames with a thread
 //! timer at each frame's delay, not on the frame ticker (a 10 fps GIF need
 //! not keep the ticker running at the display's rate), measured on the
@@ -85,7 +85,7 @@ use windows::{
                 D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, D2D1_INTERPOLATION_MODE,
                 D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, D2D1_INTERPOLATION_MODE_LINEAR,
                 D2D1_PROPERTY_TYPE_ENUM, D2D1_PROPERTY_TYPE_FLOAT, D2D1_PROPERTY_TYPE_MATRIX_5X4,
-                ID2D1Bitmap1, ID2D1DeviceContext, ID2D1Effect, ID2D1Image,
+                ID2D1Bitmap1, ID2D1CommandList, ID2D1DeviceContext, ID2D1Effect, ID2D1Image,
             },
             Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
             Imaging::{
@@ -167,7 +167,8 @@ fn context(surface: &Surface, uri: &str) -> Context {
     Context {
         asset_base: surface.asset_base.borrow().clone(),
         read_asset: surface.image_assets.borrow().clone(),
-        access: Arc::default(),
+        access: surface.native.access(),
+        media_files: surface.media_files.borrow().clone(),
         disk: remote
             .then(|| surface.image_cache.borrow().clone())
             .flatten(),
@@ -179,8 +180,8 @@ fn context(surface: &Surface, uri: &str) -> Context {
 /// at the last of them).
 const MAX_FRAMES: usize = 600;
 
-/// The most bytes one animation's frames take: larger animations show
-/// their first frame.
+/// The most bytes one animation's frames take: larger animations decode
+/// smaller (half the side at a time) until their frames fit.
 const MAX_ANIMATION_BYTES: usize = 48 << 20;
 
 /// Decoded pixels: premultiplied BGRA, rows packed.
@@ -250,6 +251,16 @@ impl Frame {
             drawn: AtomicBool::new(false),
             bitmap_threads: Mutex::new(Vec::new()),
             counted: AtomicBool::new(false),
+        })
+    }
+
+    /// A frame of premultiplied BGRA pixels, rows packed.
+    #[cfg(test)]
+    pub(crate) fn from_bgra(width: u32, height: u32, data: Vec<u8>) -> Arc<Frame> {
+        Frame::new(Pixels {
+            width,
+            height,
+            data,
         })
     }
 
@@ -494,13 +505,14 @@ fn animation(
         LoopCount::Finite(n) if format == image::ImageFormat::Gif => n.get().saturating_add(1),
         LoopCount::Finite(n) => n.get(),
     };
-    let (mut pixels, mut delays, mut total) = (Vec::new(), Vec::new(), 0);
+    let (mut buffers, mut delays, mut total) = (Vec::<image::RgbaImage>::new(), Vec::new(), 0);
     let mut natural = None;
+    let mut longest = longest;
     for frame in frames.take(MAX_FRAMES) {
         let frame = match frame {
             Ok(frame) => frame,
             // A damaged frame ends the animation; what decoded plays.
-            Err(e) if !pixels.is_empty() => {
+            Err(e) if !buffers.is_empty() => {
                 log::debug!("image: animation cut short: {e}");
                 break;
             }
@@ -512,18 +524,27 @@ fn animation(
         natural.get_or_insert(Natural::Pixels(w, h));
         let buffer = shrunk(buffer, longest);
         total += buffer.as_raw().len();
-        if total > MAX_ANIMATION_BYTES {
-            log::debug!("image: animation over {MAX_ANIMATION_BYTES} bytes: its first frame shows");
-            pixels.truncate(1);
-            delays.truncate(1);
-            if pixels.is_empty() {
-                pixels.push(Pixels::from_rgba(buffer));
-            }
-            break;
-        }
-        pixels.push(Pixels::from_rgba(buffer));
+        buffers.push(buffer);
         delays.push(delay);
+        // Over budget: the frames take half the side (a quarter of the
+        // bytes) until they fit, so a large animation plays as sharp as
+        // the budget allows rather than stopping on its first frame.
+        while total > MAX_ANIMATION_BYTES {
+            let (w, h) = buffers[0].dimensions();
+            let side = w.max(h);
+            if side <= 1 {
+                break;
+            }
+            longest = (side / 2).max(1);
+            log::debug!("image: animation over {MAX_ANIMATION_BYTES} bytes: decoding at {longest}");
+            total = 0;
+            for buffer in &mut buffers {
+                *buffer = shrunk(std::mem::take(buffer), longest);
+                total += buffer.as_raw().len();
+            }
+        }
     }
+    let pixels: Vec<Pixels> = buffers.into_iter().map(Pixels::from_rgba).collect();
     let Some(natural) = natural.filter(|_| !pixels.is_empty()) else {
         return Err("no frames".into());
     };
@@ -661,13 +682,26 @@ fn decode(bytes: &[u8], target: &Target) -> Result<Picture, String> {
     ))
 }
 
+/// A pixel buffer ([`ImageSrc::rgba`](nsh_core::element::ImageSrc::rgba)),
+/// taken as it is: no decode, at its own size.
+fn from_rgba((w, h, rgba): (u32, u32, &[u8])) -> Result<Picture, String> {
+    let rgba = image::RgbaImage::from_raw(w, h, rgba.to_vec()).ok_or("RGBA of the wrong size")?;
+    Ok(Picture::still(
+        Pixels::from_rgba(rgba),
+        Natural::Pixels(w, h),
+    ))
+}
+
 /// The process's decoded images, in the core's budget.
 fn images() -> &'static Images<Picture> {
     static IMAGES: LazyLock<Images<Picture>> = LazyLock::new(|| {
         Images::with_on_evict(
             nsh_core::image::budget(),
             |bytes: &ImageData, target: &Target| {
-                let picture = decode(bytes, target)?;
+                let picture = match bytes.rgba() {
+                    Some(rgba) => from_rgba(rgba)?,
+                    None => decode(bytes, target)?,
+                };
                 let cost = picture.cost();
                 Ok((picture.clone(), picture.natural, cost))
             },
@@ -858,26 +892,49 @@ pub(crate) fn load_menu_icon(
     )
 }
 
+/// An image a canvas draws: its pixels, and how many of them make one unit
+/// of the image's own size (what `drawImage`'s source rectangle and its
+/// default size are in).
+#[derive(Clone)]
+pub(crate) struct CanvasBitmap {
+    pub(crate) frame: Arc<Frame>,
+    /// 1 for a bitmap decoded whole, whose units are its pixels; an SVG's
+    /// pixels per point, as it was rasterized.
+    pub(crate) scale: f32,
+}
+
 /// Loads the bitmap `uri` (`https://…`, `asset:/…`, a file path, `data:`)
 /// for a canvas off the UI thread, at its natural size; `done` runs on
-/// the surface's UI thread with the image (an animation's first frame). Canvases
-/// draw bitmaps: an SVG is an image that failed to load.
+/// the surface's UI thread with the image (an animation's first frame). An
+/// SVG is rasterized by the shared SVG renderer at `scale` pixels per
+/// point (the canvas's), so that it stays sharp on the screen, and handed
+/// over as its bitmap.
 ///
 /// A cached image is handed over before this returns: callers must not
 /// hold a borrow of view state that `done` takes.
 pub(crate) fn load_bitmap(
     surface: &Rc<Surface>,
     uri: &str,
-    done: impl FnOnce(Result<Arc<Frame>, String>) + 'static,
+    scale: f32,
+    done: impl FnOnce(Result<CanvasBitmap, String>) + 'static,
 ) {
-    let name = uri.to_owned();
     let done = move |result: Result<(Picture, Lease), String>| {
-        done(result.and_then(|(p, _)| match p.natural {
-            Natural::Vector(_) => Err(format!(
-                "{name} is an SVG image: canvases draw bitmaps (PNG, JPEG, ...)"
-            )),
-            Natural::Pixels(..) => Ok(p.frame),
-        }));
+        done(result.map(|(p, _)| {
+            // What it was decoded at over its own size.
+            let own = match p.natural {
+                Natural::Vector(points) => points.width.0,
+                Natural::Pixels(width, _) => width as f32,
+            };
+            let scale = if own > 0.0 {
+                p.frame.size().0 as f32 / own
+            } else {
+                1.0
+            };
+            CanvasBitmap {
+                frame: p.frame,
+                scale,
+            }
+        }))
     };
     let source = ImageSource {
         uri: uri.into(),
@@ -889,7 +946,7 @@ pub(crate) fn load_bitmap(
     if let Some(load) = fetch(
         surface,
         &source,
-        Want::natural(1.0),
+        Want::natural(scale.max(1.0)),
         Frames::First,
         Priority::Normal,
         None,
@@ -1256,9 +1313,12 @@ pub(crate) fn set(
         }
         image.generation += 1;
         if !same_source {
+            let retain = options.retain_previous && source.is_some() && image.source.is_some();
             image.source = source.cloned();
-            image.image = None;
-            image.lease = Lease::none();
+            if !retain {
+                image.image = None;
+                image.lease = Lease::none();
+            }
             image.load = None;
             image.fade = None;
             image.playback = None;
@@ -1312,10 +1372,9 @@ fn start(surface: &Rc<Surface>, view: &NshView) {
         let Some(image) = s.image.as_ref() else {
             return;
         };
-        let source = image
-            .source
-            .clone()
-            .filter(|_| image.image.is_none() && image.load.is_none());
+        let source = image.source.clone().filter(|_| {
+            image.load.is_none() && (image.image.is_none() || image.options.retain_previous)
+        });
         (
             image.generation,
             events,
@@ -1462,11 +1521,13 @@ pub(crate) fn resized(surface: &Rc<Surface>, view: &NshView) {
         image.load = None;
         let Ok((picture, lease)) = result else { return };
         // The same image, larger: no new load events; an animation plays
-        // on from the frame it was.
-        if let (Some(p), Some(animation)) = (image.playback.as_mut(), picture.animation.clone())
-            && animation.frames.len() == p.animation.frames.len()
-        {
-            p.animation = animation;
+        // on from the frame it was. A decode that cannot play the same
+        // frames keeps the one playing (its frames are what draws).
+        if let Some(p) = image.playback.as_mut() {
+            match picture.animation.clone() {
+                Some(a) if a.frames.len() == p.animation.frames.len() => p.animation = a,
+                _ => return,
+            }
         }
         image.image = Some(picture);
         image.lease = lease;
@@ -1530,7 +1591,13 @@ fn loaded(
                     image.placeholder_load = None;
                 }
             }
-            Err(message) => log::warn!("image failed: {message}"),
+            Err(message) => {
+                if image.options.retain_previous {
+                    image.image = None;
+                    image.lease = Lease::none();
+                }
+                log::warn!("image failed: {message}");
+            }
         }
         (events, id, image.fade.is_some())
     };
@@ -1642,6 +1709,28 @@ struct Effects {
     blur: ID2D1Effect,
 }
 
+impl Effects {
+    /// New effects of `dc`'s device, made in device generation `generation`.
+    fn new(dc: &ID2D1DeviceContext, generation: u64) -> windows::core::Result<Self> {
+        // SAFETY: COM calls on the live context; the properties are set with
+        // values of their types.
+        unsafe {
+            let tint = dc.CreateEffect(&CLSID_D2D1ColorMatrix)?;
+            let blur = dc.CreateEffect(&CLSID_D2D1GaussianBlur)?;
+            blur.SetValue(
+                D2D1_GAUSSIANBLUR_PROP_BORDER_MODE.0 as u32,
+                D2D1_PROPERTY_TYPE_ENUM,
+                &(D2D1_BORDER_MODE_HARD.0 as u32).to_ne_bytes(),
+            )?;
+            Ok(Self {
+                generation,
+                tint,
+                blur,
+            })
+        }
+    }
+}
+
 thread_local! {
     static EFFECTS: RefCell<Option<Effects>> = const { RefCell::new(None) };
 }
@@ -1651,31 +1740,33 @@ pub(crate) fn clear_thread_cache() {
     let _ = BITMAPS.try_with(|b| b.borrow_mut().clear());
 }
 
-/// Runs `f` with the tint and blur effects of `dc`'s device.
+/// True when `dc` records into a command list: what it draws is played back
+/// later, through the effects as they are then.
+fn recording(dc: &ID2D1DeviceContext) -> bool {
+    // SAFETY: a COM call on the live context.
+    unsafe { dc.GetTarget() }.is_ok_and(|t| t.cast::<ID2D1CommandList>().is_ok())
+}
+
+/// Runs `f` with tint and blur effects of `dc`'s device: the device's own,
+/// their inputs unset after, or new ones while `dc` records. A command list
+/// refers to the effects it draws through, so the shared ones, set again for
+/// the next picture or unset, would change what it plays back (a leaving
+/// screen's picture failed to draw, `D2DERR_INVALID_GRAPH_CONFIGURATION`).
 fn with_effects<R>(dc: &ID2D1DeviceContext, f: impl FnOnce(&Effects) -> R) -> Option<R> {
+    let generation = crate::gfx::generation();
+    if recording(dc) {
+        return match Effects::new(dc, generation) {
+            Ok(effects) => Some(f(&effects)),
+            Err(e) => {
+                log::warn!("image: cannot create effects: {e}");
+                None
+            }
+        };
+    }
     EFFECTS.with(|cell| {
         let mut cell = cell.borrow_mut();
-        let generation = crate::gfx::generation();
         if cell.as_ref().is_none_or(|e| e.generation != generation) {
-            // SAFETY: COM calls on the live context; the properties are set
-            // with values of their types.
-            let made = unsafe {
-                (|| -> windows::core::Result<Effects> {
-                    let tint = dc.CreateEffect(&CLSID_D2D1ColorMatrix)?;
-                    let blur = dc.CreateEffect(&CLSID_D2D1GaussianBlur)?;
-                    blur.SetValue(
-                        D2D1_GAUSSIANBLUR_PROP_BORDER_MODE.0 as u32,
-                        D2D1_PROPERTY_TYPE_ENUM,
-                        &(D2D1_BORDER_MODE_HARD.0 as u32).to_ne_bytes(),
-                    )?;
-                    Ok(Effects {
-                        generation,
-                        tint,
-                        blur,
-                    })
-                })()
-            };
-            match made {
+            match Effects::new(dc, generation) {
                 Ok(e) => *cell = Some(e),
                 Err(e) => {
                     log::warn!("image: cannot create effects: {e}");
@@ -1683,7 +1774,15 @@ fn with_effects<R>(dc: &ID2D1DeviceContext, f: impl FnOnce(&Effects) -> R) -> Op
                 }
             }
         }
-        cell.as_ref().map(f)
+        let effects = cell.as_ref()?;
+        let out = f(effects);
+        // The effects keep no image alive between draws.
+        // SAFETY: COM calls on live effects.
+        unsafe {
+            effects.tint.SetInput(0, None, false);
+            effects.blur.SetInput(0, None, false);
+        }
+        Some(out)
     })
 }
 
@@ -1752,53 +1851,62 @@ fn draw_one(
     // the context's DPI: mapped onto the rectangle by the world transform.
     let (sx, sy) = effect_scale((fw, fh), (bw, bh), cx.scale);
     cx.set_transform(Mat4::new().translate(x, y).scale(sx, sy).then(&saved));
-    with_effects(cx.dc, |effects| {
-        // SAFETY: COM calls on the live context and effects of its device;
-        // the property values have their types' sizes.
-        unsafe {
-            let Ok(mut input) = bitmap.cast::<ID2D1Image>() else {
-                return;
-            };
-            if let Some(tint) = tint {
-                let m = tint_matrix(tint);
-                let bytes: Vec<u8> = m.iter().flat_map(|v| v.to_ne_bytes()).collect();
-                let _ = effects.tint.SetValue(
-                    D2D1_COLORMATRIX_PROP_COLOR_MATRIX.0 as u32,
-                    D2D1_PROPERTY_TYPE_MATRIX_5X4,
-                    &bytes,
-                );
-                effects.tint.SetInput(0, &input, true);
-                match effects.tint.GetOutput() {
-                    Ok(out) => input = out,
-                    Err(_) => return,
-                }
-            }
-            if blur > 0.0 {
-                let sigma = effect_blur_sigma(blur, (sx, sy));
-                let _ = effects.blur.SetValue(
-                    D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION.0 as u32,
-                    D2D1_PROPERTY_TYPE_FLOAT,
-                    &sigma.to_ne_bytes(),
-                );
-                effects.blur.SetInput(0, &input, true);
-                match effects.blur.GetOutput() {
-                    Ok(out) => input = out,
-                    Err(_) => return,
-                }
-            }
-            cx.dc.DrawImage(
-                &input,
-                None,
-                None,
-                interpolation,
-                D2D1_COMPOSITE_MODE_SOURCE_OVER,
-            );
-            // The effects keep no image alive between draws.
-            effects.tint.SetInput(0, None, false);
-            effects.blur.SetInput(0, None, false);
-        }
-    });
+    if let Ok(input) = bitmap.cast::<ID2D1Image>() {
+        let sigma = effect_blur_sigma(blur, (sx, sy));
+        with_effects(cx.dc, |effects| {
+            draw_through(cx.dc, effects, input, tint, sigma, interpolation);
+        });
+    }
     cx.set_transform(saved);
+}
+
+/// Draws `input` through `effects`: painted with `tint` through its alpha,
+/// then blurred by deviation `sigma` when it is positive.
+fn draw_through(
+    dc: &ID2D1DeviceContext,
+    effects: &Effects,
+    mut input: ID2D1Image,
+    tint: Option<nsh_core::Color>,
+    sigma: f32,
+    interpolation: D2D1_INTERPOLATION_MODE,
+) {
+    // SAFETY: COM calls on the live context and effects of its device; the
+    // property values have their types' sizes.
+    unsafe {
+        if let Some(tint) = tint {
+            let m = tint_matrix(tint);
+            let bytes: Vec<u8> = m.iter().flat_map(|v| v.to_ne_bytes()).collect();
+            let _ = effects.tint.SetValue(
+                D2D1_COLORMATRIX_PROP_COLOR_MATRIX.0 as u32,
+                D2D1_PROPERTY_TYPE_MATRIX_5X4,
+                &bytes,
+            );
+            effects.tint.SetInput(0, &input, true);
+            match effects.tint.GetOutput() {
+                Ok(out) => input = out,
+                Err(_) => return,
+            }
+        }
+        if sigma > 0.0 {
+            let _ = effects.blur.SetValue(
+                D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION.0 as u32,
+                D2D1_PROPERTY_TYPE_FLOAT,
+                &sigma.to_ne_bytes(),
+            );
+            effects.blur.SetInput(0, &input, true);
+            match effects.blur.GetOutput() {
+                Ok(out) => input = out,
+                Err(_) => return,
+            }
+        }
+        dc.DrawImage(
+            &input,
+            None,
+            None,
+            interpolation,
+            D2D1_COMPOSITE_MODE_SOURCE_OVER,
+        );
+    }
 }
 
 /// Draws an image view's picture.
@@ -1852,12 +1960,196 @@ pub(crate) fn draw(cx: &mut DrawCx<'_>, state: &ViewState) {
 }
 
 #[cfg(test)]
+impl ImageState {
+    /// An image state showing a loaded, opaque white SVG of `points` at
+    /// `pixels` square (as one decoded for the display's scale).
+    pub(crate) fn loaded_for_test(pixels: u32, points: f32) -> ImageState {
+        use nsh_core::geometry::{px, size};
+        let data = vec![255u8; (pixels * pixels * 4) as usize];
+        let picture = Picture::still(
+            Pixels {
+                width: pixels,
+                height: pixels,
+                data,
+            },
+            Natural::Vector(size(px(points), px(points))),
+        );
+        ImageState {
+            image: Some(picture),
+            alpha: 1.0,
+            ..ImageState::default()
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use nsh_core::image::loader::{Location, resolve};
 
     use super::*;
+
+    #[test]
+    fn retain_previous_replaces_clears_errors_and_unmounts() {
+        retain_previous_lifecycle();
+    }
+
+    // Control completion ordering while using the platform decoder and mounter.
+    fn retain_previous_lifecycle() {
+        use nsh_core::image::{Budget, MemoryCache};
+        use nsh_core::{MountItem, ViewKind};
+
+        let surface = Surface::new(Default::default());
+        surface.mounter.borrow_mut().apply(
+            &surface,
+            &MountItem::Create {
+                id: 2,
+                kind: ViewKind::Image,
+            },
+        );
+        let view = surface.view(2).unwrap();
+        let options = ImageOptions {
+            retain_previous: true,
+            ..Default::default()
+        };
+        let source = |uri: &str| ImageSource {
+            uri: uri.into(),
+            ..Default::default()
+        };
+        let red = decoded(br##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#f00"/></svg>"##, 64).unwrap();
+        let blue = decoded(br##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#00f"/></svg>"##, 64).unwrap();
+        let budget = Budget::new(1024);
+        let cache = MemoryCache::<u8, ()>::new(&budget);
+        let generation = || view.state().image.as_ref().unwrap().generation;
+        let shown = || {
+            let s = view.state();
+            s.image
+                .as_ref()
+                .and_then(|i| i.image.as_ref())
+                .map(|p| p.frame.pixels.data.clone())
+        };
+        let red_pixels = red.frame.pixels.data.clone();
+        let blue_pixels = blue.frame.pixels.data.clone();
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/red.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        loaded(
+            &surface,
+            &view,
+            generation(),
+            Ok((red.clone(), cache.insert_transient(1, (), 16))),
+            false,
+        );
+        assert_eq!(shown(), Some(red_pixels.clone()));
+
+        let old = generation();
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/blue.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        assert_eq!(
+            shown(),
+            Some(red_pixels.clone()),
+            "replacement retains previous pixels while pending"
+        );
+        assert_eq!(budget.used(), 16);
+        loaded(&surface, &view, old, Err("stale failure".into()), true);
+        assert_eq!(
+            shown(),
+            Some(red_pixels),
+            "stale failure cannot clear the current frame"
+        );
+        loaded(
+            &surface,
+            &view,
+            generation(),
+            Ok((blue.clone(), cache.insert_transient(2, (), 32))),
+            true,
+        );
+        assert_eq!(shown(), Some(blue_pixels.clone()));
+        assert_eq!(budget.used(), 32, "replacement releases the old lease");
+
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/broken.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        assert_eq!(shown(), Some(blue_pixels));
+        loaded(
+            &surface,
+            &view,
+            generation(),
+            Err("invalid image".into()),
+            true,
+        );
+        assert_eq!(shown(), None, "failure clears the retained frame");
+        assert_eq!(budget.used(), 0);
+
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/red-again.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        loaded(
+            &surface,
+            &view,
+            generation(),
+            Ok((red.clone(), cache.insert_transient(3, (), 16))),
+            false,
+        );
+        let cleared = generation();
+        set(&surface, &view, None, ResizeMode::Contain, &options);
+        assert_eq!(shown(), None, "explicit clear is immediate");
+        assert_eq!(budget.used(), 0);
+        loaded(&surface, &view, cleared, Ok((blue, Lease::none())), true);
+        assert_eq!(
+            shown(),
+            None,
+            "completion after clear cannot resurrect pixels"
+        );
+
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/last.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        loaded(
+            &surface,
+            &view,
+            generation(),
+            Ok((red, cache.insert_transient(4, (), 16))),
+            false,
+        );
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/pending.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        assert_eq!(budget.used(), 16);
+        surface
+            .mounter
+            .borrow_mut()
+            .apply(&surface, &MountItem::Delete { id: 2 });
+        drop(view);
+        assert_eq!(budget.used(), 0, "unmount releases the retained frame");
+        surface.stop();
+    }
 
     #[test]
     fn host_image_assets_load_without_a_directory_and_are_released_on_stop() {
@@ -2133,6 +2425,37 @@ mod tests {
     }
 
     #[test]
+    fn large_animations_shrink_to_fit_and_keep_playing() {
+        // #2248: 20 frames of 800x800 take ~48.8 MiB, over the budget.
+        use image::{Delay, Frame, codecs::gif::GifEncoder};
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = GifEncoder::new(&mut bytes);
+            for i in 0..20u32 {
+                let rgba = image::RgbaImage::from_fn(800, 800, |x, _| {
+                    image::Rgba(if (x / 16 + i) % 2 == 0 {
+                        [0, 0, 0, 255]
+                    } else {
+                        [255; 4]
+                    })
+                });
+                let frame = Frame::from_parts(rgba, 0, 0, Delay::from_numer_denom_ms(100, 1));
+                encoder.encode_frame(frame).unwrap();
+            }
+        }
+        let picture = animation(&bytes, image::ImageFormat::Gif, 800)
+            .unwrap()
+            .unwrap();
+        let a = picture.animation.as_ref().expect("still animates");
+        assert_eq!(a.frames.len(), 20);
+        assert!(picture.cost() <= MAX_ANIMATION_BYTES);
+        let (w, h) = picture.frame.size();
+        assert_eq!((w, h), (400, 400), "the largest size that fits");
+        assert!(a.frames.iter().all(|f| f.size() == (w, h)));
+        assert_eq!(picture.natural, Natural::Pixels(800, 800));
+    }
+
+    #[test]
     fn effect_transform_accounts_for_target_dpi() {
         let one_x = effect_scale((100.0, 50.0), (200.0, 100.0), 1.0);
         let two_x = effect_scale((100.0, 50.0), (200.0, 100.0), 2.0);
@@ -2198,5 +2521,127 @@ mod tests {
         // Red, of the input's alpha; nothing from its colors.
         assert_eq!(&m[15..19], &[1.0, 1.0, 0.0, 0.0]);
         assert!(m[..15].iter().all(|v| *v == 0.0));
+    }
+
+    #[test]
+    fn a_recording_keeps_each_pictures_tint() {
+        use windows::Win32::Graphics::Direct2D::{
+            Common::{D2D_POINT_2U, D2D_RECT_U},
+            D2D1_BITMAP_OPTIONS, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_CPU_READ,
+            D2D1_BITMAP_OPTIONS_TARGET, D2D1_MAP_OPTIONS_READ,
+        };
+        use windows_numerics::Matrix3x2;
+        let Ok(gfx) = crate::gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let dc = &gfx.dc;
+        let props = |options: D2D1_BITMAP_OPTIONS| D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: options,
+            colorContext: std::mem::ManuallyDrop::new(None),
+        };
+        let red = nsh_core::Color::rgba(255, 0, 0, 255);
+        let blue = nsh_core::Color::rgba(0, 0, 255, 255);
+        // SAFETY: COM calls on live objects of one device; `EndDraw`
+        // follows each `BeginDraw`; the mapped memory is read before `Unmap`.
+        unsafe {
+            // An opaque 4 × 4 picture, drawn tinted red at the origin and
+            // blue 10 points to the right, as two icons of a leaving screen.
+            let white = [0xffu8; 4 * 4 * 4];
+            let picture: ID2D1Image = dc
+                .CreateBitmap(
+                    D2D_SIZE_U {
+                        width: 4,
+                        height: 4,
+                    },
+                    Some(white.as_ptr().cast()),
+                    16,
+                    &props(D2D1_BITMAP_OPTIONS_NONE),
+                )
+                .unwrap()
+                .cast()
+                .unwrap();
+            let list = dc.CreateCommandList().unwrap();
+            dc.SetTarget(&list);
+            dc.BeginDraw();
+            for (tint, x) in [(red, 0.0), (blue, 10.0)] {
+                dc.SetTransform(&Matrix3x2::translation(x, 0.0));
+                with_effects(dc, |effects| {
+                    draw_through(
+                        dc,
+                        effects,
+                        picture.clone(),
+                        Some(tint),
+                        0.0,
+                        D2D1_INTERPOLATION_MODE_LINEAR,
+                    );
+                })
+                .unwrap();
+            }
+            dc.SetTransform(&Matrix3x2::identity());
+            dc.EndDraw(None, None).unwrap();
+            dc.SetTarget(None);
+            list.Close().unwrap();
+            // Another picture drawn through the device's effects meanwhile,
+            // as the window's next frame does.
+            let size = D2D_SIZE_U {
+                width: 16,
+                height: 4,
+            };
+            let target = dc
+                .CreateBitmap(size, None, 0, &props(D2D1_BITMAP_OPTIONS_TARGET))
+                .unwrap();
+            dc.SetTarget(&target);
+            dc.BeginDraw();
+            dc.Clear(None);
+            with_effects(dc, |_| ()).unwrap();
+            dc.DrawImage(
+                &list,
+                None,
+                None,
+                D2D1_INTERPOLATION_MODE_LINEAR,
+                D2D1_COMPOSITE_MODE_SOURCE_OVER,
+            );
+            // Played back after: an effect of the list without its input
+            // failed the whole pass here.
+            dc.EndDraw(None, None).unwrap();
+            dc.SetTarget(None);
+            let read = dc
+                .CreateBitmap(
+                    size,
+                    None,
+                    0,
+                    &props(D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW),
+                )
+                .unwrap();
+            read.CopyFromBitmap(
+                Some(&D2D_POINT_2U { x: 0, y: 0 }),
+                &target,
+                Some(&D2D_RECT_U {
+                    left: 0,
+                    top: 0,
+                    right: 16,
+                    bottom: 4,
+                }),
+            )
+            .unwrap();
+            let mapped = read.Map(D2D1_MAP_OPTIONS_READ).unwrap();
+            // Row 1, column `x`.
+            let px = |x: usize| {
+                std::slice::from_raw_parts(mapped.bits.add(mapped.pitch as usize + x * 4), 4)
+                    .to_vec()
+            };
+            // BGRA: each picture keeps the tint it was drawn with.
+            let (left, right) = (px(1), px(11));
+            read.Unmap().unwrap();
+            assert_eq!(left, [0, 0, 255, 255]);
+            assert_eq!(right, [255, 0, 0, 255]);
+        }
     }
 }

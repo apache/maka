@@ -1,8 +1,18 @@
-//! Pure OS metadata. Returned directory paths confer no filesystem access.
+//! OS metadata. Returned directory paths confer no filesystem access; the
+//! home directory is told only to apps granted `capabilities.homeDir`.
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
-use crate::element::{JsError, codes, module};
+use crate::element::{JsError, System, codes, module};
+
+/// The native operating system's name (`process.platform`, `os.platform()`):
+/// Rust's `std::env::consts::OS`, but `"harmonyos"` on HarmonyOS, whose
+/// target (`target_env = "ohos"`) Rust counts as Linux.
+pub(crate) const SYSTEM: &str = if cfg!(target_env = "ohos") {
+    "harmonyos"
+} else {
+    std::env::consts::OS
+};
 
 /// Native OS metadata. Returned paths confer no filesystem access.
 #[module]
@@ -17,9 +27,10 @@ impl Os {
 
     /// The native operating system's name, as Rust's `std::env::consts::OS`
     /// and gpui-shell's say it: `"macos"`, `"windows"`, `"linux"`, `"ios"`,
-    /// `"android"` (not Node's `"darwin"` / `"win32"`).
+    /// `"android"` (not Node's `"darwin"` / `"win32"`); `"harmonyos"` on
+    /// HarmonyOS, which Rust's target calls Linux.
     pub(crate) fn platform() -> String {
-        std::env::consts::OS.to_owned()
+        SYSTEM.to_owned()
     }
 
     /// The native CPU architecture's name, as Rust's
@@ -29,10 +40,18 @@ impl Os {
         std::env::consts::ARCH.to_owned()
     }
 
-    /// The configured absolute native home directory. This grants no file
-    /// access. Throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` where the
-    /// platform has none.
-    pub(crate) fn homedir() -> Result<String, JsError> {
+    /// The configured absolute native home directory, for apps granted
+    /// `capabilities.homeDir` (`ERR_ACCESS_DENIED` otherwise). This grants
+    /// no file access. Throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` where
+    /// the platform has none.
+    pub(crate) fn homedir(sys: System) -> Result<String, JsError> {
+        if !sys.access.allows_home_dir() {
+            return Err(JsError::access_denied(
+                "os.homedir() is not granted: add `\"homeDir\": true` to capabilities in nsh.json",
+                "homeDir",
+                "",
+            ));
+        }
         let none = || {
             JsError::Error("os.homedir(): no absolute native home directory is configured".into())
                 .with_code(codes::UNAVAILABLE)
@@ -59,16 +78,46 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::access::{Access, Capabilities};
+
+    fn sys(declared: Capabilities) -> System {
+        System::new(
+            std::sync::Arc::new(Access {
+                declared,
+                granted: None,
+            }),
+            None,
+            Default::default(),
+            Default::default(),
+        )
+    }
 
     #[test]
     fn metadata_matches_native_values_without_surface_context() {
         assert_eq!(Os::platform(), std::env::consts::OS);
         assert_eq!(Os::arch(), std::env::consts::ARCH);
         assert_eq!(Os::EOL, if cfg!(windows) { "\r\n" } else { "\n" });
-        if let Ok(home) = Os::homedir() {
+        if let Ok(home) = Os::homedir(sys(Capabilities::all())) {
             assert!(PathBuf::from(home).is_absolute());
         }
     }
+
+    #[test]
+    fn the_home_directory_is_a_capability() {
+        let Err(error) = Os::homedir(sys(Default::default())) else {
+            panic!("os.homedir() without capabilities.homeDir");
+        };
+        assert_eq!(error.code(), Some(codes::ACCESS_DENIED));
+        assert!(error.message().contains("homeDir"), "{}", error.message());
+        let granted = Capabilities {
+            home_dir: true,
+            ..Default::default()
+        };
+        let denied =
+            |r: Result<String, JsError>| r.is_err_and(|e| e.code() == Some(codes::ACCESS_DENIED));
+        assert!(!denied(Os::homedir(sys(granted))));
+    }
+
     #[test]
     fn registry_generates_os_signatures_from_typed_functions() {
         let registry = crate::runtime::registries()

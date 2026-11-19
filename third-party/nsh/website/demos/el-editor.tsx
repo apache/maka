@@ -1,7 +1,7 @@
 import { mount, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 import { Editor, type EditorDiagnostic, type EditorRef, type EditorSearchResult } from "nsh/base";
-import { button, buttonText, desktop, field, Log, Panel, Segmented, size, Split, ui, wide, sectionSurface } from "./palette";
+import { button, buttonText, desktop, field, Log, Panel, Segmented, Split, ui, wide, sectionSurface } from "./palette";
 
 const SAMPLES = {
   rust: `/// The n-th Fibonacci number.
@@ -92,7 +92,7 @@ function App() {
                 accessibilityLabel="Find"
                 autoCapitalize="none"
                 autoCorrect={false}
-                {...field({ style: { height: size.controlSm, paddingVertical: 0 } })}
+                {...field()}
               />
               <Text style={{ fontSize: 13, fontVariant: ["tabular-nums"], color: ui().text }}>
                 {query() ? (found().error ?? `${found().current == null ? "–" : found().current! + 1} of ${found().count}`) : "–"}

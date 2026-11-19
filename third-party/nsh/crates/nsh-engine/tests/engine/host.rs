@@ -185,6 +185,55 @@ fn host_allowlist_matches_prefixes() {
     );
 }
 
+/// Posts `echo` and `other` with `{ a: 1 }` and shows what each did:
+/// `posted`, or the error's `code`.
+const POSTS: &str = r#"import { mount, signal, Text } from "nsh";
+import { host } from "nsh";
+
+const shown = signal("waiting");
+const post = (name) => {
+  try { host.post(name, { a: 1 }); return "posted"; } catch (e) { return e.code; }
+};
+setTimeout(() => shown.set(`done ${post("echo")} ${post("other")}`), 0);
+
+mount(() => <Text>{shown()}</Text>);
+"#;
+
+/// The posts that reached the platform once `done` showed and `count`
+/// came (the core sends them as a task, after the turn's views).
+fn posts(rx: &Receiver<MountBatch>, done: &str, count: usize) -> Vec<Command> {
+    let mut posts = Vec::new();
+    let mut shown = false;
+    until(rx, |batch| {
+        posts.extend(batch.items.iter().filter_map(|item| match item {
+            MountItem::Command {
+                id: ROOT_ID,
+                command: command @ Command::HostPost { .. },
+            } => Some(command.clone()),
+            _ => None,
+        }));
+        shown |= texts(batch).any(|t| t == done);
+        shown && posts.len() >= count
+    });
+    posts
+}
+
+#[test]
+fn host_posts_reach_the_platform_without_an_sdk_channel() {
+    let echo = Some(r#"{ "host": ["echo"] }"#);
+    let (_engine, rx) = start_with(POSTS, with_host(), echo, None);
+    assert_eq!(
+        posts(&rx, "done posted ERR_ACCESS_DENIED", 1),
+        [Command::HostPost {
+            name: "echo".into(),
+            args: json!({ "a": 1 }),
+        }]
+    );
+    // Without a host, posts are dropped, refused names too.
+    let (_engine, rx) = start_with(POSTS, Environment::default(), echo, None);
+    assert!(posts(&rx, "done posted posted", 0).is_empty());
+}
+
 const EVENTS: &str = r#"import { mount, signal, Text } from "nsh";
 import { host } from "nsh";
 

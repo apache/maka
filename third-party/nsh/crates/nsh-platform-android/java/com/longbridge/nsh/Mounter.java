@@ -5,16 +5,20 @@ import android.animation.AnimatorListenerAdapter;
 import android.animation.TimeInterpolator;
 import android.animation.ValueAnimator;
 import android.content.Context;
+import android.content.pm.ActivityInfo;
 import android.graphics.Rect;
 import android.text.Layout;
 import android.util.SparseArray;
 import android.util.SparseLongArray;
+import android.os.Build;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import android.view.animation.AccelerateInterpolator;
 import android.view.animation.AnimationUtils;
 import android.view.animation.DecelerateInterpolator;
 import android.view.animation.LinearInterpolator;
+import android.view.animation.PathInterpolator;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewParent;
@@ -75,6 +79,8 @@ final class Mounter {
      * its message, its buttons and a destructive action, each light then dark ARGB (0: the system's).
      */
     final int[] dialogColors = new int[10];
+    /** The alerts shown and not answered yet, by dialog id: what {@link SystemUi#closeDialog} takes back. */
+    final SparseArray<android.app.AlertDialog> dialogs = new SparseArray<>();
     /** The status bar the app asked for last (style, hidden), applied again when the appearance changes. */
     private int barStyle = -1;
     private boolean barHidden;
@@ -104,8 +110,12 @@ final class Mounter {
 
     /** One part of a layout animation (`encode.rs` `layout_transition`). */
     private static final class Transition {
-        int curve; // 0 linear, 1 ease in, 2 ease out, 3 ease in-out, 4 spring, 5 the keyboard's
+        int curve; // 0 linear, 1 ease in, 2 ease out, 3 ease in-out, 4 fitted spring, 5 the keyboard's, 6 spring, 7 cubic Bézier
         float damping;
+        /** A spring's progress (6), sampled evenly over the time it settles in (the duration), ending at 1. */
+        float[] samples;
+        /** A cubic Bézier's control points (7): x1, y1, x2, y2. */
+        float[] bezier;
         int property; // 0 opacity, 1 scale
         long duration, delay;
 
@@ -120,6 +130,17 @@ final class Mounter {
                     float d = damping;
                     return t -> (float) (1 + Math.pow(2, -10 * t) * Math.sin((t - d / 4) * Math.PI * 2 / d));
                 }
+                case 6: {
+                    float[] p = samples;
+                    int last = p.length - 1;
+                    return t -> {
+                        if (t >= 1) return 1;
+                        float x = Math.max(t, 0) * last;
+                        int i = (int) x;
+                        return p[i] + (p[i + 1] - p[i]) * (x - i);
+                    };
+                }
+                case 7: return new PathInterpolator(bezier[0], bezier[1], bezier[2], bezier[3]);
                 default: return new AccelerateDecelerateInterpolator();
             }
         }
@@ -131,6 +152,57 @@ final class Mounter {
     final Context context;
     final Images images;
     final SparseArray<View> views = new SparseArray<>();
+    /** The `captureKeys` policy of each view, as `KeyCaptures.java` reads it (`encode.rs` `key_capture`). */
+    private final SparseArray<int[]> keyCaptures = new SparseArray<>();
+    /** `focusable`: -1 unset, 0 false, 1 true (`encode.rs` `view_props`). */
+    private final android.util.SparseIntArray focusProps = new android.util.SparseIntArray();
+    /** A portaled view's logical keyboard parent (`ViewProps::key_parent`); absent: ordinary. */
+    private final android.util.SparseIntArray keyParents = new android.util.SparseIntArray();
+    /**
+     * A managed view took or lost the focus: the core styles it (`FOCUSED`),
+     * and its `onFocus` / `onBlur` listeners hear it as an input's do.
+     */
+    private final View.OnFocusChangeListener focusChange = (view, focused) -> {
+        if (!(view instanceof Node)) return;
+        int id = ((Node) view).nodeId();
+        // The focus went somewhere (the user's Tab or tap, or the view a
+        // pending `focus()` waits for): that request is over.
+        if (focused) dropPendingFocus();
+        // A programmatic focus only opts this focus session into touch
+        // mode. Once it ends, default buttons must remain touch-neutral.
+        if (!focused && !Focusable.touch(focusProps.get(id, -1))) {
+            view.setFocusableInTouchMode(false);
+        }
+        if (handle() == 0) return;
+        reportState(id, STATE_FOCUSED, focused);
+        if (wants(id, focused ? Native.FOCUS : Native.BLUR)) {
+            event(id, focused ? Native.FOCUS : Native.BLUR);
+        }
+    };
+    /**
+     * A press on a managed stop focuses it before its press handlers run
+     * (the focus-a-visible-control behavior the contract asks for), where
+     * the focus can go: an explicit `focusable` takes it anywhere,
+     * including touch mode; a default pressable only outside touch mode,
+     * and never from a text input or hosted native view (only an explicit
+     * `focusable` does). A touch-mode tap therefore leaves an input
+     * editing and its keyboard up.
+     */
+    private final View.OnTouchListener pointerFocus = (view, e) -> {
+        if (e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN && view instanceof Node) {
+            int id = ((Node) view).nodeId();
+            int prop = focusProps.get(id, -1);
+            boolean nativeFocused = keyNode(view.getRootView().findFocus(), 1) == 0;
+            boolean touchMode = view.getRootView().isInTouchMode();
+            if (Focusable.pointer(prop, nativeFocused, touchMode) && focusStop(id) && !view.isFocused()) {
+                // requestFocus invokes focusChange synchronously. Mark the
+                // pointer modality first so focus-visible is not keyboard's.
+                if (handle() != 0) Native.pointerInput(handle());
+                view.requestFocus();
+            }
+        }
+        return false;
+    };
     private final SparseArray<Dynamic> statics = new SparseArray<>();
     /** The events each view listens to: kinds below 64 here, ... */
     private final SparseLongArray events = new SparseLongArray();
@@ -169,6 +241,13 @@ final class Mounter {
     /** `hitSlop` of views that have one (px: top, right, bottom, left). */
     private final SparseArray<float[]> slops = new SparseArray<>();
     private final SparseArray<A11y> a11y = new SparseArray<>();
+    /**
+     * The view whose node an accessibility service last clicked through its delegate
+     * (TalkBack's double tap), and when (uptime ms): a checked or selected state it changes in a
+     * later batch is told as that click's (`A11y.changed`).
+     */
+    View accessibilityClicked;
+    long accessibilityClickedAt;
     /** Layout animation of the batch being applied: create, update, delete. */
     private Transition[] layoutAnimation;
     /** Views created by the batch being applied. */
@@ -205,6 +284,8 @@ final class Mounter {
         this.density = host.getResources().getDisplayMetrics().density;
         this.images = images;
         components.put(TabBarComponent.NAME, c -> new TabBarComponent(context, c, this::night));
+        components.put(SwitchComponent.NAME, c -> new SwitchComponent(context, c, this::night));
+        components.put(DateTimePickerComponent.NAME, c -> new DateTimePickerComponent(context, c, this::night));
         images.redirects = (base, location) -> Native.mediaRedirect(handle(), base, location);
         images.inline = uri -> {
             long handle = handle();
@@ -218,9 +299,9 @@ final class Mounter {
             }
 
             @Override
-            public byte[] complete(String url, int status, String[] headers, byte[] body) {
+            public byte[] complete(String url, int status, String[] headers, byte[] body, String[] redirects) {
                 long handle = handle();
-                return handle == 0 ? null : Native.imageCacheComplete(handle, url, status, headers, body);
+                return handle == 0 ? null : Native.imageCacheComplete(handle, url, status, headers, body, redirects);
             }
         };
         root = new Box(context, this, 1);
@@ -230,6 +311,11 @@ final class Mounter {
     /** Whether the running app's web views may navigate to {@code url} (its capabilities). */
     boolean allowsWebview(String url) {
         return Native.allowsWebview(handle(), url);
+    }
+
+    /** Whether the running app's web pages may capture {@code kind} (its {@code webview.media}). */
+    boolean allowsWebMedia(String kind) {
+        return Native.allowsWebMedia(handle(), kind);
     }
 
     long handle() {
@@ -334,6 +420,7 @@ final class Mounter {
                     if (v instanceof TextBox || v instanceof ImageBox) {
                         v.setClickable(presses || (v instanceof TextBox && ((TextBox) v).hasLinks()));
                     }
+                    updateFocusable(id, v);
                     break;
                 }
                 case IMAGE: {
@@ -398,6 +485,13 @@ final class Mounter {
                         if (v instanceof ComponentBox && ((ComponentBox) v).component instanceof TabBarComponent) {
                             ((TabBarComponent) ((ComponentBox) v).component).appearanceChanged();
                         }
+                        if (v instanceof ComponentBox && ((ComponentBox) v).component instanceof SwitchComponent) {
+                            ((SwitchComponent) ((ComponentBox) v).component).appearanceChanged();
+                        }
+                        if (v instanceof ComponentBox && ((ComponentBox) v).component instanceof DateTimePickerComponent) {
+                            ((DateTimePickerComponent) ((ComponentBox) v).component).appearanceChanged();
+                        }
+                        if (v instanceof StackBox.ScreenBox) ((StackBox.ScreenBox) v).appearanceChanged();
                     }
                     if (barStyle == 0) {
                         SystemUi.statusBar(context, barStyle, barHidden, night());
@@ -428,11 +522,13 @@ final class Mounter {
                     boolean bouncesZoom = b.getInt() != 0, pinch = b.getInt() != 0, center = b.getInt() != 0;
                     boolean ownIndicator = b.getInt() != 0;
                     float indicatorHeight = b.getFloat();
+                    float barTop = b.getFloat(), barRight = b.getFloat(), barBottom = b.getFloat(), barLeft = b.getFloat();
                     if (v instanceof ScrollBox) {
                         ((ScrollBox) v).setBehavior(paging, interval, offsets, alignment, deceleration, enabled, bounces,
                                 top, right, bottom, left, taps, oneStep);
                         ((ScrollBox) v).setZoom(zooms, minZoom, maxZoom, bouncesZoom, pinch, center);
                         ((ScrollBox) v).setRefresh(ownIndicator, indicatorHeight);
+                        ((ScrollBox) v).setBarInset(barTop, barRight, barBottom, barLeft);
                     }
                     break;
                 }
@@ -462,7 +558,11 @@ final class Mounter {
                     Dynamic d = statics.get(id);
                     if (v != null && d != null) applyDynamic(v, d);
                     // Its props bound again are handed over again.
-                    if (v instanceof ComponentBox) ((ComponentBox) v).forgetAnimated();
+                    if (v instanceof ComponentBox) {
+                        NshComponent c = ((ComponentBox) v).component;
+                        if (c instanceof RustComponent) ((RustComponent) c).step(seq);
+                        else ((ComponentBox) v).forgetAnimated();
+                    }
                     break;
                 }
                 case GESTURES: {
@@ -534,7 +634,7 @@ final class Mounter {
                     if (v instanceof InputBox) ((InputBox) v).setContent(px(x), px(y), px(x + w) - px(x), px(y + h) - px(y));
                     break;
                 }
-                case COMMAND: command(b, objects); break;
+                case COMMAND: command(b, objects, seq); break;
                 case COMPONENT: {
                     int id = b.getInt();
                     component(id, string(objects, b.getInt()));
@@ -571,17 +671,25 @@ final class Mounter {
                     View v = views.get(b.getInt());
                     String[] names = new String[b.getInt()];
                     for (int i = 0; i < names.length; i++) names[i] = string(objects, b.getInt());
-                    if (v instanceof ComponentBox) ((ComponentBox) v).slots = names;
+                    if (v instanceof ComponentBox) {
+                        NshComponent c = ((ComponentBox) v).component;
+                        if (c instanceof RustComponent) ((RustComponent) c).step(seq);
+                        else ((ComponentBox) v).slots = names;
+                    }
                     break;
                 }
                 case COMPONENT_PROPS: {
                     View v = views.get(b.getInt());
                     int count = b.getInt();
                     NshComponent c = v instanceof ComponentBox ? ((ComponentBox) v).component : null;
-                    for (int i = 0; i < count; i++) {
-                        String name = string(objects, b.getInt());
-                        String json = string(objects, b.getInt());
-                        if (c != null) c.setProp(name, Json.parse(json));
+                    if (c instanceof RustComponent) {
+                        ((RustComponent) c).step(seq);
+                    } else if (c != null) {
+                        for (int i = 0; i < count; i++) {
+                            String name = string(objects, b.getInt());
+                            String json = string(objects, b.getInt());
+                            c.setProp(name, Json.parse(json));
+                        }
                     }
                     break;
                 }
@@ -595,6 +703,10 @@ final class Mounter {
         }
         created.clear();
         finishNavigation();
+        // Commands run before the navigation: a page's `focus()` in the
+        // batch that pushes it finds the page placed only now, so it is
+        // focused before the frame draws.
+        if (pendingFocus.id() != 0) retryFocus();
         outputs(Native.afterBatch(handle(), seq));
     }
 
@@ -638,6 +750,14 @@ final class Mounter {
         Transition t = new Transition();
         t.curve = b.getInt();
         t.damping = b.getFloat();
+        if (t.curve == 6) {
+            t.samples = new float[b.getInt()];
+            for (int i = 0; i < t.samples.length; i++) t.samples[i] = b.getFloat();
+        }
+        if (t.curve == 7) {
+            t.bezier = new float[4];
+            for (int i = 0; i < 4; i++) t.bezier[i] = b.getFloat();
+        }
         t.property = b.getInt();
         t.duration = (long) b.getFloat();
         t.delay = (long) b.getFloat();
@@ -687,13 +807,14 @@ final class Mounter {
                 v = modal.root;
                 break;
             }
-            case 12: v = new WebBox(context, this, id); break;
+            case 12: v = WebBox.make(context, this, id); break;
             case 13: v = new VideoBox(context, this, host, id); break;
             case 14: v = new CanvasBox(context, this, id); break;
             case 15: v = new ComponentBox(context, this, id); break;
             default: v = new Box(context, this, id);
         }
         views.put(id, v);
+        updateFocusable(id, v);
         if (layoutAnimation != null) created.add(id);
     }
 
@@ -712,6 +833,10 @@ final class Mounter {
      */
     void destroyComponents() {
         Notifications.forget(this);
+        // A page's orientations go with the app, and so does a focus
+        // request still waiting (no `DELETE` ends it).
+        orientations(0);
+        dropPendingFocus();
         if (audio != null) {
             audio.release();
             audio = null;
@@ -719,7 +844,52 @@ final class Mounter {
         for (int i = 0; i < views.size(); i++) {
             View v = views.valueAt(i);
             if (v instanceof ComponentBox) ((ComponentBox) v).destroy();
+            if (v instanceof WebBox) ((WebBox) v).destroy();
+            if (v instanceof ScrollBox) {
+                ((ScrollBox) v).unmounted = true;
+                unkeyScroll((ScrollBox) v);
+            }
         }
+    }
+
+    // Scroll views the host watches (`NshView.watchScroll`), by `nativeID`.
+    private final java.util.Map<String, NshView.ScrollWatcher> scrollWatchers = new java.util.HashMap<>();
+    private final java.util.Map<String, ScrollBox> keyedScrolls = new java.util.HashMap<>();
+
+    void watchScroll(String key, NshView.ScrollWatcher watcher) {
+        if (watcher == null) {
+            scrollWatchers.remove(key);
+            return;
+        }
+        scrollWatchers.put(key, watcher);
+        ScrollBox box = keyedScrolls.get(key);
+        if (box != null) watcher.onAttached(new NshScrollHandle(box, key));
+    }
+
+    /** A scroll view's props were applied, with {@code key} its {@code nativeID} (null: none). */
+    private void keyScroll(ScrollBox box, String key) {
+        if (java.util.Objects.equals(box.hostKey, key)) return;
+        unkeyScroll(box);
+        if (key == null) return;
+        // Another scroll view of the same id makes way: the newest is watched.
+        ScrollBox previous = keyedScrolls.get(key);
+        if (previous != null) unkeyScroll(previous);
+        box.hostKey = key;
+        keyedScrolls.put(key, box);
+        NshView.ScrollWatcher watcher = scrollWatchers.get(key);
+        if (watcher != null) watcher.onAttached(new NshScrollHandle(box, key));
+    }
+
+    /** The scroll view is gone or lost its key: its handle goes dead and its watcher hears it. */
+    private void unkeyScroll(ScrollBox box) {
+        String key = box.hostKey;
+        if (key == null) return;
+        box.hostKey = null;
+        box.hostListeners.clear();
+        if (keyedScrolls.get(key) != box) return;
+        keyedScrolls.remove(key);
+        NshView.ScrollWatcher watcher = scrollWatchers.get(key);
+        if (watcher != null) watcher.onDetached();
     }
 
     /** The app's sounds and players (one per engine), made at its first audio command. UI thread. */
@@ -878,6 +1048,16 @@ final class Mounter {
     }
 
     private void delete(int id) {
+        View v = views.get(id);
+        if (id == pendingFocus.id()) {
+            dropPendingFocus();
+            android.util.Log.w("nsh", "focus(): view " + id + " was removed before it was shown; the request is dropped");
+        }
+        if (v != null && managed(v) && v.isFocused()) {
+            // The view goes away: report its blur before it leaves the tree.
+            v.setOnFocusChangeListener(focusChange);
+            releaseFocus(v);
+        }
         removeHosted(id);
         ModalHost modal = modals.get(id);
         if (modal != null) {
@@ -887,7 +1067,6 @@ final class Mounter {
             modals.remove(id);
             touchTrackers.remove(modal.touches());
         }
-        View v = views.get(id);
         if (v instanceof StackBox) stacks.remove(v);
         SelectableView area = selectableViews.get(id);
         if (area != null) {
@@ -905,6 +1084,10 @@ final class Mounter {
         if (v instanceof WebBox) ((WebBox) v).destroy();
         if (v instanceof VideoBox) ((VideoBox) v).destroy();
         if (v instanceof ComponentBox) ((ComponentBox) v).destroy();
+        if (v instanceof ScrollBox) {
+            ((ScrollBox) v).unmounted = true;
+            unkeyScroll((ScrollBox) v);
+        }
         if (v == focused) focused = null;
         views.remove(id);
         headerItems.remove(id);
@@ -915,8 +1098,12 @@ final class Mounter {
         if ((events.get(id) & (1L << Native.TOUCH)) != 0) touchListeners--;
         events.delete(id);
         eventsHigh.delete(id);
+        keyCaptures.remove(id);
+        focusProps.delete(id);
+        keyParents.delete(id);
         slops.remove(id);
         a11y.remove(id);
+        if (accessibilityClicked == v) accessibilityClicked = null;
     }
 
     private void frame(int id, float x, float y, float w, float h) {
@@ -1147,7 +1334,7 @@ final class Mounter {
         ValueAnimator a = ValueAnimator.ofFloat(0, 1);
         a.setDuration((long) fx.transitionDuration);
         a.setStartDelay((long) fx.transitionDelay);
-        a.setInterpolator(Effects.interpolator(fx.transitionEasing));
+        a.setInterpolator(fx.transitionInterpolator());
         Dynamic now = new Dynamic();
         a.addUpdateListener(animation -> {
             float t = (float) animation.getAnimatedValue();
@@ -1555,6 +1742,7 @@ final class Mounter {
             a.actionLabels[i] = string(objects, b.getInt());
         }
         a.testId = string(objects, b.getInt());
+        String nativeId = string(objects, b.getInt());
         float longPressDelay = b.getFloat();
         int ripple = b.getInt();
         Integer rippleColor = null;
@@ -1570,6 +1758,39 @@ final class Mounter {
         }
         boolean selectableView = b.getInt() != 0;
         boolean continuesText = b.getInt() != 0;
+        // `selectionMenu` (`encode.rs` `selection_menu`): the count, then per
+        // item its id (-1 a separator), whether it is enabled and its label.
+        int menuCount = b.getInt();
+        SelectableView.MenuEntry[] selectionMenu = new SelectableView.MenuEntry[menuCount];
+        for (int i = 0; i < menuCount; i++) {
+            int itemId = b.getInt();
+            boolean enabled = b.getInt() != 0;
+            String label = string(objects, b.getInt());
+            selectionMenu[i] = new SelectableView.MenuEntry(itemId, enabled, label);
+        }
+        // `captureKeys` (`encode.rs` `key_capture`): mode, then for keys
+        // the count and each canonical key id and modifiers.
+        int captureMode = b.getInt();
+        if (captureMode == KeyCaptures.KEYS) {
+            int count = b.getInt();
+            int[] policy = new int[2 + count * 2];
+            policy[0] = KeyCaptures.KEYS;
+            policy[1] = count;
+            for (int i = 0; i < count; i++) {
+                policy[2 + i * 2] = b.getInt();
+                policy[3 + i * 2] = b.getInt();
+            }
+            keyCaptures.put(id, policy);
+        } else if (captureMode == KeyCaptures.ALL) {
+            keyCaptures.put(id, new int[] {KeyCaptures.ALL});
+        } else {
+            keyCaptures.remove(id);
+        }
+        int focusable = b.getInt();
+        focusProps.put(id, focusable);
+        int keyParent = b.getInt();
+        if (keyParent >= 0) keyParents.put(id, keyParent);
+        else keyParents.delete(id);
         if (v == null) return;
         if (v instanceof TextBox) ((TextBox) v).continuesText = continuesText;
         SelectableView area = selectableViews.get(id);
@@ -1580,6 +1801,8 @@ final class Mounter {
             area.clear();
             selectableViews.remove(id);
         }
+        area = selectableViews.get(id);
+        if (area != null) area.menu = selectionMenu;
         Feedback f = feedback.get(id);
         if (f == null) feedback.put(id, f = new Feedback());
         f.longPressDelay = longPressDelay >= 0 ? Math.round(longPressDelay) : -1;
@@ -1592,8 +1815,13 @@ final class Mounter {
         }
         if (v instanceof InputBox) ((InputBox) v).pointerEvents = pointerEvents;
         if (v instanceof TextBox) ((TextBox) v).a11y = a;
+        A11y before = a11y.get(id);
         a11y.put(id, a);
         a.apply(v);
+        updateFocusable(id, v);
+        // After the new delegate is in place: services answer by querying the node.
+        a.changed(v, before);
+        if (v instanceof ScrollBox) keyScroll((ScrollBox) v, nativeId);
     }
 
     private static String string(Object[] objects, int index) {
@@ -1601,26 +1829,21 @@ final class Mounter {
     }
 
     /** Applies `[animating, (view, prop, value)*]` from the animator. */
-    /** A canvas's drawing; loads the images it draws (bitmaps: an SVG is an image that failed to load). */
+    /** A canvas's drawing; loads the images it draws (an SVG as its rasterized bitmap). */
     private void drawing(CanvasBox canvas, int[] code, Object[] objects) {
         for (String uri : canvas.setDrawing(code, objects)) {
             if (canvas.images.containsKey(uri)) continue;
             // At their natural size: the drawing may scale them anyway.
             Images.Image cached = images.request(uri, 0, 0, (image, error) -> {
-                if (image != null && !image.vector) {
+                if (image != null) {
                     canvas.images.put(uri, image);
                     canvas.invalidate();
                 } else {
-                    android.util.Log.w("nsh", "canvas image failed: " + (image != null ? notABitmap(uri) : error));
+                    android.util.Log.w("nsh", "canvas image failed: " + error);
                 }
             });
-            if (cached != null && cached.vector) android.util.Log.w("nsh", "canvas image failed: " + notABitmap(uri));
-            else if (cached != null) canvas.images.put(uri, cached);
+            if (cached != null) canvas.images.put(uri, cached);
         }
-    }
-
-    private static String notABitmap(String uri) {
-        return uri + " is an SVG image: canvases draw bitmaps (PNG, JPEG, ...)";
     }
 
     /** Canvas animated value slot `n` arrives as property `CANVAS_ARG + n` (`animation.rs`). */
@@ -1837,6 +2060,14 @@ final class Mounter {
         }
         dirtyModals.clear();
         updateBack();
+    }
+
+    /** Reports every mounted screen's insets again, after the view's safe area changed. */
+    void reportAllScreenInsets() {
+        for (int i = 0; i < screenOptions.size(); i++) {
+            int id = screenOptions.keyAt(i);
+            if (views.get(id) instanceof StackBox.ScreenBox) reportScreenInsets(id, screenOptions.valueAt(i));
+        }
     }
 
     /** A screen's insets below its header, for `safeAreaInsets()`. */
@@ -2063,6 +2294,7 @@ final class Mounter {
         boolean caretHidden = b.getInt() != 0;
         boolean pasteInserts = b.getInt() != 0;
         boolean scrollbarVisible = b.getInt() != 0, replaced = b.getInt() != 0;
+        int fontVariant = b.getInt();
         if (!(v instanceof InputBox)) return;
         ((InputBox) v).pasteInserts = pasteInserts;
         ((InputBox) v).setScrollbar(scrollbarVisible, replaced);
@@ -2072,7 +2304,8 @@ final class Mounter {
         String family = familyIndex >= 0 ? (String) objects[familyIndex] : null;
         ((InputBox) v).configure(size, weight, italic, color, family, spacing, align, placeholder,
                 hasPlaceholderColor, placeholderColor, secure, keyboard, returnKey, capitalize, autoCorrect,
-                multiline, maxLength, editable, autoFocus, hasSelection, selection, hasCaret, caret, submit);
+                multiline, maxLength, editable, autoFocus, hasSelection, selection, hasCaret, caret, submit,
+                inputRtl, fontVariant);
     }
 
     /**
@@ -2088,26 +2321,134 @@ final class Mounter {
         if (f.getRootView() == host.getRootView()) host.requestFocus();
     }
 
-    private void command(ByteBuffer b, Object[] objects) {
+    /** The activity's requested orientation before a page set one (null: none set). */
+    private Integer ownOrientation;
+
+    /**
+     * A page's {@code supportedOrientations} ({@code nsh_core::ModalConfig}
+     * bits: 1 portrait, 2 upside down, 4 landscape-left, 8 landscape-right;
+     * 0 gives the activity back the orientation it had). Landscape-left is
+     * UIKit's {@code UIInterfaceOrientationLandscapeLeft}, the device
+     * turned clockwise: Android's reverse landscape. Two-sided sets follow
+     * the user's rotation lock ({@code USER_*}).
+     */
+    private void orientations(int bits) {
+        android.app.Activity activity = SystemUi.activity(context);
+        if (activity == null) return;
+        if (bits == 0) {
+            if (ownOrientation != null) activity.setRequestedOrientation(ownOrientation);
+            ownOrientation = null;
+            return;
+        }
+        if (ownOrientation == null) ownOrientation = activity.getRequestedOrientation();
+        boolean portrait = (bits & 1) != 0, upsideDown = (bits & 2) != 0;
+        boolean left = (bits & 4) != 0, right = (bits & 8) != 0;
+        int requested;
+        if ((portrait || upsideDown) && (left || right)) {
+            requested = portrait && upsideDown && left && right
+                    ? ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+                    : ActivityInfo.SCREEN_ORIENTATION_USER;
+        } else if (portrait && upsideDown) {
+            requested = ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT;
+        } else if (portrait) {
+            requested = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
+        } else if (upsideDown) {
+            requested = ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT;
+        } else if (left && right) {
+            requested = ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE;
+        } else if (left) {
+            requested = ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE;
+        } else {
+            requested = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
+        }
+        activity.setRequestedOrientation(requested);
+    }
+
+    /**
+     * `Haptics` of `nsh/mobile`: the haptic feedback constant closest to
+     * `haptic` (`nsh_core::Haptic`, in the order `encode.rs` writes), which
+     * the view plays when the user's touch feedback setting allows it.
+     * API levels: {@link HapticFeedbackConstants#CONFIRM} /
+     * {@link HapticFeedbackConstants#REJECT} from 30 (else
+     * {@link HapticFeedbackConstants#VIRTUAL_KEY} /
+     * {@link HapticFeedbackConstants#LONG_PRESS});
+     * {@link HapticFeedbackConstants#SEGMENT_TICK} from 34 (else
+     * {@link HapticFeedbackConstants#CLOCK_TICK} for selection).
+     */
+    private static void haptic(View view, int haptic) {
+        boolean api30 = Build.VERSION.SDK_INT >= 30;
+        int feedback;
+        switch (haptic) {
+            case 0: // selection
+                feedback = Build.VERSION.SDK_INT >= 34
+                        ? HapticFeedbackConstants.SEGMENT_TICK
+                        : HapticFeedbackConstants.CLOCK_TICK;
+                break;
+            case 1: feedback = HapticFeedbackConstants.KEYBOARD_TAP; break; // light
+            case 2: feedback = HapticFeedbackConstants.VIRTUAL_KEY; break; // medium
+            case 3: feedback = HapticFeedbackConstants.LONG_PRESS; break; // heavy
+            case 4: feedback = HapticFeedbackConstants.CLOCK_TICK; break; // soft
+            case 5: feedback = HapticFeedbackConstants.CONTEXT_CLICK; break; // rigid
+            case 6: // success
+                feedback = api30 ? HapticFeedbackConstants.CONFIRM : HapticFeedbackConstants.VIRTUAL_KEY;
+                break;
+            case 7: feedback = HapticFeedbackConstants.LONG_PRESS; break; // warning: no constant of its own
+            case 8: // error
+                feedback = api30 ? HapticFeedbackConstants.REJECT : HapticFeedbackConstants.LONG_PRESS;
+                break;
+            default: return;
+        }
+        view.performHapticFeedback(feedback);
+    }
+
+    private void command(ByteBuffer b, Object[] objects, long seq) {
         int id = b.getInt(), kind = b.getInt();
         View v = views.get(id);
         switch (kind) {
             case 0:
-                if (v instanceof InputBox) ((InputBox) v).focus();
+                focus(id, v);
                 break;
             case 1:
+                blurPending(id, v);
                 if (v instanceof InputBox) {
                     ((InputBox) v).blur();
+                } else if (v != null && managed(v) && v.isFocused()) {
+                    releaseFocus(v);
+                } else if (modals.get(id) != null) {
+                    // Blur whatever the dialog window has focused and hide its keyboard.
+                    View window = v != null ? v.getRootView() : null;
+                    if (window != null) {
+                        View f = window.findFocus();
+                        if (f != null && f != window) {
+                            InputBox input = inputOf(f);
+                            if (input != null) input.blur();
+                            else releaseFocus(f);
+                        }
+                        InputMethodManager imm = (InputMethodManager) context.getSystemService(Context.INPUT_METHOD_SERVICE);
+                        imm.hideSoftInputFromWindow(window.getWindowToken(), 0);
+                    }
                 } else if (id == 1) {
-                    // Keyboard.dismiss(): hide the keyboard even when the field that showed it is gone (a page that
-                    // closed with it), which leaves no focused view in the host but the keyboard still up. Not when
-                    // an editor outside the host has it (the embedding app's, another NshView's): they share the window.
+                    // Keyboard.dismiss(): prefer the tracked field (a dialog's
+                    // EditText lives in another window, so host.findFocus()
+                    // misses it). Else hide whatever still holds the IME.
+                    // Matches iOS (#522): dismiss ends editing in modals too.
+                    InputBox field = focusedInput();
+                    if (field != null) {
+                        field.blur();
+                        break;
+                    }
                     View f = host.findFocus();
+                    if (f == null) {
+                        View modal = topModalWindow();
+                        if (modal != null) f = modal.findFocus();
+                    }
                     InputMethodManager imm = (InputMethodManager) context.getSystemService(Context.INPUT_METHOD_SERVICE);
                     if (f != null) {
                         imm.hideSoftInputFromWindow(f.getWindowToken(), 0);
-                        if (f != host) host.requestFocus();
+                        if (f != host) releaseFocus(f);
                     } else {
+                        // Field gone: hide with the host token unless another
+                        // editor outside the host still has the IME (#714).
                         View other = host.getRootView().findFocus();
                         if (other == null || !other.onCheckIsTextEditor() || !imm.isActive(other)) {
                             imm.hideSoftInputFromWindow(host.getWindowToken(), 0);
@@ -2169,15 +2510,31 @@ final class Mounter {
                     texts[i] = (String) objects[b.getInt()];
                     styles[i] = b.getInt();
                 }
-                SystemUi.dialog(this, dialog, title, message, cancelable, sheet, texts, styles);
+                // Its text field: the text, the placeholder, select all, required.
+                String input = null, placeholder = null;
+                boolean selectAll = false, required = false;
+                if (b.getInt() != 0) {
+                    input = (String) objects[b.getInt()];
+                    placeholder = optString(b, objects);
+                    selectAll = b.getInt() != 0;
+                    required = b.getInt() != 0;
+                }
+                SystemUi.dialog(this, dialog, title, message, cancelable, sheet, texts, styles, input, placeholder,
+                        selectAll, required);
                 break;
             }
+            case 60:
+                SystemUi.closeDialog(this, b.getInt());
+                break;
             case 14: {
                 boolean block = b.getInt() != 0;
                 clearJsResponder();
                 if (block && v != null) {
-                    // Scroll views around the responder stop taking its touches.
+                    // Scroll views around the responder stop taking its touches, and the presses around it
+                    // end: a handle held past the long press delay is no long press of the text around it.
                     for (ViewParent p = v.getParent(); p != null; p = p.getParent()) {
+                        if (p instanceof Box) ((Box) p).cancelPress();
+                        else if (p instanceof TextBox && ((TextBox) p).press != null) ((TextBox) p).press.cancel();
                         if (p instanceof ScrollBox) {
                             ((ScrollBox) p).jsBlocked = true;
                             blockedScrolls.add((ScrollBox) p);
@@ -2193,11 +2550,36 @@ final class Mounter {
                 if (v instanceof InputBox) ((InputBox) v).select(start, end);
                 break;
             }
+            case 49: {
+                float x = b.getFloat(), y = b.getFloat(), w = b.getFloat(), h = b.getFloat();
+                int actions = b.getInt();
+                if (v instanceof InputBox) ((InputBox) v).openEditMenu(x, y, w, h, actions);
+                break;
+            }
+            case 51: {
+                int request = b.getInt();
+                String generation = (String) objects[b.getInt()];
+                String start = (String) objects[b.getInt()];
+                String poll = (String) objects[b.getInt()];
+                String cleanup = (String) objects[b.getInt()];
+                if (v instanceof WebBox) ((WebBox) v).evaluate(request, generation, start, poll, cleanup);
+                break;
+            }
+            case 52: {
+                int request = b.getInt();
+                if (v instanceof WebBox) ((WebBox) v).cancelEvaluation(request);
+                break;
+            }
+            case 50:
+                if (v instanceof InputBox) ((InputBox) v).closeEditMenu();
+                break;
             case 21: {
                 String name = string(objects, b.getInt());
                 String json = string(objects, b.getInt());
-                if (v instanceof ComponentBox && ((ComponentBox) v).component != null) {
-                    ((ComponentBox) v).component.command(name, Json.parse(json));
+                if (v instanceof ComponentBox) {
+                    NshComponent c = ((ComponentBox) v).component;
+                    if (c instanceof RustComponent) ((RustComponent) c).step(seq);
+                    else if (c != null) c.command(name, Json.parse(json));
                 }
                 break;
             }
@@ -2213,6 +2595,12 @@ final class Mounter {
                 SystemUi.setClipboard(context, (String) objects[b.getInt()]);
                 break;
             }
+            case 56: {
+                String text = (String) objects[b.getInt()];
+                String html = (String) objects[b.getInt()];
+                SystemUi.setClipboardHtml(context, text, html);
+                break;
+            }
             case 25: {
                 Picker.Request request = new Picker.Request();
                 request.id = b.getInt();
@@ -2220,6 +2608,19 @@ final class Mounter {
                 request.maxDimension = b.getInt();
                 request.quality = b.getFloat();
                 request.current = b.getInt() != 0;
+                request.view = host;
+                Picker.show(context, request);
+                break;
+            }
+            case 57: {
+                Picker.Request request = new Picker.Request();
+                request.id = b.getInt();
+                request.limit = b.getInt() != 0 ? Integer.MAX_VALUE : 1;
+                request.folders = b.getInt() != 0;
+                String extensions = (String) objects[b.getInt()];
+                request.extensions = extensions.isEmpty() ? new String[0] : extensions.split(",");
+                request.files = true;
+                request.paths = this;
                 request.view = host;
                 Picker.show(context, request);
                 break;
@@ -2260,6 +2661,18 @@ final class Mounter {
                         new Object[] {(double) request, "not supported on Android"});
                 break;
             }
+            case 55: {
+                // `encode.rs` `Command::RenderCanvas`: the request, the size in pixels, the scale, the format,
+                // then the drawing as `CANVAS` carries it.
+                int request = b.getInt(), width = b.getInt(), height = b.getInt();
+                float scale = b.getFloat();
+                int format = b.getInt(), words = b.getInt();
+                int[] code = new int[words];
+                b.asIntBuffer().get(code);
+                b.position(b.position() + words * 4);
+                CanvasRender.render(this, request, width, height, scale, format, code, objects);
+                break;
+            }
             case 44: {
                 Notifications.command(this, b, objects);
                 break;
@@ -2268,6 +2681,36 @@ final class Mounter {
                 audio().command(b, objects);
                 break;
             }
+            case 58: {
+                // `encode.rs` `Command::Share`: the request, the title and the
+                // text (each after whether it is there), then the files.
+                Share.Request request = new Share.Request();
+                request.id = b.getInt();
+                boolean hasTitle = b.getInt() != 0;
+                String title = (String) objects[b.getInt()];
+                boolean hasText = b.getInt() != 0;
+                String text = (String) objects[b.getInt()];
+                request.title = hasTitle ? title : null;
+                request.text = hasText ? text : null;
+                request.files = new String[b.getInt()];
+                for (int i = 0; i < request.files.length; i++) request.files[i] = (String) objects[b.getInt()];
+                request.mounter = this;
+                Share.show(context, request);
+                break;
+            }
+            case 59: {
+                // `encode.rs` `Command::AuthSession`: the request, the page, the callback scheme, ephemeral.
+                int request = b.getInt();
+                String url = (String) objects[b.getInt()];
+                String scheme = (String) objects[b.getInt()];
+                boolean ephemeral = b.getInt() != 0;
+                AuthSession.open(context, this, request, url, scheme, ephemeral);
+                break;
+            }
+            case 61:
+                // `encode.rs` `Command::CloseAuthSession`: the request the app closed.
+                AuthSession.close(b.getInt());
+                break;
             case 26: {
                 int request = b.getInt();
                 String url = (String) objects[b.getInt()];
@@ -2304,6 +2747,14 @@ final class Mounter {
             case 17: {
                 String text = (String) objects[b.getInt()];
                 (v != null ? v : host).announceForAccessibility(text);
+                break;
+            }
+            case 48: {
+                haptic(host, b.getInt());
+                break;
+            }
+            case 54: {
+                orientations(b.getInt());
                 break;
             }
             case 18: {
@@ -2368,6 +2819,9 @@ final class Mounter {
 
     void inputFocused(InputBox input, boolean focused) {
         if (focused) {
+            // As a managed view's focus does (`focusChange`): a request
+            // still waiting for another view would take it from the field.
+            dropPendingFocus();
             this.focused = input;
             host.post(this::revealFocused);
         } else if (this.focused == input) {
@@ -2433,15 +2887,541 @@ final class Mounter {
 
     // --- Events --------------------------------------------------------------
 
+    /**
+     * The scroll view whose `keyboardShouldPersistTaps` "never" holds the current touch: if the touch is a tap, it
+     * only dismisses the keyboard; meanwhile it presses nothing.
+     */
+    private ScrollBox tapScroll;
+    /** A view of the touch reported a long press: it is no tap. */
+    private boolean longPressed;
+
+    void startTapOnly(ScrollBox s) {
+        tapScroll = s;
+    }
+
+    void endTapOnly(ScrollBox s) {
+        if (tapScroll == s) tapScroll = null;
+    }
+
+    /**
+     * At a root (the surface, a modal), before it dispatches {@code e}: a tap that only dismisses the keyboard
+     * reaches the views and JS responders as a cancel, so nothing inside (a responder, a web view) acts on it.
+     * Returns the event to dispatch, a new one to recycle when it is not {@code e}.
+     */
+    android.view.MotionEvent keyboardTap(android.view.MotionEvent e) {
+        int action = e.getActionMasked();
+        if (action == android.view.MotionEvent.ACTION_DOWN) {
+            // Set by the scroll view as the down goes through it; nothing of an earlier touch lingers.
+            tapScroll = null;
+            longPressed = false;
+            return e;
+        }
+        if (action != android.view.MotionEvent.ACTION_UP || tapScroll == null || longPressed || !tapScroll.stillTap(e)) return e;
+        ScrollBox s = tapScroll;
+        tapScroll = null;
+        s.hideKeyboard();
+        android.view.MotionEvent cancel = android.view.MotionEvent.obtain(e);
+        cancel.setAction(android.view.MotionEvent.ACTION_CANCEL);
+        return cancel;
+    }
+
     boolean wants(int id, int kind) {
         if (kind >= 64) return (eventsHigh.get(id) & (1L << (kind - 64))) != 0;
         return (events.get(id) & (1L << kind)) != 0;
+    }
+
+    /** Whether `id`'s own state lets it hear keys (a disabled view captures and listens to none). */
+    private boolean keyEnabled(int id) {
+        A11y a = a11y.get(id);
+        return a == null || (a.state & 1) == 0;
+    }
+
+    /** A view the keyboard manager focuses: not an input and not hosted native content. */
+    private static boolean managed(View v) {
+        return v instanceof Node && !(v instanceof InputBox)
+                && !(v instanceof WidgetBox) && !(v instanceof ComponentBox);
+    }
+
+    /**
+     * Whether `id` is a Tab stop: {@code focusable} (true, or unset and the
+     * view takes presses) and enabled. Inputs are stops of their own (their
+     * EditText is the native focus target) and the root is the host itself.
+     */
+    private boolean focusStop(int id) {
+        if (id <= 1) return false;
+        View v = views.get(id);
+        if (v == null) return false;
+        return Focusable.stop(focusProps.get(id, -1), wants(id, Native.PRESS), keyEnabled(id));
+    }
+
+    /** Releases focus to the same window's keyboard root, without focusing another field. */
+    private void releaseFocus(View v) {
+        View window = v.getRootView();
+        if (window == host.getRootView()) {
+            host.requestFocus();
+            return;
+        }
+        for (int i = 0; i < modals.size(); i++) {
+            ModalHost modal = modals.valueAt(i);
+            if (modal.window() == window) {
+                modal.focusRoot();
+                return;
+            }
+        }
+        v.clearFocus();
+    }
+
+    /** An input blurring: the focus leaves its own window, not another window's. */
+    void releaseFocusOf(View v) {
+        releaseFocus(v);
+    }
+
+    /** The input whose EditText contains `v`, if any. */
+    private static InputBox inputOf(View v) {
+        for (View cur = v; cur != null; ) {
+            if (cur instanceof InputBox) return (InputBox) cur;
+            ViewParent parent = cur.getParent();
+            cur = parent instanceof View ? (View) parent : null;
+        }
+        return null;
+    }
+
+    /**
+     * Applies `focusable` (and whether the view takes presses) to a managed
+     * view: Android's own focus carries it, so Tab/Shift+Tab and
+     * `requestFocus` work, and the focus listeners report `FOCUSED`,
+     * `onFocus` and `onBlur` to the core. Only an explicit `focusable` is
+     * focusable in touch mode; a default pressable is a hardware/Tab stop
+     * whose keyboard focus still reveals it in its scroll view, but which
+     * never takes a touch-mode focus.
+     */
+    private void updateFocusable(int id, View v) {
+        if (v == null || id <= 1 || !managed(v)) return;
+        boolean stop = focusStop(id);
+        // Our paired focus/touch listeners mark an installed stop. Unlike
+        // the setters, this getter never creates View.ListenerInfo.
+        boolean listening = v.getOnFocusChangeListener() == focusChange;
+        if (!stop && v.isFocused()) {
+            // Report the blur before focusability is dropped.
+            if (!listening) {
+                v.setOnFocusChangeListener(focusChange);
+                listening = true;
+            }
+            releaseFocus(v);
+        }
+        if (v.isFocusable() != stop) v.setFocusable(stop);
+        // Only an explicit `focusable` (or a programmatic `ref.focus()`,
+        // which sets this itself) opts into touch-mode focus. A default
+        // pressable stays a hardware/Tab stop, so Android's touch-mode
+        // focus path never pulls the focus out of an input or hosted view
+        // on a tap. Keep the flag while the view holds the focus: a props
+        // update must not blur a `ref.focus()` on a default pressable.
+        boolean touch = stop && Focusable.touch(focusProps.get(id, -1));
+        if (touch) {
+            if (!v.isFocusableInTouchMode()) v.setFocusableInTouchMode(true);
+        } else if ((!stop || !v.isFocused()) && v.isFocusableInTouchMode()) {
+            v.setFocusableInTouchMode(false);
+        }
+        if (Build.VERSION.SDK_INT >= 26) v.setDefaultFocusHighlightEnabled(false);
+        // Only change listeners when entering/leaving the stop set. Even
+        // setting a null listener allocates ListenerInfo on an untouched view.
+        if (listening != stop) {
+            v.setOnFocusChangeListener(stop ? focusChange : null);
+            v.setOnTouchListener(stop ? pointerFocus : null);
+        }
+    }
+
+    /**
+     * A `ref.focus()` whose view is not shown yet (`PendingFocus`: a page
+     * the batch pushes, a page under its transition shader, a dialog's
+     * content before its window shows).
+     */
+    private final PendingFocus pendingFocus = new PendingFocus();
+    /**
+     * Tries a pending focus again each frame, posted only while a managed
+     * view waits: Choreographer calls it whichever window the view will
+     * show in (the surface's or a dialog's), and nothing runs per frame
+     * when no request waits.
+     */
+    private final android.view.Choreographer.FrameCallback pendingFocusFrame = frameTime -> {
+        retryFocus();
+        int id = pendingFocus.id();
+        if (id != 0 && !(views.get(id) instanceof InputBox)) {
+            android.view.Choreographer.getInstance().postFrameCallback(this.pendingFocusFrame);
+        }
+    };
+
+    /**
+     * What held the focus of the pending view's window outside NSH's own
+     * views when the request was made (`foreignFocus`), so the request
+     * still takes the focus from it, as it would from a shown view.
+     */
+    private View pendingForeign;
+
+    /** `Command::Focus`: the latest request wins over one still waiting. */
+    private void focus(int id, View v) {
+        dropPendingFocus();
+        // A field not shown yet waits on its own and reports that wait
+        // (`inputFocusWaits`), so a newer request or a blur ends it.
+        if (v instanceof InputBox) ((InputBox) v).focus();
+        else focusManaged(id);
+    }
+
+    /**
+     * `ref.focus()` on a managed stop: makes it focusable and focuses it,
+     * at once when it is shown, else once it is (`PendingFocus`). The
+     * request is explicit, so it opts into touch-mode focus as an
+     * explicit `focusable` does; `updateFocusable` keeps that while the
+     * view holds the focus. On a shown view that is not a stop it does
+     * nothing; a request dropped without effect (no such view, a view
+     * neither shown nor a stop) logs a warning. Called only by `focus`,
+     * which ends the request before it.
+     */
+    private void focusManaged(int id) {
+        View v = views.get(id);
+        if (v == null) {
+            android.util.Log.w("nsh", "focus(): no view " + id);
+            return;
+        }
+        boolean stop = focusStop(id);
+        if (v.isShown()) {
+            if (stop) takeFocus(v);
+            return;
+        }
+        if (!stop) {
+            android.util.Log.w("nsh", "focus(): view " + id + " is neither shown nor a focus stop"
+                    + " (focusable false, disabled, or no press handler); the request is dropped");
+            return;
+        }
+        pendingFocus.start(id, android.os.SystemClock.uptimeMillis());
+        pendingForeign = foreignFocus(v.getRootView());
+        android.view.Choreographer.getInstance().postFrameCallback(pendingFocusFrame);
+    }
+
+    /** Focuses `v`; whether Android gave it the focus. */
+    private boolean takeFocus(View v) {
+        if (!v.isFocusable()) v.setFocusable(true);
+        if (!v.isFocusableInTouchMode()) v.setFocusableInTouchMode(true);
+        return v.requestFocus();
+    }
+
+    /** Focuses the view a pending request waits for once it is shown; gives the request up after its bound. */
+    private void retryFocus() {
+        int id = pendingFocus.id();
+        View v = views.get(id);
+        // A field waits on its own (`InputBox.focus`).
+        if (id == 0 || v instanceof InputBox) return;
+        switch (pendingFocus.retry(v != null && v.isShown(), android.os.SystemClock.uptimeMillis())) {
+            case PendingFocus.FOCUS: {
+                android.view.Choreographer.getInstance().removeFrameCallback(pendingFocusFrame);
+                View before = pendingForeign;
+                pendingForeign = null;
+                View foreign = foreignFocus(v.getRootView());
+                if (foreign != null && foreign != before) {
+                    // Hosted native content, a web view or the embedding
+                    // app's own view took the focus meanwhile (the user's
+                    // tap or Tab), which `focusChange` does not see: the
+                    // latest focus wins, as a node's would.
+                    break;
+                }
+                // Its props may have changed while it waited.
+                if (!focusStop(id)) {
+                    android.util.Log.w("nsh", "focus(): view " + id
+                            + " stopped being a focus stop before it was shown; the request is dropped");
+                } else if (!takeFocus(v)) {
+                    android.util.Log.w("nsh", "focus(): view " + id + " was shown but did not take the focus");
+                }
+                break;
+            }
+            case PendingFocus.EXPIRED:
+                android.view.Choreographer.getInstance().removeFrameCallback(pendingFocusFrame);
+                pendingForeign = null;
+                android.util.Log.w("nsh", "focus(): view " + id + " was not shown within "
+                        + PendingFocus.TIMEOUT_MS + " ms; the request is dropped");
+                break;
+            default:
+                break;
+        }
+    }
+
+    /**
+     * The view holding `window`'s focus when it is not NSH's own: in
+     * hosted native content (a `WidgetBox`, a web view's included, or a
+     * `ComponentBox`) or one of the embedding app's views. Null when
+     * nothing, the surface, a dialog's root or a node (an input's field
+     * included) holds it.
+     */
+    private View foreignFocus(View window) {
+        View f = window == null ? null : window.findFocus();
+        for (View cur = f; cur != null; ) {
+            if (cur == host || ModalHost.isRoot(cur)) return null;
+            if (cur instanceof WidgetBox || cur instanceof ComponentBox) return f;
+            if (cur instanceof Node) return null;
+            ViewParent parent = cur.getParent();
+            cur = parent instanceof View ? (View) parent : null;
+        }
+        return f;
+    }
+
+    /** Ends a pending focus request, a field's own wait included. */
+    private void dropPendingFocus() {
+        int id = pendingFocus.clear();
+        if (id == 0) return;
+        pendingForeign = null;
+        View v = views.get(id);
+        if (v instanceof InputBox) ((InputBox) v).cancelPendingFocus();
+        else android.view.Choreographer.getInstance().removeFrameCallback(pendingFocusFrame);
+    }
+
+    /**
+     * An input's `focus()` started waiting for its field (`InputBox.focus`,
+     * whoever asked: `ref.focus()`, `autoFocus`): the latest request, so
+     * one still waiting for another view ends.
+     */
+    void inputFocusWaits(InputBox input) {
+        int id = input.nodeId();
+        if (pendingFocus.id() == id) return;
+        dropPendingFocus();
+        pendingFocus.start(id, android.os.SystemClock.uptimeMillis());
+    }
+
+    /** An input's wait for its field ended, met or not (`InputBox.cancelPendingFocus`). */
+    void inputFocusWaitEnded(InputBox input) {
+        if (pendingFocus.id() == input.nodeId()) pendingFocus.clear();
+    }
+
+    /** `Command::Blur` of `id` (`v`): ends a pending focus of it, of a view it holds, or of any view (`Keyboard.dismiss()`). */
+    private void blurPending(int id, View v) {
+        int waiting = pendingFocus.id();
+        if (PendingFocus.blurs(id, waiting, v != null && waiting != 0 && holds(v, views.get(waiting)))) {
+            dropPendingFocus();
+        }
+    }
+
+    /**
+     * The node a key event belongs to: the focused managed view's id, the
+     * window's `fallback` root node when nothing in it has a focus, or
+     * `0` for an {@code EditText} or hosted native view, which owns its
+     * keys.
+     */
+    int keyNode(View focus, int fallback) {
+        if (focus == null || focus == host) return fallback;
+        View v = focus;
+        while (v != null && v != host) {
+            if (v instanceof InputBox || v instanceof WidgetBox || v instanceof ComponentBox) return 0;
+            if (v instanceof Node) return ((Node) v).nodeId();
+            ViewParent parent = v.getParent();
+            v = parent instanceof View ? (View) parent : null;
+        }
+        return fallback;
+    }
+
+    /** Whether the focused node is a managed control (a view that takes presses, not an input or root). */
+    boolean control(int node) {
+        return node > 1 && keyEnabled(node) && wants(node, Native.PRESS);
+    }
+
+    /** Whether `focus` is in hosted native content (not an input), which keeps Tab for itself. */
+    private boolean hostedFocus(View focus) {
+        View v = focus;
+        while (v != null && v != host) {
+            if (v instanceof WidgetBox || v instanceof ComponentBox) return true;
+            if (v instanceof Node) return false;
+            ViewParent parent = v.getParent();
+            v = parent instanceof View ? (View) parent : null;
+        }
+        return false;
+    }
+
+    /**
+     * The logical keyboard parent of `id`: a portaled view's mounted
+     * `key_parent` override first (its native Insert parent is not its
+     * logical one), then a screen/header's host parent, else its native
+     * parent.
+     */
+    private int logicalParent(int id) {
+        int keyParent = keyParents.get(id, -1);
+        int hosted = hosts.get(id, -1);
+        if (keyParent >= 0 || hosted >= 0) {
+            return KeyAncestry.parent(keyParent, hosted, -1);
+        }
+        return KeyAncestry.parent(-1, -1, nativeParent(id));
+    }
+
+    /** The nearest mounted ancestor node, as a native Insert put it. */
+    private int nativeParent(int id) {
+        View v = views.get(id);
+        if (v == null) return -1;
+        ViewParent parent = v.getParent();
+        while (parent != null) {
+            if (parent instanceof View) {
+                View view = (View) parent;
+                if (view == host) return -1;
+                if (view instanceof Node) return ((Node) view).nodeId();
+            }
+            parent = parent.getParent();
+        }
+        return -1;
+    }
+
+    /** Whether nodes `id` and `window` are in the same native window (a keyboard boundary). */
+    private boolean sameWindow(int id, int window) {
+        View a = views.get(id), b = views.get(window);
+        return a != null && b != null && a.getRootView() == b.getRootView();
+    }
+
+    /**
+     * Whether the focused node or an enabled ancestor hears raw keys
+     * (`onKeyDown` / `onKeyUp`) or mounts a `captureKeys` policy: only then
+     * does a key need a native {@code KeyEvent} and its capture rules. A
+     * view that hears nothing takes the existing fast path.
+     */
+    boolean keyListens(int focused, int window) {
+        int id = focused;
+        while (id > 0) {
+            if (keyEnabled(id)
+                    && (wants(id, Native.KEY_DOWN) || wants(id, Native.KEY_UP)
+                            || KeyCaptures.capturesAnything(keyCaptures.get(id)))) {
+                return true;
+            }
+            if (id == window || id == 1) break;
+            int next = logicalParent(id);
+            if (next <= 0 || !sameWindow(next, window)) break;
+            id = next;
+        }
+        return false;
+    }
+
+    /**
+     * Whether a mounted {@code captureKeys} rule of the focused view or an
+     * enabled ancestor captures {@code e}: the same canonical shortcut key
+     * as `keymap.rs`, on the UI thread, before Android's defaults. A
+     * system key ({@code KeyEvent.isSystem}: Back, Home, volume, media,
+     * camera, call) is never captured, not even by {@code all}; Android
+     * keeps its default. The raw notification is a separate decision and
+     * still reaches the listeners ({@link #keyListens}), with
+     * {@code defaultPrevented: false}.
+     */
+    boolean keyCaptured(int focused, int window, android.view.KeyEvent e) {
+        int key = KeyCaptures.eventKey(e.getKeyCode(), e.getUnicodeChar(0));
+        int modifiers = KeyCaptures.modifiers(e.getMetaState());
+        boolean system = e.isSystem();
+        int id = focused;
+        while (id > 0) {
+            if (keyEnabled(id) && KeyCaptures.captured(keyCaptures.get(id), key, modifiers, system)) {
+                return true;
+            }
+            if (id == window || id == 1) break;
+            int next = logicalParent(id);
+            if (next <= 0 || !sameWindow(next, window)) break;
+            id = next;
+        }
+        return false;
+    }
+
+    /**
+     * Tab or Shift+Tab from `focus`: the next managed stop or input in
+     * native tree order. The first and last stop yield ({@code false}) to
+     * the embedding Android host instead of wrapping, so Android's own
+     * focus search and defaults get that Tab. Hosted native content keeps
+     * Tab for itself ({@code false}).
+     */
+    boolean moveFocus(View windowRoot, View focus, boolean forward) {
+        if (hostedFocus(focus)) return false;
+        java.util.ArrayList<View> stops = new java.util.ArrayList<>();
+        collectFocusStops(windowRoot, stops);
+        if (stops.isEmpty()) return false;
+        int index = -1;
+        if (focus != null && focus != host) {
+            int holder = -1;
+            for (int i = 0; i < stops.size(); i++) {
+                if (stops.get(i) == focus) {
+                    index = i;
+                    break;
+                }
+                if (holder < 0 && holds(stops.get(i), focus)) holder = i;
+            }
+            if (index < 0) index = holder;
+        }
+        index = TabOrder.next(index, stops.size(), forward);
+        if (index < 0) return false;
+        return keyFocus(stops.get(index));
+    }
+
+    /**
+     * An arrow key while the window's own root holds the focus
+     * ({@link ArrowEntry}): the first stop in `windowRoot` that is on
+     * screen in the window, or its first stop when none is; false when it
+     * has none.
+     */
+    boolean enterFocus(View windowRoot) {
+        java.util.ArrayList<View> stops = new java.util.ArrayList<>();
+        collectFocusStops(windowRoot, stops);
+        android.graphics.Rect window = new android.graphics.Rect();
+        android.graphics.Rect rect = new android.graphics.Rect();
+        boolean shown = windowRoot.getGlobalVisibleRect(window);
+        int index = ArrowEntry.stop(stops.size(), i -> shown
+                && stops.get(i).getGlobalVisibleRect(rect) && android.graphics.Rect.intersects(window, rect));
+        return index >= 0 && keyFocus(stops.get(index));
+    }
+
+    /** Focuses the stop `moveFocus` or `enterFocus` picked, as a key does. */
+    private boolean keyFocus(View next) {
+        if (next instanceof InputBox) {
+            ((InputBox) next).focus();
+            return true;
+        }
+        // A Tab (or an arrow into the app) is a keyboard transition: leave
+        // touch mode as a hardware key does, so a default pressable (not
+        // focusable in touch mode) takes the focus from a real or a
+        // synthetic key alike. The enclosing scroll view still reveals the
+        // stop (ScrollView's requestChildFocus), as for any keyboard focus.
+        return next.requestFocusFromTouch();
+    }
+
+    /** Collects the Tab stops under `view` in tree order. */
+    private void collectFocusStops(View view, java.util.ArrayList<View> stops) {
+        if (view == null || view == host || view.getVisibility() != View.VISIBLE || !view.isShown()) return;
+        if (view instanceof InputBox) {
+            if (keyEnabled(((InputBox) view).nodeId())) stops.add(view);
+            return;
+        }
+        // Hosted native content owns its internal focus.
+        if (view instanceof WidgetBox || view instanceof ComponentBox) return;
+        if (view instanceof Node) {
+            int id = ((Node) view).nodeId();
+            // A split's content wrapper shares its outer box's id; only the
+            // mapped view is the stop.
+            if (id != 1 && views.get(id) == view && managed(view) && focusStop(id)) {
+                stops.add(view);
+            }
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                collectFocusStops(group.getChildAt(i), stops);
+            }
+        }
+    }
+
+    private static boolean holds(View ancestor, View view) {
+        for (View v = view; v != null; ) {
+            if (v == ancestor) return true;
+            ViewParent parent = v.getParent();
+            v = parent instanceof View ? (View) parent : null;
+        }
+        return false;
     }
 
     /** Press callbacks claim a touch; visual feedback alone only observes it. */
     boolean handlesPress(int id) {
         return wants(id, Native.PRESS) || wants(id, Native.LONG_PRESS)
                 || wants(id, Native.PRESS_IN) || wants(id, Native.PRESS_OUT);
+    }
+
+    /** Listens to taps: a press listener other than `onLongPress`, which alone leaves the taps to the views around. */
+    boolean handlesTap(int id) {
+        return wants(id, Native.PRESS) || wants(id, Native.PRESS_IN) || wants(id, Native.PRESS_OUT);
     }
 
     boolean hasPan(int id) {
@@ -2452,6 +3432,7 @@ final class Mounter {
     private final android.util.SparseArray<float[]> panActivations = new android.util.SparseArray<>();
     /** Scroll views an activated pan gate blocks. */
     private final java.util.ArrayList<ScrollBox> gatedScrolls = new java.util.ArrayList<>();
+    private View activeGate;
 
     private void clearJsResponder() {
         for (ScrollBox s : blockedScrolls) s.jsBlocked = false;
@@ -2476,6 +3457,7 @@ final class Mounter {
     /** The pan gate of {@code v} activated: the scroll views around it stop taking the touches. */
     void gateBlock(View v) {
         gateRelease();
+        activeGate = v;
         for (ViewParent p = v.getParent(); p != null; p = p.getParent()) {
             if (p instanceof ScrollBox) {
                 ((ScrollBox) p).gateBlocked = true;
@@ -2487,8 +3469,14 @@ final class Mounter {
 
     /** The touches of an activated pan gate ended. */
     void gateRelease() {
+        activeGate = null;
         for (ScrollBox s : gatedScrolls) s.gateBlocked = false;
         gatedScrolls.clear();
+    }
+
+    /** The view whose pan gate activated for the touches down now, or null. */
+    View activeGate() {
+        return activeGate;
     }
 
     void event(int id, int kind) {
@@ -2515,6 +3503,8 @@ final class Mounter {
      * where the touch is in {@code v} and in its root view.
      */
     void press(int id, int kind, View v, PressAt at) {
+        if (kind == Native.LONG_PRESS) longPressed = true;
+        if (kind == Native.PRESS && tapScroll != null) return;
         // The surface, or the window of the modal the view is in.
         View root = v.getRootView() == host.getRootView() ? host : v.getRootView();
         int[] rootAt = new int[2];
@@ -2544,6 +3534,17 @@ final class Mounter {
         Native.paste(handle(), id, text, images, uris);
     }
 
+    /**
+     * Answers `OffscreenCanvas` render {@code request} ({@link CanvasRender}): the encoded image, or why it failed
+     * ({@code failure}: {@link CanvasRender#RENDER_FAILED} or {@link CanvasRender#RENDER_TOO_LARGE}, and {@code error}).
+     * Once the view is destroyed there is no app to tell.
+     */
+    void canvasImage(int request, byte[] bytes, int failure, String error) {
+        long handle = handle();
+        if (handle == 0) return;
+        Native.canvasImage(handle, request, bytes, failure, error);
+    }
+
     void eventMap(int id, int kind, String[] keys, Object[] values) {
         long handle = handle();
         if (handle == 0) return;
@@ -2566,7 +3567,9 @@ final class Mounter {
     }
 
     void scroll(int id, float x, float y, int applied) {
-        outputs(Native.scroll(handle(), id, x, y, applied));
+        long handle = handle();
+        if (handle == 0) return;
+        outputs(Native.scroll(handle, id, x, y, applied));
     }
 
     void inputScroll(int id, float y, float contentWidth, float contentHeight, float width, float height) {
@@ -2579,7 +3582,9 @@ final class Mounter {
 
     /** Scroll view {@code id} came to rest: snapping animated values settle. */
     void scrollEnded(int id) {
-        outputs(Native.scrollEnded(handle(), id));
+        long handle = handle();
+        if (handle == 0) return;
+        outputs(Native.scrollEnded(handle, id));
     }
 
     void pan(int id, int state, float tx, float ty, float vx, float vy) {

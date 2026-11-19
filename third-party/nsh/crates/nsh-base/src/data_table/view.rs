@@ -31,7 +31,8 @@ use nsh_core::{
 use super::{
     DataTableAlign, DataTableCell, DataTableHeaderCell, DataTablePart, DataTableProps,
     DataTableSortDirection,
-    controller::{Dt, MOVE_SLOP, PressRegion, SORT_WIDTH},
+    columns::Columns,
+    controller::{CustomCell, Dt, Geo, MOVE_SLOP, PressRegion, SORT_WIDTH},
     selection::Selection,
 };
 use crate::HandleEdge;
@@ -55,6 +56,13 @@ fn parts<E: Element>(
     parts_with(el, props, list, || None)
 }
 
+fn part_styled(props: DataTableProps, which: DataTablePart) -> bool {
+    props
+        .classes
+        .with(|c| c.get(which).is_some_and(|s| !s.is_empty()))
+        || props.styles.with(|s| s.get(which).is_some())
+}
+
 /// [`parts`], with `own` classes after the parts' (a row's `rowClasses`).
 fn parts_with<E: Element>(
     el: E,
@@ -63,8 +71,9 @@ fn parts_with<E: Element>(
     own: impl Fn() -> Option<SharedString> + 'static,
 ) -> E {
     let styles = list.clone();
+    let own = computed(own);
     el.app_class(move || {
-        let own = own();
+        let own = own.get();
         props.classes.with(|c| {
             let list = list();
             let mut joined: Vec<&str> = list
@@ -79,6 +88,9 @@ fn parts_with<E: Element>(
     })
     .inline_style(move || {
         props.styles.with(|s| {
+            if s.is_empty() {
+                return Style::default();
+            }
             Style::from_decls(
                 styles()
                     .iter()
@@ -95,8 +107,8 @@ fn part<E: Element>(el: E, props: DataTableProps, which: DataTablePart) -> E {
 
 /// `parts` with the column's own classes after the parts', which are the
 /// more specific: a title's `headerClass` (`row` is `None`), a cell's
-/// `cellClass` and the `positiveClass` or `negativeClass` its value calls
-/// for.
+/// `cellClass`, the `positiveClass` or `negativeClass` its value calls
+/// for, then the cell's `cellClasses` entry.
 fn column_parts<E: Element>(
     el: E,
     dt: &Dt,
@@ -107,37 +119,54 @@ fn column_parts<E: Element>(
     let props = dt.props;
     let dt = dt.clone();
     let styles = list.clone();
-    let extra = move || {
+    let extra = computed(move || {
         dt.layout_rev.get();
         let def = def.get()?;
         let (own, positive, negative) = {
             let st = dt.st.borrow();
             let column = st.defs.get(def)?;
+            // A title: `row` is absent. A cell whose row is not known yet
+            // keeps the column's cell class only when it has no rise or
+            // fall class, and skips the value.
             if row.is_none() {
                 return column.header_class.clone();
             }
-            let own = column.cell_class.clone();
-            if column.positive_class.is_none() && column.negative_class.is_none() {
-                return own;
-            }
             (
-                own,
+                column.cell_class.clone(),
                 column.positive_class.clone(),
                 column.negative_class.clone(),
             )
         };
-        let tone = match dt.cell_sign(row?.get()?, def) {
-            Some(true) => positive,
-            Some(false) => negative,
-            None => None,
+        let Some(row_index) = row.and_then(|row| row.get()) else {
+            return if positive.is_none() && negative.is_none() {
+                own
+            } else {
+                None
+            };
         };
-        match (own, tone) {
+        // A column with no rise or fall class skips reading the cell.
+        let tone = if positive.is_none() && negative.is_none() {
+            None
+        } else {
+            match dt.cell_sign(row_index, def) {
+                Some(true) => positive,
+                Some(false) => negative,
+                None => None,
+            }
+        };
+        let own = match (own, tone) {
+            (Some(a), Some(b)) => Some(format!("{a} {b}").into()),
+            (a, b) => a.or(b),
+        };
+        // After the column's classes: the app's mark for this one cell.
+        let marked = dt.cell_class(row_index, def);
+        match (own, marked) {
             (Some(a), Some(b)) => Some(format!("{a} {b}").into()),
             (a, b) => a.or(b),
         }
-    };
+    });
     el.app_class(move || {
-        let own = extra();
+        let own = extra.get();
         props.classes.with(|c| {
             let list = list();
             let mut joined: Vec<&str> = list
@@ -152,6 +181,9 @@ fn column_parts<E: Element>(
     })
     .inline_style(move || {
         props.styles.with(|s| {
+            if s.is_empty() {
+                return Style::default();
+            }
             Style::from_decls(
                 styles()
                     .iter()
@@ -174,6 +206,7 @@ pub(crate) fn render(dt: Dt) -> impl IntoElement {
     let strip_x = Lead::new();
     let (body_dt, header_dt, hit_dt, strip_dt, over_dt) =
         (dt.clone(), dt.clone(), dt.clone(), dt.clone(), dt.clone());
+    let bar_dt = dt.clone();
     let (body_dt2, header_dt2) = (dt.clone(), dt.clone());
     let family = move || props.font_family.get();
     part(
@@ -215,6 +248,7 @@ pub(crate) fn render(dt: Dt) -> impl IntoElement {
                 .otherwise(move || header(header_dt2.clone(), false)),
             )
             .child(strip(strip_dt, strip_x))
+            .child(projected_vertical_bar(bar_dt))
             .child(overlays(over_dt)),
     )
 }
@@ -224,7 +258,7 @@ pub(crate) fn render(dt: Dt) -> impl IntoElement {
 /// The width of the content box, whole columns included.
 fn content_width(dt: &Dt) -> f32 {
     let g = dt.geo();
-    g.lead + g.fixed + g.x.extent() as f32
+    g.lead + g.fixed + g.x.extent() as f32 + g.end
 }
 
 fn hit_layer(dt: Dt, lead: Lead) -> impl IntoElement {
@@ -232,6 +266,7 @@ fn hit_layer(dt: Dt, lead: Lead) -> impl IntoElement {
     let (scroll_dt, hscroll_dt, strip_dt) = (dt.clone(), dt.clone(), dt.clone());
     let (top_dt, height_dt, width_dt) = (dt.clone(), dt.clone(), dt.clone());
     let (press, hover, menu) = (dt.clone(), dt.clone(), dt.clone());
+    let indicator_dt = dt.clone();
     let (leave, focus, blur) = (dt.clone(), dt.clone(), dt.clone());
     scroll()
         .element_ref(&dt.vscroll)
@@ -241,6 +276,9 @@ fn hit_layer(dt: Dt, lead: Lead) -> impl IntoElement {
         .bottom_0()
         .top(move || Length::from(px(top_dt.geo().header)))
         .scrollbar(move || {
+            if indicator_dt.web_desktop && indicator_dt.geo().y.scaled() {
+                return false;
+            }
             props
                 .vertical_scrollbar
                 .get()
@@ -249,6 +287,14 @@ fn hit_layer(dt: Dt, lead: Lead) -> impl IntoElement {
         .bounces(move || props.bounces.get())
         .on_scroll(move |e: &ScrollEvent| {
             scroll_dt.scroll_y.set(e.offset.y);
+        })
+        .on_scroll_drag_start({
+            let dt = dt.clone();
+            move |offset: &Point<Points>| dt.drag_started(false, *offset)
+        })
+        .on_scroll_drag_end({
+            let dt = dt.clone();
+            move |offset: &Point<Points>| dt.drag_ended(false, *offset)
         })
         .on_scroll_end({
             let dt = dt.clone();
@@ -274,6 +320,18 @@ fn hit_layer(dt: Dt, lead: Lead) -> impl IntoElement {
                         .flex_1()
                         .scrollbar(false)
                         .bounces(move || props.bounces.get())
+                        .on_scroll_drag_start({
+                            let dt = dt.clone();
+                            move |offset: &Point<Points>| dt.drag_started(true, *offset)
+                        })
+                        .on_scroll_drag_end({
+                            let dt = dt.clone();
+                            move |offset: &Point<Points>| dt.drag_ended(true, *offset)
+                        })
+                        .on_scroll_end({
+                            let dt = dt.clone();
+                            move |_: &Point<Points>| dt.rest()
+                        })
                         .on_scroll(move |e: &ScrollEvent| {
                             hscroll_dt.scroll_x.set(e.offset.x);
                             // The desktops' bar follows, unless it leads.
@@ -295,7 +353,7 @@ fn hit_layer(dt: Dt, lead: Lead) -> impl IntoElement {
                                 .h(move || Length::from(px(strip_dt.geo().y.extent() as f32)))
                                 .on(EventKind::Press, move |p: &EventPayload| {
                                     if let EventPayload::Press(e) = p {
-                                        press.press_with(e.position, e.clicks, e.modifiers);
+                                        press.press_with(e);
                                     }
                                 })
                                 // Tab stops at the table here, as at gpui-component's
@@ -306,14 +364,10 @@ fn hit_layer(dt: Dt, lead: Lead) -> impl IntoElement {
                                 // selects or moves.
                                 .on_mouse_move(move |e: &MouseEvent| {
                                     if e.pressed_button.is_none() {
-                                        hover.hover_at(e.position);
+                                        hover.hover_at(e);
                                     }
                                 })
-                                .on_mouse_leave(move |_: &MouseEvent| {
-                                    if leave.hover.get_untracked().is_some() {
-                                        leave.hover.set(None);
-                                    }
-                                })
+                                .on_mouse_leave(move |_: &MouseEvent| leave.hover_left())
                                 .on_context_menu(move |e: &ContextMenuEvent| {
                                     menu.context_menu(e.position, e.page_position)
                                 }),
@@ -360,7 +414,8 @@ impl Lead {
     }
 }
 
-/// The desktops' horizontal scroll bar: a band over the body's bottom edge
+/// The desktops' horizontal scroll bar: a band over the body's bottom edge,
+/// under the scrolling columns (between the fixed ones, which do not move),
 /// whose own scroll view the bar belongs to, moving the table's.
 fn strip(dt: Dt, lead: Lead) -> impl IntoElement {
     let props = dt.props;
@@ -381,16 +436,31 @@ fn strip(dt: Dt, lead: Lead) -> impl IntoElement {
     let width_dt = dt.clone();
     when(shown, move || {
         let (scroll_dt, width_dt) = (dt.clone(), width_dt.clone());
+        let (left_dt, right_dt) = (dt.clone(), dt.clone());
         let lead = lead.clone();
         scroll()
             .horizontal()
             .element_ref(&dt.strip)
             .test_id("data-table-scrollbar")
             .absolute()
-            .left_0()
-            .right_0()
+            .left(move || {
+                let g = left_dt.geo();
+                Length::from(px(g.lead + g.fixed))
+            })
+            .right(move || {
+                let g = right_dt.geo();
+                Length::from(px(g.end + g.bar))
+            })
             .bottom_0()
             .h(px(STRIP))
+            .on_scroll_drag_start({
+                let dt = dt.clone();
+                move |offset: &Point<Points>| dt.drag_started(true, *offset)
+            })
+            .on_scroll_drag_end({
+                let dt = dt.clone();
+                move |offset: &Point<Points>| dt.drag_ended(true, *offset)
+            })
             .on_scroll(move |e: &ScrollEvent| {
                 // The table follows the bar, unless the table leads (the bar
                 // following it): sending that back would fight a drag.
@@ -409,9 +479,86 @@ fn strip(dt: Dt, lead: Lead) -> impl IntoElement {
             .child(
                 view()
                     .h(px(1.0))
-                    .w(move || Length::from(px(content_width(&width_dt)))),
+                    .w(move || Length::from(px(width_dt.geo().x.extent() as f32))),
             )
     })
+}
+
+/// A scaled web table follows wheel input from a local anchor. Its native
+/// offset recenters at rest, so that offset cannot also be its visible bar.
+/// This separate, bounded scroll view represents the proportional position;
+/// recentering the hit layer leaves both its offset and its thumb unchanged.
+fn projected_vertical_bar(dt: Dt) -> impl IntoElement {
+    let shown_dt = dt.clone();
+    when(
+        move || {
+            shown_dt.web_desktop
+                && shown_dt.geo().y.scaled()
+                && shown_dt
+                    .props
+                    .vertical_scrollbar
+                    .get()
+                    .unwrap_or(shown_dt.props.scrollbar.get())
+        },
+        move || {
+            let bar = element_ref();
+            let target = Rc::new(Cell::new(None::<Points>));
+            let sync_dt = dt.clone();
+            let sync_target = target.clone();
+            effect(move || {
+                let g = sync_dt.geo();
+                let y = g.y.scroll_points(g.cy);
+                if sync_target.replace(Some(y)) == Some(y) {
+                    return;
+                }
+                bar.scroll_to(Point { x: Points::ZERO, y }, false);
+            });
+            let mount_dt = dt.clone();
+            let mount_target = target.clone();
+            let layout_dt = dt.clone();
+            let height_dt = dt.clone();
+            let scroll_dt = dt.clone();
+            let wheel_dt = dt.clone();
+            scroll()
+                .element_ref(&bar)
+                .test_id("data-table-proportional-scrollbar")
+                .on_layout(move |_: &Bounds<Points>| {
+                    let g = untracked(|| mount_dt.geo());
+                    let y = g.y.scroll_points(g.cy);
+                    mount_target.set(Some(y));
+                    bar.scroll_to(Point { x: Points::ZERO, y }, false);
+                })
+                .absolute()
+                .right_0()
+                .bottom_0()
+                .w(px(STRIP))
+                .top(move || Length::from(px(layout_dt.geo().header)))
+                .bounces(false)
+                .on_scroll(move |e: &ScrollEvent| {
+                    // Programmatic following must not feed rounding back into
+                    // the document's position, including when the bar is hidden.
+                    if target
+                        .get()
+                        .is_some_and(|y| (e.offset.y - y).0.abs() <= 0.5)
+                    {
+                        return;
+                    }
+                    let g = untracked(|| scroll_dt.geo());
+                    let content = g.y.content_offset(f64::from(e.offset.y.0));
+                    scroll_dt.scroll_rows_to(&g, content, false);
+                })
+                .child(
+                    view()
+                        .w(relative(1.0))
+                        .h(move || Length::from(px(height_dt.geo().y.extent() as f32)))
+                        .on_wheel(move |e: &nsh_core::WheelEvent| {
+                            let g = untracked(|| wheel_dt.geo());
+                            let delta = e.delta.points(px(g.row_height));
+                            wheel_dt.scroll_rows_to(&g, g.cy + f64::from(delta.y.0), false);
+                        }),
+                )
+        },
+    )
 }
 
 // The body.
@@ -427,6 +574,8 @@ struct Windows {
     col_slots: Slots,
     scroll_cols: Memo<Vec<usize>>,
     fixed_cols: Memo<Vec<usize>>,
+    /// The columns fixed at the end.
+    end_cols: Memo<Vec<usize>>,
     /// The first row of the chunk of rows that rows are placed from.
     row_origin: Memo<usize>,
     /// The display index of the first scrolling column of its chunk, whence
@@ -463,6 +612,14 @@ fn windows(dt: &Dt) -> Windows {
             .collect()
     });
     let d = dt.clone();
+    let end_cols = computed(move || {
+        d.layout_rev.get();
+        let st = d.st.borrow();
+        (st.columns.end_start()..st.columns.len())
+            .map(|display| st.columns.def(display))
+            .collect()
+    });
+    let d = dt.clone();
     let row_origin = computed(move || d.visible_rows().start / ROW_CHUNK * ROW_CHUNK);
     let d = dt.clone();
     let col_origin = computed(move || {
@@ -489,6 +646,7 @@ fn windows(dt: &Dt) -> Windows {
         col_slots,
         scroll_cols,
         fixed_cols,
+        end_cols,
         row_origin,
         col_origin,
         span,
@@ -500,10 +658,58 @@ fn windows(dt: &Dt) -> Windows {
 enum Region {
     /// The row numbers.
     Lead,
-    /// The fixed columns.
+    /// The columns fixed at the start.
     Fixed,
     /// The scrolling columns.
     Scroll,
+    /// The columns fixed at the end.
+    End,
+}
+
+impl Dt {
+    /// Whether the region `which` of fixed columns has any (tracked).
+    fn has_fixed(&self, which: Region) -> bool {
+        self.layout_rev.get() > 0 && {
+            let st = self.st.borrow();
+            match which {
+                Region::End => st.columns.end_len() > 0,
+                _ => st.columns.fixed_len() > 0,
+            }
+        }
+    }
+
+    /// Where region `which` starts in the table's view (tracked).
+    fn region_left(&self, which: Region) -> f32 {
+        let g = self.geo();
+        match which {
+            Region::Lead => 0.0,
+            Region::Fixed => g.lead,
+            Region::Scroll => g.lead + g.fixed,
+            Region::End => {
+                g.lead + self.st.borrow().columns.end_left(g.columns_view(), g.cx) as f32
+            }
+        }
+    }
+}
+
+/// The width of region `which`, as a style.
+fn region_width<E: Element>(el: E, dt: Dt, which: Region) -> E {
+    match which {
+        Region::Lead => el.w(move || Length::from(px(dt.geo().lead))),
+        Region::Fixed => el.w(move || Length::from(px(dt.geo().fixed))),
+        Region::End => el.w(move || Length::from(px(dt.geo().end))),
+        // Up to the columns fixed at the end, which it passes under.
+        Region::Scroll => el.right(move || {
+            let g = dt.geo();
+            let right = dt.region_left(Region::End) - g.lead;
+            let view = g.columns_view() as f32;
+            Length::from(px(if g.end > 0.0 {
+                (view - right).max(0.0)
+            } else {
+                0.0
+            }))
+        }),
+    }
 }
 
 fn body(dt: Dt, custom: bool) -> impl IntoElement {
@@ -511,6 +717,7 @@ fn body(dt: Dt, custom: bool) -> impl IntoElement {
     let w = windows(&dt);
     let top_dt = dt.clone();
     let (lead_dt, fixed_dt, scroll_dt) = (dt.clone(), dt.clone(), dt.clone());
+    let end_dt = dt.clone();
     let right_dt = dt.clone();
     view()
         .absolute()
@@ -523,18 +730,19 @@ fn body(dt: Dt, custom: bool) -> impl IntoElement {
         .overflow_hidden()
         .pointer_events(PointerEvents::None)
         .child(region(scroll_dt, Region::Scroll, w, custom))
-        .child(edge(dt.clone(), props, false))
+        .child(edge(dt.clone(), props, Region::Fixed, false))
+        .child(edge(dt.clone(), props, Region::End, false))
         .child(region(fixed_dt, Region::Fixed, w, custom))
+        .child(region(end_dt, Region::End, w, custom))
         .child(region(lead_dt, Region::Lead, w, custom))
 }
 
-/// The line at the fixed columns' trailing edge.
-fn edge(dt: Dt, props: DataTableProps, in_row: bool) -> impl IntoElement {
+/// The line between the scrolling columns and the fixed ones of `which`
+/// (`Fixed` or `End`): at the trailing edge of those at the start, the
+/// leading edge of those at the end; `in_row`, in a row of that region.
+fn edge(dt: Dt, props: DataTableProps, which: Region, in_row: bool) -> impl IntoElement {
     let left_dt = dt.clone();
-    let shown = {
-        let dt = dt.clone();
-        move || dt.st.borrow().columns.fixed_len() > 0 && dt.layout_rev.get() > 0
-    };
+    let shown = move || dt.has_fixed(which) && part_styled(props, DataTablePart::FixedEdge);
     when(shown, move || {
         let dt = left_dt.clone();
         part(
@@ -545,10 +753,11 @@ fn edge(dt: Dt, props: DataTableProps, in_row: bool) -> impl IntoElement {
                 .w(px(1.0))
                 .left(move || {
                     let g = dt.geo();
-                    Length::from(px(if in_row {
-                        g.fixed - 1.0
-                    } else {
-                        g.lead + g.fixed - 1.0
+                    Length::from(px(match (which, in_row) {
+                        (Region::End, true) => 0.0,
+                        (Region::End, false) => dt.region_left(Region::End),
+                        (_, true) => g.fixed - 1.0,
+                        (_, false) => g.lead + g.fixed - 1.0,
                     }))
                 }),
             props,
@@ -614,7 +823,7 @@ fn region(dt: Dt, which: Region, w: Windows, custom: bool) -> impl IntoElement {
         let dt = dt.clone();
         move || match which {
             Region::Lead => dt.row_header_shown(),
-            Region::Fixed => dt.layout_rev.get() > 0 && dt.st.borrow().columns.fixed_len() > 0,
+            Region::Fixed | Region::End => dt.has_fixed(which),
             Region::Scroll => true,
         }
     };
@@ -631,19 +840,8 @@ fn region(dt: Dt, which: Region, w: Windows, custom: bool) -> impl IntoElement {
             .top_0()
             .bottom_0()
             .overflow_hidden()
-            .left(move || {
-                let g = left_dt.geo();
-                Length::from(px(match which {
-                    Region::Lead => 0.0,
-                    Region::Fixed => g.lead,
-                    Region::Scroll => g.lead + g.fixed,
-                }))
-            })
-            .map(move |v| match which {
-                Region::Lead => v.w(move || Length::from(px(width_dt.geo().lead))),
-                Region::Fixed => v.w(move || Length::from(px(width_dt.geo().fixed))),
-                Region::Scroll => v.right_0(),
-            })
+            .left(move || Length::from(px(left_dt.region_left(which))))
+            .map(move |v| region_width(v, width_dt.clone(), which))
             .child(
                 // The rows' origin: the first row of its chunk, scrolled
                 // by the content offsets, on the device pixels layout rounds
@@ -677,22 +875,29 @@ fn region(dt: Dt, which: Region, w: Windows, custom: bool) -> impl IntoElement {
     })
 }
 
-/// The `cell_state` of a row of the three regions.
+/// The `cell_state` of a row of the three regions, and its `selected` memo.
 fn row_parts(
     dt: &Dt,
     row: Memo<Option<usize>>,
-) -> impl Fn() -> Vec<DataTablePart> + Clone + 'static {
+) -> (
+    Memo<bool>,
+    impl Fn() -> Vec<DataTablePart> + Clone + 'static,
+) {
     let props = dt.props;
     let hovered = {
         let hover = dt.hover;
         computed(move || row.get().is_some() && hover.get() == row.get())
     };
-    let selected = {
-        let dt = dt.clone();
-        computed(move || matches!(dt.selection(), Selection::Row(r) if Some(r) == row.get()))
-    };
-    let active = row_active(dt, row);
-    move || {
+    let row_marks = dt.row_marks;
+    let selected = computed(move || {
+        let r = row.get();
+        r.is_some() && row_marks.get().0 == r
+    });
+    let active = computed(move || {
+        let r = row.get();
+        r.is_some() && row_marks.get().1 == r
+    });
+    let list = move || {
         let mut list = vec![DataTablePart::Row];
         if props.stripe.get() && row.get().is_some_and(|r| r % 2 == 1) {
             list.push(DataTablePart::RowOdd);
@@ -707,16 +912,8 @@ fn row_parts(
             list.push(DataTablePart::RowActive);
         }
         list
-    }
-}
-
-/// Whether row `row` is the one a context menu was asked for.
-fn row_active(dt: &Dt, row: Memo<Option<usize>>) -> Memo<bool> {
-    let dt = dt.clone();
-    computed(move || {
-        dt.data_rev.get();
-        row.get().is_some() && dt.st.borrow().active == Some((row.get(), None))
-    })
+    };
+    (selected, list)
 }
 
 /// How a press in a row of `which` region finds its column.
@@ -724,6 +921,7 @@ fn region_of(which: Region, w: Windows) -> PressRegion {
     match which {
         Region::Lead => PressRegion::Lead,
         Region::Fixed => PressRegion::Fixed,
+        Region::End => PressRegion::End,
         Region::Scroll => PressRegion::Scroll {
             origin: w.col_origin.get_untracked(),
         },
@@ -739,10 +937,12 @@ fn body_row(
 ) -> impl IntoElement {
     let props = dt.props;
     let (top_dt, height_dt, width_dt) = (dt.clone(), dt.clone(), dt.clone());
-    let list = row_parts(&dt, row);
-    let row_selected = {
-        let dt = dt.clone();
-        computed(move || matches!(dt.selection(), Selection::Row(r) if Some(r) == row.get()))
+    let (row_selected, list) = row_parts(&dt, row);
+    // Its `hover:` classes and the `group-hover:` classes of the cells in
+    // it, in every region, follow the hit layer's hovered row.
+    let row_hovered = {
+        let hover = dt.hover;
+        computed(move || row.get().is_some() && hover.get() == row.get())
     };
     let (press_dt, menu_dt, class_dt) = (dt.clone(), dt.clone(), dt.clone());
     let el = parts_with(
@@ -752,6 +952,7 @@ fn body_row(
             .style_when(move || row.get().is_none(), |s| s.hidden())
             // The table is one stop of Tab, its hit layer.
             .focusable(false)
+            .project_hovered(row_hovered)
             .on(EventKind::Press, move |p: &EventPayload| {
                 let Some(row) = row.get_untracked() else {
                     return;
@@ -791,13 +992,16 @@ fn body_row(
         Region::Lead => el
             .w(move || Length::from(px(width_dt.geo().lead)))
             .child(row_number(dt, row)),
-        Region::Fixed => el
-            .w(move || Length::from(px(width_dt.geo().fixed)))
+        Region::Fixed | Region::End => region_width(el, width_dt, which)
             // Above the row background, below the cells: a selected cell's
-            // trailing border must cover the fixed-column separator.
-            .child(edge(dt.clone(), props, true))
+            // border must cover the fixed-column separator.
+            .child(edge(dt.clone(), props, which, true))
             .child(each(
-                w.fixed_cols,
+                if which == Region::End {
+                    w.end_cols
+                } else {
+                    w.fixed_cols
+                },
                 |def: &usize| *def,
                 move |def, _| {
                     let def = def.get_untracked();
@@ -877,17 +1081,16 @@ fn cell(
         })
     };
     let flags = {
-        let dt = dt.clone();
+        let cell_marks = dt.cell_marks;
         computed(move || {
-            dt.data_rev.get();
+            let (sel_cell, sel_col, active_cell) = cell_marks.get();
             let (Some(row), Some(def)) = (row.get(), def.get()) else {
                 return CellFlags::default();
             };
-            let st = dt.st.borrow();
             CellFlags {
-                selected: st.selection == Selection::Cell(row, def),
-                column_selected: st.selection == Selection::Column(def),
-                active: st.active == Some((Some(row), Some(def))),
+                selected: sel_cell == Some((row, def)),
+                column_selected: sel_col == Some(def),
+                active: active_cell == Some((row, def)),
             }
         })
     };
@@ -909,8 +1112,25 @@ fn cell(
     let width_dt = dt.clone();
     let height_dt = dt.clone();
     let col_dt = dt.clone();
+    // A cell the app draws gets the presses on its own pressable views,
+    // passed on by the hit layer over the body.
+    let view_ref = custom.then(|| {
+        let view_ref = element_ref();
+        let key = dt.custom_cells.borrow_mut().add(CustomCell {
+            view: view_ref,
+            row,
+            def,
+        });
+        let cells = dt.custom_cells.clone();
+        cleanup(move || cells.borrow_mut().remove(key));
+        view_ref
+    });
     let el = column_parts(
         view()
+            .map(move |v| match &view_ref {
+                Some(r) => v.element_ref(r),
+                None => v,
+            })
             .role(AccessibilityRole::Cell)
             .accessibility_state(move || AccessibilityState {
                 selected: flags.get().selected || flags.get().column_selected,
@@ -931,6 +1151,7 @@ fn cell(
                 let start = st.columns.start(display);
                 let origin = match which {
                     Region::Scroll => st.columns.start(w.col_origin.get().min(st.columns.len())),
+                    Region::End => st.columns.start(st.columns.end_start()),
                     _ => 0.0,
                 };
                 Length::from(px((start - origin) as f32))
@@ -1024,13 +1245,19 @@ struct GroupCell {
     to: usize,
 }
 
-/// The groups of every level that start in `range` of the display indexes
-/// (or, in the fixed region, before the first scrolling column).
-fn group_cells(dt: &Dt, scroll: bool, window: &[usize], origin: usize) -> Vec<GroupCell> {
-    let (fixed, n) = {
+/// The groups of every level over the columns of region `which`: those
+/// over the made scrolling columns (or the chunk they are placed from), or
+/// over a column fixed at that side.
+fn group_cells(dt: &Dt, which: Region, window: &[usize], origin: usize) -> Vec<GroupCell> {
+    let (fixed, end, n) = {
         let st = dt.st.borrow();
-        (st.columns.fixed_len(), st.columns.len())
+        (
+            st.columns.fixed_len(),
+            st.columns.end_start(),
+            st.columns.len(),
+        )
     };
+    let scroll = which == Region::Scroll;
     let first = window
         .first()
         .and_then(|&d| dt.st.borrow().columns.display_of(d));
@@ -1053,7 +1280,12 @@ fn group_cells(dt: &Dt, scroll: bool, window: &[usize], origin: usize) -> Vec<Gr
                     // Overlapping the made columns (or the chunk they are
                     // placed from).
                     let low = first.unwrap_or(origin).min(origin);
-                    to > fixed.max(low) && last.is_some_and(|l| from <= l) && from >= low.min(from)
+                    to > fixed.max(low)
+                        && from < end
+                        && last.is_some_and(|l| from <= l)
+                        && from >= low.min(from)
+                } else if which == Region::End {
+                    to > end
                 } else {
                     from < fixed
                 };
@@ -1076,6 +1308,7 @@ fn header(dt: Dt, custom: bool) -> impl IntoElement {
     let w = windows(&dt);
     let (height_dt, right_dt) = (dt.clone(), dt.clone());
     let (corner_dt, fixed_dt, scroll_dt) = (dt.clone(), dt.clone(), dt.clone());
+    let end_dt = dt.clone();
     part(
         view()
             .absolute()
@@ -1090,6 +1323,7 @@ fn header(dt: Dt, custom: bool) -> impl IntoElement {
     )
     .child(header_region(scroll_dt, Region::Scroll, w, custom))
     .child(header_region(fixed_dt, Region::Fixed, w, custom))
+    .child(header_region(end_dt, Region::End, w, custom))
     .child(corner(corner_dt))
     .child(move_line(dt))
 }
@@ -1122,7 +1356,7 @@ fn header_region(dt: Dt, which: Region, w: Windows, custom: bool) -> impl IntoEl
     let shown = {
         let dt = dt.clone();
         move || match which {
-            Region::Fixed => dt.layout_rev.get() > 0 && dt.st.borrow().columns.fixed_len() > 0,
+            Region::Fixed | Region::End => dt.has_fixed(which),
             _ => true,
         }
     };
@@ -1131,7 +1365,7 @@ fn header_region(dt: Dt, which: Region, w: Windows, custom: bool) -> impl IntoEl
         computed(move || {
             dt.layout_rev.get();
             let window = w.scroll_cols.get();
-            group_cells(&dt, which == Region::Scroll, &window, w.col_origin.get())
+            group_cells(&dt, which, &window, w.col_origin.get())
         })
     };
     when(shown, move || {
@@ -1144,6 +1378,7 @@ fn header_region(dt: Dt, which: Region, w: Windows, custom: bool) -> impl IntoEl
         );
         let list = match which {
             Region::Fixed => w.fixed_cols,
+            Region::End => w.end_cols,
             _ => w.scroll_cols,
         };
         view()
@@ -1151,17 +1386,8 @@ fn header_region(dt: Dt, which: Region, w: Windows, custom: bool) -> impl IntoEl
             .top_0()
             .bottom_0()
             .overflow_hidden()
-            .left(move || {
-                let g = left_dt.geo();
-                Length::from(px(match which {
-                    Region::Scroll => g.lead + g.fixed,
-                    _ => g.lead,
-                }))
-            })
-            .map(move |v| match which {
-                Region::Scroll => v.right_0(),
-                _ => v.w(move || Length::from(px(width_dt.geo().fixed))),
-            })
+            .left(move || Length::from(px(left_dt.region_left(which))))
+            .map(move |v| region_width(v, width_dt.clone(), which))
             .child(
                 view()
                     .absolute()
@@ -1215,6 +1441,7 @@ fn group_cell(dt: Dt, group: GroupCell, which: Region, w: Windows) -> impl IntoE
                 let st = left_dt.st.borrow();
                 let origin = match which {
                     Region::Scroll => st.columns.start(w.col_origin.get().min(st.columns.len())),
+                    Region::End => st.columns.start(st.columns.end_start()),
                     _ => 0.0,
                 };
                 Length::from(px((st.columns.start(group.from) - origin) as f32))
@@ -1318,6 +1545,7 @@ fn title(dt: Dt, def: usize, which: Region, w: Windows, custom: bool) -> impl In
                 };
                 let origin = match which {
                     Region::Scroll => st.columns.start(w.col_origin.get().min(st.columns.len())),
+                    Region::End => st.columns.start(st.columns.end_start()),
                     _ => 0.0,
                 };
                 Length::from(px((st.columns.start(display) - origin) as f32))
@@ -1340,11 +1568,11 @@ fn title(dt: Dt, def: usize, which: Region, w: Windows, custom: bool) -> impl In
                 if up_moved.replace(false) {
                     return;
                 }
-                let clicks = match p {
-                    EventPayload::Press(e) => e.clicks,
-                    _ => 1,
+                let (clicks, modifiers) = match p {
+                    EventPayload::Press(e) => (e.clicks, e.modifiers),
+                    _ => (1, Default::default()),
                 };
-                press_dt.header_press(def, clicks);
+                press_dt.header_press(def, clicks, modifiers);
             })
             .on_context_menu(move |e: &ContextMenuEvent| {
                 header_menu_dt.header_context_menu(def, e.page_position)
@@ -1370,12 +1598,7 @@ fn title(dt: Dt, def: usize, which: Region, w: Windows, custom: bool) -> impl In
                 let at = {
                     let st = move_dt.st.borrow();
                     let display = st.columns.display_of(def).unwrap_or(0);
-                    let start = st.columns.start(display) as f32;
-                    if display < st.columns.fixed_len() {
-                        g.lead + start
-                    } else {
-                        g.lead + start - g.cx as f32
-                    }
+                    column_x(&st.columns, &g, display)
                 };
                 // The pointer in the table: where the title starts and the
                 // pointer in it.
@@ -1408,42 +1631,61 @@ fn title_content(
     sortable: bool,
     custom: bool,
     selected: Memo<bool>,
-) -> impl IntoElement {
+) -> AnyElement {
     let props = dt.props;
-    let label_dt = dt.clone();
-    let label: AnyElement = if custom {
-        let render_dt = dt.clone();
-        dynamic(move || {
-            let render = props.render_header_cell.get()?;
-            let value = DataTableHeaderCell {
-                column: def as u32,
-                key: render_dt.st.borrow().defs.get(def)?.key.clone(),
-                title: render_dt.title(def),
-                sort: sorted.get(),
-                selected: selected.get(),
-            };
-            Some(
-                render
-                    .render(format!("head:{def}"), value)
-                    .flex_1()
-                    .min_w(px(0.0)),
-            )
-        })
-        .into_element()
-    } else {
-        // The title takes the room the sort button leaves, aligned as the
-        // column's cells.
-        text(move || label_dt.title(def))
-            .number_of_lines(1)
-            .flex_1()
-            .min_w(px(0.0))
-            .map(move |t| match align {
-                DataTableAlign::Start => t.text_left(),
-                DataTableAlign::Center => t.text_center(),
-                DataTableAlign::End => t.text_right(),
+    let make_label = move |dt: Dt| -> AnyElement {
+        if custom {
+            dynamic(move || {
+                let render = props.render_header_cell.get()?;
+                let value = DataTableHeaderCell {
+                    column: def as u32,
+                    key: dt.st.borrow().defs.get(def)?.key.clone(),
+                    title: dt.title(def),
+                    sort: sorted.get(),
+                    selected: selected.get(),
+                };
+                Some(
+                    render
+                        .render(format!("head:{def}"), value)
+                        .flex_1()
+                        .min_w(px(0.0)),
+                )
             })
             .into_element()
+        } else {
+            // The title takes the room the sort button leaves, aligned as the
+            // column's cells.
+            text(move || dt.title(def))
+                .number_of_lines(1)
+                .flex_1()
+                .min_w(px(0.0))
+                .map(move |t| match align {
+                    DataTableAlign::Start => t.text_left(),
+                    DataTableAlign::Center => t.text_center(),
+                    DataTableAlign::End => t.text_right(),
+                })
+                .into_element()
+        }
     };
+    if !sortable {
+        let wrapped = computed(move || part_styled(props, DataTablePart::HeaderContent));
+        return dynamic(move || {
+            let label = make_label(dt.clone());
+            if wrapped.get() {
+                part(
+                    view().flex_1().flex_row().items_center().min_w(px(0.0)),
+                    props,
+                    DataTablePart::HeaderContent,
+                )
+                .child(label)
+                .into_element()
+            } else {
+                label
+            }
+        })
+        .into_element();
+    }
+    let label = make_label(dt.clone());
     let indicator_dt = dt;
     part(
         view().flex_1().flex_row().items_center().min_w(px(0.0)),
@@ -1451,9 +1693,8 @@ fn title_content(
         DataTablePart::HeaderContent,
     )
     .child(label)
-    .when(sortable, move |v| {
-        v.child(sort_button(indicator_dt.clone(), def, sorted))
-    })
+    .child(sort_button(indicator_dt, def, sorted))
+    .into_element()
 }
 
 /// The sort button at the end of a sortable title: its hit area and
@@ -1467,17 +1708,17 @@ fn sort_button(
     let id = format!("sort:{}", dt.st.borrow().defs[def].key);
     part(
         view()
+            .relative()
             .flex_none()
             .w(px(SORT_WIDTH))
             .h(px(SORT_WIDTH))
             .items_center()
             .justify_center()
-            .cursor_pointer()
             .role(AccessibilityRole::Button)
             .test_id(&id)
             .focusable(false)
             .on_press(move || dt.sort_next(def))
-            .child(sort_icon(props, sorted)),
+            .children(sort_icons(props, sorted)),
         props,
         DataTablePart::SortIndicator,
     )
@@ -1488,30 +1729,38 @@ fn sort_button(
 /// In a terminal, one glyph: `▲` ascending, `▼` descending, `↕` unsorted,
 /// each the part of its direction (an unsorted column's `↕` the ascending
 /// part's, not selected: as faint as an unsorted chevron).
-fn sort_icon(props: DataTableProps, sorted: Memo<Option<DataTableSortDirection>>) -> AnyElement {
+fn sort_icons(
+    props: DataTableProps,
+    sorted: Memo<Option<DataTableSortDirection>>,
+) -> Vec<AnyElement> {
     // A terminal draws no chevrons: the direction is one Cell's glyph.
     if crate::terminal::is_terminal() {
-        return dynamic(move || {
-            let (glyph, which) = match sorted.get() {
-                Some(DataTableSortDirection::Ascending) => ("▲", DataTablePart::SortAscending),
-                Some(DataTableSortDirection::Descending) => ("▼", DataTablePart::SortDescending),
-                None => ("↕", DataTablePart::SortAscending),
-            };
-            Some(part(
-                text(glyph)
-                    .number_of_lines(1)
-                    .accessible(false)
-                    .accessibility_state(move || AccessibilityState {
-                        selected: sorted.get().is_some(),
-                        ..AccessibilityState::default()
-                    }),
-                props,
-                which,
-            ))
-        })
-        .into_element();
+        return vec![
+            dynamic(move || {
+                let (glyph, which) = match sorted.get() {
+                    Some(DataTableSortDirection::Ascending) => ("▲", DataTablePart::SortAscending),
+                    Some(DataTableSortDirection::Descending) => {
+                        ("▼", DataTablePart::SortDescending)
+                    }
+                    None => ("↕", DataTablePart::SortAscending),
+                };
+                Some(part(
+                    text(glyph)
+                        .number_of_lines(1)
+                        .accessible(false)
+                        .accessibility_state(move || AccessibilityState {
+                            selected: sorted.get().is_some(),
+                            ..AccessibilityState::default()
+                        }),
+                    props,
+                    which,
+                ))
+            })
+            .into_element(),
+        ];
     }
     const K: f32 = 12.0 / 24.0;
+    let inset = px((SORT_WIDTH - 12.0) * 0.5);
     let chevron = move |points: [f32; 6], direction, which| {
         part(
             canvas(move || {
@@ -1527,7 +1776,7 @@ fn sort_icon(props: DataTableProps, sorted: Memo<Option<DataTableSortDirection>>
                     .stroke()
             })
             .absolute()
-            .inset_0()
+            .inset(inset)
             .accessible(false)
             .pointer_events(PointerEvents::None)
             .accessibility_state(move || AccessibilityState {
@@ -1537,22 +1786,20 @@ fn sort_icon(props: DataTableProps, sorted: Memo<Option<DataTableSortDirection>>
             props,
             which,
         )
+        .into_element()
     };
-    view()
-        .relative()
-        .w(px(12.0))
-        .h(px(12.0))
-        .child(chevron(
+    vec![
+        chevron(
             [7.0, 9.0, 12.0, 4.0, 17.0, 9.0],
             DataTableSortDirection::Ascending,
             DataTablePart::SortAscending,
-        ))
-        .child(chevron(
+        ),
+        chevron(
             [7.0, 15.0, 12.0, 20.0, 17.0, 15.0],
             DataTableSortDirection::Descending,
             DataTablePart::SortDescending,
-        ))
-        .into_element()
+        ),
+    ]
 }
 
 /// The band at a title's trailing edge that a drag resizes the column
@@ -1619,11 +1866,14 @@ fn move_line(dt: Dt) -> impl IntoElement {
                     } else {
                         drag.to
                     };
-                    let at = st.columns.start(display.min(st.columns.len()));
-                    let x = if display <= st.columns.fixed_len() {
-                        g.lead + at as f32
+                    let display = display.min(st.columns.len());
+                    let x = if display <= st.columns.fixed_len() || display > st.columns.end_start()
+                    {
+                        column_x(&st.columns, &g, display)
                     } else {
-                        (g.lead + at as f32 - g.cx as f32).max(g.lead + g.fixed)
+                        let end = st.columns.end_left(g.columns_view(), g.cx) as f32;
+                        (g.lead + st.columns.start(display) as f32 - g.cx as f32)
+                            .clamp(g.lead + g.fixed, g.lead + end)
                     };
                     Length::from(px(x - DROP_LINE / 2.0))
                 }),
@@ -1631,6 +1881,22 @@ fn move_line(dt: Dt) -> impl IntoElement {
             DataTablePart::MoveIndicator,
         )
     })
+}
+
+/// Where the column at `display` (or the columns' end, at their number)
+/// starts in the table's view: a fixed one where it stays, a scrolling one
+/// where the table scrolled it.
+fn column_x(columns: &Columns, g: &Geo, display: usize) -> f32 {
+    let start = columns.start(display.min(columns.len()));
+    let x = if display < columns.fixed_len() {
+        start
+    } else if display >= columns.end_start() && columns.end_start() < columns.len() {
+        let end = columns.start(columns.end_start());
+        columns.end_left(g.columns_view(), g.cx) + (start - end)
+    } else {
+        start - g.cx
+    };
+    g.lead + x as f32
 }
 
 // What shows over the rows.

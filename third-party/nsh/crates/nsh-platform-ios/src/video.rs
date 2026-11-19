@@ -233,6 +233,8 @@ pub(crate) struct VideoHost {
     status: Rc<Status>,
     props: VideoProps,
     repeat: Rc<Cell<bool>>,
+    /// The item played to its end (and does not loop).
+    ended: Rc<Cell<bool>>,
     /// Its key in [`audio_playing`].
     audio_key: u64,
 }
@@ -259,6 +261,7 @@ impl VideoHost {
             status: Rc::default(),
             props: VideoProps::default(),
             repeat: Rc::default(),
+            ended: Rc::default(),
             audio_key: NEXT_AUDIO_KEY.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
     }
@@ -293,8 +296,25 @@ impl VideoHost {
         }
         self.repeat.set(p.repeat);
         if let Some(player) = &self.player {
+            // Played from the end, a video starts over: a seek the app
+            // makes in the same turn arrives after these props.
+            if !p.paused && self.props.paused && self.ended.replace(false) {
+                seek_exactly(player, 0.0);
+            }
             // SAFETY: AVPlayer's documented API.
             unsafe {
+                // AVPlayer's automatic policy may pause video even with a
+                // playback audio session. The app also needs audio in its
+                // UIBackgroundModes. Apply on every configure so replacement
+                // players and changes back to Default get the right policy.
+                let background_policy: isize = match p.audio_session {
+                    // AVPlayerAudiovisualBackgroundPlaybackPolicyAutomatic
+                    AudioSession::Default => 1,
+                    // AVPlayerAudiovisualBackgroundPlaybackPolicyContinuesIfPossible
+                    AudioSession::Playback | AudioSession::MixWithOthers => 3,
+                };
+                let _: () =
+                    msg_send![player, setAudiovisualBackgroundPlaybackPolicy: background_policy];
                 let _: () = msg_send![player, setMuted: Bool::new(p.muted)];
                 let _: () = msg_send![player, setVolume: p.volume];
                 if p.paused {
@@ -327,6 +347,7 @@ impl VideoHost {
     /// Starts playing `source` (or nothing).
     fn open(&mut self, source: Option<&str>) {
         self.close();
+        self.ended.set(false);
         let Some(url) = source.and_then(|s| self.url(s)) else {
             return;
         };
@@ -341,10 +362,11 @@ impl VideoHost {
         // SAFETY: AVPlayer's documented API.
         let item: Option<Retained<AnyObject>> = unsafe { msg_send![&player, currentItem] };
         let (control, id, repeat) = (self.control.clone(), self.id, self.repeat.clone());
-        let audio_key = self.audio_key;
+        let (audio_key, ended) = (self.audio_key, self.ended.clone());
         let weak_player = objc2::rc::Weak::from_retained(&player);
         let block = RcBlock::new(move |_: NonNull<NSNotification>| {
             control.dispatch_event(id, EventKind::End, EventPayload::None);
+            ended.set(!repeat.get());
             if !repeat.get() {
                 // It stopped: the other apps' audio may play again.
                 audio_playing(audio_key, None);
@@ -513,14 +535,25 @@ impl VideoHost {
     }
 
     pub(crate) fn seek(&self, seconds: f64) {
-        if let Some(player) = &self.player {
-            let zero = CMTime::from_seconds(0.0);
+        let Some(player) = &self.player else { return };
+        seek_exactly(player, seconds);
+        // The player stopped itself at the end; a video the app has not
+        // paused plays on from where it was sought.
+        if self.ended.replace(false) && !self.props.paused {
             // SAFETY: AVPlayer's documented API.
-            let _: () = unsafe {
-                msg_send![player, seekToTime: CMTime::from_seconds(seconds), toleranceBefore: zero, toleranceAfter: zero]
-            };
+            let _: () = unsafe { msg_send![player, setRate: self.props.rate] };
+            audio_playing(self.audio_key, Some(self.props.audio_session));
         }
     }
+}
+
+/// Seeks `player` to `seconds`, to the frame.
+fn seek_exactly(player: &AnyObject, seconds: f64) {
+    let zero = CMTime::from_seconds(0.0);
+    // SAFETY: AVPlayer's documented API.
+    let _: () = unsafe {
+        msg_send![player, seekToTime: CMTime::from_seconds(seconds.max(0.0)), toleranceBefore: zero, toleranceAfter: zero]
+    };
 }
 
 impl Drop for VideoHost {

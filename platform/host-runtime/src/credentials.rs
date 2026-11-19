@@ -18,15 +18,15 @@
  */
 
 use futures_util::future::BoxFuture;
-use maka_capabilities::call::Resources;
 use maka_capabilities::credentials;
 use maka_capabilities::credentials::Record;
 use maka_capabilities::credentials::Write;
 use maka_capabilities::credentials::WriteResult;
-use maka_capabilities::storage::Namespace;
-use maka_capabilities::storage::StoreError;
-use maka_capabilities::storage::validate_key;
 use maka_config::ConfigurationStore;
+use maka_plugin_core::storage::Namespace;
+use maka_plugin_core::storage::StoreError;
+use maka_plugin_core::storage::validate_key;
+use maka_plugin_core::work::resources::Resources;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 #[derive(Clone)]

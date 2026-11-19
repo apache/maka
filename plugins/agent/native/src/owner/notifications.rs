@@ -17,33 +17,78 @@
  * under the License.
  */
 
-//! Background worker follow-ups use the original Agent admission gate and durable queue.
+//! Background follow-ups use the original Agent admission gate and durable queue.
 use super::*;
+use maka_agent_facts::durable::{ExecutionIdentity, FactId, UnixMillis};
 use maka_agent_facts::message::MessageOrigin;
-use maka_event_log::message_admissions::{PendingExecution, PendingMessageAdmission};
+use maka_agent_state::{
+    ContentBlob,
+    queue::{
+        MessageResolution, Placement as QueuePlacement, PreparedRequest, QueueCommand, QueueEdit,
+        RequestId,
+    },
+};
+
+/// Captured policy for background execution.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct BackgroundApproval {
+    pub(super) target: ScheduledTarget,
+    pub(super) model: ModelSelection,
+    pub(super) accepted_model: crate::model::AcceptedModel,
+    pub(super) thinking_level: Option<ThinkingLevel>,
+    pub(super) language: Language,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) sandbox_ceiling: Option<maka_sandbox::Sandbox>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(super) enum NotificationBackend {
+    Model {
+        model: ModelSelection,
+        thinking_level: Option<ThinkingLevel>,
+    },
+    Executor {
+        selection: maka_agent_facts::executor::Selection,
+    },
+}
+impl NotificationBackend {
+    pub(super) fn preference(&self) -> BackendPreference {
+        match self {
+            Self::Model {
+                model,
+                thinking_level,
+            } => BackendPreference::model(model.clone(), *thinking_level),
+            Self::Executor { selection } => BackendPreference::Executor {
+                selection: selection.clone(),
+            },
+        }
+    }
+}
 
 pub(crate) struct ReturnRoute {
-    model: crate::model::AcceptedModel,
+    pub(super) backend: NotificationBackend,
+    model: Option<crate::model::AcceptedModel>,
     pub(crate) workspace: Workspace,
-    pub(crate) binding: maka_agent_facts::workspace::BindingStamp,
+    pub(crate) binding: maka_sandbox::workspace::BindingStamp,
 }
 impl ReturnRoute {
     pub(crate) fn new(
         model: crate::model::AcceptedModel,
         workspace: Workspace,
-        binding: maka_agent_facts::workspace::BindingStamp,
+        binding: maka_sandbox::workspace::BindingStamp,
     ) -> Self {
+        let backend = NotificationBackend::Model {
+            model: model.selection(),
+            thinking_level: model.thinking_level,
+        };
         Self {
-            model,
+            backend,
+            model: Some(model),
             workspace,
             binding,
         }
-    }
-    pub(crate) fn binding_model(&self) -> &maka_agent_facts::execution::ModelBinding {
-        &self.model.binding
-    }
-    pub(crate) fn thinking_level(&self) -> Option<ThinkingLevel> {
-        self.model.thinking_level
     }
 }
 impl Owner {
@@ -60,133 +105,177 @@ impl Owner {
         (!self.stop.is_cancelled()).then_some(guard)
     }
 
-    pub(crate) async fn return_route(&self, source: &Invocation) -> Result<ReturnRoute, String> {
-        let runs = self.runs.state().await;
-        let control = runs
-            .controls
-            .get(&source.session_id)
-            .ok_or("agent_source_inactive")?;
-        if control.invocation != *source {
-            return Err("agent_source_changed".into());
+    pub(crate) async fn return_route(
+        &self,
+        source: &ExecutionIdentity,
+    ) -> Result<ReturnRoute, String> {
+        let view = self
+            .session_run(&source.session_id, source.run_id)
+            .await?
+            .ok_or("notification_source_inactive")?;
+        let session = self.session(&source.session_id).await?;
+        if view.spec.turn_id != source.turn_id
+            || view.stopped
+            || view.terminal.is_some()
+            || session.configuration.permission_basis() != view.spec.permission_basis
+        {
+            return Err("notification_source_changed".into());
         }
-        Ok(ReturnRoute {
-            model: control
-                .basis
-                .model
-                .clone()
-                .ok_or("agent_model_unavailable")?,
-            workspace: control.basis.workspace.clone(),
-            binding: control.basis.binding,
-        })
+        use maka_agent_facts::durable::BackendSpec;
+        let workspace = session.configuration.workspace;
+        let binding = view.spec.permission_basis.binding;
+        match &view.spec.backend {
+            BackendSpec::Model { descriptor, .. } => {
+                let bytes = self
+                    .durable
+                    .content(source.run_id, descriptor.clone())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let model = crate::model::AcceptedModel::from_backend(&view.spec.backend, &bytes)
+                    .map_err(public_error)?;
+                Ok(ReturnRoute::new(model, workspace, binding))
+            }
+            BackendSpec::Executor { selection, .. } if selection.executor == "external" => {
+                Ok(ReturnRoute {
+                    backend: NotificationBackend::Executor {
+                        selection: selection.clone(),
+                    },
+                    model: None,
+                    workspace,
+                    binding,
+                })
+            }
+            _ => Err("notification_backend_unavailable".into()),
+        }
+    }
+
+    pub(super) async fn resolve_notification_route(
+        &self,
+        backend: NotificationBackend,
+        session: &str,
+        workspace: Workspace,
+        binding: maka_sandbox::workspace::BindingStamp,
+    ) -> Result<ReturnRoute, String> {
+        match backend {
+            NotificationBackend::Model {
+                model,
+                thinking_level,
+            } => {
+                let model = crate::model::Source::select(
+                    self.configuration.clone(),
+                    self.catalog.clone(),
+                    self.credentials.clone(),
+                    model,
+                    thinking_level,
+                    session.to_owned(),
+                    self.revision.clone(),
+                )
+                .await
+                .map_err(public_error)?;
+                Ok(ReturnRoute::new(model.accepted, workspace, binding))
+            }
+            backend @ NotificationBackend::Executor { .. } => Ok(ReturnRoute {
+                backend,
+                model: None,
+                workspace,
+                binding,
+            }),
+        }
     }
 
     pub(crate) async fn prepare_notification(
         &self,
-        source: &Invocation,
+        source: &ExecutionIdentity,
         route: &ReturnRoute,
         identity: &str,
         render: impl FnOnce(Language) -> String,
         origin: MessageOrigin,
-    ) -> Result<Option<PendingMessageAdmission>, String> {
-        let runs = self.runs.lock().await;
-        if runs.closing || self.stop.is_cancelled() {
-            return Err("agent_closed".into());
-        }
-        if runs.busy(&source.session_id) || self.has_parked_invocation(&source.session_id).await? {
-            return Ok(None);
-        }
-        let session = match self.session(&source.session_id).await {
-            Ok(session) => session,
-            Err(error) if error == "agent_session_unavailable" => return Ok(None),
-            Err(error) => return Err(error),
+    ) -> Result<Option<PreparedRequest>, String> {
+        let placement = if matches!(origin, MessageOrigin::SessionCompletion { .. })
+            || matches!(&origin, MessageOrigin::Session { execution } if execution == source && identity == super::external_recovery::recovery_request_id(source.run_id))
+        {
+            QueuePlacement::Completion {
+                caller: source.run_id,
+            }
+        } else {
+            QueuePlacement::Followup
         };
+        self.prepare_notification_checked(
+            &source.session_id,
+            route,
+            identity,
+            render,
+            origin,
+            placement,
+            None,
+        )
+        .await
+        .map_err(String::from)
+    }
+    pub(super) async fn prepare_notification_checked(
+        &self,
+        session_id: &str,
+        route: &ReturnRoute,
+        identity: &str,
+        render: impl FnOnce(Language) -> String,
+        origin: MessageOrigin,
+        placement: QueuePlacement,
+        boundary: Option<&ScheduledTarget>,
+    ) -> Result<Option<PreparedRequest>, send::CaptureError> {
+        if let Some(original) = self
+            .durable
+            .queue()
+            .entry(session_id.to_owned(), RequestId(identity.into()))
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(Some(original.request));
+        }
+        if self.stop.is_cancelled() {
+            return Err("agent_closed".to_owned().into());
+        }
+        let session = self.session(session_id).await?;
         if session.archived
-            || !self.runs.workspace_available(
-                &source.session_id,
-                std::path::Path::new(&session.configuration.workspace.path),
-            )
             || session.configuration.workspace != route.workspace
             || session.configuration.binding != route.binding
         {
             return Ok(None);
         }
-        if workspace::validate(
-            &self.workspace_roots,
-            &route.workspace,
-            &self.managed_worktrees,
-        )
-        .await
-        .is_err()
-        {
-            return Ok(None);
-        }
-        let snapshot = self
-            .configuration
-            .runtime_policy()
-            .await
-            .map_err(|_| "agent_preferences_unavailable")?;
-        let language = self.resolve_language(&snapshot);
-        let text = render(language);
-        drop(runs);
-        let selected_catalog = self.mcp_projects.base.clone();
-        let runs = self.runs.lock().await;
-        if runs.closing || self.stop.is_cancelled() {
-            return Err("agent_closed".into());
-        }
-        let current = self.session(&source.session_id).await?;
-        if runs.busy(&source.session_id)
-            || !self.runs.workspace_available(
-                &source.session_id,
-                std::path::Path::new(&current.configuration.workspace.path),
+        // A current native scope owns preparation. The stored route only selects data;
+        // current Session/workspace gates and the issuer determine actual authority.
+        let native = self
+            .services
+            .request(
+                maka_capabilities::call::Identity::Native,
+                self.stop.child_token(),
             )
-            || self.has_parked_invocation(&source.session_id).await?
-            || current.configuration != session.configuration
-            || current.archived
-        {
-            return Ok(None);
+            .map_err(|e| e.to_string())?;
+        let capture = self
+            .capture_current_run(
+                session_id,
+                Some(route.backend.preference()),
+                identity.to_owned(),
+                native.scope(),
+            )
+            .await;
+        let cleanup = native.finish().await;
+        let mut basis = send::finish_capture(capture, cleanup)?;
+        if let Some(model) = &route.model {
+            let current = basis
+                .model
+                .as_ref()
+                .ok_or_else(|| "notification_model_unavailable".to_owned())?;
+            if !model.same_execution_route(current) {
+                return Err(send::CaptureError::RouteChanged);
+            }
+            basis.model = Some(model.clone());
         }
-
-        let basis = MessageBasis {
-            mcp_revision: None,
-            client_mcp: None,
-            mcp_catalog: None,
-            language,
-            compaction_prompt: Some(self.effective_compaction_prompt(
-                session.configuration.compaction_prompt.as_deref(),
-                &snapshot,
-                language,
-            )),
-            collaboration_mode: session.configuration.collaboration_mode,
-            background_kind: BackgroundKind::Schedule,
-            tool_discovery: self.settings.tool_discovery,
-            allowed_tools: self.admitted_tools(&source.session_id, &session.configuration.tools),
-            background: None,
-            model: Some(route.model.clone()),
-            executor: None,
-            workspace: route.workspace.clone(),
-            binding: session.configuration.binding,
-            fingerprint: hex::encode(Sha256::digest(text.as_bytes())),
-            tools: self.tool_basis.clone(),
-            internal_tools: selected_catalog.definitions.clone(),
-            internal_bindings: selected_catalog.bindings.clone(),
-            behavior: self.bot_behavior(
-                &source.session_id,
-                self.capture_behavior(Some(&route.workspace), &snapshot, language)
-                    .await?,
-                &snapshot,
-                language,
-                self.admitted_tools(&source.session_id, &session.configuration.tools)
-                    .as_deref(),
-            ),
-        };
-        let message: MessageInput = text.into();
-        let delivered = RootSourceMessage {
+        let message: MessageInput = render(basis.language).into();
+        let source = RootSourceMessage {
             message: DeliveredMessage {
                 origin: Some(origin),
                 message_id: format!("m_{identity}"),
-                submitted_content_digest: message
-                    .content_digest()
-                    .map_err(|_| "agent_message_invalid")?,
+                submitted_content_digest: message.content_digest().map_err(|e| e.to_string())?,
                 content: message.clone(),
             },
             unprepared_content: message,
@@ -194,146 +283,187 @@ impl Owner {
             disposition: MessageDisposition::TurnStarted,
             submitted_intent: None,
         };
-        Ok(Some(PendingMessageAdmission {
-            execution: PendingExecution {
-                owner: self.prefix.clone(),
-                basis: serde_json::to_value(basis).map_err(|_| "agent_message_basis_invalid")?,
-            },
-            invocation: Invocation {
-                session_id: source.session_id.clone(),
-                turn_id: format!("t_{identity}"),
-                run_id: format!("r_{identity}"),
-                invocation_id: format!("i_{identity}"),
-            },
-            steering_invocation: None,
-            source: delivered,
-            required_tools: Default::default(),
-            admitted_at: now(),
-        }))
+        self.enqueue_background_checked(
+            session_id,
+            source,
+            &basis,
+            identity,
+            Default::default(),
+            placement,
+            false,
+            boundary,
+        )
+        .await
+        .map(Some)
+        .map_err(Into::into)
     }
 
-    /// Reopening a frozen notification consults original acceptance, delivery and
-    /// cancellation. SQL uncertainty never creates a replacement message identity.
+    /// Original requests are observed, never re-frozen from a stored execution grant.
     pub(crate) async fn admit_notification(
-        self: &Arc<Self>,
-        admission: &PendingMessageAdmission,
+        &self,
+        request: &PreparedRequest,
     ) -> Result<bool, String> {
-        let session = &admission.invocation.session_id;
-        let message = &admission.source.message.message_id;
-        if admission.execution.owner != self.prefix || !self.owns(session) {
+        if request.spec.owner != self.run_owner() || !self.owns(&request.spec.session_id) {
             return Err("agent_queue_owner_invalid".into());
         }
-        let ordered = self.runs.ordered(session).await;
-        if self
-            .store
-            .session(session)
-            .await
-            .map_err(|error| error.to_string())?
-            .root_message(session, message)
-            .await
-            .map_err(|_| "agent_queue_unavailable")?
-            .is_some()
-            || self
-                .store
-                .session(session)
-                .await
-                .map_err(|error| error.to_string())?
-                .message_cancelled(session, message)
-                .await
-                .map_err(|_| "agent_queue_unavailable")?
-        {
-            return Ok(true);
-        }
         let original = self
-            .store
-            .session(session)
+            .durable
+            .queue()
+            .entry(request.spec.session_id.clone(), request.id.clone())
             .await
-            .map_err(|error| error.to_string())?
-            .message_admission(session, message)
-            .await
-            .map_err(|_| "agent_queue_unavailable")?;
-        if let Some(original) = &original {
-            let mut descriptor = admission.clone();
-            let mut expected: MessageBasis =
-                serde_json::from_value(descriptor.execution.basis.clone())
-                    .map_err(|error| error.to_string())?;
-            let accepted: MessageBasis = serde_json::from_value(original.execution.basis.clone())
-                .map_err(|error| error.to_string())?;
-            expected.mcp_revision = accepted.mcp_revision;
-            expected.client_mcp = accepted.client_mcp;
-            expected.internal_tools = accepted.internal_tools;
-            expected.internal_bindings = accepted.internal_bindings;
-            descriptor.execution.basis =
-                serde_json::to_value(expected).map_err(|error| error.to_string())?;
-            if *original != descriptor {
-                return Err("agent_message_identity_changed".into());
-            }
-        }
-        let cancellation = self.stop.child_token();
+            .map_err(|e| e.to_string())?
+            .ok_or("agent_notification_missing")?;
+        // Queue edits may replace content while preserving the admitted identity.
+        if original.request.message_id != request.message_id
+            || original.request.spec.owner != request.spec.owner
+            || original.request.spec.turn_id != request.spec.turn_id
         {
-            let mut runs = ordered.state().await;
-            if runs.closing || self.stop.is_cancelled() {
-                return if original.is_some() {
-                    Ok(true)
-                } else {
-                    Err("agent_closed".into())
+            return Err("agent_message_identity_changed".into());
+        }
+        Ok(!matches!(
+            self.durable
+                .queue()
+                .resolve_message(request.spec.session_id.clone(), request.message_id.clone())
+                .await
+                .map_err(|e| e.to_string())?,
+            MessageResolution::Missing
+        ))
+    }
+
+    pub(super) async fn enqueue_background(
+        &self,
+        session: &str,
+        source: RootSourceMessage,
+        basis: &CapturedRun,
+        key: &str,
+        required_tools: BTreeSet<String>,
+        placement: QueuePlacement,
+        steer: bool,
+    ) -> Result<PreparedRequest, String> {
+        self.enqueue_background_checked(
+            session,
+            source,
+            basis,
+            key,
+            required_tools,
+            placement,
+            steer,
+            None,
+        )
+        .await
+    }
+    async fn enqueue_background_checked(
+        &self,
+        session: &str,
+        source: RootSourceMessage,
+        basis: &CapturedRun,
+        key: &str,
+        required_tools: BTreeSet<String>,
+        mut placement: QueuePlacement,
+        steer: bool,
+        boundary: Option<&ScheduledTarget>,
+    ) -> Result<PreparedRequest, String> {
+        let _ordered = self.runs.ordered(session).await;
+        let queue = self.durable.queue();
+        if let Some(original) = queue
+            .entry(session.to_owned(), RequestId(key.into()))
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(original.request);
+        }
+        self.validate_background(basis).await?;
+        let current = self.session(session).await?;
+        basis.validate_background_target(
+            &current,
+            self.scheduler.investigation_profile(&current.id),
+        )?;
+        if let Some(boundary) = boundary {
+            discovery::check_target(&current, boundary)?;
+        }
+        let native = self
+            .services
+            .request(
+                maka_capabilities::call::Identity::Native,
+                self.stop.child_token(),
+            )
+            .map_err(|e| e.to_string())?;
+        let native = match &basis.background_sandbox_ceiling {
+            Some(ceiling) => native.with_sandbox_floor(ceiling)?,
+            None => native,
+        };
+        let frozen = self
+            .freeze_background_request(session, source, basis, required_tools, key, native.scope())
+            .await;
+        let cleanup = native.finish().await;
+        let (request, contents): (PreparedRequest, Vec<ContentBlob>) = match (frozen, cleanup) {
+            (Ok(frozen), Ok(())) => frozen,
+            (Err(error), Ok(())) => return Err(error),
+            (result, Err(cleanup)) => {
+                return Err(format!(
+                    "{}; background request cleanup: {cleanup}",
+                    result.err().unwrap_or_default()
+                ));
+            }
+        };
+        if steer {
+            let control = self.runs.state().await.controls.get(session).cloned();
+            if let Some(control) = control
+                && control.basis.model.is_some()
+                && let Some(view) = self.session_run(session, control.execution.run_id).await?
+                && !view.stopped
+                && view.terminal.is_none()
+                && view.spec.permission_basis == request.spec.permission_basis
+                && view.spec.workspace == request.spec.workspace
+                && request
+                    .spec
+                    .permission_ceiling
+                    .sandbox
+                    .contains(&view.spec.permission_ceiling.sandbox)
+                    .map_err(|error| error.to_string())?
+                && request
+                    .spec
+                    .approval_ceiling()
+                    .contains(&view.spec.approval_ceiling())
+                    .map_err(|error| error.to_string())?
+                && view
+                    .spec
+                    .permission_ceiling
+                    .approval
+                    .is_subset_of(request.spec.permission_ceiling.approval)
+            {
+                placement = QueuePlacement::Steering {
+                    run: view.run,
+                    expected_head: maka_agent_state::Head::from(&view),
                 };
             }
-            if runs.busy(session) || self.has_parked_invocation(session).await? {
-                return Ok(original.is_some());
-            }
-            runs.preparing.insert(session.clone(), cancellation.clone());
         }
-        let accepted = async {
-            if original.is_some() {
-                return Ok(true);
-            }
-            let current = match self.session(session).await {
-                Ok(session) => session,
-                Err(error) if error == "agent_session_unavailable" => return Ok(false),
-                Err(error) => return Err(error),
-            };
-            let mut basis: MessageBasis = serde_json::from_value(admission.execution.basis.clone())
-                .map_err(|_| "agent_message_basis_invalid")?;
-            self.validate_background(&basis).await?;
-            basis.validate_background_target(&current)?;
-            if current.archived
-                || current.configuration.workspace != basis.workspace
-                || current.configuration.binding != basis.binding
-            {
-                return Ok(false);
-            }
-            // Deferred work captures runtime tools when accepted; retries keep that original basis.
-            let catalog = self.mcp_projects.capture(&basis.workspace).await?;
-            let catalog = self.mcp_projects.with_client(session, catalog)?;
-            basis.mcp_revision = catalog.revision.clone();
-            basis.client_mcp = catalog.client_mcp;
-            basis.mcp_catalog = Some(catalog.clone());
-            basis.internal_tools = catalog.definitions.clone();
-            basis.internal_bindings = catalog.bindings.clone();
-            let mut accepted = admission.clone();
-            accepted.execution.basis =
-                serde_json::to_value(&basis).map_err(|error| error.to_string())?;
-            self.store
-                .session(&admission.invocation.session_id)
-                .await
-                .map_err(|error| error.to_string())?
-                .admit_message(accepted)
-                .await
-                .map_err(|_| "agent_admission_unknown")?;
-            Ok(true)
-        }
-        .await;
-        match accepted {
-            Ok(true) => {}
-            result => {
-                ordered.state().await.preparing.remove(session);
-                return result;
-            }
-        }
-        self.start_pending(session, ordered, cancellation)
+        let current = queue
+            .read(session.to_owned())
             .await
-            .map_err(public_error)?;
-        Ok(true)
+            .map_err(|e| e.to_string())?;
+        let digest = Sha256::digest(format!("background-enqueue/{session}/{key}").as_bytes());
+        let id = FactId::try_from(Uuid::from_bytes(
+            digest[..16].try_into().expect("SHA-256 prefix"),
+        ))
+        .map_err(str::to_owned)?;
+        queue
+            .execute(
+                session.to_owned(),
+                QueueCommand {
+                    id,
+                    at: UnixMillis(0),
+                    expected_revision: current.revision,
+                    edit: QueueEdit::Enqueue {
+                        request: Box::new(request.clone()),
+                        placement,
+                    },
+                },
+                contents,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        self.wake_notify.notify_one();
+        Ok(request)
     }
 }

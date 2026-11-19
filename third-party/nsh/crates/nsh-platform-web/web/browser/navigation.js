@@ -1,7 +1,7 @@
 // Route state is held by the shared Rust reactive graph. Stack transitions,
 // layout, back handling and modal surfaces remain in the Rust core/platform.
 export function createNavigation(reactive, dom, environment, animation) {
-  const { signal, computed, untracked, split, batch } = reactive;
+  const { signal, computed, effect, untracked, split, batch } = reactive;
   const rt = dom.rt, pages = new WeakSet(), popped = new WeakMap();
   const except = (props, keys) => split(props, keys)[1];
   function createNavStack(routes) {
@@ -51,7 +51,14 @@ export function createNavigation(reactive, dom, environment, animation) {
   }
   function NavStack(props) {
     const node = rt.element("stack");
-    rt.spread(node, except(props, ["state", "children"]));
+    rt.spread(node, except(props, ["state", "children", "onChange"]));
+    // `onChange({ routes })` after each change, not for the first routes.
+    let started = false;
+    effect(() => {
+      const routes = props.state.routes();
+      if (!started) { started = true; return; }
+      untracked(() => props.onChange?.({ routes }));
+    });
     const entries = props.state.__nshEntries;
     const rows = rt.each(entries, (read, index) => {
       const entry = untracked(read);

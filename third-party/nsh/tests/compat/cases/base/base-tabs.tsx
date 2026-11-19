@@ -1,10 +1,11 @@
 // A case of the API's test suite (docs/dev/compatibility.md): `Tab` and
 // `Tabs` of `nsh/base`, the tabs of a tab list and the list, with no look
 // of their own: the roles and states screen readers get
-// (`accessibilityLabel`), a press reported with `onPress` (the selected
-// tab's too) while the app owns which tab is selected (`selected`) and
+// (`accessibilityLabel`, `accessibilityDescription`), a press reported
+// with `onPress` (the selected tab's too) while the app owns which tab is selected (`selected`) and
 // shows its content, `disabled`, the list as one stop of the keyboard
-// focus (only the selected tab is `focusable`), and the app's look of a tab
+// focus (only the selected tab is `focusable`) named by its
+// `accessibilityLabel`, and the app's look of a tab
 // (`selectedStyle`) and of the marker it puts inside, whose
 // `group-selected:` and `group-disabled:` classes follow the tab. The
 // marker's widths move the label after it, which is how its script sees
@@ -26,6 +27,7 @@ function App() {
       selected={current() === value}
       disabled={locked && disabled()}
       accessibilityLabel={locked ? `${label} section` : undefined}
+      accessibilityDescription={value === "activity" ? "Updates every minute" : undefined}
       class="group flex-row items-center"
       selectedStyle={{ backgroundColor: "#00ff00" }}
       onPress={() => {
@@ -41,6 +43,7 @@ function App() {
     <View style={{ flex: 1, paddingTop: 20, gap: 4 }}>
       <Tabs
         testID="sections"
+        accessibilityLabel="Sections"
         class="gap-[4px]"
         indicatorClass="left-0 w-[3px] my-[2px]"
         indicatorStyle={{ backgroundColor: "#ff0000" }}

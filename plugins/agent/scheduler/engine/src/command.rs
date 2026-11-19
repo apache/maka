@@ -17,110 +17,14 @@
  * under the License.
  */
 
-use crate::{
-    schedule::Schedule,
-    task::{Create, Effect, Task},
-};
+use crate::schedule::Schedule;
 use maka_agent_facts::configuration::Patch;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum Query {
-    List {
-        cursor: Option<String>,
-        expected_revision: Option<u64>,
-    },
-    Get {
-        task_id: String,
-    },
-}
-impl Query {
-    pub fn validate(&self) -> Result<(), crate::Error> {
-        match self {
-            Self::Get { task_id } => crate::task::text(task_id),
-            Self::List {
-                cursor,
-                expected_revision,
-            } => {
-                if cursor.is_some() != expected_revision.is_some()
-                    || cursor.as_ref().is_some_and(|cursor| {
-                        cursor.is_empty() || !cursor.bytes().all(|byte| byte.is_ascii_digit())
-                    })
-                    || expected_revision.is_some_and(|revision| revision > (1 << 53) - 1)
-                {
-                    return Err(crate::invalid(
-                        "continuation requires a numeric cursor and revision",
-                    ));
-                }
-                Ok(())
-            }
-        }
-    }
-}
-#[derive(Clone, Debug, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum Mutation {
-    Create {
-        input: Create,
-    },
-    /// A caller-owned identity for creation that can be reconciled after losing a reply.
-    CreateOnce {
-        operation_id: uuid::Uuid,
-        input: Create,
-    },
-    Update {
-        task_id: String,
-        patch: Update,
-    },
-    Pause {
-        task_id: String,
-    },
-    Resume {
-        task_id: String,
-    },
-    ClearHistory {
-        task_id: String,
-    },
-    TriggerNow {
-        task_id: String,
-    },
-    Delete {
-        task_id: String,
-    },
-    Snooze {
-        task_id: String,
-        delay_ms: i64,
-    },
-}
-impl Mutation {
-    pub fn task_id(&self) -> Option<&str> {
-        match self {
-            Self::Create { .. } | Self::CreateOnce { .. } => None,
-            Self::Update { task_id, .. }
-            | Self::Pause { task_id }
-            | Self::Resume { task_id }
-            | Self::ClearHistory { task_id }
-            | Self::TriggerNow { task_id }
-            | Self::Delete { task_id }
-            | Self::Snooze { task_id, .. } => Some(task_id),
-        }
-    }
-}
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(bound(deserialize = "E: Deserialize<'de>"))]
-pub struct Update<E = Effect> {
+pub struct Update<E> {
     #[serde(default, deserialize_with = "present")]
     pub title: Option<String>,
     #[serde(default, deserialize_with = "present")]
@@ -146,47 +50,6 @@ impl<E> Default for Update<E> {
         }
     }
 }
-#[derive(Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase"
-)]
-pub enum QueryResult {
-    Page {
-        revision: u64,
-        tasks: Vec<Task>,
-        next_cursor: Option<String>,
-    },
-    RevisionChanged {
-        expected: u64,
-        actual: u64,
-    },
-    Task {
-        revision: Option<u64>,
-        timezone: Option<String>,
-        task: Option<Box<Task>>,
-    },
-}
-#[derive(Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase"
-)]
-pub enum MutationResult {
-    Task {
-        task: Box<Task>,
-    },
-    Created {
-        operation_id: uuid::Uuid,
-        task_id: String,
-    },
-    Deleted {
-        task_id: String,
-    },
-}
-
 fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,

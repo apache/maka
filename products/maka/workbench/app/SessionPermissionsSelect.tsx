@@ -30,16 +30,20 @@ import type {
   PendingComposerPermissions,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { ChoiceIndicator } from './ChoiceIndicator';
+import { useToolbarCompact } from './composerToolbar';
 import { delayed } from './delayed';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import {
   C,
   captionTextStyle,
-  controlStyle,
-  controlHoverStyle,
-  controlFocusStyle,
   controlDisabledStyle,
+  floatingStyle,
+  menuDetailTextStyle,
+  menuLabelStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
+  menuSeparatorStyle,
   toolbarControlStyle,
 } from './ui';
 
@@ -48,7 +52,7 @@ const accessChoices: AgentWorkspaceAccess[] = [
   'workspace_write',
   'danger_full_access',
 ];
-const accessLabel = (access: AgentWorkspaceAccess) =>
+export const accessLabel = (access: AgentWorkspaceAccess) =>
   ({
     read_only: tr('Read only'),
     workspace_write: tr('Workspace write'),
@@ -58,8 +62,13 @@ const accessDetail = (access: AgentWorkspaceAccess) =>
   ({
     read_only: tr('Read files without changing the workspace.'),
     workspace_write: tr('Read and write within the workspace.'),
-    danger_full_access: tr('Sandbox off'),
+    danger_full_access: tr('No sandbox; reads and writes any file.'),
   })[access];
+const accessIcon = {
+  read_only: 'readOnly',
+  workspace_write: 'workspaceWrite',
+  danger_full_access: 'sandboxOff',
+} as const satisfies Record<AgentWorkspaceAccess, string>;
 
 type MenuSnapshot = {
   session: AgentSession | null;
@@ -158,17 +167,14 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
   // it is pending are ignored by `select`, so only the look waits.
   const saving = delayed(owner.pending);
   const disabled = () => saving() || owner.snapshot() === null;
+  const asking = () => owner.snapshot()?.permissions.requestPermissions === true;
+  // A new draft inherits the Host's setting until the user picks one.
+  const inherited = () => owner.snapshot()?.permissions.requestPermissions === null;
   const changeOpen = (next: boolean) => {
     if (!owner.pending()) open.set(next);
   };
-  const label = () => {
-    const access = owner.snapshot()?.permissions.access;
-    return access === 'danger_full_access'
-      ? tr('Sandbox off')
-      : access
-        ? accessLabel(access)
-        : tr('Sandbox');
-  };
+  const access = () => owner.snapshot()?.permissions.access ?? null;
+  const tone = () => (access() === 'danger_full_access' ? C.warning : C.secondary);
   return (
     <Popover
       open={open()}
@@ -181,15 +187,9 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
       margin={8}
       style={{ minWidth: 0, flexShrink: 1 }}
       popupStyle={{
+        ...floatingStyle(),
         width: 340,
-        maxWidth: Math.max(0, windowSize().width - 16),
         maxHeight: Math.max(0, windowSize().height - 16),
-        minHeight: 0,
-        padding: 8,
-        backgroundColor: C.surface,
-        borderWidth: 1,
-        borderColor: C.line,
-        borderRadius: 12,
       }}
       trigger={
         <Button
@@ -200,7 +200,9 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
             open()
               ? undefined
               : owner.snapshot()
-                ? tr('Sandbox and approvals')
+                ? access()
+                  ? `${accessLabel(access()!)} · ${tr('Sandbox and approvals')}`
+                  : tr('Sandbox and approvals')
                 : tr('Loading sandbox settings…'),
           )}
           style={{
@@ -214,54 +216,35 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
           focusStyle={{ backgroundColor: C.line }}
           disabledStyle={controlDisabledStyle}
         >
-          <Text
-            style={[
-              { ...captionTextStyle, color: C.secondary, flexShrink: 1 },
-              { numberOfLines: 1 },
-            ]}
-          >
-            {label()}
-          </Text>
+          <If when={access()}>
+            <Icon name={accessIcon[access()!]} color={tone()} />
+          </If>
+          <If when={!useToolbarCompact() || !access()}>
+            <Text
+              style={[{ ...captionTextStyle, color: tone(), flexShrink: 1 }, { numberOfLines: 1 }]}
+            >
+              {access() ? accessLabel(access()!) : tr('Sandbox')}
+            </Text>
+          </If>
           <Icon name="down" color={C.muted} />
         </Button>
       }
     >
       <If when={owner.snapshot() !== null}>
-        <View style={{ minHeight: 0, flexShrink: 1, gap: 4 }}>
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 8,
-            }}
-          >
-            <Text style={{ ...captionTextStyle, color: C.secondary, paddingHorizontal: 8 }}>
-              {tr('Sandbox and approvals')}
-            </Text>
-            <Button
-              disabled={saving()}
-              accessibilityLabel={tr('Close sandbox settings')}
-              tooltip={textTooltip(() => tr('Close'))}
-              onPress={inputAction(changeOpen, false)}
-              style={{ ...controlStyle, width: 32, alignItems: 'center' }}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-              disabledStyle={controlDisabledStyle}
+        <Scroll style={{ minHeight: 0, flexShrink: 1 }}>
+          <View>
+            <Text style={menuLabelStyle()}>{tr('Sandbox')}</Text>
+            <Each<AgentWorkspaceAccess>
+              of={accessChoices}
+              key={(access: AgentWorkspaceAccess) => access}
             >
-              <Icon name="close" color={C.muted} />
-            </Button>
-          </View>
-          <Scroll style={{ minHeight: 0, flexShrink: 1 }}>
-            <View style={{ gap: 4 }}>
-              <Each<AgentWorkspaceAccess>
-                of={accessChoices}
-                key={(access: AgentWorkspaceAccess) => access}
-              >
-                {(access) => (
+              {(access) => {
+                const checked = () => owner.snapshot()?.permissions.access === access();
+                const tone = () => (access() === 'danger_full_access' ? C.warning : undefined);
+                return (
                   <Button
                     disabled={disabled()}
-                    selected={owner.snapshot()?.permissions.access === access()}
+                    selected={checked()}
                     accessibilityLabel={
                       access() === 'danger_full_access'
                         ? tr('Full access · Sandbox off')
@@ -271,105 +254,84 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
                       snapshot: owner.snapshot()!,
                       change: { kind: 'access', value: access() },
                     })}
-                    style={rowStyle()}
-                    hoverStyle={controlHoverStyle()}
-                    focusStyle={controlFocusStyle()}
+                    style={menuRowStyle()}
+                    hoverStyle={menuRowHoverStyle()}
+                    focusStyle={menuRowHoverStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
-                    <ChoiceIndicator
-                      kind="radio"
-                      checked={owner.snapshot()?.permissions.access === access()}
-                      disabled={disabled()}
-                    />
-                    <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'none' }]}>
-                      <Text style={{ ...captionTextStyle, color: C.text }}>
+                    <Icon name={accessIcon[access()]} color={tone() ?? C.secondary} />
+                    <View style={[{ flex: 1, minWidth: 0, gap: 2 }, { pointerEvents: 'none' }]}>
+                      <Text style={{ ...captionTextStyle, color: tone() ?? C.text }}>
                         {accessLabel(access())}
                       </Text>
-                      <Text style={{ ...captionTextStyle, color: C.muted }}>
+                      <Text style={{ ...menuDetailTextStyle, color: tone() ?? C.muted }}>
                         {accessDetail(access())}
                       </Text>
                     </View>
+                    <View style={{ width: 16 }}>
+                      <If when={checked()}>
+                        <Icon name="check" color={C.accent} />
+                      </If>
+                    </View>
                   </Button>
-                )}
-              </Each>
-              <View
-                style={[
-                  { height: 1, backgroundColor: C.line, margin: 4 },
-                  { pointerEvents: 'none' },
-                ]}
-              />
-              <Text
-                style={{
-                  ...captionTextStyle,
-                  color: C.secondary,
-                  paddingHorizontal: 8,
-                  paddingVertical: 4,
-                }}
+                );
+              }}
+            </Each>
+            <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
+            <Button
+              disabled={disabled()}
+              selected={asking()}
+              accessibilityLabel={tr('{label}: {state}', {
+                label: tr('Ask for approval'),
+                state: inherited() ? tr('Default') : asking() ? tr('On') : tr('Off'),
+              })}
+              onPress={inputAction(owner.select, {
+                snapshot: owner.snapshot()!,
+                change: { kind: 'requests', value: !asking() },
+              })}
+              style={menuRowStyle()}
+              hoverStyle={menuRowHoverStyle()}
+              focusStyle={menuRowHoverStyle()}
+              disabledStyle={controlDisabledStyle}
+            >
+              <Icon name="approval" color={C.secondary} />
+              <View style={[{ flex: 1, minWidth: 0, gap: 2 }, { pointerEvents: 'none' }]}>
+                <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Ask for approval')}</Text>
+                <Text style={{ ...menuDetailTextStyle, color: C.muted }}>
+                  {tr('When off, anything outside the sandbox is blocked.')}
+                </Text>
+              </View>
+              <If
+                when={inherited()}
+                else={<ChoiceIndicator kind="switch" checked={asking()} disabled={disabled()} />}
               >
-                {tr('Approval requests')}
-              </Text>
-              <Each<boolean> of={[true, false]} key={(ask: boolean) => ask}>
-                {(ask) => (
-                  <Button
-                    disabled={disabled()}
-                    selected={owner.snapshot()?.permissions.requestPermissions === ask()}
-                    accessibilityLabel={
-                      ask() ? tr('Ask for approval') : tr('Do not ask for approval')
-                    }
-                    onPress={inputAction(owner.select, {
-                      snapshot: owner.snapshot()!,
-                      change: { kind: 'requests', value: ask() },
-                    })}
-                    style={rowStyle()}
-                    hoverStyle={controlHoverStyle()}
-                    focusStyle={controlFocusStyle()}
-                    disabledStyle={controlDisabledStyle}
-                  >
-                    <ChoiceIndicator
-                      kind="radio"
-                      checked={owner.snapshot()?.permissions.requestPermissions === ask()}
-                      disabled={disabled()}
-                    />
-                    <Text style={{ ...captionTextStyle, color: C.text, flex: 1, minWidth: 0 }}>
-                      {ask() ? tr('Ask for approval') : tr('Do not ask for approval')}
-                    </Text>
-                  </Button>
-                )}
-              </Each>
-              <Text style={{ ...captionTextStyle, color: C.muted, paddingHorizontal: 8 }}>
-                {tr('Tools outside this policy are blocked when approval requests are off.')}
-              </Text>
-              <Text style={{ ...captionTextStyle, color: C.muted, padding: 8 }}>
-                {tr(
-                  'Applies to this conversation. Changing either setting clears earlier approvals.',
-                )}
-              </Text>
-              <If when={saving()}>
-                <Text style={{ ...captionTextStyle, color: C.muted, padding: 8 }}>
-                  {tr('Saving sandbox settings…')}
-                </Text>
+                <Text style={{ ...menuDetailTextStyle, color: C.muted }}>{tr('Default')}</Text>
               </If>
-              <If when={owner.error()}>
-                <Text
-                  style={[
-                    { ...captionTextStyle, color: C.danger, padding: 8 },
-                    { userSelect: 'text' },
-                  ]}
-                >
-                  {owner.error()}
-                </Text>
-              </If>
-            </View>
-          </Scroll>
-        </View>
+            </Button>
+            <Text style={noteStyle()}>
+              {owner.snapshot()?.session
+                ? tr('Applies to this conversation; changing the sandbox clears earlier approvals.')
+                : tr('New conversations also start with this sandbox.')}
+            </Text>
+            <If when={saving()}>
+              <Text style={noteStyle()}>{tr('Saving sandbox settings…')}</Text>
+            </If>
+            <If when={owner.error()}>
+              <Text style={[{ ...noteStyle(), color: C.danger }, { userSelect: 'text' }]}>
+                {owner.error()}
+              </Text>
+            </If>
+          </View>
+        </Scroll>
       </If>
     </Popover>
   );
 }
 
-const rowStyle = () => ({
-  ...controlStyle,
-  flexDirection: 'row' as const,
-  alignItems: 'center' as const,
-  gap: 12,
+const noteStyle = () => ({
+  ...menuDetailTextStyle,
+  color: C.muted,
+  paddingHorizontal: 8,
+  paddingTop: 4,
+  paddingBottom: 8,
 });

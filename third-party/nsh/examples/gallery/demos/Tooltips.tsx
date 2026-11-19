@@ -65,14 +65,14 @@ export function Tooltips() {
     const key = (k: string) => (pointer ? keymap.label(k) : undefined);
     const current = () => tools.find((t) => t.id === tool())!;
     return (
-      <Card icon="tooltip" title="On a toolbar" subtitle={pointer ? "Rest the pointer on a tool; its key works too" : "Touch screens show none: the names are the buttons' labels"}>
+      <Card icon="tooltip" title="On a toolbar" subtitle={pointer ? "Rest the pointer on a tool; its key works too" : "Touch screens show none: names are labels"}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: terminal ? TERMINAL_GAP : 2, alignSelf: "flex-start", padding: 3, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.inset }}>
           <Each of={tools}>
             {(t) => (
               <Trigger
                 icon={t().icon}
                 variant="ghost"
-                open={tool() === t().id}
+                on={tool() === t().id}
                 ink={tool() === t().id ? colors.text : colors.muted}
                 accessibilityLabel={t().label}
                 tip={<Tip label={t().label} shortcut={key(t().key)} placement="bottom" />}
@@ -116,7 +116,7 @@ export function Tooltips() {
       </View>
     );
     return (
-      <Card icon="tooltip" title="Its side" subtitle="Each comes out of the side it is on; it flips where there is no room">
+      <Card icon="tooltip" title="Its side" subtitle="Each from its side; it flips without room">
         <View style={{ alignItems: "center", gap: 6, paddingVertical: 8 }}>
           {side("top", "arrow-up")}
           <View style={{ flexDirection: "row", gap: pointer ? 46 : 60 }}>
@@ -175,7 +175,7 @@ export function Tooltips() {
     const pinned = signal(false);
     const presence = createPresence("bottom");
     return (
-      <Card icon="tooltip" title="Opened by the app" subtitle="Controlled: shown while pinned, or while the pointer rests">
+      <Card icon="tooltip" title="Opened by the app" subtitle="Shown while pinned or while the pointer rests">
         <View
           tooltip={
             <Tooltip

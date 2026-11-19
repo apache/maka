@@ -50,6 +50,7 @@ pub struct GoalDetail {
     pub retry_at: Option<u64>,
     pub created_at: u64,
     pub pending: bool,
+    pub dismissed: bool,
     pub report: Option<maka_goal::goal::Report>,
     pub note: String,
 }
@@ -102,13 +103,6 @@ pub struct GoalApproval {
     pub target: ScheduledTarget,
     pub model: ModelSelection,
     pub thinking_level: Option<ThinkingLevel>,
-}
-
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentGoalReceiptRead")]
-pub struct GoalReceiptRead {
-    pub reference: maka_plugin_core::operation::RecoveryRef,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]

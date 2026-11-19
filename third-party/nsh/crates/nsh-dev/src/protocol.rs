@@ -29,6 +29,15 @@ pub const WS_PATH: &str = "/ws";
 /// Default dev-server port.
 pub const DEFAULT_PORT: u16 = 8790;
 
+/// A build a host runs ([`ClientMessage::Hello`]).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunningBuild {
+    /// The server run it came from ([`ServerMessage::Hello`]).
+    pub session: u64,
+    /// Its build number.
+    pub version: u64,
+}
+
 /// Messages from a dev host to the server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -56,6 +65,13 @@ pub enum ClientMessage {
         /// The host takes test steps ([`ServerMessage::Step`]).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         tests: bool,
+        /// The build the host's app runs, when it reconnects: a server of
+        /// the same run sends the hot updates it missed
+        /// ([`ServerMessage::Patch`]) before the latest bundle, so the app
+        /// keeps its state. `None`: a first connection, or a host that does
+        /// not say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        running: Option<RunningBuild>,
     },
     /// The outcome of the [`ServerMessage::Step`] with this id.
     StepDone {
@@ -385,6 +401,28 @@ pub struct SpanStyle {
     pub line_through: bool,
 }
 
+/// A view's style, as [`TestStep::ViewStyle`] answers it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
+pub struct ViewStyle {
+    /// Its `backgroundColor`, `0xRRGGBBAA`; `None` when transparent.
+    pub background_color: Option<u32>,
+    /// Its own `opacity`.
+    pub opacity: f32,
+    /// The opacity it shows with: its own times every view's around it.
+    pub effective_opacity: f32,
+}
+
+impl Default for ViewStyle {
+    fn default() -> Self {
+        ViewStyle {
+            background_color: None,
+            opacity: 1.0,
+            effective_opacity: 1.0,
+        }
+    }
+}
+
 /// A step of a test on a host's app, named as `nsh/test` names them: views
 /// are found by selectors (`id:save`, `text:Add`, `role:button[Save]`), and
 /// actions are native input at the view the selector names.
@@ -520,6 +558,15 @@ pub enum TestStep {
     },
     /// Lets go of the pointer `DragAndHold` left down (`app.drop`).
     Drop,
+    /// An input method composes `text` in the input (`app.compose`):
+    /// marked text at the caret, in place of what it composed; empty, the
+    /// composition ends with nothing committed.
+    Compose {
+        /// Which input.
+        selector: String,
+        /// What it composes.
+        text: String,
+    },
     /// Drops local files on a view (`app.dropFiles`).
     DropFiles {
         /// Where.
@@ -529,6 +576,9 @@ pub enum TestStep {
     },
     /// Goes back as the user does (`app.back`).
     Back,
+    /// Goes forward in the browser's history (`app.forward`): the web's
+    /// alone, the other platforms have no forward.
+    Forward,
     /// Lets the app run (`app.wait`).
     Wait {
         /// Milliseconds.
@@ -591,6 +641,12 @@ pub enum TestStep {
     /// The style of the first character `selector` names
     /// (`app.spanStyle`): a [`SpanStyle`].
     SpanStyle {
+        /// The selector.
+        selector: String,
+    },
+    /// The style of the view `selector` names (`app.viewStyle`): a
+    /// [`ViewStyle`], or null when none matches.
+    ViewStyle {
         /// The selector.
         selector: String,
     },
@@ -660,6 +716,11 @@ pub enum TestStep {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "query", rename_all = "snake_case")]
 pub enum SceneQuery {
+    /// The textual accessibility value of a composite input, if supplied.
+    InputValueText {
+        /// The input selector.
+        selector: String,
+    },
     /// How many batches the app applied and how long ago the last was.
     Activity,
     /// The app's errors since the last time, taken.

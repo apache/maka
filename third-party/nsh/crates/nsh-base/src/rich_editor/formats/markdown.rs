@@ -10,15 +10,18 @@
 //! is written as a pipe table; any other is written as its HTML, which
 //! reads back as it was.
 
-use std::collections::BTreeSet;
+use std::{cell::Cell, collections::BTreeSet};
 
 use markdown::mdast;
 use serde_json::Value;
 
 use super::{DocFormat, DomParser, DomSerializer, FormatError, ParseOptions};
-use crate::rich_editor::{
-    model::{Attrs, Fragment, Mark, Node, Schema},
-    tables::{TableRole, colspan, rowspan, table_node_types, table_role},
+use crate::{
+    mdast_tree::{Mdast, plain_text},
+    rich_editor::{
+        model::{Attrs, Fragment, Mark, Node, Schema},
+        tables::{TableRole, colspan, rowspan, table_node_types, table_role},
+    },
 };
 
 /// The schema's names for what Markdown expresses. The defaults are the
@@ -184,10 +187,12 @@ impl DocFormat for MarkdownFormat {
 
     fn parse(&self, schema: &Schema, input: &str) -> Result<Node, FormatError> {
         let root = markdown::to_mdast(input, &markdown::ParseOptions::gfm())
+            .map(Mdast)
             .map_err(|e| FormatError::Markdown(e.to_string()))?;
         let reader = Reader {
             schema,
             names: &self.names,
+            depth: Cell::new(0),
         };
         let mut blocks = reader.blocks(root.children().map(Vec::as_slice).unwrap_or(&[]))?;
         if blocks.is_empty() {
@@ -223,7 +228,16 @@ impl DocFormat for MarkdownFormat {
 struct Reader<'a> {
     schema: &'a Schema,
     names: &'a MarkdownNames,
+    /// How many `blocks` / `inlines` are being read around the current
+    /// node ([`MAX_DEPTH`]).
+    depth: Cell<usize>,
 }
+
+/// How deep blocks and inline content are read: deeper content is its text.
+/// The tree is read recursively, so without a bound a paste of thousands of
+/// nested quotes or lists ran the stack out (`TextView` bounds it the same
+/// way).
+const MAX_DEPTH: usize = 64;
 
 impl Reader<'_> {
     fn has_node(&self, name: &str) -> bool {
@@ -253,11 +267,16 @@ impl Reader<'_> {
     }
 
     fn blocks(&self, nodes: &[mdast::Node]) -> Result<Vec<Node>, FormatError> {
-        let mut out = Vec::new();
-        for node in nodes {
-            self.block(node, &mut out)?;
+        if self.depth.get() >= MAX_DEPTH {
+            let text = plain_text(nodes);
+            let inline = self.text(text.trim(), Vec::new());
+            return Ok(vec![self.paragraph(inline)?]);
         }
-        Ok(out)
+        self.depth.set(self.depth.get() + 1);
+        let mut out = Vec::new();
+        let read = nodes.iter().try_for_each(|node| self.block(node, &mut out));
+        self.depth.set(self.depth.get() - 1);
+        read.map(|()| out)
     }
 
     fn block(&self, node: &mdast::Node, out: &mut Vec<Node>) -> Result<(), FormatError> {
@@ -455,10 +474,15 @@ impl Reader<'_> {
     }
 
     fn inlines(&self, nodes: &[mdast::Node], marks: &[Mark]) -> Vec<Node> {
+        if self.depth.get() >= MAX_DEPTH {
+            return self.text(&plain_text(nodes), marks.to_vec());
+        }
+        self.depth.set(self.depth.get() + 1);
         let mut out = Vec::new();
         for node in nodes {
             self.inline(node, marks, &mut out);
         }
+        self.depth.set(self.depth.get() - 1);
         out
     }
 
@@ -975,6 +999,39 @@ mod tests {
         let again = f.parse(&schema, &out).unwrap();
         assert!(doc.eq(&again), "not stable: {md:?} -> {out:?}");
         (doc, out)
+    }
+
+    /// Deeply nested Markdown (pasted or set by the app) is read with a
+    /// bounded depth: deeper content is kept as text, and the tree is
+    /// dropped without recursion, so no input runs the stack out on a
+    /// thread of a common size.
+    #[test]
+    fn deeply_nested_markdown_is_read_without_running_the_stack_out() {
+        let deep = |depth: usize| {
+            // Each list item opens with its text: the starter schema's list
+            // items start with a paragraph.
+            let list: String = (0..depth / 10)
+                .map(|i| format!("{}- deep\n", "  ".repeat(i)))
+                .collect();
+            [format!("{}deep\n", "> ".repeat(depth)), list]
+        };
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || {
+                let schema = starter::schema();
+                let f = MarkdownFormat::default();
+                for md in deep(5_000) {
+                    let doc = f.parse(&schema, &md).unwrap();
+                    assert!(doc.text_content().contains("deep"), "{md:.20}");
+                    f.serialize(&doc).unwrap();
+                }
+                // Shallow nesting is read as before.
+                let doc = f.parse(&schema, "> > > quoted\n").unwrap();
+                assert_eq!(doc.child(0).child(0).child(0).ty().name(), "blockquote");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

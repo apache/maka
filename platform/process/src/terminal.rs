@@ -24,12 +24,12 @@ use alacritty_terminal::{
     term::{Config, TermMode, cell::Flags},
     vte::ansi,
 };
-use maka_agent_facts::terminal::MouseEncoding;
-use maka_agent_facts::terminal::MouseTracking;
-use maka_agent_facts::terminal::TerminalCursor;
-use maka_agent_facts::terminal::TerminalInputModes;
-use maka_agent_facts::terminal::TerminalScreen;
-use maka_agent_facts::terminal::TerminalSize;
+use maka_plugin_core::terminal::MouseEncoding;
+use maka_plugin_core::terminal::MouseTracking;
+use maka_plugin_core::terminal::TerminalCursor;
+use maka_plugin_core::terminal::TerminalInputModes;
+use maka_plugin_core::terminal::TerminalScreen;
+use maka_plugin_core::terminal::TerminalSize;
 use std::{cell::RefCell, rc::Rc};
 
 pub mod display;
@@ -56,7 +56,7 @@ impl Screen {
         let events = Events(Rc::new(RefCell::new(Default::default())));
         let term = Term::new(
             Config {
-                scrolling_history: maka_agent_facts::terminal::history_rows(size.cols()),
+                scrolling_history: maka_plugin_core::terminal::history_rows(size.cols()),
                 ..Default::default()
             },
             &Size(size),
@@ -103,7 +103,7 @@ impl Screen {
     pub fn resize(&mut self, size: TerminalSize) -> Result<(), ScreenError> {
         self.check()?;
         let previous = self.size();
-        let history = maka_agent_facts::terminal::history_rows(size.cols());
+        let history = maka_plugin_core::terminal::history_rows(size.cols());
         // Set the new cell allowance before reflow: trim before width growth,
         // allow additional physical rows when columns shrink.
         // set_options targets the primary grid even while the alternate is active.
@@ -154,7 +154,7 @@ impl Screen {
         let mut clipped = false;
         let screen = render(term, false, &mut remaining, &mut clipped);
         let alternate = self.state.last_alternate.as_ref().map(|rows| {
-            maka_agent_facts::terminal::display::text_rows(
+            maka_plugin_core::terminal::display::text_rows(
                 &rows.rows,
                 false,
                 &mut remaining,

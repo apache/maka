@@ -9,13 +9,17 @@
 //! root view (its insets, size and margins against the root view's box);
 //! with one it goes on a side of the anchor ([`place`]): the side asked
 //! for, the other one when it does not fit there, kept inside the root
-//! view's safe area. This module has the options and that placement, which
-//! has no state.
+//! view's safe area. An overlay whose size follows the room it was told
+//! (`onPosition`'s `available`, a select's list) chooses its side at its
+//! natural size, not the size that room gave it ([`place_fitted`]). This
+//! module has the options and that placement, which has no state.
 //!
 //! A hint overlay (a tooltip, [`OverlayConfig::hint`]) is shown by the
 //! core itself: on the desktops, once the pointer rested on its anchor (its
 //! parent without one) for the hint's delay, until the pointer leaves the
-//! anchor or presses it, as GPUI's tooltips are. An element's `tooltip`
+//! anchor or presses it, as GPUI's tooltips are; at once when the pointer
+//! comes to its anchor within its grace period after leaving one whose hint
+//! it showed (`HINT_GRACE_PERIOD`, 300 ms). An element's `tooltip`
 //! ([`TooltipContent`]) is one the core makes.
 
 use std::time::Duration;
@@ -50,10 +54,12 @@ pub enum OverlayAnchor {
     /// Rust) goes by its own box: the slot's holder around it is that
     /// wrapper.
     Content(NodeId),
-    /// Beside a view inside another, as a submenu beside its row: lined
-    /// up with `node` along the side it goes on, and outside `edges` (the
-    /// menu around the row) across it, so the gap is measured from the
-    /// menu's edge, not from the row inside its padding.
+    /// Beside a view inside another, as a submenu beside its row: its
+    /// content (inside its own padding and border) lined up with `node`
+    /// along the side it goes on, so a submenu's first item is level with
+    /// its row, and outside `edges` (the menu around the row) across it,
+    /// so the gap is measured from the menu's edge, not from the row
+    /// inside its padding.
     Beside {
         /// The view it lines up with.
         node: NodeId,
@@ -166,6 +172,16 @@ pub struct OverlayConfig {
 /// The delay of a hint before it shows (500 ms, as the desktops' tooltips).
 pub const HINT_DELAY: Duration = Duration::from_millis(500);
 
+/// The hints' grace period: the pointer coming to an anchor this soon after
+/// leaving one whose hint it showed shows its hint at once, without waiting
+/// its delay (300 ms, `gpui-base`'s `TooltipDefaults` grace period).
+pub(crate) const HINT_GRACE_PERIOD: Duration = Duration::from_millis(300);
+
+/// A hint delay this long or longer never ends (the longest a timer waits,
+/// `nsh-base`'s `Tooltip` with an endless `delay`): the pointer never shows
+/// that hint, so it takes no part in the grace period.
+pub(crate) const HINT_ENDLESS: Duration = Duration::from_millis(i32::MAX as u64);
+
 /// What an element's `tooltip` shows, in a hint overlay the core makes
 /// above the element (or the element itself when it is a hint overlay) ([`OverlayConfig::hint`]).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -261,6 +277,35 @@ pub fn place(
     }
 }
 
+/// Places an overlay whose size follows the room it is given (its max
+/// size along the side is the [`Placed::available`] it was told, as a
+/// list that scrolls past it), as [`place`] does: the side is chosen at
+/// `natural`, its size without that limit, so one taller than the room
+/// below goes above when it fits there whole, however short the room
+/// below has made it; then it is placed at the size it takes on that side,
+/// `natural` limited to the room there (on the side with more room when it
+/// fits on neither).
+pub fn place_fitted(
+    anchor: Bounds<Points>,
+    natural: Size<Points>,
+    area: Bounds<Points>,
+    config: &OverlayConfig,
+    rtl: bool,
+) -> Placed {
+    let chosen = place(anchor, natural, area, config, rtl);
+    let shown = if chosen.placement.is_horizontal() {
+        size(natural.width.min(chosen.available.width), natural.height)
+    } else {
+        size(natural.width, natural.height.min(chosen.available.height))
+    };
+    // It fits on that side at that size: `place` keeps it there.
+    let config = OverlayConfig {
+        placement: chosen.placement,
+        ..*config
+    };
+    place(anchor, shown, area, &config, rtl)
+}
+
 /// `bounds` less `inset` on every side (never negative).
 pub(crate) fn inset(bounds: Bounds<Points>, edges: [f32; 4]) -> Bounds<Points> {
     let [top, right, bottom, left] = edges;
@@ -350,6 +395,52 @@ mod tests {
         );
         assert_eq!(tall.placement, Placement::Bottom);
         assert_eq!(tall.origin.y, px(200.0));
+    }
+
+    #[test]
+    fn fitted_overlays_choose_their_side_at_their_natural_size() {
+        let config = config(Placement::Bottom, Align::Start);
+        // Fits below: stays there, at its size.
+        let below = place_fitted(
+            rect(100.0, 100.0, 80.0, 40.0),
+            size(px(120.0), px(300.0)),
+            AREA,
+            &config,
+            false,
+        );
+        assert_eq!(below.placement, Placement::Bottom);
+        assert_eq!(below.origin, point(px(100.0), px(144.0)));
+        assert_eq!(below.available, size(px(400.0), px(656.0)));
+        // Taller than the room below (156), fits above (596): above, whole.
+        let anchor = rect(100.0, 600.0, 80.0, 40.0);
+        let above = place_fitted(anchor, size(px(120.0), px(400.0)), AREA, &config, false);
+        assert_eq!(above.placement, Placement::Top);
+        assert_eq!(above.origin, point(px(100.0), px(196.0)));
+        assert_eq!(above.available, size(px(400.0), px(596.0)));
+        // Fits on neither side: the one with more room (below, 446), its
+        // size limited to that room, beside the anchor rather than over it.
+        let anchor = rect(100.0, 300.0, 80.0, 50.0);
+        let neither = place_fitted(anchor, size(px(120.0), px(700.0)), AREA, &config, false);
+        assert_eq!(neither.placement, Placement::Bottom);
+        assert_eq!(neither.origin, point(px(100.0), px(354.0)));
+        assert_eq!(neither.available, size(px(400.0), px(446.0)));
+        let config = OverlayConfig {
+            placement: Placement::Top,
+            ..config
+        };
+        // Asked above with less room there (296): below all the same.
+        let neither = place_fitted(anchor, size(px(120.0), px(700.0)), AREA, &config, false);
+        assert_eq!(neither.placement, Placement::Bottom);
+        assert_eq!(neither.origin.y, px(354.0));
+        // Beside the anchor: its width decides, limited the same way.
+        let config = OverlayConfig {
+            placement: Placement::Right,
+            ..config
+        };
+        let anchor = rect(300.0, 100.0, 40.0, 40.0);
+        let side = place_fitted(anchor, size(px(200.0), px(60.0)), AREA, &config, false);
+        assert_eq!(side.placement, Placement::Left);
+        assert_eq!(side.origin, point(px(96.0), px(100.0)));
     }
 
     #[test]

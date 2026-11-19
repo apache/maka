@@ -162,6 +162,7 @@ fn bytecode(entry: &str) -> Vec<u8> {
         minify: false,
         split: false,
         ui_sets: ui_sets.iter().map(Into::into).collect(),
+        ..Default::default()
     })
     .unwrap();
     nsh_js::compile_bytecode_with(

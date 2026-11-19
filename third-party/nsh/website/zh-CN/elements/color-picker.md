@@ -258,7 +258,7 @@ Rust 中 `ColorPickerEvent::Change(Hsla, SharedString)` 和 `ColorPickerEvent::C
 | `ColorEyeDropper` | 选择器内，或单独使用 | `class`、`style` |
 
 通道两端的值对应轨道两端，滑块的拇指以这两端为中心。给滑块留出半个拇指宽度的内边距（`h-3` 轨道外用 `h-6 justify-center px-2.5`），拇指就完整地留在滑块内，两端都能接受按压。部件显示的状态：拖动时拇指的
-`active:`，有键盘焦点时的 `focus:`，色板的 `selected:`，以及每个部件的 `disabled:`。
+`active:`，有键盘焦点时的 `focus-visible:`，色板的 `selected:`，以及每个部件的 `disabled:`。
 
 ## 键盘
 

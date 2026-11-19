@@ -12,7 +12,7 @@
 //! next start (`nsh_engine::updates`). They update the code on every
 //! platform with a launcher that runs them, iOS and Android included.
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "updater"))]
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
@@ -89,21 +89,52 @@ pub(crate) struct UpdateProgress {
     pub(crate) total: Option<f64>,
 }
 
+/// Options of `checkForUpdate`.
+#[derive(Debug, Clone, Default, JsObject)]
+#[non_exhaustive]
+pub(crate) struct UpdateCheckOptions {
+    /// The name of a channel in `nsh.json`'s `"updater": { "channels" }`
+    /// to check instead of the default source. Only names the package
+    /// declares are accepted: the app's code chooses, the package says
+    /// where.
+    pub(crate) channel: Option<String>,
+    /// The language the app shows (a BCP 47 tag such as `zh-TW`): `notes`
+    /// is then the manifest's notes in it, or in its language (`zh`),
+    /// downloading only that file, else the default notes.
+    pub(crate) locale: Option<String>,
+}
+
+/// Options of `checkForPackage`.
+#[derive(Debug, Clone, Default, JsObject)]
+#[non_exhaustive]
+pub(crate) struct PackageCheckOptions {
+    /// As `checkForUpdate`'s: the language `notes` is in, when the
+    /// manifest has it.
+    pub(crate) locale: Option<String>,
+}
+
 /// A newer version of the app.
 #[derive(Debug, Clone, Default, PartialEq, JsObject)]
 #[non_exhaustive]
 pub(crate) struct AppUpdate {
     /// Its version.
     pub(crate) version: String,
-    /// What changed, as the manifest says it.
+    /// What changed, as the manifest says it: in the check's `locale` when
+    /// the manifest has it.
     pub(crate) notes: Option<String>,
     /// Where the user can get it by hand: the archive, or a store's page on
     /// iOS and Android. For `openUrl` when `canInstall` is false.
     pub(crate) url: String,
-    /// Whether `downloadUpdate` and `installAndRestart` work here: a package
-    /// on the desktop, installed where the user can write. False on iOS and
-    /// Android, and under a directory only the system writes.
+    /// Whether `downloadUpdate`, `installAndRestart` and `installOnQuit` work
+    /// here: a package on the desktop, installed where the user can write.
+    /// False on iOS and Android, and under a directory only the system
+    /// writes.
     pub(crate) can_install: bool,
+    /// Whether only the installed app is behind: the package this run's code
+    /// came from is already this version or a later one, so the update
+    /// brings a newer runtime and native shell, not newer app code. Apps that
+    /// update by package can offer it as the quieter "update the app" step.
+    pub(crate) shell: bool,
 }
 
 /// A newer build of the app's code, as a signed package.
@@ -114,7 +145,8 @@ pub(crate) struct PackageUpdate {
     pub(crate) version: String,
     /// Its build number, newer than the running one.
     pub(crate) build: f64,
-    /// What changed, as the manifest says it.
+    /// What changed, as the manifest says it: in the check's `locale` when
+    /// the manifest has it.
     pub(crate) notes: Option<String>,
     /// Its size in bytes, when the manifest says it.
     pub(crate) size: Option<f64>,
@@ -153,14 +185,14 @@ impl ShellInfo {
     /// and whether the launcher runs packages.
     fn new(config: Option<&[u8]>, runs_packages: bool) -> ShellInfo {
         // (version, build, trusts package roots); nothing updates on the web
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "updater"))]
         let shipped = config
             .and_then(|bytes| nsh_updater::Config::parse(bytes).ok())
             .map(|config| {
                 let roots = !config.package_roots().is_empty();
                 (config.version, config.build.unwrap_or(1), roots)
             });
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", not(feature = "updater")))]
         let shipped: Option<(String, u64, bool)> = config.and(None);
         ShellInfo {
             version: shipped.as_ref().map(|(version, _, _)| version.clone()),
@@ -177,14 +209,22 @@ pub(crate) struct Updater;
 
 #[module(flat)]
 impl Updater {
-    /// Asks the source in `nsh.json`'s `"updater"` for a newer version.
-    /// Resolves with the update, or `null` when the app is up to date, has
-    /// no `"updater"`, or runs where apps do not update (the web, a
-    /// development run). Rejects when the source cannot be reached or its
-    /// manifest is not acceptable: a bad signature, another app's id, a
-    /// URL that is not HTTPS.
-    pub(crate) fn check_for_update(sys: System) -> Later<Option<AppUpdate>> {
-        Later::new(native::check(sys))
+    /// Asks the source in `nsh.json`'s `"updater"` for a newer version:
+    /// its `url` or `github`, or with `channel`, the manifest of that name
+    /// in its `"channels"`. Resolves with the update, or `null` when the
+    /// app is up to date, has no `"updater"`, or runs where apps do not
+    /// update (the web, a development run). Rejects when the package
+    /// declares no channel of that name, and when the source cannot be
+    /// reached or its manifest is not acceptable: a bad signature, another
+    /// app's id, a URL that is not HTTPS. `downloadUpdate`,
+    /// `installAndRestart` and `installOnQuit` use what the last check
+    /// found, whichever source.
+    pub(crate) fn check_for_update(
+        options: Option<UpdateCheckOptions>,
+        sys: System,
+    ) -> Later<Option<AppUpdate>> {
+        let options = options.unwrap_or_default();
+        Later::new(native::check(sys, options.channel, options.locale))
     }
 
     /// Downloads the update the last `checkForUpdate` found and checks it
@@ -207,6 +247,22 @@ impl Updater {
         Later::new(native::install(sys))
     }
 
+    /// Replaces the installed app with the downloaded update when the app
+    /// quits, without starting it again: the user's next start opens the
+    /// new version. The update is unpacked and checked now, as
+    /// `installAndRestart` checks it, and the promise resolves once it
+    /// waits; quitting then only moves it into place. Rejects when nothing
+    /// was downloaded or the update is refused, which leaves the app as it
+    /// was. Calling it again replaces what waits, and `installAndRestart`
+    /// installs at once instead. Only a quit of the app installs it: if the
+    /// app ends otherwise (a crash, being killed), it is gone, and the next
+    /// `checkForUpdate` offers the update again. When moving it into place
+    /// fails as the app quits (the app was moved meanwhile, say), the app
+    /// stays as it was and quits all the same, the failure logged.
+    pub(crate) fn install_on_quit(sys: System) -> Later<()> {
+        Later::new(native::install_on_quit(sys))
+    }
+
     /// Asks the source in `nsh.json`'s `"updater"` for a newer build of the
     /// app's code: a signed package newer than the running build (the
     /// running package's, else the one the app shipped with) that this
@@ -214,8 +270,12 @@ impl Updater {
     /// app trusts no package roots (`"updater": { "packages": { "roots" } }`)
     /// or runs where apps do not update (the web, a development run).
     /// Rejects as `checkForUpdate` does.
-    pub(crate) fn check_for_package(sys: System) -> Later<Option<PackageUpdate>> {
-        Later::new(native::check_package(sys))
+    pub(crate) fn check_for_package(
+        options: Option<PackageCheckOptions>,
+        sys: System,
+    ) -> Later<Option<PackageUpdate>> {
+        let locale = options.and_then(|options| options.locale);
+        Later::new(native::check_package(sys, locale))
     }
 
     /// Downloads the package the last `checkForPackage` found, checks it
@@ -286,9 +346,11 @@ fn unavailable() -> JsError {
     .with_code(codes::UNAVAILABLE)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "updater"))]
 mod native {
     use nsh_updater::{Available, Config, Download};
+
+    use std::collections::BTreeMap;
 
     use super::*;
 
@@ -337,7 +399,11 @@ mod native {
         available: Available,
         dir: PathBuf,
         archive: RefCell<Option<PathBuf>>,
-        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        #[cfg(any(
+            all(target_os = "linux", not(target_env = "ohos")),
+            target_os = "macos",
+            windows
+        ))]
         installation: nsh_updater::install::Installation,
     }
 
@@ -348,7 +414,11 @@ mod native {
         super::super::fs::blocking(move || work().map_err(JsError::Error)).await
     }
 
-    pub(super) async fn check(sys: System) -> Result<Option<AppUpdate>, JsError> {
+    pub(super) async fn check(
+        sys: System,
+        channel: Option<String>,
+        locale: Option<String>,
+    ) -> Result<Option<AppUpdate>, JsError> {
         let found = sys.locals.get::<Found>();
         let _operation = begin(&found)?;
         // A failed check keeps what the last one found, and its download: a
@@ -363,7 +433,17 @@ mod native {
                 return Ok(None);
             };
             let config = Config::parse(&bytes).map_err(|e| e.to_string())?;
-            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            // Only the source changes: the id, version and key are the
+            // package's, and the installation is found by its own file.
+            let config = match &channel {
+                Some(name) => config.channel(name).map_err(|e| e.to_string())?,
+                None => config,
+            };
+            #[cfg(any(
+                all(target_os = "linux", not(target_env = "ohos")),
+                target_os = "macos",
+                windows
+            ))]
             if let Some(installation) =
                 nsh_updater::install::Installation::current(&config.id, &bytes)
             {
@@ -377,20 +457,28 @@ mod native {
             };
             let available = config
                 .check(&manifest, signature.as_deref(), &nsh_updater::platform())
-                .map_err(|e| e.to_string())?
-                .filter(|available| {
-                    !package_covers(worker.running_package().as_ref(), &available.version)
-                });
-            Ok(available.map(|available| (bytes, config, available)))
+                .map_err(|e| e.to_string())?;
+            let running = worker.running_package();
+            Ok(available.map(|mut available| {
+                let shell = package_covers(running.as_ref(), &available.version);
+                if let Some(notes) = localized(&*worker, &available.localized_notes, locale) {
+                    available.notes = Some(notes);
+                }
+                (bytes, config, available, shell)
+            }))
         })
         .await?;
-        let Some((bytes, config, available)) = checked else {
+        let Some((bytes, config, available, shell)) = checked else {
             *found.0.borrow_mut() = None;
             return Ok(None);
         };
         // Only the desktops install an update (`can_install` below).
         #[cfg_attr(
-            not(any(target_os = "linux", target_os = "macos", windows)),
+            not(any(
+                all(target_os = "linux", not(target_env = "ohos")),
+                target_os = "macos",
+                windows
+            )),
             allow(unused_mut)
         )]
         let mut update = AppUpdate {
@@ -398,8 +486,13 @@ mod native {
             notes: available.notes.clone(),
             url: available.url.clone(),
             can_install: false,
+            shell,
         };
-        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        #[cfg(any(
+            all(target_os = "linux", not(target_env = "ohos")),
+            target_os = "macos",
+            windows
+        ))]
         {
             let id = config.id.clone();
             let installation = blocking(move || {
@@ -433,9 +526,33 @@ mod native {
                 *found = None;
             }
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+        #[cfg(not(any(
+            all(target_os = "linux", not(target_env = "ohos")),
+            target_os = "macos",
+            windows
+        )))]
         let _ = (bytes, config, host, &found);
         Ok(Some(update))
+    }
+
+    /// The notes in `locale` among `files`, downloaded and checked; `None`
+    /// keeps the default notes, also when the file cannot be had: notes in
+    /// another language must not fail a check.
+    fn localized(
+        host: &dyn UpdaterHost,
+        files: &BTreeMap<String, nsh_updater::NotesFile>,
+        locale: Option<String>,
+    ) -> Option<String> {
+        let file = nsh_updater::notes_for(files, &locale?)?;
+        let opened = get_all(host, &file.url)
+            .and_then(|bytes| nsh_updater::open_notes(file, bytes).map_err(|e| e.to_string()));
+        match opened {
+            Ok(notes) => Some(notes),
+            Err(e) => {
+                log::warn!("updater: notes: {e}");
+                None
+            }
+        }
     }
 
     /// A small file, whole. A manifest is a few kilobytes.
@@ -531,7 +648,10 @@ mod native {
     /// The downloaded package the app's next start runs.
     const NEXT: &str = "next.nshpkg";
 
-    pub(super) async fn check_package(sys: System) -> Result<Option<PackageUpdate>, JsError> {
+    pub(super) async fn check_package(
+        sys: System,
+        locale: Option<String>,
+    ) -> Result<Option<PackageUpdate>, JsError> {
         let found = sys.locals.get::<Found>();
         let _operation = begin(&found)?;
         let (Some(host), Some(data_dir)) = (sys.updater.clone(), sys.data_dir.clone()) else {
@@ -564,7 +684,12 @@ mod native {
                     env!("CARGO_PKG_VERSION"),
                 )
                 .map_err(|e| e.to_string())?;
-            Ok(available.map(|available| (config, available, running_build)))
+            Ok(available.map(|mut available| {
+                if let Some(notes) = localized(&*worker, &available.localized_notes, locale) {
+                    available.notes = Some(notes);
+                }
+                (config, available, running_build)
+            }))
         })
         .await?;
         let Some((config, available, running_build)) = checked else {
@@ -670,13 +795,21 @@ mod native {
 
     /// As `Application.restart()`: the app's launcher runs the package
     /// when it starts again.
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[cfg(any(
+        all(target_os = "linux", not(target_env = "ohos")),
+        target_os = "macos",
+        windows
+    ))]
     async fn restart_into_package() -> Result<(), JsError> {
         crate::element::desktop::restart();
         std::future::pending().await
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    #[cfg(not(any(
+        all(target_os = "linux", not(target_env = "ohos")),
+        target_os = "macos",
+        windows
+    )))]
     async fn restart_into_package() -> Result<(), JsError> {
         Err(JsError::Error(
             "an app cannot restart itself here: the package runs from the app's next start".into(),
@@ -684,7 +817,11 @@ mod native {
         .with_code(codes::UNAVAILABLE))
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[cfg(any(
+        all(target_os = "linux", not(target_env = "ohos")),
+        target_os = "macos",
+        windows
+    ))]
     pub(super) async fn install(sys: System) -> Result<(), JsError> {
         let found = sys.locals.get::<Found>();
         let _operation = begin(&found)?;
@@ -693,12 +830,20 @@ mod native {
             JsError::Error("nothing is downloaded: call downloadUpdate first".into())
         })?;
         let installation = pending.installation.clone();
-        blocking(move || {
-            installation.install(&archive).map_err(|e| e.to_string())?;
+        // Installed now instead of as the app quits (`installOnQuit`).
+        crate::restart::set_at_exit(None);
+        // The restart starts the app at the path the user knows: once the
+        // directory or `.app` is swapped, this process' executable is the
+        // old one, moved aside and deleted.
+        crate::restart::remember_program();
+        let program = blocking(move || {
+            let program = installation.install(&archive).map_err(|e| e.to_string())?;
             let _ = std::fs::remove_file(&archive);
-            Ok(())
+            Ok(program)
         })
         .await?;
+        // The update may have renamed the executable or its `.app`.
+        crate::restart::set_program(program);
         // As `Application.restart()`: the app quits as the user's quit does
         // (storage written, windows closed), and the new version starts
         // once this process has exited (`crate::restart`).
@@ -706,15 +851,66 @@ mod native {
         std::future::pending().await
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    #[cfg(not(any(
+        all(target_os = "linux", not(target_env = "ohos")),
+        target_os = "macos",
+        windows
+    )))]
     pub(super) async fn install(_: System) -> Result<(), JsError> {
+        Err(unavailable())
+    }
+
+    #[cfg(any(
+        all(target_os = "linux", not(target_env = "ohos")),
+        target_os = "macos",
+        windows
+    ))]
+    pub(super) async fn install_on_quit(sys: System) -> Result<(), JsError> {
+        let found = sys.locals.get::<Found>();
+        let _operation = begin(&found)?;
+        let pending = pending(&sys)?;
+        let archive = pending.archive.borrow().clone().ok_or_else(|| {
+            JsError::Error("nothing is downloaded: call downloadUpdate first".into())
+        })?;
+        let installation = pending.installation.clone();
+        // What waited before goes first: it is staged in the same place.
+        crate::restart::set_at_exit(None);
+        let staged = blocking({
+            let archive = archive.clone();
+            move || installation.stage(&archive).map_err(|e| e.to_string())
+        })
+        .await?;
+        let version = pending.available.version.clone();
+        crate::restart::set_at_exit(Some(Box::new(move || {
+            // A restart after the swap starts the app at the path the
+            // user knows, as `install` has it.
+            crate::restart::remember_program();
+            match staged.finish() {
+                Ok(program) => {
+                    // The update may have renamed the executable or its `.app`.
+                    crate::restart::set_program(program);
+                    log::info!("installed version {version} as the app quit")
+                }
+                Err(e) => log::error!("cannot install version {version} as the app quits: {e}"),
+            }
+            let _ = std::fs::remove_file(&archive);
+        })));
+        Ok(())
+    }
+
+    #[cfg(not(any(
+        all(target_os = "linux", not(target_env = "ohos")),
+        target_os = "macos",
+        windows
+    )))]
+    pub(super) async fn install_on_quit(_: System) -> Result<(), JsError> {
         Err(unavailable())
     }
     /// Whether the package this run's code came from is already the
     /// release `offered` or a later one. The app's own version is the one it
-    /// shipped as, so after restarting into a package of the latest release
-    /// the manifest would still look newer, and the whole app would be
-    /// downloaded and offered again for what already runs.
+    /// shipped as, so a run on a package of the latest release still sees the
+    /// release as newer: its code is current and only the shell is behind
+    /// (`AppUpdate::shell`).
     fn package_covers(running: Option<&PackageVersion>, offered: &str) -> bool {
         running.is_some_and(|running| nsh_updater::version_at_least(&running.version, offered))
     }
@@ -759,6 +955,138 @@ mod native {
             );
         }
 
+        /// A package of version 1.0.0 whose `"updater"` has a default
+        /// source and a `beta` channel, each serving a signed manifest; it
+        /// records the URLs asked for.
+        struct Channels(std::sync::Mutex<Vec<String>>);
+
+        const SECRET: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+        const PUBLIC: &str = "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=";
+        const STABLE: &str = "https://x.dev/latest.json";
+        const BETA: &str = "https://x.dev/beta/latest.json";
+
+        fn served(version: &str) -> Vec<u8> {
+            format!(
+                r#"{{"id":"dev.noop.app","version":"{version}","platforms":{{"{}":{{"url":"a.tar.gz","sha256":"ab","size":2}}}}}}"#,
+                nsh_updater::platform()
+            )
+            .into_bytes()
+        }
+
+        const ZH_TW: &str = "https://x.dev/beta/notes.zh-TW.md";
+        const JA: &str = "https://x.dev/beta/notes.ja.md";
+
+        /// The beta manifest: notes, and in zh-TW and ja beside it (ja's
+        /// file does not match its hash).
+        fn beta() -> Vec<u8> {
+            let mut manifest: serde_json::Value =
+                serde_json::from_slice(&served("1.1.0-beta.1")).unwrap();
+            manifest["notes"] = "Fixes".into();
+            manifest["localizedNotes"] = serde_json::json!({
+                "zh-TW": { "url": "notes.zh-TW.md", "sha256": nsh_updater::sha256("修復".as_bytes()) },
+                "ja": { "url": "notes.ja.md", "sha256": nsh_updater::sha256("修正".as_bytes()) },
+            });
+            serde_json::to_vec(&manifest).unwrap()
+        }
+
+        impl UpdaterHost for Channels {
+            fn config(&self) -> Option<Vec<u8>> {
+                Some(
+                    format!(
+                        r#"{{"id":"dev.noop.app","version":"1.0.0","url":"{STABLE}","channels":{{"beta":"{BETA}"}},"publicKey":"{PUBLIC}"}}"#
+                    )
+                    .into_bytes(),
+                )
+            }
+
+            fn get(&self, url: &str, sink: UpdaterSink<'_>) -> Result<(), String> {
+                self.0.lock().unwrap().push(url.to_owned());
+                let manifest = match url.strip_suffix(".sig").unwrap_or(url) {
+                    STABLE => served("1.0.0"),
+                    BETA => beta(),
+                    ZH_TW => return sink("修復".as_bytes(), None),
+                    JA => return sink(b"tampered", None),
+                    _ => return Err("not found".into()),
+                };
+                let body = if url.ends_with(".sig") {
+                    nsh_updater::sign(SECRET, &manifest).unwrap().into_bytes()
+                } else {
+                    manifest
+                };
+                sink(&body, Some(body.len() as u64))
+            }
+        }
+
+        #[test]
+        fn a_check_reads_the_channel_the_package_declares() {
+            let host = Arc::new(Channels(Default::default()));
+            let sys = System::default().with_updater(Some(host.clone()));
+            let checked = |channel: Option<&str>| {
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(check(sys.clone(), channel.map(str::to_owned), None))
+            };
+            // The default source has nothing newer; the beta channel has.
+            assert!(checked(None).unwrap().is_none());
+            let update = checked(Some("beta")).unwrap().unwrap();
+            assert_eq!(update.version, "1.1.0-beta.1");
+            assert_eq!(update.url, "https://x.dev/beta/a.tar.gz");
+            assert_eq!(
+                *host.0.lock().unwrap(),
+                [
+                    STABLE.to_owned(),
+                    format!("{STABLE}.sig"),
+                    BETA.to_owned(),
+                    format!("{BETA}.sig"),
+                ]
+            );
+            // A name the package does not declare reaches no host.
+            host.0.lock().unwrap().clear();
+            assert!(checked(Some("nightly")).is_err());
+            assert!(checked(Some("https://evil.dev/latest.json")).is_err());
+            assert!(host.0.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn a_check_downloads_only_the_notes_of_its_locale() {
+            let host = Arc::new(Channels(Default::default()));
+            let sys = System::default().with_updater(Some(host.clone()));
+            let notes = |locale: Option<&str>| {
+                host.0.lock().unwrap().clear();
+                let update = tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(check(
+                        sys.clone(),
+                        Some("beta".into()),
+                        locale.map(str::to_owned),
+                    ))
+                    .unwrap()
+                    .unwrap();
+                let fetched = host.0.lock().unwrap().len();
+                (update.notes.unwrap(), fetched)
+            };
+            assert_eq!(notes(None), ("Fixes".to_owned(), 2));
+            assert_eq!(notes(Some("zh-TW")), ("修復".to_owned(), 3));
+            // No file for it, or one that fails its hash: the default notes.
+            assert_eq!(notes(Some("de")), ("Fixes".to_owned(), 2));
+            assert_eq!(notes(Some("ja")), ("Fixes".to_owned(), 3));
+        }
+
+        /// Nothing waits to install when no check found an update the app
+        /// can install, and the rejection says so.
+        #[test]
+        fn install_on_quit_needs_a_downloaded_update() {
+            let sys = System::default().with_updater(Some(Arc::new(Channels(Default::default()))));
+            let error = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(install_on_quit(sys))
+                .unwrap_err();
+            assert_eq!(error.code(), Some(codes::UNAVAILABLE));
+        }
+
         #[test]
         fn operations_are_serial_and_release_on_error_or_cancellation() {
             let found = Found::default();
@@ -773,12 +1101,17 @@ mod native {
     }
 }
 
-/// Nothing updates on the web: a deploy updates its apps.
-#[cfg(target_arch = "wasm32")]
+/// Nothing updates on the web (a deploy updates its apps), nor in a build
+/// without the `updater` feature.
+#[cfg(any(target_arch = "wasm32", not(feature = "updater")))]
 mod native {
     use super::*;
 
-    pub(super) async fn check(_: System) -> Result<Option<AppUpdate>, JsError> {
+    pub(super) async fn check(
+        _: System,
+        _: Option<String>,
+        _: Option<String>,
+    ) -> Result<Option<AppUpdate>, JsError> {
         Ok(None)
     }
 
@@ -793,7 +1126,14 @@ mod native {
         Err(unavailable())
     }
 
-    pub(super) async fn check_package(_: System) -> Result<Option<PackageUpdate>, JsError> {
+    pub(super) async fn install_on_quit(_: System) -> Result<(), JsError> {
+        Err(unavailable())
+    }
+
+    pub(super) async fn check_package(
+        _: System,
+        _: Option<String>,
+    ) -> Result<Option<PackageUpdate>, JsError> {
         Ok(None)
     }
 

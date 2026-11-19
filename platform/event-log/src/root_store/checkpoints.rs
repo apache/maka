@@ -20,18 +20,20 @@
 //! Root-owned physical checkpoint work. Caller cancellation never releases SQL
 //! or file custody before the original worker has actually stopped.
 use super::*;
-use crate::bundle::{BundleError, StagedBundle};
 use crate::checkpoints::{
     Head, Manifest, ObjectRef, Publication, PublicationRequest, PublicationState, Request,
     Revision, Scope, invalid,
 };
-use rusqlite::OptionalExtension;
 use std::future::Future;
+pub(crate) mod authority;
 mod journal;
 pub(in crate::root_store) mod load;
+mod local;
 mod objects;
+pub mod portable;
 pub(crate) mod restore;
-mod workspace;
+pub(crate) mod workspace;
+use crate::checkpoints::repository::VerifiedCheckpoint;
 use objects::Objects;
 
 #[derive(Clone)]
@@ -40,13 +42,7 @@ pub struct HistoryCheckpoints {
     scope: Scope,
 }
 
-#[derive(Debug)]
-pub struct Checkout {
-    pub head: Head,
-    pub manifest: Manifest,
-    /// Verified, rewound bytes; this is history material, not activation authority.
-    pub bundle: std::fs::File,
-}
+pub use crate::checkpoints::Checkout;
 
 impl RootStore {
     /// Trusted assembly only. The Agent owner must authorize its namespace and Session.
@@ -125,9 +121,38 @@ impl HistoryCheckpoints {
     pub async fn publish(
         &self,
         publication: PublicationRequest,
+        snapshot: std::fs::File,
+    ) -> Result<Publication, StoreError> {
+        if publication.workspace.is_some() {
+            return Err(invalid(
+                "workspace publication requires its original physical fence",
+            ));
+        }
+        self.publish_inner(publication, snapshot, None).await
+    }
+
+    pub async fn publish_fenced(
+        &self,
+        publication: PublicationRequest,
+        snapshot: std::fs::File,
+        fence: &WorkspaceFence,
+    ) -> Result<Publication, StoreError> {
+        fence.validate_owner(&self.session.owner()?.owned_root()?)?;
+        self.publish_inner(publication, snapshot, Some(fence.clone()))
+            .await
+    }
+
+    async fn publish_inner(
+        &self,
+        publication: PublicationRequest,
+        snapshot: std::fs::File,
+        fence: Option<WorkspaceFence>,
     ) -> Result<Publication, StoreError> {
         let request = self.request(publication)?;
-        let log = self.session.scoped().await?;
+        let mut log = self.session.scoped().await?;
+        if let Some(fence) = &fence {
+            log = log.scoped(Arc::new(fence.clone()));
+        }
         worker(
             log,
             self.session.gates.clone(),
@@ -143,9 +168,9 @@ impl HistoryCheckpoints {
                     return Ok(finish_cleanup(&log, &objects, &request, value).await);
                 }
                 boundary("claimed");
-                let prepared = capture(&log, &objects, &request).await;
-                let manifest = match prepared {
-                    Ok(manifest) => manifest,
+                let prepared = capture(&objects, &request, snapshot, fence.as_ref());
+                let (manifest, verified) = match prepared {
+                    Ok(captured) => captured,
                     Err(error) => {
                         // Only capture has run: no Head commit can be outstanding here.
                         journal::interrupt(&log, request.clone()).await?;
@@ -162,9 +187,8 @@ impl HistoryCheckpoints {
                     return Err(error);
                 }
                 boundary("prepared");
-                // capture already validated these immutable objects; recovery
-                // independently verifies retained bytes before resuming.
-                let value = journal::commit(&log, request.clone(), manifest).await?;
+                // Fresh local capture carries its verification; recovery rechecks retained bytes.
+                let value = authority::commit(&log, &objects, &request, manifest, verified).await?;
                 boundary("published");
                 Ok(finish_cleanup(&log, &objects, &request, value).await)
             },
@@ -177,11 +201,27 @@ impl HistoryCheckpoints {
         publication: PublicationRequest,
     ) -> Result<Option<Publication>, StoreError> {
         let request = self.request(publication)?;
-        journal::read(&self.session.scoped().await?, request).await
+        let log = self.session.scoped().await?;
+        let Some(mut value) = journal::read(&log, request.clone()).await? else {
+            return Ok(None);
+        };
+        if let PublicationState::Prepared { manifest } = &value.state
+            && let Some(receipt) = authority::receipt(&log, &request, manifest.clone()).await?
+        {
+            value.state = match receipt {
+                crate::checkpoints::repository::CommitReceipt::Published { head } => {
+                    PublicationState::Published { head }
+                }
+                crate::checkpoints::repository::CommitReceipt::Conflict { actual } => {
+                    PublicationState::Conflict { actual }
+                }
+            };
+        }
+        Ok(Some(value))
     }
 
     pub async fn read_head(&self) -> Result<Option<Head>, StoreError> {
-        journal::read_head(
+        authority::head(
             &self.session.scoped().await?,
             self.scope.clone(),
             self.session.id().into(),
@@ -212,28 +252,15 @@ async fn checkout(
     revision: Revision,
 ) -> Result<Checkout, StoreError> {
     let (head, manifest) = selected_checkpoint(log, objects, &scope, &session, revision).await?;
-    let digest = head.manifest.digest.clone();
-    let key = log
-        .connection
-        .read(move |db| {
-            db.query_row(
-                "SELECT capture_key FROM history_snapshots WHERE digest=?",
-                rusqlite::params![digest],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(StoreError::MaterialCollected)
-        })
-        .await?;
-    let bundle = materialize_bundle(log, key, &manifest).await?;
+    let snapshot = objects.read(&manifest.history.object)?;
     // Confirm the retained revision again after expensive verification.
-    if journal::read_head(log, scope, session).await?.as_ref() != Some(&head) {
+    if authority::head(log, scope, session).await?.as_ref() != Some(&head) {
         return Err(invalid("history checkpoint revision unavailable"));
     }
     Ok(Checkout {
         head,
         manifest,
-        bundle,
+        snapshot,
     })
 }
 
@@ -244,7 +271,7 @@ async fn selected_checkpoint(
     session: &str,
     revision: Revision,
 ) -> Result<(Head, Manifest), StoreError> {
-    let head = journal::read_head(log, scope.clone(), session.to_owned())
+    let head = authority::head(log, scope.clone(), session.to_owned())
         .await?
         .filter(|head| head.revision == revision)
         .ok_or_else(|| invalid("history checkpoint revision unavailable"))?;
@@ -252,10 +279,10 @@ async fn selected_checkpoint(
     let Manifest {
         root_id,
         scope: origin,
-        inventory,
+        session_id,
         ..
     } = &manifest;
-    if root_id != objects.root_id() || origin != scope || inventory.root_session_id != session {
+    if root_id != objects.root_id() || origin != scope || session_id != session {
         return Err(invalid("history checkpoint origin differs"));
     }
     if let Some(snapshot) = manifest.workspace() {
@@ -264,144 +291,59 @@ async fn selected_checkpoint(
     Ok((head, manifest))
 }
 
-fn bundle_error(error: BundleError) -> StoreError {
-    match error {
-        BundleError::Store(error) => error,
-        BundleError::CandidateSetStale => invalid("confirmed checkpoint subtree changed"),
-    }
-}
-
-async fn capture(
-    log: &EventLog,
+fn capture(
     objects: &Objects,
     request: &Request,
-) -> Result<ObjectRef, StoreError> {
-    let key = request.key()?;
-    log.capture_snapshot(
-        key.clone(),
-        request.session_id.clone(),
-        request.publication.confirmed_subtree_digest.clone(),
-    )
-    .await?;
-    let file = tokio::fs::File::from_std(objects.create(request, "bundle")?);
-    let (file, summary) = log.export_snapshot(key, file).await?;
-    file.sync_all().await?;
-    drop(file);
-    let mut file = std::fs::File::open(objects.staging(request, "bundle")?)?;
-    let bundle = objects::measure(&mut file)?;
-    use std::io::{Seek, SeekFrom};
-    file.seek(SeekFrom::Start(0))?;
-    boundary("payload");
-    let mut staged = StagedBundle::read(tokio::fs::File::from_std(file))
-        .await
-        .map_err(bundle_error)?;
-    let validated = async {
-        staged.validate_history().await.map_err(bundle_error)?;
-        if staged.summary().inventory != summary.inventory
-            || staged.summary().digest != summary.digest
-        {
-            return Err(invalid("checkpoint captured bundle differs"));
-        }
-        staged.history_cut(&request.session_id).await
+    mut snapshot: std::fs::File,
+    fence: Option<&WorkspaceFence>,
+) -> Result<(ObjectRef, Option<VerifiedCheckpoint>), StoreError> {
+    use std::io::{Read, Seek, SeekFrom};
+    if !snapshot.metadata()?.is_file() {
+        return Err(invalid("checkpoint snapshot is not a regular file"));
     }
-    .await;
-    let closed = staged.close().await.map_err(bundle_error);
-    let history_cut = validated?;
-    closed?;
+    snapshot.seek(SeekFrom::Start(0))?;
+    let expected = &request.publication.history.object;
+    let limit = expected
+        .bytes
+        .checked_add(1)
+        .ok_or_else(|| invalid("checkpoint snapshot size overflow"))?;
+    let mut file = objects.create(request, "snapshot")?;
+    let bytes = std::io::copy(&mut snapshot.take(limit), &mut file)?;
+    if bytes != expected.bytes {
+        return Err(invalid("checkpoint snapshot size differs"));
+    }
+    file.sync_all()?;
+    drop(file);
+    let path = objects.staging(request, "snapshot")?;
+    let reference = objects::measure(&mut std::fs::File::open(&path)?)?;
+    if &reference != expected {
+        return Err(invalid("checkpoint snapshot digest or size differs"));
+    }
+    objects.link_staged(&path, &reference)?;
+    boundary("payload");
     let workspace = request
         .publication
         .workspace
         .as_ref()
-        .map(|source| workspace::capture(objects, request, source))
+        .map(|source| {
+            let fence = fence.ok_or_else(|| invalid("workspace publication fence missing"))?;
+            fence.validate_owner(&objects.owner)?;
+            workspace::capture(objects, request, source, fence.directory()?)
+        })
         .transpose()?;
     let manifest = Manifest {
         root_id: objects.root_id().into(),
         scope: request.scope.clone(),
-        inventory: summary.inventory,
-        bundle,
-        transfer_digest: summary.digest,
-        history_cut,
+        session_id: request.session_id.clone(),
+        history: request.publication.history.clone(),
         workspace,
     };
-    objects.publish_manifest(request, &manifest)
-}
-
-async fn materialize_bundle(
-    log: &EventLog,
-    key: String,
-    manifest: &Manifest,
-) -> Result<std::fs::File, StoreError> {
-    let file = tokio::fs::File::from_std(tempfile::tempfile()?);
-    let (file, summary) = log.export_snapshot(key, file).await?;
-    let mut file = file.into_std().await;
-    use std::io::{Seek, SeekFrom};
-    file.seek(SeekFrom::Start(0))?;
-    if summary.inventory != manifest.inventory
-        || summary.digest != manifest.transfer_digest
-        || objects::measure(&mut file)? != manifest.bundle
-    {
-        return Err(invalid("checkpoint bundle differs from frozen manifest"));
-    }
-    file.seek(SeekFrom::Start(0))?;
-    Ok(file)
-}
-
-async fn validate_bundle(
-    log: &EventLog,
-    objects: &Objects,
-    manifest: &Manifest,
-    key: String,
-) -> Result<(), StoreError> {
-    if let Some(workspace) = manifest.workspace() {
-        workspace::verify(objects, workspace)?;
-    }
-    let Manifest {
-        inventory,
-        bundle,
-        transfer_digest,
-        ..
-    } = manifest;
-    let file = tokio::fs::File::from_std(materialize_bundle(log, key, manifest).await?);
-    let mut staged = StagedBundle::read(file).await.map_err(bundle_error)?;
-    let result = async {
-        if &staged.summary().inventory != inventory
-            || &staged.summary().digest != transfer_digest
-            || staged.summary().bytes != bundle.bytes
-        {
-            return Err(invalid("checkpoint manifest and bundle differ"));
-        }
-        staged.validate_history().await.map_err(bundle_error)?;
-        if staged.history_cut(&inventory.root_session_id).await? != manifest.history_cut {
-            return Err(invalid("checkpoint history cut differs from bundle"));
-        }
-        Ok(())
-    }
-    .await;
-    let closed = staged.close().await.map_err(bundle_error);
-    result.and(closed)
-}
-
-async fn verify(
-    log: &EventLog,
-    objects: &Objects,
-    request: &Request,
-    reference: &ObjectRef,
-) -> Result<(), StoreError> {
-    let manifest = objects.manifest(reference)?;
-    let Manifest {
-        root_id,
-        scope,
-        inventory,
-        ..
-    } = &manifest;
-    if root_id != objects.root_id()
-        || scope != &request.scope
-        || inventory.root_session_id != request.session_id
-        || inventory.subtree_digest != request.publication.confirmed_subtree_digest
-    {
-        return Err(invalid("checkpoint manifest origin or membership differs"));
-    }
-    validate_bundle(log, objects, &manifest, request.key()?).await
+    let reference = objects.publish_manifest(request, &manifest)?;
+    objects.finish_capture()?;
+    let verified = objects.is_local().then(|| {
+        VerifiedCheckpoint::captured(objects.storage().identity(), reference.clone(), manifest)
+    });
+    Ok((reference, verified))
 }
 
 async fn resume(
@@ -410,10 +352,7 @@ async fn resume(
     request: &Request,
     manifest: ObjectRef,
 ) -> Result<Publication, StoreError> {
-    match verify(log, objects, request, &manifest).await {
-        Ok(()) => journal::commit(log, request.clone(), manifest).await,
-        Err(error) => journal::unavailable(log, request.clone(), manifest, error.to_string()).await,
-    }
+    authority::commit(log, objects, request, manifest, None).await
 }
 
 async fn finish_cleanup(
@@ -451,6 +390,7 @@ async fn cleanup(
 }
 
 struct PhysicalWork {
+    custody: Option<Arc<EventLog>>,
     gates: Arc<gates::Gates>,
     root: Arc<root::RootOwner>,
     complete: bool,
@@ -458,9 +398,11 @@ struct PhysicalWork {
 impl Drop for PhysicalWork {
     fn drop(&mut self) {
         if self.complete {
+            drop(self.custody.take());
             self.gates.finish_work();
         } else {
-            self.gates.retain_unconfirmed(self.root.clone());
+            self.gates
+                .retain_unconfirmed(Arc::new((self.root.clone(), self.custody.take())));
         }
     }
 }
@@ -503,8 +445,17 @@ where
     Fut: Future<Output = Result<T, StoreError>> + Send + 'static,
 {
     let root = log.owned_root()?;
+    let storage = log
+        .checkpoint
+        .as_ref()
+        .ok_or_else(|| invalid("checkpoint authority is not configured"))?
+        .storage()
+        .cloned();
     gates.start_work()?;
+    let custody = Arc::new(log);
+    let log = custody.scoped(custody.clone());
     let mut work = PhysicalWork {
+        custody: Some(custody),
         gates,
         root: root.clone(),
         complete: true,
@@ -518,7 +469,10 @@ where
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?;
-                let objects = open(root)?;
+                let mut objects = open(root)?;
+                if let Some(storage) = storage {
+                    objects.use_shared(storage.objects);
+                }
                 runtime.block_on(action(log, objects))
             })();
             work.complete = true;
@@ -528,18 +482,4 @@ where
     receive.await.map_err(|_| StoreError::OperationUnknown)?
 }
 
-#[cfg(not(test))]
 fn boundary(_: &str) {}
-#[cfg(test)]
-fn boundary(phase: &str) {
-    if std::env::var("MAKA_CHECKPOINT_TEST_PHASE").ok().as_deref() == Some(phase) {
-        let path = std::env::var_os("MAKA_CHECKPOINT_TEST_READY").expect("test ready path");
-        std::fs::write(path, phase).unwrap();
-        loop {
-            std::thread::park();
-        }
-    }
-}
-
-#[cfg(all(test, unix))]
-mod tests;

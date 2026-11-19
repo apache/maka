@@ -19,7 +19,7 @@
 
 import { batch, cleanup, computed, signal } from 'nsh';
 import type { Host } from './host';
-import { tr } from './locale';
+import { localizedPresentation, tr } from './locale';
 import { message, UiError } from './text';
 import { sameValue as same } from '../../../../plugins/shared/value';
 import type {
@@ -51,7 +51,10 @@ export type PluginAction = {
   field: string | null;
 };
 export const pluginTitle = (instance: ManagedInstance) =>
-  instance.presentation?.displayName || instance.path.join(' / ');
+  (instance.presentation && localizedPresentation(instance.presentation).displayName) ||
+  instance.path.join(' / ');
+export const pluginDescription = (instance: ManagedInstance) =>
+  instance.presentation && localizedPresentation(instance.presentation).description;
 export const settingCaption = (value: SettingValue | null | undefined) =>
   value?.kind === 'text' || value?.kind === 'number'
     ? value.text
@@ -79,6 +82,7 @@ export type PluginSettingsSnapshot = {
   editor: Editor | null;
   query: string;
   interfaceQuery: string;
+  communityQuery?: string;
 };
 export function createPluginSettings(
   host: Host,
@@ -93,6 +97,8 @@ export function createPluginSettings(
   const fields = signal<Fields | null>(restored?.fields ?? null);
   const editor = signal<Editor | null>(restored?.editor ?? null);
   const query = signal(restored?.query ?? '');
+  const installingCommunity = signal<string | null>(null);
+  const communityQuery = signal(restored?.communityQuery ?? '');
   const loading = signal(false);
   const view = signal(0);
   let alive = true,
@@ -162,7 +168,9 @@ export function createPluginSettings(
       loading.set(true);
     });
     try {
-      const first = await host.query('management', 'instances', { kind: 'start' });
+      const first = await host.query('management', 'instances', {
+        kind: 'start',
+      });
       if (!visible() || reading !== generation) return;
       const instances = [...first.instances];
       let after = first.next ?? null;
@@ -231,7 +239,7 @@ export function createPluginSettings(
     return !!form && !same(form.value, initialValue(form.field));
   }, closeEditor);
   const back = () => {
-    if (operations.busy() || discarding.back()) return false;
+    if (operations.navigationBusy() || discarding.back()) return false;
     if (editor()) {
       closeEditor();
       return false;
@@ -255,6 +263,7 @@ export function createPluginSettings(
   });
   return {
     rootUi,
+    communityQuery,
     snapshot(): PluginSettingsSnapshot {
       return {
         inventory: inventory(),
@@ -263,6 +272,7 @@ export function createPluginSettings(
         editor: editor(),
         query: query(),
         interfaceQuery: rootUi.query(),
+        communityQuery: communityQuery(),
       };
     },
     inventory,
@@ -276,7 +286,69 @@ export function createPluginSettings(
     action,
     navigation: () => JSON.stringify(action()),
     title: () =>
-      editor() ? tr('Plugin setting') : selected() ? pluginTitle(selected()!) : tr('Plugins'),
+      editor()
+        ? tr('Plugin setting')
+        : selected()
+          ? pluginTitle(selected()!)
+          : tr('Installed plugins'),
+    installingCommunity,
+    communityInstance(repo: string, packageId?: string | null) {
+      if (packageId) return inventory()?.instances.find((item) => item.package.id === packageId);
+      return inventory()?.instances.find(
+        (item) =>
+          item.path.length === 1 &&
+          item.path[0] === 'community-' + repo.toLowerCase().replace('/', '--'),
+      );
+    },
+    installCommunity(repo: string) {
+      const current = inventory();
+      if (!current || disabled() || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return;
+      return operations.run(
+        async () => {
+          installingCommunity.set(repo);
+          try {
+            const downloaded = await operations.mutate('management', 'installUrl', {
+              expectedRevision: current.source.revision,
+              url: 'https://github.com/' + repo + '/releases/latest/download/plugin.maka-plugin',
+            });
+            if (downloaded.status !== 'committed')
+              throw new Error(
+                downloaded.diagnostic ?? downloaded.reason ?? tr('Refresh and try again.'),
+              );
+            if (
+              !current.instances.some((item) => item.package.id === downloaded.value.package.id)
+            ) {
+              const inserted = await operations.mutate('management', 'editComposition', {
+                expectedRevision: downloaded.value.source.revision,
+                edits: [
+                  {
+                    kind: 'insert',
+                    name: 'community-' + repo.toLowerCase().replace('/', '--'),
+                    package: downloaded.value.package,
+                    usePackage: 'ui',
+                    settings: [],
+                    bindings: {},
+                  },
+                ],
+              });
+              if (inserted.status !== 'committed')
+                throw new Error(
+                  inserted.diagnostic ?? inserted.reason ?? tr('Refresh and try again.'),
+                );
+            }
+            await host.refresh();
+          } finally {
+            try {
+              if (visible()) await load();
+              else inventory.set(null);
+            } finally {
+              installingCommunity.set(null);
+            }
+          }
+        },
+        { background: true },
+      );
+    },
     filtered: computed(
       () =>
         inventory()?.instances.filter((instance) =>

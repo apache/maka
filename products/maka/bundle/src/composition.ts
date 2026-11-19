@@ -37,6 +37,13 @@ export const packageNames = [
   'workbench',
   'conversations',
   'composer',
+  'calculator',
+  'applications',
+  'quick-library',
+  'screenshot',
+  'symbols',
+  'clipboard-history',
+  'file-search',
   'host-logs',
   'recovery-gateway',
   'host-deployment-manager',
@@ -65,6 +72,13 @@ export const instanceNames = [
   'workbench-ui',
   'conversations-ui',
   'composer-ui',
+  'calculator-ui',
+  'applications-ui',
+  'quick-library-ui',
+  'screenshot-ui',
+  'symbols-ui',
+  'clipboard-history-ui',
+  'file-search-ui',
   'settings-ui',
   'workspace-files-ui',
 ] as const;
@@ -126,6 +140,7 @@ const defaultUi = {
       navigation: { instance: 'conversations-ui', id: 'navigation' },
       session: { instance: 'conversations-ui', id: 'session' },
       preview: { instance: 'conversations-ui', id: 'preview' },
+      rooms: { instance: 'conversations-ui', id: 'rooms' },
       settings: { instance: 'settings-ui', id: 'Settings' },
     },
   },
@@ -138,6 +153,13 @@ const defaultUi = {
     },
   },
   'composer-ui': { package: 'composer', views: {} },
+  'calculator-ui': { package: 'calculator', views: {} },
+  'applications-ui': { package: 'applications', views: {} },
+  'quick-library-ui': { package: 'quick-library', views: {} },
+  'screenshot-ui': { package: 'screenshot', views: {} },
+  'symbols-ui': { package: 'symbols', views: {} },
+  'clipboard-history-ui': { package: 'clipboard-history', views: {} },
+  'file-search-ui': { package: 'file-search', views: {} },
   'settings-ui': { package: 'settings', views: {} },
   'workspace-files-ui': { package: 'workspace-files', views: {} },
 } as const;
@@ -156,6 +178,7 @@ const settingsUiImports = [
   'management',
   'receipts',
   'skills',
+  'web',
 ];
 const workspaceUiImports = ['agent', 'terminal'];
 
@@ -453,7 +476,7 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
         const contract =
           tool.target.kind === 'import' &&
           tool.target.name === 'files' &&
-          ['readText', 'glob', 'grep', 'write', 'edit', 'applyPatch'].includes(tool.method)
+          ['read', 'write', 'edit', 'applyPatch'].includes(tool.method)
             ? 'maka.workspace.Files'
             : tool.target.kind === 'import' &&
                 tool.target.name === 'processes' &&
@@ -533,6 +556,15 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
         : {},
     );
   host.instances.gateway!.bindings!.agent = [local('agent', 'agent')];
+  if (computerMethods.length) {
+    host.instances.gateway!.bindings!.computer = [local('workspace-computer', 'computer')];
+    endpoints.computer = expose(
+      'gateway',
+      'computer',
+      ['watchStage', 'watchFrames', 'readFrame', 'presentTarget'],
+      false,
+    );
+  }
   if (configuration.processes)
     host.instances.gateway!.bindings!.terminal = [local('workspace-processes', 'terminal')];
   if (configuration.web) {
@@ -621,7 +653,7 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
             ...(configuration.executorProcesses?.setupDirectory ? ['launch'] : []),
           ],
         },
-        { provider: keys['workspace-files'], export: 'files', methods: ['readText', 'write'] },
+        { provider: keys['workspace-files'], export: 'files', methods: ['read', 'write'] },
         { provider: keys.forms, export: 'forms', methods: ['ask'] },
       ].map((grant) => ({
         ...grant,

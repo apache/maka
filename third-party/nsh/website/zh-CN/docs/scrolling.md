@@ -103,6 +103,7 @@ scroll().horizontal().scrollbar(false).child(
 | `bounces` | `.bounces(..)` | `boolean` | `true` | 允许越过边缘回弹。 |
 | `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | 显示滚动条。 |
 | `contentInset` | `.content_inset(EdgeInsets { .. })` | `Partial<Edges>` | | 内容四周可以滚动进入的留白。 |
+| `scrollbarInset` | `.scrollbar_inset(EdgeInsets { .. })` | `Partial<Edges>` | | 滚动指示条与视图各边保持的距离。 |
 | `contentOffset` | `.content_offset(point(..))` | `{ x?, y? }` | | 初始位置。 |
 | `decelerationRate` | `.deceleration(rate)` | `"normal" \| "fast" \| number` | 平台默认 | 惯性滑动减速的快慢：`"normal"`、`"fast"`，或每毫秒保留的速度比例（`0.998` 为 normal，`0.99` 为 fast；`0` 表示平台默认）。 |
 
@@ -535,6 +536,8 @@ mount(Photo);
 
 在 iOS 上，缩放结束后，缩放视图里的文字和画布会按新的分辨率重新绘制，保持清晰。在 Android 上，NSH 使用自己的滚动视图实现缩放：围绕捏合焦点缩放，支持任意手指数平移、惯性滑动，并在边缘和缩放极限处产生橡皮筋效果。与系统的手势检测一致，Android 在两指间距达到约 27 mm 时开始捏合。
 
+可缩放的滚动视图放在另一个滚动视图里时（例如图片查看器的横向分页），在触屏上（iOS、Android 和 Web）的表现与相册一致：未放大的图片上滑动会翻页，放大后滑动会平移图片，平移到图片边缘后，剩下的滑动会继续翻到下一页或上一页。
+
 ## 从代码滚动
 
 给滚动视图设置 ref（Rust 中用 `element_ref()` 和 `.element_ref(&scroller)`，TSX 中用 [`ref`](./jsx-and-components.md)）并调用它的方法。命令会在同一次更新的其他改动之后执行，所以滚动到刚刚添加的内容也没问题。
@@ -560,6 +563,24 @@ let scroll!: ScrollRef;
 
 列表另外还有 `scrollToIndex`、`scrollToOffset` 和 `scrollToEnd`；见[列表](./lists.md#从代码滚动)。
 
+### 把视图滚到可见处
+
+每个元素的 ref 都有 `reveal`：它按这次更新的布局，从内到外滚动视图外围的滚动视图，让视图显示出来。`vertical` 决定视图在纵向滚动视图里的位置，`horizontal` 决定在横向滚动视图里的位置：`"start"`（`vertical` 的默认值）、`"center"`、`"end"` 或 `"nearest"`（`horizontal` 的默认值）。`"nearest"` 下已经完整可见或铺满视口的视图不动，否则把它越出的那一边对齐到视口的同一边（比视口长的视图则把另一边对齐到视口的另一边）。`"start"` 和 `"end"` 指物理方向：纵向滚动视图里是上和下，横向滚动视图里是左和右，从左到右和从右到左的布局都一样。每个滚动视图从之前发给它的滚动所到的位置出发（无论平台是否已经回报），停在内容两端（含 `contentInset` 留出的部分）。视图的位置按布局计算，与 `measure()` 一样，因此不计入变换（包括动画），也不计入平台尚未应用的 `zoomTo`。默认带动画，`animated: false` 直接跳到位置。`List` 的行用列表自己的 `scrollToIndex` 滚动。
+
+```rust tabs
+let row = element_ref();
+
+view().element_ref(&row).child(text("Quality check"))
+view().on_press(move || row.reveal(RevealOptions::default().vertical(ScrollAlignment::Center)))
+```
+
+```tsx tabs
+let row!: ViewRef;
+
+<View ref={row}>…</View>
+<View onPress={() => row.reveal({ vertical: "center" })}>…</View>
+```
+
 ## 滚动视图与键盘
 
 NSH 会自动让获得焦点的输入框保持可见：键盘出现时，输入框所在的滚动视图会得到与键盘等高的底部 inset，并把输入框滚动到可见位置。这是原生完成的，应用中不需要任何代码。滚动视图之外的内容（例如固定在底部的消息栏）以 `env(keyboard-inset-height)` 作为底部内边距（见[滚动视图之外的内容](./forms-and-keyboard.md#滚动视图之外的内容)）。
@@ -573,7 +594,7 @@ NSH 会自动让获得焦点的输入框保持可见：键盘出现时，输入�
 
 `keyboardShouldPersistTaps`：
 
-- `"never"`：点击输入框之外只会收起键盘，按钮接收下一次点击。用户要先点一次收起键盘，再点一次才能按下。
+- `"never"`：点击输入框之外只会收起键盘，按钮接收下一次点击。用户要先点一次收起键盘，再点一次才能按下。里面的视图都不会响应这次点击：不触发 `onPress`（手指按下时 `onPressIn` / `onPressOut` 和 `active:` 样式照常显示），responder 的触摸以 `onResponderTerminate` 而不是 `onResponderRelease` 结束，web view 等原生视图收不到点击。只有点击会被拦下并收起键盘：长按（`onLongPress`、上下文菜单）、拖动和滚动与键盘未弹出时一样。
 - `"handled"`：点在会处理它的东西（按钮）上时，点击照常传递，键盘保持；点在空白处则收起键盘。表单通常应选它。
 - `"always"`：键盘在每次点击后都保持显示。
 

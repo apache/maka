@@ -11,7 +11,8 @@
 // children's, seen from the center; `selection:bg-*` is the selection
 // highlight. A shadow color replaces the layers' colors at the size's alpha
 // (`shadow-sm/20`); `-current` takes the text color; `perspective-none`
-// clears a perspective; Tailwind 4.3's palettes (`mauve`, ...).
+// clears a perspective; Tailwind 4.3's palettes (`mauve`, ...); a gradient
+// written out with Tailwind's `image:` hint is the gradient.
 import { Text, View } from "nsh";
 import { Input } from "nsh/base";
 
@@ -49,6 +50,7 @@ function App() {
         <View testID="perspective-none" class="size-[100px] rotate-y-45" />
       </View>
       <View testID="palette" class="h-1 bg-mauve-500" />
+      <View testID="bg-image" class="h-1 bg-[image:linear-gradient(#ff0000,#0000ff)]" />
     </View>
   );
 }

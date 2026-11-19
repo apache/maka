@@ -32,6 +32,10 @@ import {
   controlStyle,
   inputBorderRadius,
   inputTextStyle,
+  floatingStyle,
+  menuDetailTextStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
 } from './ui';
 
 const terminal = platform.idiom === 'terminal';
@@ -130,6 +134,8 @@ export function SettingsSection(props: {
   title?: string;
   trailing?: JSX.Element;
   note?: string;
+  /** The note reports something that went wrong, not how the section works. */
+  noteWarns?: boolean;
   children: JSX.Element;
 }) {
   return (
@@ -170,7 +176,13 @@ export function SettingsSection(props: {
         <View style={{ marginTop: terminal ? 0 : -1 }}>{props.children}</View>
       </View>
       <If when={props.note}>
-        <Text style={{ ...captionTextStyle, color: C.muted, paddingHorizontal: inset }}>
+        <Text
+          style={{
+            ...captionTextStyle,
+            color: props.noteWarns ? C.warning : C.muted,
+            paddingHorizontal: inset,
+          }}
+        >
           {props.note}
         </Text>
       </If>
@@ -201,8 +213,7 @@ function RowLine() {
 export type SettingsRowProps = {
   label: string;
   description?: string;
-  /** Short context on the label's line, muted and truncated before the label is. */
-  note?: string;
+  detail?: JSX.Element;
   /** Something that needs action, in `warning`. */
   status?: string;
   leading?: JSX.Element;
@@ -221,41 +232,21 @@ export function SettingsRow(props: SettingsRowProps) {
     <>
       {props.leading}
       <View style={[{ flex: 1, minWidth: 0, gap: textGap }, { pointerEvents: 'none' }]}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 }}>
-          <Text
-            style={[
-              {
-                ...labelStyle,
-                flexShrink: 1,
-                minWidth: 0,
-                color:
-                  props.tone === 'danger' ? C.danger : props.tone === 'muted' ? C.muted : C.text,
-              },
-              { numberOfLines: 1, textOverflow: 'ellipsis' },
-            ]}
-          >
-            {props.label}
-          </Text>
-          <If when={props.note}>
-            <Text
-              style={[
-                {
-                  fontSize: 12,
-                  lineHeight: labelStyle.lineHeight,
-                  color: C.muted,
-                  flex: 1,
-                  minWidth: 0,
-                },
-                { numberOfLines: 1, textOverflow: 'ellipsis' },
-              ]}
-            >
-              {props.note}
-            </Text>
-          </If>
-        </View>
+        <Text
+          style={[
+            {
+              ...labelStyle,
+              color: props.tone === 'danger' ? C.danger : props.tone === 'muted' ? C.muted : C.text,
+            },
+            { numberOfLines: 1, textOverflow: 'ellipsis' },
+          ]}
+        >
+          {props.label}
+        </Text>
         <If when={props.description}>
           <Text style={{ ...captionTextStyle, color: C.muted }}>{props.description}</Text>
         </If>
+        {props.detail}
       </View>
       <If when={props.status}>
         <Text style={[{ ...captionTextStyle, color: C.warning }, { pointerEvents: 'none' }]}>
@@ -292,9 +283,43 @@ export function SettingsRow(props: SettingsRowProps) {
 }
 
 /** An immediate on/off setting: the whole row toggles it. */
+export function SettingsMonogram(props: { name: string; muted: boolean }) {
+  return (
+    <If when={!terminal}>
+      <View
+        style={[
+          {
+            width: 28,
+            height: 28,
+            borderRadius: 8,
+            backgroundColor: C.raised,
+            alignItems: 'center',
+            justifyContent: 'center',
+          },
+          { pointerEvents: 'none' },
+        ]}
+      >
+        <Text
+          style={{
+            fontSize: 13,
+            lineHeight: 16,
+            fontWeight: '600',
+            color: props.muted ? C.muted : C.secondary,
+          }}
+        >
+          {Array.from(props.name.trim())[0]?.toUpperCase() ?? '?'}
+        </Text>
+      </View>
+    </If>
+  );
+}
+
 export function SettingsSwitch(props: {
   label: string;
   description?: string;
+  detail?: JSX.Element;
+  leading?: JSX.Element;
+  tone?: 'muted';
   checked: boolean;
   disabled?: boolean;
   onPress(): void;
@@ -307,6 +332,9 @@ export function SettingsSwitch(props: {
     <SettingsRow
       label={props.label}
       description={props.description}
+      detail={props.detail}
+      leading={props.leading}
+      tone={props.tone}
       status={props.status}
       accessibilityLabel={
         props.accessibilityLabel ??
@@ -346,12 +374,22 @@ export function SettingsSelect(props: {
   placeholder?: string;
   /** Drawn before the current value, such as a palette swatch. */
   preview?: JSX.Element;
+  trailing?: JSX.Element;
+  flush?: boolean;
   change(value: string): void;
 }) {
   const current = () => props.choices.find((choice) => choice.value === props.value);
   return (
-    <View style={rowStyle}>
-      <RowLine />
+    <View
+      style={
+        props.flush
+          ? { ...rowStyle, paddingHorizontal: 0, paddingVertical: 0, minHeight: terminal ? 16 : 32 }
+          : rowStyle
+      }
+    >
+      <If when={!props.flush}>
+        <RowLine />
+      </If>
       <View style={[{ flex: 1, minWidth: 0, gap: textGap }, { pointerEvents: 'none' }]}>
         <Text style={{ ...labelStyle, color: C.text }}>{props.label}</Text>
         <If when={props.description}>
@@ -370,17 +408,11 @@ export function SettingsSelect(props: {
         margin={8}
         align="end"
         popupStyle={{
+          ...floatingStyle(),
           minWidth: 200,
-          maxWidth: Math.max(0, windowSize().width - 16),
           maxHeight: Math.min(360, Math.max(0, windowSize().height - 16)),
-          minHeight: 0,
-          padding: 4,
-          backgroundColor: C.surface,
-          borderWidth: 1,
-          borderColor: C.line,
-          borderRadius: 12,
         }}
-        groupStyle={{ paddingHorizontal: 12, paddingTop: 8, paddingBottom: 4 }}
+        groupStyle={{ paddingHorizontal: 8, paddingTop: 8, paddingBottom: 4 }}
         style={{ flexShrink: 1, minWidth: 0, maxWidth: '60%' }}
         trigger={
           <View
@@ -427,34 +459,28 @@ export function SettingsSelect(props: {
             <Icon name="down" color={C.muted} size={14} />
           </View>
         }
-        itemClass={`rounded-lg focus:bg-[${C.raised}]`}
+        itemClass={`rounded-lg focus:bg-[${C.floatingRaised}]`}
         renderItem={(item) => (
-          <View
-            style={{
-              ...controlStyle,
-              minHeight: 32,
-              paddingVertical: 6,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 8,
-            }}
-          >
-            <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={menuRowStyle()}>
+            <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
               <Text style={{ ...captionTextStyle, color: item.disabled ? C.muted : C.text }}>
                 {item.title}
               </Text>
               <If when={(item as SettingsChoice).detail}>
-                <Text style={{ ...captionTextStyle, color: C.muted }}>
+                <Text style={{ ...menuDetailTextStyle, color: C.muted }}>
                   {(item as SettingsChoice).detail}
                 </Text>
               </If>
             </View>
-            <If when={item.value === props.value}>
-              <Icon name="check" color={C.accent} size={14} />
-            </If>
+            <View style={{ width: 16 }}>
+              <If when={item.value === props.value}>
+                <Icon name="check" color={C.accent} />
+              </If>
+            </View>
           </View>
         )}
       />
+      {props.trailing}
     </View>
   );
 }
@@ -522,7 +548,6 @@ export function SettingsInlineInput(props: {
   masked?: boolean;
   disabled?: boolean;
   grow?: number;
-  onCommit?(): void;
 }) {
   return (
     <Input
@@ -530,8 +555,6 @@ export function SettingsInlineInput(props: {
       value={props.value}
       placeholder={props.placeholder ?? props.label}
       onChange={({ value }) => props.change(value)}
-      onBlur={props.onCommit}
-      onSubmit={props.onCommit}
       masked={props.masked}
       readonly={props.disabled}
       autoCapitalize="none"
@@ -578,6 +601,7 @@ export function SettingsSearch(props: {
 export function SettingsInput(props: {
   label: string;
   description?: string;
+  stacked?: boolean;
   value: string;
   change(value: string): void;
   placeholder?: string;
@@ -588,15 +612,26 @@ export function SettingsInput(props: {
   error?: string;
 }) {
   return (
-    <View style={{ ...rowStyle, alignItems: props.error ? 'flex-start' : 'center' }}>
+    <View
+      style={{
+        ...rowStyle,
+        flexDirection: props.stacked ? 'column' : 'row',
+        alignItems: props.stacked ? 'stretch' : props.error ? 'flex-start' : 'center',
+      }}
+    >
       <RowLine />
-      <View style={[{ width: '36%', minWidth: 0, gap: textGap }, { pointerEvents: 'none' }]}>
+      <View
+        style={[
+          { width: props.stacked ? '100%' : '36%', minWidth: 0, gap: textGap },
+          { pointerEvents: 'none' },
+        ]}
+      >
         <Text style={{ ...labelStyle, color: C.text }}>{props.label}</Text>
         <If when={props.description}>
           <Text style={{ ...captionTextStyle, color: C.muted }}>{props.description}</Text>
         </If>
       </View>
-      <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+      <View style={{ flex: props.stacked ? undefined : 1, minWidth: 0, gap: 4 }}>
         <Input
           accessibilityLabel={props.label}
           autoFocus={props.autoFocus}
@@ -725,14 +760,18 @@ export function SettingsButton(props: {
   disabled?: boolean;
   selected?: boolean;
   tone?: 'primary' | 'quiet' | 'danger';
-  icon?: 'plus' | 'refresh' | 'trash';
+  icon?: 'edit' | 'plus' | 'refresh' | 'trash';
   /** Shows only the icon; the label still names the button. */
   iconOnly?: boolean;
+  autoFocus?: boolean;
 }) {
   const primary = () => props.tone === 'primary';
   const quiet = () => props.tone === 'quiet';
   return (
     <Button
+      ref={(node) => {
+        if (props.autoFocus) node.focus();
+      }}
       accessibilityLabel={props.accessibilityLabel ?? props.label}
       disabled={props.disabled}
       selected={props.selected}
@@ -807,10 +846,7 @@ export function SettingsFormFooter(props: {
   );
 }
 
-/**
- * A failed read, where its data would be, with the way back. The reason already
- * shows under the title when the settings dialog reported it.
- */
+/** A failed read, where its data would be, with the way back. */
 export function SettingsProblem(props: { message?: string; retry?: () => void }) {
   return (
     <View

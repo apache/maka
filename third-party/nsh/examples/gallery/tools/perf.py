@@ -3,7 +3,7 @@
 
 Opens the gallery in the platform's window (`nsh test --target
 <linux|macos|windows|ios> --fps`), visits every demo, lets it run idle and scrolls it, and reads the
-performance monitor's line of every second (`nsh::perf`). Prints a table per
+performance monitor's line of every second (`nsh::fps`). Prints a table per
 scenario and writes the readings as JSON:
 
     cargo build --release -p nsh-cli
@@ -31,13 +31,9 @@ from pathlib import Path
 GALLERY = Path(__file__).resolve().parent.parent
 
 # The demos of the gallery's index (`App.tsx`), as their rows are labeled.
-DEMOS = [
-    "Stocks", "AI Chat", "Photos", "Lists", "Scrolling", "Navigation", "Form", "Resizable", "Dock",
-    "Gestures", "Physics", "Animations", "Canvas", "Styles", "Tailwind", "Text", "Text View", "Images",
-    "Components", "Overlays", "Menus", "Controls", "WebView", "Video", "System", "Standard APIs", "Storage",
-]
+DEMOS = re.findall(r'\{ name: "([^"]+)", detail:', (GALLERY / "App.tsx").read_text())
 
-# One second's `nsh::perf` line: the fields both desktops log, and between
+# One second's `nsh::fps` line: the fields both desktops log, and between
 # `over` and `commits` the platform's frame phases as `name mean/p50/p95/max`
 # (Linux: update, layout, paint, snapshot, canvas, drain; macOS: tick,
 # drain, canvas; Windows: tick, drain, paint, present, canvas).
@@ -104,6 +100,7 @@ def main() -> int:
     parser.add_argument("--seconds", type=int, default=4)
     parser.add_argument("--size", default="1200x800", help="the window, WxH in points")
     parser.add_argument("--out", help="the JSON file of the readings")
+    parser.add_argument("--log", help="a file for the test's raw output (the per-second `nsh::fps` lines)")
     args = parser.parse_args()
     demos = [d.strip() for d in args.only.split(",")] if args.only else DEMOS
     width, height = args.size.split("x")
@@ -120,8 +117,8 @@ def main() -> int:
         "}, 3_600_000);\n"
     )
     command = [args.nsh, "-v", "test", str(test), "--target", args.target, "--fps"]
-    if args.target == "macos":
-        # The active app, as the baseline's runs were (`nsh test` runs macOS apps in the background by default).
+    if args.target in ("macos", "windows", "linux", "gpui"):
+        # The active app, as the baseline's runs were (`nsh test` runs these apps in the background by default).
         command.append("--foreground")
     print("$", " ".join(command), file=sys.stderr)
     proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -148,6 +145,8 @@ def main() -> int:
             reading["phases"] = {p["name"]: p["stat"] for p in PHASE.finditer(reading["phases"])}
             readings[scenario].append(reading)
     code = proc.wait()
+    if args.log:
+        Path(args.log).write_text("".join(log))
     if code != 0:
         sys.stdout.write("".join(log[-60:]))
         print(f"nsh test exited with {code}", file=sys.stderr)

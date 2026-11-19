@@ -20,6 +20,8 @@ mod chunks;
 mod error;
 mod host_channel;
 mod local_storage;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod logging;
 #[cfg(feature = "net")]
 pub mod net;
 pub mod perf;
@@ -27,6 +29,9 @@ mod script;
 #[cfg_attr(not(feature = "shader"), path = "shader_off.rs")]
 pub mod shader;
 mod shader_frame;
+#[cfg(all(feature = "shader", any(target_vendor = "apple", windows)))]
+#[cfg_attr(windows, path = "shader_surfaces_windows.rs")]
+mod shader_surfaces;
 #[cfg(not(target_arch = "wasm32"))]
 mod storage;
 #[cfg(feature = "js-core")]
@@ -63,6 +68,7 @@ pub use nsh_core::{
     element::{EngineContext, Root, Tokens},
     geometry::{self, Bounds, Edges, Point, Points, Size},
     js::{HostLimits, Limits},
+    main_thread::MainThreadTask,
     platform::{
         ColorScheme, Environment, FetchEvent, FetchOp, HostEnvironment, HourCycle, HttpBody,
         HttpHead, HttpRequest, Idiom, Languages, Lifecycle, Locale, LocaleSettings,
@@ -78,7 +84,7 @@ pub use nsh_js::BYTECODE_VERSION;
 pub use nsh_package as package;
 use rustc_hash::FxHashMap;
 #[cfg(not(target_arch = "wasm32"))]
-pub use storage::{FileStorage, data_dir};
+pub use storage::{FileStorage, resolve_data_dir, support_dir};
 
 use crate::script::{NetworkQueue, RequestId, Script};
 pub use crate::{
@@ -93,6 +99,9 @@ pub use crate::{
 /// threads on Apple platforms.
 const ENGINE_STACK_SIZE: usize = 8 * 1024 * 1024;
 
+/// How often the performance monitor is read for `perfStats()` while it
+/// measures.
+const PERF_STATS_INTERVAL: Duration = Duration::from_secs(1);
 /// Minimum time between idle cycle collections. QuickJS frees acyclic
 /// garbage immediately; only cycles (such as detached node subtrees, whose
 /// parent/child links reference each other) wait for the collector.
@@ -437,7 +446,10 @@ impl Bundle {
         self
     }
 
-    /// Sets the URL relative request URLs resolve against.
+    /// Sets the URL relative request URLs resolve against: the page's, for
+    /// an app on a web page. A base marks a page: with one, a media source
+    /// `/x` is the page's path, not a local file under `capabilities.fs`
+    /// ([`nsh_core::access::Access::media_url`]), so a native host sets none.
     pub fn with_base_url(mut self, url: impl Into<Arc<str>>) -> Self {
         self.base_url = Some(url.into());
         self
@@ -509,6 +521,15 @@ impl Bundle {
                 log::warn!("app.json: {what}, ignored");
             }
             bundle.url_schemes = schemes;
+        }
+        // The files it opens come as `file:` URLs (`nsh_core::file_type`).
+        if info
+            .as_ref()
+            .is_some_and(nsh_core::file_type::declares_file_types)
+        {
+            bundle
+                .url_schemes
+                .push(nsh_core::file_type::FILE_SCHEME.to_owned());
         }
         bundle.system_paths.plugin_dir = nsh_core::access::canonicalize(path)?
             .parent()
@@ -720,6 +741,15 @@ pub trait MountSink: Send + 'static {
     /// applied in place: reload the latest full bundle.
     fn hot_update_failed(&self) {}
 
+    /// Runs `task` on the UI thread, after the batches submitted before it
+    /// (`nsh_core::element::run_on_main_thread`). By default it runs here,
+    /// on the engine thread: what a host without a main thread of its own
+    /// does (headless tests, the web, where the engine runs on the page's
+    /// thread).
+    fn run_on_main_thread(&self, task: MainThreadTask) {
+        task.run();
+    }
+
     /// The engine laid the app out at `size` ([`EngineControl::resize`]):
     /// called after the commit of the turn that applied the resize (if it
     /// changed anything, its batch came before), once per turn, with the
@@ -918,6 +948,10 @@ pub struct EngineConfig {
     pub viewport: Size<Points>,
     /// Log per-commit timings (target `nsh::perf`, level info).
     pub trace: bool,
+    /// Scroll views make the native views of their content only near
+    /// their viewport (the platforms' apps); off, they make all of it
+    /// (tests, which read whole pages). [`EngineConfig::new`]: off.
+    pub content_culling: bool,
     /// The HTTP stack behind `fetch`; without one, requests fail.
     pub network: Option<Arc<dyn Network>>,
     /// The host transport for WebSockets, including the browser WebSocket API.
@@ -949,19 +983,31 @@ pub struct EngineConfig {
     /// The tokio runtime the components' async tasks use (timers, IO,
     /// background work); `None`: one shared by the engines of the process.
     pub runtime: Option<tokio::runtime::Handle>,
-    /// Where apps keep their data: each app in `<data_dir>/<app id>`
-    /// ([`App::app_id`]; `default` without one), its storage
-    /// (`nsh/storage`) in `storage.json` there. The platform's: the
-    /// system's data directory ([`data_dir`]) for apps of their own,
-    /// `…/nsh` in an embedding app's. `None`: nothing is kept.
+    /// Where apps keep their data when [`EngineConfig::data_dir`] names
+    /// none: each app in `<support_dir>/<app id>` ([`App::app_id`];
+    /// `default` without one). The platforms give the system's directory
+    /// for apps' data ([`support_dir`]) unless told otherwise; an app that
+    /// embeds nsh gives its own (`…/nsh` in its data directory), as do
+    /// development hosts that keep a run's data apart; it is known before
+    /// the app's id is. `None` with no `data_dir` either: nothing is kept
+    /// on disk (an engine made for a test). The platforms' to set, not
+    /// apps': an app names its own directory with
+    /// [`data_dir`](Self::data_dir).
+    #[doc(hidden)]
+    pub support_dir: Option<std::path::PathBuf>,
+    /// The app's own data directory, used as it is (no app id appended):
+    /// its storage (`nsh/storage`, `storage.json` there), `process.dataDir`
+    /// and the `${dataDir}` of its file grants. The desktop runners set it
+    /// from `nsh.json` `"dataDir"`. `None`: `<support_dir>/<app id>`.
     pub data_dir: Option<std::path::PathBuf>,
     /// Where the app's caches are kept and how much each keeps: the engine
     /// opens them in `<root>/<app id>/<kind>` ([`Engine::image_cache`]).
     /// [`EngineConfig::new`]: none.
     pub cache: CacheOptions,
-    /// The app's storage, overriding the one [`EngineConfig::data_dir`]
-    /// names (the browser's `localStorage`, an embedder's own); `None`
-    /// with no data directory either: in memory, for the engine's life.
+    /// The app's storage, overriding the `storage.json` in its data
+    /// directory (the browser's `localStorage`, an embedder's own, a
+    /// test's stand-in); `None` where the system has no data directory
+    /// either: in memory, for the engine's life.
     pub storage: Option<Arc<dyn nsh_core::storage::StorageBackend>>,
     /// The time the app runs on: the system's, or a manual clock a test
     /// moves (`nsh_core::time::Clock::manual`), which its timers, frames
@@ -1004,6 +1050,11 @@ pub struct EngineConfig {
     /// built-in backend, which every desktop backend has, embedded or
     /// standalone. The main window's commands always go to the platform.
     pub windows: Option<Arc<dyn nsh_core::desktop::WindowBackend>>,
+    /// The app's login item (`Application.launchAtLogin`): the platform's,
+    /// which a standalone app's runner gives (`run_app` with the backend's
+    /// `login_item` option), or a test's fake. `None` (the default): the
+    /// app does not launch at login.
+    pub login_item: Option<Arc<dyn nsh_core::desktop::LoginItemBackend>>,
 }
 
 /// Values of the environment an engine keeps whatever its platform reports
@@ -1073,10 +1124,18 @@ fn trusted_directory(path: Option<std::path::PathBuf>) -> Option<std::path::Path
         .filter(|path| path.is_dir())
 }
 
-/// Native hosts choose these anchors before any application JavaScript runs.
-#[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
+/// Native hosts choose these anchors before any application JavaScript runs
+/// (the VM's `fs/promises` and the core's media files read under them).
 fn bundle_system_paths(bundle: &Bundle) -> nsh_core::access::TrustedPaths {
-    let mut paths = bundle.system_paths.clone();
+    system_paths(bundle.system_paths.clone(), !bundle.policy.harden)
+}
+
+/// `paths` with the anchors checked and the home directory filled in; in
+/// `development`, the local `nsh run`'s source directory as the app's.
+fn system_paths(
+    mut paths: nsh_core::access::TrustedPaths,
+    development: bool,
+) -> nsh_core::access::TrustedPaths {
     paths.plugin_dir = trusted_directory(paths.plugin_dir);
     paths.home_dir = trusted_directory(paths.home_dir);
     if paths.home_dir.is_none() {
@@ -1089,7 +1148,7 @@ fn bundle_system_paths(bundle: &Bundle) -> nsh_core::access::TrustedPaths {
     // Local `nsh run` passes its canonical entry directory directly to the
     // native child process. Remote dev messages never contain this field.
     // A packaged/hardened bundle cannot inherit a development source anchor.
-    if paths.plugin_dir.is_none() && !bundle.policy.harden {
+    if paths.plugin_dir.is_none() && development {
         paths.plugin_dir = std::env::var_os("NSH_DEV_APP_DIR")
             .map(std::path::PathBuf::from)
             .and_then(|path| trusted_directory(Some(path)));
@@ -1109,6 +1168,7 @@ impl EngineConfig {
             app: app.into(),
             viewport: Size::new(Points(390.0), Points(844.0)),
             trace: false,
+            content_culling: false,
             network: None,
             websocket: None,
             refuse_connections: None,
@@ -1121,6 +1181,7 @@ impl EngineConfig {
             limits: Limits::default(),
             ui_sets: Vec::new(),
             runtime: None,
+            support_dir: None,
             data_dir: None,
             cache: CacheOptions::off(),
             storage: None,
@@ -1133,13 +1194,14 @@ impl EngineConfig {
             speech: None,
             audio: None,
             windows: None,
+            login_item: None,
         }
     }
 
     /// Where a runner opens the main window of an app with nsh.json
     /// `window.restoreBounds`: the placement its last run kept in its
-    /// storage ([`EngineConfig::storage`], or the file in its directory of
-    /// [`EngineConfig::data_dir`]), fitted on `displays`, the ones there
+    /// storage ([`EngineConfig::storage`], or the file in its data
+    /// directory), fitted on `displays`, the ones there
     /// are now. Read before making the window; `None` without
     /// `restoreBounds` or a kept placement. The engine keeps it as the
     /// window changes (the environment's window state).
@@ -1153,15 +1215,25 @@ impl EngineConfig {
     }
 }
 
+/// The data directory of the app `config` runs: [`EngineConfig::data_dir`],
+/// or `<support_dir>/<app id>`; `None` with neither.
+fn data_dir(config: &EngineConfig) -> Option<std::path::PathBuf> {
+    config.data_dir.clone().or_else(|| {
+        config
+            .support_dir
+            .as_ref()
+            .map(|root| root.join(app_dir_name(config.app.app_id())))
+    })
+}
+
 /// The storage of the app `config` runs: [`EngineConfig::storage`], or a
-/// file in its directory of [`EngineConfig::data_dir`].
+/// file in its data directory.
 fn app_storage(config: &EngineConfig) -> Option<Arc<dyn nsh_core::storage::StorageBackend>> {
     if let Some(storage) = &config.storage {
         return Some(storage.clone());
     }
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(root) = &config.data_dir {
-        let dir = root.join(app_dir_name(config.app.app_id()));
+    if let Some(dir) = data_dir(config) {
         return Some(FileStorage::open(dir));
     }
     None
@@ -1192,6 +1264,7 @@ impl std::fmt::Debug for EngineConfig {
             .field("app", &self.app)
             .field("viewport", &self.viewport)
             .field("trace", &self.trace)
+            .field("content_culling", &self.content_culling)
             .field("network", &self.network.is_some())
             .field("assets", &self.assets.is_some())
             .field("environment", &self.environment)
@@ -1206,6 +1279,7 @@ impl std::fmt::Debug for EngineConfig {
             .field("picker", &self.picker.is_some())
             .field("speech", &self.speech.is_some())
             .field("audio", &self.audio.is_some())
+            .field("login_item", &self.login_item.is_some())
             .field("windows", &self.windows.is_some())
             .finish()
     }
@@ -1224,8 +1298,11 @@ const MAX_FLUSH_ROUNDS: usize = 64;
 enum Message {
     Event(NodeId, EventKind, EventPayload),
     Scroll(NodeId, Point<Points>, u32),
+    KeyScrolled(NodeId, nsh_core::scroll::KeyMove),
     Kept(Vec<NodeId>),
+    ContentCulling(bool),
     InputScroll(NodeId, Point<Points>, Size<Points>, Size<Points>),
+    InputComposing(NodeId, Option<String>),
     Zoom(NodeId, f32),
     ComponentSize(NodeId, Size<Points>),
     AnimationsFinished(Vec<nsh_core::animation::Finished>),
@@ -1237,12 +1314,21 @@ enum Message {
     /// it changes rarely.
     Environment(Box<Environment>),
     FocusPath(Vec<NodeId>),
+    /// The platform found no GPU to draw shader views with
+    /// ([`EngineControl::shaders_unavailable`]).
+    ShadersUnavailable,
     /// The displays (desktops).
     Displays(Arc<[nsh_core::desktop::Display]>),
     RootSize(NodeId, Size<Points>, EdgeInsets),
+    /// Where the root view's anchored overlays may go
+    /// ([`EngineControl::set_overlay_area`]).
+    OverlayArea(Option<nsh_core::Bounds<Points>>),
+    /// A press beyond the root view ([`EngineControl::press_beyond_root`]).
+    PressBeyondRoot(nsh_core::Point<Points>),
     ScreenHeader(NodeId, Option<Points>),
     Frame,
     States(NodeId, u16),
+    Modality(nsh_core::platform::InputModality),
     FontsChanged,
     Remount,
     /// An event of a request (by the hop it is for: events of a hop the
@@ -1317,11 +1403,24 @@ const PACED_BIND_TIME: std::time::Duration = std::time::Duration::from_millis(2)
 pub struct EngineControl {
     tx: Sender<Message>,
     events_sent: Arc<std::sync::atomic::AtomicU64>,
+    /// The input modality last sent ([`Self::set_input_modality`]), shared
+    /// by every clone: 0 none, else 1 + the modality.
+    modality: Arc<std::sync::atomic::AtomicU8>,
+    /// What cleans a download's staging directory when the engine is gone
+    /// and an event cannot be delivered: the platform's last stop
+    /// acknowledgement goes here.
+    downloads: nsh_core::webview::downloads::DownloadCleanup,
 }
 
 impl EngineControl {
     /// Delivers an input event (and its data) to a node.
     pub fn dispatch_event(&self, id: NodeId, event: EventKind, payload: EventPayload) {
+        // A download's stop acknowledgement is recorded with the cleanup
+        // sink before it is queued: the engine may stop after the send but
+        // before it consumes the event, and that fact must not be lost.
+        // While the core lives the sink only records (the core publishes);
+        // once the core is gone the sink cleans.
+        self.downloads.dispatch(id, event, &payload);
         self.events_sent
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         if self.tx.send(Message::Event(id, event, payload)).is_err() {
@@ -1344,11 +1443,27 @@ impl EngineControl {
         let _ = self.tx.send(Message::Scroll(id, offset, applied));
     }
 
+    /// Reports that a scroll key moved scroll view `id` by `key_move`. Sent
+    /// after the platform started its own key scroll, for every key move
+    /// and not End alone: the core takes a list on to its real end from
+    /// End and lets go of it on the others (`Core::key_scrolled`).
+    pub fn key_scrolled(&self, id: NodeId, key_move: nsh_core::scroll::KeyMove) {
+        let _ = self.tx.send(Message::KeyScrolled(id, key_move));
+    }
+
     /// Keeps the virtual list rows holding `nodes` rendered wherever they
     /// scroll (`Core::set_kept`): the ends of a text selection. Replaces
     /// the last call's; none releases them.
     pub fn keep_rendered(&self, nodes: Vec<NodeId>) {
         let _ = self.tx.send(Message::Kept(nodes));
+    }
+
+    /// Whether scroll views make the native views of their content as it
+    /// comes near their viewport (the default), or all of it
+    /// (`Core::set_content_culling`): a test driver's, whose steps reach
+    /// every view of a page.
+    pub fn set_content_culling(&self, enabled: bool) {
+        let _ = self.tx.send(Message::ContentCulling(enabled));
     }
 
     /// Reports how far a multiline input's text scrolled: its offset, the
@@ -1365,6 +1480,14 @@ impl EngineControl {
         let _ = self
             .tx
             .send(Message::InputScroll(id, offset, content, viewport));
+    }
+
+    /// Reports what input `id` shows while an input method composes in it
+    /// (its text with the composition at the caret), `None` once the
+    /// composition ends: the core measures the input with it, so it grows
+    /// as the composition wraps (`Core::input_composing`).
+    pub fn input_composing(&self, id: NodeId, shown: Option<String>) {
+        let _ = self.tx.send(Message::InputComposing(id, shown));
     }
 
     /// Reports the zoom scale of a zoomable scroll view (before the offset
@@ -1395,6 +1518,14 @@ impl EngineControl {
         let _ = self.tx.send(Message::Environment(Box::new(environment)));
     }
 
+    /// The platform has no GPU to draw shader views with
+    /// ([`shader::Renderer::new`] is `None`): the app's
+    /// `Environment::shaders` turns `false` now and stays so, whatever the
+    /// platform reports later. Telling it again does nothing.
+    pub fn shaders_unavailable(&self) {
+        let _ = self.tx.send(Message::ShadersUnavailable);
+    }
+
     /// Reports the displays (desktops: on start, in
     /// [`Engine::start_with`]'s setup, so the app reads them as it first
     /// renders, then whenever they change).
@@ -1412,6 +1543,22 @@ impl EngineControl {
     /// of it covered by system UI.
     pub fn set_root_size(&self, id: NodeId, size: Size<Points>, insets: EdgeInsets) {
         let _ = self.tx.send(Message::RootSize(id, size, insets));
+    }
+
+    /// Where the root view's anchored overlays may be placed, in its
+    /// coordinates, when the platform shows them beyond it (the web's
+    /// `overlays: "viewport"`: the window); `None` keeps them to the root
+    /// view ([`nsh_core::Core::set_overlay_area`]).
+    pub fn set_overlay_area(&self, area: Option<nsh_core::Bounds<Points>>) {
+        let _ = self.tx.send(Message::OverlayArea(area));
+    }
+
+    /// A press at `page` (in the root view's coordinates) beyond the root
+    /// view, where the platform shows its anchored overlays too (the web
+    /// page around the player): the overlays watching presses hear
+    /// `onPressOutside` ([`nsh_core::Core::presses_beyond_root`]).
+    pub fn press_beyond_root(&self, page: nsh_core::Point<Points>) {
+        let _ = self.tx.send(Message::PressBeyondRoot(page));
     }
 
     /// The platform measured where the content of screen `id` starts below
@@ -1465,6 +1612,23 @@ impl EngineControl {
     /// it, instead of waiting for the batches to stop for a while.
     pub fn flush(&self, done: impl FnOnce(bool) + Send + 'static) {
         let _ = self.tx.send(Message::Flush(Box::new(done)));
+    }
+
+    /// The user gave the surface input with `modality`: a pointer, finger
+    /// or pen going down, or a key pressed (not a modifier alone). Called
+    /// for every such event, before the platform acts on it, so it reaches
+    /// the core ahead of the focus move it causes; only a change crosses
+    /// to the engine. The core shows the keyboard focus by it
+    /// (`focus-visible:`; [`nsh_core::Core::set_input_modality`]).
+    pub fn set_input_modality(&self, modality: nsh_core::platform::InputModality) {
+        use std::sync::atomic::Ordering;
+        let code = match modality {
+            nsh_core::platform::InputModality::Keyboard => 1,
+            nsh_core::platform::InputModality::Pointer => 2,
+        };
+        if self.modality.swap(code, Ordering::Relaxed) != code {
+            let _ = self.tx.send(Message::Modality(modality));
+        }
     }
 
     /// Reports the interaction states of view `id` that the core asked to
@@ -1521,8 +1685,13 @@ pub struct Engine {
     host: HostChannel,
     /// Interrupts running JS when the engine stops.
     stop: Arc<std::sync::atomic::AtomicBool>,
+    /// The app has quit listeners (`on_app_quit`, `Application.on("quit")`):
+    /// a drop gives them [`QUIT_TIMEOUT`] before interrupting JS.
+    quit_listeners: Arc<std::sync::atomic::AtomicBool>,
     /// The app's disk cache of downloaded images.
     image_cache: Option<nsh_core::image::DiskCache>,
+    /// [`Engine::media_files`].
+    media_files: Arc<nsh_core::access::MediaFiles>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1552,27 +1721,54 @@ impl Engine {
         S: MountSink,
     {
         let image_cache = config.cache.open_images(config.app.app_id());
+        let media_files = Arc::new(media_files(&config, &app_access(&config.app)));
         let (tx, rx) = crossbeam_channel::unbounded();
+        let downloads = nsh_core::webview::downloads::DownloadCleanup::new();
         let control = EngineControl {
             tx: tx.clone(),
             events_sent: Arc::default(),
+            modality: Arc::default(),
+            downloads: downloads.clone(),
         };
         setup(&control);
         let engine_tx = tx;
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let engine_stop = stop.clone();
+        let quit_listeners = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let engine_quit_listeners = quit_listeners.clone();
         let host = config.host.clone();
+        let engine_downloads = downloads.clone();
         let thread = std::thread::Builder::new()
             .name("nsh-engine".into())
             .stack_size(ENGINE_STACK_SIZE)
-            .spawn(move || run(config, make_text_engine(), sink, engine_tx, rx, engine_stop))?;
+            .spawn(move || {
+                run(
+                    config,
+                    make_text_engine(),
+                    sink,
+                    (engine_tx, rx),
+                    engine_stop,
+                    engine_quit_listeners,
+                    engine_downloads,
+                )
+            })?;
         Ok(Engine {
             control,
             thread: Some(thread),
             host,
             stop,
+            quit_listeners,
             image_cache,
+            media_files,
         })
+    }
+
+    /// The roots the app's local media files are read under
+    /// ([`nsh_core::access::MediaFiles::open`]). The platform's image
+    /// loader reads `<Image>` files through them, as the core's does, so a
+    /// link swapped in after the check is not followed out of them.
+    pub fn media_files(&self) -> Arc<nsh_core::access::MediaFiles> {
+        self.media_files.clone()
     }
 
     /// The disk cache of the images the app downloads
@@ -1592,7 +1788,20 @@ impl Engine {
 impl Drop for Engine {
     fn drop(&mut self) {
         // Dropped on the platform's main thread: a script still running is
-        // aborted rather than waited for.
+        // aborted rather than waited for, after the app's quit listeners
+        // had their time (GPUI's shutdown waits for its quit observers so).
+        if self
+            .quit_listeners
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            self.host.request_shutdown(&self.control.tx);
+            let deadline = Instant::now() + QUIT_TIMEOUT + QUIT_GRACE;
+            while self.thread.as_ref().is_some_and(|t| !t.is_finished())
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
         self.host.shutdown(&self.control.tx, &self.stop);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -1612,6 +1821,15 @@ fn raise_thread_priority() {
     }
 }
 
+/// How long the engine runs the app's quit listeners at most.
+#[cfg(not(target_arch = "wasm32"))]
+use nsh_core::element::desktop::QUIT_TIMEOUT;
+
+/// What the dropping [`Engine`] waits past [`QUIT_TIMEOUT`] for the engine
+/// to finish its last turn before interrupting JS.
+#[cfg(not(target_arch = "wasm32"))]
+const QUIT_GRACE: Duration = Duration::from_millis(20);
+
 /// A resize this soon after the last is one of a burst, a window being
 /// dragged; this long after the last the burst is over ([`Core::set_resizing`]).
 const RESIZE_BURST_GAP: Duration = Duration::from_millis(120);
@@ -1621,10 +1839,12 @@ fn run<M: TextEngine + 'static, S: MountSink>(
     config: EngineConfig,
     text_engine: M,
     sink: S,
-    tx: Sender<Message>,
-    rx: Receiver<Message>,
+    messages: (Sender<Message>, Receiver<Message>),
     stop: Arc<std::sync::atomic::AtomicBool>,
+    quit_listeners: Arc<std::sync::atomic::AtomicBool>,
+    downloads: nsh_core::webview::downloads::DownloadCleanup,
 ) {
+    let (tx, rx) = messages;
     raise_thread_priority();
     // The thread's time is the engine's from its first line of JS on.
     let _clock = config.clock.enter();
@@ -1632,7 +1852,11 @@ fn run<M: TextEngine + 'static, S: MountSink>(
     let Some(mut driver) = Driver::start(config, text_engine, Rc::new(sink), tx, &rx, stop) else {
         return;
     };
+    driver.state.core.set_download_cleanup(downloads);
+    driver.quit_listeners = quit_listeners;
+    driver.sync_quit_listeners();
     drive(&mut driver, &rx);
+    driver.quit(&rx);
     // Stopped on purpose (a crash never gets here): a trial is over.
     if let Some(trial) = &driver.trial {
         trial.healthy();
@@ -1688,6 +1912,7 @@ fn drive<M: TextEngine + 'static>(driver: &mut Driver<M>, rx: &Receiver<Message>
         }
         driver.turn();
         driver.state.record_perf(started);
+        driver.read_perf_stats();
         if rx.is_empty() {
             driver.collect_if_idle();
         }
@@ -1711,23 +1936,44 @@ pub struct LocalEngine<M: TextEngine + 'static> {
     pumping: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(not(target_arch = "wasm32"))]
     image_cache: Option<nsh_core::image::DiskCache>,
+    media_files: Arc<nsh_core::access::MediaFiles>,
+    /// [`LocalEngine::start_quit`] ran: the app's quit listeners start once.
+    quit_started: bool,
 }
 
 impl<M: TextEngine + 'static> LocalEngine<M> {
     /// Starts the app (its first frame goes to `sink` before this returns);
     /// `None` if it could not start (reported to `sink`).
     pub fn start<S: MountSink>(config: EngineConfig, text_engine: M, sink: S) -> Option<Self> {
+        Self::start_with(config, text_engine, sink, |_| {})
+    }
+
+    /// [`LocalEngine::start`], with `setup` sending input before the engine
+    /// starts, as [`Engine::start_with`]'s does: the link that launched the
+    /// app is there before its code runs.
+    pub fn start_with<S: MountSink>(
+        config: EngineConfig,
+        text_engine: M,
+        sink: S,
+        setup: impl FnOnce(&EngineControl),
+    ) -> Option<Self> {
         #[cfg(not(target_arch = "wasm32"))]
         let image_cache = config.cache.open_images(config.app.app_id());
+        let media_files = Arc::new(media_files(&config, &app_access(&config.app)));
         let (tx, rx) = crossbeam_channel::unbounded();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let downloads = nsh_core::webview::downloads::DownloadCleanup::new();
         let control = EngineControl {
             tx: tx.clone(),
             events_sent: Arc::default(),
+            modality: Arc::default(),
+            downloads: downloads.clone(),
         };
+        setup(&control);
         let _clock = config.clock.enter();
         let _context = config.context.enter();
-        let driver = Driver::start(config, text_engine, Rc::new(sink), tx, &rx, stop)?;
+        let mut driver = Driver::start(config, text_engine, Rc::new(sink), tx, &rx, stop)?;
+        driver.state.core.set_download_cleanup(downloads);
         Some(LocalEngine {
             driver: ManuallyDrop::new(driver),
             rx,
@@ -1736,6 +1982,8 @@ impl<M: TextEngine + 'static> LocalEngine<M> {
             pumping: Arc::default(),
             #[cfg(not(target_arch = "wasm32"))]
             image_cache,
+            media_files,
+            quit_started: false,
         })
     }
 
@@ -1744,6 +1992,11 @@ impl<M: TextEngine + 'static> LocalEngine<M> {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn image_cache(&self) -> Option<nsh_core::image::DiskCache> {
         self.image_cache.clone()
+    }
+
+    /// The immutable local-media roots granted by this engine configuration.
+    pub fn media_files(&self) -> Arc<nsh_core::access::MediaFiles> {
+        self.media_files.clone()
     }
 
     /// A handle for sending input.
@@ -1809,6 +2062,52 @@ impl<M: TextEngine + 'static> LocalEngine<M> {
             .extend_components(nsh_core::element::Registry::merged(&sets));
     }
 
+    /// Hands one key transition of the focused view `id` to the engine now,
+    /// without waiting for a pump: sets
+    /// [`nsh_core::KeyEvent::default_prevented`] from the mounted
+    /// `captureKeys` rule of `id` or an enabled ancestor within its window
+    /// (computed anew for this transition) and routes it as the engine's
+    /// own input does, bubbling KeyDown and KeyUp to the enabled ancestors.
+    /// It returns that decision, so an in-process host (a browser page) can
+    /// consume the key before its default runs.
+    ///
+    /// `stroke` is the adapter's own canonical shortcut stroke for this
+    /// transition (what its existing shortcut matcher uses); capture
+    /// matching uses it as is, never the event's `key` or `code`. `None`: a
+    /// key no shortcut names, which only `KeyCapture::All` captures.
+    /// `payload` should be [`EventPayload::Key`]; any other payload is
+    /// routed unchanged and the answer is false.
+    #[doc(hidden)]
+    pub fn key_event(
+        &mut self,
+        id: NodeId,
+        kind: EventKind,
+        mut payload: EventPayload,
+        stroke: Option<nsh_core::keymap::Keystroke>,
+    ) -> bool {
+        let _clock = self.driver.clock.enter();
+        let _context = self.driver.context.enter();
+        let prevented = match &mut payload {
+            EventPayload::Key(event) => {
+                event.default_prevented = self.driver.state.core.key_captured(id, stroke.as_ref());
+                event.default_prevented
+            }
+            _ => false,
+        };
+        self.driver
+            .handle(Message::Event(id, kind, payload), &self.rx);
+        prevented
+    }
+
+    /// Whether `id` has a key listener or a capture rule on itself or an
+    /// enabled logical ancestor up to its window root: an in-process host
+    /// calls it before building a key payload, so a portaled overlay's
+    /// logical ancestors are not missed. Heap free (one walk).
+    #[doc(hidden)]
+    pub fn key_interest(&self, id: NodeId) -> bool {
+        self.driver.state.core.key_interest(id)
+    }
+
     /// Handles the input sent since the last call, runs what is due
     /// (timers, tasks) and commits. Returns when to call again at the
     /// latest (sooner if input arrives); `None`: only for input.
@@ -1830,6 +2129,7 @@ impl<M: TextEngine + 'static> LocalEngine<M> {
                 break;
             }
         }
+        self.driver.read_perf_stats();
         self.driver.collect_if_idle();
         self.pumping
             .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -1841,6 +2141,29 @@ impl<M: TextEngine + 'static> LocalEngine<M> {
             wake();
         }
         self.driver.deadline()
+    }
+
+    /// The app ends while its host goes on a moment longer (a web page
+    /// being discarded): starts the app's quit listeners' work
+    /// ([`Core::start_quit`]) and runs what is due at once, as one
+    /// [`pump`](Self::pump). What they do synchronously is done when this
+    /// returns; their async work runs in the pumps the host still makes.
+    /// An app ends once: later calls do nothing, as the desktops run the
+    /// listeners once, as the process ends.
+    #[doc(hidden)]
+    pub fn start_quit(&mut self) {
+        if std::mem::replace(&mut self.quit_started, true) {
+            return;
+        }
+        {
+            let _clock = self.driver.clock.enter();
+            let _context = self.driver.context.enter();
+            if !self.driver.state.core.has_quit_listeners() {
+                return;
+            }
+            self.driver.state.core.start_quit();
+        }
+        self.pump();
     }
 }
 
@@ -1887,6 +2210,11 @@ struct Driver<M: TextEngine + 'static> {
     /// that way; WebAssembly has no such stop.
     #[cfg(not(target_arch = "wasm32"))]
     trial: Option<Arc<dyn Trial>>,
+    /// Tells the dropping [`Engine`] whether the app has quit listeners.
+    quit_listeners: Arc<std::sync::atomic::AtomicBool>,
+    /// The quit listeners run ([`Driver::quit`]): frames are not submitted
+    /// any more.
+    quitting: bool,
 }
 
 impl<M: TextEngine + 'static> Driver<M> {
@@ -1900,6 +2228,7 @@ impl<M: TextEngine + 'static> Driver<M> {
         stop: Arc<std::sync::atomic::AtomicBool>,
     ) -> Option<Self> {
         config.pinned.apply(&mut config.environment);
+        drawn_shaders(&mut config.environment, false);
         let trial = match &config.app {
             App::Js(bundle) => bundle.trial.clone(),
             App::Rust(_) => None,
@@ -1910,12 +2239,9 @@ impl<M: TextEngine + 'static> Driver<M> {
         let host_bridge = config.host.bridge(tx.clone());
         let host_tx = tx.clone();
         let text_engine = Rc::new(text_engine);
-        let access = Arc::new(match &config.app {
-            App::Js(bundle) => bundle.policy.access(),
-            // Native code is trusted: it reaches what the platform allows.
-            App::Rust(_) => Policy::default().access(),
-        });
+        let access = Arc::new(app_access(&config.app));
         let mut core = Core::new(text_engine.clone(), config.viewport);
+        core.set_content_culling(config.content_culling);
         core.set_tree_order_tracking(sink.needs_tree_order());
         core.set_projected_state_mounting(sink.needs_projected_states());
         // The runtime's components (`nsh/mobile`'s `TabBar`) and the UI
@@ -1936,6 +2262,14 @@ impl<M: TextEngine + 'static> Driver<M> {
             core.set_max_nodes(config.limits.max_nodes);
         }
         core.set_access(access.clone());
+        if let App::Js(bundle) = &config.app {
+            // What `//` media sources resolve against, as `fetch`'s URLs do.
+            core.set_base_url(bundle.base_url.clone());
+        }
+        // The roots local media files are read under, as `fs/promises`
+        // reads files (where it has a file system: the desktops).
+        let media_files = Arc::new(media_files(&config, &access));
+        core.set_media_files(media_files.clone());
         #[cfg(not(target_arch = "wasm32"))]
         core.set_image_context(nsh_core::image::loader::Context {
             asset_base: config.assets.as_ref().and_then(|a| a.base()),
@@ -1943,26 +2277,34 @@ impl<M: TextEngine + 'static> Driver<M> {
                 nsh_core::image::loader::ReadAsset::new(move |uri: &str| assets.read(uri))
             }),
             access: access.clone(),
+            media_files,
             // The same cache as the platform's ([`Engine::image_cache`]).
             disk: config.cache.open_images(config.app.app_id()),
             // The platform's, if it set one ([`nsh_core::image::loader::set_transport`]).
             transport: None,
         });
         core.set_storage(app_storage(&config));
+        core.set_data_dir(data_dir(&config));
         core.set_clipboard(config.clipboard.clone());
         core.set_picker(config.picker.clone());
         core.set_speech(config.speech.clone());
         core.set_url_schemes(config.app.url_schemes().iter().cloned());
+        // Every VM reads the core's address where it is (`UrlScheme.url()`).
+        #[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
+        let app_url = core.app_url_cell();
         core.set_audio(config.audio.clone());
         core.set_window_backend(config.windows.clone());
-        if let Some(window) = config.app.main_window() {
-            core.set_main_window(window);
-        }
+        core.set_login_item(config.login_item.clone());
         core.set_font_scale(config.environment.font_scale);
         core.set_class_environment(class_environment(&config.environment));
         core.set_header_heights(config.header_heights.0, config.header_heights.1);
         core.set_safe_area(insets(&config.environment));
         core.set_environment(ui_environment(&config.environment, config.viewport));
+        // After the environment: a surface without a window takes no
+        // attributes.
+        if let Some(window) = config.app.main_window() {
+            core.set_main_window(window);
+        }
         // WebAssembly has no threads for a runtime: tasks' timers are
         // `nsh_core::time`'s there, fired by the driver.
         #[cfg(not(target_arch = "wasm32"))]
@@ -2026,7 +2368,9 @@ impl<M: TextEngine + 'static> Driver<M> {
         // The embedding app's tokens sent before the start
         // (`Engine::start_with`) are there as the bundle evaluates, so its
         // first render reads them; the rest comes after it, in order.
-        // So are the displays, which the app reads as it first renders.
+        // So are the displays, which the app reads as it first renders,
+        // and the link that launched the app, which its first `url()` reads
+        // (the core keeps it for the first `open` listener too).
         let mut early = Vec::new();
         let mut displays: Arc<[nsh_core::desktop::Display]> = Arc::from(Vec::new());
         while let Ok(message) = rx.try_recv() {
@@ -2041,6 +2385,9 @@ impl<M: TextEngine + 'static> Driver<M> {
                     core.set_displays(list.clone());
                     displays = list;
                 }
+                Message::Event(nsh_core::ROOT_ID, EventKind::UrlScheme, payload) => {
+                    core.component_event(nsh_core::ROOT_ID, EventKind::UrlScheme, &payload);
+                }
                 message => early.push(message),
             }
         }
@@ -2054,6 +2401,7 @@ impl<M: TextEngine + 'static> Driver<M> {
             events: Vec::new(),
             trace: config.trace,
             perf: None,
+            perf_stats_at: None,
             perf_commit: perf::CommitTiming::default(),
             committed_since_gc: false,
             hot: Vec::new(),
@@ -2061,6 +2409,7 @@ impl<M: TextEngine + 'static> Driver<M> {
             touch_move: None,
             mouse_moves: Vec::new(),
             mouse_moved: None,
+            key_path: Vec::new(),
             sets_seen: FxHashMap::default(),
             resized: None,
             resize_burst_ends: None,
@@ -2072,6 +2421,7 @@ impl<M: TextEngine + 'static> Driver<M> {
             events_reported: 0,
             pinned: config.pinned,
             environment: config.environment,
+            shaders_unavailable: false,
             app_locale: None,
             host: config.host.clone(),
             url_opens: Vec::new(),
@@ -2116,6 +2466,8 @@ impl<M: TextEngine + 'static> Driver<M> {
             _host: config.host.attach(host_tx, rx.clone()),
             #[cfg(not(target_arch = "wasm32"))]
             trial: trial.clone(),
+            quit_listeners: Arc::default(),
+            quitting: false,
         };
         let eval_us = match &config.app {
             App::Js(bundle) => {
@@ -2131,15 +2483,14 @@ impl<M: TextEngine + 'static> Driver<M> {
                             config.assets.clone(),
                             bundle,
                         ),
-                        data_dir: config
-                            .data_dir
-                            .as_ref()
-                            .map(|root| root.join(app_dir_name(config.app.app_id()))),
+                        app_url: app_url.clone(),
+                        data_dir: data_dir(&config),
                         paths: bundle_system_paths(bundle),
                         wake: Arc::new(move || {
                             let _ = system_tx.send(Message::Wake);
                         }),
                         host: Rc::new(host_bridge),
+                        lazy_rows: config.content_culling,
                     }
                 };
                 #[cfg(not(any(
@@ -2206,6 +2557,7 @@ impl<M: TextEngine + 'static> Driver<M> {
             }
             sink.submit(batch);
         }
+        state.run_on_main_thread(&**sink);
         if let Some(trial) = trial {
             start_trial(trial);
         }
@@ -2239,7 +2591,34 @@ impl<M: TextEngine + 'static> Driver<M> {
         } else {
             self.due()
         };
-        [due, gc_deadline].into_iter().flatten().min()
+        [due, gc_deadline, self.state.perf_stats_at]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    /// Reads the performance monitor for `perfStats()` when a reading is
+    /// due, once a second while it measures.
+    fn read_perf_stats(&mut self) {
+        let Some(at) = self.state.perf_stats_at else {
+            return;
+        };
+        let now = Instant::now();
+        if now < at {
+            return;
+        }
+        self.state.perf_stats_at = Some(now + PERF_STATS_INTERVAL);
+        let Some(stats) = self.state.perf.as_ref().map(|m| m.snapshot().stats()) else {
+            return;
+        };
+        self.state.core.set_perf_stats(Some(stats));
+        if let Some(script) = &self.script {
+            script.set_perf_stats(Some(&stats));
+        }
+        if let Some(batch) = self.state.commit(self.script.as_ref()) {
+            self.sink.submit(batch);
+        }
+        self.state.run_on_main_thread(&*self.sink);
     }
 
     /// When the next timer, task timer or throttled scroll or mouse move
@@ -2250,6 +2629,7 @@ impl<M: TextEngine + 'static> Driver<M> {
             self.state.next_scroll_event(),
             self.state.next_mouse_move(),
             self.state.core.next_task_timer(),
+            self.state.core.download_deadline(),
             self.state.resize_burst_ends,
             self.state.window_state.settles,
         ]
@@ -2426,10 +2806,8 @@ impl<M: TextEngine + 'static> Driver<M> {
             .window_state
             .settles
             .is_some_and(|due| due <= nsh_core::time::now())
-            && let Some(env) = state.window_state.reported
+            && let Some(env) = state.window_state.take_pending()
         {
-            state.window_state.settles = None;
-            state.window_state.shown = env.window_state;
             apply_environment(script, state, env);
         }
         let turn_start = state.trace.then(Instant::now);
@@ -2454,7 +2832,8 @@ impl<M: TextEngine + 'static> Driver<M> {
         // renders in the commit.
         let tasks = turn_start.map(|s| s.elapsed());
         state.load_fonts(script, assets.as_deref(), &**sink);
-        if let Some(batch) = state.commit(script) {
+        let batch = state.commit(script);
+        if let Some(batch) = batch.filter(|_| !self.quitting) {
             sink.submit(batch);
             if let (Some(start), Some(tasks)) = (turn_start, tasks) {
                 log::info!(
@@ -2465,6 +2844,7 @@ impl<M: TextEngine + 'static> Driver<M> {
                 );
             }
         }
+        state.run_on_main_thread(&**sink);
         if let Some(size) = state.resized.take() {
             sink.resized(size);
         }
@@ -2473,6 +2853,56 @@ impl<M: TextEngine + 'static> Driver<M> {
         state.load_chunks(script, &**sink);
         state.request_frame(script, &**sink);
         self.check_stopped();
+        self.sync_quit_listeners();
+    }
+
+    /// Tells the [`Engine`] whether the app has quit listeners now.
+    fn sync_quit_listeners(&self) {
+        self.quit_listeners.store(
+            self.state.core.has_quit_listeners(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// The engine stops: runs the app's quit listeners and what they wait
+    /// for, [`QUIT_TIMEOUT`] at most (the dropping [`Engine`] interrupts JS
+    /// then). Their frames are not submitted; the embedding app's events
+    /// stay queued behind the shutdown, for the next app.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn quit(&mut self, rx: &Receiver<Message>) {
+        if !self.state.core.has_quit_listeners() {
+            return;
+        }
+        let deadline = Instant::now() + QUIT_TIMEOUT;
+        self.quitting = true;
+        self.state.core.start_quit();
+        let mut kept = Vec::new();
+        loop {
+            self.turn();
+            if !self.state.core.quit_pending() || self.stopped {
+                break;
+            }
+            let wake = self.deadline().map_or(deadline, |at| at.min(deadline));
+            match rx.recv_deadline(wake) {
+                Ok(Message::Shutdown) => {}
+                Ok(message @ Message::HostEvent(..)) => kept.push(message),
+                Ok(message) => {
+                    self.handle(message, rx);
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+            }
+            if Instant::now() >= deadline {
+                log::warn!(
+                    "the app's quit listeners did not finish in {} ms",
+                    QUIT_TIMEOUT.as_millis()
+                );
+                break;
+            }
+        }
+        for message in kept {
+            let _ = self.state.net.tx.send(message);
+        }
     }
 
     /// When the next idle collection may run: a second after the last, once
@@ -2495,11 +2925,23 @@ impl<M: TextEngine + 'static> Driver<M> {
             if let Some(start) = start {
                 log::info!(target: "nsh::perf", "gc: {}µs", start.elapsed().as_micros());
             }
+            // What the app holds, for the performance monitor: read here,
+            // when the heap was just walked and nothing waits.
+            if let Some(monitor) = &self.state.perf {
+                let (js_heap, js_objects) = script.heap_usage();
+                monitor.set_memory(perf::MemorySample {
+                    js_heap,
+                    js_objects,
+                    nodes: self.state.core.node_count() as u64,
+                    node_ids: self.state.core.node_id_room() as u64,
+                });
+            }
             self.last_gc = Instant::now();
             self.state.committed_since_gc = false;
             if let Some(batch) = self.state.commit(Some(script)) {
                 self.sink.submit(batch);
             }
+            self.state.run_on_main_thread(&*self.sink);
         }
     }
 
@@ -2537,6 +2979,9 @@ struct State<M: TextEngine> {
     pinned: EnvironmentPins,
     /// The environment given last, before the app's language is applied.
     environment: Environment,
+    /// The platform found no GPU for shader views
+    /// ([`EngineControl::shaders_unavailable`]).
+    shaders_unavailable: bool,
     /// The language the app shows in whatever the user's (`setLocale`).
     app_locale: Option<nsh_core::platform::Locale>,
     /// A display frame was requested and has not begun yet.
@@ -2549,6 +2994,9 @@ struct State<M: TextEngine> {
     trace: bool,
     /// Where commit timings go ([`EngineControl::set_perf_monitor`]).
     perf: Option<Arc<perf::PerfMonitor>>,
+    /// When the monitor is read next for `perfStats()` (while there is a
+    /// monitor), on the system's time.
+    perf_stats_at: Option<Instant>,
     /// The core's share of the wake-up being measured (`layout`, `ops`,
     /// `items`; `js` is the rest of the wake-up).
     perf_commit: perf::CommitTiming,
@@ -2574,8 +3022,11 @@ struct State<M: TextEngine> {
     mouse_moves: Vec<(NodeId, EventPayload)>,
     /// When `mouse_moves` were last delivered.
     mouse_moved: Option<Instant>,
+    /// The views a key transition reaches: the core fills it, and the
+    /// engine notifies each (a buffer reused between events).
+    key_path: Vec<NodeId>,
     /// [`keep_last_sets`]'s buffer, reused.
-    sets_seen: FxHashMap<(u8, NodeId), usize>,
+    sets_seen: FxHashMap<(u8, NodeId, u32), usize>,
     /// The viewport size a resize set this turn ([`MountSink::resized`]).
     resized: Option<Size<Points>>,
     /// A resize before this time continues a burst of them
@@ -2638,27 +3089,6 @@ impl FetchTask for AssetTask {
 fn is_asset(url: &str) -> bool {
     url.get(..6)
         .is_some_and(|scheme| scheme.eq_ignore_ascii_case("asset:"))
-}
-
-/// Whether the bundled file `url` names stays inside the app's files
-/// whichever way a host maps `asset:/<path>` to its asset directory: the
-/// path is relative, and no segment is empty, `.` or `..` (encoded or not)
-/// or holds a backslash, a NUL or a colon (a Windows drive). Hosts join the
-/// path to their directory as it comes, so they never see one that
-/// escapes it.
-fn is_inside_assets(url: &str) -> bool {
-    let Some(path) = url.get(6..).and_then(|rest| rest.strip_prefix('/')) else {
-        return false;
-    };
-    path.split('/').all(|segment| {
-        let segment = segment.to_ascii_lowercase();
-        let named = !matches!(segment.replace("%2e", ".").as_str(), "" | "." | "..");
-        let plain = !segment.contains(['\\', '\0', ':'])
-            && !["%2f", "%5c", "%00", "%3a"]
-                .iter()
-                .any(|encoded| segment.contains(encoded));
-        named && plain
-    })
 }
 
 /// `url` (an `asset:/` URL) as its response answers at it, and as the
@@ -2753,14 +3183,22 @@ impl Net {
 
     /// Makes `who`'s request, if the app may (else why not). Bundled files
     /// are the app's own: their requests need no capability.
-    fn request(&mut self, who: Requester, request: HttpRequest) -> Result<(), access::Refused> {
+    fn request(&mut self, who: Requester, mut request: HttpRequest) -> Result<(), access::Refused> {
         if is_asset(&request.url) {
             self.asset(who, request);
-        } else if self.access.is_unrestricted() {
+            return Ok(());
+        }
+        if self.access.is_unrestricted() {
             self.start(who, request, None);
-        } else if !self.access.allows_http(&request.method, &request.url) {
-            return Err(access::refused(&request.method, &request.url));
-        } else if request.follow_redirects {
+            return Ok(());
+        }
+        // The request goes out with the URL the check granted: Rust's and
+        // `registerFont`'s URLs come as written, `fetch`'s already parsed.
+        match self.access.http_url(&request.method, &request.url) {
+            Some(url) => request.url = url.into_owned(),
+            None => return Err(access::refused(&request.method, &request.url)),
+        }
+        if request.follow_redirects {
             let hop = access::hop(&request);
             let followed = access::Followed { request, hops: 0 };
             self.start(who, hop, Some(followed));
@@ -2815,7 +3253,7 @@ impl Net {
         );
         // Failed here, before any host reads the file or serves it
         // ([`Assets::url`]): a request no host may answer reaches none.
-        let refused = if !is_inside_assets(&file) {
+        let refused = if !nsh_core::access::is_inside_assets(&file) {
             Some(format!(
                 "{}: bundled files are named by a path inside the app's files",
                 request.url
@@ -3130,10 +3568,19 @@ impl<M: TextEngine> State<M> {
         if !self.frame_requested
             && (script.is_some_and(Script::wants_frame)
                 || self.core.wants_frame()
+                || self.core.has_paced_mounts()
                 || (script.is_some() && self.core.has_paced_list_binds()))
         {
             self.frame_requested = true;
             sink.request_frame();
+        }
+    }
+
+    /// Hands the sink the functions the app asked to run on the main thread
+    /// this turn, after the turn's batch.
+    fn run_on_main_thread(&mut self, sink: &dyn MountSink) {
+        for task in self.core.take_main_thread_tasks() {
+            sink.run_on_main_thread(task);
         }
     }
 
@@ -3190,6 +3637,8 @@ impl<M: TextEngine> State<M> {
         let mut js = std::time::Duration::ZERO;
         // The overscan bound this turn ([`PACED_BIND_OPS`]).
         let mut paced = PacedBinds::default();
+        // The views made this turn share one budget (`nsh_core`'s `pace.rs`).
+        self.core.begin_mount_turn();
         for _ in 0..MAX_LIST_ROUNDS {
             // Requests from the previous round (or frame) first.
             let js_start = Instant::now();
@@ -3197,6 +3646,13 @@ impl<M: TextEngine> State<M> {
             // the core).
             let binds = self.binds.drain(..);
             if let Some(script) = script {
+                // What JS queued before this round (a timer, a handler) may
+                // change a list's items, and the core works out the overscan
+                // left to bind from the items it has: it applies those ops
+                // first, and the overscan waits for the next round, or a
+                // cell would be bound to an item that is gone.
+                script.take_ops(&mut self.ops);
+                let unapplied = !self.ops.is_empty();
                 for bind in binds {
                     script.bind_list(bind.list, &bind.binds);
                 }
@@ -3216,7 +3672,11 @@ impl<M: TextEngine> State<M> {
                 };
                 let mut source_pending = source_changed(&self.ops);
                 let mut binds = Vec::new();
-                while !source_pending && paced.left() && self.core.has_paced_list_binds() {
+                while !source_pending
+                    && !unapplied
+                    && paced.left()
+                    && self.core.has_paced_list_binds()
+                {
                     let start = Instant::now();
                     let ops = self.ops.len();
                     self.core.take_paced_list_binds(1, &mut binds);
@@ -3243,7 +3703,16 @@ impl<M: TextEngine> State<M> {
             for event in self.events.drain(..) {
                 match event {
                     JsEvent::Event(id, event, payload) => {
-                        if !self.core.component_event(id, event, &payload)
+                        if matches!(event, EventKind::KeyDown | EventKind::KeyUp) {
+                            dispatch_key(
+                                script,
+                                &mut self.core,
+                                &mut self.key_path,
+                                id,
+                                event,
+                                &payload,
+                            );
+                        } else if !self.core.component_event(id, event, &payload)
                             && let Some(script) = script
                         {
                             script.dispatch_event(id, event, &payload);
@@ -3378,6 +3847,8 @@ fn insets(env: &Environment) -> EdgeInsets {
 fn ui_environment(env: &Environment, window: Size<Points>) -> nsh_core::element::Environment {
     nsh_core::element::Environment {
         window,
+        horizontal_size_class: env.horizontal_size_class,
+        vertical_size_class: env.vertical_size_class,
         safe_area: insets(env),
         title_bar: env.title_bar,
         window_state: env.window_state,
@@ -3387,9 +3858,11 @@ fn ui_environment(env: &Environment, window: Size<Points>) -> nsh_core::element:
         font_scale: env.font_scale,
         reduce_motion: env.reduce_motion,
         screen_reader: env.screen_reader,
+        reads_active_descendants: env.reads_active_descendants,
         rtl: env.rtl,
         pixel_ratio: env.pixel_ratio,
         os: env.os,
+        platform: env.platform,
         os_version: env.os_version,
         idiom: env.idiom,
         locale: env.locale,
@@ -3399,28 +3872,48 @@ fn ui_environment(env: &Environment, window: Size<Points>) -> nsh_core::element:
         native_focus_scopes: env.native_focus_scopes,
         host: env.host,
         lifecycle: env.lifecycle,
+        wake_count: env.wake_count,
         screen_color: env.screen_color,
+        canvas_render: env.canvas_render,
+        share: env.share,
+        auth_session: env.auth_session,
         file_requests: env.file_requests,
         speech: env.speech,
         notifications: env.notifications,
         audio: env.audio,
+        tab_bar: env.tab_bar,
         cell: env.cell,
         web_input: env.web_input,
+        web_evaluate: env.web_evaluate,
+        web_views: env.web_views,
+        webview_requests: env.webview_requests,
+        shaders: env.shaders,
     }
+}
+
+/// `Environment::shaders` as the app sees it: the platform's, `false` on a
+/// grid surface (a terminal's Cells) and once the platform or this process
+/// found no GPU (`unavailable`: [`EngineControl::shaders_unavailable`]).
+fn drawn_shaders(env: &mut Environment, unavailable: bool) {
+    env.shaders &= env.cell.is_none() && !unavailable && !shader::no_gpu();
 }
 
 /// What class variants read from the environment.
 fn class_environment(env: &Environment) -> nsh_core::tailwind::ClassEnvironment {
     nsh_core::tailwind::ClassEnvironment {
         dark: env.color_scheme == ColorScheme::Dark,
-        platform: if env.os == Os::Web {
-            nsh_core::tailwind::Platform::Web
-        } else if cfg!(target_os = "android") {
-            nsh_core::tailwind::Platform::Android
-        } else {
-            nsh_core::tailwind::Platform::Ios
+        platform: match env.os {
+            Os::Web => nsh_core::tailwind::Platform::Web,
+            Os::Android => nsh_core::tailwind::Platform::Android,
+            _ => nsh_core::tailwind::Platform::Ios,
         },
         reduce_motion: env.reduce_motion,
+        pointer: if env.desktop() {
+            nsh_core::tailwind::Pointer::Fine
+        } else {
+            nsh_core::tailwind::Pointer::Coarse
+        },
+        terminal: env.idiom == Idiom::Terminal,
     }
 }
 
@@ -3464,7 +3957,8 @@ const WINDOW_SETTLE: Duration = Duration::from_millis(150);
 
 /// The window's bounds the app reads: a move or a resize reaches it once
 /// the window has stayed for [`WINDOW_SETTLE`] (one report at the end of a
-/// drag, not one per point), a change of mode, display or being minimized
+/// drag, not one per point), or before a press handler reads it. A change
+/// of mode, display or being minimized
 /// or hidden at once (with the bounds of then).
 #[derive(Default)]
 struct WindowStateReport {
@@ -3477,6 +3971,12 @@ struct WindowStateReport {
 }
 
 impl WindowStateReport {
+    fn take_pending(&mut self) -> Option<Environment> {
+        self.settles = None;
+        let env = self.reported.take()?;
+        self.shown = env.window_state;
+        Some(env)
+    }
     /// The environment the app gets of `env`, the platform's at `now`: its
     /// window state held back while it moves.
     fn report(&mut self, mut env: Environment, now: Instant) -> Environment {
@@ -3543,17 +4043,67 @@ fn apply_environment<M: TextEngine>(
     }
 }
 
+/// Notifies every view a key transition reaches, from one platform event:
+/// `id` and its enabled ancestors within its window (the core decides the
+/// path). Rust component listeners and JS listeners each hear it once; a
+/// listener's answer cannot change handling.
+fn dispatch_key<M: TextEngine>(
+    script: Option<&Script>,
+    core: &mut nsh_core::Core<M>,
+    path: &mut Vec<NodeId>,
+    id: NodeId,
+    event: EventKind,
+    payload: &EventPayload,
+) {
+    core.key_path(id, path);
+    for node in path.iter().copied() {
+        core.component_event(node, event, payload);
+        // A node with no listener (Rust or JS) hears nothing: no event
+        // object is built for it.
+        if core.listens(node, event)
+            && let Some(script) = script
+        {
+            script.dispatch_event(node, event, payload);
+        }
+    }
+    path.clear();
+}
+
+/// Hands out the `onPressOutside` events of a press the core worked out
+/// (`context_menu_presses_outside`, `presses_beyond_root`): to the
+/// overlay's Rust component, else to JS.
+fn press_outside<M: TextEngine>(
+    script: Option<&Script>,
+    core: &mut nsh_core::Core<M>,
+    pressed: Vec<(NodeId, EventPayload)>,
+) {
+    for (overlay, payload) in pressed {
+        if !core.component_event(overlay, EventKind::PressOutside, &payload)
+            && let Some(script) = script
+        {
+            script.dispatch_event(overlay, EventKind::PressOutside, &payload);
+        }
+    }
+}
+
 /// Returns false on shutdown.
 fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message: Message) -> bool {
     match message {
         Message::Event(id, event, mut payload) => {
+            if event == EventKind::Press
+                && let Some(env) = state.window_state.take_pending()
+            {
+                apply_environment(script, state, env);
+            }
             state.events_handled += 1;
             if state.trace {
                 log::info!(target: "nsh::perf", "event {event:?} on view {id}");
             }
             // Mouse moves wait for the frame, the latest per view; any other
             // event comes after the moves before it (a view hears where the
-            // mouse went before it hears it leave).
+            // mouse went before it hears it leave). A drag on the desktops
+            // also sends a touch move with each mouse move: that is the same
+            // motion, not an event after it.
             if event == EventKind::MouseMove {
                 match state.mouse_moves.iter_mut().find(|(v, _)| *v == id) {
                     Some((_, pending)) => *pending = payload,
@@ -3561,7 +4111,10 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
                 }
                 return true;
             }
-            state.dispatch_mouse_moves(script);
+            if !matches!(&payload, EventPayload::Touch(t) if t.phase == nsh_core::TouchPhase::Move)
+            {
+                state.dispatch_mouse_moves(script);
+            }
             // The core tracks input text for layout and to recognize stale
             // values (from JS and from Rust components alike).
             if let (EventKind::ChangeText, EventPayload::Text { text, count }) = (event, &payload) {
@@ -3572,8 +4125,33 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
             if event == EventKind::CaretMove {
                 state.core.locate_caret(id, &mut payload);
             }
+            if event == EventKind::SelectionChange {
+                state.core.locate_selection(id, &mut payload);
+            }
             if event == EventKind::Paste {
                 payload = payload.into_paste();
+            }
+            // A secondary click goes down as a press does: the overlays it
+            // is outside of hear `onPressOutside` first, then the view its
+            // `onContextMenu`, so a context menu open on the view closes
+            // before the view asks for one again where the pointer is.
+            if let EventPayload::ContextMenu(menu) = &payload {
+                let pressed = state.core.context_menu_presses_outside(id, menu);
+                press_outside(script, &mut state.core, pressed);
+            }
+            // Key transitions bubble to the focused view's enabled
+            // ancestors within its window, for Rust and JS listeners
+            // alike, from this one platform event.
+            if matches!(event, EventKind::KeyDown | EventKind::KeyUp) {
+                dispatch_key(
+                    script,
+                    &mut state.core,
+                    &mut state.key_path,
+                    id,
+                    event,
+                    &payload,
+                );
+                return true;
             }
             // Events on a Rust component's parts are the component's.
             if deliver_component_event(
@@ -3630,10 +4208,18 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
                 event.pending = true;
             }
         }
+        Message::KeyScrolled(id, key_move) => state.core.key_scrolled(id, key_move),
         Message::Kept(nodes) => state.core.set_kept(&nodes),
+        Message::ContentCulling(enabled) => {
+            state.core.set_content_culling(enabled);
+            if let Some(script) = script {
+                script.set_lazy_rows(enabled);
+            }
+        }
         Message::InputScroll(id, offset, content, viewport) => {
             state.core.set_input_scroll(id, offset, content, viewport);
         }
+        Message::InputComposing(id, shown) => state.core.input_composing(id, shown.as_deref()),
         Message::Zoom(id, scale) => state.core.set_zoom(id, scale),
         Message::ComponentSize(id, size) => state.core.set_component_size(id, size),
         Message::AnimationsFinished(mut finished) => {
@@ -3659,8 +4245,19 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
         Message::Wake => {}
         Message::Environment(mut env) => {
             state.pinned.apply(&mut env);
+            drawn_shaders(&mut env, state.shaders_unavailable);
             let env = state.window_state.report(*env, nsh_core::time::now());
             apply_environment(script, state, env);
+        }
+        Message::ShadersUnavailable => {
+            state.shaders_unavailable = true;
+            if state.environment.shaders {
+                let env = Environment {
+                    shaders: false,
+                    ..state.environment
+                };
+                apply_environment(script, state, env);
+            }
         }
         Message::Displays(displays) => {
             state.core.set_displays(displays.clone());
@@ -3670,11 +4267,17 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
         }
         Message::FocusPath(path) => {
             state.core.set_focus_path(&path);
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(script) = script {
                 script.set_focus_path(&path);
             }
         }
         Message::RootSize(id, size, insets) => state.core.set_root_size(id, size, insets),
+        Message::OverlayArea(area) => state.core.set_overlay_area(area),
+        Message::PressBeyondRoot(page) => {
+            let pressed = state.core.presses_beyond_root(page);
+            press_outside(script, &mut state.core, pressed);
+        }
         Message::ScreenHeader(id, height) => state.core.set_screen_header(id, height),
         Message::Frame => {
             state.frame_requested = false;
@@ -3684,6 +4287,7 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
             }
         }
         Message::States(id, states) => state.core.set_states(id, states),
+        Message::Modality(modality) => state.core.set_input_modality(modality),
         Message::FontsChanged => state.core.fonts_changed(),
         Message::Remount => state.core.remount(),
         Message::Fetch(who, hop, event) => match (who, state.net.event(who, hop, event)) {
@@ -3727,6 +4331,16 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
             state.core.set_perf_monitor(monitor.is_some());
             if let Some(script) = script {
                 script.set_fps_enabled(monitor.is_some());
+            }
+            // A reading a second after the monitor starts; none without it.
+            state.perf_stats_at = monitor
+                .as_ref()
+                .map(|_| Instant::now() + PERF_STATS_INTERVAL);
+            if monitor.is_none() {
+                state.core.set_perf_stats(None);
+                if let Some(script) = script {
+                    script.set_perf_stats(None);
+                }
             }
             state.perf = monitor;
             state.perf_commit = perf::CommitTiming::default();
@@ -3811,37 +4425,47 @@ fn extend_frame(frame: &mut Vec<nsh_core::MountItem>, items: Vec<nsh_core::Mount
 /// Of the items of a frame merged from several commits that set one part
 /// of a view whole (its frame, style, text, ...), keeps the last: the
 /// platform would apply each in one pass, and a list's rounds (binds, then
-/// the paced ones) relay and restyle the same cells. Once per turn, with
-/// `last` the reused buffer.
-fn keep_last_sets(frame: &mut Vec<nsh_core::MountItem>, last: &mut FxHashMap<(u8, NodeId), usize>) {
+/// the paced ones) relay and restyle the same cells. Frames apart from
+/// each other by a layout animation are all kept: the platform animates
+/// each with the one before it (a list's rows set where they showed, then
+/// slide: `nsh_core`'s `list_motion.rs`). Once per turn, with `last` the
+/// reused buffer.
+fn keep_last_sets(
+    frame: &mut Vec<nsh_core::MountItem>,
+    last: &mut FxHashMap<(u8, NodeId, u32), usize>,
+) {
     last.clear();
     let mut repeated = false;
+    let mut run = 0;
     for (k, item) in frame.iter().enumerate() {
-        if let Some(key) = sets_whole(item) {
+        run += matches!(item, nsh_core::MountItem::LayoutAnimation(_)) as u32;
+        if let Some(key) = sets_whole(item, run) {
             repeated |= last.insert(key, k).is_some();
         }
     }
     if !repeated {
         return;
     }
-    let mut k = 0;
+    let (mut k, mut run) = (0, 0);
     frame.retain(|item| {
         k += 1;
-        sets_whole(item).is_none_or(|key| last[&key] == k - 1)
+        run += matches!(item, nsh_core::MountItem::LayoutAnimation(_)) as u32;
+        sets_whole(item, run).is_none_or(|key| last[&key] == k - 1)
     });
 }
 
 /// The part of a view an item sets whole, and the view: of two such items
-/// the later is all the view ends up with.
-fn sets_whole(item: &nsh_core::MountItem) -> Option<(u8, nsh_core::NodeId)> {
+/// the later is all the view ends up with. Frames also by the `run` of
+/// layout animation they are in.
+fn sets_whole(item: &nsh_core::MountItem, run: u32) -> Option<(u8, nsh_core::NodeId, u32)> {
     use nsh_core::MountItem;
     Some(match *item {
-        MountItem::Frame { id, .. } => (0, id),
-        MountItem::Overflow { id, .. } => (1, id),
-        MountItem::ViewStyle { id, .. } => (2, id),
-        MountItem::Text { id, .. } => (3, id),
-        MountItem::Events { id, .. } => (4, id),
-        MountItem::Image { id, .. } => (5, id),
+        MountItem::Frame { id, .. } => (0, id, run),
+        MountItem::Overflow { id, .. } => (1, id, 0),
+        MountItem::ViewStyle { id, .. } => (2, id, 0),
+        MountItem::Text { id, .. } => (3, id, 0),
+        MountItem::Events { id, .. } => (4, id, 0),
+        MountItem::Image { id, .. } => (5, id, 0),
         _ => return None,
     })
 }
@@ -3860,8 +4484,68 @@ fn release_spare_ops(ops: &mut Vec<Op>) {
     }
 }
 
+/// What `app` may reach: a JS app its policy's grant, a Rust app what its
+/// root declares (`nsh.json` `capabilities`); either without a declaration
+/// what an app without one reaches.
+fn app_access(app: &App) -> Access {
+    match app {
+        App::Js(bundle) => bundle.policy.access(),
+        App::Rust(root) => Policy {
+            declared: root.capabilities_ref().cloned(),
+            ..Policy::default()
+        }
+        .access(),
+    }
+}
+
+/// The roots local media files are read under, as `fs/promises` reads
+/// files (where the platform has a file system for apps: the native OSes).
+fn media_files(config: &EngineConfig, access: &Access) -> nsh_core::access::MediaFiles {
+    match &config.app {
+        App::Js(bundle) => nsh_core::access::MediaFiles::new(
+            access,
+            data_dir(config).as_deref(),
+            &bundle_system_paths(bundle),
+            nsh_core::access::native_files(config.environment.os),
+        ),
+        App::Rust(root) if root.capabilities_ref().is_some() => nsh_core::access::MediaFiles::new(
+            access,
+            data_dir(config).as_deref(),
+            &system_paths(nsh_core::access::TrustedPaths::default(), false),
+            nsh_core::access::native_files(config.environment.os),
+        ),
+        App::Rust(_) => nsh_core::access::MediaFiles::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "js-core")]
+    #[test]
+    fn an_apps_directory_is_its_own_or_the_one_named_by_its_id() {
+        let app = || super::Bundle::source(String::new()).with_app_id(Some("com.a"));
+        let mut config = super::EngineConfig::new(app());
+        assert_eq!(super::data_dir(&config), None);
+        config.support_dir = Some("/data".into());
+        assert_eq!(
+            super::data_dir(&config),
+            Some(std::path::Path::new("/data").join("com.a"))
+        );
+        // `"dataDir"`: storage, `${dataDir}` and its files all live there,
+        // whatever the app's id.
+        config.data_dir = Some("/home/a/.myapp".into());
+        assert_eq!(super::data_dir(&config), Some("/home/a/.myapp".into()));
+        config.app = app().with_app_id(Some("com.b")).into();
+        assert_eq!(super::data_dir(&config), Some("/home/a/.myapp".into()));
+        config.data_dir = None;
+        assert_eq!(
+            super::data_dir(&config),
+            Some(std::path::Path::new("/data").join("com.b"))
+        );
+        config.support_dir = None;
+        assert_eq!(super::data_dir(&config), None);
+    }
+
     #[test]
     fn an_emptied_op_buffer_gives_back_what_a_large_commit_grew() {
         let mut ops: Vec<super::Op> = Vec::with_capacity(super::RETAINED_OPS * 8);
@@ -4344,5 +5028,78 @@ mount(() => <View>
             })
             .collect();
         assert_eq!(frames, [(6, 0.0), (4, 50.0)]);
+
+        // A view set where it showed, then animated to its new frame,
+        // keeps both: each applies with the layout animation before it.
+        let animation = |update| {
+            MountItem::LayoutAnimation(nsh_core::LayoutAnimation {
+                update,
+                ..Default::default()
+            })
+        };
+        let eased = nsh_core::LayoutAnimation::EASE_IN_EASE_OUT.update;
+        let mut frame = vec![animation(None), at(4, 50.0), animation(eased), at(4, 0.0)];
+        super::extend_frame(&mut frame, vec![at(4, 20.0)]);
+        super::keep_last_sets(&mut frame, &mut Default::default());
+        let frames: Vec<_> = frame
+            .iter()
+            .filter_map(|m| match m {
+                MountItem::Frame { frame, .. } => Some(frame.origin.y.0),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(frames, [50.0, 20.0]);
+    }
+}
+
+#[cfg(test)]
+mod download_cleanup_tests {
+    //! A platform's last stop acknowledgement after the engine's channel
+    //! closed must still clean the private staging directory.
+
+    use super::*;
+
+    #[test]
+    fn an_end_queued_into_a_dead_engine_cleans_its_staging_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "nsh-engine-download-cleanup-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let leaf = dir.join("out.bin");
+        std::fs::write(&leaf, b"partial").unwrap();
+
+        let cleanup = nsh_core::webview::DownloadCleanup::new();
+        cleanup.register_staging(7, "d1", dir.clone(), leaf.clone());
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let control = EngineControl {
+            tx,
+            events_sent: Arc::default(),
+            modality: Arc::default(),
+            downloads: cleanup.clone(),
+        };
+        drop(rx);
+
+        control.dispatch_event(
+            7,
+            EventKind::DownloadEnd,
+            nsh_core::webview::download_end(&nsh_core::webview::DownloadEnd {
+                id: "d1".into(),
+                outcome: nsh_core::webview::DownloadOutcome::Finished { bytes: 3 },
+            }),
+        );
+        // The core's Drop closes the sink (the engine handle outlives it).
+        cleanup.close();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while dir.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the dead engine's staging directory was not cleaned"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
     }
 }

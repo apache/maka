@@ -5,24 +5,18 @@
 
 use nsh_core::{
     AccessibilityState,
-    element::{LayoutCurve, LayoutTransition, Style},
+    element::{LayoutTransition, Spring, Style},
     prelude::*,
 };
 
 use crate::roving::{Pattern, Roving, member};
 
-/// How long the indicator takes to travel to another tab, in milliseconds:
-/// as long as `gpui-component`'s `spring_move` (a 280 ms response, a damping
-/// ratio of 0.85: `theme/motion.rs`) takes to come within a thousandth of
-/// its end, which is where a layout spring of that damping fitted into
-/// this duration does too (`nsh_core::transition`).
-/// `ln 1000 / (0.85 · 2π / 0.28 s)`.
-const INDICATOR_MS: f32 = 362.0;
-
 /// The indicator's travel to another tab: `gpui-component`'s tab bar
-/// indicator's `spring_move`, a little springy.
-const INDICATOR: LayoutTransition =
-    LayoutTransition::new(LayoutCurve::Spring { damping: 0.85 }, INDICATOR_MS);
+/// indicator's `spring_move` (a 280 ms response, a damping ratio of 0.85:
+/// `theme/motion.rs`), a little springy.
+fn indicator_motion() -> LayoutTransition {
+    LayoutTransition::spring(Spring::new(280.0).damping_ratio(0.85))
+}
 
 /// What a [`Tab`] finds of its [`Tabs`] through context.
 #[derive(Clone)]
@@ -46,6 +40,10 @@ pub struct TabProps {
     /// What screen readers say: the tab's name, when its children have no
     /// text that says it (an icon).
     pub accessibility_label: Prop<Option<SharedString>>,
+    /// More about the tab than its name, which screen readers read after a
+    /// pause, and a user can skip: what it can do that its name does not
+    /// say (a closable tab that Delete closes).
+    pub accessibility_description: Prop<Option<SharedString>>,
     /// The content: the app's label, icon or badge, which screen readers
     /// say.
     pub children: Prop<Children>,
@@ -84,6 +82,7 @@ pub fn Tab(props: TabProps, cx: Scope<TabEvent>) -> impl IntoElement {
         .disabled(props.disabled)
         .role(AccessibilityRole::Tab)
         .optional_label(props.accessibility_label)
+        .optional_accessibility_description(props.accessibility_description)
         .accessibility_state(move || AccessibilityState {
             selected: props.selected.get(),
             ..AccessibilityState::default()
@@ -107,16 +106,20 @@ pub struct TabsProps {
     /// The style of the indicator, over `indicatorClass`.
     #[prop(default)]
     pub indicator_style: Prop<Style>,
+    /// What screen readers call the list ("Sections", "Views"), said as
+    /// they enter it; its tabs stay elements of their own.
+    pub accessibility_label: Prop<Option<SharedString>>,
     /// The tabs of the list, and whatever the app lays out between them.
     pub children: Prop<Children>,
 }
 
 /// The tab list around a set of [`Tab`]s: screen readers hear the tabs
-/// inside it as one list, each still an element of its own. It holds no
-/// value and no content: each tab is told whether it is selected and
-/// reports a press with `onPress`, and the app keeps which one is and shows
-/// that tab's content next to the list. Its layout and look are the app's
-/// `class` and `style` (`flex-row` for a row).
+/// inside it as one list, named by its `accessibilityLabel`, each still an
+/// element of its own. It holds no value and no content: each tab is told
+/// whether it is selected and reports a press with `onPress`, and the app
+/// keeps which one is and shows that tab's content next to the list. Its
+/// layout and look are the app's `class` and `style` (`flex-row` for a
+/// row).
 ///
 /// The keyboard, as WAI-ARIA's tab list pattern has it, where views that
 /// take presses are stops of the keyboard focus (macOS, the web): the list
@@ -125,7 +128,8 @@ pub struct TabsProps {
 /// previous and next tab, around the ends, Home and End to the first and
 /// last, past disabled tabs. The tab the focus moves to reports `onPress`,
 /// so the app selects it as the focus moves (automatic activation); Space
-/// and Return press the focused tab.
+/// and Return press the focused tab. Its tabs are its children, or inside
+/// the app's views among them (a tab with a hover frame or a badge).
 ///
 /// Its indicator (`gpui-component`'s tab bar's: an underline, a pill or a
 /// segmented highlight) is a part the app styles with `indicatorClass` and
@@ -159,6 +163,7 @@ pub fn Tabs(props: TabsProps, _cx: Scope<NoEvent>) -> impl IntoElement {
     };
     view()
         .role(AccessibilityRole::Tablist)
+        .optional_label(props.accessibility_label)
         // Tabs two Cells apart in a row: the terminal's tab bar.
         .when(terminal, |v| v.flex_row().gap_x(measure_text("", "00")))
         .child(when(styled, move || indicator(list.clone(), class, style)))
@@ -176,7 +181,7 @@ fn indicator(list: Roving, class: Prop<Option<SharedString>>, style: Prop<Style>
         .accessibility_elements_hidden(true)
         .follow(move || list.current())
         .style_when(move || none.current().is_none(), |s| s.hidden())
-        .follow_transition(move || (!reduce_motion()).then_some(INDICATOR))
+        .follow_transition(move || (!reduce_motion()).then_some(indicator_motion()))
         .app_class(class)
         .inline_style(style)
 }

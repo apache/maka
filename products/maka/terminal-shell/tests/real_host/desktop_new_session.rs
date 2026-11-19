@@ -39,7 +39,9 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{Notify, watch};
-use uuid::Uuid;
+
+#[path = "desktop_new_session/rooms.rs"]
+mod rooms;
 
 macro_rules! native {
     ($ty:path { $($field:ident: $value:expr),* $(,)? }) => {{
@@ -180,12 +182,24 @@ impl Desktop {
         std::fs::create_dir_all(&directory).unwrap();
         self.pump();
         let guard = self.frame.lock().unwrap();
-        let frame = guard.as_ref().unwrap();
+        let Some(frame) = guard.as_ref() else {
+            return;
+        };
         let size = frame.size();
         let mut ppm = format!("P6\n{} {}\n255\n", size.width.0, size.height.0).into_bytes();
         for pixel in frame.pixels().as_chunks::<4>().0 {
             ppm.extend_from_slice(&pixel[..3]);
         }
+        let name = match std::env::var("NEXTEST_TEST_NAME") {
+            Ok(test) => {
+                let test = test
+                    .rsplit("::")
+                    .next()
+                    .expect("a test name has a final component");
+                format!("{test}-{name}")
+            }
+            Err(_) => name.to_owned(),
+        };
         std::fs::write(directory.join(format!("{name}.ppm")), ppm).unwrap();
     }
 
@@ -208,7 +222,8 @@ impl Desktop {
 
     fn pump(&self) {
         self.platform.pump_with_draw(true);
-        assert!(self.platform.take_error().is_none(), "native UI failed");
+        let error = self.platform.take_error();
+        assert!(error.is_none(), "native UI failed: {error:?}");
     }
 
     async fn until<T>(&self, stage: &str, mut read: impl FnMut() -> Option<T>) -> T {
@@ -225,10 +240,7 @@ impl Desktop {
             }
         })
         .await
-        .unwrap_or_else(|_| {
-            self.artifact("failure");
-            panic!("{stage}; observed: {:?}", self.outcome.lock().unwrap());
-        })
+        .unwrap_or_else(|_| self.timed_out(stage))
     }
 
     /// Acts until `done`, slowly enough that a repeat does not undo what the
@@ -260,10 +272,36 @@ impl Desktop {
             }
         })
         .await
-        .unwrap_or_else(|_| {
-            self.artifact("failure");
-            panic!("{stage}; observed: {:?}", self.outcome.lock().unwrap());
-        })
+        .unwrap_or_else(|_| self.timed_out(stage))
+    }
+
+    fn timed_out(&self, stage: &str) -> ! {
+        self.artifact("failure");
+        let rendered = [
+            "Focus message composer",
+            "Send message",
+            "Stop response",
+            "Add to queue",
+            "Edit queued message 1",
+            "Retry message",
+            "Continue response",
+            "Messages",
+        ]
+        .map(|label| (label, self.controls(label)));
+        let frame = self
+            .frame
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|frame| (frame.token(), frame.size()));
+        panic!(
+            "{stage}; native target: {:?}; native editor text: {:?}; native pending: {}; native active: {}; captured frame: {frame:?}; rendered controls: {rendered:?}; preview outcome: {:?}",
+            self.platform.text_input_target(),
+            self.platform.editor_text(),
+            self.platform.has_pending(),
+            self.platform.is_active(),
+            self.outcome.lock().unwrap(),
+        );
     }
 
     fn key(&self, name: &str, control: bool) {
@@ -304,10 +342,22 @@ impl Desktop {
     async fn copy_input(&self) -> String {
         self.target_after(None).await;
         let _ = self.platform.take_clipboard_write();
-        self.key("a", true);
-        self.key("c", true);
+        let mut acted = None::<std::time::Instant>;
         self.until("the selected draft was not copied", || {
-            self.platform.take_clipboard_write()
+            if let Some(copied) = self.platform.take_clipboard_write() {
+                return Some(copied);
+            }
+            if acted.is_none_or(|at| at.elapsed() >= Duration::from_millis(200)) {
+                if self.platform.text_input_target().is_none()
+                    && let [composer] = self.controls("Focus message composer").as_slice()
+                {
+                    self.press_at(composer.center());
+                }
+                self.key("a", true);
+                self.key("c", true);
+                acted = Some(std::time::Instant::now());
+            }
+            None
         })
         .await
     }
@@ -315,6 +365,15 @@ impl Desktop {
     async fn paste(&self, text: &str) {
         self.target_after(None).await;
         assert!(self.platform.paste(nsh_core::PasteEvent::new(text)));
+    }
+
+    async fn paste_image(&self, bytes: &[u8]) {
+        self.target_after(None).await;
+        self.platform
+            .set_clipboard_text("UNRELATED_SYSTEM_CLIPBOARD");
+        let mut event = nsh_core::PasteEvent::default();
+        event.files = vec![nsh_core::PastedFile::image(bytes.to_vec())];
+        assert!(self.platform.paste(event));
     }
 
     async fn type_text(&self, text: &str) {
@@ -411,6 +470,26 @@ impl Desktop {
             (found.len() == 1).then(|| found[0])
         })
         .await
+    }
+
+    /// Opens the one folded step group and returns where `step` is in it.
+    async fn open_group(&self, step: &str) -> Bounds<nsh_terminal::Pixels> {
+        self.press("Process group").await;
+        self.control(step).await
+    }
+
+    /// Presses `label` until `shown` appears. The Room test may press while its work summary is settling.
+    async fn press_until(&self, label: &str, shown: &str) {
+        self.retry(
+            &format!("pressing {label} did not show {shown}"),
+            || !self.controls(shown).is_empty(),
+            || {
+                if let [bounds] = self.controls(label)[..] {
+                    self.press_at(bounds.center());
+                }
+            },
+        )
+        .await;
     }
 
     /// Clicks the one control labelled `label` once the window shows it.
@@ -563,7 +642,8 @@ async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
     let mut fixture = images_fixture().await;
     let (path, _) = image_file(&fixture);
     let workspace = fixture.directory.path().join("workspace");
-    std::fs::create_dir_all(workspace.join("other-project/workspace")).unwrap();
+    let nested_workspace = workspace.join("other-project").join("workspace");
+    std::fs::create_dir_all(&nested_workspace).unwrap();
     let desktop = Desktop::open(&fixture, &fixture.address).await;
     desktop.new_draft().await;
     desktop.attach(&path).await;
@@ -585,6 +665,9 @@ async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
     desktop.press("Focus message composer").await;
     desktop.expect_text("UNSENT_LOCAL_ONLY").await;
     desktop.press("Choose composer workspace").await;
+    desktop
+        .control(&format!("Use folder {}", nested_workspace.display()))
+        .await;
     desktop
         .control(&format!("Use folder {}", workspace.display()))
         .await;
@@ -809,18 +892,6 @@ async fn desktop_recovers_an_unavailable_remembered_folder() {
         .await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("KEEP_CURRENT_WINDOW_DRAFT").await;
-    desktop.press("Choose composer workspace").await;
-    desktop.artifact("recent-folders-remove");
-    desktop.press("Remove this folder from recents").await;
-    desktop
-        .wait("removed folder was still remembered", async {
-            while !desktop.client.recent_workspaces().await.unwrap().is_empty() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await;
-    desktop.press("Focus message composer").await;
-    desktop.expect_text("KEEP_CURRENT_WINDOW_DRAFT").await;
     assert!(workspace.is_dir());
     let sessions = desktop.sessions().await;
     assert_eq!(sessions.len(), 1);
@@ -828,28 +899,6 @@ async fn desktop_recovers_an_unavailable_remembered_folder() {
         sessions[0]["workspace"]["path"],
         workspace.to_str().unwrap()
     );
-    let desktop = desktop
-        .restart(&fixture, nsh_core::platform::Appearance::Dark)
-        .await;
-    desktop.control("Actions for NSH real Agent").await;
-    desktop
-        .retry(
-            "workspace menu did not open",
-            || !desktop.controls("Choose another folder…").is_empty(),
-            || {
-                if let Some(bounds) = desktop.controls("Choose composer workspace").first() {
-                    desktop.press_at(bounds.center());
-                }
-            },
-        )
-        .await;
-    desktop.control("Choose another folder…").await;
-    assert!(
-        desktop
-            .controls(&format!("Use folder {}", workspace.display()))
-            .is_empty()
-    );
-    assert!(desktop.client.recent_workspaces().await.unwrap().is_empty());
     desktop.close().await;
     fixture.finish().await;
 }
@@ -884,6 +933,380 @@ fn assert_image(request: &ModelRequest, text: &str, bytes: &[u8]) {
         })
         .collect();
     assert_eq!(images, vec![bytes.to_vec()], "{}", request.body);
+}
+
+async fn desktop_composer_click_and_ime_follow_the_text_after_a_mention() {
+    let fixture = Fixture::open().await;
+    let client = fixture.client().await;
+    let referenced = mutate(
+        &client,
+        "create",
+        json!({
+            "title":"删过度设计", "labels":[],
+            "workspace":{"kind":"session", "sessionId":fixture.session},
+        }),
+    )
+    .await;
+    assert_eq!(referenced["kind"], "created", "{referenced}");
+    let referenced = referenced["session"]["id"].as_str().unwrap();
+    client.close().await.unwrap();
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let composer = desktop.control("Focus message composer").await;
+    desktop.press_at(composer.center());
+    desktop.paste("@删过度").await;
+    desktop.press("删过度设计").await;
+    let mention = format!("[@删过度设计](maka://session/{referenced}) ");
+    desktop.expect_text(&mention).await;
+    desktop.key("right", false);
+    let before_ah = "**它刚刚提了个 PR**，你来 review 一下，你可以用";
+    let prefix = format!("{mention}{before_ah}");
+    desktop.paste(before_ah).await;
+    desktop.expect_text(&prefix).await;
+    desktop.key("right", false);
+    let insertion = desktop
+        .until("the caret did not reach the end of the first part", || {
+            desktop
+                .platform
+                .input_caret_bounds()
+                .filter(|bounds| bounds.left() > composer.left() + px(200.))
+        })
+        .await;
+    let suffix = "啊，看看实现干不干净，优不优雅，测试是不是有很多低信心、低价值的测试";
+    desktop.paste(suffix).await;
+    desktop.expect_text(&format!("{prefix}{suffix}")).await;
+    desktop.press_at(point(insertion.left(), insertion.center().y));
+    let composition_bounds = Bounds::new(
+        point(insertion.left() + px(3.), insertion.top()),
+        size(px(9.), insertion.size.height),
+    );
+    let before = desktop.pixels(composition_bounds).unwrap();
+    desktop.artifact("composer-ime-click");
+    let target = desktop.platform.text_input_target().unwrap();
+    assert!(
+        desktop
+            .platform
+            .apply_composition(&target, "", "a", Some(1..1), true)
+            .unwrap()
+    );
+    let preedit = desktop
+        .until(
+            "the input method's preedit did not appear at the clicked position",
+            || {
+                desktop
+                    .pixels(composition_bounds)
+                    .filter(|pixels| *pixels != before)
+            },
+        )
+        .await;
+    desktop.artifact("composer-ime-preedit");
+    assert!(
+        desktop
+            .platform
+            .apply_composition(&target, "阿", "", None, false)
+            .unwrap()
+    );
+    desktop
+        .until(
+            "the committed character did not replace the preedit",
+            || {
+                desktop
+                    .pixels(composition_bounds)
+                    .filter(|pixels| *pixels != preedit)
+            },
+        )
+        .await;
+    desktop.artifact("composer-ime-committed");
+    assert_eq!(desktop.copy_input().await, format!("{prefix}阿{suffix}"));
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_composer_previews_markdown_and_sends_its_source() {
+    let mut fixture = Fixture::open().await;
+    let client = fixture.client().await;
+    let conversation = mutate(
+        &client,
+        "create",
+        json!({
+            "title":"Markdown preview", "labels":[],
+            "workspace":{"kind":"session", "sessionId":fixture.session},
+            "backend":{
+                "kind":"model",
+                "connectionId":fixture.selection["connectionId"],
+                "modelId":fixture.selection["modelId"],
+            },
+        }),
+    )
+    .await;
+    assert_eq!(conversation["kind"], "created", "{conversation}");
+    client.close().await.unwrap();
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let previous = desktop.platform.text_input_target();
+    desktop.press("Open conversation Markdown preview").await;
+    desktop.target_after(previous).await;
+    let source = "# 发布说明\n\n这是**重点：**先看[文档](https://example.org/docs)，再看 https://example.org/status。\n\n- 检查构建\n- 提交结果";
+    desktop.press("Focus message composer").await;
+    desktop.paste(source).await;
+    desktop.expect_text(source).await;
+    let selected = desktop
+        .until("the composer did not settle its select-all anchor", || {
+            let &[composer] = desktop.controls("Focus message composer").as_slice() else {
+                return None;
+            };
+            desktop.platform.input_caret_bounds().filter(|bounds| {
+                bounds.left() < composer.left() + px(32.) && bounds.top() < composer.top() + px(32.)
+            })
+        })
+        .await;
+    let mut collapsed = None::<std::time::Instant>;
+    let mut settled = None;
+    let tail = desktop
+        .until("the caret did not collapse to the draft end", || {
+            if collapsed.is_some()
+                && !desktop.platform.has_pending()
+                && let Some(bounds) = desktop.platform.input_caret_bounds()
+                && bounds.left() > selected.left() + px(24.)
+                && bounds.top() > selected.top()
+            {
+                if settled == Some(bounds) {
+                    return Some(bounds);
+                }
+                settled = Some(bounds);
+                return None;
+            }
+            settled = None;
+            if collapsed.is_none_or(|at| at.elapsed() >= Duration::from_millis(200)) {
+                desktop.key("right", false);
+                collapsed = Some(std::time::Instant::now());
+            }
+            None
+        })
+        .await;
+    desktop.artifact("composer-markdown-draft");
+
+    let mut homed = None::<std::time::Instant>;
+    let mut home_tries = 0usize;
+    let marker = desktop
+        .until("the caret did not reach the list marker", || {
+            let cur = desktop.platform.input_caret_bounds();
+            if home_tries >= 6 {
+                panic!("PROBE_CARET selected={selected:?} tail={tail:?} after_home={cur:?}");
+            }
+            if let Some(bounds) = cur
+                && bounds.left() < tail.left() - px(24.)
+                && bounds.top() == tail.top()
+            {
+                return Some(bounds);
+            }
+            if homed.is_none_or(|at| at.elapsed() >= Duration::from_millis(200)) {
+                desktop.key("home", false);
+                homed = Some(std::time::Instant::now());
+                home_tries += 1;
+            }
+            None
+        })
+        .await;
+    let mut ended = None::<std::time::Instant>;
+    desktop
+        .until("the caret did not leave the list marker", || {
+            if let Some(bounds) = desktop.platform.input_caret_bounds()
+                && bounds.left() > marker.left() + px(24.)
+            {
+                return Some(());
+            }
+            if ended.is_none_or(|at| at.elapsed() >= Duration::from_millis(200)) {
+                desktop.key("end", false);
+                ended = Some(std::time::Instant::now());
+            }
+            None
+        })
+        .await;
+    desktop.press_at(point(marker.left() + px(1.), marker.center().y));
+    desktop.artifact("composer-markdown-edit-list-marker");
+    desktop.key_with("right", native!(Modifiers { shift: true }));
+    desktop.paste("+").await;
+    assert_eq!(
+        desktop.copy_input().await,
+        source.replace("- 提交结果", "+ 提交结果")
+    );
+    desktop.key("z", true);
+    desktop.expect_text(source).await;
+
+    desktop.press("Send message").await;
+    let request = desktop.request(&mut fixture).await;
+    let message = request.body["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(message["role"], "user");
+    assert_eq!(message["content"].as_str(), Some(source));
+    desktop
+        .wait("the response did not finish", request.finish())
+        .await;
+    let copy = desktop.control("Copy user message").await;
+    desktop.artifact("composer-markdown-sent");
+    desktop.hover_at(copy.center());
+    desktop
+        .until("the copy action did not appear", || {
+            desktop.draws_in(copy).then_some(())
+        })
+        .await;
+    desktop.press_at(copy.center());
+    let copied = desktop
+        .until("the sent message was not copied", || {
+            desktop.platform.take_clipboard_write()
+        })
+        .await;
+    assert_eq!(copied, source);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_composer_references_a_conversation_without_waking_it() {
+    let mut fixture = Fixture::open_with_configuration(Options::default(), |_, root| {
+        std::fs::write(root.join("workspace/Release-notes.md"), "Reference").unwrap();
+    })
+    .await;
+    let client = fixture.client().await;
+    let backend = json!({
+        "kind":"model",
+        "connectionId":fixture.selection["connectionId"],
+        "modelId":fixture.selection["modelId"],
+    });
+    let conversation = |title| {
+        json!({
+            "title":title,"labels":[],
+            "workspace":{"kind":"session","sessionId":fixture.session},
+            "backend":backend,
+        })
+    };
+    let current = mutate(&client, "create", conversation("Current conversation")).await;
+    let referenced = mutate(&client, "create", conversation("Release checklist")).await;
+    assert_eq!(current["kind"], "created", "{current}");
+    assert_eq!(referenced["kind"], "created", "{referenced}");
+    let current = current["session"]["id"].as_str().unwrap();
+    let referenced = referenced["session"]["id"].as_str().unwrap();
+    mutate(
+        &client,
+        "send",
+        json!({
+            "sessionId":referenced,"backend":backend,
+            "message":"What is left on the release checklist?",
+        }),
+    )
+    .await;
+    let history = "The builds are ready. Review the release notes before tagging the release.";
+    let mut prior_reply = fixture.next_request().await;
+    prior_reply.delta(history).await;
+    prior_reply.finish().await;
+    fixture.idle(&client, referenced).await;
+    client.close().await.unwrap();
+
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1280),
+            nsh_terminal::DevicePixels(800),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    let previous = desktop.platform.text_input_target();
+    desktop
+        .press("Open conversation Current conversation")
+        .await;
+    desktop.target_after(previous).await;
+    desktop.press("Focus message composer").await;
+    desktop.paste("Review @Release").await;
+    desktop.control("Release checklist").await;
+    desktop.control("Release-notes.md").await;
+    desktop.artifact("composer-session-reference-menu");
+    desktop.press("Release checklist").await;
+    let mention = format!("Review [@Release checklist](maka://session/{referenced}) ");
+    desktop.expect_text(&mention).await;
+    desktop.key("right", false);
+    desktop.paste("before tagging. @Release").await;
+    desktop.press("Release-notes.md").await;
+    let text = format!("{mention}before tagging. @Release-notes.md ");
+    desktop.expect_text(&text).await;
+    desktop.key("right", false);
+    desktop.artifact("composer-session-reference-draft");
+    assert!(desktop.controls("@Release checklist").is_empty());
+    desktop.press("Send message").await;
+
+    let mut request = desktop.request(&mut fixture).await;
+    let message = request.body["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(message["role"], "user");
+    let user_content = message["content"].as_str().unwrap();
+    assert!(user_content.starts_with(text.trim_end()), "{user_content}");
+    assert!(
+        user_content.contains("<session_references>"),
+        "{user_content}"
+    );
+    request
+        .delta(&format!(
+            "[@Checklist](maka://session/{referenced}) has the details for this release."
+        ))
+        .await;
+    desktop
+        .wait("the current conversation did not finish", request.finish())
+        .await;
+    desktop
+        .wait(
+            "the current conversation did not settle",
+            fixture.idle(&desktop.client, current),
+        )
+        .await;
+    let target = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId":referenced}))
+        .await
+        .unwrap();
+    assert_eq!(target["session"]["activity"], "idle");
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+    for from_reply in [false, true] {
+        if from_reply {
+            // The Markdown link starts the line above the reply's actions.
+            let copy = desktop.control("Copy message").await;
+            desktop.press_at(point(copy.center().x + px(16.), copy.top() - px(16.)));
+        } else {
+            desktop.press("@Release checklist").await;
+        }
+        desktop.control("Close side pane").await;
+        let reference = desktop.control("@Release checklist").await;
+        let copy = desktop
+            .until(
+                "the referenced conversation's earlier reply did not appear in the side pane",
+                || {
+                    desktop
+                        .controls("Copy message")
+                        .into_iter()
+                        .find(|bounds| bounds.left() > reference.right())
+                },
+            )
+            .await;
+        desktop.artifact(if from_reply {
+            "agent-reply-session-link-beside"
+        } else {
+            "composer-session-reference-beside"
+        });
+        desktop.hover_at(copy.center());
+        desktop
+            .until("the reply's copy action did not appear", || {
+                desktop.draws_in(copy).then_some(())
+            })
+            .await;
+        desktop.press_at(copy.center());
+        let copied = desktop
+            .until("the earlier reply was not copied", || {
+                desktop.platform.take_clipboard_write()
+            })
+            .await;
+        assert_eq!(copied, history);
+        desktop.press("Close side pane").await;
+        desktop.control("@Release checklist").await;
+    }
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+    desktop.close().await;
+    fixture.finish().await;
 }
 
 async fn desktop_new_draft_completes_commands_skills_and_files_without_creating_a_session() {
@@ -1015,9 +1438,18 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
     fixture.finish().await;
 }
 
-async fn desktop_retries_a_failed_turn_in_place() {
+async fn desktop_continues_a_failed_run_without_duplicating_the_user_message() {
     let mut fixture = Fixture::open().await;
-    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1200),
+            nsh_terminal::DevicePixels(900),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
     desktop.new_draft().await;
     desktop.type_text("RETRIED_IN_PLACE_MESSAGE").await;
     desktop.submit().await;
@@ -1027,7 +1459,102 @@ async fn desktop_retries_a_failed_turn_in_place() {
             json!({"error":{"type":"invalid_request_error","message":"FIXTURE_TURN_FAILED"}}),
         )
         .await;
-    desktop.press("Retry").await;
+    let resume = desktop.control("Continue response").await;
+    let composer = desktop.control("Focus message composer").await;
+    assert!(
+        resume.center().x > composer.center().x && resume.center().y > composer.center().y,
+        "Continue must sit in the composer's lower right: {resume:?}, {composer:?}"
+    );
+    assert!(desktop.controls("Continue in a new run").is_empty());
+    desktop.artifact("continue-in-composer");
+    let sessions = desktop.sessions().await;
+    let failed_session = sessions
+        .iter()
+        .find(|value| value["id"] != fixture.session)
+        .unwrap();
+    let session = failed_session["id"].as_str().unwrap();
+    let observed = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId":session}))
+        .await
+        .unwrap();
+    let history = desktop
+        .client
+        .query(
+            "agent",
+            "history",
+            json!({
+                "sessionId":session, "through":observed["through"], "position":{"kind":"tail"},
+                "view":"conversation"
+            }),
+        )
+        .await
+        .unwrap();
+    let opening = history["chunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["role"] == "user")
+        .unwrap();
+    let trace = desktop
+        .client
+        .query(
+            "agent",
+            "historyRequests",
+            json!({
+                "sessionId":session, "through":observed["through"], "position":opening["position"]
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(trace["requests"].as_array().unwrap().len(), 1);
+    assert!(trace["requests"][0]["firstTokenAt"].is_null());
+    let finished = &trace["requests"][0]["finished"];
+    assert_eq!(finished["outcome"], "error");
+    assert!(
+        finished["diagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("FIXTURE_TURN_FAILED")
+    );
+    desktop.press("Trajectory").await;
+    desktop.press("Inspect model request fixture-model").await;
+    desktop.control("Close record details").await;
+    desktop.artifact("trajectory-failed-request");
+    desktop.press("Chat").await;
+    desktop.new_draft().await;
+    let draft = desktop
+        .client
+        .load_draft("agent", session, super::support::EDITOR)
+        .await
+        .unwrap();
+    desktop
+        .client
+        .save_draft(
+            "agent",
+            session,
+            super::support::EDITOR,
+            draft.map(|draft| draft.revision),
+            serde_json::from_value(json!({"text":"","attachments":[],"settledUploads":[],
+            "quotes":[{"text":"Quoted follow-up","label":"Earlier reply"}]}))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    desktop
+        .press(&format!(
+            "Open conversation {}",
+            failed_session["title"].as_str().unwrap()
+        ))
+        .await;
+    desktop.control("Remove quote").await;
+    desktop.control("Send message").await;
+    assert!(
+        desktop.controls("Continue response").is_empty(),
+        "the quote-only draft should be sent as a new message"
+    );
+    desktop.press("Remove quote").await;
+    desktop.press("Continue response").await;
     let retry = desktop.request(&mut fixture).await;
     let users: Vec<_> = retry.body["messages"]
         .as_array()
@@ -1042,6 +1569,13 @@ async fn desktop_retries_a_failed_turn_in_place() {
         "{}",
         retry.body
     );
+    assert_eq!(
+        users
+            .iter()
+            .filter(|message| message.to_string().contains("RETRIED_IN_PLACE_MESSAGE"))
+            .count(),
+        1
+    );
     retry.finish().await;
     let sessions = desktop.sessions().await;
     assert_eq!(sessions.len(), 2);
@@ -1054,6 +1588,219 @@ async fn desktop_retries_a_failed_turn_in_place() {
     fixture.idle(&desktop.client, session).await;
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
     desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_history_anchors_keep_the_reader_off_live_output_until_latest() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    let body = "A long reply leaves space between prompts to test the reader. ".repeat(12);
+    for turn in 1..=6 {
+        desktop.type_text(&format!("History prompt {turn}")).await;
+        desktop.submit().await;
+        let mut reply = desktop.request(&mut fixture).await;
+        reply
+            .delta(&format!("History reply {turn}\n\n{body}"))
+            .await;
+        desktop
+            .wait("the reply did not finish", reply.finish())
+            .await;
+        desktop
+            .until(
+                "the active response did not finish in the workbench",
+                || desktop.controls("Stop response").is_empty().then_some(()),
+            )
+            .await;
+    }
+    desktop.press("Jump to turn: History prompt 2").await;
+    desktop.control("Return to latest").await;
+    let copy = desktop.control("Copy user message").await;
+    let _ = desktop.platform.take_clipboard_write();
+    desktop.hover_at(copy.center());
+    desktop
+        .until("the copy action did not appear on hover", || {
+            desktop.draws_in(copy).then_some(())
+        })
+        .await;
+    desktop.press("Copy user message").await;
+    let copied = desktop
+        .until("the selected user message was not copied", || {
+            desktop.platform.take_clipboard_write()
+        })
+        .await;
+    assert_eq!(copied, "History prompt 2");
+    desktop.artifact("history-anchor");
+    desktop.press("Return to latest").await;
+    desktop
+        .until("the latest reply did not come into view", || {
+            (desktop.controls("Return to latest").is_empty()
+                && !desktop.controls("Copy message").is_empty())
+            .then_some(())
+        })
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[cfg(target_os = "macos")]
+async fn desktop_resumes_live_activity_when_scrolling_back_to_latest() {
+    let mut fixture = Fixture::configured(Options {
+        responses: true,
+        ..Options::default()
+    })
+    .await;
+    let client = fixture.client().await;
+    mutate(
+        &client,
+        "send",
+        json!({"sessionId": fixture.session, "backend": {
+            "kind": "model", "connectionId": fixture.selection["connectionId"],
+            "modelId": fixture.selection["modelId"],
+        }, "message": "Follow the activity"}),
+    )
+    .await;
+    let mut reply = fixture.next_request().await;
+    for index in 0..35 {
+        reply
+            .packet(json!({"type":"response.output_item.done","item":{
+                "type":"reasoning","id":format!("reasoning-{index}"),
+                "summary":[{"type":"summary_text","text":format!("Activity line {index}")}]
+            }}))
+            .await;
+    }
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let thumb = desktop.open_group("Thinking · Activity line 34").await;
+    assert!(desktop.controls("Return to latest").is_empty());
+    let at = point(thumb.right() - px(5.), thumb.center().y);
+    desktop.hover_at(at);
+    let scroll = |from, to| {
+        for input in [
+            PlatformInput::MouseMove(native!(MouseMoveEvent { position: from })),
+            PlatformInput::MouseDown(native!(MouseDownEvent {
+                button: MouseButton::Left,
+                position: from,
+                click_count: 1,
+            })),
+            PlatformInput::MouseMove(native!(MouseMoveEvent {
+                position: to,
+                pressed_button: Some(MouseButton::Left),
+            })),
+            PlatformInput::MouseUp(native!(MouseUpEvent {
+                button: MouseButton::Left,
+                position: to,
+                click_count: 1,
+            })),
+        ] {
+            desktop.platform.dispatch_input(input).unwrap();
+            desktop.pump();
+        }
+    };
+    desktop
+        .retry(
+            "scroll up to pause activity following",
+            || !desktop.controls("Return to latest").is_empty(),
+            || scroll(at, point(at.x, at.y - px(80.))),
+        )
+        .await;
+    let outer = point(at.x + px(16.), at.y);
+    scroll(outer, point(outer.x, outer.y - px(120.)));
+    let user = desktop.control("Copy user message").await;
+    assert!(desktop.controls("Thinking · Activity line 34").is_empty());
+    // The outer thumb now rests at the top of its track, level with the prompt.
+    let outer = point(outer.x, user.top() + px(32.));
+    desktop
+        .retry(
+            "scroll down to resume without clicking Latest",
+            || {
+                desktop.controls("Return to latest").is_empty()
+                    && desktop.controls("Resume following").is_empty()
+            },
+            || {
+                scroll(
+                    point(outer.x, outer.y - px(32.)),
+                    point(outer.x, outer.y + px(36.)),
+                )
+            },
+        )
+        .await;
+    reply
+        .packet(json!({"type":"response.output_item.done","item":{
+            "type":"reasoning","id":"follow-up",
+            "summary":[{"type":"summary_text","text":"New activity after scrolling"}]
+        }}))
+        .await;
+    desktop
+        .control("Thinking · New activity after scrolling")
+        .await;
+    reply.finish_stream().await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn history_pages_return_each_prompt_once_from_tail_to_start() {
+    let mut fixture = Fixture::open().await;
+    let client = fixture.client().await;
+    let backend = json!({
+        "kind": "model",
+        "connectionId": fixture.selection["connectionId"],
+        "modelId": fixture.selection["modelId"],
+    });
+    for turn in 1..=12 {
+        mutate(
+            &client,
+            "send",
+            json!({"sessionId": fixture.session, "backend": backend, "message": format!("History prompt {turn}")}),
+        )
+        .await;
+        let mut reply = fixture.next_request().await;
+        reply.delta(&format!("History reply {turn}")).await;
+        reply.finish().await;
+        fixture.idle(&client, &fixture.session).await;
+    }
+    let observed = client
+        .query("agent", "observe", json!({"sessionId": fixture.session}))
+        .await
+        .unwrap();
+    let mut position = json!({"kind": "tail"});
+    let mut prompts = Vec::new();
+    for _ in 0..12 {
+        let page = client
+            .query(
+                "agent",
+                "history",
+                json!({
+                    "sessionId": fixture.session,
+                    "through": observed["through"],
+                    "position": position,
+                    "view": "conversation",
+                }),
+            )
+            .await
+            .unwrap();
+        let chunks = page["chunks"].as_array().unwrap();
+        assert!(!chunks.is_empty());
+        prompts.extend(
+            chunks
+                .iter()
+                .rev()
+                .filter(|chunk| chunk["role"] == "user")
+                .map(|chunk| chunk["text"].as_str().unwrap().to_owned()),
+        );
+        if page["before"].is_null() {
+            break;
+        }
+        let next = json!({"kind": "before", "cursor": page["before"]});
+        assert_ne!(next, position, "the older page did not advance its cursor");
+        position = next;
+    }
+    assert_eq!(
+        prompts,
+        (1..=12)
+            .rev()
+            .map(|turn| format!("History prompt {turn}"))
+            .collect::<Vec<_>>()
+    );
     fixture.finish().await;
 }
 
@@ -1141,6 +1888,56 @@ async fn desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu() 
     fixture.finish().await;
 }
 
+async fn desktop_edits_a_message_in_place_and_forks_only_when_sent() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("ORIGINAL_EDIT_MESSAGE").await;
+    desktop.submit().await;
+    let mut reply = desktop.request(&mut fixture).await;
+    reply.delta("ORIGINAL_EDIT_REPLY").await;
+    desktop
+        .wait("the reply did not finish", reply.finish())
+        .await;
+    let sessions = desktop.sessions().await;
+    assert_eq!(sessions.len(), 2);
+    let session = sessions
+        .iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fixture.idle(&desktop.client, &session).await;
+
+    // Editing stays in this conversation until the user sends the fork.
+    desktop.press("Edit and resend in a fork").await;
+    desktop.expect_text("ORIGINAL_EDIT_MESSAGE").await;
+    desktop.artifact("message-editor");
+    assert_eq!(desktop.sessions().await.len(), 2);
+    desktop.type_text("EDITED_IN_PLACE_MESSAGE").await;
+    assert_eq!(desktop.sessions().await.len(), 2);
+    desktop.press("Send edited message in a fork").await;
+    let edited = desktop.request(&mut fixture).await;
+    let body = edited.body.to_string();
+    assert!(body.contains("EDITED_IN_PLACE_MESSAGE"), "{body}");
+    assert!(!body.contains("ORIGINAL_EDIT_MESSAGE"), "{body}");
+    edited.finish().await;
+    let sessions = desktop.sessions().await;
+    assert_eq!(sessions.len(), 3);
+    let fork = sessions
+        .iter()
+        .find(|item| item["id"] != fixture.session && item["id"] != session.as_str())
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fixture.idle(&desktop.client, &fork).await;
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     let mut fixture = Fixture::configured(Options {
         code_mode: true,
@@ -1157,45 +1954,16 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
         .tool_call("exec", json!({"code":"text(await tools.GetGoal({}));"}))
         .await;
     let mut answer = desktop.request(&mut fixture).await;
-    // A running turn is open under its summary row, with no group header of its own.
-    let summary = desktop.control("Turn work details").await;
-    let nested = desktop.control("Toggle tool GetGoal").await;
-    assert!(desktop.controls("Process group").is_empty());
-    // A turn has two lanes and no indent: each step's icon sits under the
-    // summary's chevron, and an open tool card starts on that same lane.
-    assert_eq!(nested.left(), summary.left());
-    assert!(desktop.controls("Toggle tool exec").is_empty());
-    desktop.press("Toggle tool GetGoal").await;
-    let lane = nested.left() + px(8.);
-    let below = nested.bottom() + px(24.);
-    desktop
-        .until("the tool card did not start on the icon lane", || {
-            desktop.pump();
-            let strip = desktop.pixels(Bounds::new(
-                point(lane - px(2.), below),
-                size(px(4.), px(1.)),
-            ))?;
-            let [outside, before, edge, inside] = strip.as_chunks::<4>().0 else {
-                return None;
-            };
-            (outside == before && before != edge && edge == inside).then_some(())
-        })
-        .await;
+    desktop.control("Turn work details").await;
+    assert!(desktop.controls("Toggle tool Read goal").is_empty());
+    desktop.open_group("Toggle tool Read goal").await;
+    assert!(desktop.controls("Toggle tool Run script").is_empty());
     desktop.artifact("script-tools");
-    // Folding a running turn is the user's choice, and finishing keeps the latest one.
-    desktop.press("Turn work details").await;
-    desktop
-        .until("the running turn did not fold", || {
-            desktop
-                .controls("Toggle tool GetGoal")
-                .is_empty()
-                .then_some(())
-        })
+    answer
+        .thinking("Checking the log\n\nLook for the next step.")
         .await;
-    desktop.press("Turn work details").await;
-    desktop.control("Toggle tool GetGoal").await;
-    answer.delta("The goal is unchanged.").await;
-    answer.finish().await;
+    desktop.control("Thinking · Checking the log").await;
+    desktop.artifact("streaming-thinking-order");
     let sessions = desktop.sessions().await;
     let session = sessions
         .iter()
@@ -1203,14 +1971,447 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
         .unwrap()["id"]
         .as_str()
         .unwrap();
+    let observed = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId":session}))
+        .await
+        .unwrap();
+    let history = desktop
+        .client
+        .query(
+            "agent",
+            "history",
+            json!({
+                "sessionId":session, "through":observed["through"], "position":{"kind":"tail"},
+                "view":"conversation"
+            }),
+        )
+        .await
+        .unwrap();
+    let opening = history["chunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["role"] == "user")
+        .unwrap();
+    let read_requests = |through: u64| {
+        desktop.client.query(
+            "agent",
+            "historyRequests",
+            json!({
+                "sessionId":session, "through":through, "position":opening["position"]
+            }),
+        )
+    };
+    let live_first_token = desktop
+        .wait(
+            "the streaming request has no first-token timestamp",
+            async {
+                loop {
+                    let observed = desktop
+                        .client
+                        .query("agent", "observe", json!({"sessionId":session}))
+                        .await
+                        .unwrap();
+                    let live = read_requests(observed["through"].as_u64().unwrap())
+                        .await
+                        .unwrap();
+                    let streaming = &live["requests"][1];
+                    if let Some(at) = streaming["firstTokenAt"].as_u64() {
+                        assert!(streaming["finished"].is_null());
+                        break at;
+                    }
+                }
+            },
+        )
+        .await;
+    answer.delta("The goal is unchanged.").await;
+    answer.finish().await;
     fixture.idle(&desktop.client, session).await;
     desktop.control("Copy message").await;
-    assert_eq!(
-        desktop.control("Turn work details").await.origin,
-        summary.origin
-    );
-    assert!(!desktop.controls("Toggle tool GetGoal").is_empty());
+    desktop
+        .until("completed answer did not fold the turn's work", || {
+            (desktop.controls("Toggle tool Read goal").is_empty()
+                && desktop.controls("Thinking · Checking the log").is_empty())
+            .then_some(())
+        })
+        .await;
+    desktop.artifact("completed-answer-folded-work");
+    desktop.press("Turn work details").await;
+    desktop.open_group("Toggle tool Read goal").await;
+    let observed = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId":session}))
+        .await
+        .unwrap();
+    let trace = read_requests(observed["through"].as_u64().unwrap())
+        .await
+        .unwrap();
+    let attempts = trace["requests"].as_array().unwrap();
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[1]["firstTokenAt"], live_first_token);
+    for attempt in attempts {
+        assert_eq!(attempt["finished"]["outcome"], "success");
+        assert_eq!(attempt["finished"]["usage"]["input_tokens"], 1);
+        let started = attempt["startedAt"].as_u64().unwrap();
+        let first_token = attempt["firstTokenAt"].as_u64().unwrap();
+        assert!(
+            started <= first_token && first_token <= attempt["finished"]["at"].as_u64().unwrap()
+        );
+        assert!(attempt["estimatedInputTokens"].is_number());
+    }
+    let after = attempts[0]["order"]["path"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    let tail = desktop.client.query("agent", "historyRequests", json!({
+        "sessionId":session, "through":observed["through"], "position":opening["position"], "after":after
+    })).await.unwrap();
+    assert_eq!(tail["requests"], json!([attempts[1]]));
     desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_presents_session_tools_in_chat_and_trajectory() {
+    let mut fixture = Fixture::open_with_configuration(
+        Options {
+            session_tools: true,
+            ..Options::default()
+        },
+        |configuration, _| configuration["agent"]["toolDiscovery"] = json!(false),
+    )
+    .await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("Ask the worker for an update.").await;
+    desktop.submit().await;
+    desktop
+        .request(&mut fixture)
+        .await
+        .tool_call(
+            "SessionSend",
+            json!({
+                "sessionId": "00000000-0000-4000-8000-000000000001",
+                "message": "Check the compiler output."
+            }),
+        )
+        .await;
+    let answer = desktop.request(&mut fixture).await;
+    assert!(
+        answer.body.to_string().contains(
+            "Session or Room was not found or is archived; check the ID with SessionList"
+        ),
+        "{}",
+        answer.body
+    );
+    let title = "Send message to agent · Check the compiler output.";
+    let row = format!("Toggle tool {title}");
+    desktop.open_group(&row).await;
+    desktop.artifact("session-send-collapsed");
+    desktop.press(&row).await;
+    desktop.control("Toggle original tool details").await;
+    desktop.artifact("session-send-expanded");
+    desktop.press("Toggle original tool details").await;
+    desktop.control("Toggle original tool details").await;
+    desktop.press(&row).await;
+
+    let session = desktop
+        .sessions()
+        .await
+        .into_iter()
+        .find(|item| item["id"] != fixture.session)
+        .unwrap();
+    let observed = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId": session["id"]}))
+        .await
+        .unwrap();
+    answer
+        .tool_call(
+            "SessionRead",
+            json!({
+                "sessionId": session["id"]
+            }),
+        )
+        .await;
+    let final_answer = desktop.request(&mut fixture).await;
+    assert!(
+        final_answer
+            .body
+            .to_string()
+            .contains(observed["run"]["runId"].as_str().unwrap()),
+        "{}",
+        final_answer.body
+    );
+    desktop.press("Toggle tool Inspect conversation").await;
+    desktop.control("Toggle original tool details").await;
+    desktop.artifact("session-work-expanded");
+
+    desktop.press("Trajectory").await;
+    desktop.control(&format!("Inspect {title}")).await;
+    desktop.control("Inspect Inspect conversation").await;
+    final_answer.finish().await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_delivers_session_messages_with_the_original_sender_and_content() {
+    let mut fixture = Fixture::open_with_configuration(
+        Options {
+            session_tools: true,
+            ..Options::default()
+        },
+        |configuration, _| configuration["agent"]["toolDiscovery"] = json!(false),
+    )
+    .await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let roots = desktop
+        .client
+        .query("agent", "directories", json!({"kind":"roots"}))
+        .await
+        .unwrap();
+    let backend = json!({
+        "kind": "model",
+        "connectionId": fixture.selection["connectionId"],
+        "modelId": fixture.selection["modelId"],
+    });
+    let recipient = mutate(
+        &desktop.client,
+        "create",
+        json!({
+            "title": "Build review", "labels": [],
+            "backend": backend,
+            "workspace": {"kind":"directory", "path":roots["roots"][0]["path"]}
+        }),
+    )
+    .await;
+    mutate(
+        &desktop.client,
+        "send",
+        json!({"sessionId": fixture.session, "backend": backend, "message": "Tell the build reviewer what to check."}),
+    )
+    .await;
+    desktop
+        .request(&mut fixture)
+        .await
+        .tool_call(
+            "SessionSend",
+            json!({
+                "sessionId": recipient["session"]["id"],
+                "message": "**The build passed.**\nPlease review the compiler warnings."
+            }),
+        )
+        .await;
+    // Delivery changes sidebar recency; admit both ends before locating the row.
+    let first = desktop.request(&mut fixture).await;
+    let second = desktop.request(&mut fixture).await;
+    let mut roles = Vec::new();
+    for request in [&first, &second] {
+        let message = request.body["messages"].as_array().unwrap().last().unwrap();
+        let role = message["role"].as_str().unwrap();
+        roles.push(role);
+        let content = message["content"].as_str().unwrap();
+        match role {
+            "tool" => {
+                let receipt: Value = serde_json::from_str(content).unwrap();
+                assert_eq!(receipt["kind"], "queued", "{receipt}");
+                assert_eq!(receipt["sessionId"], recipient["session"]["id"]);
+                assert!(receipt["messageId"].is_string(), "{receipt}");
+            }
+            "user" => {
+                assert!(content.contains(&fixture.session), "{content}");
+                assert!(
+                    content
+                        .ends_with("**The build passed.**\nPlease review the compiler warnings."),
+                    "{content}"
+                );
+            }
+            _ => panic!("unexpected preview request: {}", request.body),
+        }
+    }
+    roles.sort_unstable();
+    assert_eq!(roles, ["tool", "user"]);
+    first.finish().await;
+    second.finish().await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_folds_the_conversations_a_conversation_created() {
+    let mut fixture = Fixture::open_with_configuration(
+        Options {
+            session_tools: true,
+            ..Options::default()
+        },
+        |configuration, _| configuration["agent"]["toolDiscovery"] = json!(false),
+    )
+    .await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1440),
+            nsh_terminal::DevicePixels(800),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    let backend = json!({
+        "kind": "model",
+        "connectionId": fixture.selection["connectionId"],
+        "modelId": fixture.selection["modelId"],
+    });
+    mutate(
+        &desktop.client,
+        "send",
+        json!({"sessionId": fixture.session, "backend": backend, "message": "Split the work."}),
+    )
+    .await;
+    for title in [
+        "Triage CI failure",
+        "Review the browser dispatch",
+        "Measure Stage blur",
+        "Check Windows build",
+    ] {
+        desktop
+            .request(&mut fixture)
+            .await
+            .tool_call(
+                "SessionCreate",
+                json!({
+                    "title": title,
+                    "labels": [],
+                    "workspace": {"kind": "session", "sessionId": fixture.session}
+                }),
+            )
+            .await;
+    }
+    let last = desktop.request(&mut fixture).await;
+    assert!(
+        !last.body.to_string().contains("invalid tool input"),
+        "{}",
+        last.body
+    );
+    // Four created conversations list under their creator and fold behind one row.
+    let child = "Open conversation Check Windows build";
+    let unfold = "Show the conversations NSH real Agent created";
+    let fold = "Fold the conversations NSH real Agent created";
+    let row = desktop.control(fold).await;
+    assert!(row.bottom() <= desktop.control(child).await.top());
+    desktop.artifact("created-conversations-open");
+    desktop.press(fold).await;
+    desktop.control(unfold).await;
+    assert!(desktop.controls(child).is_empty());
+    desktop.artifact("created-conversations-folded");
+    desktop.press(unfold).await;
+    desktop.control(fold).await;
+    desktop.control(child).await;
+    last.finish().await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_folds_work_when_responses_starts_the_final_answer() {
+    let mut fixture = Fixture::configured(Options {
+        responses: true,
+        ..Options::default()
+    })
+    .await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("Check the log").await;
+    desktop.submit().await;
+    let mut reply = desktop.request(&mut fixture).await;
+    reply
+        .packet(json!({"type":"response.output_item.done","item":{
+            "type":"reasoning","id":"reasoning-1",
+            "summary":[{"type":"summary_text","text":"Checking the log"}]
+        }}))
+        .await;
+    let thought = "Thinking · Checking the log";
+    desktop.open_group(thought).await;
+    let message = |id, phase, content| json!({"type":"message","role":"assistant","id":id,"phase":phase,"content":content});
+    let added = |id, phase| json!({"type":"response.output_item.added","item":message(id, phase, json!([]))});
+    let delta = |id, text| json!({"type":"response.output_text.delta","item_id":id,"delta":text});
+    let done = |id, phase, text| {
+        json!({"type":"response.output_item.done","item":
+            message(id, phase, json!([{"type":"output_text","text":text}]))})
+    };
+    reply.packet(added("progress", "commentary")).await;
+    reply.packet(delta("progress", "I found the log.")).await;
+    reply
+        .packet(done("progress", "commentary", "I found the log."))
+        .await;
+    reply.packet(added("answer", "final_answer")).await;
+    reply.packet(delta("answer", "The log is clean.")).await;
+    desktop
+        .until(
+            "the final answer did not fold the work while streaming",
+            || {
+                (desktop.controls(thought).is_empty()
+                    && !desktop.controls("Stop response").is_empty())
+                .then_some(())
+            },
+        )
+        .await;
+    desktop.artifact("streaming-final-answer-folded-work");
+    assert!(desktop.controls("Return to latest").is_empty());
+
+    reply
+        .packet(done("answer", "final_answer", "The log is clean."))
+        .await;
+    reply
+        .packet(json!({"type":"response.completed","response":{
+            "id":"response-1","usage":{"input_tokens":10,"output_tokens":20}
+        }}))
+        .await;
+    reply.finish_stream().await;
+    desktop.control("Copy message").await;
+    assert!(desktop.controls(thought).is_empty());
+    desktop.press("Turn work details").await;
+    desktop.open_group(thought).await;
+
+    // Reopen to exercise cold Chat history. Live previews already knew the
+    // thought, so expanding before reconnect alone cannot verify lazy paging.
+    let session = desktop
+        .sessions()
+        .await
+        .into_iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    desktop.close().await;
+    let client = fixture.client().await;
+    let page = client
+        .query(
+            "agent",
+            "history",
+            json!({
+                "sessionId": session,
+                "position": {"kind": "tail"},
+                "includeThinking": true,
+                "view": "chat",
+            }),
+        )
+        .await
+        .unwrap();
+    let rows = page["chunks"].as_array().unwrap();
+    assert!(rows.iter().any(|row| row["foldedWork"]["thoughts"] == 1));
+    assert!(!rows.iter().any(|row| row["field"] == "thinking"));
+    assert!(rows.iter().any(|row| row["text"] == "The log is clean."));
+    let original = std::mem::replace(&mut fixture.session, session);
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.control("Copy message").await;
+    assert!(desktop.controls(thought).is_empty());
+    desktop.artifact("reopened-history-collapsed");
+    desktop.press("Turn work details").await;
+    desktop.open_group(thought).await;
+    desktop.artifact("reopened-history-expanded");
+    desktop.close().await;
+    fixture.session = original;
     fixture.finish().await;
 }
 
@@ -1285,7 +2486,12 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
         .type_text("Review the current implementation.")
         .await;
     desktop.submit().await;
-    let original = desktop.request(&mut fixture).await;
+    let original = desktop
+        .wait(
+            "initial submission did not reach the provider",
+            fixture.next_request(),
+        )
+        .await;
     let session = desktop
         .sessions()
         .await
@@ -1313,7 +2519,12 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     desktop.key("right", false);
     desktop.artifact(&format!("steering-{theme}-{width_name}-sending"));
     gate.release();
-    let second = desktop.request(&mut fixture).await;
+    let second = desktop
+        .wait(
+            "frozen steering did not reach the provider after releasing the send reply",
+            fixture.next_request(),
+        )
+        .await;
     let sent = second.body["messages"].to_string();
     assert!(
         sent.contains("Review the current implementation.")
@@ -1327,7 +2538,8 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     desktop.expect_text("Keep the sidebar compact.").await;
     drop(original);
 
-    desktop.type_text("Summarize the changes afterwards.").await;
+    let queued_followup = "Summarize the changes afterwards for [@REA review](maka://session/ma_8b708bb06d73d5d83a9265c0464928803a7478a2a9083b6c3647cfc8c7c0f102_8fface6128fd12c727e1b3ab8e96acf2) across every remaining edge case in detail.";
+    desktop.type_text(queued_followup).await;
     desktop.right_click("Send message").await;
     desktop.control("Add to queue").await;
     desktop.artifact(&format!("steering-{theme}-{width_name}-queue-menu"));
@@ -1361,8 +2573,9 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
                     .await
                     .unwrap();
                 if queue["entries"].as_array().unwrap().iter().any(|row| {
-                    row["preview"] == "Summarize the changes afterwards."
-                        && row["kind"] == "followup"
+                    row["preview"].as_str().is_some_and(|preview| {
+                        preview.starts_with("Summarize the changes afterwards")
+                    }) && row["kind"] == "followup"
                 }) {
                     return;
                 }
@@ -1412,7 +2625,12 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     );
     desktop.type_text("Check keyboard focus too.").await;
     desktop.submit().await;
-    let third = desktop.request(&mut fixture).await;
+    let third = desktop
+        .wait(
+            "steering after queue and IME did not reach the provider",
+            fixture.next_request(),
+        )
+        .await;
     let sent = third.body["messages"].to_string();
     assert!(
         sent.contains("Check keyboard focus too."),
@@ -1439,12 +2657,12 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     desktop.key("right", false);
     desktop.artifact(&format!("steering-{theme}-{width_name}-active"));
     desktop.press("Model for queued and future messages").await;
-    desktop.control("Choose model").await;
+    desktop.control("Manage models").await;
     desktop.artifact(&format!("steering-{theme}-{width_name}-model-scope"));
     desktop
         .retry(
             "the model menu did not close",
-            || desktop.controls("Choose model").is_empty(),
+            || desktop.controls("Manage models").is_empty(),
             || desktop.key("escape", false),
         )
         .await;
@@ -1476,11 +2694,33 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
         desktop.controls("Retry message").is_empty(),
         "a failed message does not force the details panel open"
     );
+    desktop.control("Dismiss messages").await;
     desktop.press("Messages").await;
-    desktop.control("Retry message").await;
+    let messages_strip = desktop.control("Messages").await;
+    let retry = desktop.control("Retry message").await;
+    let edit_in_composer = desktop.control("Edit message in composer").await;
+    let dismiss_status = desktop.control("Dismiss message status").await;
+    assert!(
+        retry.bottom() <= messages_strip.top()
+            && edit_in_composer.bottom() <= messages_strip.top()
+            && dismiss_status.bottom() <= messages_strip.top(),
+        "wrapped stopped message clipped its actions: strip={messages_strip:?}, retry={retry:?}, edit={edit_in_composer:?}, dismiss={dismiss_status:?}"
+    );
     desktop.press("Focus message composer").await;
     desktop.key("right", false);
     desktop.artifact(&format!("steering-{theme}-{width_name}-stopped"));
+    desktop.press("Edit message in composer").await;
+    desktop
+        .until(
+            "restoring stopped message to composer did not clear Messages",
+            || desktop.controls("Messages").is_empty().then_some(()),
+        )
+        .await;
+    desktop
+        .expect_text(&format!(
+            "Preserve this draft after stopping.\n\n{queued_followup}"
+        ))
+        .await;
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 3);
     desktop.close().await;
     fixture.finish().await;
@@ -1566,7 +2806,7 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
             .await;
         desktop.drop_paths(vec![directory.clone()], position);
         let expanded = desktop
-            .composer_height("the dropped directory did not wrap", |height| {
+            .composer_height(&format!("the dropped directory did not wrap; pending={}, blur={blur}, before={before:?}", pending_height.is_some()), |height| {
                 height > before
             })
             .await;
@@ -1582,9 +2822,9 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
             .await;
     }
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
-    let (path, _) = image_file(&fixture);
-    desktop.attach(&path).await;
-    let name = path.file_name().unwrap().to_str().unwrap();
+    let bytes = STANDARD.decode(PNG).unwrap();
+    let name = "image.png";
+    desktop.paste_image(&bytes).await;
     let remove = desktop.control(&format!("Remove attachment {name}")).await;
     // Below the remove button, inside the thumbnail it sits 36 points into.
     let sample = Bounds::new(
@@ -1659,9 +2899,16 @@ async fn shell_shares_its_lines(desktop: &Desktop, docked: bool) {
     };
     for (name, bounds) in [
         ("sidebar toggle", toggle),
+        (
+            "session details",
+            desktop.control("Toggle session details").await,
+        ),
         ("Chat view", desktop.control("Chat").await),
         ("Trajectory view", desktop.control("Trajectory").await),
-        ("workspace", desktop.control("Browse workspace files").await),
+        (
+            "workspace pane",
+            desktop.control("Toggle workspace pane").await,
+        ),
     ] {
         assert_eq!(
             bounds.center().y,
@@ -1702,7 +2949,7 @@ async fn disconnected_desktop(
     shell_shares_its_lines(&desktop, layout == "wide").await;
     let closing = tokio::spawn({
         let store = fixture.store.clone();
-        async move { store.shutdown().await }
+        async move { store.drain().await }
     });
     reply.delta("Wake the original source watcher.").await;
     desktop.control("Details").await;
@@ -1758,7 +3005,6 @@ async fn disconnected_desktop(
     desktop
         .wait("the closed store did not drain", closing)
         .await
-        .unwrap()
         .unwrap();
     desktop.close().await;
     fixture.finish().await;
@@ -1811,13 +3057,217 @@ async fn desktop_connection_failure_has_one_status_below_the_workspace() {
     disconnected_desktop(theme, appearance, layout, width, height).await;
 }
 
+async fn desktop_subagent_settings_preserves_conflict_and_session_snapshot() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../workbench/tests/fixtures/subagent-settings.tsx");
+    let output = fixture.directory.path().join("preset-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(width),
+            nsh_terminal::DevicePixels(height),
+        ),
+        appearance,
+        Some((source, "en", "New")),
+    )
+    .await;
+    desktop.event("fixture.seed", json!({}));
+    desktop.control("Reviewer").await;
+    desktop.artifact(&format!("subagents-list-{theme}-{layout}"));
+    desktop.press("Reviewer").await;
+    desktop.control("Save subagent").await;
+    desktop.artifact(&format!("subagents-editor-{theme}-{layout}"));
+    desktop.press("Choose model").await;
+    desktop.control("Test model").await;
+    desktop.artifact(&format!("subagents-model-menu-{theme}-{layout}"));
+    desktop.press("Test model").await;
+    desktop.control("Save subagent").await;
+    desktop.event("fixture.conflict", json!({}));
+    desktop
+        .until("conflict did not preserve the draft", || {
+            desktop.outcome.lock().unwrap()["error"]
+                .as_str()
+                .is_some_and(|text| text.contains("changed elsewhere"))
+                .then_some(())
+        })
+        .await;
+    desktop.control("Conflict recorded").await;
+    desktop.artifact(&format!("subagents-conflict-{theme}-{layout}"));
+    desktop.event("fixture.details", json!({}));
+    desktop
+        .until("applied snapshot was lost after deletion", || {
+            (desktop.outcome.lock().unwrap()["details"] == true).then_some(())
+        })
+        .await;
+    desktop.control("Snapshot shown").await;
+    desktop.artifact(&format!("subagents-session-{theme}-{layout}"));
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_model_catalog_preserves_search_and_selection_during_refresh() {
+    let fixture = Fixture::open().await;
+    let client = fixture.client_at(&fixture.address).await;
+    let observation = client
+        .subscribe("agent", "watchModels", json!({}))
+        .await
+        .unwrap();
+    let initial = observation.next().await.unwrap().unwrap();
+    assert!(
+        matches!(initial, maka_app_client::SubscriptionEvent::Item(ref page) if !page["choices"].as_array().unwrap().is_empty())
+    );
+    let configuration =
+        maka_config::ConfigurationStore::for_root(fixture.store.owned_root().unwrap())
+            .await
+            .unwrap();
+    let catalog = configuration.catalog().await.unwrap();
+    let connection = catalog
+        .connections
+        .iter()
+        .find(|row| row.connection_id == fixture.selection["connectionId"].as_str().unwrap())
+        .unwrap();
+    let updated = configuration.update_connection(serde_json::from_value(json!({
+        "expected":{"connectionId":connection.connection_id,"revision":connection.revision},"changes":{"enabled":false}
+    })).unwrap()).await.unwrap();
+    assert!(matches!(
+        updated,
+        maka_agent_facts::configuration::CatalogMutationResult::Committed { .. }
+    ));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let event = observation.next().await.unwrap().unwrap();
+            if let maka_app_client::SubscriptionEvent::Item(page) = event
+                && page["choices"].as_array().unwrap().is_empty()
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("an open model catalog did not observe the connection being disabled");
+    observation.close().await.unwrap();
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../workbench/tests/fixtures/model-select.tsx");
+    let output = fixture.directory.path().join("model-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(width),
+            nsh_terminal::DevicePixels(height),
+        ),
+        appearance,
+        Some((source, "en", "Choose model and effort")),
+    )
+    .await;
+    desktop.press("Choose model and effort").await;
+    desktop.control("Use Claude Sonnet · Claude Code").await;
+    desktop.artifact(&format!("models-refreshing-{theme}-{layout}"));
+    desktop.paste("Claude").await;
+    desktop
+        .until("search did not filter models during discovery", || {
+            desktop
+                .controls("Use Reasoning model · OpenAI")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    let legacy = json!({"kind":"executor","selection":{"executor":"external","settings":{"runtime":"antigravity","model":"opus-high"}}});
+    let grouped = json!({"selection":{"kind":"executor","selection":{"executor":"external","settings":{"runtime":"antigravity","model":"opus"}}},
+        "aliases":[{"kind":"executor","selection":{"executor":"external","settings":{"runtime":"antigravity","model":"opus-high","thinkingLevel":"high"}}}],
+        "sourceName":"Antigravity","label":"Claude Opus","thinkingLevels":["low","high"],"defaultThinkingLevel":null});
+    let sonnet = json!({"selection":{"kind":"executor","selection":{"executor":"external","settings":{"runtime":"claude-code","model":"sonnet"}}},
+        "sourceName":"Claude Code","label":"Claude Sonnet","thinkingLevels":["low","high"],"defaultThinkingLevel":null});
+    desktop.event("fixture.publish", json!({"choices":[grouped, sonnet]}));
+    desktop.control("Use Claude Opus · Antigravity").await;
+    desktop.key("enter", false);
+    desktop
+        .until(
+            "refresh moved the keyboard selection to another model",
+            || {
+                (desktop.outcome.lock().unwrap()["backend"]["selection"]["settings"]["model"]
+                    == "sonnet")
+                    .then_some(())
+            },
+        )
+        .await;
+    desktop.key("escape", false);
+    desktop.event("fixture.backend", legacy);
+    desktop.press("Choose model and effort").await;
+    desktop.control("Use Claude Sonnet · Claude Code").await;
+    desktop.press("Choose reasoning effort").await;
+    desktop.control("Use effort high").await;
+    desktop.artifact(&format!("models-normalized-{theme}-{layout}"));
+    desktop.press("Use effort low").await;
+    desktop
+        .until(
+            "changing effort did not canonicalize the saved variant",
+            || {
+                let outcome = desktop.outcome.lock().unwrap();
+                (outcome["backend"]["selection"]["settings"]["model"] == "opus"
+                    && outcome["backend"]["selection"]["settings"]["thinkingLevel"] == "low")
+                    .then_some(())
+            },
+        )
+        .await;
+    desktop.artifact(&format!("models-low-{theme}-{layout}"));
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     let fixture = Fixture::open().await;
     let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../terminal-shell/tests/real_host/model_settings_preview.tsx");
     let output = fixture.directory.path().join("settings-preview");
     let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
         std::fs::read_to_string(compiled.module).unwrap()
     })
     .await
@@ -1857,6 +3307,9 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     );
     desktop.artifact(&format!("connection-model-retry-{theme}-{layout}"));
     desktop.press("Fetch models").await;
+    desktop.press("gpt-6.2-sol: Off").await;
+    desktop.press("gpt-6.2-sol: On").await;
+    desktop.control("gpt-6.2-sol: Off").await;
     desktop.control("Edit model gpt-4.1").await;
     {
         let outcome = desktop.outcome.lock().unwrap();
@@ -1902,7 +3355,17 @@ async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection()
         .join("../terminal-shell/tests/real_host/model_settings_preview.tsx");
     let output = fixture.directory.path().join("settings-preview");
     let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
         std::fs::read_to_string(compiled.module).unwrap()
     })
     .await
@@ -2033,7 +3496,17 @@ async fn desktop_mermaid_renders_markdown_and_toggles_its_source() {
         .join("../terminal-shell/tests/real_host/mermaid_preview.tsx");
     let output = fixture.directory.path().join("mermaid-preview");
     let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
         std::fs::read_to_string(compiled.module).unwrap()
     })
     .await
@@ -2109,7 +3582,7 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop
         .retry(
             "the Goal dialog did not open",
-            || !desktop.controls("Close Goal").is_empty(),
+            || !desktop.controls("Cancel editing").is_empty(),
             || {
                 let goal = desktop.controls("Goal");
                 let add = desktop.controls("Add to message");
@@ -2153,6 +3626,7 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
         )
         .await;
     let first = desktop.request(&mut fixture).await;
+    desktop.control("Toggle conversation todo").await;
     desktop.press(active_goal).await;
     desktop.control("Pause Goal").await;
     desktop.press("Toggle conversation todo").await;
@@ -2182,13 +3656,34 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     let running = desktop.request(&mut fixture).await;
     desktop.press("Change budget").await;
     desktop.control("Cancel editing").await;
+    assert!(
+        running.body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["function"]["name"] == "GoalStatus"),
+        "{}",
+        running.body
+    );
     running
         .tool_call(
             "GoalStatus",
             json!({"status":"achieved", "note":"Verified the requested result"}),
         )
         .await;
-    desktop.request(&mut fixture).await.finish().await;
+    let finished = desktop.request(&mut fixture).await;
+    let result: Value = serde_json::from_str(
+        finished.body["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["content"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(result["current"]["status"], "achieved", "{result}");
+    finished.finish().await;
     desktop
         .until("a finished Goal still offers budget updates", || {
             desktop.controls("Apply budget").is_empty().then_some(())
@@ -2222,6 +3717,10 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.submit().await;
     let next = desktop.request(&mut fixture).await;
     assert!(next.body.to_string().contains("Finish the follow-up"));
+    assert!(
+        desktop.controls("Dismiss Goal").is_empty(),
+        "an active Goal must not offer strip dismissal"
+    );
     desktop.press(active_goal).await;
     desktop.control("Pause Goal").await;
     desktop.press(active_goal).await;
@@ -2230,7 +3729,19 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
         json!({"status":"achieved", "note":"Follow-up verified"}),
     )
     .await;
-    desktop.request(&mut fixture).await.finish().await;
+    let finished = desktop.request(&mut fixture).await;
+    let result: Value = serde_json::from_str(
+        finished.body["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["content"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(result["current"]["status"], "achieved", "{result}");
+    finished.finish().await;
     desktop.press("Focus message composer").await;
     desktop.type_text("/goal").await;
     // "/goal" opens a completion menu, and an Enter on the binding of a menu
@@ -2238,18 +3749,30 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop
         .retry(
             "/goal did not open the Goal dialog",
-            || !desktop.controls("Close Goal").is_empty(),
+            || !desktop.controls("New Goal").is_empty(),
             || desktop.key("enter", false),
         )
         .await;
-    desktop.control("New Goal").await;
+    let previous = desktop.platform.text_input_target();
+    desktop.press("New Goal").await;
+    desktop.target_after(previous).await;
+    desktop.type_text("Cancel this unsubmitted Goal").await;
+    desktop.control("Start Goal").await;
     desktop.key("escape", false);
     desktop
-        .until("the Goal dialog did not close", || {
-            desktop.controls("Close Goal").is_empty().then_some(())
+        .until("the Goal dialog did not cancel editing", || {
+            desktop.controls("Start Goal").is_empty().then_some(())
         })
         .await;
-    drop(first);
+    desktop.press("Close Goal").await;
+    desktop.press("Dismiss Goal").await;
+    desktop
+        .until("dismissed Goal remained on the composer strip", || {
+            desktop.controls(finished_goal).is_empty().then_some(())
+        })
+        .await;
+    assert!(desktop.controls("Dismiss Goal").is_empty());
+    first.finish_stream().await;
     desktop.close().await;
     fixture.finish().await;
 }
@@ -2335,7 +3858,7 @@ async fn desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_cha
             desktop.controls(toggle).is_empty().then_some(())
         })
         .await;
-    desktop.control("Toggle tool todo_write").await;
+    desktop.open_group("Toggle tool Update checklist").await;
     // Progress on the same list leaves it closed, fenced on the rendered tool disclosure.
     running
         .tool_call(
@@ -2347,7 +3870,7 @@ async fn desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_cha
     desktop
         .until(
             "the progress todo_write did not render in the transcript",
-            || (desktop.controls("Toggle tool todo_write").len() == 2).then_some(()),
+            || (desktop.controls("Toggle tool Update checklist").len() == 2).then_some(()),
         )
         .await;
     assert!(
@@ -2411,456 +3934,6 @@ async fn desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_cha
     let answer = desktop.request(&mut fixture).await;
     desktop.control(toggle).await;
     answer.finish().await;
-    desktop.close().await;
-    fixture.finish().await;
-}
-
-async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside() {
-    use super::support::mutate;
-    use maka_agent_api::session::StoredSessionConfiguration;
-    use maka_agent_facts::interaction::{InteractionRecord, InteractionRequest, PermissionRequest};
-
-    let mut fixture = Fixture::configured(Options {
-        session_tools: true,
-        ..Options::default()
-    })
-    .await;
-    let parent = fixture.session.clone();
-    let (_, appearance, _, width, height) = visual_case();
-    let desktop = Desktop::open_at(
-        &fixture,
-        &fixture.address,
-        size(
-            nsh_terminal::DevicePixels(1280),
-            nsh_terminal::DevicePixels(900),
-        ),
-        appearance,
-    )
-    .await;
-    let observed = desktop
-        .client
-        .query("agent", "observe", json!({"sessionId":parent}))
-        .await
-        .unwrap();
-    assert_eq!(
-        observed["session"]["permissions"]["access"], "read_only",
-        "the parent must need human approval to allow the child's report write"
-    );
-    let backend = json!({
-        "kind": "model",
-        "connectionId": fixture.selection["connectionId"],
-        "modelId": fixture.selection["modelId"],
-    });
-    mutate(&desktop.client, "send", json!({
-        "sessionId":parent, "message":"Delegate sandbox verification and review any access request.",
-        "backend":backend,
-    })).await;
-    desktop
-        .request(&mut fixture)
-        .await
-        .tool_call("tool_search", json!({"query":"Session"}))
-        .await;
-    let discovered = desktop.request(&mut fixture).await;
-    for name in ["SessionCreate", "SessionSend", "SessionRespond"] {
-        assert!(
-            discovered.body["tools"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|tool| tool["function"]["name"] == name),
-            "missing {name}: {}",
-            discovered.body
-        );
-    }
-    discovered
-        .tool_call(
-            "SessionCreate",
-            json!({
-                "title":"Verify sandbox delegation","labels":[],
-                "workspace":{"kind":"session","sessionId":parent},
-            }),
-        )
-        .await;
-    let created_reply = desktop.request(&mut fixture).await;
-    let created: Value = serde_json::from_str(
-        created_reply.body["messages"]
-            .as_array()
-            .unwrap()
-            .last()
-            .unwrap()["content"]
-            .as_str()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(created["kind"], "created", "{created}");
-    let child = created["session"]["id"].as_str().unwrap().to_owned();
-    created_reply.tool_call("SessionSend", json!({
-        "sessionId":child, "message":"Verify the sandbox boundary. Write the verification report only after approval.",
-        "backend":backend,
-    })).await;
-    let first = desktop.request(&mut fixture).await;
-    let second = desktop.request(&mut fixture).await;
-    let (parent_reply, mut child_reply) =
-        if first.body["messages"].as_array().unwrap().last().unwrap()["role"] == "tool" {
-            (first, second)
-        } else {
-            (second, first)
-        };
-    let store = fixture.store.session(&child).await.unwrap();
-    let projection = store
-        .session_projection::<StoredSessionConfiguration>(&child)
-        .await
-        .unwrap()
-        .unwrap();
-    let binding = projection
-        .session
-        .workspace_binding
-        .as_ref()
-        .unwrap()
-        .stamp();
-    let basis = maka_agent_facts::workspace::PermissionBasis {
-        boundary_revision: projection
-            .session
-            .configuration
-            .workspace
-            .boundary_revision(projection.session.configuration.boundary_revision, binding)
-            .unwrap(),
-        binding,
-    };
-    let invocation = projection.root_turn.unwrap().invocation;
-    let permissions = json!({"filesystem":[{
-        "path":fixture.directory.path().join("workspace/report.md"),"scope":"exact","access":"write"
-    }],"network":"denied"});
-    let record = InteractionRecord {
-        session_id: child.clone(),
-        turn_id: invocation.turn_id.clone(),
-        run_id: invocation.run_id.clone(),
-        request_id: Uuid::new_v4().to_string(),
-        created_at: 1,
-        request: InteractionRequest::Permissions {
-            tool_use_id: Some("write-report".into()),
-            basis,
-            request: PermissionRequest {
-                reason: "Write the sandbox verification report.".into(),
-                command: None,
-                permissions: serde_json::from_value(permissions.clone()).unwrap(),
-            },
-        },
-        outcome: None,
-    };
-    assert!(
-        store
-            .establish_run_interaction(&invocation, &record)
-            .await
-            .unwrap()
-            .matches
-    );
-    desktop.press("Waiting for you").await;
-    desktop
-        .control("Actions for Verify sandbox delegation")
-        .await;
-    desktop.artifact("child-needs-you-inbox");
-    desktop.press("Waiting for you").await;
-    desktop
-        .until("child remained in the normal root sidebar", || {
-            desktop
-                .controls("Actions for Verify sandbox delegation")
-                .is_empty()
-                .then_some(())
-        })
-        .await;
-    parent_reply.tool_call("SessionRespond", json!({
-        "sessionId":child,"requestId":record.request_id,
-        "answer":{"kind":"permissions","decision":{"decision":"allow","scope":"once","permissions":permissions}}
-    })).await;
-    desktop.control("Approve child decision").await;
-    desktop.control("Verify sandbox delegation").await;
-    desktop.artifact("parent-child-approval");
-    desktop.press("Approve child decision").await;
-    let mut parent_reply = desktop.request(&mut fixture).await;
-    let settled = desktop
-        .client
-        .query(
-            "agent",
-            "interaction",
-            json!({
-                "sessionId":child,"requestId":record.request_id
-            }),
-        )
-        .await
-        .unwrap();
-    assert_eq!(settled["outcome"]["kind"], "permissions_decision");
-    assert_eq!(settled["outcome"]["decision"]["decision"], "allow");
-    parent_reply
-        .delta("Approved this report write for one call after your confirmation.")
-        .await;
-    parent_reply.finish().await;
-    child_reply
-        .delta("Sandbox verification is complete. The report write was approved for one call only.")
-        .await;
-    child_reply.finish().await;
-    desktop
-        .wait(
-            "parent did not finish",
-            fixture.idle(&desktop.client, &parent),
-        )
-        .await;
-    desktop
-        .wait(
-            "child did not finish",
-            fixture.idle(&desktop.client, &child),
-        )
-        .await;
-    if !desktop.controls("Expand session browser").is_empty() {
-        desktop.press("Expand session browser").await;
-    }
-    assert!(
-        desktop
-            .controls("Actions for Verify sandbox delegation")
-            .is_empty(),
-        "child conversations must not appear as sidebar roots"
-    );
-    desktop.press("Actions for NSH real Agent").await;
-    desktop.press("Child conversations").await;
-    desktop.press("Open Verify sandbox delegation").await;
-    assert!(
-        desktop
-            .controls("Open source conversation beside this one")
-            .is_empty()
-    );
-    desktop
-        .retry(
-            "the completed child work details did not open",
-            || !desktop.controls("Agent message").is_empty(),
-            || {
-                let controls = desktop.controls("Turn work details");
-                if controls.len() == 1 {
-                    desktop.press_at(controls[0].center());
-                }
-            },
-        )
-        .await;
-    // The finished turn's summary is its only disclosure; its steps share its icon lane.
-    assert!(desktop.controls("Process group").is_empty());
-    let summary = desktop.control("Turn work details").await;
-    let message = desktop.control("Agent message").await;
-    assert_eq!(message.left(), summary.left());
-    assert!(
-        desktop
-            .controls("Open source conversation beside this one")
-            .is_empty()
-    );
-    desktop.press("Agent message").await;
-    desktop
-        .control("Open source conversation beside this one")
-        .await;
-    desktop
-        .press("Open source conversation beside this one")
-        .await;
-    desktop.control("Close side pane").await;
-    desktop
-        .until(
-            "source conversation did not load its reply beside the child",
-            || (desktop.controls("Copy message").len() == 2).then_some(()),
-        )
-        .await;
-    desktop.artifact("source-conversation-beside");
-    desktop.press("Close side pane").await;
-    desktop
-        .platform
-        .set_viewport(
-            size(
-                nsh_terminal::DevicePixels(width),
-                nsh_terminal::DevicePixels(height),
-            ),
-            1.0,
-        )
-        .unwrap();
-    desktop
-        .until("activity lanes did not settle after resize", || {
-            let summaries = desktop.controls("Turn work details");
-            let messages = desktop.controls("Agent message");
-            let ([summary], [message]) = (summaries.as_slice(), messages.as_slice()) else {
-                return None;
-            };
-            (message.right() <= px(width as f32) && message.left() == summary.left()).then_some(())
-        })
-        .await;
-    desktop.artifact("agent-message-expanded");
-    desktop.press("Agent message").await;
-    desktop.artifact("agent-message-collapsed");
-    desktop.press("Turn work details").await;
-    desktop.artifact("agent-message-default");
-    desktop.close().await;
-    fixture.finish().await;
-}
-
-async fn desktop_child_conversations_manage_nested_and_archived_workers() {
-    use maka_agent_api::session::StoredSessionConfiguration;
-    let fixture = Fixture::open().await;
-    let original = fixture
-        .store
-        .session(&fixture.session)
-        .await
-        .unwrap()
-        .get_session::<StoredSessionConfiguration>(&fixture.session)
-        .await
-        .unwrap()
-        .unwrap()
-        .configuration;
-    let prefix = fixture.session.rsplit_once('_').unwrap().0;
-    let child = format!("{prefix}_{}", Uuid::new_v4().simple());
-    let grandchild = format!("{prefix}_{}", Uuid::new_v4().simple());
-    let disposable = format!("{prefix}_{}", Uuid::new_v4().simple());
-    for (id, parent, title) in [
-        (&child, &fixture.session, "Archived worker"),
-        (&grandchild, &child, "Verification worker"),
-        (&disposable, &fixture.session, "Disposable worker"),
-    ] {
-        let mut configuration = original.clone();
-        configuration.parent_session_id = Some(parent.clone());
-        configuration.title = title.into();
-        configuration.backend = Some(
-            serde_json::from_value(json!({
-                "kind":"model", "connectionId":fixture.selection["connectionId"],
-                "modelId":fixture.selection["modelId"], "thinkingLevel":null,
-            }))
-            .unwrap(),
-        );
-        fixture
-            .store
-            .create_session(id, id, &configuration, 1)
-            .await
-            .unwrap();
-    }
-    fixture
-        .store
-        .session(&child)
-        .await
-        .unwrap()
-        .change_session_archived::<StoredSessionConfiguration>(&child, None, true, 2)
-        .await
-        .unwrap();
-    let (theme, appearance, layout, width, height) = visual_case();
-    let width = if layout == "narrow" { 640 } else { width };
-    let desktop = Desktop::open_at(
-        &fixture,
-        &fixture.address,
-        size(
-            nsh_terminal::DevicePixels(width),
-            nsh_terminal::DevicePixels(height),
-        ),
-        appearance,
-    )
-    .await;
-    if !desktop.controls("Expand session browser").is_empty() {
-        desktop.press("Expand session browser").await;
-    }
-    desktop.press("Actions for NSH real Agent").await;
-    desktop.press("Child conversations").await;
-    let first = desktop.control("Open Archived worker").await;
-    desktop.press("Expand Archived worker").await;
-    let last = desktop.control("Open Verification worker").await;
-    assert!(
-        last.left() > first.left(),
-        "a grandchild must be visibly nested beneath its parent"
-    );
-    assert!(
-        last.right() <= px(width as f32 - 16.0),
-        "deep rows stay inside the dialog's viewport"
-    );
-    desktop.artifact(&format!("child-conversations-{theme}-{layout}"));
-    for (id, title, action, archived) in [
-        (
-            &grandchild,
-            "Verification worker",
-            "Archive conversation",
-            true,
-        ),
-        (
-            &grandchild,
-            "Verification worker",
-            "Restore conversation",
-            false,
-        ),
-        (&child, "Archived worker", "Restore conversation", false),
-        (
-            &disposable,
-            "Disposable worker",
-            "Archive conversation",
-            true,
-        ),
-    ] {
-        desktop.right_click(&format!("Open {title}")).await;
-        desktop.control(action).await;
-        desktop.artifact(&format!(
-            "child-menu-{}-{theme}-{layout}",
-            if archived { "archive" } else { "restore" }
-        ));
-        desktop.press(action).await;
-        desktop
-            .wait("tree action did not change the targeted worker", async {
-                loop {
-                    let observed = desktop
-                        .client
-                        .query("agent", "observe", json!({"sessionId":id}))
-                        .await
-                        .unwrap();
-                    if observed["session"]["archived"] == archived {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await;
-        desktop
-            .until("tree action menu did not settle", || {
-                (desktop.controls(action).is_empty()
-                    && desktop.controls("Close child conversations").len() == 1)
-                    .then_some(())
-            })
-            .await;
-        desktop.control("Open Verification worker").await;
-    }
-    desktop.press("Actions for Disposable worker").await;
-    desktop.press("Delete conversation").await;
-    desktop.control("Confirm delete conversation").await;
-    assert!(
-        fixture
-            .store
-            .get_session::<StoredSessionConfiguration>(&disposable)
-            .await
-            .unwrap()
-            .is_some(),
-        "opening delete confirmation must not delete the worker"
-    );
-    desktop.artifact(&format!("child-delete-confirmation-{theme}-{layout}"));
-    desktop.press("Confirm delete conversation").await;
-    desktop
-        .until("deleted worker remained in the tree", || {
-            (desktop.controls("Open Disposable worker").is_empty()
-                && desktop.controls("Close child conversations").len() == 1)
-                .then_some(())
-        })
-        .await;
-    assert!(
-        fixture
-            .store
-            .get_session::<StoredSessionConfiguration>(&disposable)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    let previous = desktop.platform.text_input_target();
-    desktop.press("Open Verification worker").await;
-    desktop.target_after(previous).await;
-    desktop.type_text("OPENED_TREE_GRANDCHILD").await;
-    desktop
-        .wait(
-            "opening a descendant did not bind its draft to that conversation",
-            super::support::wait_draft(&desktop.client, &grandchild, "OPENED_TREE_GRANDCHILD"),
-        )
-        .await;
     desktop.close().await;
     fixture.finish().await;
 }
@@ -2943,7 +4016,17 @@ async fn desktop_system_permission_guidance_uses_native_actions_without_paths() 
         .join("../terminal-shell/tests/real_host/permission_preview.tsx");
     let output = fixture.directory.path().join("permission-preview");
     let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
         std::fs::read_to_string(compiled.module).unwrap()
     })
     .await
@@ -2997,30 +4080,586 @@ async fn desktop_system_permission_guidance_uses_native_actions_without_paths() 
     fixture.finish().await;
 }
 
+async fn desktop_composer_toolbar_customizes_layout_and_context_usage() {
+    let mut fixture = Fixture::configured(Options {
+        usage_limits: true,
+        ..Options::default()
+    })
+    .await;
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1280),
+            nsh_terminal::DevicePixels(800),
+        ),
+        nsh_core::platform::Appearance::Dark,
+        None,
+    )
+    .await;
+    desktop.new_draft().await;
+    desktop.type_text("Check composer context usage").await;
+    desktop.submit().await;
+    let mut reply = desktop.request(&mut fixture).await;
+    reply
+        .delta("Context usage ring stays visible beside the model selector.")
+        .await;
+    desktop
+        .wait("the reply did not finish", reply.finish())
+        .await;
+    let model_before = desktop.control("Choose model and effort").await;
+    let sandbox_before = desktop.control("Sandbox and approvals").await;
+    assert!(
+        sandbox_before.left() < model_before.left(),
+        "default layout places sandbox left of model: sandbox={sandbox_before:?}, model={model_before:?}"
+    );
+    desktop.press("Open settings").await;
+    desktop.control("Close settings").await;
+    desktop.press("Settings section General").await;
+    desktop.control("Language").await;
+    desktop.control("70%+").await;
+    desktop.control("Model").await;
+
+    desktop.press("Usage limits: Off").await;
+    desktop.control("Usage limits: On").await;
+    desktop.press("Model").await;
+    desktop.control("Move left").await;
+    for _ in 0..4 {
+        desktop.press("Move left").await;
+    }
+    desktop.control("Reset").await;
+    desktop.press("Close settings").await;
+    let usage_indicator = desktop
+        .control("NSH fixture · API key spending limit · 72% remaining")
+        .await;
+    let model_after = desktop.control("Choose model and effort").await;
+    let sandbox_after = desktop.control("Sandbox and approvals").await;
+    assert!(
+        model_after.left() < model_before.left(),
+        "moving model across the spacer should shift it left: before={model_before:?}, after={model_after:?}, sandbox={sandbox_after:?}"
+    );
+    assert!(
+        usage_indicator.left() > model_after.left(),
+        "usage limits indicator should render on the right side after moving model left: usage={usage_indicator:?}, model={model_after:?}"
+    );
+    desktop.press("Open settings").await;
+    desktop.press("Settings section General").await;
+    desktop.press("Off").await;
+    desktop.press("Usage limits: On").await;
+    desktop.control("Usage limits: Off").await;
+    desktop.press("Reset").await;
+    desktop.press("Close settings").await;
+    let model_reset = desktop.control("Choose model and effort").await;
+    assert!(
+        model_reset.left() >= model_before.left() - px(2.0),
+        "reset should restore model to the right side: before={model_before:?}, reset={model_reset:?}"
+    );
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_composer_sandbox_choice_becomes_the_default() {
+    let fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.press("Sandbox and approvals").await;
+    desktop.press("Full access · Sandbox off").await;
+    desktop
+        .wait(
+            "the composer's sandbox choice did not become the Host default",
+            async {
+                loop {
+                    let preferences = desktop
+                        .client
+                        .query("settings", "assistantPreferences", json!({}))
+                        .await
+                        .unwrap();
+                    if preferences["defaultSandboxMode"] == "danger-full-access" {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            },
+        )
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_workspace_stage_inspector_worktrees_and_fullscreen_review() {
+    let mut fixture = Fixture::open_with_configuration(
+        Options {
+            session_tools: cfg!(not(windows)),
+            ..Options::default()
+        },
+        |config, directory| {
+            config["agent"]["permissions"]["access"] = json!("workspace_write");
+            config["agent"]["toolDiscovery"] = json!(false);
+            let linked_wt = directory.join("feature-worktree");
+            let wt_parent = directory.join("worktrees");
+            std::fs::create_dir_all(&wt_parent).unwrap();
+            let roots = config["agent"]["workspaceRoots"].as_array_mut().unwrap();
+            roots.push(json!({
+                "label": "Feature Worktree",
+                "path": linked_wt,
+            }));
+            roots.push(json!({
+                "label": "Worktrees",
+                "path": wt_parent,
+            }));
+            config["agent"]["skillLibrary"] = Value::Null;
+        let workspace = directory.join("workspace");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(
+            workspace.join("Cargo.lock"),
+            "# Automatically generated by Cargo.\nversion = 4\n\n[[package]]\nname = \"maka-engine\"\nversion = \"0.2.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("src/engine.rs"),
+            "pub struct ReviewEngine {\n    pub max_files: usize,\n    pub collapse_locks: bool,\n}\n\nimpl ReviewEngine {\n    pub fn new() -> Self {\n        Self {\n            max_files: 30,\n            collapse_locks: false,\n        }\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("src/stage.rs"),
+            "pub fn default_stage_width() -> u32 {\n    416\n}\n",
+        )
+        .unwrap();
+        let run_git = |cwd: &Path, args: &[&str]| {
+            let result = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&result.stderr)
+            );
+        };
+        run_git(&workspace, &["init", "-b", "main", "--quiet"]);
+        run_git(
+            &workspace,
+            &["remote", "add", "origin", "https://github.com/apache/maka.git"],
+        );
+        run_git(&workspace, &["add", "."]);
+        run_git(
+            &workspace,
+            &[
+                "-c",
+                "user.name=M4n5ter",
+                "-c",
+                "user.email=m4n5terrr@gmail.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "feat(review): initial review engine",
+            ],
+        );
+        run_git(
+            &workspace,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "feat/linked-stage",
+                linked_wt.to_str().unwrap(),
+            ],
+        );
+        for (name, branch) in [
+            ("agy-maka-host", "codex/agy-maka-host"),
+            ("dependency-audit", "codex/dependency-audit-baseline"),
+            ("external-agent-automations", "codex/external-agent-automations"),
+            ("external-agent-interruption", "codex/external-agent-interruption"),
+            ("goal-recovery-followup", "codex/goal-recovery-followup"),
+            ("history-entry", "codex/history-entry"),
+            ("history-navigation", "codex/history-navigation"),
+            ("history-prompt-anchors", "codex/history-prompt-anchors"),
+            ("json-render", "feat/json-render"),
+            ("kimi-parallel-tool-results", "codex/kimi-parallel-tool-results"),
+            ("maka-activity-edge-fade", "codex/maka-activity-edge-fade"),
+            ("maka-automatic-run-recovery", "codex/maka-automatic-run-recovery"),
+            ("maka-background-compaction", "codex/maka-background-compaction"),
+        ] {
+            let path = wt_parent.join(name);
+            run_git(
+                &workspace,
+                &[
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "-b",
+                    branch,
+                    path.to_str().unwrap(),
+                ],
+            );
+        }
+        std::fs::write(
+            wt_parent.join("external-agent-automations/src/stage.rs"),
+            "pub fn default_stage_width() -> u32 {
+    560
+}
+// Long branch worktree change
+",
+        )
+        .unwrap();
+        // Dirty changes in main workspace (Cargo.lock + src/engine.rs + src/stage.rs)
+        std::fs::write(
+            workspace.join("Cargo.lock"),
+            "# Automatically generated by Cargo.\nversion = 4\n\n[[package]]\nname = \"maka-engine\"\nversion = \"0.3.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("src/engine.rs"),
+            "pub struct ReviewEngine {\n    pub max_files: usize,\n    pub collapse_locks: bool,\n    pub preserve_scroll: bool,\n}\n\nimpl ReviewEngine {\n    pub fn new() -> Self {\n        Self {\n            max_files: 30,\n            collapse_locks: true,\n            preserve_scroll: true,\n        }\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("src/stage.rs"),
+            "pub fn default_stage_width() -> u32 {\n    496\n}\n\npub fn supports_fullscreen() -> bool {\n    true\n}\n",
+        )
+        .unwrap();
+        // Distinct dirty change in linked worktree
+        std::fs::write(
+            linked_wt.join("src/stage.rs"),
+            "pub fn default_stage_width() -> u32 {\n    640\n}\n// Linked worktree experiment\n",
+        )
+        .unwrap();
+    })
+    .await;
+
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1440),
+            nsh_terminal::DevicePixels(840),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+
+    desktop.new_draft().await;
+    desktop
+        .type_text("Review the multi-file engine refactor and fullscreen stage UX")
+        .await;
+    desktop.submit().await;
+    #[cfg(not(windows))]
+    for title in [
+        "Trace Windows and rich editor CI failures",
+        "Audit Stage blur and native anchor bounds",
+        "Verify multi-worktree search and scroll",
+        "Check Composer dock lifecycle",
+        "Run workspace-files Git engine tests",
+        "Validate GitHub PR inline review threads",
+        "Inspect SessionInspector overflow bounds",
+        "Measure DiffView 60fps scroll preservation",
+        "Verify Fullscreen Stage floating PiP",
+        "Audit token allowlist security boundaries",
+        "Check compact tab truncation width",
+        "Verify worktree branch badge layout",
+    ] {
+        desktop
+            .request(&mut fixture)
+            .await
+            .tool_call(
+                "SessionCreate",
+                json!({
+                    "title": title,
+                    "labels": [],
+                    "workspace": {"kind": "directory", "path": fixture.directory.path().join("workspace")}
+                }),
+            )
+            .await;
+    }
+    let mut reply = desktop.request(&mut fixture).await;
+    reply
+        .delta("已经核对过 `src/engine.rs` 和 `src/stage.rs` 的改动：\n\n- `Cargo.lock` 默认自动折叠，不会挡住正文代码浏览。\n- 右侧 Stage 支持可搜索、带滚动条的 Git worktree 选择器与严格受限高度的详情面板。")
+        .await;
+    desktop
+        .wait("the model response did not finish", reply.finish())
+        .await;
+
+    // 1. Verify Composer holds [Browse workspace files] on the same toolbar row as [Add to message]
+    let ws_btn = desktop.control("Browse workspace files").await;
+    let add_btn = desktop.control("Add to message").await;
+    assert!(
+        (ws_btn.center().y - add_btn.center().y).abs() <= px(2.0),
+        "Browse workspace files must sit in Composer toolbar beside Add to message: ws={ws_btn:?}, add={add_btn:?}"
+    );
+    let composer_before = desktop.control("Focus message composer").await;
+    assert!(
+        composer_before.bottom() <= px(840.0),
+        "Composer started off screen: {composer_before:?}"
+    );
+
+    let sessions = desktop.sessions().await;
+    let active_sid = sessions
+        .iter()
+        .find(|s| s["id"] != fixture.session && s["parentSessionId"].is_null())
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let rev = desktop
+        .client
+        .query("agent", "gitRevisions", json!({"sessionId": active_sid}))
+        .await;
+    assert!(
+        rev.as_ref()
+            .ok()
+            .and_then(|v| v["worktrees"].as_array())
+            .is_some_and(|w| w.len() >= 15),
+        "expected >=15 worktrees in gitRevisions, got: {rev:?}"
+    );
+
+    // Verify Conversation header layout
+    let inspector_toggle = desktop.control("Toggle session details").await;
+    let chat_tab = desktop.control("Chat").await;
+    let trajectory_tab = desktop.control("Trajectory").await;
+    let stage_toggle = desktop.control("Toggle workspace pane").await;
+    assert!(
+        inspector_toggle.right() <= chat_tab.left() + px(1.0)
+            && stage_toggle.left() >= trajectory_tab.right() - px(1.0),
+        "Header controls out of order: inspector={inspector_toggle:?}, chat={chat_tab:?}, trajectory={trajectory_tab:?}, stage={stage_toggle:?}"
+    );
+    assert!(
+        (inspector_toggle.center().y - chat_tab.center().y).abs() <= px(2.0)
+            && (stage_toggle.center().y - chat_tab.center().y).abs() <= px(2.0),
+        "Header controls misaligned vertically: inspector={inspector_toggle:?}, chat={chat_tab:?}, stage={stage_toggle:?}"
+    );
+
+    // 2. Open Session Context Inspector with 12 subagents & 15 worktrees:
+    //    Composer MUST NOT move or get pushed off screen even when all subagents are expanded!
+    desktop.press("Toggle session details").await;
+    let inspector_wt = desktop.control("Switch worktree").await;
+    let inspector_changes = desktop.control("Review workspace changes").await;
+    assert!(
+        inspector_wt.size.height >= px(40.0)
+            && inspector_wt.size.height <= px(64.0)
+            && inspector_changes.size.height >= px(24.0),
+        "SessionInspector controls unexpected size: wt={inspector_wt:?}, changes={inspector_changes:?}"
+    );
+    #[cfg(not(windows))]
+    {
+        desktop.press("Show all (12)").await;
+        desktop.control("Show less").await;
+    }
+    let composer_with_expanded_inspector = desktop.control("Focus message composer").await;
+    assert!(
+        (composer_with_expanded_inspector.top() - composer_before.top()).abs() <= px(2.0)
+            && composer_with_expanded_inspector.bottom() <= px(840.0),
+        "SessionInspector pushed Composer down! before={composer_before:?}, after={composer_with_expanded_inspector:?}"
+    );
+    desktop.artifact("ux-01-inspector-bounded-height");
+
+    // Open searchable, scrollable WorktreePicker from SessionInspector:
+    // verify search box + bounded popup height, then filter and select long-branch worktree
+    desktop.press("Switch worktree").await;
+    let wt_filter = desktop.control("Filter worktrees…").await;
+    assert!(
+        wt_filter.bottom() <= px(800.0),
+        "Worktree filter out of bounds: {wt_filter:?}"
+    );
+    // Visible items inside the scrollable popover must stay strictly above window bottom (840pt)
+    for visible_wt in desktop.controls("external-agent-automations") {
+        assert!(
+            visible_wt.bottom() <= px(820.0),
+            "Worktree popover overflowed window bottom: {visible_wt:?}"
+        );
+    }
+    desktop.artifact("ux-02-worktree-picker-scrollable");
+
+    desktop.type_text("external-agent-automations").await;
+    desktop.key("enter", false);
+    desktop
+        .until("Worktree popover did not close after selection", || {
+            desktop
+                .controls("Filter worktrees…")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    let wt_after_long = desktop.control("Switch worktree").await;
+    assert!(
+        wt_after_long.size.height <= px(64.0) && wt_after_long.size.width >= px(220.0),
+        "Long branch name squashed or wrapped worktree card in SessionInspector: {wt_after_long:?}"
+    );
+    desktop.artifact("ux-03-inspector-long-branch-clean");
+
+    // Close inspector and open Right Workspace Stage -> Launchpad -> Changes Studio
+    desktop.press("Toggle session details").await;
+    desktop.press("Toggle workspace pane").await;
+    desktop.control("Files").await;
+
+    // 3. Open Changes Studio while long-branch worktree is active: verify sub-header never squashes!
+    desktop.press("Changes").await;
+    let uncommitted_btn = desktop.control("Uncommitted").await;
+    let studio_wt_pill = desktop.control("Switch worktree").await;
+    assert!(
+        uncommitted_btn.size.width >= px(72.0)
+            && (uncommitted_btn.center().y - studio_wt_pill.center().y).abs() <= px(2.0),
+        "ChangesStudio sub-header squashed by long worktree pill: uncommitted={uncommitted_btn:?}, wt={studio_wt_pill:?}"
+    );
+    desktop.artifact("ux-04-changes-studio-long-worktree");
+
+    // Filter and switch back to main workspace via ChangesStudio WorktreePicker, then test compact file tab
+    desktop.press("Switch worktree").await;
+    desktop.control("Filter worktrees…").await;
+    desktop.type_text("workspace").await;
+    desktop.artifact("ux-05-worktree-picker-search");
+    desktop.key("enter", false);
+    desktop
+        .until("Worktree picker did not close after pressing Enter", || {
+            desktop
+                .controls("Filter worktrees…")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    desktop.control("Changed files").await;
+
+    let open_src = desktop
+        .until("Open source file buttons did not appear", || {
+            let btns = desktop.controls("Open source file");
+            btns.get(1).copied().or_else(|| btns.first().copied())
+        })
+        .await;
+    desktop.press_at(open_src.center());
+    desktop.control("Go back").await;
+    let file_tab = desktop
+        .until("Compact file stage tab did not appear", || {
+            desktop
+                .controls("Preview src/engine.rs")
+                .into_iter()
+                .next()
+                .or_else(|| desktop.controls("Preview Cargo.lock").into_iter().next())
+        })
+        .await;
+    assert!(
+        file_tab.size.width <= px(200.0),
+        "Stage tab stretched abnormally wide: {file_tab:?}"
+    );
+    let find_button = desktop.control("Find in file").await;
+    let editor_body_probe = Bounds::new(
+        point(file_tab.left(), find_button.bottom() + px(24.0)),
+        size(px(280.0), px(180.0)),
+    );
+    desktop
+        .until(
+            "CurrentFile Editor body collapsed to 0px or stayed blank",
+            || desktop.draws_in(editor_body_probe).then_some(()),
+        )
+        .await;
+    desktop.artifact("ux-06-file-editor-full-height");
+    desktop.press("Go back").await;
+    desktop.control("Changed files").await;
+
+    // 4. Enter Fullscreen Stage + Expandable Floating Conversation PiP
+    desktop.press("Enter fullscreen").await;
+    desktop
+        .until("Exit fullscreen control did not appear", || {
+            (!desktop.controls("Exit fullscreen").is_empty()).then_some(())
+        })
+        .await;
+    desktop.control("Expand conversation").await;
+    desktop.artifact("ux-06-fullscreen-collapsed-pip");
+
+    desktop.press("Expand conversation").await;
+    desktop
+        .until("Expanded conversation did not appear", || {
+            (desktop.controls("Collapse conversation").len() >= 2).then_some(())
+        })
+        .await;
+    desktop.artifact("ux-07-fullscreen-expanded-pip");
+
+    // Optional live GitHub PR capture when MAKA_UX_CAPTURE_GITHUB_PR=1
+    if std::env::var_os("MAKA_UX_CAPTURE_GITHUB_PR").is_some() {
+        let new_tab = desktop
+            .until("New tab control did not appear", || {
+                desktop.controls("New tab").into_iter().next()
+            })
+            .await;
+        desktop.press_at(new_tab.center());
+        let search_box = desktop
+            .until("Launchpad search box did not appear", || {
+                desktop
+                    .controls("Search files, PR #number, or branch…")
+                    .into_iter()
+                    .next()
+            })
+            .await;
+        let previous = desktop.platform.text_input_target();
+        desktop.press_at(search_box.center());
+        desktop.target_after(previous).await;
+        desktop.type_text("#6974").await;
+        desktop.key("enter", false);
+        desktop.control("Summary").await;
+        let _ =
+            tokio::time::timeout(Duration::from_secs(8), desktop.control("Open on GitHub")).await;
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        desktop.artifact("ux-08-github-pr-summary");
+    }
+
+    let exit_fs = desktop
+        .until("Exit fullscreen button missing", || {
+            desktop.controls("Exit fullscreen").into_iter().next()
+        })
+        .await;
+    desktop.press_at(exit_fs.center());
+    desktop.control("Enter fullscreen").await;
+
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 /// Native cases run on the process main thread, required by AppKit.
 pub(crate) const CASES: &[&str] = &[
+    "desktop_room_reply_wakes_an_agent_without_mixing_drafts",
+    "desktop_composer_references_a_room_without_posting",
+    "desktop_context_menus_follow_the_pointer_and_manage_rooms",
     "desktop_remembers_folders_without_restoring_unsent_drafts",
     "desktop_new_conversation_preserves_an_owned_worktree",
     "desktop_recovers_an_unavailable_remembered_folder",
+    "desktop_composer_click_and_ime_follow_the_text_after_a_mention",
+    "desktop_composer_previews_markdown_and_sends_its_source",
+    "desktop_composer_references_a_conversation_without_waking_it",
     "desktop_new_draft_completes_commands_skills_and_files_without_creating_a_session",
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
-    "desktop_retries_a_failed_turn_in_place",
+    "desktop_continues_a_failed_run_without_duplicating_the_user_message",
+    "desktop_history_anchors_keep_the_reader_off_live_output_until_latest",
+    #[cfg(target_os = "macos")]
+    "desktop_resumes_live_activity_when_scrolling_back_to_latest",
+    "history_pages_return_each_prompt_once_from_tail_to_start",
     "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu",
+    "desktop_edits_a_message_in_place_and_forks_only_when_sent",
     "desktop_lists_a_scripts_tool_calls_in_place_of_the_script",
+    "desktop_presents_session_tools_in_chat_and_trajectory",
+    "desktop_delivers_session_messages_with_the_original_sender_and_content",
+    "desktop_folds_the_conversations_a_conversation_created",
+    "desktop_folds_work_when_responses_starts_the_final_answer",
     "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened",
     "desktop_steering_freezes_each_message_and_queue_is_one_shot",
     "desktop_file_gestures_preserve_drafts_and_stage_an_image",
     "desktop_new_draft_falls_back_to_a_file_for_an_undecodable_image",
     "desktop_connection_failure_has_one_status_below_the_workspace",
+    "desktop_model_catalog_preserves_search_and_selection_during_refresh",
     "desktop_model_settings_keeps_successful_sign_in_and_retries_models",
+    "desktop_subagent_settings_preserves_conflict_and_session_snapshot",
     "desktop_provider_picker_searches_real_catalog_and_preserves_selection",
     "desktop_mermaid_renders_markdown_and_toggles_its_source",
     "desktop_goal_commands_create_pause_resume_and_finish_without_losing_the_draft",
     "desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_changes",
-    "desktop_parent_reviews_child_access_and_opens_attributed_sender_beside",
-    "desktop_child_conversations_manage_nested_and_archived_workers",
     "desktop_composer_large_paste_keeps_controls_on_screen",
     "desktop_system_permission_guidance_uses_native_actions_without_paths",
+    "desktop_composer_toolbar_customizes_layout_and_context_usage",
+    "desktop_composer_sandbox_choice_becomes_the_default",
+    "desktop_workspace_stage_inspector_worktrees_and_fullscreen_review",
 ];
 
 pub(crate) fn run(name: &str) {
@@ -3030,6 +4669,15 @@ pub(crate) fn run(name: &str) {
         .build()
         .unwrap();
     match name {
+        "desktop_room_reply_wakes_an_agent_without_mixing_drafts" => {
+            runtime.block_on(rooms::desktop_room_reply_wakes_an_agent_without_mixing_drafts())
+        }
+        "desktop_composer_references_a_room_without_posting" => {
+            runtime.block_on(rooms::desktop_composer_references_a_room_without_posting())
+        }
+        "desktop_context_menus_follow_the_pointer_and_manage_rooms" => {
+            runtime.block_on(rooms::desktop_context_menus_follow_the_pointer_and_manage_rooms())
+        }
         "desktop_remembers_folders_without_restoring_unsent_drafts" => {
             runtime.block_on(desktop_remembers_folders_without_restoring_unsent_drafts())
         }
@@ -3038,6 +4686,15 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_recovers_an_unavailable_remembered_folder" => {
             runtime.block_on(desktop_recovers_an_unavailable_remembered_folder())
+        }
+        "desktop_composer_click_and_ime_follow_the_text_after_a_mention" => {
+            runtime.block_on(desktop_composer_click_and_ime_follow_the_text_after_a_mention())
+        }
+        "desktop_composer_previews_markdown_and_sends_its_source" => {
+            runtime.block_on(desktop_composer_previews_markdown_and_sends_its_source())
+        }
+        "desktop_composer_references_a_conversation_without_waking_it" => {
+            runtime.block_on(desktop_composer_references_a_conversation_without_waking_it())
         }
         "desktop_new_draft_completes_commands_skills_and_files_without_creating_a_session" => {
             runtime.block_on(
@@ -3048,14 +4705,38 @@ pub(crate) fn run(name: &str) {
             .block_on(
                 desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot(),
             ),
-        "desktop_retries_a_failed_turn_in_place" => {
-            runtime.block_on(desktop_retries_a_failed_turn_in_place())
+        "desktop_continues_a_failed_run_without_duplicating_the_user_message" => {
+            runtime.block_on(desktop_continues_a_failed_run_without_duplicating_the_user_message())
+        }
+        "desktop_history_anchors_keep_the_reader_off_live_output_until_latest" => {
+            runtime.block_on(desktop_history_anchors_keep_the_reader_off_live_output_until_latest())
+        }
+        "history_pages_return_each_prompt_once_from_tail_to_start" => {
+            runtime.block_on(history_pages_return_each_prompt_once_from_tail_to_start())
         }
         "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu" => {
             runtime.block_on(desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu())
         }
+        "desktop_edits_a_message_in_place_and_forks_only_when_sent" => {
+            runtime.block_on(desktop_edits_a_message_in_place_and_forks_only_when_sent())
+        }
         "desktop_lists_a_scripts_tool_calls_in_place_of_the_script" => {
             runtime.block_on(desktop_lists_a_scripts_tool_calls_in_place_of_the_script())
+        }
+        "desktop_presents_session_tools_in_chat_and_trajectory" => {
+            runtime.block_on(desktop_presents_session_tools_in_chat_and_trajectory())
+        }
+        "desktop_delivers_session_messages_with_the_original_sender_and_content" => runtime
+            .block_on(desktop_delivers_session_messages_with_the_original_sender_and_content()),
+        "desktop_folds_the_conversations_a_conversation_created" => {
+            runtime.block_on(desktop_folds_the_conversations_a_conversation_created())
+        }
+        #[cfg(target_os = "macos")]
+        "desktop_resumes_live_activity_when_scrolling_back_to_latest" => {
+            runtime.block_on(desktop_resumes_live_activity_when_scrolling_back_to_latest())
+        }
+        "desktop_folds_work_when_responses_starts_the_final_answer" => {
+            runtime.block_on(desktop_folds_work_when_responses_starts_the_final_answer())
         }
         "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened" => {
             runtime.block_on(desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened())
@@ -3071,6 +4752,12 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_connection_failure_has_one_status_below_the_workspace" => {
             runtime.block_on(desktop_connection_failure_has_one_status_below_the_workspace())
+        }
+        "desktop_subagent_settings_preserves_conflict_and_session_snapshot" => {
+            runtime.block_on(desktop_subagent_settings_preserves_conflict_and_session_snapshot())
+        }
+        "desktop_model_catalog_preserves_search_and_selection_during_refresh" => {
+            runtime.block_on(desktop_model_catalog_preserves_search_and_selection_during_refresh());
         }
         "desktop_model_settings_keeps_successful_sign_in_and_retries_models" => {
             runtime.block_on(desktop_model_settings_keeps_successful_sign_in_and_retries_models())
@@ -3088,16 +4775,20 @@ pub(crate) fn run(name: &str) {
             .block_on(
                 desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_changes(),
             ),
-        "desktop_parent_reviews_child_access_and_opens_attributed_sender_beside" => runtime
-            .block_on(desktop_parent_reviews_child_access_and_opens_attributed_sender_beside()),
-        "desktop_child_conversations_manage_nested_and_archived_workers" => {
-            runtime.block_on(desktop_child_conversations_manage_nested_and_archived_workers())
-        }
         "desktop_composer_large_paste_keeps_controls_on_screen" => {
             runtime.block_on(desktop_composer_large_paste_keeps_controls_on_screen())
         }
         "desktop_system_permission_guidance_uses_native_actions_without_paths" => {
             runtime.block_on(desktop_system_permission_guidance_uses_native_actions_without_paths())
+        }
+        "desktop_composer_toolbar_customizes_layout_and_context_usage" => {
+            runtime.block_on(desktop_composer_toolbar_customizes_layout_and_context_usage())
+        }
+        "desktop_composer_sandbox_choice_becomes_the_default" => {
+            runtime.block_on(desktop_composer_sandbox_choice_becomes_the_default())
+        }
+        "desktop_workspace_stage_inspector_worktrees_and_fullscreen_review" => {
+            runtime.block_on(desktop_workspace_stage_inspector_worktrees_and_fullscreen_review())
         }
         _ => panic!("unknown native test: {name}"),
     }

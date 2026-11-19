@@ -59,7 +59,7 @@ final class NavTransition extends View implements NshView.ShaderFrames {
      * may hide), `done` when it ends, `own` instead when it ended before a
      * frame came back (the change then moves with its own animation). A
      * transition still running over `parent` ends first, before the
-     * pictures are taken. Null where it does not run (no shader, Android 9,
+     * pictures are taken. Null where it does not run (no shader, before Android 10,
      * less motion, no picture, no GPU): the caller animates as it would.
      */
     static NavTransition start(Mounter mounter, ViewGroup parent, int id, int page, View[] lower, View[] upper,

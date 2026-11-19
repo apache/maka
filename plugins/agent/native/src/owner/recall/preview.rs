@@ -22,9 +22,37 @@ use tokio_util::sync::CancellationToken;
 use unicode_normalization::UnicodeNormalization;
 
 // The search dialog shows three lines in a column at most 760px wide with
-// 12px text: about 120 Latin characters per line. Only the display preview is
-// windowed; its anchor always opens the complete source, including long terms.
+// 12px text: about 120 Latin characters per line.
 const DISPLAY_CHARACTERS: usize = 3 * 120;
+const TOOL_CHARACTERS: usize = 720;
+
+pub(super) fn tool_passages(
+    mut results: maka_assistant::recall::search::ResultSet,
+    stop: &CancellationToken,
+) -> Result<maka_assistant::recall::search::ResultSet, String> {
+    for passage in &mut results.passages {
+        for message in &mut passage.messages {
+            check(stop)?;
+            let Some((end, _)) = message.text.char_indices().nth(TOOL_CHARACTERS) else {
+                continue;
+            };
+            if message.is_anchor && !passage.matched_terms.is_empty() {
+                message.text = excerpt_with_limit(
+                    &message.text,
+                    &passage.matched_terms,
+                    TOOL_CHARACTERS,
+                    false,
+                    stop,
+                )?
+                .0;
+            } else {
+                message.text.truncate(end);
+                message.text.push('…');
+            }
+        }
+    }
+    Ok(results)
+}
 
 fn check(stop: &CancellationToken) -> Result<(), String> {
     if stop.is_cancelled() {
@@ -54,6 +82,16 @@ pub(super) fn excerpt(
     terms: &[String],
     stop: &CancellationToken,
 ) -> Result<(String, Vec<RecallHighlight>), String> {
+    excerpt_with_limit(text, terms, DISPLAY_CHARACTERS, true, stop)
+}
+
+fn excerpt_with_limit(
+    text: &str,
+    terms: &[String],
+    limit: usize,
+    single_line: bool,
+    stop: &CancellationToken,
+) -> Result<(String, Vec<RecallHighlight>), String> {
     check(stop)?;
     let text: String = characters(text, stop).nfc().collect();
     check(stop)?;
@@ -71,29 +109,20 @@ pub(super) fn excerpt(
         }
     }
     let terms = folded_terms;
-    let mut first = None;
+    let mut match_start = None;
     for term in &terms {
         check(stop)?;
         if let Some(at) = folded.find(term) {
-            let candidate = (at, at + term.len());
-            if first.is_none_or(|(start, end)| at < start || (at == start && candidate.1 > end)) {
-                first = Some(candidate);
-            }
+            match_start = Some(match_start.map_or(at, |first: usize| first.min(at)));
         }
     }
     let mut start = 0;
-    let mut end = DISPLAY_CHARACTERS;
-    if let Some((match_start, match_end)) = first {
+    if let Some(match_start) = match_start {
         let mut folded_offset = 0;
-        let mut first_character = None;
         for (index, ch) in characters(&text, stop).enumerate() {
             let next = folded_offset + ch.to_lowercase().map(char::len_utf8).sum::<usize>();
-            if first_character.is_none() && next > match_start {
-                first_character = Some(index);
-            }
-            if folded_offset < match_end && next >= match_end {
-                start = first_character.unwrap_or(index).saturating_sub(1);
-                end = (start + DISPLAY_CHARACTERS).max(index + 1);
+            if next > match_start {
+                start = index.saturating_sub(1);
                 break;
             }
             folded_offset = next;
@@ -101,20 +130,26 @@ pub(super) fn excerpt(
     }
     check(stop)?;
     let mut characters = characters(&text, stop).skip(start);
-    let shown: String = characters.by_ref().take(end - start).collect();
+    let shown: String = characters.by_ref().take(limit).collect();
     let suffix = characters.next().is_some();
     let prefix = usize::from(start > 0);
     let mut excerpt = String::new();
     if prefix != 0 {
         excerpt.push('…');
     }
-    excerpt.extend(
-        shown
-            .chars()
-            .map(|ch| if ch.is_whitespace() { ' ' } else { ch }),
-    );
+    excerpt.extend(shown.chars().map(|ch| {
+        if single_line && ch.is_whitespace() {
+            ' '
+        } else {
+            ch
+        }
+    }));
     if suffix {
         excerpt.push('…');
+    }
+    if !single_line {
+        check(stop)?;
+        return Ok((excerpt, Vec::new()));
     }
 
     // Lowercasing can expand a scalar; map matches back to the displayed
@@ -182,5 +217,68 @@ mod tests {
             .map(|range| String::from_utf16(&utf16[range.start..range.end]).unwrap())
             .collect();
         assert_eq!(matches, ["😀", "café", "İ", "終点"]);
+    }
+
+    #[test]
+    fn recall_emits_a_hit_excerpt_and_retains_its_original_row_address() {
+        use maka_agent_facts::{durable::FactId, history::HistoryRowAddress};
+        use maka_agent_ports::session::history::Role;
+        use maka_assistant::recall::search::{Passage, PassageMessage, ResultSet};
+
+        let anchor_position = HistoryRowAddress::Live {
+            sequence: 42,
+            fact: FactId::new(),
+            item_index: 0,
+        };
+        let text = format!("{}匹配位置\n{}", "旧正文".repeat(300), "尾部".repeat(800));
+        let result = tool_passages(
+            ResultSet {
+                passages: vec![Passage {
+                    session_id: "session".into(),
+                    session_title: "Search fixture".into(),
+                    anchor_message_id: "anchor".into(),
+                    anchor_position: anchor_position.clone(),
+                    through: 45,
+                    turn_id: "turn".into(),
+                    messages: vec![PassageMessage {
+                        message_id: "anchor".into(),
+                        role: Role::ToolResult,
+                        text,
+                        timestamp: 0,
+                        is_anchor: true,
+                        attachments: vec![],
+                    }],
+                    matched_terms: vec!["匹配位置".into()],
+                    score: 1.,
+                    has_more_before: false,
+                    has_more_after: false,
+                }],
+                searched_every_session: true,
+                gaps: vec![],
+            },
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let passage = &result.passages[0];
+        assert_eq!(
+            passage.messages[0].text,
+            format!("…文匹配位置\n{}…", "尾部".repeat(357))
+        );
+        let rendered = result.render();
+        let original = rendered
+            .lines()
+            .find_map(|line| line.strip_prefix("Original: SessionRead("))
+            .unwrap()
+            .strip_suffix(')')
+            .unwrap();
+        let read: maka_agent_api::contract::SessionReadInput =
+            serde_json::from_str(original).unwrap();
+        let row = read.row.expect("exact row lookup");
+        assert_eq!(row.through, Some(45));
+        assert_eq!(row.position, anchor_position);
+        assert_eq!(
+            row.field,
+            maka_agent_ports::session::history::HistoryField::Body
+        );
     }
 }

@@ -52,7 +52,7 @@ use windows::{
                     DXGI_SAMPLE_DESC,
                 },
                 CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_PRESENT,
-                DXGI_PRESENT_PARAMETERS, DXGI_RGBA, DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1,
+                DXGI_PRESENT_PARAMETERS, DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1,
                 DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
                 DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIDevice,
                 IDXGIDevice1, IDXGIFactory2, IDXGISurface, IDXGISwapChain1, IDXGISwapChain2,
@@ -241,6 +241,38 @@ pub(crate) fn target_properties(scale: f32, premultiplied: bool) -> D2D1_BITMAP_
 /// The most frames the device queues (the maximum DXGI takes).
 const MAX_DEVICE_LATENCY: u32 = 16;
 
+/// The longest a resized window waits for its swap chain's frame in flight
+/// ([`SwapChain::wait_ready`]): a few vertical blanks at the slowest rates.
+const RESIZE_FRAME_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Whether DWM shows window `hwnd`: visible, its top-level window neither
+/// minimized nor cloaked.
+fn composed(hwnd: HWND) -> bool {
+    use windows::Win32::{
+        Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute},
+        UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, IsIconic, IsWindowVisible},
+    };
+    // SAFETY: plain calls on a window handle (an invalid one answers no);
+    // the attribute is written into a local of its size.
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() {
+            return false;
+        }
+        let root = GetAncestor(hwnd, GA_ROOT);
+        if IsIconic(root).as_bool() {
+            return false;
+        }
+        let mut cloaked = 0u32;
+        let read = DwmGetWindowAttribute(
+            root,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut u32 as *mut _,
+            std::mem::size_of::<u32>() as u32,
+        );
+        read.is_err() || cloaked == 0
+    }
+}
+
 /// The flags every swap chain is made (and resized) with: frames are paced
 /// on its latency waitable object ([`SwapChain::ready`]).
 pub(crate) const SWAP_CHAIN_FLAGS: DXGI_SWAP_CHAIN_FLAG =
@@ -259,8 +291,6 @@ pub(crate) struct SwapChain {
     last: Option<Vec<RECT>>,
     /// A frame was presented since the buffers were made or resized.
     shown: bool,
-    /// What fills the window past the buffers (`0xRRGGBBAA`) while it grows.
-    background: Option<u32>,
     /// A transparent window's: composed, premultiplied alpha.
     premultiplied: bool,
     /// Frame pacing: one frame in flight per swap chain.
@@ -344,6 +374,40 @@ impl Latency {
         false
     }
 
+    /// Waits until a frame may be drawn (takes a token), at most `timeout`.
+    /// A wait [`Latency::defer`] registered is cancelled first: it would take
+    /// the token in this one's place and hand it over only through
+    /// `holding`, which a blocking wait does not see until it times out.
+    fn wait(&self, timeout: std::time::Duration) -> bool {
+        self.cancel();
+        if self.wake.holding.load(Ordering::Acquire) {
+            return true;
+        }
+        let ms = timeout.as_millis().min(u32::MAX as u128) as u32;
+        // SAFETY: a wait on a live semaphore.
+        if unsafe { WaitForSingleObject(self.handle, ms) } == WAIT_OBJECT_0 {
+            self.wake.holding.store(true, Ordering::Release);
+            return true;
+        }
+        false
+    }
+
+    /// Unregisters the wait [`Latency::defer`] registered, if any, once its
+    /// callback (if it runs) has ended.
+    fn cancel(&self) {
+        let wait = self.wait.replace(HANDLE::default());
+        if wait.is_invalid() {
+            return;
+        }
+        // SAFETY: waits for a running callback to end.
+        let _ = unsafe { UnregisterWaitEx(wait, Some(HANDLE(-1isize as *mut _))) };
+        if self.wake.armed.swap(false, Ordering::AcqRel) {
+            // The callback never ran: take its leaked clone back.
+            // SAFETY: `defer` leaked exactly one clone, still unclaimed.
+            drop(unsafe { Arc::from_raw(Arc::as_ptr(&self.wake)) });
+        }
+    }
+
     /// Asks for `WM_NSH_PAINT` when a token is free (once).
     fn defer(&self) {
         if self.wake.armed.swap(true, Ordering::AcqRel) {
@@ -382,16 +446,7 @@ impl Latency {
 
 impl Drop for Latency {
     fn drop(&mut self) {
-        let wait = self.wait.get();
-        if !wait.is_invalid() {
-            // SAFETY: waits for a running callback to end.
-            let _ = unsafe { UnregisterWaitEx(wait, Some(HANDLE(-1isize as *mut _))) };
-            if self.wake.armed.swap(false, Ordering::AcqRel) {
-                // The callback never ran: take its leaked clone back.
-                // SAFETY: `defer` leaked exactly one clone, still unclaimed.
-                drop(unsafe { Arc::from_raw(Arc::as_ptr(&self.wake)) });
-            }
-        }
+        self.cancel();
         // SAFETY: the handle was obtained from the swap chain and is ours.
         let _ = unsafe { CloseHandle(self.handle) };
     }
@@ -428,6 +483,8 @@ impl SwapChain {
             // While a resize is drawn DWM already shows the window at its new
             // size: the last frame stays as it was, where stretching it would
             // move everything in the window by part of a pixel, every frame.
+            // Past it DWM shows the redirection surface, which `WM_SIZE` fills
+            // with the window's background.
             Scaling: DXGI_SCALING_NONE,
             // Back buffers keep their pixels: frames draw only what changed.
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
@@ -458,7 +515,6 @@ impl SwapChain {
             generation: generation(),
             last: None,
             shown: false,
-            background: None,
             premultiplied,
             latency,
         })
@@ -468,26 +524,6 @@ impl SwapChain {
     #[cfg(test)]
     pub(crate) fn premultiplied(&self) -> bool {
         self.premultiplied
-    }
-
-    /// Fills the window past the buffers with `color` from the next present
-    /// on, while a resize's frame is being drawn. A composed swap chain
-    /// stretches instead (DirectComposition takes no other scaling).
-    pub(crate) fn set_background(&mut self, color: nsh_core::Color) {
-        if self.premultiplied || self.background.replace(color.0) == Some(color.0) {
-            return;
-        }
-        let channel = |shift: u32| ((color.0 >> shift) & 0xff) as f32 / 255.0;
-        let rgba = DXGI_RGBA {
-            r: channel(24),
-            g: channel(16),
-            b: channel(8),
-            a: 1.0,
-        };
-        // SAFETY: a COM call on a live swap chain; the color outlives it.
-        if let Err(err) = unsafe { self.swap.SetBackgroundColor(&rgba) } {
-            log::warn!("cannot set the swap chain's background: {err}");
-        }
     }
 
     /// The window shows a frame of these buffers, which stays until the next.
@@ -559,6 +595,23 @@ impl SwapChain {
             self.latency.defer();
             false
         }
+    }
+
+    /// Whether a resized window's frame can be presented: waits for the
+    /// frame in flight to be shown, at most [`RESIZE_FRAME_WAIT`], since a
+    /// frame queued past it would show every later one that much late. A
+    /// window DWM does not compose (hidden, minimized, cloaked) may not get
+    /// its token back for a while, so it only polls. When not,
+    /// `WM_NSH_PAINT` comes as soon as it can, as from [`SwapChain::ready`].
+    pub(crate) fn wait_ready(&self) -> bool {
+        let hwnd = HWND(self.latency.wake.hwnd as *mut _);
+        if composed(hwnd) {
+            if self.latency.wait(RESIZE_FRAME_WAIT) {
+                return true;
+            }
+            log::debug!("a resized window's frame in flight was not shown in time");
+        }
+        self.ready()
     }
 
     /// Queues the frame drawn for the next vertical blank; `changed`:

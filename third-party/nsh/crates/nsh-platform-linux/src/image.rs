@@ -15,8 +15,8 @@
 //! it when the last reference (the cache's, the views') goes. SVG images
 //! (sniffed from their bytes) are drawn by [`nsh_core::svg`] at the
 //! bucket's size; their picture keeps their intrinsic size in points, which
-//! they are laid out with and report. Canvases draw bitmaps only
-//! ([`load_bitmap`]).
+//! they are laid out with and report. Canvases draw them as their
+//! rasterized bitmap ([`load_bitmap`]).
 //!
 //! Animated GIF and WebP images decode every frame (composited, at most
 //! [`MAX_FRAMES`] and [`MAX_ANIMATION_BYTES`]: larger ones show their first
@@ -108,6 +108,7 @@ fn context(surface: &Surface, uri: &str) -> Context {
         asset_base: surface.asset_base.borrow().clone(),
         read_asset: surface.image_assets.borrow().clone(),
         access: surface.access.borrow().clone(),
+        media_files: surface.media_files.borrow().clone(),
         disk: remote
             .then(|| surface.image_cache.borrow().clone())
             .flatten(),
@@ -398,13 +399,23 @@ fn decode(bytes: &[u8], target: &Target) -> Result<Picture, String> {
     Ok(Picture::still(texture(image.into_rgba8())))
 }
 
+/// A pixel buffer ([`ImageSrc::rgba`](nsh_core::element::ImageSrc::rgba)),
+/// taken as it is: no decode, at its own size.
+fn from_rgba((w, h, rgba): (u32, u32, &[u8])) -> Result<Picture, String> {
+    let rgba = image::RgbaImage::from_raw(w, h, rgba.to_vec()).ok_or("RGBA of the wrong size")?;
+    Ok(Picture::still(texture(rgba)))
+}
+
 /// The process's decoded images, in the core's budget.
 fn images() -> &'static Images<Picture> {
     static IMAGES: LazyLock<Images<Picture>> = LazyLock::new(|| {
         Images::new(
             nsh_core::image::budget(),
             |bytes: &ImageData, target: &Target| {
-                let picture = decode(bytes, target)?;
+                let picture = match bytes.rgba() {
+                    Some(rgba) => from_rgba(rgba)?,
+                    None => decode(bytes, target)?,
+                };
                 let cost = picture.cost();
                 Ok((picture.clone(), picture.natural, cost))
             },
@@ -542,24 +553,34 @@ fn fetch(
 
 /// Loads the bitmap `uri` (`https://…`, `asset:/…`, a file path, `data:`)
 /// for a canvas off the main thread, at its natural size; `done` runs on
-/// the main thread with the image (an animation's first frame). Canvases
-/// draw bitmaps: an SVG is an image that failed to load.
+/// the main thread with the image (an animation's first frame) and how
+/// many of its pixels make one unit of the image's own size (1 for a
+/// bitmap decoded whole, whose units are its pixels). An SVG is rasterized
+/// by the shared SVG renderer at `scale` pixels per point (the canvas's),
+/// so that it stays sharp on the screen, and handed over as its bitmap.
 ///
 /// A cached texture is handed over before this returns: callers must not
 /// hold a borrow of view state that `done` takes.
 pub(crate) fn load_bitmap(
     surface: &Rc<Surface>,
     uri: &str,
-    done: impl FnOnce(Result<gdk::Texture, String>) + 'static,
+    scale: f64,
+    done: impl FnOnce(Result<(gdk::Texture, f64), String>) + 'static,
 ) {
-    let name = uri.to_owned();
     let done = move |result: Result<(Picture, Lease), String>| {
-        done(result.and_then(|(p, _)| match p.natural {
-            Natural::Vector(_) => Err(format!(
-                "{name} is an SVG image: canvases draw bitmaps (PNG, JPEG, ...)"
-            )),
-            Natural::Pixels(..) => Ok(p.texture),
-        }));
+        done(result.map(|(p, _)| {
+            // What it was decoded at over its own size.
+            let own = match p.natural {
+                Natural::Vector(points) => f64::from(points.width.0),
+                Natural::Pixels(width, _) => f64::from(width),
+            };
+            let scale = if own > 0.0 {
+                f64::from(p.texture.width()) / own
+            } else {
+                1.0
+            };
+            (p.texture, scale)
+        }))
     };
     let source = ImageSource {
         uri: uri.into(),
@@ -567,7 +588,7 @@ pub(crate) fn load_bitmap(
         scales: nsh_core::ImageScales::NONE,
         data: None,
     };
-    let want = Want::natural(1.0);
+    let want = Want::natural(scale.max(1.0) as f32);
     // A canvas keeps the texture itself: the load runs to its end.
     if let Some(load) = fetch(
         surface,
@@ -877,9 +898,12 @@ pub(crate) fn set(
         }
         image.generation += 1;
         if !same_source {
+            let retain = options.retain_previous && source.is_some() && image.source.is_some();
             image.source = source.cloned();
-            image.image = None;
-            image.lease = Lease::none();
+            if !retain {
+                image.image = None;
+                image.lease = Lease::none();
+            }
             image.load = None;
             image.fade = None;
             if let Some(mut p) = image.playback.take() {
@@ -936,10 +960,9 @@ fn start(surface: &Rc<Surface>, view: &NshView) {
         let Some(image) = s.image.as_ref() else {
             return;
         };
-        let source = image
-            .source
-            .clone()
-            .filter(|_| image.image.is_none() && image.load.is_none());
+        let source = image.source.clone().filter(|_| {
+            image.load.is_none() && (image.image.is_none() || image.options.retain_previous)
+        });
         (image.generation, events, id, source, frame, image.mode)
     };
     let want = want(view, frame, mode);
@@ -1177,7 +1200,13 @@ fn loaded(
                     image.placeholder_load = None;
                 }
             }
-            Err(message) => log::warn!("image failed: {message}"),
+            Err(message) => {
+                if image.options.retain_previous {
+                    image.image = None;
+                    image.lease = Lease::none();
+                }
+                log::warn!("image failed: {message}");
+            }
         }
         (events, id, image.fade.is_some(), hook)
     };
@@ -1406,6 +1435,165 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retain_previous_replaces_clears_errors_and_unmounts() {
+        crate::gtk_test::run(retain_previous_lifecycle)
+            .expect("native image test requires a GTK display (use xvfb-run)");
+    }
+
+    // Control completion ordering while using the platform decoder and mounter.
+    fn retain_previous_lifecycle() {
+        use nsh_core::image::{Budget, MemoryCache};
+        use nsh_core::{MountItem, ViewKind};
+
+        let surface = crate::gtk_test::surface();
+        crate::gtk_test::apply(
+            &surface,
+            &[MountItem::Create {
+                id: 2,
+                kind: ViewKind::Image,
+            }],
+        );
+        let view = crate::gtk_test::view(&surface, 2);
+        let options = ImageOptions {
+            retain_previous: true,
+            ..Default::default()
+        };
+        let source = |uri: &str| ImageSource {
+            uri: uri.into(),
+            ..Default::default()
+        };
+        let red = decoded(br##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#f00"/></svg>"##, 64).unwrap();
+        let blue = decoded(br##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#00f"/></svg>"##, 64).unwrap();
+        let budget = Budget::new(1024);
+        let cache = MemoryCache::<u8, ()>::new(&budget);
+        let generation = || view.state().image.as_ref().unwrap().generation;
+        let shown = || {
+            let s = view.state();
+            s.image
+                .as_ref()
+                .and_then(|i| i.image.as_ref())
+                .map(|p| pixels(&p.texture))
+        };
+        let red_pixels = pixels(&red.texture);
+        let blue_pixels = pixels(&blue.texture);
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/red.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        loaded(
+            &surface,
+            &view,
+            generation(),
+            Ok((red.clone(), cache.insert_transient(1, (), 16))),
+            false,
+        );
+        assert_eq!(shown(), Some(red_pixels.clone()));
+
+        let old = generation();
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/blue.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        assert_eq!(
+            shown(),
+            Some(red_pixels.clone()),
+            "replacement retains previous pixels while pending"
+        );
+        assert_eq!(budget.used(), 16);
+        loaded(&surface, &view, old, Err("stale failure".into()), true);
+        assert_eq!(
+            shown(),
+            Some(red_pixels),
+            "stale failure cannot clear the current frame"
+        );
+        loaded(
+            &surface,
+            &view,
+            generation(),
+            Ok((blue.clone(), cache.insert_transient(2, (), 32))),
+            true,
+        );
+        assert_eq!(shown(), Some(blue_pixels.clone()));
+        assert_eq!(budget.used(), 32, "replacement releases the old lease");
+
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/broken.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        assert_eq!(shown(), Some(blue_pixels));
+        loaded(
+            &surface,
+            &view,
+            generation(),
+            Err("invalid image".into()),
+            true,
+        );
+        assert_eq!(shown(), None, "failure clears the retained frame");
+        assert_eq!(budget.used(), 0);
+
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/red-again.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        loaded(
+            &surface,
+            &view,
+            generation(),
+            Ok((red.clone(), cache.insert_transient(3, (), 16))),
+            false,
+        );
+        let cleared = generation();
+        set(&surface, &view, None, ResizeMode::Contain, &options);
+        assert_eq!(shown(), None, "explicit clear is immediate");
+        assert_eq!(budget.used(), 0);
+        loaded(&surface, &view, cleared, Ok((blue, Lease::none())), true);
+        assert_eq!(
+            shown(),
+            None,
+            "completion after clear cannot resurrect pixels"
+        );
+
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/last.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        loaded(
+            &surface,
+            &view,
+            generation(),
+            Ok((red, cache.insert_transient(4, (), 16))),
+            false,
+        );
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/pending.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        assert_eq!(budget.used(), 16);
+        crate::gtk_test::apply(&surface, &[MountItem::Delete { id: 2 }]);
+        drop(view);
+        assert_eq!(budget.used(), 0, "unmount releases the retained frame");
+        surface.stop();
+    }
+
+    #[test]
     fn plays_animations() {
         let delays = [100, 50, 200];
         let mut t = Timeline::default();
@@ -1481,6 +1669,14 @@ mod tests {
             frames: Frames::All,
         };
         decode(bytes, &target)
+    }
+
+    #[test]
+    fn takes_rgba_buffers_as_they_are() {
+        let picture = from_rgba((2, 1, &[255, 0, 0, 255, 0, 0, 255, 128])).unwrap();
+        assert_eq!(picture.natural, Natural::Pixels(2, 1));
+        // Downloaded as premultiplied BGRA.
+        assert_eq!(pixels(&picture.texture), [0, 0, 255, 255, 128, 0, 0, 128]);
     }
 
     #[test]

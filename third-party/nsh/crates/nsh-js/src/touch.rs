@@ -18,6 +18,7 @@ use std::{
 
 use nsh_core::{
     Command, NodeId, Op, TouchEvent, TouchPhase, TouchPoint, decl, element::PanGesture,
+    keymap::Modifiers,
 };
 use rquickjs::qjs;
 use rustc_hash::FxHashMap;
@@ -208,6 +209,18 @@ fn free(cx: *mut JsContext, v: JsValue) {
     unsafe { qjs::JS_FreeValue(cx, v) };
 }
 
+/// The pointer fields of `p` on `o` (`pointerType`, `pressure`, `tiltX`,
+/// `tiltY`).
+fn set_pointer(cx: *mut JsContext, o: JsValue, p: &TouchPoint) {
+    let name = p.pointer_type.name();
+    // SAFETY: a new string the object takes.
+    let kind = unsafe { qjs::JS_NewStringLen(cx, name.as_ptr().cast(), name.len() as _) };
+    set(cx, o, c"pointerType", kind);
+    set(cx, o, c"pressure", number(p.pressure as f64));
+    set(cx, o, c"tiltX", number(p.tilt_x as f64));
+    set(cx, o, c"tiltY", number(p.tilt_y as f64));
+}
+
 /// A touch point as JS sees it.
 fn point(cx: *mut JsContext, p: &TouchPoint, timestamp: f64) -> JsValue {
     // SAFETY: a new object.
@@ -219,6 +232,19 @@ fn point(cx: *mut JsContext, p: &TouchPoint, timestamp: f64) -> JsValue {
     set(cx, o, c"locationX", number(p.location.x.0 as f64));
     set(cx, o, c"locationY", number(p.location.y.0 as f64));
     set(cx, o, c"timestamp", number(timestamp));
+    set_pointer(cx, o, p);
+    o
+}
+
+/// `Modifiers` as a press event's (`{ control, alt, shift, platform }`).
+fn modifiers_object(cx: *mut JsContext, m: &Modifiers) -> JsValue {
+    // SAFETY: a new object.
+    let o = unsafe { qjs::JS_NewObject(cx) };
+    let flag = |v: bool| if v { qjs::JS_TRUE } else { qjs::JS_FALSE };
+    set(cx, o, c"control", flag(m.ctrl));
+    set(cx, o, c"alt", flag(m.alt));
+    set(cx, o, c"shift", flag(m.shift));
+    set(cx, o, c"platform", flag(m.cmd));
     o
 }
 
@@ -246,6 +272,7 @@ fn event(
     touches: &[&TouchPoint],
     changed: &[&TouchPoint],
     timestamp: f64,
+    modifiers: &Modifiers,
 ) -> JsValue {
     // SAFETY: a new object taking its fields.
     let e = unsafe { qjs::JS_NewObject(cx) };
@@ -256,6 +283,8 @@ fn event(
     set(cx, e, c"pageY", number(about.page.y.0 as f64));
     set(cx, e, c"target", number(about.target as f64));
     set(cx, e, c"timestamp", number(timestamp));
+    set_pointer(cx, e, about);
+    set(cx, e, c"modifiers", modifiers_object(cx, modifiers));
     let list = |ps: &[&TouchPoint]| array(cx, ps.iter().map(|p| point(cx, p, timestamp)).collect());
     set(cx, e, c"touches", list(touches));
     set(cx, e, c"changedTouches", list(changed));
@@ -516,7 +545,14 @@ pub(crate) fn dispatch(cx: *mut JsContext, touch: &TouchEvent) -> Result<(), JsV
         return Ok(());
     };
     let path = t.paths.borrow().get(&about.id).cloned().unwrap_or_default();
-    let e = event(cx, about, &down, &changed, touch.timestamp);
+    let e = event(
+        cx,
+        about,
+        &down,
+        &changed,
+        touch.timestamp,
+        &touch.modifiers,
+    );
     let result = (|| -> Result<(), JsValue> {
         let raw = match phase {
             TouchPhase::Start => "onTouchStart",
@@ -638,16 +674,24 @@ unsafe extern "C" fn pan_create(
     }
 }
 
-/// The centroid of `e.touches`.
-fn centroid(cx: *mut JsContext, e: JsValue) -> (f64, f64, usize) {
+/// The centroid of `e.touches`; `None` (an exception pending) when the
+/// array's length throws or is longer than [`dom::MAX_ARRAY_ITEMS`] (the
+/// app may call the handlers with an event of its own).
+fn centroid(cx: *mut JsContext, e: JsValue) -> Option<(f64, f64, usize)> {
     let list = get(cx, e, c"touches");
-    let mut len: i64 = 0;
+    let mut len = 0;
     let (mut x, mut y) = (0.0, 0.0);
     // SAFETY: reads of live values, freed after.
     unsafe {
-        if qjs::JS_IsArray(list) && qjs::JS_GetLength(cx, list, &mut len) == 0 {
-            for i in 0..len.max(0) {
-                let p = qjs::JS_GetPropertyInt64(cx, list, i);
+        if qjs::JS_IsArray(list) {
+            // Read natively: a sparse array is as long as it says.
+            let Some(n) = dom::checked_len(cx, list) else {
+                qjs::JS_FreeValue(cx, list);
+                return None;
+            };
+            len = n;
+            for i in 0..len {
+                let p = qjs::JS_GetPropertyUint32(cx, list, i);
                 x += get_number(cx, p, c"pageX");
                 y += get_number(cx, p, c"pageY");
                 qjs::JS_FreeValue(cx, p);
@@ -655,8 +699,8 @@ fn centroid(cx: *mut JsContext, e: JsValue) -> (f64, f64, usize) {
         }
         qjs::JS_FreeValue(cx, list);
     }
-    let n = len.max(1) as f64;
-    (x / n, y / n, len.max(0) as usize)
+    let n = f64::from(len.max(1));
+    Some((x / n, y / n, len as usize))
 }
 
 fn remember(cx: *mut JsContext, last: JsValue, x: f64, y: f64, time: f64, count: usize) {
@@ -666,9 +710,10 @@ fn remember(cx: *mut JsContext, last: JsValue, x: f64, y: f64, time: f64, count:
     set(cx, last, c"n", number(count as f64));
 }
 
-/// A grant or a first finger: the gesture starts here.
-fn reset(cx: *mut JsContext, gs: JsValue, last: JsValue, e: JsValue) {
-    let (x, y, n) = centroid(cx, e);
+/// A grant or a first finger: the gesture starts here; `None` (an
+/// exception pending) as [`centroid`].
+fn reset(cx: *mut JsContext, gs: JsValue, last: JsValue, e: JsValue) -> Option<()> {
+    let (x, y, n) = centroid(cx, e)?;
     for (k, v) in [
         (c"moveX", x),
         (c"moveY", y),
@@ -683,11 +728,13 @@ fn reset(cx: *mut JsContext, gs: JsValue, last: JsValue, e: JsValue) {
     }
     set(cx, gs, c"numberActiveTouches", number(n as f64));
     remember(cx, last, x, y, get_number(cx, e, c"timestamp"), n);
+    Some(())
 }
 
 /// Moves the gesture to `e`'s touches (a finger going down or up makes
-/// the centroid jump, which is no movement).
-fn update(cx: *mut JsContext, gs: JsValue, last: JsValue, e: JsValue) {
+/// the centroid jump, which is no movement); `None` (an exception
+/// pending) as [`centroid`].
+fn update(cx: *mut JsContext, gs: JsValue, last: JsValue, e: JsValue) -> Option<()> {
     let time = get_number(cx, e, c"timestamp");
     let (lx, ly, lt, ln) = (
         get_number(cx, last, c"x"),
@@ -695,9 +742,9 @@ fn update(cx: *mut JsContext, gs: JsValue, last: JsValue, e: JsValue) {
         get_number(cx, last, c"t"),
         get_number(cx, last, c"n") as usize,
     );
-    let (x, y, n) = centroid(cx, e);
+    let (x, y, n) = centroid(cx, e)?;
     if time == lt && n == ln {
-        return;
+        return Some(());
     }
     set(cx, gs, c"numberActiveTouches", number(n as f64));
     if n == ln {
@@ -722,6 +769,7 @@ fn update(cx: *mut JsContext, gs: JsValue, last: JsValue, e: JsValue) {
     set(cx, gs, c"moveX", number(x));
     set(cx, gs, c"moveY", number(y));
     remember(cx, last, x, y, time, n);
+    Some(())
 }
 
 /// Calls the config's `name(e, gs)`; `None` when it has none.
@@ -785,9 +833,11 @@ unsafe extern "C" fn pan_handler(
     match magic {
         // onStartShouldSetResponderCapture
         0 => {
-            let (_, _, n) = centroid(cx, e);
-            if n == 1 {
-                reset(cx, gs, last, e);
+            let Some((_, _, n)) = centroid(cx, e) else {
+                return qjs::JS_EXCEPTION;
+            };
+            if n == 1 && reset(cx, gs, last, e).is_none() {
+                return qjs::JS_EXCEPTION;
             }
             set(cx, gs, c"numberActiveTouches", number(n as f64));
             let r = callback(cx, config, c"onStartShouldSetPanResponderCapture", e, gs);
@@ -798,14 +848,18 @@ unsafe extern "C" fn pan_handler(
             false,
         ),
         2 => {
-            update(cx, gs, last, e);
+            if update(cx, gs, last, e).is_none() {
+                return qjs::JS_EXCEPTION;
+            }
             answer(
                 callback(cx, config, c"onMoveShouldSetPanResponderCapture", e, gs),
                 false,
             )
         }
         3 => {
-            update(cx, gs, last, e);
+            if update(cx, gs, last, e).is_none() {
+                return qjs::JS_EXCEPTION;
+            }
             answer(
                 callback(cx, config, c"onMoveShouldSetPanResponder", e, gs),
                 false,
@@ -813,7 +867,9 @@ unsafe extern "C" fn pan_handler(
         }
         // onResponderGrant: the gesture starts at the grant.
         4 => {
-            reset(cx, gs, last, e);
+            if reset(cx, gs, last, e).is_none() {
+                return qjs::JS_EXCEPTION;
+            }
             if let Some(r) = callback(cx, config, c"onPanResponderGrant", e, gs) {
                 // SAFETY: an inline tag check.
                 if unsafe { qjs::JS_IsException(r) } {
@@ -828,7 +884,9 @@ unsafe extern "C" fn pan_handler(
         }
         5 => ignore(callback(cx, config, c"onPanResponderReject", e, gs)),
         6..=8 => {
-            update(cx, gs, last, e);
+            if update(cx, gs, last, e).is_none() {
+                return qjs::JS_EXCEPTION;
+            }
             let name = match magic {
                 6 => c"onPanResponderStart",
                 7 => c"onPanResponderMove",
@@ -890,6 +948,15 @@ export interface TouchPoint {
   target: number;
   /** Milliseconds. */
   timestamp: number;
+  /** What touches: `"touch"` (a finger), `"pen"` or `"mouse"`. */
+  pointerType: PointerType;
+  /** How hard it presses, 0 to 1 (`PointerEvent.pressure`): 0.5 while down
+   * and 0 once lifted on a device without pressure. */
+  pressure: number;
+  /** A pen's tilt in degrees, -90 to 90 (`PointerEvent.tiltX` / `tiltY`);
+   * 0 when the device does not report it. */
+  tiltX: number;
+  tiltY: number;
 }
 
 /** A touch or responder event: the finger it is about, the fingers down
@@ -898,6 +965,12 @@ export interface GestureResponderEvent extends TouchPoint {
   touches: TouchPoint[];
   changedTouches: TouchPoint[];
   nativeEvent: GestureResponderEvent;
+  /** The modifier keys held when the finger (or mouse button) went down,
+   * as `PressEvent`'s: an Alt-drag or a Shift-click reads them in the
+   * responder grant. On every target the touch events and the responder
+   * grant come before the same press's `onPressDown` (which waits ~130 ms
+   * in a scroll view, as the touch may start a scroll). */
+  modifiers: Modifiers;
   /** Touch handlers (`onTouchStart`…): views further out do not see it. */
   stopPropagation(): void;
 }
@@ -982,6 +1055,7 @@ mod tests {
         EventPayload::Touch(Box::new(TouchEvent {
             phase,
             timestamp: t,
+            modifiers: Default::default(),
             activated: None,
             points: vec![TouchPoint {
                 id: 1,
@@ -990,6 +1064,10 @@ mod tests {
                 page: point(px(x), px(y)),
                 location: point(px(x), px(y)),
                 changed: true,
+                pointer_type: nsh_core::PointerType::Touch,
+                pressure: 0.5,
+                tilt_x: 0.0,
+                tilt_y: 0.0,
             }],
         }))
     }
@@ -1083,5 +1161,56 @@ mod tests {
                 command: nsh_core::Command::ClearJsResponder
             }
         )));
+    }
+
+    #[test]
+    fn responder_events_carry_the_modifiers_held_at_the_press() {
+        let host = Host::new().unwrap();
+        host.eval_source(
+            r#"
+            import { element, append, spread } from "nsh:rt";
+            import { PanResponder } from "nsh";
+            const log = [];
+            globalThis.log = log;
+            const outer = element("view");
+            const inner = element("view");
+            append(outer, inner);
+            const mods = (e) => {
+                const m = e.nativeEvent.modifiers;
+                return [m.control, m.alt, m.shift, m.platform].map(Number).join("");
+            };
+            const pan = PanResponder.create({
+                onStartShouldSetPanResponder: () => true,
+                onPanResponderGrant: (e) => log.push(`grant ${mods(e)}`),
+                onPanResponderRelease: (e) => log.push(`release ${mods(e)}`),
+            });
+            spread(inner, pan.panHandlers);
+            globalThis.keep = outer;
+            "#,
+        )
+        .unwrap();
+        let alt = |phase| {
+            let mut e = touch(phase, 10.0, 10.0, 0.0);
+            if let EventPayload::Touch(t) = &mut e {
+                t.modifiers.alt = true;
+                t.modifiers.shift = true;
+            }
+            e
+        };
+        host.dispatch_event(4, EventKind::Touch, &alt(TouchPhase::Start));
+        host.dispatch_event(4, EventKind::Touch, &alt(TouchPhase::End));
+        host.eval_source(r#"import { text } from "nsh:rt"; text(globalThis.log.join("|"));"#)
+            .unwrap();
+        let mut ops = Vec::new();
+        host.take_ops(&mut ops);
+        let log = ops
+            .iter()
+            .rev()
+            .find_map(|o| match o {
+                Op::CreateText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(log, "grant 0110|release 0110");
     }
 }

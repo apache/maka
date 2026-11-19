@@ -90,6 +90,16 @@ test("the lifecycle follows the system's", async () => {
   expect(app.shows("App: active")).toBe(true);
 });
 
+test("the system waking from sleep counts", async () => {
+  const app = await open("./App.tsx");
+  expect(app.shows("Wakes: 0")).toBe(true);
+  await app.wake();
+  expect(app.shows("Wakes: 1")).toBe(true);
+  await app.wake();
+  expect(app.shows("Wakes: 2")).toBe(true);
+  expect(app.shows("App: active")).toBe(true);
+});
+
 test("the time zone follows the system's", async () => {
   const app = await open("./App.tsx");
   await app.setLocaleSettings({ timeZone: "Asia/Tokyo" });

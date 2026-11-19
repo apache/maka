@@ -21,11 +21,11 @@ use crate::{Error, Transcript, catalog};
 use maka_capabilities::filesystem::OpenFile;
 use maka_capabilities::filesystem::ReadDirectory;
 use maka_capabilities::filesystem::Symlinks;
-use maka_capabilities::storage;
-use maka_capabilities::storage::Data;
-use maka_capabilities::storage::Mutation;
-use maka_capabilities::storage::Store;
-use maka_capabilities::storage::StoreError;
+use maka_plugin_core::storage;
+use maka_plugin_core::storage::Data;
+use maka_plugin_core::storage::Mutation;
+use maka_plugin_core::storage::Store;
+use maka_plugin_core::storage::StoreError;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, path::Path};
 use uuid::Uuid;
@@ -118,6 +118,58 @@ impl Source {
             Location::OpenCode { database } => {
                 catalog::opencode(views, database.clone(), query).await
             }
+        }
+    }
+
+    pub async fn read_exact(
+        &self,
+        views: &(impl crate::access::ReadSource + ?Sized),
+        selection: &Selection,
+        sink: &mut dyn crate::ExactSink,
+    ) -> Result<crate::ExactTranscript, Error> {
+        self.validate()?;
+        if selection.source_id != self.id {
+            return Err(Error::Invalid("selection belongs to another source"));
+        }
+        crate::transcript::identity(&selection.session_id)?;
+        let (root, format) = match &self.location {
+            Location::OpenCode { database } => {
+                if &selection.path != database {
+                    return Err(Error::Invalid("selected database has changed"));
+                }
+                return crate::opencode::read_exact(
+                    views,
+                    database.clone(),
+                    &selection.session_id,
+                    sink,
+                )
+                .await;
+            }
+            Location::Codex { root } => (root, catalog::Format::Codex),
+            Location::ClaudeCode { root } => (root, catalog::Format::ClaudeCode),
+        };
+        let file = directory(views, root.clone())
+            .await?
+            .open_file(OpenFile {
+                path: selection.path.clone(),
+                symlinks: Symlinks::Reject,
+            })
+            .await?;
+        let result = match format {
+            catalog::Format::Codex => {
+                crate::codex::read_exact(views, &file, &selection.session_id, sink).await
+            }
+            catalog::Format::ClaudeCode => {
+                crate::claude::read_exact(views, &file, &selection.session_id, sink).await
+            }
+        };
+        match (result, file.close().await) {
+            (Err(primary), Err(cleanup)) => Err(Error::Cleanup {
+                primary: Box::new(primary),
+                cleanup,
+            }),
+            (_, Err(cleanup)) => Err(cleanup.into()),
+            (result, Ok(())) => result,
         }
     }
 

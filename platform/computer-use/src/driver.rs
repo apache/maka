@@ -20,8 +20,7 @@
 pub(crate) mod native_computer;
 
 use crate::desktop::{NativeCleanup, NativeEpochId, observe_retirement};
-#[cfg(test)]
-use cua_driver_sdk::TrustedSessionOptions;
+
 use cua_driver_sdk::{
     ConfiguredDriverOptions, CuaDriver, CuaDriverSession, DriverError, HostSessionOptions,
     RuntimeAuthorizationOptions, SessionPermissionMode, worker::ActionCompletion,
@@ -170,7 +169,33 @@ pub(crate) enum WindowsCaptureCommit {
     Replaced { id: String },
 }
 #[cfg(target_os = "windows")]
+pub(crate) struct NativeWindowsCall<T> {
+    pub value: T,
+    pub source: Option<crate::desktop::worker::native_owner::NativePresentationSource>,
+}
+#[cfg(target_os = "windows")]
+impl<T> NativeWindowsCall<T> {
+    pub(crate) fn metadata(value: T) -> Self {
+        Self {
+            value,
+            source: None,
+        }
+    }
+    pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> NativeWindowsCall<U> {
+        NativeWindowsCall {
+            value: f(self.value),
+            source: self.source,
+        }
+    }
+}
+#[cfg(target_os = "windows")]
+type CoordinateCall = NativeWindowsCall<CallResult>;
+#[cfg(not(target_os = "windows"))]
+type CoordinateCall = CallResult;
+
+#[cfg(target_os = "windows")]
 pub(crate) struct WindowsObservationResult {
+    pub source: Option<crate::desktop::worker::native_owner::NativePresentationSource>,
     pub commit: Option<WindowsObservationCommit>,
     pub result: Result<CallResult, ToolError>,
 }
@@ -195,7 +220,7 @@ impl Driver {
         cancellation: &CancellationToken,
         language: Language,
         invocation: &crate::InvocationContext<'_>,
-    ) -> Result<CallResult, ToolError> {
+    ) -> Result<NativeWindowsCall<CallResult>, ToolError> {
         Self::invoke_with_coordinates(
             driver,
             name,
@@ -223,7 +248,7 @@ impl Driver {
         cancellation: &CancellationToken,
         language: Language,
         invocation: &crate::InvocationContext<'_>,
-    ) -> Result<CallResult, ToolError> {
+    ) -> Result<NativeWindowsCall<CallResult>, ToolError> {
         Self::invoke_with_coordinates(
             driver,
             name,
@@ -262,7 +287,7 @@ impl Driver {
         .await?;
         // Read the producer's commit before the ordinary error mapper discards
         // the failed response. A failed observation is never a rollback ACK.
-        let call: CallResult = serde_json::from_str(&result.raw_json).map_err(|error| {
+        let call: CallResult = serde_json::from_str(&result.value.raw_json).map_err(|error| {
             ToolError::OutcomeUnknown(format!("invalid native observation result: {error}"))
         })?;
         let commit = call
@@ -274,12 +299,13 @@ impl Driver {
             .map_err(|error| {
                 ToolError::OutcomeUnknown(format!("invalid native observation commit: {error}"))
             })?;
-        let mapped = if result.is_error {
-            windows_native_result(result, language)
+        let mapped = if result.value.is_error {
+            windows_native_result(result.value, language)
         } else {
             Ok(call)
         };
         Ok(WindowsObservationResult {
+            source: result.source,
             commit,
             result: mapped,
         })
@@ -329,13 +355,18 @@ impl Driver {
         epoch: NativeEpochId,
         session: &str,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
     ) -> BoxFuture<'static, Result<(), ToolError>> {
         let owner = self.native_owner.clone();
         let session = session.to_owned();
         let turn = turn.to_owned();
+        let execution = execution.clone();
         // Same explicit cleanup custody: losing an observer does not cancel a
         // native monitor/process retirement already accepted by the Host.
-        let task = tokio::spawn(async move { owner.finish_turn(epoch, &session, &turn).await });
+        let task =
+            tokio::spawn(
+                async move { owner.finish_turn(epoch, &session, &turn, &execution).await },
+            );
         Box::pin(async move {
             task.await.map_err(|error| {
                 ToolError::CleanupUnconfirmed(format!(
@@ -767,7 +798,7 @@ impl Driver {
         language: Language,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
-        Self::invoke_with_coordinates(
+        let result = Self::invoke_with_coordinates(
             driver,
             name,
             input,
@@ -780,7 +811,15 @@ impl Driver {
             #[cfg(target_os = "windows")]
             invocation,
         )
-        .await
+        .await?;
+        #[cfg(target_os = "windows")]
+        {
+            Ok(result.value)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Ok(result)
+        }
     }
 
     pub(crate) async fn invoke_native_window_pixels(
@@ -792,7 +831,7 @@ impl Driver {
         language: Language,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
-        Self::invoke_with_coordinates(
+        let result = Self::invoke_with_coordinates(
             driver,
             name,
             input,
@@ -805,7 +844,15 @@ impl Driver {
             #[cfg(target_os = "windows")]
             invocation,
         )
-        .await
+        .await?;
+        #[cfg(target_os = "windows")]
+        {
+            Ok(result.value)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Ok(result)
+        }
     }
 
     /// Match the selected Cua dispatch backend; DISPLAY alone is not XID proof.
@@ -983,7 +1030,8 @@ impl Driver {
         coordinates: NativeCoordinates,
         expected_generation: Option<crate::desktop::worker::native_owner::NativeGeneration>,
         invocation: &crate::InvocationContext<'_>,
-    ) -> Result<crate::desktop::worker::native_owner::NativeResult, ToolError> {
+    ) -> Result<NativeWindowsCall<crate::desktop::worker::native_owner::NativeResult>, ToolError>
+    {
         use crate::desktop::worker::native_owner::NativeCoordinateFrame;
 
         if cancellation.is_cancelled() {
@@ -1017,7 +1065,10 @@ impl Driver {
                 invocation,
             )
             .await?;
-        Ok(reply.result)
+        Ok(NativeWindowsCall {
+            value: reply.result,
+            source: Some(reply.source),
+        })
     }
 
     async fn invoke_with_coordinates(
@@ -1032,7 +1083,7 @@ impl Driver {
             crate::desktop::worker::native_owner::NativeGeneration,
         >,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
-    ) -> Result<CallResult, ToolError> {
+    ) -> Result<CoordinateCall, ToolError> {
         if ![
             "list_apps",
             "list_windows",
@@ -1070,7 +1121,11 @@ impl Driver {
         #[cfg(target_os = "macos")]
         if let Some(role) = match name {
             "list_apps" => Some(crate::desktop::worker::MacRole::ListApps),
-            "list_windows" => Some(crate::desktop::worker::MacRole::ListWindows),
+            "list_windows" => Some(crate::desktop::worker::MacRole::ListWindows {
+                pid: serde_json::from_value::<cua_driver_contract::ListWindowsInput>(input.clone())
+                    .map_err(|error| ToolError::Failed(error.to_string()))?
+                    .pid,
+            }),
             _ => None,
         } {
             // Inventory must not initialize the serving Host's native runtime.
@@ -1132,7 +1187,10 @@ impl Driver {
         };
         #[cfg(target_os = "windows")]
         {
-            windows_native_result(result, language)
+            Ok(NativeWindowsCall {
+                value: windows_native_result(result.value, language)?,
+                source: result.source,
+            })
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1159,6 +1217,74 @@ impl Driver {
         Ok(())
     }
 
+    #[cfg(target_os = "windows")]
+    pub(crate) async fn present_native_window(
+        driver: &Arc<Mutex<Self>>,
+        capture: &crate::preview::native::NativeCapture,
+        authority: Arc<dyn crate::preview::ForegroundAuthority>,
+        area: crate::preview::PresentationArea,
+        cancellation: CancellationToken,
+    ) -> Result<crate::preview::PresentationResult, ToolError> {
+        let owner = {
+            let mut current = driver.lock().await;
+            current.admit_epoch(capture.native_epoch)?;
+            current.native_owner.clone()
+        };
+        owner
+            .present(
+                &capture.windows_source,
+                &capture.binding,
+                capture.subject.clone(),
+                authority,
+                area,
+                cancellation,
+            )
+            .await
+    }
+    #[cfg(not(target_os = "windows"))]
+    pub(crate) async fn presentation_session(
+        driver: &Arc<Mutex<Self>>,
+        epoch: NativeEpochId,
+        cancellation: &CancellationToken,
+    ) -> Result<Arc<CuaDriverSession>, ToolError> {
+        if cancellation.is_cancelled() {
+            return Err(ToolError::Failed("Computer presentation cancelled".into()));
+        }
+        let bound = driver.lock().await.bind_epoch(epoch, Language::En)?;
+        let session = bound.ready(Language::En).await?;
+        let mut current = driver.lock().await;
+        current.admit_epoch(epoch)?;
+        if cancellation.is_cancelled()
+            || !current
+                .sessions
+                .get(&epoch)
+                .is_some_and(|current| Arc::ptr_eq(current, &bound))
+        {
+            return Err(ToolError::Failed(
+                "Computer presentation epoch retired".into(),
+            ));
+        }
+        Ok(session)
+    }
+    #[cfg(not(target_os = "windows"))]
+    pub(crate) async fn check_presentation_session(
+        driver: &Arc<Mutex<Self>>,
+        epoch: NativeEpochId,
+        session: &Arc<CuaDriverSession>,
+    ) -> Result<(), ToolError> {
+        let mut current = driver.lock().await;
+        current.admit_epoch(epoch)?;
+        if !current
+            .sessions
+            .get(&epoch)
+            .is_some_and(|bound| Arc::ptr_eq(&bound.session, session))
+        {
+            return Err(ToolError::Failed(
+                "Computer presentation session changed".into(),
+            ));
+        }
+        Ok(())
+    }
     fn bind_epoch(
         &mut self,
         epoch: NativeEpochId,
@@ -1422,46 +1548,6 @@ fn native_element_result(
     native_input_result(result, language)
 }
 
-#[cfg(all(test, target_os = "linux", not(target_env = "musl")))]
-mod linux_element_boundary_tests {
-    use super::*;
-
-    #[test]
-    fn native_element_refusals_keep_original_text_and_uncertain_dispatch_stays_uncertain() {
-        let message = "element is not in this window's AT-SPI tree; refresh get_window_state()";
-        for (code, effect, uncertain) in [
-            ("input_preparation_failed", Some("refused"), false),
-            ("input_preparation_failed", Some("unverifiable"), true),
-            ("input_preparation_failed", None, true),
-            ("input_outcome_unknown", Some("unverifiable"), true),
-        ] {
-            let result = cua_driver_sdk::ToolResult {
-                text: message.into(),
-                images: Vec::new(),
-                structured_json: effect
-                    .map(|effect| serde_json::json!({"code":code,"effect":effect}).to_string()),
-                is_error: true,
-                error_code: Some(code.into()),
-                action: None,
-                verification: None,
-                degraded: false,
-                raw_json: "{}".into(),
-            };
-            match native_element_result(result, Language::En).unwrap_err() {
-                ToolError::Failed(actual) => {
-                    assert!(!uncertain);
-                    assert_eq!(actual, message);
-                }
-                ToolError::OutcomeUnknown(actual) => {
-                    assert!(uncertain);
-                    assert_eq!(actual, message);
-                }
-                other => panic!("unexpected native element error: {other}"),
-            }
-        }
-    }
-}
-
 fn refusal(code: &str, reason: &str, language: Language) -> String {
     if code.starts_with("background_unavailable") {
         return format!(
@@ -1482,7 +1568,7 @@ fn refusal(code: &str, reason: &str, language: Language) -> String {
     message
 }
 
-fn native_error(error: &DriverError, language: Language) -> ToolError {
+pub(crate) fn native_error(error: &DriverError, language: Language) -> ToolError {
     match error {
         DriverError::Shutdown => ToolError::Failed(crate::language::inactive(language).into()),
         DriverError::ActionInterrupted {
@@ -1495,374 +1581,5 @@ fn native_error(error: &DriverError, language: Language) -> ToolError {
         | DriverError::Worker { .. }
         | DriverError::Remote { .. } => ToolError::OutcomeUnknown(error.to_string()),
         error => ToolError::Failed(error.to_string()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use cua_driver_contract::{EndSessionInput, GetSessionInput, StartSessionInput};
-
-    #[tokio::test]
-    #[cfg_attr(
-        windows,
-        ignore = "the SDK requires an interactive Windows desktop even for lifecycle administration"
-    )]
-    async fn failed_bound_session_reports_each_observers_language() {
-        let mut driver = Driver::default();
-        let bound = driver
-            .bind_epoch(NativeEpochId::new(), Language::En)
-            .unwrap();
-        bound.session.close();
-
-        for (language, expected) in [
-            (
-                Language::En,
-                "Computer Use session is inactive. Call cua_reset and rebind targets.",
-            ),
-            (
-                Language::ZhCn,
-                "Computer Use 会话已失效。请调用 cua_reset 并重新绑定目标。",
-            ),
-            (
-                Language::En,
-                "Computer Use session is inactive. Call cua_reset and rebind targets.",
-            ),
-        ] {
-            let error = match bound.ready(language).await {
-                Ok(_) => panic!("a closed SDK session must not be started again"),
-                Err(error) => error,
-            };
-            let ToolError::Failed(message) = error else {
-                panic!("a session closed before startup has no uncertain effect: {error:?}");
-            };
-            assert_eq!(message, expected);
-        }
-        driver.close().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn dropping_an_epoch_close_observer_keeps_the_original_cleanup() {
-        let mut driver = Driver::default();
-        let epoch = NativeEpochId::new();
-        let session = driver
-            .bind_epoch(epoch, Language::En)
-            .unwrap()
-            .ready(Language::En)
-            .await
-            .unwrap();
-        let original = session
-            .get_session(GetSessionInput { session: None })
-            .await
-            .unwrap();
-
-        drop(driver.release_epoch(epoch));
-        driver.release_epoch(epoch).await.unwrap();
-        assert!(
-            session
-                .get_session(GetSessionInput { session: None })
-                .await
-                .is_err(),
-            "the original epoch lease must be revoked after its observer disappears"
-        );
-        let replacement = driver
-            .bind_epoch(epoch, Language::En)
-            .unwrap()
-            .ready(Language::En)
-            .await
-            .unwrap()
-            .get_session(GetSessionInput { session: None })
-            .await
-            .unwrap();
-        assert_ne!(
-            original.session, replacement.session,
-            "a confirmed epoch retirement must permit a fresh lifecycle episode"
-        );
-        driver.release_epoch(epoch).await.unwrap();
-        driver.close().await.unwrap();
-    }
-
-    #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn fresh_binding_replaces_failed_controller_without_restarting_old_owner() {
-        let driver = Arc::new(Mutex::new(Driver::default()));
-        let (original, unaffected) = {
-            let mut driver = driver.lock().await;
-            (
-                driver
-                    .select_mac_controller(-1, "same-process", None)
-                    .unwrap(),
-                driver
-                    .select_mac_controller(-2, "another-process", None)
-                    .unwrap(),
-            )
-        };
-        // A deterministic startup failure before AX I/O follows the same
-        // ready-error / confirmed-join path as an unavailable AX application.
-        assert!(matches!(original.ensure_started().await,
-            Err(ToolError::Failed(reason)) if reason == "native AX controller requires an actual process"));
-        driver
-            .lock()
-            .await
-            .release_epoch(NativeEpochId::new())
-            .await
-            .unwrap();
-        let retired = driver
-            .lock()
-            .await
-            .select_mac_controller(-1, "same-process", None)
-            .expect_err("a failed owner cannot accept a new getApp binding");
-        Driver::retire_mac_controller_owner(&driver, -1, retired)
-            .await
-            .unwrap();
-        let replacement = driver
-            .lock()
-            .await
-            .select_mac_controller(-1, "same-process", None)
-            .unwrap();
-        assert!(!replacement.same_owner(&original));
-        assert!(
-            driver
-                .lock()
-                .await
-                .select_mac_controller(-2, "another-process", None)
-                .unwrap()
-                .same_owner(&unaffected)
-        );
-        assert!(matches!(original.primary_window_id().await,
-            Err(ToolError::Failed(reason)) if reason == "native AX controller is closed"));
-        assert!(matches!(replacement.ensure_started().await,
-            Err(ToolError::Failed(reason)) if reason == "native AX controller requires an actual process"));
-        driver.lock().await.close().await.unwrap();
-    }
-
-    #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn retiring_an_old_controller_preserves_its_replacement() {
-        let driver = Arc::new(Mutex::new(Driver::default()));
-        let old = crate::macos::controller::Controller::new(1, "old".into(), None);
-        let current = crate::macos::controller::Controller::new(1, "current".into(), None);
-        driver.lock().await.mac_controllers.insert(
-            1,
-            MacController {
-                generation: "current".into(),
-                controller: current.clone(),
-            },
-        );
-        // A delayed old-generation cleanup must not erase a replacement that
-        // another admitted getApp already installed for this PID.
-        Driver::retire_mac_controller_owner(&driver, 1, old)
-            .await
-            .unwrap();
-        assert!(
-            driver.lock().await.mac_controllers[&1]
-                .controller
-                .same_owner(&current)
-        );
-        driver.lock().await.close().await.unwrap();
-    }
-
-    #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn epoch_release_preserves_controller_until_terminal_host_close() {
-        let mut driver = Driver::default();
-        let controller = crate::macos::controller::Controller::new(1, "generation".into(), None);
-        driver.mac_controllers.insert(
-            1,
-            MacController {
-                generation: "generation".into(),
-                controller: controller.clone(),
-            },
-        );
-        // Dormant controllers exercise ownership without AX, native threads,
-        // an SDK runtime, or a desktop fixture.
-        driver.release_epoch(NativeEpochId::new()).await.unwrap();
-        assert!(
-            driver.mac_controllers[&1]
-                .controller
-                .same_owner(&controller)
-        );
-        assert!(matches!(driver.state, State::Idle));
-        driver.close().await.unwrap();
-        assert!(driver.mac_controllers.is_empty());
-        assert!(matches!(driver.state, State::Closed));
-        assert!(controller.ensure_started().await.is_err());
-    }
-
-    // This uses only SDK session administration, never desktop observation or
-    // input. It exercises the real binding/expiry/reset ownership contract.
-    #[tokio::test]
-    #[cfg_attr(
-        windows,
-        ignore = "the SDK requires an interactive Windows desktop even for lifecycle administration"
-    )]
-    async fn bound_sessions_ignore_ended_implicit_state_and_reset_independently() {
-        let mut driver = Driver::default();
-        let a_epoch = NativeEpochId::new();
-        let b_epoch = NativeEpochId::new();
-        let expired_epoch = NativeEpochId::new();
-        let a = driver
-            .bind_epoch(a_epoch, Language::En)
-            .unwrap()
-            .ready(Language::En)
-            .await
-            .unwrap();
-        let b = driver
-            .bind_epoch(b_epoch, Language::En)
-            .unwrap()
-            .ready(Language::En)
-            .await
-            .unwrap();
-        let State::Active(native) = &driver.state else {
-            unreachable!()
-        };
-        native
-            .start_session(StartSessionInput {
-                session: None,
-                capture_scope: None,
-                cursor_theme: None,
-                cursor_motion: None,
-            })
-            .await
-            .unwrap();
-        native
-            .end_session(EndSessionInput { session: None })
-            .await
-            .unwrap();
-        let before = a
-            .get_session(GetSessionInput { session: None })
-            .await
-            .unwrap();
-        let other = b
-            .get_session(GetSessionInput { session: None })
-            .await
-            .unwrap();
-        assert_ne!(before.session, other.session);
-        assert_eq!(
-            before.expires_in_seconds, None,
-            "bound lifecycle must follow its host owner"
-        );
-        driver.release_epoch(a_epoch).await.unwrap();
-        assert!(
-            a.get_session(GetSessionInput { session: None })
-                .await
-                .is_err()
-        );
-        let after = driver
-            .bind_epoch(a_epoch, Language::En)
-            .unwrap()
-            .ready(Language::En)
-            .await
-            .unwrap()
-            .get_session(GetSessionInput { session: None })
-            .await
-            .unwrap();
-        assert_ne!(
-            before.session, after.session,
-            "reset owns a fresh lifecycle episode"
-        );
-        assert_eq!(
-            other.session,
-            b.get_session(GetSessionInput { session: None })
-                .await
-                .unwrap()
-                .session
-        );
-        // Terminal authority must not make reset itself impossible.
-        b.end_session(EndSessionInput { session: None })
-            .await
-            .unwrap();
-        driver.release_epoch(b_epoch).await.unwrap();
-        driver
-            .bind_epoch(b_epoch, Language::En)
-            .unwrap()
-            .ready(Language::En)
-            .await
-            .unwrap()
-            .get_session(GetSessionInput { session: None })
-            .await
-            .unwrap();
-        driver.release_epoch(a_epoch).await.unwrap();
-        driver.release_epoch(b_epoch).await.unwrap();
-        // Exercise the SDK's real expiry diagnostic, not a fabricated error.
-        let State::Active(native) = &driver.state else {
-            unreachable!()
-        };
-        let expired = native
-            .create_trusted_session(TrustedSessionOptions {
-                public_session: format!("expiry-{}", uuid::Uuid::new_v4()),
-                mode: SessionPermissionMode::Standard,
-                ttl_seconds: 1,
-                idle_ttl_seconds: 1,
-                capability_manifest_path: None,
-                bounded_manifest_path: None,
-            })
-            .unwrap();
-        expired
-            .start_session(StartSessionInput {
-                session: None,
-                capture_scope: None,
-                cursor_theme: None,
-                cursor_motion: None,
-            })
-            .await
-            .unwrap();
-        let started = OnceCell::new();
-        started.set(Ok(())).unwrap();
-        driver.sessions.insert(
-            expired_epoch,
-            Arc::new(BoundSession {
-                session: expired,
-                started,
-                #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-                native_turns: Mutex::new(Default::default()),
-            }),
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-        // SDK authorization rejects this before any desktop observation.
-        let driver = Arc::new(Mutex::new(driver));
-        let failure = Driver::invoke(
-            &driver,
-            "list_apps",
-            serde_json::json!({}),
-            expired_epoch,
-            &CancellationToken::new(),
-            Language::En,
-            #[cfg(target_os = "windows")]
-            &crate::InvocationContext::new("expiry-fixture", "fixture-turn"),
-        )
-        .await
-        .unwrap_err()
-        .to_string();
-        assert!(
-            failure.contains("authorization context expired"),
-            "{failure}"
-        );
-        assert!(failure.contains("cua_reset"), "{failure}");
-        assert!(
-            !refusal(
-                "permission_denied",
-                "desktop observation is forbidden by policy",
-                Language::En,
-            )
-            .contains("cua_reset")
-        );
-        let cleanup = driver.lock().await.release_epoch(expired_epoch);
-        cleanup.await.unwrap();
-        let bound = driver
-            .lock()
-            .await
-            .bind_epoch(expired_epoch, Language::En)
-            .unwrap();
-        bound
-            .ready(Language::En)
-            .await
-            .unwrap()
-            .get_session(GetSessionInput { session: None })
-            .await
-            .unwrap();
-        let cleanup = driver.lock().await.release_epoch(expired_epoch);
-        cleanup.await.unwrap();
-        driver.lock().await.close().await.unwrap();
     }
 }

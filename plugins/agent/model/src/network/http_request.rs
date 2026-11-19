@@ -32,9 +32,16 @@ impl Network {
         &self,
         request: http::Request,
         cancellation: CancellationToken,
+        source: Option<&maka_agent_ports::model::RequestSource>,
     ) -> Result<http::Response, Error> {
         let cleanup = request.body.cleanup();
-        let result = self.request_http_inner(request, cancellation).await;
+        let result = self.request_http_inner(request, cancellation, source).await;
+        let result = match result {
+            Err(error) if !error.cleanup_unconfirmed() => Err(source
+                .and_then(|source| source.frozen.authorization_failure())
+                .unwrap_or(error)),
+            result => result,
+        };
         if result
             .as_ref()
             .is_err_and(|error| !error.cleanup_unconfirmed())
@@ -52,15 +59,16 @@ impl Network {
         &self,
         request: http::Request,
         cancellation: CancellationToken,
+        source: Option<&maka_agent_ports::model::RequestSource>,
     ) -> Result<http::Response, Error> {
         let mut method = match request.method {
-            http::Method::Get => Method::GET,
-            http::Method::Head => Method::HEAD,
-            http::Method::Post => Method::POST,
-            http::Method::Put => Method::PUT,
-            http::Method::Patch => Method::PATCH,
-            http::Method::Delete => Method::DELETE,
-            http::Method::Options => Method::OPTIONS,
+            maka_plugin_core::http::Method::Get => Method::GET,
+            maka_plugin_core::http::Method::Head => Method::HEAD,
+            maka_plugin_core::http::Method::Post => Method::POST,
+            maka_plugin_core::http::Method::Put => Method::PUT,
+            maka_plugin_core::http::Method::Patch => Method::PATCH,
+            maka_plugin_core::http::Method::Delete => Method::DELETE,
+            maka_plugin_core::http::Method::Options => Method::OPTIONS,
         };
         let mut headers = headers(request.headers)?;
         if headers.contains_key(CONTENT_LENGTH) || headers.contains_key(TRANSFER_ENCODING) {
@@ -77,7 +85,14 @@ impl Network {
         loop {
             let input = body.take().expect("one source per redirect hop");
             let (response, upload) = self
-                .send_http(method.clone(), &url, headers.clone(), input, &cancellation)
+                .send_http(
+                    method.clone(),
+                    &url,
+                    headers.clone(),
+                    input,
+                    &cancellation,
+                    source,
+                )
                 .await?;
             let status = response.status().as_u16();
             // reqwest 0.13's tower redirect rules: 301/302 change POST only;
@@ -172,10 +187,11 @@ impl Network {
         headers: HeaderMap,
         input: http::RequestBody,
         cancellation: &CancellationToken,
+        source: Option<&maka_agent_ports::model::RequestSource>,
     ) -> Result<(reqwest::Response, UploadLease), Error> {
         let cleanup = input.cleanup();
         let result = self
-            .send_http_inner(method, url, headers, input, cancellation)
+            .send_http_inner(method, url, headers, input, cancellation, source)
             .await;
         if result
             .as_ref()
@@ -197,6 +213,7 @@ impl Network {
         headers: HeaderMap,
         input: http::RequestBody,
         cancellation: &CancellationToken,
+        source: Option<&maka_agent_ports::model::RequestSource>,
     ) -> Result<(reqwest::Response, UploadLease), Error> {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
@@ -216,7 +233,7 @@ impl Network {
         let length = input.length();
         let stop = cancellation.child_token();
         let (stream, receipt) = http::upload::track(input, stop.clone());
-        let upload = UploadLease {
+        let mut upload = UploadLease {
             connections,
             stop,
             receipt: AsyncMutex::new(receipt),
@@ -236,10 +253,12 @@ impl Network {
         if let Some(length) = length.filter(|length| *length > 0) {
             pending = pending.header(CONTENT_LENGTH, length);
         }
-        let response = {
+        let response = async {
+            if let Some(source)=source{source.frozen.authorize(cancellation.clone()).await?;}
+            if cancellation.is_cancelled(){return Err(Error::Cancelled);}
             let sending = pending.send();
             tokio::pin!(sending);
-            let mut receipt = upload.receipt.lock().await;
+            let receipt = upload.receipt.get_mut();
             let close_source = receipt.needs_source_close();
             tokio::select! {
                 biased;
@@ -266,7 +285,7 @@ impl Network {
                     }
                 }
             }
-        };
+        }.await;
         match response {
             Ok(response) => Ok((response, upload)),
             Err(error) => {

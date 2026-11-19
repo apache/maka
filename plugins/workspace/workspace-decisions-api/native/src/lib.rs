@@ -23,13 +23,14 @@ mod network;
 use contract::*;
 use contract::{EXPORT, IMPLEMENTATION, contract};
 use futures_util::future::BoxFuture;
-use maka_capabilities::call::Resources;
-use maka_capabilities::storage::Namespace;
-use maka_capabilities::storage::StoreError;
 use maka_config::ConfigurationStore;
 use maka_host_runtime::application::{
-    Context, Handler, NativeActivation, NativeContext, NativeOwner, NativeRegistry,
+    Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeActivation, NativeContext,
+    NativeOwner, NativeRegistry,
 };
+use maka_plugin_core::storage::Namespace;
+use maka_plugin_core::storage::StoreError;
+use maka_plugin_core::work::resources::Resources;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio_util::sync::CancellationToken;
@@ -124,9 +125,9 @@ impl Handler for Service {
         name: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         let owner = self.0.clone();
-        Box::pin(async move {
+        let result = async move {
             if owner.stopping.is_cancelled() || context.scope().cancellation.is_cancelled() {
                 return Err("decisions_api_closed".into());
             }
@@ -231,6 +232,10 @@ impl Handler for Service {
                 }
                 _ => Err("decisions_api_method_unavailable".into()),
             }
+        };
+        Box::pin(async move {
+            let result: std::result::Result<Value, String> = result.await;
+            result.map(HandlerValue::Json).map_err(HandlerError::from)
         })
     }
 }

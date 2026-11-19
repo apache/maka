@@ -11,10 +11,12 @@
 //!
 //! Scaled, a finger would move the content several times as far as itself
 //! (a million rows of 28 points, nine times). Where the scroll bar is not
-//! dragged (touch), the offset is followed from an [`Anchor`] instead: the
-//! content moves as far as the scroll ([`Axis::content_offset_from`]), and
-//! once the scroll comes to rest the scroll view is moved, unseen, to where
-//! its bar stands for the content ([`Axis::anchor_at`]).
+//! dragged (touch, or web desktop wheels and keys), the offset is followed
+//! from an [`Anchor`] instead: the content moves as far as the scroll
+//! ([`Axis::content_offset_from`]). Once the scroll comes to rest, the scroll
+//! view moves, unseen, to the content's anchor ([`Axis::anchor_at`]): the
+//! proportional bar position in the interior, with native scroll room
+//! reserved near either end for a one-to-one reverse gesture.
 
 use nsh_core::Points;
 
@@ -89,18 +91,46 @@ impl Axis {
         at.clamp(0.0, cmax)
     }
 
-    /// The anchor that shows content offset `content` with the scroll view
-    /// where its bar stands for it: [`Self::scroll_offset`] on a device
-    /// pixel of `pixel_ratio`, where the platforms keep a scroll offset.
+    /// A scrollbar drag spans the full content, linearly on each side of
+    /// where it started. Keeping that starting point avoids a jump when a
+    /// wheel's one-to-one offset has not yet been recentered at rest.
+    pub(crate) fn content_offset_drag(&self, scroll: f64, anchor: Anchor) -> f64 {
+        if !self.scaled() {
+            return self.content_offset(scroll);
+        }
+        let smax = (self.extent() - self.viewport).max(0.0);
+        let cmax = (self.total - self.viewport).max(0.0);
+        let at = if scroll >= anchor.scroll {
+            anchor.content
+                + (scroll - anchor.scroll) * (cmax - anchor.content)
+                    / (smax - anchor.scroll).max(f64::MIN_POSITIVE)
+        } else {
+            anchor.content * scroll / anchor.scroll.max(f64::MIN_POSITIVE)
+        };
+        at.clamp(0.0, cmax)
+    }
+
+    /// The anchor that shows content offset `content`, on a device pixel
+    /// of `pixel_ratio`, where the platforms keep a scroll offset.
+    /// It follows the proportional bar position ([`Self::scroll_offset`])
+    /// in the interior and reserves native scroll room near either end so
+    /// a reverse gesture follows the content one to one. While the reserve
+    /// clamps that proportional position, successive content offsets can
+    /// share the same native anchor.
     pub(crate) fn anchor_at(&self, content: f64, pixel_ratio: f64) -> Anchor {
         let max = (self.total - self.viewport).max(0.0);
         let content = content.clamp(0.0, max);
+        let room = (self.extent() - self.viewport).max(0.0);
+        let pad = (room / 64.0).min(room / 2.0);
+        let scroll = self
+            .scroll_offset(content)
+            .clamp(content.min(pad), (room - (max - content).min(pad)).max(0.0));
         let ratio = pixel_ratio.max(f64::MIN_POSITIVE);
-        let scroll = (self.scroll_offset(content) * ratio).round() / ratio;
+        let scroll = (scroll * ratio).round() / ratio;
         // The `f32` the scroll view reports, so the anchor's offset is met
         // exactly when the scroll comes back to it.
         Anchor {
-            scroll: f64::from(scroll as f32),
+            scroll: f64::from((scroll as f32).clamp(0.0, room as f32)),
             content,
         }
     }
@@ -227,10 +257,10 @@ mod tests {
     #[test]
     fn a_stale_anchor_at_the_origin_jumps_until_it_is_retargeted() {
         // A million rows of 28 points. The scroll view was brought back to 0
-        // while the anchor still stood for content further down (a rest that
-        // skipped retargeting because the offset was already the bar's).
+        // while the anchor still stood for scaled content further down (a rest
+        // that skipped retargeting because the offset was already the bar's).
         let axis = Axis::new(28_000_000.0, 600.0);
-        let stale = axis.anchor_at(900.0, 2.0);
+        let stale = axis.anchor_at(900_000.0, 2.0);
         assert!(
             axis.content_offset_from(0.0, stale).abs() < 1.0,
             "the origin still shows the top"
@@ -242,6 +272,35 @@ mod tests {
         );
         let fresh = axis.anchor_at(0.0, 2.0);
         assert!((axis.content_offset_from(58.0, fresh) - 58.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn resting_near_either_end_keeps_reverse_scrolls_one_to_one() {
+        // A million rows of 28 points. After settling a few dozen rows from
+        // the top, a reverse gesture must have one-to-one scroll room all the
+        // way back to row 0 instead of compressing 900pt into 96.5pt.
+        let axis = Axis::new(28_000_000.0, 600.0);
+        let near_top = axis.anchor_at(900.0, 2.0);
+        assert_eq!(near_top.scroll, 900.0);
+        for step in [60.0, 240.0, 600.0, 900.0] {
+            let at = axis.content_offset_from(near_top.scroll - step, near_top);
+            assert!(
+                (at - (900.0 - step)).abs() < 1e-6,
+                "step {step} back from 900 landed at {at}"
+            );
+        }
+
+        let cmax = 28_000_000.0 - 600.0;
+        let smax = MAX_EXTENT - 600.0;
+        let near_bottom = axis.anchor_at(cmax - 900.0, 2.0);
+        assert_eq!(near_bottom.scroll, smax - 900.0);
+        for step in [60.0, 240.0, 600.0, 900.0] {
+            let at = axis.content_offset_from(near_bottom.scroll + step, near_bottom);
+            assert!(
+                (at - (cmax - 900.0 + step)).abs() < 1e-6,
+                "step {step} forward from cmax - 900 landed at {at}"
+            );
+        }
     }
 
     #[test]
@@ -259,6 +318,43 @@ mod tests {
         let small = Axis::new(10_000.0, 500.0);
         let a = small.anchor_at(1234.0, 3.0);
         assert_eq!(small.content_offset_from(2000.0, a), 2000.0);
+    }
+
+    #[test]
+    fn a_web_bar_drag_starts_in_place_and_reaches_both_ends() {
+        let axis = Axis::new(68_000_000.0, 672.0);
+        // The wheel has moved locally and is still in flight: its native
+        // offset is not yet where the proportional scrollbar stands.
+        let anchor = Anchor {
+            scroll: 1500.0,
+            content: 34_000_250.0,
+        };
+        assert_eq!(
+            axis.content_offset_drag(anchor.scroll, anchor),
+            anchor.content
+        );
+        assert_eq!(axis.content_offset_drag(0.0, anchor), 0.0);
+        assert_eq!(
+            axis.content_offset_drag(MAX_EXTENT - 672.0, anchor),
+            68_000_000.0 - 672.0
+        );
+        let mut previous = 0.0;
+        for i in 0..=1000 {
+            let content =
+                axis.content_offset_drag((MAX_EXTENT - 672.0) * f64::from(i) / 1000.0, anchor);
+            assert!(content >= previous);
+            previous = content;
+        }
+        // After a drag ends, the same point becomes the local anchor:
+        // the next quarter-pixel wheel delta is a quarter content pixel.
+        let ended = Anchor {
+            scroll: 1_500_000.0,
+            content: 45_000_000.0,
+        };
+        assert_eq!(
+            axis.content_offset_from(ended.scroll + 0.25, ended),
+            ended.content + 0.25
+        );
     }
 
     #[test]

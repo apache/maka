@@ -438,7 +438,7 @@ fn report(
 /// or unparented: GTK would hand it to the parent, which (not focusable)
 /// gives it to its first focusable descendant, the field of another
 /// screen (selecting all its text).
-fn drop_focus(widget: &impl IsA<gtk::Widget>) {
+pub(crate) fn drop_focus(widget: &impl IsA<gtk::Widget>) {
     let widget = widget.as_ref();
     if let Some(root) = widget.root()
         && root
@@ -1307,6 +1307,22 @@ impl Nav {
     }
 }
 
+/// Whether `view` is inside the newest modal of its own window.
+pub(crate) fn in_focus_scope(surface: &Surface, view: &NshView) -> bool {
+    // AT can query an inserted action during a mount/navigation mutation.
+    let (Ok(_windows), Ok(nav)) = (surface.windows.try_borrow(), surface.nav.try_borrow()) else {
+        return false;
+    };
+    let Some(window) = crate::window::try_root_id(surface, view) else {
+        return false;
+    };
+    let scope = nav
+        .newest_in(surface, window)
+        .and_then(|id| nav.modals.get(&id))
+        .and_then(|modal| modal.view.as_ref());
+    scope.is_none_or(|scope| view == scope || view.is_ancestor(scope))
+}
+
 /// Goes back (the newest modal, the innermost stack or the app's
 /// `onBackPress`): whether something took it.
 pub(crate) fn go_back(surface: &Rc<Surface>) -> bool {
@@ -1452,7 +1468,7 @@ pub(crate) fn modal_config(surface: &Rc<Surface>, view: &NshView, config: &Modal
     }
     let mut nav = surface.nav.borrow_mut();
     let id = view.id();
-    nav.modals.entry(id).or_default().config = *config;
+    nav.modals.entry(id).or_default().config = config.clone();
     nav.size_modal(surface, id);
 }
 

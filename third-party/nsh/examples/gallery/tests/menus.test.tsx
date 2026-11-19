@@ -97,8 +97,8 @@ test("a row's menu changes the list", async () => {
 test("the placement and alignment change the menu's trigger", async () => {
   await app.press("Top");
   await app.press("End");
-  await app.waitFor("top · end");
-  await app.press("top · end");
+  await app.waitFor("Top, at the end");
+  await app.press("Top, at the end");
   await app.waitFor("Three");
 });
 
@@ -120,4 +120,24 @@ test("a command that takes a while shows a toast that becomes its result", async
   await app.waitFor("Syncing…");
   await app.wait(1300);
   await app.waitFor("Up to date");
+});
+
+test("on iOS the system's menu card leaves the segments to UIKit, not the gallery's drawn ones", async () => {
+  await app.waitFor("The system's menu");
+  await app.waitFor("id:system-menu");
+  expect(app.shows("Sorted by Date")).toBe(true);
+  expect(app.shows("List · sorted by Date")).toBe(true);
+  // The segments are a UISegmentedControl, which headless runs (no UIKit to
+  // size it) do not draw: none of the gallery's drawn segments stand in.
+  expect(app.shows("Grid")).toBe(false);
+  expect(app.shows("Columns")).toBe(false);
+});
+
+test("off iOS the system's menu card falls back to the gallery's drawn segments", async () => {
+  const desk = await open("../App.tsx", { platform: "macos", width: 1200, height: 1700, clock: {} });
+  await desk.press("role:button[Menu]");
+  await desk.waitFor("The system's menu");
+  expect(desk.shows("id:system-segments")).toBe(false);
+  await desk.press("Grid");
+  await desk.waitFor("Grid · sorted by Date");
 });

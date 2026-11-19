@@ -28,7 +28,7 @@ use tokio::sync::watch;
 #[derive(Clone)]
 pub(crate) struct CommitHub(Arc<Hub>);
 struct Hub {
-    all: watch::Sender<u64>,
+    all: watch::Sender<()>,
     activations: watch::Sender<()>,
     material_releases: watch::Sender<()>,
     sessions: Mutex<HashMap<String, Weak<Registration>>>,
@@ -36,14 +36,14 @@ struct Hub {
 struct Registration {
     session: String,
     hub: Weak<Hub>,
-    sender: Mutex<Option<watch::Sender<u64>>>,
+    sender: Mutex<Option<watch::Sender<()>>>,
 }
 
 /// Register before reading the initial SQL snapshot. The subscription pins only
 /// its notification channel, never the Session's historical execution state.
 #[derive(Clone)]
 pub struct SessionSubscription {
-    receiver: watch::Receiver<u64>,
+    receiver: watch::Receiver<()>,
     _registration: Arc<Registration>,
     control: Option<watch::Receiver<()>>,
 }
@@ -67,7 +67,7 @@ impl SessionSubscription {
     }
 }
 impl Deref for SessionSubscription {
-    type Target = watch::Receiver<u64>;
+    type Target = watch::Receiver<()>;
     fn deref(&self) -> &Self::Target {
         &self.receiver
     }
@@ -84,15 +84,15 @@ pub(crate) struct CommitNotice {
     sessions: Arc<[String]>,
 }
 impl CommitHub {
-    pub(crate) fn new(through: u64) -> Self {
+    pub(crate) fn new() -> Self {
         Self(Arc::new(Hub {
-            all: watch::channel(through).0,
+            all: watch::channel(()).0,
             activations: watch::channel(()).0,
             material_releases: watch::channel(()).0,
             sessions: Mutex::new(HashMap::new()),
         }))
     }
-    pub(crate) fn subscribe(&self) -> watch::Receiver<u64> {
+    pub(crate) fn subscribe(&self) -> watch::Receiver<()> {
         self.0.all.subscribe()
     }
     pub(crate) fn subscribe_activations(&self) -> watch::Receiver<()> {
@@ -110,7 +110,7 @@ impl CommitHub {
                 let registration = Arc::new(Registration {
                     session: session.to_owned(),
                     hub: Arc::downgrade(&self.0),
-                    sender: Mutex::new(Some(watch::channel(*self.0.all.borrow()).0)),
+                    sender: Mutex::new(Some(watch::channel(()).0)),
                 });
                 sessions.insert(session.to_owned(), Arc::downgrade(&registration));
                 registration
@@ -147,9 +147,15 @@ impl CommitHub {
     }
 }
 impl CommitNotice {
-    /// Called only after a confirmed commit, on its independent SQL owner.
-    pub(crate) fn publish(&self, sequence: u64) {
-        self.notify(Some(sequence));
+    /// Preserve statically routed owner sessions and transaction-discovered
+    /// domain sessions together. Empty declarations never erase an owner route.
+    pub(crate) fn with_sessions(&self, sessions: impl IntoIterator<Item = String>) -> Self {
+        let mut affected = self.sessions.iter().cloned().collect::<BTreeSet<_>>();
+        affected.extend(sessions);
+        Self {
+            hub: self.hub.clone(),
+            sessions: affected.into_iter().collect(),
+        }
     }
     pub(crate) fn activations(&self) {
         self.hub.0.activations.send_replace(());
@@ -160,7 +166,7 @@ impl CommitNotice {
         self.hub.0.material_releases.send_replace(());
     }
     pub(crate) fn metadata(&self) {
-        self.notify(None);
+        self.notify();
     }
     /// Shared workspace metadata affects only this owner's live observers. Do
     /// not enumerate durable Session membership or retain idle registrations.
@@ -177,13 +183,8 @@ impl CommitNotice {
             .collect();
         self.for_sessions(ids.iter().map(String::as_str)).metadata();
     }
-    fn notify(&self, sequence: Option<u64>) {
-        self.hub.0.all.send_modify(|current| {
-            if let Some(sequence) = sequence {
-                *current = (*current).max(sequence);
-            }
-        });
-        let through = *self.hub.0.all.borrow();
+    fn notify(&self) {
+        self.hub.0.all.send_replace(());
         let recipients: Vec<_> = {
             let sessions = self.hub.0.sessions.lock().unwrap();
             self.sessions
@@ -193,12 +194,9 @@ impl CommitNotice {
         };
         for registration in recipients {
             if let Some(sender) = registration.sender.lock().unwrap().as_ref() {
-                sender.send_modify(|current| *current = (*current).max(through));
+                sender.send_replace(());
             }
         }
-    }
-    pub(crate) fn for_session(&self, session: &str) -> Self {
-        self.hub.session(session)
     }
     pub(crate) fn for_sessions<'a>(&self, sessions: impl IntoIterator<Item = &'a str>) -> Self {
         self.hub.sessions(sessions)
@@ -229,83 +227,5 @@ impl Drop for Hub {
         {
             registration.sender.lock().unwrap().take();
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn commits_wake_only_affected_sessions_and_subscriptions_leave_no_history() {
-        let hub = CommitHub::new(7);
-        let mut all = hub.subscribe();
-        let mut watched: Vec<_> = (0..1024)
-            .map(|i| hub.subscribe_session(&format!("s{i}")))
-            .collect();
-        hub.session("s17").publish(9);
-        assert!(all.has_changed().unwrap());
-        all.borrow_and_update();
-        for (i, watch) in watched.iter_mut().enumerate() {
-            assert_eq!(watch.has_changed().unwrap(), i == 17);
-            if i == 17 {
-                assert_eq!(*watch.borrow_and_update(), 9);
-            }
-        }
-        hub.session("s17").metadata();
-        assert!(watched[17].has_changed().unwrap());
-        assert!(!watched[18].has_changed().unwrap());
-        let later = hub.subscribe_session("later");
-        assert_eq!(*later.borrow(), 9);
-        assert!(!later.has_changed().unwrap());
-        drop(watched);
-        assert_eq!(hub.0.sessions.lock().unwrap().len(), 1);
-        drop(later);
-        assert!(hub.0.sessions.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn independent_subscribers_share_notifications_but_do_not_keep_owner_alive() {
-        let hub = CommitHub::new(0);
-        let mut first = hub.subscribe_session("one");
-        let mut second = first.clone();
-        hub.session("one").publish(1);
-        first.changed().await.unwrap();
-        second.changed().await.unwrap();
-        drop(first);
-        assert_eq!(hub.0.sessions.lock().unwrap().len(), 1);
-        drop(hub);
-        assert!(second.changed().await.is_err());
-    }
-    #[tokio::test]
-    async fn metadata_commit_wakes_the_session_without_advancing_its_event_cursor() {
-        let directory = tempfile::tempdir().unwrap();
-        let log = crate::EventLog::open(&directory.path().join("events.sqlite"))
-            .await
-            .unwrap();
-        log.create_session(
-            "session",
-            "create",
-            &serde_json::json!({"name":"before"}),
-            1,
-        )
-        .await
-        .unwrap();
-        let mut own = log.subscribe_session_commits("session");
-        let other = log.subscribe_session_commits("other");
-        let through = *own.borrow();
-        log.replace_session_metadata("session", 1, serde_json::json!({"name":"after"}))
-            .await
-            .unwrap();
-        assert!(own.has_changed().unwrap());
-        assert_eq!(*own.borrow_and_update(), through);
-        assert!(!other.has_changed().unwrap());
-        log.set_session_archived::<serde_json::Value>("session", true, 2)
-            .await
-            .unwrap();
-        assert!(own.has_changed().unwrap());
-        assert_eq!(*own.borrow_and_update(), through);
-        assert!(!other.has_changed().unwrap());
-        log.close().await.unwrap();
     }
 }

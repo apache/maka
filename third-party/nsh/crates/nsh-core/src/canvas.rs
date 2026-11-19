@@ -7,6 +7,7 @@
 
 mod damage;
 mod hit;
+pub mod render;
 
 use std::sync::Arc;
 
@@ -412,8 +413,8 @@ pub struct CanvasFont {
     pub weight: u16,
     /// Italic.
     pub italic: bool,
-    /// The first family; `None` is the system font (also for
-    /// `system-ui` / `sans-serif`).
+    /// Font family or CSS fallback list (`"SF Mono, Menlo, PingFang SC"`);
+    /// `None` is the system font (`system-ui` / `sans-serif`).
     pub family: Option<Arc<str>>,
     /// OpenType features: `small-caps` and (beyond CSS, which only has
     /// them in `font-variant-numeric`) `tabular-nums`, `oldstyle-nums`,
@@ -471,14 +472,17 @@ impl CanvasFont {
             }
             rest = tail;
         }
-        let family = rest
-            .split(',')
-            .next()
-            .map(|f| f.trim().trim_matches(['"', '\'']))
-            .filter(|f| !f.is_empty())?;
-        font.family = match family {
-            "system-ui" | "sans-serif" | "-apple-system" | "ui-sans-serif" => None,
-            f => Some(f.into()),
+        let mut families = crate::style::font_families(rest);
+        let first = families.next()?;
+        font.family = match (first, families.next()) {
+            (crate::style::FamilyName::System, None) => None,
+            (crate::style::FamilyName::Named(name), None)
+                if !name.contains([',', '"', '\'', '\\'])
+                    && !crate::style::is_css_generic_keyword(name) =>
+            {
+                Some(name.into())
+            }
+            _ => Some(rest.into()),
         };
         Some(font)
     }
@@ -668,6 +672,15 @@ pub enum CanvasTextBaseline {
 pub struct CanvasImage {
     /// URL or `asset:/path`.
     pub uri: Arc<str>,
+}
+
+impl CanvasImage {
+    /// The pixels per point its file name declares (`logo@3x.png` → 3; 1
+    /// without), as an `Image`'s: `drawImage` without a destination size
+    /// draws it at its pixels over this many points, on every screen.
+    pub fn density(&self) -> f32 {
+        crate::image::density(&self.uri)
+    }
 }
 
 /// One recorded operation. The methods and properties without `method` /
@@ -1534,6 +1547,14 @@ mod tests {
     use super::*;
     use crate::text::{AttributedText, TextEngine, TextLayout};
 
+    #[test]
+    fn an_image_density_is_its_file_name_s() {
+        let density = |uri: &str| CanvasImage { uri: uri.into() }.density();
+        assert_eq!(density("asset:/logo@3x.png"), 3.0);
+        assert_eq!(density("https://example.com/a/b@2x.jpg"), 2.0);
+        assert_eq!(density("asset:/logo.png"), 1.0);
+    }
+
     /// A CSS gradient as the background of a box: the line through the
     /// box's center at the gradient's angle, as long as CSS makes it, and
     /// its stops; a repeating one's stops repeated over the whole line, the
@@ -1780,7 +1801,22 @@ mod tests {
     fn fonts_parse_the_css_shorthand() {
         let f = CanvasFont::parse("italic bold 14px \"Inter\", sans-serif").unwrap();
         assert_eq!((f.size, f.weight, f.italic), (px(14.0), 700, true));
-        assert_eq!(f.family.as_deref(), Some("Inter"));
+        assert_eq!(f.family.as_deref(), Some("\"Inter\", sans-serif"));
+        assert_eq!(
+            crate::style::font_families(f.family.as_deref().unwrap()).collect::<Vec<_>>(),
+            vec![
+                crate::style::FamilyName::Named("Inter"),
+                crate::style::FamilyName::System,
+            ]
+        );
+        let single = CanvasFont::parse("14px \"Inter\"").unwrap();
+        assert_eq!(single.family.as_deref(), Some("Inter"));
+        let quoted_generic = CanvasFont::parse("14px \"serif\"").unwrap();
+        assert_eq!(
+            crate::style::font_families(quoted_generic.family.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec![crate::style::FamilyName::Named("serif")]
+        );
         let f = CanvasFont::parse("600 12px/1.5 system-ui").unwrap();
         assert_eq!((f.size, f.weight, f.family), (px(12.0), 600, None));
         let f = CanvasFont::parse("small-caps tabular-nums 13px system-ui").unwrap();
@@ -1797,5 +1833,6 @@ mod tests {
         assert!(CanvasFont::parse("wide 13px system-ui").is_none());
         assert!(CanvasFont::parse("bold").is_none());
         assert!(CanvasFont::parse("14px").is_none());
+        assert!(CanvasFont::parse("14px , ").is_none());
     }
 }

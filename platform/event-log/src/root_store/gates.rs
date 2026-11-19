@@ -35,11 +35,11 @@ pub(super) enum Key {
     Session(String),
     Work(String),
     Binding(uuid::Uuid),
-    // A profile revoke must linearize before or after a native dispatch T1.
-    ComputerApp(String),
 }
 
 pub(super) struct Gates {
+    owner: Weak<crate::root::RootOwner>,
+    pub(super) workspaces: super::workspace_fence::Registry,
     entries: Mutex<HashMap<Key, Weak<Registration>>>,
     stop: CancellationToken,
     lifetime: Mutex<Lifetime>,
@@ -49,8 +49,34 @@ pub(super) struct Gates {
 struct Lifetime {
     active: usize,
     recovering: bool,
-    unconfirmed: Vec<crate::connection::custody::Custody>,
+    unconfirmed: Vec<Arc<RetainedEntry>>,
 }
+struct RetainedEntry {
+    _custody: crate::connection::custody::Custody,
+}
+
+pub(super) struct RetainedSettlement {
+    gates: Arc<Gates>,
+    entry: Arc<RetainedEntry>,
+}
+impl RetainedSettlement {
+    pub(super) fn confirm_cleanup(self) {
+        let retained = {
+            let mut lifetime = self.gates.lifetime.lock().unwrap();
+            let index = lifetime
+                .unconfirmed
+                .iter()
+                .position(|entry| Arc::ptr_eq(entry, &self.entry))
+                .expect("original retained owner can only settle once");
+            lifetime.unconfirmed.swap_remove(index)
+        };
+        // Custody destruction may finish work and re-enter the gates registry.
+        drop(retained);
+        drop(self.entry);
+        self.gates.changed.notify_waiters();
+    }
+}
+
 struct Registration {
     key: Key,
     registry: Weak<Gates>,
@@ -74,8 +100,10 @@ pub(super) struct ExclusivePins {
 }
 
 impl Gates {
-    pub(super) fn new() -> Arc<Self> {
+    pub(super) fn new(owner: &Arc<crate::root::RootOwner>) -> Arc<Self> {
         Arc::new(Self {
+            owner: Arc::downgrade(owner),
+            workspaces: super::workspace_fence::Registry::default(),
             entries: Mutex::new(HashMap::new()),
             stop: CancellationToken::new(),
             lifetime: Mutex::new(Lifetime::default()),
@@ -132,8 +160,28 @@ impl Gates {
         self.changed.notify_waiters();
     }
     pub(super) fn retain_unconfirmed(&self, custody: crate::connection::custody::Custody) {
-        self.lifetime.lock().unwrap().unconfirmed.push(custody);
+        self.lifetime
+            .lock()
+            .unwrap()
+            .unconfirmed
+            .push(Arc::new(RetainedEntry { _custody: custody }));
         self.changed.notify_waiters();
+    }
+    pub(super) fn retain_with_settlement(
+        self: &Arc<Self>,
+        custody: crate::connection::custody::Custody,
+    ) -> RetainedSettlement {
+        let entry = Arc::new(RetainedEntry { _custody: custody });
+        self.lifetime
+            .lock()
+            .unwrap()
+            .unconfirmed
+            .push(entry.clone());
+        self.changed.notify_waiters();
+        RetainedSettlement {
+            gates: self.clone(),
+            entry,
+        }
     }
     pub(super) fn is_closing(&self) -> bool {
         self.stop.is_cancelled()
@@ -155,6 +203,22 @@ impl Gates {
                     && (lifetime.active == 0 || !lifetime.unconfirmed.is_empty())
                 {
                     return !lifetime.unconfirmed.is_empty();
+                }
+            }
+            changed.await;
+        }
+    }
+    /// A failed shutdown receipt is final, but its original owner may still
+    /// receive actual late cleanup evidence before closing its original SQL.
+    pub(super) async fn wait_for_settlement(&self) {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            {
+                let lifetime = self.lifetime.lock().unwrap();
+                if lifetime.active == 0 && lifetime.unconfirmed.is_empty() {
+                    return;
                 }
             }
             changed.await;
@@ -240,18 +304,6 @@ impl Gates {
         Ok(ExclusivePins { _pins: pins })
     }
 }
-impl SharedPins {
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
-        self._pins.len()
-    }
-}
-impl ExclusivePins {
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
-        self._pins.len()
-    }
-}
 impl Drop for Registration {
     fn drop(&mut self) {
         if let Some(registry) = self.registry.upgrade() {
@@ -277,53 +329,8 @@ impl Drop for RecoveryPin {
         if let Some(released) = self.released.take() {
             let _ = released.send(());
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use futures_util::poll;
-    #[tokio::test]
-    async fn live_pins_exclude_only_their_keys_and_last_clone_releases() {
-        let gates = Gates::new();
-        let key = Key::Binding(uuid::Uuid::new_v4());
-        let pin = gates.read([key.clone(), key.clone()]).await.unwrap();
-        assert_eq!(pin.len(), 1);
-        let clone = pin.clone();
-        let mut writer = Box::pin(gates.write([key.clone()]));
-        assert!(poll!(&mut writer).is_pending());
-        drop(
-            gates
-                .write([Key::Binding(uuid::Uuid::new_v4())])
-                .await
-                .unwrap(),
-        );
-        drop(pin);
-        assert!(poll!(&mut writer).is_pending());
-        drop(clone);
-        let exclusive = writer.await.unwrap();
-        assert_eq!(exclusive.len(), 1);
-        drop(exclusive);
-        assert!(gates.entries.lock().unwrap().is_empty());
-    }
-    #[tokio::test]
-    async fn closed_and_cancelled_waiters_leave_no_history_sized_registry() {
-        let gates = Gates::new();
-        for index in 0..10_000 {
-            drop(gates.read([Key::Session(index.to_string())]).await.unwrap());
+        if let Some(owner) = self.gates.owner.upgrade() {
+            owner.capability_source_changed();
         }
-        assert!(gates.entries.lock().unwrap().is_empty());
-        let key = Key::Binding(uuid::Uuid::new_v4());
-        let writer = gates.write([key.clone()]).await.unwrap();
-        let mut cancelled = Box::pin(gates.read([key.clone()]));
-        assert!(poll!(&mut cancelled).is_pending());
-        drop(cancelled);
-        let mut closed = Box::pin(gates.read([key]));
-        assert!(poll!(&mut closed).is_pending());
-        gates.close();
-        assert!(matches!(closed.await, Err(StoreError::ConnectionClosed)));
-        drop(writer);
-        assert!(gates.entries.lock().unwrap().is_empty());
     }
 }

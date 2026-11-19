@@ -7,7 +7,7 @@ demo: el-data-table
 
 # DataTable
 
-`DataTable` 像电子表格那样显示行和列，并向两个方向滚动，行数和列数都不限。只创建视野中的单元格，所以一百万行、一万列的表格滚动起来与小表格一样流畅。行、列或单元格可以用指针和键盘选择；列有固定的宽度，拖动边缘调整宽度，拖动标题移动，可以在其他列滚动时固定在左侧，也可以排序。标题可以位于分组标签之下，单元格和标题都可以由应用绘制。
+`DataTable` 像电子表格那样显示行和列，并向两个方向滚动，行数和列数都不限。只创建视野中的单元格，所以一百万行、一万列的表格滚动起来与小表格一样流畅。行、列或单元格可以用指针和键盘选择；列有固定的宽度，拖动边缘调整宽度，拖动标题移动，可以在其他列滚动时固定在左侧或右侧，也可以排序。标题可以位于分组标签之下，单元格和标题都可以由应用绘制。
 
 `DataTable` 提供布局、对齐、虚拟化和交互。应用通过 `classes` 和 `styles` 设置各部件的内边距、颜色、边框和选中态外观。Rust 用 `nsh_base::data_table()` 创建它，TSX 用 `nsh/base` 中的 `<DataTable>`。
 
@@ -69,7 +69,7 @@ mount(App);
 | `fitPadding` | 应用的内边距、图标或徽标需要的额外宽度，适配列宽时加到最宽的标题或单元格文字上。 |
 | `align` | `"start"`（默认）、`"center"` 或 `"end"`（用于数字），单元格和标题一致。 |
 | `sortable` | 标题末端有一个排序按钮，按下会请求排序（见[排序](#sorting)）。 |
-| `fixed` | 其他列在它下面滚动时，它固定在左侧。固定列排在其他列之前，保持各自的顺序。 |
+| `fixed` | 其他列在它下面滚动时它固定在哪一侧：`true` 或 `"left"` 固定在左侧，排在其他列之前；`"right"` 固定在右侧，排在其他列之后（滚动列放得下时紧跟在它们后面，放不下时贴住表格右边缘）。固定列保持各自的顺序。 |
 | `resizable`、`movable` | 拖动它的边缘是否调整宽度，拖动它的标题是否移动。默认取表格的 `resizableColumns` 和 `movableColumns`。 |
 | `selectable` | 是否参与选择。按钮或复选框所在的列设为 `false`。默认 `true`。 |
 | `cellClass` | 该列单元格的 classes，排在 `cell` 部件之后：单列的内边距或对齐。 |
@@ -137,7 +137,30 @@ const page = signal({ start: 0, rows: load(0) });
 | `columnSelectable`（默认 `true`） | 一列：它的标题 | `{ column }` |
 | `cellSelectable`（默认 `false`） | 一个单元格；行号列（开启时默认显示）选择行 | `{ row, column }` |
 
-开启 `cellSelectable` 并隐藏行号列（`rowHeader={false}`）时，再次按下已选中的单元格会选中它所在的行。按住 Shift 或平台的命令键按下时，只有 `selectOnModifierPress`（默认 `true`）为真才会选中行，这样自己维护多行选择的应用可以自行处理这些按下：`onRowPress` 报告表体的每一次按下，带有所在行、指针下的列、连续点击次数和按住的修饰键。`selectable` 为 `false` 的列，它本身和它的单元格都不会被选中。
+开启 `cellSelectable` 并隐藏行号列（`rowHeader={false}`）时，再次按下已选中的单元格会选中它所在的行。`selectOnModifierPress` 为真（默认）时，按住 Shift 或平台的命令键按下会像没有按住那样选中行、单元格或标题。应用自己保存多行、多个单元格或多列的选择时把它设为 false：表格保留已有的选择，并报告这次按下。`onRowPress` 报告表体的每一次按下，带有所在行、指针下的列、连续点击次数和按住的修饰键。`onColumnPress` 以同样的方式报告标题被按下（`{ column, clicks, shift, control, alt, platform }`），`selectable` 为 false 的列也包括在内。排序按钮报告 `onSortChange`，拖动标题并完成移动则报告 `onColumnMove`。
+
+`cellClasses` 按数据行号和列在 `columns` 中的下标（与 `onRowPress` 报告的数字相同）给单个单元格附加类名，画在部件类和该列 `cellClass` 之后。单元格的文字仍由表格绘制。应用选中的列用该列的 `headerClass` 和 `cellClass` 上色。`selectable` 为 false 的列，它本身和它的单元格都不会被选中；按下它的标题仍会报告。
+
+```tsx
+<DataTable
+  columns={columns.map((column, i) =>
+    pickedColumns.includes(i)
+      ? { ...column, headerClass: "bg-primary/10", cellClass: "bg-primary/10" }
+      : column,
+  )}
+  data={rows}
+  rowSelectable={false}
+  columnSelectable={false}
+  cellSelectable={false}
+  selectOnModifierPress={false}
+  cellClasses={pickedCells.map((cell) => ({ ...cell, class: "bg-primary/15" }))}
+  onRowPress={(event) => pickCell(event)}
+  onColumnPress={(event) => pickColumn(event)}
+  class="flex-1"
+/>
+```
+
+方向键、Escape 和 `copy()` 仍作用于表格自己的那一项选择。应用从自己的数据复制它保存的集合。
 
 行从数据中的 0 开始计数，列是它在 `columns` 中的索引，不受用户移动后顺序的影响。`onSelectionChange` 报告用户的选择（没有选择时为 `null`）。`selection` 属性由应用设置选择；不设置时由表格自己保存。`onDoublePress` 报告一行、一个单元格或一个标题被连按两次，`onContextMenu` 报告次要按下或长按，并给出应用打开 [`Menu`](./menu.md) 的位置。两者都指出指针下的单元格（`row` 和 `column`）、行号（只有 `row`）或标题（只有 `column`）。在下一次按下之前，请求菜单的单元格带有 `cellActive` 部件；单元格不可选时，则是它所在的行带有 `rowActive` 部件。
 
@@ -183,7 +206,7 @@ const page = signal({ start: 0, rows: load(0) });
 
 ## 调整和移动列
 
-拖动列的尾部边缘会在 `minWidth` 和 `maxWidth` 之内调整宽度，`onColumnResize({ key, width })` 报告每一步。连续按两次边缘会把该列适配到最宽的文本和标题。拖动标题会移动列，并用一条线显示将放下的位置；`onColumnMove` 报告 `{ key, from, to, order }`，其中 `order` 是所有列当前顺序的 `key`。固定列只能在固定列之间移动。`resizableColumns` 和 `movableColumns` 对整个表格开关这两项，列自己的 `resizable` 和 `movable` 优先。
+拖动列的尾部边缘会在 `minWidth` 和 `maxWidth` 之内调整宽度，`onColumnResize({ key, width })` 报告每一步。连续按两次边缘会把该列适配到最宽的文本和标题。拖动标题会移动列，并用一条线显示将放下的位置；`onColumnMove` 报告 `{ key, from, to, order }`，其中 `order` 是所有列当前顺序的 `key`。固定列只能在同一侧的固定列之间移动。`resizableColumns` 和 `movableColumns` 对整个表格开关这两项，列自己的 `resizable` 和 `movable` 优先。
 
 <a id="live-data"></a>
 
@@ -206,7 +229,7 @@ const columns: DataTableColumn[] = [
 
 ## 绘制单元格和标题
 
-当某一列不只是文字时（徽标、按钮），用 `renderCell` 绘制应用自己的单元格。它只为视野中的单元格调用，参数是 `DataTableCell`：`row`、`column`、`key`、`text`（表格原本会显示的文字）和 `selected`。应用按 `row` 查找自己的数据。`renderHeaderCell` 绘制铺满单元格的标题，参数是 `DataTableHeaderCell`：`column`、`key`、`title`、`sort`（方向，或无）和 `selected`。
+当某一列不只是文字时（徽标、按钮），用 `renderCell` 绘制应用自己的单元格。它只为视野中的单元格调用，参数是 `DataTableCell`：`row`、`column`、`key`、`text`（表格原本会显示的文字）和 `selected`。应用按 `row` 查找自己的数据。它绘制的视图和表格外的视图一样响应按下和指针：`onPress`、`hover:` 类、`onMouseEnter` / `onMouseMove` / `onMouseLeave`；`classes.row` 设为 `"group"` 时，指针所在行的 `group-hover:` 类也会生效。`renderHeaderCell` 绘制铺满单元格的标题，参数是 `DataTableHeaderCell`：`column`、`key`、`title`、`sort`（方向，或无）和 `selected`。
 
 ```tsx
 <DataTable
@@ -224,6 +247,8 @@ const columns: DataTableColumn[] = [
   class="flex-1"
 />
 ```
+
+单元格里带 `onPress` 的视图（例如复制按钮）会收到按在它上面的按下，这时表格不会选中该行，也不会触发 `onRowPress`；按在单元格其他位置照常选中行。这类视图只收到 `onPress`，不显示悬停和按下状态的样式。
 
 `fontFamily` 和 `fontSize`（默认 `14`）设置单元格的字体，表格也用它来测量文字以适配列宽。
 
@@ -300,7 +325,7 @@ const columns: DataTableColumn[] = [
 | `cellColumnSelected` | 被选中列的单元格，排在 `cell` 之后 |
 | `rowHeader` | 行号单元格 |
 | `rowHeaderCorner` | 行号上方的角落 |
-| `fixedEdge` | 固定列尾部边缘的线，位于在其下滚动的列之上 |
+| `fixedEdge` | 固定列和在其下滚动的列之间的线：左侧固定列的尾部边缘，右侧固定列的起始边缘 |
 | `empty` | `empty` 插槽的盒子 |
 
 <a id="props"></a>
@@ -309,11 +334,12 @@ const columns: DataTableColumn[] = [
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `columns` | `.columns(..)` | `DataTableColumn[]` | `[]` | 从左到右的列。固定列排在前面。 |
+| `columns` | `.columns(..)` | `DataTableColumn[]` | `[]` | 从左到右的列。左侧固定列排在最前，右侧固定列排在最后。 |
 | `data` | `.data(..)` | `Row[]` | `[]` | 行：按列 `key` 取字段的对象，或按位置索引的数组。 |
 | `rowCount` | `.row_count(..)` | `number` | 已持有的行数 | 行的总数。 |
 | `dataStart` | `.data_start(..)` | `number` | `0` | `data` 第一行对应的行号。 |
 | `rowClasses` | `.row_classes(..)` | `string[]` | `[]` | 所给各行的类名，按它们在 `data` 中的位置对应：行自己的外观，不需要每行调用 JS。 |
+| `cellClasses` | `.cell_classes(..)` | `DataTableCellClass[]` | `[]` | 单个单元格的类名，按数据行号和列下标对应，加在部件类和该列 `cellClass` 之后。单元格的文字仍由表格绘制。 |
 | `rowHeight` | `.row_height(..)` | `number` | `32` | 表体行的高度，单位为点；在终端里一行就是一个 Cell。 |
 | `headerHeight` | `.header_height(..)` | `number` | 行高 | 标题行的高度；在终端里标题行就是一个 Cell。 |
 | `groups` | `.groups(..)` | `DataTableColumnGroup[][]` | `[]` | 列上方的标签，从最低一层开始。 |
@@ -321,7 +347,7 @@ const columns: DataTableColumn[] = [
 | `rowSelectable` | `.row_selectable(..)` | `boolean` | `true` | 按下和按键可以选择行。 |
 | `columnSelectable` | `.column_selectable(..)` | `boolean` | `true` | 按下标题会选中该列，左右键在列之间移动。 |
 | `cellSelectable` | `.cell_selectable(..)` | `boolean` | `false` | 按下和按键可以选择单元格。 |
-| `selectOnModifierPress` | `.select_on_modifier_press(..)` | `boolean` | `true` | 按住 Shift 或命令键按下时选中行。 |
+| `selectOnModifierPress` | `.select_on_modifier_press(..)` | `boolean` | `true` | 按住 Shift 或命令键按下时选中行、单元格或标题。 |
 | `selection` | `.selection(..)` | `DataTableSelection` | | 当前选择，由应用设置。 |
 | `loopSelection` | `.loop_selection(..)` | `boolean` | `true` | 方向键在两端循环。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 屏幕阅读器对表格的称呼。 |
@@ -353,6 +379,7 @@ const columns: DataTableColumn[] = [
 |---|---|---|
 | `onSelectionChange` | `.on_selection_change(\|selection: &Option<DataTableSelection>\| ..)` | 用户改变了选择：`{ selection }`，一个 `{ row?, column? }` 或 `null`。 |
 | `onRowPress` | `.on_row_press(\|event: &DataTablePress\| ..)` | 按下了一行或一个单元格：`{ row, column?, clicks, shift, control, alt, platform }`。 |
+| `onColumnPress` | `.on_column_press(\|event: &DataTableColumnPress\| ..)` | 按下了一个标题：`{ column, clicks, shift, control, alt, platform }`。 |
 | `onDoublePress` | `.on_double_press(\|target: &DataTableTarget\| ..)` | 一行、一个单元格或一个标题被连按两次：`{ target }`，一个 `{ row?, column? }`。 |
 | `onContextMenu` | `.on_context_menu(\|event: &DataTableContextMenu\| ..)` | 请求了上下文菜单：`{ row?, column?, x, y }`，位置位于根视图中。 |
 | `onSortChange` | `.on_sort_change(\|sort: &Option<DataTableSort>\| ..)` | 按下了排序按钮：`{ sort }`，下一个排序 `{ key, direction }` 或 `null`。 |
@@ -369,3 +396,15 @@ const columns: DataTableColumn[] = [
 - [Editor](./editor.md) 和 [DiffView](./diff-view.md)：另外两个处理大量数据的基础组件。
 - [Menu](./menu.md)：从 `onContextMenu` 打开的菜单。
 - [`nsh/base`](../modules/nsh-base.md)：其他基础组件。
+
+### Rust 中的固定列
+
+`nsh_base::data_table::ColumnFixed` 沿用 GPUI Kit 按列所在一侧的命名。`None`（默认）正常滚动；`Left` 和 `Right`
+把列固定在对应的一侧。TS 中使用 `false`、`"left"` 和 `"right"`，并保留 `true` 作为 `"left"` 的简写。
+
+```rust
+use nsh_base::{DataTableColumn, data_table::ColumnFixed};
+
+let mut actions = DataTableColumn::default();
+actions.fixed = ColumnFixed::Right;
+```

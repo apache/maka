@@ -5,10 +5,12 @@
 import { type JSX, View, mount, signal } from "nsh";
 import BaseSelectPlaceholder from "./base-select-placeholder";
 import ModDeviceTerminal from "./mod-device-terminal";
+import StyleDeviceVariants from "./style-device-variants";
 
 const cases: Record<string, () => JSX.Element> = {
   "base-select-placeholder": BaseSelectPlaceholder,
   "mod-device-terminal": ModDeviceTerminal,
+  "style-device-variants": StyleDeviceVariants,
 };
 const shown = signal("");
 

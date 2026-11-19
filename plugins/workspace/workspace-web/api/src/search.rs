@@ -26,7 +26,7 @@ pub struct Query {
     #[schemars(length(min = 1))]
     pub query: String,
     #[serde(default = "default_limit")]
-    // Tavily Search API supports max_results from 0 through 20.
+    // Presets share a 20-result request limit.
     #[schemars(range(min = 1, max = 20))]
     pub limit: usize,
 }

@@ -33,9 +33,9 @@ impl Handler for Logs {
         method: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         let source = self.0.clone();
-        Box::pin(async move {
+        let result = async move {
             let request: HostLogRequest =
                 serde_json::from_value(input).map_err(|error| error.to_string())?;
             match method.as_str() {
@@ -62,6 +62,10 @@ impl Handler for Logs {
                 }
                 _ => Err("unknown Host logs method".into()),
             }
+        };
+        Box::pin(async move {
+            let result: std::result::Result<Value, String> = result.await;
+            result.map(HandlerValue::Json).map_err(HandlerError::from)
         })
     }
 }

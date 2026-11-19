@@ -35,10 +35,10 @@ pub(crate) enum Request {
 impl Request {
     pub(crate) fn resolve(self, language: Language) -> Result<ComputerAppTarget, ToolError> {
         super::require_desktop_blocking()?;
-        let (app, binding) = match self {
+        let app = match self {
             Self::RawApp(name) => {
                 let selected = raw_app_candidate(&name, &apps::list_all_apps())?;
-                let app = match selected {
+                match selected {
                     Some((application_id, path)) => {
                         let name = path.to_str().ok_or_else(|| {
                             failed("application bundle path is not valid Unicode")
@@ -60,8 +60,7 @@ impl Request {
                         app
                     }
                     None => apps::resolve_app_info(&name).map_err(failed)?,
-                };
-                (app, None)
+                }
             }
             Self::Name(name) => {
                 let requested_path = Path::new(&name)
@@ -88,7 +87,7 @@ impl Request {
                     .filter(|window| matches.iter().any(|app| app.pid == window.pid))
                     .collect();
                 match windows.len() {
-                    0 => (apps::resolve_app_info(&name).map_err(failed)?, None),
+                    0 => apps::resolve_app_info(&name).map_err(failed)?,
                     1 => {
                         return Self::Window {
                             window_id: u64::from(windows[0].window_id),
@@ -118,18 +117,7 @@ impl Request {
                 {
                     return Err(failed("stale_target: application process changed"));
                 }
-                let application_id = apps::bundle_id_for_pid(window.pid).ok_or_else(|| {
-                    failed("window owner has no resolved application bundle identity")
-                })?;
-                let mut matches = apps::list_all_apps().into_iter().filter(|app| {
-                    app.pid == window.pid && app.bundle_id.as_deref() == Some(&application_id)
-                });
-                let app = matches.next().ok_or_else(|| {
-                    failed("window owner has no resolved application bundle metadata")
-                })?;
-                if matches.next().is_some() {
-                    return Err(failed("window owner application metadata is ambiguous"));
-                }
+                let mut target = window_owner(window.pid, language)?;
                 if crate::identity::process(pid)? != process
                     || platform_macos::windows::window_info_by_id(window_id)
                         .is_none_or(|current| current.pid != window.pid)
@@ -138,20 +126,65 @@ impl Request {
                         "stale_target: window owner changed during app resolution",
                     ));
                 }
-                (
-                    app,
-                    Some(ComputerAppBinding {
-                        pid,
-                        window_id: u64::from(window_id),
-                        process_generation: process,
-                    }),
-                )
+                target.binding = Some(ComputerAppBinding {
+                    pid,
+                    window_id: u64::from(window_id),
+                    process_generation: process,
+                });
+                return Ok(target);
             }
         };
-        let mut target = subject(app, language)?;
-        target.binding = binding;
-        Ok(target)
+        subject(app, language)
     }
+}
+
+pub(crate) fn window_owner(pid: i32, language: Language) -> Result<ComputerAppTarget, ToolError> {
+    use objc2_app_kit::NSRunningApplication;
+    let (application_id, path) = {
+        let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+            .ok_or_else(|| failed("window owner application is no longer running"))?;
+        let application_id = app
+            .bundleIdentifier()
+            .ok_or_else(|| failed("window owner has no resolved application bundle identity"))?;
+        let url = app
+            .bundleURL()
+            .ok_or_else(|| failed("window owner has no resolved application bundle URL"))?;
+        let path = url
+            .path()
+            .ok_or_else(|| failed("window owner has no resolved application bundle path"))?;
+        (application_id.to_string(), path.to_string())
+    };
+    let path = std::fs::canonicalize(path).map_err(failed)?;
+    let mut executable = [0_u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: proc_pidpath writes within this initialized byte buffer. A failed
+    // or unterminated result is rejected before converting the kernel path.
+    let written =
+        unsafe { libc::proc_pidpath(pid, executable.as_mut_ptr().cast(), executable.len() as u32) };
+    if written <= 0 {
+        return Err(failed(std::io::Error::last_os_error()));
+    }
+    let executable = std::ffi::CStr::from_bytes_until_nul(&executable).map_err(failed)?;
+    use std::os::unix::ffi::OsStrExt;
+    let executable = std::fs::canonicalize(std::ffi::OsStr::from_bytes(executable.to_bytes()))
+        .map_err(failed)?;
+    if !executable.starts_with(&path) {
+        return Err(failed(
+            "window owner bundle does not contain its process executable",
+        ));
+    }
+    let path = path
+        .to_str()
+        .ok_or_else(|| failed("application bundle path is not valid Unicode"))?;
+    let metadata = apps::resolve_app_info(path).map_err(failed)?;
+    if metadata.bundle_id.as_deref() != Some(application_id.as_str()) {
+        return Err(failed("window owner bundle identity changed on disk"));
+    }
+    crate::permission_subject::macos_target(
+        metadata.name,
+        application_id,
+        path.to_owned(),
+        language,
+    )
 }
 
 // Check app identity ambiguity without turning the number of open windows
@@ -261,11 +294,29 @@ pub(crate) fn matching_processes(
     Ok(pids)
 }
 
+pub(crate) fn running_window_owners(expected: &ComputerAppTarget) -> Vec<u32> {
+    let running = apps::list_running_apps();
+    let windows = platform_macos::windows::all_windows();
+    running
+        .into_iter()
+        .filter(|app| {
+            app.bundle_id.as_deref() == Some(expected.identity.application_id.as_str())
+                && app
+                    .launch_path
+                    .as_ref()
+                    .and_then(|path| std::fs::canonicalize(path).ok())
+                    .is_some_and(|path| path == Path::new(&expected.display.app_path))
+                && windows.iter().any(|window| window.pid == app.pid)
+        })
+        .filter_map(|app| u32::try_from(app.pid).ok())
+        .collect()
+}
+
 pub(crate) fn verify_launch(
     expected: &ComputerAppTarget,
     language: Language,
 ) -> Result<(), ToolError> {
-    let observed = Request::Name(expected.display.app_path.clone()).resolve(language)?;
+    let observed = Request::RawApp(expected.display.app_path.clone()).resolve(language)?;
     expected.check_observed(&observed)
 }
 

@@ -20,7 +20,11 @@
 use super::*;
 use base64::Engine;
 use futures_util::future::BoxFuture;
-use maka_agent_facts::configuration::*;
+use maka_agent_facts::{
+    composition::{SourceKind, SourceRevision},
+    configuration::*,
+    execution::{CodeLanguage, ToolMode},
+};
 use maka_agent_ports::{
     model::Credentials as Authorized,
     provider::{Error, Model, Policy, Provider, Resolve},
@@ -32,15 +36,22 @@ use tokio::sync::Semaphore;
 
 struct DiscoveryProvider {
     calls: AtomicUsize,
+    refreshes: AtomicUsize,
     started: Semaphore,
     release: Semaphore,
     fail: AtomicBool,
-    hash: Mutex<String>,
+    models: Mutex<Vec<(&'static str, &'static str)>>,
 }
+
 impl Provider for DiscoveryProvider {
+    fn validate_configuration(&self, _: &serde_json::Value) -> Result<(), Error> {
+        Ok(())
+    }
+
     fn resolve(&self, request: Resolve) -> BoxFuture<'_, Result<Model, Error>> {
         Box::pin(async move { Ok(resolved_model(request.model)) })
     }
+
     fn authorize(
         &self,
         _: maka_agent_ports::provider::Connection,
@@ -49,6 +60,20 @@ impl Provider for DiscoveryProvider {
     ) -> BoxFuture<'_, Result<Authorized, Error>> {
         Box::pin(async { Ok(Authorized::RequestHeaders(BTreeMap::new())) })
     }
+
+    fn refresh(
+        &self,
+        _: maka_agent_ports::provider::Connection,
+        mut credential: maka_agent_facts::provider::Credential,
+        _: Context,
+    ) -> BoxFuture<'_, Result<maka_agent_facts::provider::Credential, Error>> {
+        Box::pin(async move {
+            self.refreshes.fetch_add(1, Ordering::SeqCst);
+            credential.refresh_at = None;
+            Ok(credential)
+        })
+    }
+
     fn discover(
         &self,
         _: Discovery,
@@ -64,14 +89,25 @@ impl Provider for DiscoveryProvider {
             if self.fail.load(Ordering::SeqCst) {
                 return Err(Error::Http(503));
             }
-            let mut model = ModelInfo::new("model-a");
-            model.codex_compaction_hash = Some(self.hash.lock().unwrap().clone());
-            model.context_window = Some(200_000);
-            model.max_output_tokens = Some(128_000);
-            Ok(vec![model])
+            let specs = self.models.lock().unwrap().clone();
+            Ok(specs
+                .into_iter()
+                .map(|(id, hash)| {
+                    let mut model = ModelInfo::new(id);
+                    model.codex_compaction_hash = Some(hash.to_owned());
+                    model.service_tiers.push(ModelServiceTier {
+                        id: "priority".into(),
+                        name: "Fast".into(),
+                    });
+                    model.context_window = Some(200_000);
+                    model.max_output_tokens = Some(128_000);
+                    model
+                })
+                .collect())
         })
     }
 }
+
 struct Fixture {
     _temp: tempfile::TempDir,
     store: Arc<ConfigurationStore>,
@@ -82,6 +118,7 @@ struct Fixture {
     workers: TaskTracker,
     shutdown: CancellationToken,
 }
+
 impl Fixture {
     async fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
@@ -96,9 +133,23 @@ impl Fixture {
             .unwrap(),
         );
         let store = Arc::new(ConfigurationStore::for_root(owner).await.unwrap());
-        let input = serde_json::from_value(json!({"expectedCatalogRevision":0,"connection":{
-            "slug":"chatgpt","name":"ChatGPT","provider":{"packageId":"maka.codex","entryId":"maka.codex","scope":"profile","name":"chatgpt"},
-            "configuration":{"baseUrl":"https://chatgpt.com/backend-api/codex"},"enabled":true,"enabledModelIds":["model-a","model-b"]}})).unwrap();
+        let input = serde_json::from_value(json!({
+            "expectedCatalogRevision": 0,
+            "connection": {
+                "slug": "chatgpt",
+                "name": "ChatGPT",
+                "provider": {
+                    "packageId": "maka.codex",
+                    "entryId": "maka.codex",
+                    "scope": "profile",
+                    "name": "chatgpt"
+                },
+                "configuration": { "baseUrl": "https://chatgpt.com/backend-api/codex" },
+                "enabled": true,
+                "enabledModelIds": ["model-a", "model-b"]
+            }
+        }))
+        .unwrap();
         let CatalogMutationResult::Committed {
             connection: Some(basis),
             ..
@@ -111,7 +162,7 @@ impl Fixture {
             connection_slug: "chatgpt".into(),
             model: "model-a".into(),
         };
-        login(&store, &binding, "account-a").await;
+        login(&store, &binding, "account-a", None).await;
         let workers = TaskTracker::new();
         let shutdown = CancellationToken::new();
         let credentials = Credentials {
@@ -121,13 +172,15 @@ impl Fixture {
                 shutdown.clone(),
             )),
             inventory: Arc::new(Authority::new(workers.clone(), shutdown.clone())),
+            observation: None,
         };
         let provider = Arc::new(DiscoveryProvider {
             calls: AtomicUsize::new(0),
+            refreshes: AtomicUsize::new(0),
             started: Semaphore::new(0),
             release: Semaphore::new(0),
             fail: AtomicBool::new(false),
-            hash: Mutex::new("3000".into()),
+            models: Mutex::new(vec![("model-a", "3000")]),
         });
         let real = maka_providers::codex::Codex::new(Arc::new(
             maka_providers::catalog::Snapshot::bundled().unwrap(),
@@ -149,6 +202,11 @@ impl Fixture {
             shutdown,
         }
     }
+
+    fn set_clock(&self, secs: u64) {
+        *self.credentials.inventory.clock.lock().unwrap() = Some(secs);
+    }
+
     async fn refresh(&self) {
         let material = self
             .store
@@ -167,6 +225,7 @@ impl Fixture {
             )
             .await;
     }
+
     async fn proof(&self) -> CodexRequestProvenance {
         self.credentials.inventory.provenance(
             &self
@@ -178,6 +237,7 @@ impl Fixture {
             "model-a",
         )
     }
+
     async fn close(&self) {
         self.shutdown.cancel();
         self.workers.close();
@@ -185,7 +245,13 @@ impl Fixture {
         self.store.shutdown().await.unwrap();
     }
 }
-async fn login(store: &Arc<ConfigurationStore>, binding: &ModelBinding, account: &str) {
+
+async fn login(
+    store: &Arc<ConfigurationStore>,
+    binding: &ModelBinding,
+    account: &str,
+    refresh_at: Option<u64>,
+) {
     let row = store.catalog().await.unwrap().connections.remove(0);
     let status = store
         .credential_status(CredentialLocator::Connection {
@@ -224,22 +290,88 @@ async fn login(store: &Arc<ConfigurationStore>, binding: &ModelBinding, account:
     let access = format!(
         "header.{}.signature",
         base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(serde_json::to_vec(&json!({"chatgpt_account_id":account})).unwrap())
+            .encode(serde_json::to_vec(&json!({"chatgpt_account_id": account})).unwrap())
     );
-    let secret = json!({"access_token":access,"refresh_token":"fixture-refresh","expires_at":9000000000000_u64,"id_token":null}).to_string();
+    let secret = json!({
+        "access_token": access,
+        "refresh_token": "fixture-refresh",
+        "expires_at": 9_000_000_000_000_u64,
+        "id_token": null
+    })
+    .to_string();
     assert!(matches!(
         ticket
             .complete(
-                maka_agent_facts::provider::Credential {
-                    secret,
-                    refresh_at: None
-                },
+                maka_agent_facts::provider::Credential { secret, refresh_at },
                 now().unwrap()
             )
             .await
             .unwrap(),
         maka_config::oauth::enrollment::LoginCompletion::Committed(_)
     ));
+}
+
+fn revision() -> SourceRevision {
+    SourceRevision {
+        kind: SourceKind::ModelProvider,
+        name: "chatgpt".into(),
+        package_id: "maka.codex".into(),
+        entry_id: "maka.codex".into(),
+        activation: "fixture".into(),
+        revision: "1".into(),
+    }
+}
+
+fn resolved_model(info: ModelInfo) -> Model {
+    let main_output_limit = info.max_output_tokens;
+    Model {
+        adapter: maka_providers::codex::ADAPTER.into(),
+        protocol: maka_agent_ports::model::ProviderKind::OpenaiResponses,
+        base_url: "https://chatgpt.com/backend-api/codex".into(),
+        info,
+        thinking_levels: vec![],
+        provider_options: json!({"openai":{"store":false}}),
+        main_output_limit,
+    }
+}
+
+async fn source_fixture(f: &Fixture) -> super::super::Source {
+    use super::super::{AcceptedModel, ConfigPricing, ExecutionRoute, Source};
+    let material = f
+        .store
+        .observe_model(f.binding.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    let model = resolved_model(
+        material
+            .connection
+            .models
+            .first()
+            .cloned()
+            .unwrap_or_else(|| ModelInfo::new("model-a")),
+    );
+    Source {
+        pricing: Arc::new(ConfigPricing(f.store.clone())),
+        configuration: f.store.clone(),
+        credentials: f.credentials.clone(),
+        definition: f.definition.clone(),
+        session: "session".into(),
+        revision: revision(),
+        accepted: AcceptedModel {
+            service_tier: None,
+            binding: f.binding.clone(),
+            thinking_level: None,
+            tool_mode: ToolMode::default(),
+            code_language: CodeLanguage::default(),
+            editing_tools: None,
+            public_model: None,
+            provider: material.connection.provider.clone(),
+            route: ExecutionRoute::new(&model),
+            model_override: None,
+            body_overlay: None,
+        },
+    }
 }
 
 #[tokio::test]
@@ -266,7 +398,7 @@ async fn concurrent_requests_share_discovery_and_cancelled_waiter_does_not_cance
         f.store.catalog().await.unwrap().connections[0].enabled_model_ids,
         ["model-a", "model-b"]
     );
-    login(&f.store, &f.binding, "account-b").await;
+    login(&f.store, &f.binding, "account-b", None).await;
     assert!(f.proof().await.compatibility.is_none());
     f.provider.release.add_permits(1);
     f.refresh().await;
@@ -283,61 +415,18 @@ async fn replaced_login_waits_for_old_flight_then_refreshes_its_own_inventory() 
         async move { f.refresh().await }
     });
     f.provider.started.acquire().await.unwrap().forget();
-    login(&f.store, &f.binding, "account-b").await;
-    let material = f
-        .store
-        .observe_model(f.binding.clone())
-        .await
-        .unwrap()
-        .unwrap();
-    let second = f.credentials.inventory.ensure(
-        f.store.clone(),
-        f.credentials.clone(),
-        f.definition.clone(),
-        f.binding.clone(),
-        &material,
-    );
-    tokio::pin!(second);
-    assert!(futures_util::poll!(&mut second).is_pending());
-    assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
-    f.provider.release.add_permits(2);
-    second.await;
+    login(&f.store, &f.binding, "account-b", None).await;
+    let second = tokio::spawn({
+        let f = f.clone();
+        async move { f.refresh().await }
+    });
+    f.provider.release.add_permits(1);
     first.await.unwrap();
-    assert_eq!(f.provider.calls.load(Ordering::SeqCst), 2);
-    let proof = f.proof().await;
-    assert_eq!(proof.account_id.as_deref(), Some("account-b"));
-    assert_eq!(proof.compatibility.unwrap().comp_hash, "3000");
-    // A queued waiter can still hold the observation from before B's commit.
-    // It must reuse the newer completed revision rather than issue a third fetch.
+    f.provider.started.acquire().await.unwrap().forget();
     f.provider.release.add_permits(1);
-    f.credentials
-        .inventory
-        .ensure(
-            f.store.clone(),
-            f.credentials.clone(),
-            f.definition.clone(),
-            f.binding.clone(),
-            &material,
-        )
-        .await;
+    second.await.unwrap();
     assert_eq!(f.provider.calls.load(Ordering::SeqCst), 2);
-    f.close().await;
-}
-
-#[tokio::test]
-async fn failed_refresh_backs_off_but_replaced_login_retries() {
-    let f = Fixture::new().await;
-    f.provider.fail.store(true, Ordering::SeqCst);
-    f.provider.release.add_permits(1);
-    f.refresh().await;
-    f.refresh().await;
-    assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
-    assert!(f.proof().await.compatibility.is_none());
-    login(&f.store, &f.binding, "account-b").await;
-    f.provider.fail.store(false, Ordering::SeqCst);
-    f.provider.release.add_permits(1);
-    f.refresh().await;
-    assert_eq!(f.provider.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(f.proof().await.account_id.as_deref(), Some("account-b"));
     assert!(f.proof().await.compatibility.is_some());
     f.close().await;
 }
@@ -351,7 +440,11 @@ async fn selection_changed_during_discovery_supersedes_the_old_ticket() {
     });
     f.provider.started.acquire().await.unwrap().forget();
     let row = f.store.catalog().await.unwrap().connections.remove(0);
-    let update = serde_json::from_value(json!({"expected":{"connectionId":row.connection_id,"revision":row.revision},"changes":{"enabledModelIds":["model-a"]}})).unwrap();
+    let update = serde_json::from_value(json!({
+        "expected": { "connectionId": row.connection_id, "revision": row.revision },
+        "changes": { "enabledModelIds": ["model-a"] }
+    }))
+    .unwrap();
     f.store.update_connection(update).await.unwrap();
     f.provider.release.add_permits(1);
     task.await.unwrap();
@@ -363,32 +456,83 @@ async fn selection_changed_during_discovery_supersedes_the_old_ticket() {
 }
 
 #[tokio::test]
-async fn restart_refreshes_persisted_inventory_and_expired_proof_cannot_stamp_requests() {
+async fn warm_and_revalidation_keep_requests_non_blocking_until_expiry() {
     let f = Fixture::new().await;
-    f.provider.release.add_permits(1);
-    f.refresh().await;
-    let mut outcome = f.credentials.inventory.entries.lock().unwrap()[&f.binding.connection_id]
-        .result
-        .borrow()
-        .clone()
+    f.set_clock(1_000);
+    let initial = f
+        .store
+        .observe_model(f.binding.clone())
+        .await
+        .unwrap()
         .unwrap();
-    if let Outcome::Ready { fetched_at, .. } = &mut outcome {
-        *fetched_at = now().unwrap() - MAX_AGE;
-    }
-    let (_, result) = watch::channel(Some(outcome));
-    f.credentials
-        .inventory
-        .entries
-        .lock()
-        .unwrap()
-        .get_mut(&f.binding.connection_id)
-        .unwrap()
-        .result = result;
-    assert!(f.proof().await.compatibility.is_none());
+    f.credentials.inventory.warm(
+        f.store.clone(),
+        f.credentials.clone(),
+        f.definition.clone(),
+        f.binding.clone(),
+        &initial,
+    );
+    f.provider.started.acquire().await.unwrap().forget();
     f.provider.release.add_permits(1);
     f.refresh().await;
-    assert_eq!(f.provider.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(f.proof().await.compatibility.unwrap().comp_hash, "3000");
+
+    f.set_clock(1_000 + REFRESH_AT);
+    *f.provider.models.lock().unwrap() = vec![("model-a", "4000")];
+    let stale_but_valid = f
+        .store
+        .observe_model(f.binding.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_millis(200), f.refresh())
+        .await
+        .expect("revalidation window must not block callers");
+    f.provider.started.acquire().await.unwrap().forget();
+    assert_eq!(
+        f.credentials
+            .inventory
+            .provenance(&stale_but_valid, "model-a")
+            .compatibility
+            .unwrap()
+            .comp_hash,
+        "3000"
+    );
+    f.provider.release.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while f
+            .proof()
+            .await
+            .compatibility
+            .as_ref()
+            .map(|value| value.comp_hash.as_str())
+            != Some("4000")
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background revalidation must publish updated proof");
+    assert_eq!(
+        f.credentials
+            .inventory
+            .provenance(&stale_but_valid, "model-a")
+            .compatibility
+            .unwrap()
+            .comp_hash,
+        "3000"
+    );
+
+    f.set_clock(1_000 + REFRESH_AT + MAX_AGE);
+    assert!(f.proof().await.compatibility.is_none());
+    *f.provider.models.lock().unwrap() = vec![("model-a", "5000")];
+    f.provider.release.add_permits(1);
+    f.refresh().await;
+    assert_eq!(f.proof().await.compatibility.unwrap().comp_hash, "5000");
+
     let restarted = Arc::new(Authority::new(f.workers.clone(), f.shutdown.clone()));
+    *restarted.clock.lock().unwrap() = Some(1_000 + REFRESH_AT + MAX_AGE);
     let material = f
         .store
         .observe_model(f.binding.clone())
@@ -401,42 +545,129 @@ async fn restart_refreshes_persisted_inventory_and_expired_proof_cannot_stamp_re
             .compatibility
             .is_none()
     );
+    f.close().await;
+}
+
+#[tokio::test]
+async fn select_admits_persisted_model_without_waiting_on_inventory_or_oauth_refresh() {
+    use super::super::Source;
+    let mut f = Fixture::new().await;
     f.provider.release.add_permits(1);
-    restarted
-        .ensure(
-            f.store.clone(),
-            f.credentials.clone(),
-            f.definition.clone(),
-            f.binding.clone(),
-            &material,
-        )
-        .await;
+    f.refresh().await;
+
+    login(&f.store, &f.binding, "account-a", Some(1)).await;
+    let restarted = Arc::new(Authority::new(f.workers.clone(), f.shutdown.clone()));
+    f.credentials.inventory = restarted.clone();
+    *f.provider.models.lock().unwrap() = vec![("model-a", "3000"), ("model-b", "6000")];
     let material = f
         .store
         .observe_model(f.binding.clone())
         .await
         .unwrap()
         .unwrap();
-    assert!(
-        restarted
-            .provenance(&material, "model-a")
-            .compatibility
-            .is_some()
+    restarted.warm(
+        f.store.clone(),
+        f.credentials.clone(),
+        f.definition.clone(),
+        f.binding.clone(),
+        &material,
     );
+    f.provider.started.acquire().await.unwrap().forget();
+
+    let catalog = Arc::new(maka_providers::catalog::Catalog::new(
+        maka_providers::catalog::Snapshot::bundled().unwrap(),
+    ));
+    let selected = tokio::time::timeout(
+        Duration::from_millis(200),
+        Source::select(
+            f.store.clone(),
+            catalog.clone(),
+            f.credentials.clone(),
+            ModelSelection {
+                service_tier: None,
+                connection_id: f.binding.connection_id.clone(),
+                model_id: "model-a".into(),
+            },
+            None,
+            "session".into(),
+            revision(),
+        ),
+    )
+    .await
+    .expect("cached model admission must not block on slow discovery")
+    .unwrap();
+    assert_eq!(selected.accepted.binding.model, "model-a");
+
+    let uncached = tokio::spawn({
+        let store = f.store.clone();
+        let catalog = catalog.clone();
+        let credentials = f.credentials.clone();
+        let connection_id = f.binding.connection_id.clone();
+        async move {
+            Source::select(
+                store,
+                catalog,
+                credentials,
+                ModelSelection {
+                    service_tier: None,
+                    connection_id,
+                    model_id: "model-b".into(),
+                },
+                None,
+                "session".into(),
+                revision(),
+            )
+            .await
+        }
+    });
+    tokio::task::yield_now().await;
+    assert!(!uncached.is_finished());
+    f.provider.release.add_permits(1);
+    let uncached = uncached.await.unwrap().unwrap();
+    assert_eq!(uncached.accepted.binding.model, "model-b");
+    assert_eq!(f.provider.refreshes.load(Ordering::SeqCst), 1);
     f.close().await;
 }
 
-fn resolved_model(info: ModelInfo) -> Model {
-    let main_output_limit = info.max_output_tokens;
-    Model {
-        adapter: maka_providers::codex::ADAPTER.into(),
-        protocol: maka_agent_ports::model::ProviderKind::OpenaiResponses,
-        base_url: "https://chatgpt.com/backend-api/codex".into(),
-        info,
-        thinking_levels: vec![],
-        provider_options: json!({"openai":{"store":false}}),
-        main_output_limit,
-    }
+#[tokio::test]
+async fn restored_run_uses_its_selected_subscription_speed() {
+    use super::super::Source;
+    use maka_agent_engine::ModelSource;
+
+    let f = Fixture::new().await;
+    f.provider.release.add_permits(1);
+    f.refresh().await;
+    let catalog = Arc::new(maka_providers::catalog::Catalog::new(
+        maka_providers::catalog::Snapshot::bundled().unwrap(),
+    ));
+    let source = Source::select(
+        f.store.clone(),
+        catalog,
+        f.credentials.clone(),
+        ModelSelection {
+            connection_id: f.binding.connection_id.clone(),
+            model_id: "model-a".into(),
+            service_tier: Some("priority".into()),
+        },
+        None,
+        "session".into(),
+        revision(),
+    )
+    .await
+    .unwrap();
+    let descriptor = serde_json::to_vec(&source.accepted).unwrap();
+    let restored = Source::restore(
+        f.store.clone(),
+        f.credentials.clone(),
+        serde_json::from_slice(&descriptor).unwrap(),
+        "session".into(),
+        revision(),
+    )
+    .unwrap();
+    let prepared = restored.capture().await.unwrap();
+    assert_eq!(prepared.provider.model, "model-a");
+    assert_eq!(prepared.options["openai"]["serviceTier"], "priority");
+    f.close().await;
 }
 
 #[tokio::test]
@@ -450,8 +681,14 @@ async fn logical_step_captures_provenance_and_failure_keeps_same_model_usable() 
     let frozen = serde_json::to_vec(&prepared.context).unwrap();
     let captured = prepared.context.unwrap().codex.unwrap();
     assert_eq!(captured.compatibility.unwrap().comp_hash, "3000");
-    // Expire this owner's cache, then fail the next catalog read. Model preparation still succeeds.
-    f.credentials.inventory.entries.lock().unwrap().clear();
+
+    f.credentials
+        .inventory
+        .state
+        .lock()
+        .unwrap()
+        .entries
+        .clear();
     f.provider.fail.store(true, Ordering::SeqCst);
     f.provider.release.add_permits(1);
     let next = source.capture().await.unwrap();
@@ -468,6 +705,87 @@ async fn logical_step_captures_provenance_and_failure_keeps_same_model_usable() 
             .unwrap()
             .comp_hash,
         "3000"
+    );
+    f.close().await;
+}
+
+#[tokio::test]
+async fn observe_waits_when_sqlite_commit_leads_in_memory_ready_publication() {
+    use maka_agent_engine::ModelSource;
+    let f = Arc::new(Fixture::new().await);
+    f.set_clock(1_000);
+    f.provider.release.add_permits(1);
+    f.refresh().await;
+
+    f.set_clock(1_000 + REFRESH_AT);
+    let ModelFetchPreparation::Ready(ticket) = f
+        .store
+        .prepare_model_fetch(&f.binding.connection_id)
+        .await
+        .unwrap()
+    else {
+        panic!("prepare fetch")
+    };
+    let mut updated = ModelInfo::new("model-a");
+    updated.codex_compaction_hash = Some("4000".into());
+    updated.context_window = Some(200_000);
+    updated.max_output_tokens = Some(128_000);
+    let ConnectionModelFetchResult::Committed { connection, .. } = ticket
+        .complete(vec![updated], 1_000 + REFRESH_AT)
+        .await
+        .unwrap()
+    else {
+        panic!("commit fetch")
+    };
+
+    let material = f
+        .store
+        .observe_model(f.binding.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    let scope = identity(&material).unwrap();
+    let (sender, receiver) = watch::channel(false);
+    {
+        let mut state = f.credentials.inventory.state.lock().unwrap();
+        let entry = state.entries.get_mut(&f.binding.connection_id).unwrap();
+        entry.flight = Some(Flight {
+            id: 99,
+            identity: scope.clone(),
+            result: receiver,
+        });
+    }
+
+    let source = source_fixture(&f).await;
+    let capturing = tokio::spawn(async move { source.capture().await.unwrap() });
+    tokio::task::yield_now().await;
+    assert!(!capturing.is_finished());
+
+    {
+        let mut state = f.credentials.inventory.state.lock().unwrap();
+        let entry = state.entries.get_mut(&f.binding.connection_id).unwrap();
+        entry.flight = None;
+        entry.previous_ready = entry.ready.take();
+        entry.ready = Some(Ready {
+            identity: scope,
+            connection_revision: connection.revision,
+            fetched_at: 1_000 + REFRESH_AT,
+            hashes: BTreeMap::from([("model-a".into(), "4000".into())]),
+        });
+    }
+    sender.send_replace(true);
+
+    let prepared = capturing.await.unwrap();
+    assert_eq!(
+        prepared
+            .context
+            .unwrap()
+            .codex
+            .unwrap()
+            .compatibility
+            .unwrap()
+            .comp_hash,
+        "4000"
     );
     f.close().await;
 }
@@ -491,235 +809,4 @@ async fn host_shutdown_settles_shared_discovery_without_publishing_a_proof() {
             .is_empty()
     );
     f.store.shutdown().await.unwrap();
-}
-
-async fn source_fixture(f: &Fixture) -> super::super::Source {
-    use super::super::{AcceptedModel, ExecutionRoute, Source};
-    use maka_agent_facts::{
-        composition::{SourceKind, SourceRevision},
-        execution::{CodeLanguage, ToolMode},
-    };
-    let material = f
-        .store
-        .observe_model(f.binding.clone())
-        .await
-        .unwrap()
-        .unwrap();
-    let model = resolved_model(
-        material
-            .connection
-            .models
-            .first()
-            .cloned()
-            .unwrap_or_else(|| ModelInfo::new("model-a")),
-    );
-    Source {
-        configuration: f.store.clone(),
-        credentials: f.credentials.clone(),
-        definition: f.definition.clone(),
-        session: "session".into(),
-        revision: SourceRevision {
-            kind: SourceKind::ModelProvider,
-            name: "chatgpt".into(),
-            package_id: "maka.codex".into(),
-            entry_id: "maka.codex".into(),
-            activation: "fixture".into(),
-            revision: "1".into(),
-        },
-        accepted: AcceptedModel {
-            binding: f.binding.clone(),
-            thinking_level: None,
-            tool_mode: ToolMode::for_model("model-a", &model.base_url, None),
-            code_language: CodeLanguage::default(),
-            editing_tools: None,
-            public_model: None,
-            provider: material.connection.provider.clone(),
-            route: ExecutionRoute::new(&model),
-            model_override: None,
-            body_overlay: None,
-        },
-    }
-}
-
-#[tokio::test]
-async fn discovery_recovery_and_restoration_use_one_current_request_snapshot() {
-    use maka_agent_engine::ModelSource;
-    let f = Fixture::new().await;
-    let source = source_fixture(&f).await;
-    f.provider.fail.store(true, Ordering::SeqCst);
-    f.provider.release.add_permits(1);
-    let first = source.capture().await.unwrap();
-    assert_eq!(first.main_output_limit, None);
-    assert_eq!(first.context.as_ref().unwrap().context_window, None);
-    let accepted = serde_json::to_vec(&source.accepted).unwrap();
-
-    // Advance only the failed discovery backoff, without sleeping or changing user configuration.
-    let (_, receiver) = watch::channel(Some(Outcome::Failed {
-        retry_at: Instant::now(),
-    }));
-    f.credentials
-        .inventory
-        .entries
-        .lock()
-        .unwrap()
-        .get_mut(&f.binding.connection_id)
-        .unwrap()
-        .result = receiver;
-    f.provider.fail.store(false, Ordering::SeqCst);
-    f.provider.release.add_permits(1);
-    let next = source.capture().await.unwrap();
-    assert_eq!(next.main_output_limit, Some(128_000));
-    assert_eq!(next.context.as_ref().unwrap().context_window, Some(200_000));
-    assert_eq!(
-        next.context.as_ref().unwrap().declared_window,
-        Some(170_000)
-    );
-    assert!(
-        next.context
-            .as_ref()
-            .unwrap()
-            .codex
-            .as_ref()
-            .unwrap()
-            .compatibility
-            .is_some()
-    );
-    assert_eq!(
-        first.main_output_limit, None,
-        "prepared requests remain frozen"
-    );
-    assert_eq!(first.context.as_ref().unwrap().context_window, None);
-
-    let restored = super::super::Source::restore(
-        f.store.clone(),
-        f.credentials.clone(),
-        serde_json::from_slice(&accepted).unwrap(),
-        "session".into(),
-        source.revision.clone(),
-    )
-    .unwrap();
-    let after_restart = restored.capture().await.unwrap();
-    assert_eq!(after_restart.main_output_limit, next.main_output_limit);
-    assert_eq!(after_restart.context, next.context);
-
-    let row = f.store.catalog().await.unwrap().connections.remove(0);
-    f.store
-        .update_connection(
-            serde_json::from_value(json!({
-                "expected":{"connectionId":row.connection_id,"revision":row.revision},
-                "changes":{"requestBodyOverlay":{"temperature":0.5}}
-            }))
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-    let unchanged = source.capture().await.unwrap();
-    assert!(
-        unchanged.provider.body_overlay.is_none(),
-        "accepted body controls remain frozen"
-    );
-    assert_eq!(unchanged.context, next.context);
-    f.close().await;
-}
-
-#[tokio::test]
-async fn inventory_accepts_opaque_hashes_longer_than_a_local_guess() {
-    use maka_agent_engine::ModelSource;
-    let f = Fixture::new().await;
-    let hash = "opaque-hash".repeat(64);
-    *f.provider.hash.lock().unwrap() = hash.clone();
-    f.provider.release.add_permits(1);
-    let request = source_fixture(&f).await.capture().await.unwrap();
-    let context = request.context.unwrap();
-    context.validate().unwrap();
-    assert_eq!(
-        context.codex.unwrap().compatibility.unwrap().comp_hash,
-        hash
-    );
-    f.close().await;
-}
-
-#[tokio::test]
-async fn subscription_provenance_follows_provider_identity_with_a_responses_adapter_override() {
-    use super::super::Source;
-    use maka_agent_facts::{
-        composition::{SourceKind, SourceRevision},
-        configuration::ModelSelection,
-    };
-    let f = Fixture::new().await;
-    f.provider.release.add_permits(1);
-    f.refresh().await;
-    let row = f.store.catalog().await.unwrap().connections.remove(0);
-    f.store.update_connection(serde_json::from_value(json!({"expected":{"connectionId":row.connection_id,"revision":row.revision},"changes":{"modelOverrides":{"model-a":{"adapter":"responses"}}}})).unwrap()).await.unwrap();
-    let row = f.store.catalog().await.unwrap().connections.remove(0);
-    let (_, prepared) = Source::select(
-        f.store.clone(),
-        Arc::new(maka_providers::catalog::Catalog::new(
-            maka_providers::catalog::Snapshot::bundled().unwrap(),
-        )),
-        f.credentials.clone(),
-        ModelSelection {
-            connection_id: row.connection_id,
-            model_id: "model-a".into(),
-        },
-        None,
-        "session".into(),
-        SourceRevision {
-            kind: SourceKind::ModelProvider,
-            name: "chatgpt".into(),
-            package_id: "maka.codex".into(),
-            entry_id: "maka.codex".into(),
-            activation: "fixture".into(),
-            revision: "1".into(),
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(prepared.provider.adapter_name(), "responses");
-    let provenance = prepared.context.unwrap().codex.unwrap();
-    assert_eq!(provenance.compatibility.unwrap().comp_hash, "3000");
-    assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
-    f.close().await;
-}
-
-#[tokio::test]
-async fn admission_uses_settings_saved_while_inventory_discovery_is_pending() {
-    use super::super::Source;
-    let f = Arc::new(Fixture::new().await);
-    let discovery = tokio::spawn({
-        let f = f.clone();
-        async move { f.refresh().await }
-    });
-    f.provider.started.acquire().await.unwrap().forget();
-    let catalog = Arc::new(maka_providers::catalog::Catalog::new(
-        maka_providers::catalog::Snapshot::bundled().unwrap(),
-    ));
-    let mut selecting = Box::pin(Source::select(
-        f.store.clone(),
-        catalog.clone(),
-        f.credentials.clone(),
-        ModelSelection {
-            connection_id: f.binding.connection_id.clone(),
-            model_id: "model-a".into(),
-        },
-        None,
-        "session".into(),
-        source_fixture(&f).await.revision,
-    ));
-    assert!(futures_util::poll!(&mut selecting).is_pending());
-    let selected = tokio::spawn(selecting);
-    // Public directory updates can proceed after the initial selection read, while discovery is still held.
-    let directory = catalog.snapshot.write().await;
-    let row = f.store.catalog().await.unwrap().connections.remove(0);
-    f.store.update_connection(serde_json::from_value(json!({
-        "expected":{"connectionId":row.connection_id,"revision":row.revision},
-        "changes":{"modelOverrides":{"model-a":{"maxOutputTokens":42}},"requestBodyOverlay":{"seed":9}}
-    })).unwrap()).await.unwrap();
-    drop(directory);
-    f.provider.release.add_permits(1);
-    let (_, prepared) = selected.await.unwrap().unwrap();
-    discovery.await.unwrap();
-    assert_eq!(prepared.main_output_limit, Some(42));
-    assert_eq!(prepared.provider.body_overlay.unwrap()["seed"], 9);
-    f.close().await;
 }

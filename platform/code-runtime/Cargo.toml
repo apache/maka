@@ -24,6 +24,8 @@ publish.workspace = true
 
 [dependencies]
 maka-session-state.workspace = true
+maka-process.workspace = true
+uuid.workspace = true
 maka-agent-facts.workspace = true
 futures-util.workspace = true
 serde.workspace = true

@@ -51,6 +51,7 @@ fn start() -> (Engine, Receiver<MountBatch>) {
         minify: false,
         split: false,
         ui_sets: Vec::new(),
+        ..Default::default()
     })
     .unwrap();
     let bytecode = nsh_js::compile_bytecode(&bundle.code, false).unwrap();

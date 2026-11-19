@@ -30,19 +30,31 @@ pub(super) async fn run(
     context: Arc<Context>,
 ) -> Result<Value, String> {
     context.operation().ok_or("ACP setup requires a mutation")?;
-    if !matches!(context.scope().identity, Identity::Remote { .. }) {
-        return Err("ACP setup requires an application request".into());
-    }
-    let action: Action = serde_json::from_value(input).map_err(|e| e.to_string())?;
-    let scope = owner
+    let authority = context
+        .native_context::<maka_agent_authority::setup::ActualSetupContext>()
+        .ok_or("ACP setup requires its actual top-level native setup capability")?;
+    authority
+        .0
+        .bind_original(&context)
+        .await
+        .map_err(|error| error.to_string())?;
+    let action: Action = serde_json::from_value(input).map_err(|error| error.to_string())?;
+    let mut scope = owner
         .calls
         .issuer
         .issue_with(
             context.scope().identity.clone(),
-            context.clone(),
+            Arc::new(calls::Issued {
+                origin: context.clone(),
+                role: calls::Role::Setup(authority),
+                process: std::sync::Mutex::new(calls::ProcessSlot::Available),
+            }),
             context.scope().cancellation.clone(),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
+    scope
+        .restrict_sandbox(context.scope().sandbox_floor())
+        .map_err(|error| error.to_string())?;
     let mut ticket = context
         .scope()
         .resources
@@ -61,13 +73,20 @@ pub(super) async fn run(
         &Output(context),
     )
     .await;
-    let mut cleanup = scope.finish().await.map_err(|e| e.to_string());
-    if matches!(result, Err(Error::CleanupUnconfirmed)) {
-        cleanup = Err("ACP setup cleanup unconfirmed".into());
+    let scoped = scope.finish().await.map_err(|error| error.to_string());
+    let processes = owner.processes.settle_task(&scope).await.map(|_| ());
+    let cleanup = scoped.and(processes);
+    match &cleanup {
+        Ok(()) => ticket.complete(Ok(())),
+        Err(error) => ticket.unconfirmed(error.clone(), scope),
     }
-    ticket.complete(cleanup.clone());
     cleanup?;
-    let result: Outcome = result.map_err(|e| e.to_string())?;
+    let result: Outcome = match result {
+        Ok(outcome) => outcome,
+        Err(error) => Outcome::Unresolved {
+            diagnostic: error.to_string(),
+        },
+    };
     serde_json::to_value(result).map_err(|e| e.to_string())
 }
 struct Output(Arc<Context>);

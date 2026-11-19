@@ -215,7 +215,7 @@ On macOS and the web, where Tab reaches the views that take presses, a `ToggleGr
 
 The arrow keys skip disabled toggles and press nothing: a toggle changes only when it is pressed. Both pairs of arrows
 move, whatever the group's layout, which is the app's class. In a right-to-left layout Left and Right trade places:
-Left moves to the next toggle and Right to the previous; Up, Down, Home and End keep theirs. `focus:` styles show where
+Left moves to the next toggle and Right to the previous; Up, Down, Home and End keep theirs. `focus-visible:` styles show where
 the focus is. A `Toggle`
 outside a `ToggleGroup` is a stop of its own.
 

@@ -6,11 +6,11 @@ Helpers:
 - image(value, detail=None): emit a Host image, MCP image block or base64 data URL; image_url objects are accepted. detail is auto/low/high/original; an explicit argument overrides embedded detail.
 - audio(value): emit an MCP audio block, audio_url object or base64 data URL. Audio is delivered as native model input when supported; unsupported adapters receive an explicit notice.
 - generated_image({"image_url": ..., "output_hint": ...}): emit an image and optional hint.
-- store(key, value), load(key): retain JSON between exec calls in this live session, including across turns and compaction. Missing keys return None. No Python globals survive. Writes publish after settlement. Host restart/session retirement clears the store.
+- store(key, value), load(key): retain JSON between exec calls in this session, including across turns, compaction and Host restart. Missing keys return None. No Python globals survive. Writes publish only with successful canonical Cell final-result acceptance; failed/interrupted drafts are discarded.
 - notify(value): inject output into model history without wait, yielding or finishing the cell. Notifications during a model request arrive on the next step.
 - await yield_control(): return accumulated output while the cell continues.
 - exit(): end the script successfully.
 - ALL_TOOLS: tuple of immutable name/description records for all authorized nested tools, including deferred tools omitted from this description. Find a tool here and call it in the same cell.
 Only JSON values cross the Host boundary: object keys must be strings; bytes, sets, cycles, non-finite floats and integers outside the JSON integer range are rejected. Convert intentionally inside Python before calling tools or output/store helpers.
-Use wait only after exec returns a running cell_id. Tool permissions and schemas stay frozen for the cell. Calls to other advertised tools must be made directly. Do not invoke exec in parallel with other model tools.
+Use wait only after exec returns a running cell_id; pass terminate=True to wait to cancel a running cell and its pending calls (ProcessStop only stops background Shell refs, not cell_id). Tool permissions and schemas stay frozen for the cell. Calls to other advertised tools must be made directly. Do not invoke exec in parallel with other model tools.
 Host execution: 64 MiB interpreter allocation budget in an isolated worker with allocator headroom, 30 seconds cumulative execution (Host waits and sleeps excluded). Tool work remains owned until cleanup; use wait to collect running cells.

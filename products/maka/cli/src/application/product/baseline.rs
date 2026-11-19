@@ -63,7 +63,7 @@ pub(super) fn metadata(package: &Package) -> Result<Metadata, HostError> {
 }
 
 #[cfg(test)]
-pub(super) fn template(package: &Package) -> Result<&Template, HostError> {
+fn template(package: &Package) -> Result<&Template, HostError> {
     package
         .manifest()
         .application
@@ -73,7 +73,7 @@ pub(super) fn template(package: &Package) -> Result<&Template, HostError> {
 }
 
 #[cfg(test)]
-pub(super) fn flat(package: &Package) -> Result<Input, HostError> {
+fn flat(package: &Package) -> Result<Input, HostError> {
     let template = template(package)?;
     Ok(Input {
         base: None,

@@ -78,7 +78,8 @@ user-facing page is `website/elements/editor.md`; how each module works inside i
 ### The display map
 
 `DisplayMap` (`display_map.rs`) lays the text out in display rows: tabs advance to the next stop, widths come from
-the editor's font measured with the platform's text engine, and large files lay out without measuring every row.
+the editor's font as drawn (the app's `fontSize` and `lineHeight` grown by the user's text size, `fontScale`, as the
+core grows every text's: `controller::drawn_font`) measured with the platform's text engine, and large files lay out without measuring every row.
 With `softWrap`, a line breaks after whitespace where the row would overflow, else between graphemes, and its
 continuation rows start at its indentation unless that is over half the width. A folded line shows as one row and the
 lines it hides as none. An edit lays out only the lines it touched.
@@ -120,7 +121,8 @@ itself lives in an `Rc<RefCell<State>>` outside the reactive graph.
 ### Typed text and input methods
 
 A native `Input` (the sink), invisible, 1 point wide and a row tall, is kept at the primary caret, so input methods
-open their candidate windows there and soft keyboards show. It takes no pointer (`pointer_events(None)`, which the
+open their candidate windows there and soft keyboards show. Its scroll bar is disabled: the app's built-in bars
+belong to the visible text area. It takes no pointer (`pointer_events(None)`, which the
 mobile platforms honor on inputs too): over the caret it would take the touches of the selection's end handle. It lies over the scroll views, not in them, placed in the
 editor's box (`Ed::in_editor`) and held inside it: the platforms scroll the scroll views around a focused field to
 show it, which the editor does itself for its caret, and doing it again moved the text under the caret by a margin,
@@ -247,14 +249,20 @@ is placed right again on the next pointer event or layout.
 `highlight.rs` is one pipeline for every highlighter: the built-in one, syntect line by line (the syntaxes and scope
 mapping of `crate::syntax`, shared with `TextView`), and the app's (`EditorHighlighter`, below). The tokens stay on
 the engine thread, by line; the highlighter goes off it. The controller hands a `Job` (the highlighter, a snapshot of
-the rope, 25 ms of work) to a blocking thread, shows the lines it gave tokens and hands the next, up to 1000 lines past
-the last one in view, until the highlighter says those lines are current. Edits made while a job is out are kept and
+the rope, 25 ms of work) to a blocking thread, shows the lines it gave tokens and hands the next, until the highlighter
+says the lines up to 1000 past the last one in view are current. While the lines in view are not, a job stops at the
+last of them, so they show as soon as they are parsed rather than a slice later. A pass's work goes to its thread when
+it is made (`off_thread` starts it, `nsh_core::prelude::blocking` takes the surface's runtime outside a task), not when
+the controller's task first runs: that runs after the engine thread's turn, and the turn that mounts an editor can take
+tens of milliseconds, which the first lines' parse now overlaps. Edits made while a job is out are kept and
 given to the highlighter when it comes back; the lines it highlighted from the text before them move with them (those
 the edits replaced are dropped). When the lines in view are more than 500 lines past the highlighter's frontier (a jump
 to the end of a long file), a `Guess` highlights them with a highlighter made for it, starting 40 lines before them,
 and shows that until the highlighting from the top reaches them; a highlighter that does not guess is not asked
-again. Nothing is parsed on the engine thread: syntect costs about a millisecond a line, so a guess of the lines in
-view there took tens of milliseconds an edit in a long file (held paste keys never let a frame out); lines with no
+again. Lines in view that an edit left in the colors they had (below) are guessed again too, so typing far past the
+parse is not left in the colors it continued until the parse comes (seconds in a 200 000 line file). Nothing is parsed
+on the engine thread: a guess of the lines in view there took milliseconds an edit in a long file (held paste keys
+never let a frame out); lines with no
 tokens yet (pasted, or jumped to) show plain until the job or the guess brings theirs, a frame or two later, as
 gpui-component's highlighters leave a long document's new text until their background parse. An edit shifts the tokens of the lines it
 touches with the text (`LineEdit`): typed text takes the color of the token it extends and the rest of the line keeps
@@ -266,9 +274,13 @@ indentation.
 The built-in highlighter keeps syntect's state every 16 lines (and on lines that kept one before an edit). An edit
 marks the lines from its first one dirty; parsing starts at the nearest state kept before it and stops as soon as a
 line ends in the state the next line started with before, so typing in a function costs a few lines. Only an edit that
-changes what follows (opening a block comment or a string) parses on. The syntaxes load on a blocking thread the
-first time a language needs them (`Highlighter::load_async`, which `DiffView` uses too); on the web they come from the
-page then (`nsh-syntaxes.bin`, `text-view.md` "Syntax highlighting"), and the text stays plain until they arrive.
+changes what follows (opening a block comment or a string) parses on. The native runtimes run syntect on Oniguruma's
+regexes (`regex-onig`), the web on fancy-regex's (no C there): Oniguruma compiles a grammar's regexes about 20 times
+faster (TSX's: 15 ms against 280 ms), which an editor's first lines wait for, and parses 3 to 4 times faster. A
+highlighter is made at once where there are threads: its syntax is looked up in its first job, which loads the syntaxes
+(about a millisecond) off the engine thread and goes on to the lines in view. On the web the syntaxes come from the
+page first (`Highlighter::load_async`, `nsh-syntaxes.bin`, `text-view.md` "Syntax highlighting"), and the text stays
+plain until they arrive.
 Without feature `highlight` the built-in languages are plain; the app's highlighters still run.
 
 The app's highlighters and languages (`highlighter.rs`, `languages.rs`) are kept per engine, in a value of the
@@ -409,7 +421,8 @@ The defaults are the theme's tokens (`crate::theme()`), so a theme and the dark 
 | `definitionLink` | A 1 point line of `primary` under the link's text, on each row it covers |
 
 Syntax colors are `crate::syntax`'s `Token` styles, Allsum's palette in light and dark (the table in `text-view.md`
-"Syntax highlighting"). The font is a prop, not a class: the editor measures its text in it.
+"Syntax highlighting"). The font is a prop, not a class: the editor measures its text in it, grown by the user's text size, and its rows'
+texts keep the app's values, which the core grows. A row's text is one line, clipped where it ends.
 
 ## Accessibility
 

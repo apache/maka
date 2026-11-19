@@ -14,7 +14,7 @@ export const GET: APIRoute = async () => {
 
   // Each entry lists its translations, so search engines pair the locales.
   const entries: { href: string; en?: string; zh?: string }[] = [];
-  for (const [e, z] of [[url(''), url('zh-CN')], [url('playground'), url('zh-CN/playground')], [url('gallery'), url('zh-CN/gallery')], [url('apps'), url('zh-CN/apps')], [url('releases'), url('zh-CN/releases')], [url('brand'), url('zh-CN/brand')], ...(await getShowcaseApps()).filter((app) => app.hasReadme).map((app) => [url(`apps/${app.id}`), url(`zh-CN/apps/${app.id}`)])]) {
+  for (const [e, z] of [[url(''), url('zh-CN')], [url('playground'), url('zh-CN/playground')], [url('gallery'), url('zh-CN/gallery')], [url('apps'), url('zh-CN/apps')], [url('directory'), url('zh-CN/directory')], [url('releases'), url('zh-CN/releases')], [url('brand'), url('zh-CN/brand')], ...(await getShowcaseApps()).filter((app) => app.hasReadme).map((app) => [url(`apps/${app.id}`), url(`zh-CN/apps/${app.id}`)])]) {
     entries.push({ href: e, en: e, zh: z }, { href: z, en: e, zh: z });
   }
   for (const page of [...en, ...zh]) {

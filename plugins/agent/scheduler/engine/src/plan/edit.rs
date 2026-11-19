@@ -17,14 +17,12 @@
  * under the License.
  */
 
-#[cfg(test)]
-use super::Plan;
-use super::TaskPlan;
+use super::{Misfire, TaskPlan};
 use crate::{
     Error,
     command::Update,
     invalid,
-    schedule::Schedule,
+    schedule::{IntervalCadence, Schedule},
     task::{Create, Intent, Status, TaskEffect},
 };
 use jiff::tz::TimeZone;
@@ -47,6 +45,9 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             };
         }
         if let Some(schedule) = patch.schedule {
+            if next.task.schedule != schedule {
+                next.condition_matched = false;
+            }
             next.task.schedule = schedule;
         }
         if let Some(effect) = patch.effect {
@@ -83,11 +84,18 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         if reschedule
             || (next.task.next_fire_at.is_none_or(|at| at <= now) && next.pending.is_none())
         {
-            next.task.next_fire_at = if next.task.status == Status::Active {
+            next.task.next_fire_at = if next.task.status == Status::Active
+                || matches!(
+                    next.task.schedule,
+                    Schedule::Interval {
+                        cadence: IntervalCadence::AfterCompletion,
+                        ..
+                    }
+                ) {
                 Some(
                     next.task
                         .schedule
-                        .next_after(now, &TimeZone::get(&next.timezone)?)?
+                        .next_due(now, &TimeZone::get(&next.timezone)?, next.task.last_fire_at)?
                         .ok_or_else(|| invalid("schedule has no remaining trigger"))?,
                 )
             } else {
@@ -101,7 +109,6 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
     }
     pub fn pause(&self, now: i64) -> Self {
         let mut next = self.clone();
-        next.cancel_waiting_notification();
         if next.task.status == Status::Active {
             next.task.status = Status::Paused;
             next.task.updated_at = next.task.updated_at.max(now);
@@ -126,7 +133,11 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             next.task.next_fire_at = None;
         } else {
             next.task.status = Status::Active;
-            if next.task.next_fire_at.is_none_or(|at| at <= now) && next.pending.is_none() {
+            if next.pending.is_none()
+                && (next.task.next_fire_at.is_none()
+                    || (next.misfire == Misfire::Skip
+                        && next.task.next_fire_at.is_some_and(|at| at < now)))
+            {
                 next.task.next_fire_at = Some(
                     next.task
                         .schedule
@@ -134,36 +145,13 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
                         .ok_or_else(|| invalid("schedule has no remaining trigger"))?,
                 );
             }
+            if next.pending.is_none() && next.misfire == Misfire::Latest {
+                next.catch_up(now)?;
+            }
             next.check_expiry()?;
         }
+        next.pause_source = None;
         next.task.updated_at = next.task.updated_at.max(now);
-        Ok(next)
-    }
-    pub fn snooze(&self, delay_ms: i64, now: i64) -> Result<Self, Error> {
-        if delay_ms <= 0 {
-            return Err(invalid("snooze must be positive"));
-        }
-        if self.task.status != Status::Active
-            || (self.pending.is_some() && !self.waiting_notification())
-        {
-            return Err(invalid("only unclaimed active tasks can be snoozed"));
-        }
-        let at = self
-            .task
-            .next_fire_at
-            .ok_or_else(|| invalid("task has no trigger"))?
-            .max(now);
-        let mut next = self.clone();
-        next.cancel_waiting_notification();
-        next.task.next_fire_at = Some(
-            at.checked_add(delay_ms)
-                .ok_or_else(|| invalid("time overflow"))?,
-        );
-        if let Some(at) = next.task.next_fire_at {
-            crate::schedule::timestamp(at)?;
-        }
-        next.task.updated_at = next.task.updated_at.max(now);
-        next.check_expiry()?;
         Ok(next)
     }
     pub fn clear_history(&self, now: i64) -> Self {
@@ -187,117 +175,5 @@ fn apply<T>(patch: Patch<T>, field: &mut Option<T>) {
         Patch::Keep => {}
         Patch::Clear => *field = None,
         Patch::Set(value) => *field = Some(value),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::task::{Creator, Effect, Outcome, Run};
-
-    #[test]
-    fn old_tasks_can_reschedule_and_pending_calls_keep_their_intent_across_edits() {
-        let plan = Plan::create(
-            "task".into(),
-            Create {
-                title: "Original".into(),
-                intent_body: "Work".into(),
-                schedule: Schedule::Interval {
-                    every_seconds: 10,
-                    start_at: 1000,
-                },
-                effect: Effect::SessionResume {
-                    session_id: "session".into(),
-                },
-                max_fires: None,
-                expires_at: None,
-            },
-            Creator::User,
-            "UTC".into(),
-            1000,
-        )
-        .unwrap();
-        // A reschedule uses real wall time even before recorded creation time.
-        let mut rewound = plan
-            .update(
-                Update {
-                    schedule: Some(Schedule::Once { run_at: 750 }),
-                    ..Default::default()
-                },
-                500,
-            )
-            .unwrap();
-        assert_eq!(rewound.task.updated_at, 1000);
-        let mut recovered = rewound.clone();
-        recovered.recover(800).unwrap();
-        recovered.validate().unwrap();
-        assert_eq!(recovered.task.updated_at, 1000);
-        let fire = rewound.claim(750).unwrap().unwrap().clone();
-        assert_eq!(fire.scheduled_at, 750);
-        assert_eq!(rewound.task.updated_at, 1000);
-        let mut restored: Plan =
-            serde_json::from_value(serde_json::to_value(&rewound).unwrap()).unwrap();
-        restored.validate().unwrap();
-        assert_eq!(restored.pending.as_ref(), Some(&fire));
-        restored.pending.as_mut().unwrap().scheduled_at = -1;
-        assert!(restored.validate().is_err());
-        let now = 2 * 366 * 24 * 60 * 60 * 1000;
-        let mut next = plan
-            .update(
-                Update {
-                    schedule: Some(Schedule::Once { run_at: now + 1000 }),
-                    ..Update::default()
-                },
-                now,
-            )
-            .unwrap();
-        next.validate().unwrap();
-        // Unrelated later edits must not revalidate against the original creation time.
-        next = next
-            .update(
-                Update {
-                    title: Some("Rescheduled".into()),
-                    ..Update::default()
-                },
-                now,
-            )
-            .unwrap();
-        let fire = next.claim(now + 1000).unwrap().unwrap().clone();
-        next = next
-            .update(
-                Update {
-                    title: Some("New title".into()),
-                    schedule: Some(Schedule::Interval {
-                        every_seconds: 10,
-                        start_at: now,
-                    }),
-                    ..Update::default()
-                },
-                now + 1000,
-            )
-            .unwrap()
-            .pause(now + 1000);
-        assert_eq!(next.pending.as_ref(), Some(&fire));
-        next.settle(Run {
-            id: fire.id,
-            at: now + 2000,
-            outcome: Outcome::Ok,
-            message: "admitted".into(),
-            session_id: Some("session".into()),
-            run_id: Some("run".into()),
-        })
-        .unwrap();
-        assert_eq!(next.task.status, Status::Paused);
-        assert_eq!(next.task.fire_count, 1);
-        next = next
-            .resume(now + 3000)
-            .unwrap()
-            .snooze(1000, now + 3000)
-            .unwrap();
-        assert_eq!(next.task.next_fire_at, Some(now + 11_000));
-        assert!(next.snooze(0, now + 3000).is_err());
-        let cleared = next.clear_history(now + 4000);
-        assert!(cleared.task.runs.is_empty());
-        assert_eq!(cleared.task.fire_count, 1);
     }
 }

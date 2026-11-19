@@ -84,23 +84,20 @@ function host({
   current = SESSION,
   former = [],
 } = {}) {
-  const state = {
-    messages,
-    hold,
-    fail,
-    readThrough: 0,
-    releases: [],
-    waiting: [],
-    reads: [],
-    subscribed: 0,
-  };
+  const state = { messages, hold, fail, releases: [], waiting: [], reads: [], subscribed: 0 };
   const query = async (_endpoint, _method, input) => {
     // The Host reports the current Bot, and whether the asked Session is or was a Bot.
     const asked = input.sessionId ?? current;
     const isBot = asked === current || former.includes(asked);
     const through = isBot ? state.messages.length : 0;
     if (input.limit === 0)
-      return { sessionId: current, isBot, through, readThrough: state.readThrough, messages: [] };
+      return {
+        sessionId: current,
+        isBot,
+        through,
+        messages: [],
+        discoveryLink: state.discoveryLink,
+      };
     state.reads.push(input.after ?? 0);
     if (state.hold) await new Promise((resolve) => state.releases.push(resolve));
     if (state.fail) throw new Error('outbox read failed');
@@ -142,6 +139,50 @@ test('replies are grouped by the Turn that sent them and read in order across pa
   assert.deepEqual(replies(core, 'c'), ['m5']);
   assert.deepEqual(replies(core, 'none'), []);
   assert.deepEqual(state.reads, [0, 2, 4], 'each page is read once, in order');
+  core.close();
+});
+
+test('late discovery links update the displayed send and recover changes missed between watches', async () => {
+  const parts = [
+    message(1, 'a'),
+    { ...message(2, 'a'), messageId: 'id1', index: 1 },
+    message(3, 'b'),
+  ];
+  const { state, announce, host: h } = host({ messages: parts });
+  const core = createBotTranscriptCore(h, SESSION, () => {});
+  await core.started;
+  await settle();
+  const first = { recordId: 'A', workerSessionId: 'worker-A', workerTurnId: 'turn-A' };
+  const second = { recordId: 'B', workerSessionId: 'worker-B', workerTurnId: 'turn-B' };
+  state.messages = parts.map((m) => (m.turnId === 'a' ? { ...m, discovery: first } : m));
+  state.discoveryLink = { revision: 1, messageId: 'id1', turnId: 'a', discovery: first };
+  announce();
+  await settle();
+  assert.deepEqual(
+    core.forTurn('a').map((m) => m.discovery),
+    [first, first],
+  );
+  assert.deepEqual(
+    state.reads,
+    [0],
+    'a single link updates the cached call without reloading history',
+  );
+
+  state.messages[2] = { ...parts[2], discovery: second };
+  state.discoveryLink = { revision: 3, messageId: 'id3', turnId: 'b', discovery: second };
+  state.fail = true;
+  announce();
+  await settle();
+  assert.deepEqual(
+    replies(core, 'a'),
+    ['m1', 'm2'],
+    'a failed reload preserves the visible transcript',
+  );
+  state.fail = false;
+  announce();
+  await settle();
+  assert.deepEqual(core.latest().discovery, second);
+  assert.deepEqual(replies(core, 'a'), ['m1', 'm2']);
   core.close();
 });
 
@@ -427,11 +468,16 @@ test('a Bot Turn started by a worker finishing reports that worker; other Turns 
     { turnId: 't2' },
     { turnId: 't3', origin: { kind: 'goal', goalId: 'g1', objective: 'x' } },
     { turnId: 't4', origin: { kind: 'bot_worker', sessionId: 'worker-b' } },
+    {
+      turnId: 't5',
+      origin: { kind: 'session_completion', sessionId: 'worker-c', messageId: 'task-c' },
+    },
   ];
   assert.equal(reportedWorker(rows, 't1'), 'worker-a');
   assert.equal(reportedWorker(rows, 't2'), undefined, 'a user Turn reports no worker');
   assert.equal(reportedWorker(rows, 't3'), undefined, 'another origin is not a worker');
   assert.equal(reportedWorker(rows, 't4'), 'worker-b');
+  assert.equal(reportedWorker(rows, 't5'), 'worker-c');
   assert.equal(reportedWorker(rows, 'missing'), undefined);
 });
 
@@ -600,25 +646,4 @@ test('worker catalog observation cancellation rebinds without clearing current w
   currentCleanup();
   await settle();
   assert.equal(streams[1].closed, true);
-});
-
-test('read receipts from another window update without replaying the outbox', async () => {
-  const { state, host: h, announce } = host({ messages: [message(1, 'a'), message(2, 'b')] });
-  const core = createBotTranscriptCore(h, SESSION, () => {});
-  await core.started;
-  await settle();
-  assert.equal(core.readState().through, 2);
-  assert.equal(core.readState().readThrough, 0);
-  state.readThrough = 1;
-  announce();
-  await settle();
-  assert.equal(core.readState().readThrough, 1);
-  assert.equal(core.readState().latest.sequence, 2);
-  assert.deepEqual(state.reads, [0]);
-  state.messages.push(message(3, 'b'));
-  announce();
-  await settle();
-  assert.equal(core.readState().latest.sequence, 3);
-  assert.equal(core.readState().readThrough, 1);
-  core.close();
 });

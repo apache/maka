@@ -19,6 +19,7 @@
 
 mod delegation;
 
+use super::send::NativeMutation;
 use super::{Owner, StoredSessionConfiguration, now};
 use crate::contract::*;
 use maka_agent_facts::interaction::InteractionAnswer;
@@ -31,19 +32,30 @@ impl Owner {
         session_id: &str,
     ) -> Result<PendingInteractions, String> {
         self.session(session_id).await?;
-        let observed = self
-            .store
-            .session(session_id)
+        let mut observed = self
+            .durable
+            .interactions()
+            .pending(session_id)
             .await
-            .map_err(|error| error.to_string())?
-            .session_projection::<StoredSessionConfiguration>(session_id)
-            .await
-            .map_err(|_| "agent_interactions_unavailable")?
-            .ok_or("agent_session_unavailable")?;
+            .map_err(|error| error.to_string())?;
+        let mut cursor = observed.next.take();
+        while let Some(after) = cursor {
+            let page = self
+                .durable
+                .interactions()
+                .pending_page(session_id, Some(after), 256)
+                .await
+                .map_err(|error| error.to_string())?;
+            if page.revision != observed.revision {
+                return Err("agent_interactions_changed".into());
+            }
+            cursor = page.next;
+            observed.records.extend(page.records);
+        }
         Ok(PendingInteractions {
-            revision: observed.session.revision,
+            revision: observed.revision,
             entries: observed
-                .pending_interactions
+                .records
                 .into_iter()
                 .map(|record| InteractionSummary {
                     request_id: record.request_id,
@@ -97,37 +109,50 @@ impl Owner {
         session_id: &str,
         request_id: &str,
     ) -> Result<Option<InteractionRecord>, String> {
-        Ok(self
-            .store
-            .session(session_id)
+        self.durable
+            .interactions()
+            .read(session_id, request_id)
             .await
-            .map_err(|error| error.to_string())?
-            .interaction(request_id)
-            .await
-            .map_err(|_| "agent_interactions_unavailable")?
-            .filter(|record| record.session_id == session_id))
+            .map_err(|error| error.to_string())
     }
-    async fn commit_response(
+    async fn prepare_response(
         &self,
         input: InteractionRespond,
-    ) -> Result<InteractionResult, String> {
-        let runs = self.runs.lock().await;
-        let reject = |reason| Ok(InteractionResult::Rejected { reason });
+    ) -> Result<NativeMutation<InteractionResult>, String> {
+        let runs = std::sync::Arc::new(self.runs.lock().await);
+        let reject = |reason| {
+            Ok(NativeMutation::Returned(InteractionResult::Rejected {
+                reason,
+            }))
+        };
         if runs.closing {
             return reject(InteractionRejection::Closed);
         }
-        self.commit_response_unlocked(input).await
+        self.prepare_response_locked(input, runs, None).await
     }
 
-    async fn commit_response_unlocked(
+    async fn prepare_response_locked(
         &self,
         input: InteractionRespond,
-    ) -> Result<InteractionResult, String> {
-        let reject = |reason| Ok(InteractionResult::Rejected { reason });
+        guard: std::sync::Arc<super::runs::Exclusive>,
+        caller: Option<maka_agent_state::CallerFence>,
+    ) -> Result<NativeMutation<InteractionResult>, String> {
+        let reject = |reason| {
+            Ok(NativeMutation::Returned(InteractionResult::Rejected {
+                reason,
+            }))
+        };
         if !self.owns(&input.session_id) {
             return reject(InteractionRejection::Unavailable);
         }
-        let session = self.session(&input.session_id).await?;
+        let Some(session) = self
+            .store
+            .get_session::<StoredSessionConfiguration>(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return reject(InteractionRejection::Unavailable);
+        };
         if session.archived {
             return reject(InteractionRejection::Unavailable);
         }
@@ -188,20 +213,36 @@ impl Owner {
             return reject(InteractionRejection::InvalidAnswer);
         }
         if record.outcome.is_some() {
-            return Ok(InteractionResult::Recorded {
+            return Ok(NativeMutation::Returned(InteractionResult::Recorded {
                 record: Box::new(record),
-            });
+            }));
         }
-        let committed = self
-            .store
-            .session(&record.session_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .commit_interaction_outcome(&record.request_id, input.answer.into_outcome(now()))
-            .await
-            .map_err(|_| "agent_interaction_commit_unavailable")?;
-        Ok(InteractionResult::Recorded {
-            record: Box::new(committed.record),
-        })
+        let change = self
+            .durable
+            .interactions()
+            .prepare_outcome(
+                &record.execution.session_id,
+                &record.request_id,
+                input.answer.into_outcome(now()),
+                caller,
+                guard,
+                |settlement| {
+                    use maka_agent_state::interactions::AnswerSettlement;
+                    let result = match settlement {
+                        AnswerSettlement::Recorded(record) => InteractionResult::Recorded {
+                            record: Box::new(record),
+                        },
+                        AnswerSettlement::Unavailable => InteractionResult::Rejected {
+                            reason: InteractionRejection::Unavailable,
+                        },
+                        AnswerSettlement::AuthorizationChanged => InteractionResult::Rejected {
+                            reason: InteractionRejection::AuthorizationChanged,
+                        },
+                    };
+                    serde_json::to_value(result).map_err(maka_event_log::StoreError::from)
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(NativeMutation::Computed { change })
     }
 }

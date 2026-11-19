@@ -29,6 +29,21 @@ use tokio_util::sync::CancellationToken;
 pub(super) struct Adapter(super::responses::Adapter);
 
 impl ProviderAdapter for Adapter {
+    fn recovery_contract(
+        &self,
+        kind: &model::ProviderKind,
+        tools: &[Arc<maka_agent_facts::tools::ToolDefinition>],
+    ) -> Option<model::RecoveryContract> {
+        self.0.recovery_contract(kind, tools)
+    }
+    fn continuation_cursor(
+        &self,
+        contract: &model::RecoveryContract,
+        part: &maka_agent_facts::model::ModelPart,
+    ) -> Option<Value> {
+        self.0.continuation_cursor(contract, part)
+    }
+
     fn supports_item_acceptance(&self) -> bool {
         self.0.supports_item_acceptance()
     }
@@ -50,6 +65,11 @@ impl ProviderAdapter for Adapter {
 
 struct Subscription(Arc<dyn Session>);
 impl Session for Subscription {
+    fn fallback_availability(
+        &self,
+    ) -> maka_agent_facts::model::retry_transport::FallbackAvailability {
+        self.0.fallback_availability()
+    }
     fn retry_transport_phase(&self) -> model::RetryTransportPhase {
         self.0.retry_transport_phase()
     }

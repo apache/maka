@@ -1,8 +1,8 @@
 //! `nsh/base`: the behavior and infrastructure foundation of NSH apps' UI,
 //! written in Rust, with no look of its own (as `gpui-base` is GPUI Kit's):
 //! controls (`Button`, a link (`Link`), `Checkbox`, avatars (`Avatar`, `AvatarGroup`), a carousel (`Carousel` and its parts), a color picker: `ColorPicker` and its parts, `NumberInput`, `Radio` in a
-//! `RadioGroup`, `Slider`, `Switch`, `Toggle` in a `ToggleGroup`, a bar of them and of buttons and links (`Toolbar`, `ToolbarGroup`, `ToolbarSeparator`), a scroll bar of the app's own look (`Scrollbar`), `Tab` in `Tabs`, `Select`, `Combobox`, a command palette (`Command`), a one-time code: `OtpInput`), the pages of a set (`Pagination`), items that hold items (`Tree`), a progress bar (`Progress`), disclosure (`Collapsible`, `Accordion` and its parts),
-//! the parts of charts (`plot`: `nsh/base/plot`), navigation (stacks and pages), dialogs, popups on the core's overlays
+//! `RadioGroup`, `Slider`, `Switch`, `Toggle` in a `ToggleGroup`, a bar of them and of buttons and links (`Toolbar`, `ToolbarGroup`, `ToolbarSeparator`), a scroll bar of the app's own look (`Scrollbar`), `Tab` in `Tabs`, `Select`, `Combobox`, a command palette (`Command`), an emoji picker (`EmojiPicker`), a one-time code: `OtpInput`), the pages of a set (`Pagination`), items that hold items (`Tree`), a progress bar (`Progress`), disclosure (`Collapsible`, `Accordion` and its parts),
+//! the parts of charts (`plot`: `nsh/base/plot`), navigation (stacks and pages, and columns of stacks: `SplitView`), dialogs, popups on the core's overlays
 //! (`Popover`, `HoverCard`, `Menu`, `ContextMenu`, `Tooltip`, `Sheet`), a code editor
 //! (`Editor`), the changes between two texts (`DiffView`), tables over any number of rows and columns (`DataTable`) and static tables
 //! with a table's semantics (`Table` and its parts), toasts (`Toast`,
@@ -29,18 +29,23 @@ mod collapsible;
 mod color_picker;
 mod combobox;
 mod command;
-mod data_table;
+pub mod data_table;
 mod date_picker;
 #[cfg(feature = "editor")]
 mod diff;
 pub mod dock;
 #[cfg(feature = "editor")]
 pub mod editor;
+#[cfg(feature = "emoji-picker")]
+mod emoji_picker;
 mod hover_card;
 mod keys;
 mod link;
+mod link_hint;
 mod listbox;
+mod mdast_tree;
 mod menu;
+mod menu_button;
 mod navigation;
 mod number_input;
 mod numeric;
@@ -61,6 +66,7 @@ mod select;
 mod sheet;
 mod slider;
 mod sort;
+mod split_view;
 mod status_line;
 mod switch;
 mod syntax;
@@ -70,6 +76,13 @@ mod tabs;
 mod term;
 pub mod terminal;
 pub mod text_view;
+
+/// `EmojiPicker`'s emoji (`emoji_picker/emoji.tsv`): the native runtimes
+/// embed them; `nsh` publishes them next to a web runtime, which fetches
+/// them for its first picker.
+#[cfg(all(feature = "emoji-picker", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub use crate::emoji_picker::EMOJI_DATA;
 
 /// The KaTeX fonts `TextView` draws formulas with, in one file,
 /// zstd-compressed (about 230 kB of 500 kB; license in
@@ -94,6 +107,12 @@ use nsh_core::element::{ComponentSpec, Registry};
 /// TSX's `Input` of `nsh/base`, a host element the core makes.
 pub use nsh_core::element::{Input, input};
 
+#[cfg(feature = "emoji-picker")]
+pub use crate::emoji_picker::{
+    EmojiAnnotation, EmojiEntry, EmojiGroup, EmojiGroupId, EmojiGroupLabels, EmojiPicker,
+    EmojiPickerApi, EmojiPickerElement, EmojiPickerEvent, EmojiPickerProps, EmojiSkinTone,
+    emoji_picker,
+};
 #[cfg(feature = "term")]
 pub use crate::term::{
     Terminal, TerminalApi, TerminalColor, TerminalCursor, TerminalElement, TerminalEmulator,
@@ -109,8 +128,8 @@ pub use crate::{
         accordion_header, accordion_item, accordion_panel, accordion_trigger,
     },
     alert_dialog::{
-        AlertDialog, AlertDialogAction, AlertDialogOptions, AlertDialogPresentation,
-        AlertDialogResult, AlertDialogRole, alert_dialog,
+        AlertDialog, AlertDialogAction, AlertDialogAnswer, AlertDialogInput, AlertDialogOptions,
+        AlertDialogPresentation, AlertDialogResult, AlertDialogRole, alert_dialog,
     },
     avatar::{
         Avatar, AvatarElement, AvatarEvent, AvatarGroup, AvatarGroupElement, AvatarGroupProps,
@@ -146,11 +165,12 @@ pub use crate::{
         CommandProps, command,
     },
     data_table::{
-        DataTable, DataTableAlign, DataTableApi, DataTableCell, DataTableClasses, DataTableColumn,
-        DataTableColumnGroup, DataTableColumnMove, DataTableContextMenu, DataTableDump,
-        DataTableElement, DataTableEvent, DataTableHeaderCell, DataTablePart, DataTablePress,
-        DataTableProps, DataTableRange, DataTableRows, DataTableSelection, DataTableSort,
-        DataTableSortDirection, DataTableStyles, DataTableTarget, data_table,
+        DataTable, DataTableAlign, DataTableApi, DataTableCell, DataTableCellClass,
+        DataTableClasses, DataTableColumn, DataTableColumnGroup, DataTableColumnMove,
+        DataTableColumnPress, DataTableContextMenu, DataTableDump, DataTableElement,
+        DataTableEvent, DataTableHeaderCell, DataTablePart, DataTablePress, DataTableProps,
+        DataTableRange, DataTableRows, DataTableSelection, DataTableSort, DataTableSortDirection,
+        DataTableStyles, DataTableTarget, data_table,
     },
     date_picker::{
         DatePicker, DatePickerElement, DatePickerEvent, DatePickerProps, DatePickerValue,
@@ -160,10 +180,15 @@ pub use crate::{
     hover_card::{HoverCard, HoverCardElement, HoverCardEvent, HoverCardProps, hover_card},
     link::{Link, LinkElement, LinkEvent, LinkOpenWith, LinkProps, link},
     menu::{
-        ContextMenu, ContextMenuElement, ContextMenuProps, Menu, MenuElement, MenuEvent, MenuItem,
-        MenuItemElement, MenuItemEvent, MenuItemProps, MenuProps, MenuSeparator,
+        ContextMenu, ContextMenuElement, ContextMenuEvents, ContextMenuProps, Menu, MenuElement,
+        MenuEvent, MenuItem, MenuItemElement, MenuItemEvent, MenuItemProps, MenuList,
+        MenuListElement, MenuListEntry, MenuListProps, MenuProps, MenuSeparator,
         MenuSeparatorElement, MenuSeparatorProps, Submenu, SubmenuElement, SubmenuEvent,
-        SubmenuProps, context_menu, menu, menu_item, menu_separator, submenu,
+        SubmenuProps, context_menu, menu, menu_item, menu_list, menu_separator, submenu,
+    },
+    menu_button::{
+        MenuButton, MenuButtonElement, MenuButtonEvent, MenuButtonItem, MenuButtonProps,
+        menu_button,
     },
     navigation::{dialog, nav_page, nav_stack},
     number_input::{
@@ -201,8 +226,11 @@ pub use crate::{
         Select, SelectElement, SelectEntry, SelectEvent, SelectGroup, SelectItem, SelectProps,
         SelectValue, select,
     },
-    sheet::{Sheet, SheetElement, SheetEvent, SheetProps, sheet},
+    sheet::{Sheet, SheetDetent, SheetElement, SheetEvent, SheetProps, sheet},
     slider::{Slider, SliderElement, SliderEvent, SliderProps, SliderScale, SliderValue, slider},
+    split_view::{
+        ColumnVisibility, SplitView, SplitViewElement, SplitViewEvent, SplitViewProps, split_view,
+    },
     switch::{Switch, SwitchElement, SwitchEvent, SwitchProps, switch},
     table::{
         Table, TableBody, TableBodyElement, TableCaption, TableCaptionElement, TableCell,
@@ -218,7 +246,7 @@ pub use crate::{
         TextViewCodeAction, TextViewCodeActionEvent, TextViewElement, TextViewEvent,
         TextViewImageContext, TextViewImageFlow, TextViewLabels, TextViewLinkPressEvent,
         TextViewLinkTarget, TextViewLinks, TextViewMath, TextViewPart, TextViewParts,
-        TextViewProps, TextViewSelectionEvent, TextViewStyles, text_view,
+        TextViewProps, TextViewSelectionEvent, TextViewStyles, TextViewTaskPressEvent, text_view,
     },
     theme::{DEFAULT_THEME, Theme, ThemeError, theme, theme_overrides, tokens_of},
     time_field::{
@@ -296,6 +324,8 @@ pub fn registry_of(parts: impl IntoIterator<Item = parts::Part>) -> Registry {
 pub mod parts {
     use nsh_core::element::Registry;
 
+    #[cfg(feature = "emoji-picker")]
+    use crate::EmojiPicker;
     #[cfg(feature = "plot")]
     use crate::plot;
     #[cfg(feature = "rich-editor")]
@@ -306,11 +336,11 @@ pub mod parts {
         CarouselNext, CarouselPagination, CarouselPaginationItem, CarouselPrevious, Checkbox,
         Collapsible, ColorArea, ColorEyeDropper, ColorField, ColorPicker, ColorSlider, ColorSwatch,
         Combobox, Command, ContextMenu, DataTable, DatePicker, DockArea, HoverCard, Link, Menu,
-        MenuItem, MenuSeparator, NumberInput, OtpInput, Pagination, Popover, Progress, Radio,
-        RadioGroup, ResizablePanel, ResizablePanelGroup, Scrollbar, Select, Sheet, Slider, Submenu,
-        Switch, Tab, Table, TableBody, TableCaption, TableCell, TableFooter, TableHead,
-        TableHeader, TableRow, Tabs, TextView, TimeField, Toast, ToastStack, Toggle, ToggleGroup,
-        Toolbar, ToolbarGroup, ToolbarSeparator, Tooltip, Tree,
+        MenuButton, MenuItem, MenuSeparator, NumberInput, OtpInput, Pagination, Popover, Progress,
+        Radio, RadioGroup, ResizablePanel, ResizablePanelGroup, Scrollbar, Select, Sheet, Slider,
+        SplitView, Submenu, Switch, Tab, Table, TableBody, TableCaption, TableCell, TableFooter,
+        TableHead, TableHeader, TableRow, Tabs, TextView, TimeField, Toast, ToastStack, Toggle,
+        ToggleGroup, Toolbar, ToolbarGroup, ToolbarSeparator, Tooltip, Tree,
     };
     #[cfg(feature = "editor")]
     use crate::{DiffView, Editor};
@@ -329,6 +359,8 @@ pub mod parts {
         ("toast", toast),
         ("pickers", pickers),
         ("color_picker", color_picker),
+        #[cfg(feature = "emoji-picker")]
+        ("emoji_picker", emoji_picker),
         ("carousel", carousel),
         ("tree", tree),
         ("fields", fields),
@@ -387,11 +419,13 @@ pub mod parts {
             .module::<AlertDialog>();
     }
 
-    /// `Menu`, `ContextMenu` and their items.
+    /// `Menu`, `ContextMenu` and their items, and `MenuButton` (the
+    /// system's menu).
     pub fn menu(registry: &mut Registry) {
         registry
             .register::<ContextMenu>()
             .register::<Menu>()
+            .register::<MenuButton>()
             .register::<MenuItem>()
             .register::<MenuSeparator>()
             .register::<Submenu>();
@@ -446,6 +480,13 @@ pub mod parts {
             .register::<ColorField>()
             .register::<ColorSwatch>()
             .register::<ColorEyeDropper>();
+    }
+
+    /// `EmojiPicker`: a search field over every emoji, with the emoji's
+    /// data (fetched by the web runtime the first time a picker shows).
+    #[cfg(feature = "emoji-picker")]
+    pub fn emoji_picker(registry: &mut Registry) {
+        registry.register::<EmojiPicker>();
     }
 
     /// `Carousel` and its parts.
@@ -522,9 +563,10 @@ pub mod parts {
             .register::<TableCaption>();
     }
 
-    /// `DockArea`: a dockable workspace.
+    /// `DockArea`: a dockable workspace; and `SplitView`, whose columns
+    /// are the area's outside iOS.
     pub fn dock(registry: &mut Registry) {
-        registry.register::<DockArea>();
+        registry.register::<DockArea>().register::<SplitView>();
     }
 
     /// `ResizablePanelGroup` and `ResizablePanel`.
@@ -551,7 +593,12 @@ mod tests {
     /// The exports are named after the types (`std::any::type_name`): a
     /// renamed type, or a compiler that formats type names differently,
     /// changes what apps import.
-    #[cfg(all(feature = "editor", feature = "plot", feature = "rich-editor"))]
+    #[cfg(all(
+        feature = "editor",
+        feature = "emoji-picker",
+        feature = "plot",
+        feature = "rich-editor"
+    ))]
     #[test]
     fn the_exports_are_pinned() {
         let registry = super::registry();
@@ -591,9 +638,11 @@ mod tests {
                 "DiffView",
                 "DockArea",
                 "Editor",
+                "EmojiPicker",
                 "HoverCard",
                 "Link",
                 "Menu",
+                "MenuButton",
                 "MenuItem",
                 "MenuSeparator",
                 "NumberInput",
@@ -610,6 +659,7 @@ mod tests {
                 "Select",
                 "Sheet",
                 "Slider",
+                "SplitView",
                 "Submenu",
                 "Switch",
                 "Tab",

@@ -25,6 +25,21 @@ impl Context {
     /// Execute a typed script request using this original admitted context.
     pub fn request(&self, operation: HostRequest) -> BoxFuture<'static, Result<Value>> {
         let result = (|| match operation {
+            HostRequest::StateRead { key } => {
+                let result = self.state_read(key)?;
+                Ok(Box::pin(async move {
+                    serde_json::to_value(result.await?).map_err(|error| error.to_string())
+                }) as BoxFuture<'static, Result<Value>>)
+            }
+            HostRequest::StateScan { query } => {
+                let result = self.state_scan(query)?;
+                Ok(Box::pin(async move {
+                    serde_json::to_value(result.await?).map_err(|error| error.to_string())
+                }) as BoxFuture<'static, Result<Value>>)
+            }
+            HostRequest::CompleteState { .. } => {
+                Err("pure state completion is only available through the callback bridge".into())
+            }
             HostRequest::Emit { value } => {
                 let emitted = self.emit(value);
                 Ok(Box::pin(async move {
@@ -48,6 +63,7 @@ impl Context {
                 method,
                 input,
                 operation_id,
+                recovery,
                 attachments,
             } => {
                 let result = self.mutate(
@@ -56,10 +72,17 @@ impl Context {
                     method,
                     input,
                     operation_id,
+                    recovery,
                     self.forward(attachments)?,
                 )?;
                 Ok(Box::pin(async move { receipt_value(result.await?) })
                     as BoxFuture<'static, Result<Value>>)
+            }
+            HostRequest::LookupIntent { operation_id } => {
+                let result = self.lookup_intent(operation_id)?;
+                Ok(Box::pin(async move {
+                    serde_json::to_value(result.await?).map_err(|e| e.to_string())
+                }) as BoxFuture<'static, Result<Value>>)
             }
             HostRequest::Recover { reference } => {
                 let result = self.recover(reference.clone())?;
@@ -103,7 +126,11 @@ impl Context {
             HostRequest::Emit { .. }
             | HostRequest::Call { .. }
             | HostRequest::Mutate { .. }
-            | HostRequest::Recover { .. } => {
+            | HostRequest::Recover { .. }
+            | HostRequest::LookupIntent { .. }
+            | HostRequest::StateRead { .. }
+            | HostRequest::StateScan { .. }
+            | HostRequest::CompleteState { .. } => {
                 unreachable!()
             }
         };
@@ -136,7 +163,11 @@ impl Context {
             HostRequest::Emit { .. }
             | HostRequest::Call { .. }
             | HostRequest::Mutate { .. }
-            | HostRequest::Recover { .. } => {
+            | HostRequest::Recover { .. }
+            | HostRequest::LookupIntent { .. }
+            | HostRequest::StateRead { .. }
+            | HostRequest::StateScan { .. }
+            | HostRequest::CompleteState { .. } => {
                 unreachable!()
             }
         }));

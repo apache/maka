@@ -148,7 +148,8 @@ error iPhone 16 Pro: uncaught exception: TypeError: cannot read property 'id' of
 ```
 
 `console.log` 像浏览器控制台一样格式化值：字符串原样输出，错误附带调用栈，函数显示名称，对象和数组输出为 JSON。宿主
-未连接时，日志会写入平台日志（iOS 上是 Xcode 控制台 / 统一日志，Android 上是 `adb logcat`）。
+未连接时，日志在 iOS 上写入 Xcode 控制台（由 Xcode 运行应用时），在 Android 上写入 `adb logcat`；打包后的应用的日志写入
+平台日志（[打包应用的日志](#a-packaged-apps-logs)）。
 
 被 reject 的 Promise，如果在引起它的那段工作结束（它的微任务都已运行）时仍然没有处理函数，也会像浏览器那样记录为一条错误：
 没人 await 的 `async` 函数抛出了异常、没人 catch 的 `Promise.reject(…)`、没有人等待结果的 Rust 调用失败了。这一行和
@@ -172,6 +173,75 @@ perf commit: 10 ops, 151µs (list js 2µs), 8 mount items, 27 nodes
 ```
 
 这些数字的含义参见[测试](./testing-and-trace.md)。
+
+### 打包应用的日志
+
+在 macOS 和 iOS 上，打包后的应用把日志写入统一日志：它的警告和错误，以及它的 `js` 日志（`console.log`、
+`console.info`、`console.warn`、`console.error`、未处理的 rejection）。子系统（subsystem）是应用的 id（`nsh.json` 的
+`"id"`，即 bundle identifier），类别（category）是这一行的 target：`console.*` 是 `js`，Rust 的日志是所在模块的路径
+（`nsh_engine::updates`）。在“控制台”应用中选中这台 Mac 或连接的 iPhone，开始流式传输，再搜索
+`subsystem:com.example.notes`；在终端里用 `log` 读取：
+
+```sh
+log stream --predicate 'subsystem == "com.example.notes"'                              # 实时查看
+log show --last 1h --predicate 'subsystem == "com.example.notes" AND category == "js"'   # 最近一小时的 console.* 日志
+xcrun simctl spawn booted log stream --predicate 'subsystem == "com.example.notes"'     # iOS 模拟器里的应用
+```
+
+错误是统一日志里的错误（谓词中写 `messageType == error`），警告以 `WARN` 开头；超过约 1 KB 的一行会接着写入后面的几条。
+Mac 应用还会把日志写到它的标准错误所指向的地方：启动它的终端、文件（`2> app.log`、`open --stderr app.log`、launchd 的
+`StandardErrorPath`）或管道。嵌入了 `NativeShell.xcframework` 的 iOS 应用以它自己的 bundle identifier 记录同样的日志，由 Xcode
+运行时 Xcode 控制台也会显示，scheme 中设了 `OS_ACTIVITY_MODE=disable` 时也一样。
+
+Android 应用写入 logcat（`adb logcat -s nsh`），Windows 应用写入调试器输出（`OutputDebugString`，DebugView 和 Visual
+Studio 会显示），Linux 应用写入标准错误。
+
+#### 桌面上的日志文件和级别
+
+打包后的 macOS、Windows、Linux 应用除了写入平台日志，还把日志写到它数据目录下的文件 `logs/app.log`：
+
+| 平台 | 日志文件 |
+|---|---|
+| macOS | `~/Library/Application Support/<应用 id>/logs/app.log` |
+| Windows | `%APPDATA%\<应用 id>\logs\app.log` |
+| Linux | `$XDG_DATA_HOME/<应用 id>/logs/app.log`（`~/.local/share/<应用 id>/logs/app.log`） |
+
+每一行依次是 UTC 时间、级别、target 和消息：`2026-11-12T08:30:05.123Z INFO  js: signed in`。文件到 5 MB 时改名为
+`app.1.log`，再开始新的 `app.log`；保留之前的三个文件（`app.1.log` 到 `app.3.log`）。文件写不进去时，应用照常运行。
+
+Rust 中的 `log_file()`、TSX 中的 `process.logFile` 给出这个文件的路径，应用可以把它附进诊断报告，或者提供“打开日志文件夹”；
+日志只写入平台日志时（开发宿主、嵌入应用、移动端、Web）为 `None`（`null`）。
+
+```rust tabs
+use nsh_core::prelude::*;
+
+// The log file shown selected in Finder, File Explorer or the file manager.
+if let Some(file) = log_file() {
+    spawn(async move {
+        let _ = reveal_path(file).await;
+    });
+}
+```
+
+```tsx tabs
+import process from "process";
+
+const report = { logFile: process.logFile, version: "1.4.0" };
+```
+
+默认情况下，打包应用记录它的警告、错误和 `js` 日志（`nsh run` 下记录 info 及以上的所有日志）。环境变量 `RUST_LOG`
+可以改为指定级别，语法与 `env_logger` 相同，对日志文件和平台日志同样生效：
+
+```sh
+RUST_LOG=info ./notes                                  # info 及以上的所有日志
+RUST_LOG=warn,notes=debug,js=info ./notes              # 应用自己的 crate 记录得更详细
+```
+
+在 Windows 上，可以在 PowerShell 中为一次运行设置（`$env:RUST_LOG="info"; .\Notes.exe`），或者在系统的环境变量中为当前用户设置。
+
+Rust 代码 panic 时，无论级别怎么设，文件里都会记下它：一行 `ERROR panic:`，后面是 Rust 打印的同一段话（线程、位置和消息），
+`RUST_BACKTRACE=1` 时还附上调用栈。打包应用的标准错误常常无处可看（Windows 的 GUI 程序、从 Finder 打开的 Mac 应用），
+应用崩溃的原因就在这个文件里。
 
 ## 错误浮层
 

@@ -66,24 +66,38 @@ pub(crate) struct RustData {
     boundaries: rustc_hash::FxHashMap<Owner, Signal<Option<super::ComponentError>>>,
 }
 
-/// Makes the current owner an error boundary: what fails under it sets
-/// `failed`, for as long as it lives.
-pub(crate) fn register_boundary(failed: Signal<Option<super::ComponentError>>) {
+/// The binding that owns a boundary, inherited by its content.
+#[derive(Clone, Copy)]
+pub(super) struct BoundaryScope(Owner);
+
+/// Makes the current binding catch its own failures and those of its content.
+pub(super) fn register_boundary(failed: Signal<Option<super::ComponentError>>) -> BoundaryScope {
     let owner = Owner::current();
     with_data(|d| d.boundaries.insert(owner, failed));
     cleanup(move || {
         with_data(|d| d.boundaries.remove(&owner));
     });
+    BoundaryScope(owner)
 }
 
 /// The nearest error boundary at or above `owner`.
 pub(crate) fn boundary_of(owner: Owner) -> Option<Signal<Option<super::ComponentError>>> {
-    let mut at = Some(owner);
-    while let Some(owner) = at.filter(Owner::is_live) {
-        if let Some(signal) = with_data(|d| d.boundaries.get(&owner).copied()) {
-            return Some(signal);
+    let handle = owner.0.filter(|_| owner.is_live())?;
+    let graph = graph();
+    let boundaries = &graph.data.boundaries;
+    if let Some(&failed) = boundaries.get(&owner) {
+        return Some(failed);
+    }
+    // Placed children can outlive one run of the boundary's content.
+    // Their context still names the binding that catches their failures.
+    let mut frame = graph.context_of(handle.id);
+    while let Some(context) = frame {
+        if let Some(scope) = context.data.1.downcast_ref::<BoundaryScope>()
+            && let Some(&failed) = boundaries.get(&scope.0)
+        {
+            return Some(failed);
         }
-        at = owner.parent();
+        frame = context.parent.clone();
     }
     None
 }
@@ -389,6 +403,28 @@ impl Node {
     #[track_caller]
     pub(crate) fn with<T: 'static, R>(self, what: &str, f: impl FnOnce(&T) -> R) -> R {
         read_value(self.0.expect(what), true, f)
+    }
+
+    /// `f` of its value, subscribing nothing (`what` names it if it is
+    /// gone).
+    #[track_caller]
+    pub(crate) fn with_untracked<T: 'static, R>(self, what: &str, f: impl FnOnce(&T) -> R) -> R {
+        read_value(self.0.expect(what), false, f)
+    }
+
+    /// Whether it is a memo that runs again before its value is current
+    /// (what it reads changed). False once it is gone.
+    pub(crate) fn is_outdated(self) -> bool {
+        self.0.live() && graph().outdated(self.0.id)
+    }
+
+    /// Brings the memo it names up to date now, subscribing nothing: what
+    /// its run writes is written before the caller reads it. Nothing when
+    /// it is current or gone.
+    pub(crate) fn bring_up_to_date(self) {
+        if self.is_outdated() {
+            untracked(|| drop(r::read(Rust, self.0.id)));
+        }
     }
 
     /// Writes `value` to it (a signal's node): what read it runs again,
@@ -907,6 +943,80 @@ fn cleanup_boxed(f: Box<dyn FnOnce()>) {
     }
 }
 
+/// The number of cleanups `owner` holds.
+#[cfg(test)]
+pub(crate) fn cleanup_count(owner: Owner) -> usize {
+    owner
+        .0
+        .filter(|h| h.live())
+        .map_or(0, |h| graph().cleanup_count(h.id))
+}
+
+/// A cleanup [`removable_cleanup`] added, which its maker can take back
+/// once what it undoes ended by itself (a task that finished).
+pub(crate) struct RemovableCleanup {
+    owner: Owner,
+    /// The address of the boxed cleanup in the owner's list, which tells it
+    /// from the others: unique while `pending` holds, as the box lives.
+    key: *const (),
+    pending: Rc<Cell<bool>>,
+}
+
+/// Clears `pending` once the cleanup runs or is dropped unrun.
+struct Pending(Rc<Cell<bool>>);
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
+/// [`cleanup`] of `f`, which [`RemovableCleanup::remove`] can take back
+/// (`None` when there was no owner to add it to, or it ran at once).
+pub(crate) fn removable_cleanup(f: impl FnOnce() + 'static) -> Option<RemovableCleanup> {
+    let pending = Rc::new(Cell::new(true));
+    let marker = Pending(pending.clone());
+    let f: Box<dyn FnOnce()> = Box::new(move || {
+        // Cleared before `f` runs: the box is freed by now, so what `f`
+        // does (ending the task, whose end removes this cleanup) must not
+        // look for it.
+        drop(marker);
+        f();
+    });
+    let key = (&*f as *const dyn FnOnce()).cast::<()>();
+    let owner = Owner::current();
+    match graph().on_cleanup(f) {
+        Ok(()) => Some(RemovableCleanup {
+            owner,
+            key,
+            pending,
+        }),
+        Err(f) => {
+            if graph().owner() == DISPOSED {
+                r::Host::run_cleanup(Rust, f);
+            }
+            None
+        }
+    }
+}
+
+impl RemovableCleanup {
+    /// Removes the cleanup from its owner unrun; nothing once it ran, its
+    /// owner went, or no graph is entered (the engine going away).
+    pub(crate) fn remove(self) {
+        if !self.pending.get() || CURRENT.with(Cell::get).is_null() || !self.owner.is_live() {
+            return;
+        }
+        let Some(h) = self.owner.0 else { return };
+        let key = self.key;
+        let removed = graph().remove_cleanup(h.id, |c| {
+            std::ptr::eq((&**c as *const dyn FnOnce()).cast::<()>(), key)
+        });
+        // Dropped outside the graph's borrow: what it holds may reach it.
+        drop(removed);
+    }
+}
+
 /// Runs `f`; its writes notify together at its end (TS: `batch(fn)`).
 pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     rethrow(r::batch(Rust, shielded(f)))
@@ -1194,6 +1304,7 @@ static_reactive!(i128: i128);
 static_reactive!(isize: isize);
 static_reactive!((u32, u32): (u32, u32));
 static_reactive!(String: String);
+static_reactive!(Vec<String>: Vec<String>);
 static_reactive!(std::time::Duration: std::time::Duration);
 
 impl IntoReactive<String> for &str {

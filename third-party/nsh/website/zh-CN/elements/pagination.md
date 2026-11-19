@@ -70,7 +70,7 @@ mount(App);
 
 ## 各项
 
-每一项都使用应用的 `itemClass` 和 `itemStyle`：当前页带 `selected:`，不接受按压的项带 `disabled:`，获得键盘焦点的项带 `focus:`。整行的布局由应用的 `class` 决定（默认是一行；`gap-*`、`justify-*`）。
+每一项都使用应用的 `itemClass` 和 `itemStyle`：当前页带 `selected:`，不接受按压的项带 `disabled:`，获得键盘焦点的项带 `focus-visible:`。整行的布局由应用的 `class` 决定（默认是一行；`gap-*`、`justify-*`）。
 
 没有 `renderItem` 时，页显示页码，省略号显示 `…`，上一页和下一页显示它们的无障碍标签（没有标签时显示 `‹` 和 `›`）。`renderItem` 根据 `PaginationItemState` 绘制每一项的内容：
 

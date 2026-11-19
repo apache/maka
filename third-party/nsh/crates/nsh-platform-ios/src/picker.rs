@@ -1,6 +1,7 @@
 //! `Picker.pickFiles`: the system's document picker,
 //! `UIDocumentPickerViewController`, which hands the app copies of the files
-//! picked; they are read as they are.
+//! picked; they are read as they are. `pick_paths` returns those copies'
+//! paths directly, without reading their contents into memory.
 //!
 //! `Picker.pickImages`: the system's photo picker, `PHPickerViewController`
 //! (no photo library permission: the picker runs out of process and hands
@@ -188,6 +189,7 @@ thread_local! {
 pub(crate) struct DocumentIvars {
     id: u32,
     request: FilePickRequest,
+    paths: bool,
     control: EngineControl,
 }
 
@@ -208,7 +210,12 @@ define_class!(
                 .filter_map(|url| url.path())
                 .map(|path| std::path::PathBuf::from(path.to_string()))
                 .collect();
-            let DocumentIvars { id, request, control } = self.ivars();
+            let DocumentIvars { id, request, control, paths: only_paths } = self.ivars();
+            if *only_paths {
+                answer_paths(control, *id, paths, None);
+                self.forget();
+                return;
+            }
             let (id, request, control) = (*id, request.clone(), control.clone());
             let spawned = std::thread::Builder::new()
                 .name("nsh-picker".into())
@@ -224,8 +231,7 @@ define_class!(
 
         #[unsafe(method(documentPickerWasCancelled:))]
         fn was_cancelled(&self, _picker: &UIViewController) {
-            let DocumentIvars { id, control, .. } = self.ivars();
-            answer(control, *id, Vec::new());
+            self.cancel();
             self.forget();
         }
 
@@ -237,8 +243,7 @@ define_class!(
             let shown = SHOWN_DOCUMENTS
                 .with_borrow(|shown| shown.iter().any(|d| std::ptr::eq(&**d, this)));
             if shown {
-                let DocumentIvars { id, control, .. } = self.ivars();
-                answer(control, *id, Vec::new());
+                self.cancel();
                 self.forget();
             }
         }
@@ -246,6 +251,14 @@ define_class!(
 );
 
 impl DocumentDelegate {
+    fn cancel(&self) {
+        let state = self.ivars();
+        if state.paths {
+            answer_paths(&state.control, state.id, Vec::new(), None);
+        } else {
+            answer(&state.control, state.id, Vec::new());
+        }
+    }
     fn forget(&self) {
         let this: *const Self = self;
         SHOWN_DOCUMENTS.with_borrow_mut(|shown| shown.retain(|d| !std::ptr::eq(&**d, this)));
@@ -260,6 +273,60 @@ pub(crate) fn pick_files(
     view: &UIView,
     control: &EngineControl,
 ) {
+    show_documents(id, request, false, false, view, control);
+}
+
+fn answer_paths(
+    control: &EngineControl,
+    id: u32,
+    paths: Vec<std::path::PathBuf>,
+    error: Option<&str>,
+) {
+    let payload = match error {
+        Some(error) => EventPayload::file_failed(id, error),
+        None => EventPayload::file_answer(id, paths),
+    };
+    control.dispatch_event(nsh_core::ROOT_ID, EventKind::FileRequest, payload);
+}
+
+pub(crate) fn pick_paths(
+    id: u32,
+    dialog: file_dialog::OpenDialog,
+    view: &UIView,
+    control: &EngineControl,
+) {
+    let mut request = FilePickRequest::new(dialog.multiple, 0);
+    request.filters = dialog.filters;
+    show_documents(
+        id,
+        request,
+        true,
+        dialog.kind == file_dialog::OpenDialogKind::Folders,
+        view,
+        control,
+    );
+}
+
+fn show_documents(
+    id: u32,
+    request: FilePickRequest,
+    paths: bool,
+    folders: bool,
+    view: &UIView,
+    control: &EngineControl,
+) {
+    let failed = || {
+        if paths {
+            answer_paths(
+                control,
+                id,
+                Vec::new(),
+                Some("the document picker cannot be shown"),
+            );
+        } else {
+            answer(control, id, Vec::new());
+        }
+    };
     let mtm = MainThreadMarker::from(view);
     let (Some(type_class), Some(picker_class), Some(top)) = (
         uniform_types().then(|| class(c"UTType")).flatten(),
@@ -267,7 +334,7 @@ pub(crate) fn pick_files(
         crate::system::top_controller(view),
     ) else {
         log::warn!("the document picker cannot be shown");
-        answer(control, id, Vec::new());
+        failed();
         return;
     };
     // SAFETY: UniformTypeIdentifiers' and UIKit's documented API (iOS 14+),
@@ -282,9 +349,16 @@ pub(crate) fn pick_files(
                 found
             })
             .collect();
+        if folders {
+            types.clear();
+        }
         if types.is_empty() {
             // Any file (`UTTypeData`; folders are no `public.data`).
-            let data = NSString::from_str("public.data");
+            let data = NSString::from_str(if folders {
+                "public.folder"
+            } else {
+                "public.data"
+            });
             let found: Option<Retained<AnyObject>> =
                 msg_send![type_class, typeWithIdentifier: &*data];
             types.extend(found);
@@ -294,7 +368,7 @@ pub(crate) fn pick_files(
         let picker: Option<Retained<AnyObject>> =
             msg_send![alloc, initForOpeningContentTypes: &*types, asCopy: true];
         let Some(picker) = picker else {
-            answer(control, id, Vec::new());
+            failed();
             return;
         };
         let _: () = msg_send![&picker, setAllowsMultipleSelection: request.multiple()];
@@ -302,6 +376,7 @@ pub(crate) fn pick_files(
         let delegate = DocumentDelegate::alloc(mtm).set_ivars(DocumentIvars {
             id,
             request,
+            paths,
             control: control.clone(),
         });
         let delegate: Retained<DocumentDelegate> = msg_send![super(delegate), init];

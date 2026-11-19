@@ -77,6 +77,7 @@ export type RuntimeProtocol =
   | WebSet
   | WebKey
   | WebUpdate
+  | WebSnapshot
   | WebResult
   | WebProbe
   | WebEndpoint
@@ -101,6 +102,14 @@ export type RuntimeProtocol =
   | ComputerEvaluate
   | ComputerReplState
   | ComputerResult
+  | ComputerWatchStage
+  | ComputerStageSnapshot
+  | ComputerWatchFrames
+  | ComputerFrameNotice
+  | ComputerReadFrame
+  | ComputerPresentTarget
+  | ComputerPresentationResult
+  | ComputerFrameResult
   | ProtocolProcessLaunch
   | AcpExecutorConfiguration
   | ExecutorOutcome
@@ -181,7 +190,6 @@ export type RuntimeProtocol =
   | AgentGoalView
   | AgentGoalChange
   | AgentGoalResult
-  | AgentGoalReceiptRead
   | AgentChecklistRead
   | AgentChecklist
   | AgentRecapRead
@@ -191,7 +199,6 @@ export type RuntimeProtocol =
   | AgentSchedules
   | AgentScheduleChange
   | AgentScheduleResult
-  | AgentScheduleAlerts
   | RecallQuery
   | AgentRecallPage
   | AgentImportsRead
@@ -220,10 +227,8 @@ export type RuntimeProtocol =
   | AgentStop
   | AgentExecutionRead
   | AgentExecutionResult
-  | AgentResumableRead
-  | AgentResumable
-  | AgentResume
-  | AgentResumeResult
+  | AgentContinueRun
+  | AgentContinuationResult
   | AgentUploadAttachment
   | AgentAttachment
   | AgentAttachmentUploadResult
@@ -326,7 +331,13 @@ export type RuntimeProtocol =
   | HostObservation
   | OperationObservation
   | OperationReply
-  | ResourceMetadata;
+  | ResourceMetadata
+  | StateRecord
+  | StatePage;
+/**
+ * JavaScript epoch milliseconds, preserving fractional timestamps within Date's range.
+ */
+export type CaptureTime = number;
 /**
  * Hierarchical, stable source keys. Display aliases never become data identities.
  */
@@ -351,7 +362,8 @@ export type Receipt =
       diagnostic: string;
     };
 /**
- * Unresolved means no durable result is known, including after process loss.
+ * Unresolved and Unknown may advance to authoritative original evidence.
+ * Returned and NotExecuted are immutable; handler errors are Returned too.
  */
 export type OperationOutcome =
   | {
@@ -359,12 +371,35 @@ export type OperationOutcome =
     }
   | {
       kind: 'returned';
-      value: unknown;
+      result: OperationResult;
+    }
+  | {
+      kind: 'not_executed';
+      proof: NotExecutedProof;
     }
   | {
       kind: 'unknown';
       diagnostic: string;
     };
+/**
+ * A definite handler return. Failure does not imply absence of side effects.
+ */
+export type OperationResult =
+  | {
+      kind: 'success';
+      value: unknown;
+    }
+  | {
+      kind: 'failure';
+      diagnostic: string;
+    };
+/**
+ * An observation of a provider fence, not a capability to create that fence.
+ * Only the original provider may establish this proof before handler start.
+ */
+export type NotExecutedProof = {
+  kind: 'provider_prevented_before_start';
+};
 export type OperationCleanup =
   | {
       kind: 'unconfirmed';
@@ -667,7 +702,7 @@ export type McpTransport =
  */
 export type AgentWorkspaceAccess = 'read_only' | 'workspace_write' | 'danger_full_access';
 export type AgentToolInput = ('json' | 'skill' | 'web') | 'shell';
-export type AgentToolResult = ('json' | 'image') | 'computer';
+export type AgentToolResult = 'json' | 'image' | 'computer';
 export type AgentToolConfirmation = 'required' | 'preapproved';
 /**
  * A selected service is either an imported provider or the caller's own export.
@@ -760,7 +795,27 @@ export type DecisionsAnswer =
   | {
       type: 'refusal';
     };
-export type WebSource = 'model' | 'tavily';
+export type WebSource = 'model' | 'custom';
+export type WebBackend =
+  | {
+      kind: 'tavily';
+    }
+  | {
+      kind: 'brave';
+    }
+  | {
+      kind: 'exa';
+    }
+  | {
+      kind: 'serper';
+    }
+  | {
+      kind: 'custom';
+      endpoint: WebSearchEndpoint;
+    };
+export type WebSearchMethod = 'get' | 'post';
+export type WebParameterLocation = 'query' | 'body';
+export type WebAuthLocation = 'header' | 'query' | 'body';
 export type WebUpdate =
   | {
       kind: 'updated';
@@ -771,6 +826,10 @@ export type WebUpdate =
     }
   | {
       kind: 'invalid_key';
+    }
+  | {
+      kind: 'invalid_settings';
+      message: string;
     }
   | {
       kind: 'check_unavailable';
@@ -822,6 +881,7 @@ export type AgentModelsPage =
       kind: 'ready';
       revision: string;
       choices: AgentModelChoice[];
+      refreshing: boolean;
       complete: boolean;
       next?: AgentModelsCursor | null;
     }
@@ -837,6 +897,7 @@ export type AgentBackendPreference =
       kind: 'model';
       connectionId: string;
       modelId: string;
+      serviceTier?: string | null;
       thinkingLevel?: ThinkingLevel | null;
     }
   | {
@@ -888,6 +949,7 @@ export type AgentGlobalInstructionsUpdated =
   | {
       kind: 'unavailable';
     };
+export type AgentNativeRuntime = 'antigravity' | 'codex' | 'claude';
 export type AgentExternalAgentsState =
   | {
       kind: 'disabled';
@@ -965,7 +1027,9 @@ export type AgentExternalModels =
       kind: 'error';
       detail: string;
     };
+export type ExternalTaskId = string;
 export type Language = 'en' | 'zh-CN' | 'zh-TW';
+export type RunId = string;
 export type ExecutorSetupAction =
   | {
       kind: 'check';
@@ -1007,6 +1071,33 @@ export type ComputerResult =
       kind: 'failed';
       message: string;
       state: ComputerReplState;
+    };
+export type ComputerStageTargetKind = 'app' | 'browser';
+export type ComputerPresentationResult =
+  | {
+      kind: 'presented';
+      details: unknown;
+    }
+  | {
+      kind: 'requested';
+      details: unknown;
+    }
+  | {
+      kind: 'partial';
+      message: string;
+      details: unknown;
+    };
+export type ComputerFrameResult =
+  | {
+      kind: 'frame';
+      frame: ComputerStageFrame;
+    }
+  | {
+      kind: 'pending';
+    }
+  | {
+      kind: 'unavailable';
+      message: string;
     };
 export type Scope = 'subtree' | 'exact';
 /**
@@ -1069,11 +1160,20 @@ export type ExecutorOutput =
       toolCallId: string;
       text: string;
       isError?: boolean;
+      details?: ToolResultDetails | null;
+    }
+  | {
+      type: 'turn_usage';
+      usage: ExecutorTurnUsage;
     };
 export type ProtocolProcessProgress =
   | {
       kind: 'started';
       id: string;
+      /**
+       * Original protected private-task resource address, not launch authority.
+       */
+      resource_ref: string;
     }
   | {
       kind: 'output';
@@ -1098,8 +1198,8 @@ export type ProtocolProcessCompletion =
     };
 export type AgentWorkTarget =
   | {
-      kind: 'invocation';
-      invocationId: string;
+      kind: 'run';
+      runId: RunId;
     }
   | {
       kind: 'message';
@@ -1129,13 +1229,148 @@ export type AgentWork =
       pendingInteractions: number;
     };
 export type AgentExecutionState =
-  | 'admitted'
-  | 'running'
-  | 'waiting'
-  | 'paused'
-  | 'completed'
+  | {
+      kind: 'admitted';
+    }
+  | {
+      kind: 'running';
+    }
+  | {
+      kind: 'waiting';
+      waits: WaitReason[];
+      authorityUnavailable: boolean;
+    }
+  | {
+      kind: 'completed';
+    }
+  | {
+      kind: 'failed';
+      reason?: BlockerKind | null;
+    }
+  | {
+      kind: 'cancelled';
+    };
+export type WaitReason =
+  | {
+      kind: 'cell';
+      cell: CellId;
+    }
+  | {
+      kind: 'external';
+      task: ExternalTaskId;
+    }
+  | {
+      kind: 'provider_backoff';
+      attempt: ModelAttemptId;
+    }
+  | {
+      kind: 'model';
+      attempt: ModelAttemptId;
+    }
+  | {
+      kind: 'approval';
+      approval: ApprovalId;
+    }
+  | {
+      kind: 'retry';
+      attempt: ModelAttemptId;
+    }
+  | {
+      kind: 'operation';
+      tool: ToolKey;
+    }
+  | {
+      kind: 'child';
+      run: RunId;
+    }
+  | {
+      kind: 'blocker';
+      blocker: BlockerId;
+    };
+export type CellId = string;
+export type ModelAttemptId = string;
+export type ApprovalId = string;
+export type BlockerId = string;
+export type BlockerKind =
+  | {
+      kind: 'external_publication_unavailable';
+      publication: ExternalPublicationId;
+      diagnostic: string;
+    }
+  | {
+      kind: 'external_publication_item';
+      key: ExternalPublicationKey;
+      reason: ExternalPublicationBlocker;
+    }
+  | {
+      kind: 'current_authority_unavailable';
+      stage: AuthorityStage;
+      diagnostic: string;
+    }
+  | {
+      kind: 'external_effect_unknown';
+      task: ExternalTaskId;
+      operation: string;
+    }
+  | {
+      kind: 'operation_unknown';
+      tool: ToolKey;
+      reference: RecoveryRef;
+    }
+  | {
+      kind: 'provider_effect_unknown';
+      attempt: ModelAttemptId;
+      call: string;
+    }
+  | {
+      kind: 'original_admission_unknown';
+      tool: ToolKey;
+    }
+  | {
+      kind: 'code_cell_recovery_unavailable';
+      cell: string;
+    }
+  | {
+      kind: 'unsupported_protocol';
+      protocol: string;
+      version: number;
+    }
+  | {
+      kind: 'tool_cleanup_unconfirmed';
+      tool: ToolKey;
+      diagnostic: string;
+    }
+  | {
+      kind: 'model_cleanup_unconfirmed';
+      attempt: ModelAttemptId;
+      diagnostic: string;
+    }
+  | {
+      kind: 'cleanup_unconfirmed';
+      reference: RecoveryRef;
+    }
+  | {
+      kind: 'resources_unavailable';
+      tool: ToolKey;
+    }
+  | {
+      kind: 'external_task_unobservable';
+      descriptor: ContentRef;
+    };
+export type ExternalPublicationId = string;
+export type ExternalPublicationBlocker =
+  | 'unknown'
+  | 'conflict'
+  | 'unsupported'
   | 'failed'
-  | 'cancelled';
+  | 'not_attempted'
+  | 'cleanup_unconfirmed';
+export type AuthorityStage =
+  | 'current_session'
+  | 'workspace_scope'
+  | 'tool_bindings'
+  | 'backend_scope'
+  | 'input_codec';
 export type SettingsModelsRead =
   | {
       kind: 'start';
@@ -1149,24 +1384,20 @@ export type SettingsModelsRead =
     };
 export type UsageActivityKind = 'model' | 'tool';
 export type UsageActivityStatus = 'success' | 'error' | 'aborted' | 'unknown' | 'rejected';
-/**
- * A physical model call or tool attempt, never copied conversation membership.
- */
 export type UsageActivity =
   | {
       kind: 'model';
       attempt: UsageModelAttempt;
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'tool';
-      attempt: UsageToolAttempt;
-      [k: string]: unknown | undefined;
+      attempt: ToolUsage;
     };
 export type UsageOrigin =
   | {
       kind: 'agent';
-      invocation: Invocation;
+      execution: ExecutionIdentity;
+      link: AgentStepLink;
       purpose: ModelPurpose;
       [k: string]: unknown | undefined;
     }
@@ -1175,6 +1406,7 @@ export type UsageOrigin =
       source: UsageAuxiliarySource;
       [k: string]: unknown | undefined;
     };
+export type StepId = string;
 export type ModelPurpose = 'main' | 'summary';
 export type UsageAuxiliarySource =
   | {
@@ -1183,16 +1415,20 @@ export type UsageAuxiliarySource =
       namespace: InstanceId;
       operation: string;
       fingerprint: string;
+      /**
+       * Absent for the initial attempt, preserving existing source identities.
+       */
+      attempt?: number | null;
       [k: string]: unknown | undefined;
     }
   | {
       kind: 'session_title';
-      invocation: Invocation;
+      execution: ExecutionIdentity;
       [k: string]: unknown | undefined;
     }
   | {
       kind: 'agent';
-      invocation: Invocation;
+      execution: ExecutionIdentity;
       operation_id: string;
       [k: string]: unknown | undefined;
     }
@@ -1202,23 +1438,53 @@ export type UsageAuxiliarySource =
       [k: string]: unknown | undefined;
     };
 export type UsageOutcome = ('success' | 'error' | 'aborted') | 'unknown';
+export type ToolUsageSource =
+  | {
+      kind: 'agent';
+      execution: ExecutionIdentity;
+      call: ToolCallIdentity;
+    }
+  | {
+      kind: 'cell';
+      cell: CellId;
+      owner: CellOwner;
+      operation: string;
+    }
+  | {
+      kind: 'external';
+      task: ExternalTaskId;
+      owner: RunOwner;
+      operation: string;
+    };
 export type ToolOrigin =
   | {
       kind: 'provider';
-      step_id: string;
+      link: AgentStepLink;
     }
   | {
       kind: 'code_mode';
+      cell: CellId;
+      owner: CellOwner;
       parent_operation_id: string;
       parent_tool_call_id: string;
     }
   | {
       kind: 'code_cell';
+      cell: CellId;
+      owner: CellOwner;
       parent_operation_id: string;
       parent_tool_call_id: string;
     }
   | {
       kind: 'standalone';
+    }
+  | {
+      kind: 'external';
+      task: ExternalTaskId;
+      operation: string;
+      package_id: string;
+      entry_id: string;
+      activation: string;
     }
   | {
       kind: 'host_sdk';
@@ -1228,21 +1494,34 @@ export type ToolOrigin =
       parent_operation_id?: string | null;
       parent_relationship?: HostSdkRelationship | null;
     };
+export type CellOwner =
+  | {
+      kind: 'agent';
+      link: AgentStepLink;
+      call: string;
+    }
+  | {
+      kind: 'external';
+      run: RunId;
+      key: ExternalEffectKey;
+    }
+  | {
+      kind: 'standalone';
+      session: string;
+    };
 export type HostSdkRelationship = {
   kind: 'evaluation_observer';
   epoch: string;
 };
-export type UsageToolResult =
+export type ToolUsageResult =
   | {
       kind: 'rejected';
-      reason: RejectionKind;
-      [k: string]: unknown | undefined;
+      reason?: RejectionKind | null;
     }
   | {
       kind: 'settled';
       startedAt: number;
       outcome: UsageToolStatus;
-      [k: string]: unknown | undefined;
     };
 /**
  * Refusal category without input-derived explanation text.
@@ -1325,6 +1604,7 @@ export type PricingMutation =
       modelKey: string;
     };
 export type LanguagePreference = 'auto' | 'en' | 'zh-CN' | 'zh-TW';
+export type ProfileAvatar = 'blue' | 'green' | 'rose' | 'amber';
 /**
  * User-facing isolation preset, independent of whether approval may be requested.
  */
@@ -1341,7 +1621,7 @@ export type CredentialLocator =
       scope: 'network_proxy';
       kind: PasswordKind;
     };
-export type ConnectionCredentialKind = 'provider' | 'request_headers';
+export type ConnectionCredentialKind = 'provider' | 'request_headers' | 'usage';
 export type PasswordKind = 'password';
 export type SettingsNetworkCredentialAction = 'keep' | 'delete' | 'replace';
 export type SettingsNetworkUpdated =
@@ -1389,6 +1669,11 @@ export type SettingsPreferencesMutation =
   | {
       kind: 'personalization';
       displayName: string;
+      avatar?: ProfileAvatar | null;
+    }
+  | {
+      kind: 'memory';
+      value: MemoryPolicy;
     }
   | {
       kind: 'workspace_instructions';
@@ -1802,6 +2087,7 @@ export type SettingsConnectionDetail =
 export type ApiProtocol = 'openai-chat-completions' | 'openai-responses' | 'anthropic-messages';
 export type ModelModality = 'text' | 'image' | 'audio' | 'pdf' | 'video';
 export type RelayServiceTier = 'fast';
+export type UsageAuthentication = 'provider' | 'access_key' | 'team_access_key';
 export type SettingsCredentialLoginResult =
   | {
       kind: 'saved';
@@ -2097,6 +2383,7 @@ export type SkillPreparation =
       invocation: SkillInvocationResult;
     };
 export type SkillInvocationFailure = SkillRequestFailure;
+export type AgentSessionKind = 'agent' | 'room';
 export type AgentSessionFilter = 'all' | 'archived' | 'needs_you';
 export type AgentSessionPosition =
   | {
@@ -2139,7 +2426,7 @@ export type AgentWorkspaceSelection =
     }
   | {
       kind: 'project';
-      project: AgentProjectRef;
+      projectId: string;
       path: string;
     }
   | {
@@ -2180,7 +2467,7 @@ export type AgentGoalChange =
        */
       approval?: AgentGoalApproval | null;
     };
-export type GoalControl = 'pause' | 'resume' | 'cancel' | 'complete' | 'set_budget';
+export type GoalControl = 'pause' | 'resume' | 'cancel' | 'complete' | 'set_budget' | 'dismiss';
 export type AgentGoalResult =
   | {
       kind: 'committed';
@@ -2221,6 +2508,17 @@ export type AgentRecapFailure =
   | 'model_unavailable';
 export type AgentScheduleRead =
   | {
+      kind: 'preview_discovery';
+      effect: AgentScheduledEffect;
+      taskId?: string | null;
+    }
+  | {
+      kind: 'discovery';
+      sessionId: string;
+      cursor?: string | null;
+      expectedRevision?: number | null;
+    }
+  | {
       kind: 'list';
       cursor?: string | null;
       expectedRevision?: number | null;
@@ -2228,12 +2526,76 @@ export type AgentScheduleRead =
   | {
       kind: 'get';
       taskId: string;
+    };
+export type AgentScheduledEffect =
+  | {
+      kind: 'session';
+      delivery?: AutomationDelivery & string;
+      target: AgentScheduledTarget;
+      model: ModelSelection;
+      thinkingLevel?: ThinkingLevel | null;
     }
   | {
-      kind: 'receipt';
-      reference: RecoveryRef;
+      kind: 'executor_session';
+      target: AgentScheduledTarget;
+      selection: AgentExecutorSelection;
+    }
+  | {
+      kind: 'agent_run';
+      target: AgentScheduledTarget;
+      model: ModelSelection;
+      thinkingLevel?: ThinkingLevel | null;
+    }
+  | {
+      kind: 'discovery';
+      target: AgentScheduledTarget;
+      model: ModelSelection;
+      thinkingLevel?: ThinkingLevel | null;
+      /**
+       * Tool and permission profile requested for this plan.
+       */
+      workerTools: DiscoveryWorkerTools;
+      /**
+       * Optional exact tool choices and the categories shown to the user.
+       * The profile and the current Session ceiling still apply.
+       */
+      selectedTools?: {
+        [k: string]: DiscoveryToolGroup | undefined;
+      } | null;
     };
+export type AutomationDelivery = 'steering' | 'followup';
+export type DiscoveryWorkerTools = 'read_only' | 'session';
+/**
+ * The category is derived from the bound service, even for renamed tools.
+ */
+export type DiscoveryToolGroup =
+  | 'read_files'
+  | 'modify_files'
+  | 'history'
+  | 'commands'
+  | 'web'
+  | 'sessions'
+  | 'desktop'
+  | 'plugin_management'
+  | 'other';
 export type AgentSchedules =
+  | {
+      kind: 'discovery_tools';
+      /**
+       * All names available in this profile, including the required return tool.
+       */
+      names: string[];
+      /**
+       * Selectable names classified by their current binding.
+       */
+      groups: {
+        [k: string]: DiscoveryToolGroup | undefined;
+      };
+      /**
+       * Previously approved names for this plan and profile, if any.
+       */
+      approvedNames?: string[] | null;
+    }
   | {
       kind: 'page';
       revision: number;
@@ -2247,17 +2609,20 @@ export type AgentSchedules =
   | {
       kind: 'changed';
       revision: number;
-    }
-  | {
-      kind: 'receipt';
-      result?: AgentScheduleResult | null;
     };
 export type Status = 'active' | 'paused' | 'completed' | 'expired';
+export type AgentInvestigationPhase = 'investigating' | 'delivering' | 'stopping';
 export type Intent = {
   kind: 'text';
   body: string;
 };
 export type Schedule =
+  | {
+      kind: 'script';
+      source: string;
+      everySeconds?: number;
+      startAt: number;
+    }
   | {
       kind: 'once';
       runAt: number;
@@ -2266,6 +2631,7 @@ export type Schedule =
       kind: 'interval';
       everySeconds: number;
       startAt: number;
+      cadence?: IntervalCadence;
     }
   | {
       kind: 'calendar';
@@ -2277,23 +2643,8 @@ export type Schedule =
       expression: string;
       startAt: number;
     };
+export type IntervalCadence = 'fixed' | 'after_completion';
 export type Recurrence = 'daily' | 'weekly' | 'monthly';
-export type AgentScheduledEffect =
-  | {
-      kind: 'reminder';
-    }
-  | {
-      kind: 'session';
-      target: AgentScheduledTarget;
-      model: ModelSelection;
-      thinkingLevel?: ThinkingLevel | null;
-    }
-  | {
-      kind: 'agent_run';
-      target: AgentScheduledTarget;
-      model: ModelSelection;
-      thinkingLevel?: ThinkingLevel | null;
-    };
 export type Creator =
   | {
       kind: 'user';
@@ -2307,20 +2658,6 @@ export type Creator =
     };
 export type Outcome = 'ok' | 'failed' | 'blocked';
 export type Misfire = 'skip' | 'latest';
-export type AgentScheduleResult =
-  | {
-      kind: 'committed';
-      taskId: string;
-      revision: number;
-    }
-  | {
-      kind: 'conflict';
-      actual?: number | null;
-    }
-  | {
-      kind: 'rejected';
-      reason: string;
-    };
 export type AgentScheduleChange =
   | {
       kind: 'create';
@@ -2336,6 +2673,10 @@ export type AgentScheduleChange =
       kind: 'approve';
       taskId: string;
       revision: number;
+      /**
+       * Refresh the discovery target and approve it in one operation.
+       */
+      input?: AgentScheduledInput | null;
     }
   | {
       kind: 'pause';
@@ -2353,18 +2694,6 @@ export type AgentScheduleChange =
       revision: number;
     }
   | {
-      kind: 'snooze';
-      taskId: string;
-      revision: number;
-      delayMs: number;
-    }
-  | {
-      kind: 'acknowledge';
-      taskId: string;
-      revision: number;
-      fireId: string;
-    }
-  | {
       kind: 'clear_history';
       taskId: string;
       revision: number;
@@ -2374,6 +2703,21 @@ export type AgentScheduleChange =
       taskId: string;
       revision: number;
     };
+export type AgentScheduleResult =
+  | {
+      kind: 'committed';
+      taskId: string;
+      revision: number;
+    }
+  | {
+      kind: 'conflict';
+      actual?: number | null;
+    }
+  | {
+      kind: 'rejected';
+      reason: string;
+    };
+export type PresetRevision = number;
 /**
  * A complete logical Turn boundary within the source session.
  */
@@ -2391,7 +2735,42 @@ export type AgentForkPosition =
   | {
       kind: 'before_turn';
       turnId: string;
+    }
+  | {
+      kind: 'through_source_turn';
+      position: HistoryRowAddress;
+    }
+  | {
+      kind: 'before_source_turn';
+      position: HistoryRowAddress;
     };
+/**
+ * An original row within the actual read capability supplied by the caller.
+ * Marker paths are relative to that capability; none of these fields grants access.
+ */
+export type HistoryRowAddress =
+  | {
+      kind: 'live';
+      sequence: number;
+      fact: FactId;
+      itemIndex: number;
+    }
+  | {
+      kind: 'snapshot';
+      path: RunId[];
+      snapshot: string;
+      sequence: number;
+      fact: FactId;
+      itemIndex: number;
+    }
+  | {
+      kind: 'imported';
+      path: RunId[];
+      snapshot: string;
+      messageOrdinal: number;
+      partOrdinal: number;
+    };
+export type FactId = string;
 export type AgentSessionActivity = 'idle' | 'working' | 'waiting';
 export type AgentImportsRead =
   | {
@@ -3016,6 +3395,12 @@ export type AgentCreated =
       reason: AgentRejection;
     };
 export type AgentRejection =
+  | 'preset_not_found'
+  | 'preset_disabled'
+  | 'preset_conflict'
+  | 'preset_model_unavailable'
+  | 'preset_thinking_level_unavailable'
+  | 'preset_backend_conflict'
   | 'permission_change_requires_user'
   | 'title_invalid'
   | 'labels_invalid'
@@ -3095,6 +3480,7 @@ export type AgentSessionChanged =
       kind: 'rejected';
       reason: AgentRejection;
     };
+export type AgentOnComplete = 'notify_caller';
 export type AgentSendDelivery = 'steer' | 'queue';
 export type AgentExecutionResult =
   | {
@@ -3104,34 +3490,25 @@ export type AgentExecutionResult =
       kind: 'found';
       execution: AgentExecution;
     };
-export type AgentResumable =
-  | {
-      kind: 'ready';
-      source: AgentExecution;
-    }
-  | {
-      kind: 'unavailable';
-      reason: AgentResumeParkReason;
-    };
-export type AgentResumeParkReason =
-  | 'closed'
-  | 'archived'
-  | 'busy'
-  | 'source_missing'
-  | 'source_changed'
-  | 'source_not_resumable'
-  | 'already_continued'
-  | 'workspace_changed'
-  | 'safety_check_failed';
-export type AgentResumeResult =
+export type AgentContinuationResult =
   | {
       kind: 'started';
       execution: AgentExecution;
     }
   | {
-      kind: 'parked';
-      reason: AgentResumeParkReason;
+      kind: 'rejected';
+      reason: AgentContinuationRejection;
     };
+export type AgentContinuationRejection =
+  | 'closed'
+  | 'archived'
+  | 'busy'
+  | 'source_missing'
+  | 'source_changed'
+  | 'source_not_terminal'
+  | 'already_continued'
+  | 'workspace_changed'
+  | 'safety_check_failed';
 export type AgentAttachmentUploadResult =
   | {
       kind: 'uploaded';
@@ -3171,7 +3548,7 @@ export type InteractionAnswer =
     }
   | {
       kind: 'permissions';
-      decision: Decision2;
+      decision: PermissionDecision;
     }
   | {
       kind: 'question';
@@ -3212,16 +3589,20 @@ export type InteractionAnswer =
       kind: 'system_permission_cancel';
     };
 export type Decision = 'allow' | 'deny';
-export type Decision2 =
+export type PermissionDecision =
   | {
       decision: 'deny';
     }
   | {
       decision: 'allow';
       permissions: Permissions;
-      scope: Scope2;
+      scope: PermissionScope;
     };
-export type Scope2 = 'once' | 'turn' | 'session';
+/**
+ * The Host supplies the real operation description; it is display information,
+ * not authority inferred from a command string or a plugin-supplied Session ID.
+ */
+export type PermissionScope = 'once' | 'run' | 'session';
 export type FormValue = string | number | boolean | string[];
 export type ComputerAppDecision = 'once' | 'session' | 'always' | 'deny';
 export type AgentInteractionResult =
@@ -3253,6 +3634,7 @@ export type InteractionRequest =
     }
   | {
       kind: 'permissions';
+      target: AuthorizationObligation;
       toolUseId: string | null;
       basis: PermissionBasis;
       request: PermissionRequest;
@@ -3328,9 +3710,28 @@ export type ApprovalAllow = 'allow';
 export type PermissionApproval = {
   decision: 'allow';
   permissions: Permissions;
-  scope: Scope2;
+  scope: PermissionScope;
 };
 export type ComputerAppApproval = 'once' | 'session' | 'always';
+export type AuthorizationObligation =
+  | {
+      kind: 'external';
+      task: ExternalTaskId;
+      operation: string;
+    }
+  | {
+      kind: 'tool';
+      tool: ToolKey;
+    }
+  | {
+      kind: 'cell';
+      cell: CellId;
+      operation: string;
+    };
+/**
+ * The tool family whose authority raised a permission request.
+ */
+export type PermissionSource = 'processes' | 'web' | 'files';
 export type FormField = {
   name: string;
   label: string;
@@ -3430,7 +3831,7 @@ export type InteractionOutcome =
     }
   | {
       kind: 'permissions_decision';
-      decision: Decision2;
+      decision: PermissionDecision;
       committedAt: number;
     }
   | {
@@ -3480,8 +3881,8 @@ export type InteractionOutcome =
     };
 export type ClosureReason =
   | 'steered'
-  | 'turn_stopped'
-  | 'turn_terminal'
+  | 'run_stopped'
+  | 'run_terminal'
   | 'producer_cancelled'
   | 'timed_out'
   | 'host_restarted'
@@ -3558,6 +3959,9 @@ export type GitDiff =
   | {
       kind: 'text';
       patch: string;
+      before: string;
+      after: string;
+      digest: string;
     }
   | {
       kind: 'binary';
@@ -3659,6 +4063,8 @@ export type Ownership =
       kind: 'source_unavailable';
       sourceSessionId: string;
     };
+export type ShellVisibility = 'model' | 'user';
+export type ShellInitiator = 'user' | 'agent';
 export type SnapshotKind = 'shell_run';
 export type ShellMode = 'pipes' | 'pty';
 export type ShellStatus =
@@ -3761,6 +4167,12 @@ export type QuestionResult =
     };
 export type AgentSendResult =
   | {
+      kind: 'posted';
+      sessionId: string;
+      messageId: string;
+      deliveries: RoomDelivery[];
+    }
+  | {
       kind: 'rejected';
       sessionId: string;
       reason: AgentSendRejection;
@@ -3769,20 +4181,38 @@ export type AgentSendResult =
   | {
       kind: 'started';
       sessionId: string;
-      invocationId: string;
+      runId: RunId;
       messageId: string;
+      completion?: AgentCompletionRegistration | null;
     }
   | {
       kind: 'queued';
       sessionId: string;
       messageId: string;
       revision: number;
+      completion?: AgentCompletionRegistration | null;
     }
   | {
       kind: 'not_your_worker';
       sessionId: string;
     };
-export type AgentSendRejection = 'model_unavailable' | 'skills_unavailable' | 'turn_stopped';
+export type RoomDelivery =
+  | {
+      kind: 'accepted';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'rejected';
+      sessionId: string;
+      reason: string;
+    };
+export type AgentSendRejection =
+  | 'model_unavailable'
+  | 'skills_unavailable'
+  | 'turn_stopped'
+  | 'original_operation_unsettled';
+export type AgentCompletionRegistration = 'registered';
 export type AgentDeliveryFact =
   | {
       kind: 'opened';
@@ -3793,13 +4223,21 @@ export type AgentDeliveryFact =
   | {
       kind: 'executor_message_started';
       messageId: string;
+      stepId: StepId;
+      attemptId: ModelAttemptId;
+    }
+  | {
+      kind: 'executor_text_changed';
+      messageId: string;
+      thinking: boolean;
     }
   | {
       kind: 'transcript_changed';
     }
   | {
       kind: 'step_ended';
-      stepId: string;
+      stepId: StepId;
+      attemptId: ModelAttemptId;
       /**
        * The model/executor completed; this says nothing about tool business success.
        */
@@ -3807,20 +4245,23 @@ export type AgentDeliveryFact =
     }
   | {
       kind: 'part_committed';
-      stepId: string;
+      stepId: StepId;
+      attemptId: ModelAttemptId;
       messageId: string;
       ordinal: number;
     }
   | {
       kind: 'delta';
-      stepId: string;
+      stepId: StepId;
+      attemptId: ModelAttemptId;
       partId: string;
       text: string;
     }
   | {
       kind: 'tool_input_ready';
       toolUseId: string;
-      stepId: string;
+      stepId: StepId;
+      attemptId: ModelAttemptId;
       name: string;
       providerExecuted: boolean;
     }
@@ -3848,6 +4289,7 @@ export type AgentDeliveryFact =
       kind: 'executor_tool_start';
       toolUseId: string;
       name: string;
+      title?: DisplayText | null;
     }
   | {
       kind: 'executor_tool_progress';
@@ -3889,20 +4331,21 @@ export type AgentDiagnosticPosition =
 export type DiagnosticDetail =
   | {
       kind: 'execution';
-      invocation: Invocation;
+      execution: ExecutionIdentity;
       reason: ExecutionFailureReason;
       modelFailure?: ModelFailureCause | null;
     }
   | {
       kind: 'model_step';
-      invocation: Invocation;
-      stepId: string;
+      execution: ExecutionIdentity;
+      stepId: StepId;
+      attemptId: ModelAttemptId;
       status: ModelInterruption;
       modelFailure?: ModelFailureCause | null;
     }
   | {
       kind: 'session_title';
-      invocation: Invocation;
+      execution: ExecutionIdentity;
       cause: TitleFailureCause;
     };
 export type ExecutionFailureReason =
@@ -3912,6 +4355,7 @@ export type ExecutionFailureReason =
   | 'invalid_input'
   | 'cancelled'
   | 'model_incomplete'
+  | 'model_interrupted'
   | 'event_commit'
   | 'event_store'
   | 'model_timeout'
@@ -3989,8 +4433,20 @@ export type HistoryPosition =
       kind: 'tail';
     }
   | {
+      kind: 'message';
+      messageId: string;
+    }
+  | {
+      kind: 'before_message';
+      messageId: string;
+    }
+  | {
+      kind: 'after_message';
+      messageId: string;
+    }
+  | {
       kind: 'row';
-      position: HistoryRowPosition;
+      position: HistoryRowAddress;
       field: HistoryField;
     }
   | {
@@ -4013,14 +4469,31 @@ export type HistoryField = 'thinking' | 'body';
  * Tool output is available through source reads in both views. Conversation
  * windows carry tool metadata only, keeping large results out of chat paging.
  */
-export type HistoryView = 'text' | 'conversation';
+export type HistoryView = ('text' | 'conversation') | 'chat' | 'turn' | 'steps';
 /**
  * Trusted producer attribution, preserved independently of editable content.
  */
 export type MessageOrigin =
   | {
+      kind: 'session_completion';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
       kind: 'session';
-      invocation: Invocation;
+      execution: ExecutionIdentity;
+    }
+  | {
+      kind: 'room';
+      sessionId: string;
+      messageId: string;
+      author: RoomAuthor;
+      replyTo?: string | null;
+    }
+  | {
+      kind: 'automation';
+      automationId: string;
+      title: string;
     }
   | {
       kind: 'goal';
@@ -4030,8 +4503,24 @@ export type MessageOrigin =
   | {
       kind: 'bot_worker';
       sessionId: string;
+    }
+  | {
+      kind: 'discovery_report';
+      sessionId: string;
+    };
+export type RoomAuthor =
+  | {
+      kind: 'human';
+    }
+  | {
+      kind: 'session';
+      execution: ExecutionIdentity;
     };
 export type AgentDeliveryPage =
+  | {
+      kind: 'room';
+      through: number;
+    }
   | {
       kind: 'events';
       through: number;
@@ -4065,9 +4554,10 @@ export type AgentPreviewPage =
   | {
       kind: 'cut';
       hostEpoch: string;
-      invocationId: string;
+      runId: RunId;
       turnId: string;
-      stepId: string;
+      stepId: StepId;
+      attemptId: ModelAttemptId;
       revision: number;
       dependsOn: number;
       first: boolean;
@@ -4078,6 +4568,7 @@ export type AgentPreviewField =
   | {
       kind: 'text';
       textKind: AgentContentKind;
+      finalAnswer?: boolean;
     }
   | {
       kind: 'tool_input';
@@ -4092,6 +4583,7 @@ export type AgentQueueMessageResult =
       revision: number;
       hasAttachments: boolean;
       message: string;
+      quotes: QuoteRef[];
     }
   | {
       kind: 'revision_conflict';
@@ -4146,6 +4638,37 @@ export type AgentQueueRejection =
   | 'invalid_edit'
   | 'execution_changed'
   | 'not_running';
+export type HistoryCitation =
+  | {
+      kind: 'url';
+      url: string;
+      title?: string | null;
+    }
+  | {
+      kind: 'document';
+      title: string;
+      filename?: string | null;
+      /**
+       * Document identity within this model request.
+       */
+      documentIndex?: number | null;
+    };
+/**
+ * Location in one assistant text part. Ranges are half-open Unicode scalar offsets.
+ */
+export type CitationAnchor =
+  | {
+      kind: 'range';
+      part: number;
+      start: number;
+      end: number;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'block_end';
+      part: number;
+      [k: string]: unknown | undefined;
+    };
 /**
  * Model identity recorded for the exact historical assistant step.
  */
@@ -4161,23 +4684,62 @@ export type HistoryModel =
     };
 export type AttachmentKind = 'image' | 'pdf' | 'doc' | 'code' | 'other';
 export type HistoryTurnOutcome = 'completed' | 'failed' | 'aborted';
-/**
- * Canonical message author/kind; the field identifies body versus thinking.
- * Tool body JSON contributes string values, never its keys.
- */
-export type Role = 'compaction' | 'failure' | 'user' | 'assistant' | 'tool_call' | 'tool_result';
+export type HistoryWorkKind =
+  | {
+      kind: 'tool';
+      presentation: string | null;
+    }
+  | {
+      kind: 'thought';
+    }
+  | {
+      kind: 'message';
+    };
 /**
  * Who made a call: a model step, a script the model wrote, a tool's own work
  * through the Host SDK, or a foreign record.
  */
-export type HistoryToolCallOrigin = 'provider' | 'code_mode' | 'host_sdk' | 'imported';
-export type AgentHistoryPage = {
-  kind: 'ready';
-  through: number;
-  chunks: AgentHistoryChunk[];
-  before: Cursor | null;
-  after: Cursor | null;
-};
+export type HistoryToolCallOrigin = 'provider' | 'executor' | 'code_mode' | 'host_sdk' | 'imported';
+export type ExternalToolTarget =
+  | {
+      kind: 'command';
+      command: string;
+      cwd?: string | null;
+    }
+  | {
+      kind: 'file';
+      path: string;
+    }
+  | {
+      kind: 'search';
+      query: string;
+    };
+/**
+ * Canonical message author/kind; the field identifies body versus thinking.
+ * Tool body JSON contributes string values, never its keys.
+ */
+export type Role =
+  | 'system'
+  | 'context'
+  | 'tool'
+  | 'compaction'
+  | 'failure'
+  | 'user'
+  | 'assistant'
+  | 'tool_call'
+  | 'tool_result';
+export type AgentHistoryPage =
+  | {
+      kind: 'room';
+      page: AgentRoomHistoryPage;
+    }
+  | {
+      kind: 'ready';
+      through: number | null;
+      chunks: AgentHistoryChunk[];
+      before: Cursor | null;
+      after: Cursor | null;
+    };
 export type AgentHistorySearchPage = {
   kind: 'ready';
   through: number;
@@ -4343,18 +4905,20 @@ export type AgentHistorySearchPage = {
   /**
    * Continue even when this batch has no matches. Null is the end of the scan.
    */
-  nextAfter: HistoryRowPosition | null;
+  nextAfter: HistoryRowAddress | null;
 };
 /**
  * An explicitly selected canonical transcript field, never an execution grant.
  */
 export type SourceField =
   | ('body' | 'thinking' | 'tool_name' | 'failure_message' | 'error_class' | 'arguments' | 'result')
-  | 'receipt';
+  | 'receipt'
+  | 'provider_metadata'
+  | 'original';
 export type AgentHistorySourceReference =
   | {
       kind: 'row';
-      position: HistoryRowPosition;
+      position: HistoryRowAddress;
     }
   | {
       kind: 'tool_use';
@@ -4393,7 +4957,15 @@ export type AgentHistorySourcePage = {
 /**
  * Presentation role of the exact row. This carries no execution authority.
  */
-export type HistorySourceRole = 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'failure';
+export type HistorySourceRole =
+  | 'system'
+  | 'context'
+  | 'tool'
+  | 'user'
+  | 'assistant'
+  | 'tool_call'
+  | 'tool_result'
+  | 'failure';
 export type SourceFormat = 'text' | 'json' | 'image_descriptor';
 /**
  * Bounded image bytes from a selected subscription. Complete is a producer
@@ -4409,11 +4981,13 @@ export type AgentToolImageFrame =
     }
   | {
       kind: 'complete';
+      detail?: ImageDetail | null;
     };
+export type ImageDetail = 'auto' | 'low' | 'high' | 'original';
 export type AgentToolImagePage = {
   kind: 'ready';
   through: number;
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   offset: number;
   totalBytes: number;
   mimeType: string;
@@ -4425,13 +4999,22 @@ export type AgentToolImagePage = {
 };
 export type AgentAttachmentImageSource =
   | {
+      kind: 'artifact';
+      id: string;
+    }
+  | {
+      kind: 'room';
+      messageId: string;
+      attachmentIndex: number;
+    }
+  | {
       kind: 'uploaded';
       id: string;
     }
   | {
       kind: 'history';
       through: number;
-      position: HistoryRowPosition;
+      position: HistoryRowAddress;
       attachmentIndex: number;
     };
 export type AgentAttachmentImagePage = {
@@ -4450,6 +5033,19 @@ export type AgentAttachmentImagePage = {
  * Resource names select slots in the current request, not durable grants.
  */
 export type HostRequest =
+  | {
+      operation: 'stateRead';
+      key: string;
+    }
+  | {
+      operation: 'stateScan';
+      query: Scan;
+    }
+  | {
+      operation: 'completeState';
+      mutations: Mutation[];
+      value: unknown;
+    }
   | {
       operation: 'emit';
       value: unknown;
@@ -4471,9 +5067,14 @@ export type HostRequest =
       method: string;
       input: unknown;
       operationId: string;
+      recovery: unknown;
       attachments: {
         [k: string]: string | undefined;
       };
+    }
+  | {
+      operation: 'lookupIntent';
+      operationId: string;
     }
   | {
       operation: 'recover';
@@ -4489,10 +5090,22 @@ export type HostRequest =
       start: number;
       end: number;
     };
+export type Data =
+  | {
+      kind: 'present';
+      value: unknown;
+    }
+  | {
+      kind: 'deleted';
+    };
 export type Identity2 =
   | {
+      kind: 'native';
+      [k: string]: unknown | undefined;
+    }
+  | {
       kind: 'agent';
-      invocation: Invocation;
+      execution: ExecutionIdentity;
       operationId?: string | null;
       [k: string]: unknown | undefined;
     }
@@ -4522,6 +5135,9 @@ export interface ClientDraft {
   revision: number;
   text: string;
   attachments: ClientDraftAttachment[];
+  quotes?: QuoteRef[];
+  mentions?: string[];
+  replyTo?: string | null;
 }
 /**
  * Display metadata for an immutable Host upload in this exact draft owner.
@@ -4532,13 +5148,35 @@ export interface ClientDraftAttachment {
   mimeType: string;
   bytes: number;
 }
+export interface QuoteRef {
+  sourceMessageId?: string | null;
+  text: string;
+  label?: string | null;
+  sourceTurnId?: string | null;
+  source?: SessionQuoteSource | null;
+}
+/**
+ * Display provenance of an immutable excerpt, never authority to read its source.
+ */
+export interface SessionQuoteSource {
+  sessionId: string;
+  sessionName: string;
+  capturedAt: CaptureTime;
+  truncated: boolean;
+}
 /**
  * One complete editor revision, including the upload receipts it has handled.
  */
 export interface ClientDraftEdit {
   text: string;
+  /**
+   * Omit to preserve the quotes at the expected revision. An empty list clears them.
+   */
+  quotes?: QuoteRef[] | null;
   attachments?: ClientDraftAttachment[];
   settledUploads?: string[];
+  mentions?: string[];
+  replyTo?: string | null;
 }
 /**
  * Stable product owner, independent of endpoint aliases, VM instances and UI nodes.
@@ -5371,7 +6009,7 @@ export interface WebCapture {
   basis: WebBasis;
   available: boolean;
   source: WebSource;
-  credentialConfigured: boolean;
+  customAvailable: boolean;
 }
 export interface WebBasis {
   revision?: number | null;
@@ -5399,14 +6037,49 @@ export interface WebSet {
 export interface WebSettings {
   enabled: boolean;
   source: WebSource;
+  backend?: WebBackend;
+}
+export interface WebSearchEndpoint {
+  url: string;
+  method: WebSearchMethod;
+  query: WebParameter;
+  limit?: WebParameter | null;
+  urlParameters: {
+    [k: string]: string | undefined;
+  };
+  body: {
+    [k: string]: unknown | undefined;
+  };
+  auth?: WebAuth | null;
+  results: WebResultMapping;
+}
+export interface WebParameter {
+  location: WebParameterLocation;
+  name: string;
+}
+export interface WebAuth {
+  location: WebAuthLocation;
+  name: string;
+  prefix: string;
+}
+/**
+ * JSON pointers, with an empty list pointer selecting the response root.
+ */
+export interface WebResultMapping {
+  list: string;
+  title?: string | null;
+  url: string;
+  snippet?: string | null;
 }
 export interface WebKey {
   revision?: number | null;
+  settingsRevision?: number | null;
 }
 export interface WebSnapshot {
   revision?: number | null;
   settings: WebSettings;
   credential: WebCredential;
+  presets: WebSearchPreset[];
   [k: string]: unknown | undefined;
 }
 export interface WebCredential {
@@ -5416,8 +6089,14 @@ export interface WebCredential {
   [k: string]: unknown | undefined;
 }
 export interface WebCheck {
-  credential_revision: number;
+  credential_revision?: number | null;
+  settings_revision?: number | null;
   outcome: WebCheckOutcome;
+}
+export interface WebSearchPreset {
+  id: string;
+  endpoint: WebSearchEndpoint;
+  [k: string]: unknown | undefined;
 }
 export interface WebProbe {
   url: string;
@@ -5427,11 +6106,21 @@ export interface AgentModelsCursor {
   offset: number;
 }
 export interface AgentModelChoice {
+  serviceTiers?: ModelServiceTier[];
   selection: AgentBackendPreference;
+  /**
+   * Previously published selections, including their implied thinking level.
+   */
+  aliases?: AgentBackendPreference[];
   sourceName: string;
   label: string;
   thinkingLevels: string[];
   defaultThinkingLevel?: string | null;
+}
+export interface ModelServiceTier {
+  id: string;
+  name: string;
+  [k: string]: unknown | undefined;
 }
 export interface AgentExecutorSelection {
   executor: string;
@@ -5481,9 +6170,10 @@ export interface AgentDataSource {
   namespace: InstanceId;
 }
 export interface AgentExternalRuntimeOption {
-  id: string;
+  id: AgentNativeRuntime;
   name: string;
   enabled: boolean;
+  usageLimits: boolean;
 }
 export interface AgentExternalRuntime {
   id: string;
@@ -5497,20 +6187,19 @@ export interface AgentExternalRuntime {
  * No path, invocation or conversation key is authority.
  */
 export interface ExecutorExecute {
+  taskId: ExternalTaskId;
   language?: Language;
-  invocation: Invocation;
+  execution: ExecutionIdentity;
   conversationKey: string;
   message: string;
   cwd: string;
   instructions?: string | null;
   settings: ExecutorSettings;
 }
-export interface Invocation {
-  session_id: string;
-  turn_id: string;
-  run_id: string;
-  invocation_id: string;
-  [k: string]: unknown | undefined;
+export interface ExecutionIdentity {
+  sessionId: string;
+  turnId: string;
+  runId: RunId;
 }
 export interface AgentExecutorSetup {
   executor: string;
@@ -5616,6 +6305,80 @@ export interface ComputerEvaluate {
    */
   title?: string | null;
 }
+export interface ComputerWatchStage {
+  sessionId: string;
+}
+export interface ComputerStageSnapshot {
+  sessionId: string;
+  bindingId?: string | null;
+  revision: number;
+  targets: ComputerStageTarget[];
+  activeTargetId?: string | null;
+}
+export interface ComputerStageTarget {
+  id: string;
+  revision: number;
+  title: string;
+  kind: ComputerStageTargetKind;
+}
+export interface ComputerWatchFrames {
+  sessionId: string;
+  bindingId: string;
+  /**
+   * @minItems 1
+   * @maxItems 5
+   */
+  targetIds:
+    | [string]
+    | [string, string]
+    | [string, string, string]
+    | [string, string, string, string]
+    | [string, string, string, string, string];
+  selectedTargetId?: string | null;
+}
+/**
+ * Notifications are small. Encoded images stay in one replaceable slot per
+ * target, never in the ordered Host subscription queue or durable history.
+ */
+export interface ComputerFrameNotice {
+  sessionId: string;
+  bindingId: string;
+  feedId: string;
+  targetId: string;
+  sequence: number;
+}
+export interface ComputerReadFrame {
+  sessionId: string;
+  bindingId: string;
+  feedId: string;
+  targetId: string;
+  after: number;
+}
+export interface ComputerPresentTarget {
+  sessionId: string;
+  bindingId: string;
+  feedId: string;
+  targetId: string;
+  revision: number;
+  area: ComputerPresentationArea;
+}
+export interface ComputerPresentationArea {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+export interface ComputerStageFrame {
+  revision: number;
+  sessionId: string;
+  bindingId: string;
+  targetId: string;
+  sequence: number;
+  mimeType: string;
+  dataBase64: string;
+  width: number;
+  height: number;
+}
 export interface ProtocolProcessLaunch {
   executable: string;
   args?: string[];
@@ -5655,6 +6418,23 @@ export interface Rule {
   scope: Scope;
   access: Access;
 }
+export interface ToolResultDetails {
+  exitCode?: number | null;
+  durationMs?: number | null;
+}
+export interface ExecutorTurnUsage {
+  tokens: ModelUsage;
+  totalTokens?: number | null;
+  durationMs?: number | null;
+}
+export interface ModelUsage {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_read_tokens?: number | null;
+  cache_write_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  [k: string]: unknown | undefined;
+}
 export interface ProtocolProcessRun {
   executable: string;
   args?: string[];
@@ -5688,31 +6468,43 @@ export interface AgentWorkRead {
   cursor?: AgentAnswerCursor | null;
 }
 export interface AgentAnswerCursor {
-  invocationId: string;
+  runId: RunId;
   offset: number;
 }
 /**
- * Canonical physical execution receipt, independent of the current Session tip.
+ * Stable logical Run receipt, independent of activations and the current Session tip.
  */
 export interface AgentExecution {
   sessionId: string;
   turnId: string;
-  runId: string;
-  invocationId: string;
+  runId: RunId;
   /**
    * Run-local event count, not the root-global transcript cursor.
    */
   highWater: number;
   state: AgentExecutionState;
 }
+export interface ToolKey {
+  attempt: ModelAttemptId;
+  call: string;
+}
+export interface ExternalPublicationKey {
+  publication: ExternalPublicationId;
+  index: number;
+}
+export interface ContentRef {
+  digest: string;
+  bytes: number;
+}
 export interface AgentAnswerPage {
   text: string;
   next?: AgentAnswerCursor | null;
 }
 /**
- * Stable model identity, resolved from current connection settings at admission.
+ * Selected model and optional service tier, resolved from the connection at admission.
  */
 export interface ModelSelection {
+  serviceTier?: string | null;
   connectionId: string;
   modelId: string;
   [k: string]: unknown | undefined;
@@ -5735,8 +6527,12 @@ export interface SettingsUsageRange {
   through: UsageFence | null;
 }
 export interface UsageFence {
+  schemaVersion: number;
   stateDomain: string;
   sequence: number;
+  auxiliarySequence: number;
+  cellSequence: number;
+  queryDigest: string;
 }
 /**
  * Filters only the activity list, never headline accounting for the range.
@@ -5772,6 +6568,11 @@ export interface UsageModelAttempt {
   quote?: Quote | null;
   costUsd?: number | null;
 }
+export interface AgentStepLink {
+  run: RunId;
+  step: StepId;
+  attempt: ModelAttemptId;
+}
 /**
  * Public model identity. Credentials and provider handles never belong here.
  */
@@ -5779,14 +6580,6 @@ export interface ModelBinding {
   connection_id: string;
   connection_slug: string;
   model: string;
-  [k: string]: unknown | undefined;
-}
-export interface ModelUsage {
-  input_tokens?: number | null;
-  output_tokens?: number | null;
-  cache_read_tokens?: number | null;
-  cache_write_tokens?: number | null;
-  reasoning_tokens?: number | null;
   [k: string]: unknown | undefined;
 }
 export interface Quote {
@@ -5801,14 +6594,14 @@ export interface Pricing {
   cacheReadUsdPer1M?: number;
   cacheWriteUsdPer1M?: number;
 }
-export interface UsageToolAttempt {
+export interface ToolUsage {
   requestId: string;
-  invocation: Invocation;
-  call: ToolCallIdentity;
+  source: ToolUsageSource;
   name: string;
   binding?: ModelBinding | null;
   completedAt: number;
-  result: UsageToolResult;
+  result: ToolUsageResult;
+  cleanup?: OperationCleanup | null;
 }
 /**
  * A Tool Call is distinct from its durable host operation. Origin determines
@@ -5818,6 +6611,14 @@ export interface ToolCallIdentity {
   tool_call_id: string;
   origin: ToolOrigin;
   [k: string]: unknown | undefined;
+}
+export interface ExternalEffectKey {
+  task: ExternalTaskId;
+  operation: string;
+}
+export interface RunOwner {
+  deployment: string;
+  namespace: InstanceId;
 }
 export interface SettingsUsageSummary {
   through: UsageFence;
@@ -5912,9 +6713,6 @@ export interface UsageToolSummary {
 }
 export interface UsageGroupCursor {
   group: UsageGroup;
-  /**
-   * None identifies the unknown-provider group, not the start of pagination.
-   */
   key?: string | null;
 }
 export interface SettingsUsageSummaryRead {
@@ -5935,7 +6733,9 @@ export interface SettingsAssistantPreferences {
   defaultCompactionPrompt: string;
   revision: number;
   displayName: string;
+  avatar?: ProfileAvatar | null;
   workspaceInstructions: boolean;
+  memory: MemoryPolicy;
   defaultSandboxMode: Mode;
   shell: ShellPolicy;
 }
@@ -5948,6 +6748,10 @@ export interface MessagePredictionSettings {
    * None or blank selects the localized built-in instructions.
    */
   prompt?: string | null;
+}
+export interface MemoryPolicy {
+  enabled: boolean;
+  agentReadEnabled: boolean;
 }
 export interface ShellPolicy {
   preference: ShellPreference;
@@ -6121,6 +6925,7 @@ export interface SettingsConnectionSummary {
   provider: Identity;
   enabled: boolean;
   enabledModelCount: number;
+  usageLimits: boolean;
 }
 /**
  * Durable recipient, not a registration lease. Re-loading the same package can
@@ -6142,6 +6947,7 @@ export interface ConnectionCredentialTarget {
   };
 }
 export interface SettingsConnectionEditingFacts {
+  discoveredModelIds: string[];
   enabledModelIds: string[];
   modelOverrides: {
     [k: string]: ModelOverride | undefined;
@@ -6160,7 +6966,7 @@ export interface ModelOverride {
    */
   adapter?: string;
   /**
-   * Omitted means model-specific defaults; false is an explicit opt-out.
+   * Code Mode is enabled by default. Set false to select direct tool calls.
    */
   codeMode?: boolean;
   /**
@@ -6275,6 +7081,7 @@ export interface Descriptor {
    */
   anonymous: boolean;
   discovery: boolean;
+  usageAuthentication?: UsageAuthentication | null;
 }
 export interface Method2 {
   id: string;
@@ -6371,8 +7178,6 @@ export interface AgentWorkspace {
    */
   projectId?: string | null;
   path: string;
-  directoryIdentity: string;
-  identity: string;
 }
 /**
  * Immutable allocation intent, not the current child branch or HEAD.
@@ -6381,7 +7186,6 @@ export interface Binding {
   id: string;
   common_dir: string;
   source: string;
-  source_identity: string;
   base_commit: string;
   directory: string;
 }
@@ -6604,6 +7408,10 @@ export interface SkillRequestFailure {
   reason: SkillFailureReason;
 }
 export interface AgentList {
+  /**
+   * Omission includes both Agent conversations and Rooms.
+   */
+  kind?: AgentSessionKind | null;
   filter: AgentSessionFilter;
   /**
    * Include archived conversations alongside active ones.
@@ -6621,6 +7429,18 @@ export interface AgentList {
   titleQuery?: string;
 }
 export interface AgentCreate {
+  /**
+   * Immutable memory privacy boundary; descendants inherit it.
+   */
+  incognito?: boolean;
+  /**
+   * Rooms receive messages without running a model. Their mentions address Agent sessions.
+   */
+  kind?: AgentSessionKind & string;
+  /**
+   * Apply a preset at creation; mutually exclusive with backend.
+   */
+  presetId?: string | null;
   /**
    * Initial next-turn preference; admission resolves it again.
    */
@@ -6640,10 +7460,6 @@ export interface AgentCreate {
   title: string;
   labels: string[];
   workspace: AgentWorkspaceSelection;
-}
-export interface AgentProjectRef {
-  id: string;
-  revision: string;
 }
 export interface AgentGoalRead {
   sessionId: string;
@@ -6665,6 +7481,7 @@ export interface AgentGoalDetail {
   retryAt?: number | null;
   createdAt: number;
   pending: boolean;
+  dismissed: boolean;
   report?: GoalReport | null;
   note: string;
 }
@@ -6700,9 +7517,6 @@ export interface BindingStamp {
 export interface AgentGoalBudget {
   tokenBudget?: number | null;
 }
-export interface AgentGoalReceiptRead {
-  reference: RecoveryRef;
-}
 export interface AgentChecklistRead {
   sessionId: string;
   offset?: number;
@@ -6736,20 +7550,31 @@ export interface AgentScheduledSummary {
   id: string;
   revision: number;
   title: string;
-  status: Status;
+  sessionId: string;
+  script: boolean;
   approved: boolean;
+  status: Status;
+  /**
+   * A Bot-created one-time discovery that no longer needs approval.
+   */
+  backgroundFollowup?: boolean;
   nextFireAt?: number | null;
   pendingFire?: string | null;
-  reminder: boolean;
   lastError?: string | null;
 }
 export interface AgentScheduledDetail {
+  investigation?: AgentScheduledInvestigation | null;
   revision: number;
   task: Task;
   timezone: string;
   misfire: Misfire;
   approved: boolean;
   pendingFire?: string | null;
+}
+export interface AgentScheduledInvestigation {
+  sessionId: string;
+  turnId: string;
+  phase: AgentInvestigationPhase;
 }
 export interface Task {
   id: string;
@@ -6775,12 +7600,16 @@ export interface Run {
   outcome: Outcome;
   message: string;
   sessionId?: string | null;
-  runId?: string | null;
+  runId?: RunId | null;
 }
 export interface AgentScheduledInput {
   task: Create;
   timezone: string;
   misfire: Misfire;
+  /**
+   * Tool names presented to the user when approving a discovery plan.
+   */
+  approvedTools?: string[] | null;
 }
 export interface Create {
   title: string;
@@ -6789,16 +7618,6 @@ export interface Create {
   effect: AgentScheduledEffect;
   maxFires?: number | null;
   expiresAt?: number | null;
-}
-export interface AgentScheduleAlerts {
-  pending: number;
-  reminders: AgentScheduledReminder[];
-}
-export interface AgentScheduledReminder {
-  taskId: string;
-  fireId: string;
-  title: string;
-  body: string;
 }
 export interface RecallQuery {
   /**
@@ -6820,6 +7639,9 @@ export interface AgentRecallPage {
   gaps: string[];
 }
 export interface AgentSession {
+  incognito?: boolean;
+  kind: AgentSessionKind;
+  appliedPreset?: AppliedPreset | null;
   /**
    * Session that initiated creation, independent of fork ancestry and task ownership.
    */
@@ -6847,6 +7669,17 @@ export interface AgentSession {
   activity: AgentSessionActivity;
 }
 /**
+ * Immutable execution configuration captured when a session is created.
+ */
+export interface AppliedPreset {
+  id: string;
+  revision: PresetRevision;
+  name: string;
+  instruction: string;
+  model: ModelSelection;
+  thinkingLevel?: ThinkingLevel | null;
+}
+/**
  * Frozen conversation ancestry for presentation, not authority over the source.
  */
 export interface AgentSessionBranch {
@@ -6856,7 +7689,7 @@ export interface AgentSessionBranch {
 export interface AgentRecallPassage {
   session: AgentSession;
   anchorMessageId: string;
-  anchorPosition: HistoryRowPosition;
+  anchorPosition: HistoryRowAddress;
   /**
    * Display preview beginning at the first match. The anchor opens the complete source.
    */
@@ -6866,14 +7699,6 @@ export interface AgentRecallPassage {
    */
   highlights: AgentRecallHighlight[];
   matchedTerms: string[];
-}
-/**
- * Disposable presentation locator, never authority or a canonical execution fact.
- * The source is the original emitting fact; the index precedes UI filtering.
- */
-export interface HistoryRowPosition {
-  sourceSequence: number;
-  itemIndex: number;
 }
 export interface AgentRecallHighlight {
   start: number;
@@ -6988,6 +7813,10 @@ export interface AgentProject {
    */
   path: string | null;
 }
+export interface AgentProjectRef {
+  id: string;
+  revision: string;
+}
 export interface AgentProjectLocation {
   path: string;
   name: string;
@@ -7049,6 +7878,144 @@ export interface AgentChangeSession {
 }
 export interface AgentSend {
   /**
+   * Agent Session IDs explicitly addressed by this Room message.
+   */
+  mentions?: string[];
+  /**
+   * Original message ID in the destination Room.
+   */
+  replyTo?: string | null;
+  /**
+   * Best-effort notification to the caller when this message finishes,
+   * fails or is cancelled, and once per pending interaction or authority blocker
+   * that needs attention. An attention notification keeps the completion watch.
+   * When registration is confirmed, the caller can yield rather than poll.
+   * The watch and task admission commit together;
+   * check the completion field of the send receipt.
+   */
+  onComplete?: AgentOnComplete | null;
+  /**
+   * Immutable user-selected excerpts; source metadata grants no read authority.
+   *
+   * @maxItems 16
+   */
+  quotes?:
+    | []
+    | [QuoteRef]
+    | [QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ];
+  /**
    * Defaults to steer. Omit or use steer for updates to ongoing work;
    * use queue only when this message should wait until the current turn ends.
    */
@@ -7056,7 +8023,7 @@ export interface AgentSend {
   /**
    * An active send must not start new work after Stop fences its original Run.
    */
-  expectedInvocationId?: string | null;
+  expectedRunId?: RunId | null;
   /**
    * IDs of immutable user uploads in this Session; metadata is resolved by the owner.
    */
@@ -7070,30 +8037,23 @@ export interface AgentSend {
 }
 export interface AgentStop {
   sessionId: string;
-  invocationId: string;
+  runId: RunId;
 }
 export interface AgentExecutionRead {
   sessionId: string;
-  invocationId: string;
+  runId: RunId;
 }
 /**
- * Observe the latest run using the model selected for a possible continuation.
+ * Manual continuation of a terminal Run always admits a new Run. Recovery of an
+ * unfinished Run is internal reconciliation, not this user command.
  */
-export interface AgentResumableRead {
+export interface AgentContinueRun {
   sessionId: string;
-  model: ModelSelection;
-  thinkingLevel?: ThinkingLevel | null;
-}
-export interface AgentResume {
-  sessionId: string;
-  sourceInvocationId: string;
+  sourceRunId: RunId;
   /**
-   * Exact Run-local count returned by execution.
+   * Exact immutable source fence returned by execution.
    */
   sourceHighWater: number;
-  /**
-   * Explicit model selection for this new continuation; original input is replayed.
-   */
   model: ModelSelection;
   thinkingLevel?: ThinkingLevel | null;
 }
@@ -7137,9 +8097,7 @@ export interface AgentInteractionRespond {
   answer: InteractionAnswer;
 }
 export interface InteractionRecord {
-  sessionId: string;
-  turnId: string;
-  runId: string;
+  execution: ExecutionIdentity;
   requestId: string;
   createdAt: number;
   request: InteractionRequest;
@@ -7152,14 +8110,17 @@ export interface PermissionBasis {
   boundaryRevision: number;
   binding: BindingStamp;
 }
-/**
- * The Host supplies the real operation description; it is display information,
- * not authority inferred from a command string or a plugin-supplied Session ID.
- */
 export interface PermissionRequest {
   reason: string;
   command?: PermissionCommand | null;
   permissions: Permissions;
+  /**
+   * Network access granted for this request covers only later requests from
+   * the same source; filesystem access covers all of them. Requests stored
+   * before sources were recorded decode as Web, the only source that could
+   * be granted network access then.
+   */
+  source?: PermissionSource & string;
 }
 export interface PermissionCommand {
   command: string;
@@ -7263,6 +8224,10 @@ export interface WorkspacePath {
 export interface AgentContextRead {
   sessionId: string;
   /**
+   * Null selects the latest actual readable source, not a caller-provided execution grant.
+   */
+  runId: RunId | null;
+  /**
    * Null captures the committed head; a supplied fence must not exceed it.
    */
   through: number | null;
@@ -7275,8 +8240,12 @@ export interface AgentContextReport {
   request: AgentContextRequest | null;
 }
 export interface AgentContextRequest {
-  invocationId: string;
-  stepId: string;
+  /**
+   * Original canonical Run metadata; observation only.
+   */
+  execution: ExecutionIdentity;
+  stepId: StepId;
+  attemptId: ModelAttemptId;
   sequence: number;
   /**
    * Original request timestamp in milliseconds since the Unix epoch.
@@ -7383,6 +8352,7 @@ export interface GitStatusEntry {
   area: GitArea;
   path: WorkspacePath;
   kind: GitChangeKind;
+  digest: string;
 }
 export interface GitStatus {
   head: string | null;
@@ -7392,6 +8362,7 @@ export interface AgentGitDiffRead {
   sessionId: string;
   area: GitArea;
   path: WorkspacePath;
+  worktreePath?: string | null;
 }
 export interface TerminalList {
   sessionId: string;
@@ -7444,8 +8415,9 @@ export interface TerminalPage {
 export interface ResourceUpdate {
   sessionId: string;
   ownership: Ownership;
-  sourceTurnId: string;
-  sourceToolCallId: string;
+  correlation: unknown;
+  visibility: ShellVisibility;
+  initiator: ShellInitiator;
   result: ShellSnapshot;
 }
 export interface ShellSnapshot {
@@ -7505,11 +8477,16 @@ export interface AgentSessionPage {
   after: string | null;
 }
 export interface AgentStopped {
+  /**
+   * The original operation accepted a Stop intent for the existing Run, not
+   * proof of a new state write or physical cleanup. Missing/already-terminal
+   * preparation may return false; a terminal race after acceptance stays true.
+   */
   requested: boolean;
 }
 export interface AgentDelivery {
   sequence: number;
-  invocationId: string;
+  runId: RunId;
   turnId: string;
   fact: AgentDeliveryFact;
 }
@@ -7522,6 +8499,7 @@ export interface AgentObservation {
   compacting: AgentCompactionProgress | null;
   rememberedBackend?: AgentBackendPreference | null;
   metrics?: AgentSessionMetrics | null;
+  latestRunId?: RunId | null;
   through: number;
   run?: AgentRun | null;
   parts: AgentPart[];
@@ -7558,14 +8536,15 @@ export interface AgentSessionMetrics {
 }
 export interface AgentRun {
   backend: AgentRunBackend;
-  invocationId: string;
+  runId: RunId;
   turnId: string;
   state: AgentRunState;
 }
 export interface AgentPart {
   startSequence: number;
   messageId: string;
-  stepId: string;
+  stepId: StepId;
+  attemptId: ModelAttemptId;
   partId: string;
   textKind: AgentContentKind;
 }
@@ -7609,7 +8588,7 @@ export interface AgentHistoryRead {
  */
 export interface Cursor {
   field?: HistoryField & string;
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   offset: number;
 }
 export interface AgentHistoryLandmarksRead {
@@ -7628,25 +8607,36 @@ export interface AgentHistoryLandmarks {
   landmarks: AgentHistoryLandmark[];
 }
 export interface AgentHistoryLandmark {
-  turnId: string;
-  position: HistoryRowPosition;
-  lastPosition: HistoryRowPosition;
+  importedTurn: number | null;
+  order: HistoryOrder;
+  lastOrder: HistoryOrder;
+  turnId?: string | null;
+  position: HistoryRowAddress;
+  lastPosition: HistoryRowAddress;
   label: string;
   /**
    * The Host's attribution of the Turn's opening message, when it generated it.
    */
   origin?: MessageOrigin | null;
 }
+/**
+ * Lexicographic tree order: original marker sequences followed by the leaf
+ * sequence/ordinal. This is presentation order, never a fabricated Root sequence.
+ */
+export interface HistoryOrder {
+  path: number[];
+  itemIndex: number;
+}
 export interface AgentHistoryPromptRead {
   sessionId: string;
   through: number;
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
 }
 /**
  * A bounded presentation preview; the original message remains in history.
  */
 export interface AgentHistoryPrompt {
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   text: string;
 }
 export interface AgentPreviewPart {
@@ -7680,7 +8670,7 @@ export interface AgentComputerAppActivityState {
   stopped: boolean;
 }
 export interface ComputerAppActivity {
-  invocation: Invocation;
+  execution: ExecutionIdentity;
   operationId: string;
   target: GrantTarget;
   display: ComputerAppDisplay;
@@ -7696,17 +8686,39 @@ export interface AgentQueueMutation {
   edit: AgentQueueAction;
 }
 export interface AgentHistoryChunk {
+  importedTurn: number | null;
+  runId?: RunId | null;
   modelPart?: ModelPartIdentity | null;
+  /**
+   * Provider citation evidence, not assistant prose.
+   */
+  sourceCitation?: boolean;
+  /**
+   * Structured source on the first fragment, with bounded display labels.
+   */
+  citation?: HistoryCitation | null;
+  /**
+   * Target ordinal belongs to the same model attempt as this source.
+   */
+  citationAnchor?: CitationAnchor | null;
   /**
    * The original user input has quotes, directory references or inline references.
    * Present only on the first fragment; display text cannot reconstruct these references.
    */
   hasReferences?: boolean;
   /**
+   * Bounded quote display, present only on the first message fragment.
+   */
+  quotes?: HistoryQuote[];
+  /**
    * Part of the successfully completed native Turn's final output at `through`.
-   * Includes all body parts and source citations; never a Thinking field.
+   * Includes body text and source citations; never a Thinking field.
    */
   finalOutput?: boolean;
+  /**
+   * The provider identified this text as final before the Turn completed.
+   */
+  finalAnswer?: boolean;
   model?: HistoryModel | null;
   origin?: MessageOrigin | null;
   compaction?: HistoryCompaction | null;
@@ -7715,24 +8727,35 @@ export interface AgentHistoryChunk {
    */
   attachments?: AgentHistoryAttachment[];
   timing?: HistoryTurnTiming | null;
+  foldedWork?: HistoryFoldedWork | null;
+  work?: HistoryWorkGroup | null;
   field: HistoryField;
-  messageId: string;
-  turnId: string;
-  timestamp: number;
+  messageId?: string | null;
+  turnId?: string | null;
+  timestamp?: number | null;
   role: Role;
   /**
    * Stable display order; position remains the canonical source read address.
    */
-  order: HistoryRowPosition;
-  position: HistoryRowPosition;
+  order: HistoryOrder;
+  position: HistoryRowAddress;
   offset: number;
   totalBytes: number;
   text: string;
   tool: HistoryTool | null;
 }
 export interface ModelPartIdentity {
-  stepId: string;
+  stepId: StepId;
+  attemptId: ModelAttemptId;
   ordinal: number;
+}
+/**
+ * Display preview only; the original input retains complete text and provenance.
+ */
+export interface HistoryQuote {
+  text: string;
+  label?: string | null;
+  truncated: boolean;
 }
 /**
  * Duration of a successfully adopted context checkpoint, in recorded milliseconds.
@@ -7753,20 +8776,51 @@ export interface AgentHistoryAttachment {
 export interface HistoryTurnTiming {
   startedAt: number;
   finished: HistoryTurnFinished | null;
+  executorUsage?: ExecutorTurnUsage | null;
+  promptCache?: PromptCacheUsage | null;
 }
 export interface HistoryTurnFinished {
   at: number;
   outcome: HistoryTurnOutcome;
 }
 /**
- * Canonical references at the requested fence, never execution authority.
- * Both references are present only for a unique same-Turn call/result pair
- * with matching origin and parentage. An unpaired row retains its own reference.
+ * Reported cache reads and their share of total prompt input.
  */
-export interface HistoryTool {
-  toolUseId: string;
-  call: HistoryToolCall | null;
-  result: HistoryToolResult | null;
+export interface PromptCacheUsage {
+  inputTokens: number;
+  readTokens: number;
+}
+/**
+ * Completed activity available on demand at the same history fence.
+ */
+export interface HistoryFoldedWork {
+  thoughts: number;
+  tools: number;
+  messages: number;
+  imageCount: number;
+  images: HistoryWorkImage[];
+}
+export interface HistoryWorkImage {
+  position: HistoryRowAddress;
+  image?: number | null;
+}
+export interface HistoryWorkGroup {
+  end: Cursor;
+  /**
+   * In order of first appearance.
+   */
+  kinds: HistoryWorkKind[];
+  last: HistoryWorkKind;
+  lastCall?: HistoryToolCall | null;
+  /**
+   * The first step's tool, when it is one.
+   */
+  firstToolUseId?: string | null;
+  thoughts: number;
+  tools: number;
+  messages: number;
+  imageCount: number;
+  images: HistoryWorkImage[];
 }
 export interface HistoryToolCall {
   /**
@@ -7778,7 +8832,7 @@ export interface HistoryToolCall {
    * Opaque display contract captured at dispatch; no execution authority.
    */
   presentation?: string | null;
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   name: string;
   title: DisplayText | null;
   /**
@@ -7789,22 +8843,54 @@ export interface HistoryToolCall {
    * A unique original Host dispatch is recorded at this fence; not liveness.
    */
   dispatched: boolean;
+  externalTarget?: ExternalToolTarget | null;
+}
+/**
+ * Canonical references at the requested fence, never execution authority.
+ * Both references are present only for a unique same-Turn call/result pair
+ * with matching origin and parentage. An unpaired row retains its own reference.
+ */
+export interface HistoryTool {
+  toolUseId: string;
+  call: HistoryToolCall | null;
+  result: HistoryToolResult | null;
 }
 export interface HistoryToolResult {
   settlement: ToolSettlement | null;
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   /**
    * A failed or unknown effect, or a returned result that reports failure.
    */
   isError: boolean;
   /**
-   * Canonical content is an image; this does not grant artifact reads.
+   * The result exposes an unindexed image distinct from its indexed projection images.
    */
   image: boolean;
   /**
-   * Images the model received beside non-image content, readable by index.
+   * Images in the model projection, readable by index.
    */
   images: number;
+  details?: ToolResultDetails | null;
+}
+export interface AgentRoomHistoryPage {
+  items: AgentRoomMessage[];
+  through: number;
+  before?: string | null;
+  after?: string | null;
+}
+export interface AgentRoomMessage {
+  id: string;
+  sequence: number;
+  at: number;
+  author: RoomAuthor;
+  content: AgentRoomContent;
+  replyTo?: string | null;
+  mentions: string[];
+  deliveries: RoomDelivery[];
+}
+export interface AgentRoomContent {
+  text: string;
+  attachments: AgentHistoryAttachment[];
 }
 export interface AgentHistorySearch {
   sessionId: string;
@@ -7815,7 +8901,7 @@ export interface AgentHistorySearch {
   /**
    * Exclusive transcript-row position; null starts a scan.
    */
-  after?: HistoryRowPosition | null;
+  after?: HistoryRowAddress | null;
   /**
    * Literal query; no normalization.
    */
@@ -7832,6 +8918,7 @@ export interface AgentHistorySearch {
   includeInternal: boolean;
 }
 export interface AgentHistoryMatch {
+  order: HistoryOrder;
   /**
    * Exact canonical field to read through the source query; history body may omit it.
    */
@@ -7840,7 +8927,7 @@ export interface AgentHistoryMatch {
    * Exact transcript row. Open with HistoryPosition::Row at the same raw-event
    * fence: Thinking for a thinking match, Body for every other source field.
    */
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   preview: string;
 }
 export interface AgentHistorySourceRead {
@@ -7861,26 +8948,18 @@ export interface AgentHistorySourceRead {
 export interface HistorySource {
   model?: HistoryModel | null;
   origin?: MessageOrigin | null;
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   /**
    * Host-recorded milliseconds of this immutable row; not a client clock.
    */
-  timestamp: number;
+  timestamp?: number | null;
   role: HistorySourceRole;
   /**
    * Readable canonical fields of this same immutable row, in display order.
    *
    * @minItems 1
-   * @maxItems 7
    */
-  fields:
-    | [SourceField]
-    | [SourceField, SourceField]
-    | [SourceField, SourceField, SourceField]
-    | [SourceField, SourceField, SourceField, SourceField]
-    | [SourceField, SourceField, SourceField, SourceField, SourceField]
-    | [SourceField, SourceField, SourceField, SourceField, SourceField, SourceField]
-    | [SourceField, SourceField, SourceField, SourceField, SourceField, SourceField, SourceField];
+  fields: [SourceField, ...SourceField[]];
   field: SourceField;
   /**
    * Omission reads the encoded field. A selected JSON string is literal text.
@@ -7895,7 +8974,7 @@ export interface HistorySource {
 export interface AgentToolImageRead {
   sessionId: string;
   through: number;
-  position: HistoryRowPosition;
+  position: HistoryRowAddress;
   /**
    * Selects one of `HistoryToolResult.images`; absent when the content is the image.
    */
@@ -7920,6 +8999,15 @@ export interface HostActivation {
   contract: Contract;
   service: string[];
 }
+export interface Scan {
+  prefix?: string;
+  after?: string | null;
+}
+export interface Mutation {
+  key: string;
+  expectedRevision?: number | null;
+  data: Data;
+}
 /**
  * Actual callback observation. Neither the source nor receipt is a grant.
  */
@@ -7940,4 +9028,20 @@ export interface ResourceMetadata {
   type: ResourceType;
   bytes: number;
   metadata: unknown;
+}
+/**
+ * Deletions retain a revision, preventing stale writers from recreating a key
+ * as if it had never existed. Revision is not a business schema version.
+ */
+export interface StateRecord {
+  revision: number;
+  data: Data;
+}
+export interface StatePage {
+  entries: Entry[];
+  nextAfter?: string | null;
+}
+export interface Entry {
+  key: string;
+  record: StateRecord;
 }

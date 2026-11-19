@@ -109,7 +109,7 @@ pub(crate) fn from_usage(
         usage: Some(output::Usage {
             input: Some(counts.input),
             uncached_input: Some(i128::from(counts.uncached_input)),
-            cache_read: Some(counts.cache_read),
+            cache_read: usage.cache_read_input_tokens,
             cache_write: Some(counts.cache_write),
             output: Some(counts.output),
             reasoning: counts.reasoning,

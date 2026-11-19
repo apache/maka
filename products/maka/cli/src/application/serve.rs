@@ -47,9 +47,11 @@ pub(crate) struct Serve {
 }
 pub(super) fn native(
     catalog: Arc<maka_product_native::catalog::Catalog>,
+    state: maka_agent_state::Store,
+    helper: PathBuf,
 ) -> Result<NativeRegistry, HostError> {
     let mut native = NativeRegistry::default();
-    maka_product_native::provide(&mut native, catalog)?;
+    maka_product_native::provide(&mut native, catalog, state, helper)?;
     Ok(native)
 }
 pub(super) async fn run(args: Serve) -> Result<(), HostError> {
@@ -70,7 +72,10 @@ pub(super) async fn run(args: Serve) -> Result<(), HostError> {
         .map(super::read_json)
         .transpose()?
         .unwrap_or_default();
-    let store = Arc::new(maka_transport::open_store(Arc::new(owner)).await?);
+    let store = Arc::new(
+        maka_transport::open_store(Arc::new(owner), &maka_product_native::root_migrations())
+            .await?,
+    );
     let catalog = async {
         let configuration = maka_config::ConfigurationStore::for_root(store.owned_root()?).await?;
         Ok::<_, HostError>(maka_product_native::catalog::RuntimeCatalog::open(configuration).await?)
@@ -84,11 +89,14 @@ pub(super) async fn run(args: Serve) -> Result<(), HostError> {
         }
     };
     let opened = async {
+        let data = store.data_writer()?;
+        let state =
+            maka_agent_state::Store::new(data.clone(), maka_agent_state::DriverDomain::new(data)?)?;
         Ok::<_, HostError>(
             Host::open_with_options(
                 store.clone(),
                 args.deployment,
-                native(catalog.catalog())?,
+                native(catalog.catalog(), state, std::env::current_exe()?)?,
                 Some(maka_host_js::factory(Default::default())),
                 Configuration::PublicHost {
                     endpoints,

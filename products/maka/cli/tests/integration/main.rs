@@ -36,28 +36,15 @@ fn executable_tempdir() -> tempfile::TempDir {
     .expect("create fixture on the same filesystem as the actual Maka executable")
 }
 
-fn product_bundle() -> PathBuf {
-    std::env::var_os("OUT_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("OUT_DIR")))
-        .join("product")
-}
-
-mod application;
 mod candidate;
-mod code_command;
-#[cfg(unix)]
-mod desktop;
+
 mod initialize;
 #[allow(dead_code)]
 #[path = "../../../../../platform/transport/tests/integration/support/mod.rs"]
 mod local_fixture;
 #[cfg(target_os = "linux")]
 mod network_sandbox;
-mod product_composition;
+
 mod sandbox;
 mod startup;
 mod terminal_shell;
-
-#[path = "../../../terminal-shell/tests/real_host/mod.rs"]
-mod terminal;

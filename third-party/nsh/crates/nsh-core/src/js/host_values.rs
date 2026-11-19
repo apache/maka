@@ -7,16 +7,36 @@ use std::sync::Arc;
 use super::host::{HostCx, HostInput, HostList, HostValue, field};
 use crate::{
     AccessibilityCurrent, AccessibilityProp, AccessibilityRole, AccessibilityState, AutoFill,
-    CellSlot, EdgeInsets, ImageScales, ImageSource, KeyboardTaps, ListContentStyle, MacOsBackdrop,
-    MacOsBackdropBlending, MacOsBackdropMaterial, MacOsBackdropState, ModalProp, Prop, ScrollProp,
-    StatusBarSetting, StatusBarStyle, Viewability,
-    element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, TsTypes},
+    CellSlot, EdgeInsets, HeaderItem, HeaderItemContent, HeaderSystemItem, ImageScales,
+    ImageSource, KeyboardTaps, ListContentStyle, MacOsBackdrop, MacOsBackdropBlending,
+    MacOsBackdropMaterial, MacOsBackdropState, ModalProp, Prop, RevealOptions, ScreenProp,
+    ScrollAlignment, ScrollProp, StatusBarSetting, StatusBarStyle, Viewability,
+    element::{ElementTarget, JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, TsTypes},
     geometry::{Bounds, Percentage, Points, point, size},
     mount::ModalConfig,
     ops::OverlayProp,
     overlay::{OverlayAnchor, TooltipContent},
     props::{AccessibilityActionDef, AccessibilityValue, Checked, PanActivation, Ripple},
 };
+
+/// `"none"`, `"all"`, or the canonical keystrokes a view captures
+/// (`"mod+k"`, `"shift+tab"`): parsed once here with the shortcut rules
+/// and this platform's `mod`, which the engine's environment names
+/// ([`crate::element::try_apple_keys`]); a JS host decoding outside that
+/// environment calls [`crate::js::host::decode_capture_keys`] with its own
+/// convention.
+/// Another string clears the rule with a warning; an invalid keystroke in
+/// the array is reported and left out.
+impl HostValue for crate::KeyCapture {
+    fn decode<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Self> {
+        let apple = crate::element::try_apple_keys().unwrap_or(false);
+        super::host::decode_capture_keys(input, cx, apple)
+    }
+
+    fn ts_type(_: &mut TsTypes) -> String {
+        "\"none\" | \"all\" | readonly string[]".into()
+    }
+}
 
 fn number<I: HostInput>(input: &I, key: &str) -> Option<f32> {
     input
@@ -72,6 +92,49 @@ impl HostValue for ImageSource {
 
     fn ts_type(_: &mut TsTypes) -> String {
         "string | ImageAsset".into()
+    }
+}
+
+/// `ref.reveal(options)`: `{ vertical?, horizontal?, animated? }`, each
+/// missing one its default. None for an alignment that is not one, so the
+/// call throws rather than scrolling somewhere the app did not ask for.
+impl HostValue for RevealOptions {
+    fn decode<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Self> {
+        let mut options = RevealOptions::default();
+        if input.is_nullish() {
+            return Some(options);
+        }
+        if !input.is_object() {
+            return None;
+        }
+        let mut alignment = |key: &str, default: ScrollAlignment| match input.field(key) {
+            Some(value) if !value.is_nullish() => {
+                <ScrollAlignment as HostValue>::decode(&value, cx)
+            }
+            _ => Some(default),
+        };
+        options.vertical = alignment("vertical", options.vertical)?;
+        options.horizontal = alignment("horizontal", options.horizontal)?;
+        if let Some(animated) = input.field("animated").and_then(|a| a.as_bool()) {
+            options.animated = animated;
+        }
+        Some(options)
+    }
+
+    fn ts_type(types: &mut TsTypes) -> String {
+        let alignment = <ScrollAlignment as HostValue>::ts_type(types);
+        types.declare("RevealOptions", |_| {
+            format!(
+                "/** How `reveal` places a view in the scroll views around it. */\n\
+                 export interface RevealOptions {{\n  \
+                 /** Along vertical scroll views; `\"start\"` by default. */\n  \
+                 vertical?: {alignment};\n  \
+                 /** Along horizontal scroll views; `\"nearest\"` by default. */\n  \
+                 horizontal?: {alignment};\n  \
+                 /** Animate the scrolls; `true` by default. */\n  \
+                 animated?: boolean;\n}}"
+            )
+        })
     }
 }
 
@@ -173,6 +236,42 @@ impl HostValue for MacOsBackdrop {
     }
 }
 
+/// A dialog's `detents`, `detent`, `defaultDetent` and
+/// `largestUndimmedDetent`: `"medium"`, `"large"`, `{ height }` or
+/// `{ fraction }`; anything else is left out with a warning.
+impl HostValue for crate::SheetDetent {
+    fn decode<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Self> {
+        use crate::SheetDetent;
+        if input.is_nullish() {
+            return None;
+        }
+        if let Some(name) = input.as_string() {
+            match name.as_str() {
+                "medium" => return Some(SheetDetent::Medium),
+                "large" => return Some(SheetDetent::Large),
+                _ => {}
+            }
+        } else if input.is_object() {
+            let number = |key| input.field(key).and_then(|v| v.as_number());
+            let detent = match number("height") {
+                Some(height) => SheetDetent::of_height(height),
+                None => number("fraction").and_then(SheetDetent::of_fraction),
+            };
+            if detent.is_some() {
+                return detent;
+            }
+        }
+        cx.warn(
+            r#"detent: expected "medium", "large", `{ height }` (0 or more) or `{ fraction }` (0 to 1)"#,
+        );
+        None
+    }
+
+    fn ts_type(types: &mut TsTypes) -> String {
+        <crate::SheetDetent as crate::element::JsValue>::ts_type(types)
+    }
+}
+
 /// A page's or dialog's `statusBar`: `{ foreground, hidden, animated }`
 /// (`StatusBar`, declared with the navigation in `nsh/base`); the fields
 /// left out keep what is below. An unknown `foreground` is left out.
@@ -233,7 +332,8 @@ impl HostValue for PanActivation {
 }
 
 /// `{ disabled, selected, checked: true | false | "mixed", busy, expanded,
-/// pressed: true | false | "mixed", current: true | false | "page" | ... }`.
+/// pressed: true | false | "mixed", current: true | false | "page" | ...,
+/// hasPopup, invalid }`.
 impl HostValue for AccessibilityState {
     fn decode<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Self> {
         let flag = |key| input.field(key).and_then(|v| v.as_bool()).unwrap_or(false);
@@ -257,6 +357,7 @@ impl HostValue for AccessibilityState {
             expanded: input.field("expanded").and_then(|v| v.as_bool()),
             pressed: tristate("pressed"),
             has_popup: flag("hasPopup"),
+            invalid: flag("invalid"),
             // `false` and unknown words are no current item, as ARIA has it.
             current: match current.as_ref().and_then(|c| c.as_bool()) {
                 Some(true) => Some(AccessibilityCurrent::True),
@@ -284,7 +385,9 @@ impl HostValue for AccessibilityState {
              /** The current item of a set (ARIA's `aria-current`): a pagination's page, a wizard's step. */\n  \
              current?: boolean | \"page\" | \"step\" | \"location\" | \"date\" | \"time\";\n  \
              /** Opens a popup, a menu or a list (ARIA's `aria-haspopup`); `expanded` says whether it is open. */\n  \
-             hasPopup?: boolean;\n}"
+             hasPopup?: boolean;\n  \
+             /** The content does not pass the app's checks (ARIA's `aria-invalid`): a rejected field. */\n  \
+             invalid?: boolean;\n}"
                 .into()
         })
     }
@@ -446,7 +549,161 @@ impl HostValue for Ripple {
     }
 }
 
+/// A trailing iOS bar button: `{ key?, systemItem | symbol | label,
+/// disabled?, menu? }`. Handlers (`onPress`, menu `onSelect`) are taken by
+/// the JS runtime when it sets the prop; this decode leaves their ids at 0.
+impl HostValue for HeaderItem {
+    fn decode<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Self> {
+        if !input.is_object() {
+            return None;
+        }
+        let system = field::<HeaderSystemItem, _>(input, "systemItem", cx);
+        let symbol = field::<std::sync::Arc<str>, _>(input, "symbol", cx);
+        let label_content = field::<std::sync::Arc<str>, _>(input, "label", cx);
+        let content = match (system, symbol, label_content.clone()) {
+            (Some(item), None, _) => HeaderItemContent::SystemItem(item),
+            (None, Some(name), _) => HeaderItemContent::Symbol(name),
+            (None, None, Some(text)) => HeaderItemContent::Label(text),
+            _ => {
+                cx.warn("headerRightItems entry needs exactly one of systemItem, symbol, or label");
+                return None;
+            }
+        };
+        // `label` is the button's title when it is the content; otherwise
+        // VoiceOver's label (re-read when content was system/symbol).
+        let label = match &content {
+            HeaderItemContent::Label(_) => None,
+            _ => label_content,
+        };
+        let flag = |key| input.field(key).and_then(|v| v.as_bool()).unwrap_or(false);
+        let menu = input.field("menu").and_then(|v| {
+            v.as_list()?;
+            Some(
+                v.items()
+                    .iter()
+                    .filter_map(|item| decode_menu_item(item, cx))
+                    .collect::<Vec<_>>(),
+            )
+        });
+        Some(HeaderItem {
+            key: field(input, "key", cx),
+            content,
+            label,
+            disabled: flag("disabled"),
+            press_id: 0,
+            menu,
+        })
+    }
+
+    fn ts_type(types: &mut TsTypes) -> String {
+        let system = <HeaderSystemItem as HostValue>::ts_type(types);
+        types.declare("HeaderItem", |_| {
+            format!(
+                "/** A trailing iOS navigation-bar button (`ios.headerRightItems`).\n\
+                 * `menu` takes `nsh/desktop`'s `MenuItem` items (`onSelect` per\n\
+                 * item; `destructive`, `inline`, `symbol` as documented there).\n\
+                 * `onPress` runs when the button has no menu. */\n\
+                 export type HeaderItem = {{\n  key?: string;\n  disabled?: boolean;\n  \
+                 onPress?: () => void;\n  menu?: import(\"nsh/desktop\").MenuItem[];\n}} & (\n  \
+                 {{ systemItem: {system}; symbol?: never; label?: string }} \
+                 | {{ symbol: string; systemItem?: never; label?: string }} \
+                 | {{ label: string; systemItem?: never; symbol?: never }}\n);"
+            )
+        })
+    }
+}
+
+/// One `nsh/desktop` menu item without its handlers (ids stay 0); JS's
+/// special path for `headerRightItems` assigns ids and keeps the functions.
+fn decode_menu_item<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<crate::desktop::MenuItem> {
+    use crate::{
+        desktop::{MenuAction, MenuItem},
+        keymap::When,
+    };
+    if !input.is_object() {
+        return None;
+    }
+    if input.field("type").and_then(|v| v.as_string()).as_deref() == Some("separator") {
+        return Some(MenuItem::Separator);
+    }
+    let flag = |key| input.field(key).and_then(|v| v.as_bool());
+    let label = field::<String, _>(input, "label", cx).unwrap_or_default();
+    let enabled = !flag("disabled").unwrap_or(false);
+    let icon = field::<ImageSource, _>(input, "icon", cx);
+    let symbol = field::<String, _>(input, "symbol", cx);
+    if let Some(items_input) = input.field("submenu") {
+        let items = items_input
+            .items()
+            .iter()
+            .filter_map(|item| decode_menu_item(item, cx))
+            .collect();
+        return Some(MenuItem::Submenu {
+            label,
+            enabled,
+            items,
+            icon,
+            symbol,
+            inline: flag("inline").unwrap_or(false),
+        });
+    }
+    let role = field::<String, _>(input, "role", cx).and_then(|name| menu_role(&name));
+    if label.is_empty() && role.is_none() {
+        return None;
+    }
+    Some(MenuItem::Action(MenuAction {
+        id: 0,
+        label,
+        shortcut: None,
+        enabled,
+        checked: flag("checked"),
+        role,
+        when: When::Always,
+        icon,
+        symbol,
+        destructive: flag("destructive").unwrap_or(false),
+    }))
+}
+
+fn menu_role(name: &str) -> Option<crate::desktop::MenuRole> {
+    use crate::desktop::MenuRole;
+    Some(match name {
+        "about" => MenuRole::About,
+        "hide" => MenuRole::Hide,
+        "hideOthers" => MenuRole::HideOthers,
+        "showAll" => MenuRole::ShowAll,
+        "quit" => MenuRole::Quit,
+        "undo" => MenuRole::Undo,
+        "redo" => MenuRole::Redo,
+        "cut" => MenuRole::Cut,
+        "copy" => MenuRole::Copy,
+        "paste" => MenuRole::Paste,
+        "selectAll" => MenuRole::SelectAll,
+        "minimize" => MenuRole::Minimize,
+        "zoom" => MenuRole::Zoom,
+        "toggleFullScreen" => MenuRole::ToggleFullScreen,
+        "close" => MenuRole::Close,
+        _ => return None,
+    })
+}
+
 // --- Whole variants ---------------------------------------------------------
+
+/// `selectionMenu`: `nsh/desktop`'s `MenuItem` items. Handlers (`onSelect`)
+/// are taken by the JS runtime when it sets the prop; this decode leaves
+/// their ids at 0.
+pub(crate) fn selection_menu<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Prop> {
+    if input.is_nullish() {
+        return Some(Prop::SelectionMenu(Vec::new()));
+    }
+    input.as_list()?;
+    Some(Prop::SelectionMenu(
+        input
+            .items()
+            .iter()
+            .filter_map(|item| decode_menu_item(item, cx))
+            .collect(),
+    ))
+}
 
 /// `slot`: a recycling slot (a number) or a role.
 pub(crate) fn slot<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Prop> {
@@ -598,6 +855,36 @@ pub(crate) fn overlay_anchor<I: HostInput>(input: &I, _: &mut HostCx) -> Option<
     Some(OverlayProp::Anchor(anchor))
 }
 
+/// `accessibilityActiveDescendant`: an element (a ref), or nothing.
+pub(crate) fn active_descendant<I: HostInput>(
+    input: &I,
+    _: &mut HostCx,
+) -> Option<AccessibilityProp> {
+    Some(AccessibilityProp::ActiveDescendant(
+        input.node().map(ElementTarget::of_node),
+    ))
+}
+
+/// `accessibilityControls`: an element (a ref), or nothing.
+pub(crate) fn accessibility_controls<I: HostInput>(
+    input: &I,
+    _: &mut HostCx,
+) -> Option<AccessibilityProp> {
+    Some(AccessibilityProp::Controls(
+        input.node().map(ElementTarget::of_node),
+    ))
+}
+
+/// `accessibilityDescribedBy`: an element (a ref), or nothing.
+pub(crate) fn accessibility_described_by<I: HostInput>(
+    input: &I,
+    _: &mut HostCx,
+) -> Option<AccessibilityProp> {
+    Some(AccessibilityProp::DescribedBy(
+        input.node().map(ElementTarget::of_node),
+    ))
+}
+
 /// `tooltip`: a string, an element (a node JS made), or nothing.
 pub(crate) fn tooltip<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Prop> {
     let content = input
@@ -736,15 +1023,26 @@ pub(crate) fn scrollbar<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Prop>
     Some(Prop::Scrollbar(match input.as_bool() {
         Some(shows) => shows.into(),
         None if input.is_object() => {
-            crate::ScrollbarSetting::Themed(std::sync::Arc::new(json_of(input)))
+            crate::ScrollbarSetting::Themed(std::sync::Arc::new(json_of(input, 0, &mut {
+                JSON_ENTRIES
+            })))
         }
         None => crate::ScrollbarSetting::Shown,
     }))
 }
 
+/// Deepest nesting [`json_of`] reads.
+const JSON_DEPTH: u32 = 64;
+/// Most array items and object fields [`json_of`] reads in all.
+const JSON_ENTRIES: usize = 1 << 20;
+
 /// `input` as JSON: what is neither a boolean, number, string, array nor
-/// object (a function) is `null`.
-fn json_of<I: HostInput>(input: &I) -> crate::JsonValue {
+/// object (a function) is `null`, and so is what is nested more than
+/// [`JSON_DEPTH`] deep or past `left` entries (of [`JSON_ENTRIES`]): the
+/// app's value is read natively, where neither the time budget nor the
+/// interpreter's stack limit applies, and one that holds itself would
+/// recurse until the engine thread's stack overflows.
+fn json_of<I: HostInput>(input: &I, depth: u32, left: &mut usize) -> crate::JsonValue {
     use crate::JsonValue;
     if let Some(b) = input.as_bool() {
         return JsonValue::Bool(b);
@@ -755,17 +1053,32 @@ fn json_of<I: HostInput>(input: &I) -> crate::JsonValue {
     if let Some(s) = input.as_string() {
         return JsonValue::String(s);
     }
-    if input.as_list().is_some() {
-        return JsonValue::Array(input.items().iter().map(json_of).collect());
+    if depth >= JSON_DEPTH {
+        return JsonValue::Null;
+    }
+    if let Some(list) = input.as_list() {
+        let mut items = Vec::new();
+        for i in 0..list.len() {
+            if *left == 0 {
+                break;
+            }
+            *left -= 1;
+            if let Some(item) = list.item(i) {
+                items.push(json_of(&item, depth + 1, left));
+            }
+        }
+        return JsonValue::Array(items);
     }
     if input.is_object() {
-        return JsonValue::Object(
-            input
-                .entries()
-                .into_iter()
-                .map(|(k, v)| (k, json_of(&v)))
-                .collect(),
-        );
+        let mut fields = serde_json::Map::new();
+        for (key, value) in input.entries() {
+            if *left == 0 {
+                break;
+            }
+            *left -= 1;
+            fields.insert(key, json_of(&value, depth + 1, left));
+        }
+        return JsonValue::Object(fields);
     }
     JsonValue::Null
 }
@@ -784,8 +1097,19 @@ pub(crate) fn keyboard_taps<I: HostInput>(input: &I, _: &mut HostCx) -> Option<S
     }))
 }
 
-/// `supportedOrientations`: the orientation names.
+/// A dialog's `supportedOrientations`: the orientation names.
 pub(crate) fn orientations<I: HostInput>(input: &I, _: &mut HostCx) -> Option<ModalProp> {
+    Some(ModalProp::Orientations(orientation_bits(input)))
+}
+
+/// A page's `supportedOrientations`: the orientation names.
+pub(crate) fn page_orientations<I: HostInput>(input: &I, _: &mut HostCx) -> Option<ScreenProp> {
+    Some(ScreenProp::Orientations(orientation_bits(input)))
+}
+
+/// The [`ModalConfig::PORTRAIT`] bits of a list of orientation names; a
+/// name it does not know adds none.
+fn orientation_bits<I: HostInput>(input: &I) -> u8 {
     let mut bits = 0;
     for name in input.items() {
         bits |= match name.as_string().as_deref() {
@@ -797,7 +1121,7 @@ pub(crate) fn orientations<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Mo
             _ => 0,
         };
     }
-    Some(ModalProp::Orientations(bits))
+    bits
 }
 
 /// A shader's `uniforms`: `{ name: value }`, a value a number, a CSS color,

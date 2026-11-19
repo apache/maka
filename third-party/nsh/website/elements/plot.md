@@ -1344,7 +1344,7 @@ draws its plots in afresh, and a plot remembers in the innermost scope around it
 An interactive plot is a stop of Tab (macOS, the web), and while it has the keyboard focus its keys move the same hover
 the pointer does: the cross line, the dots and the tooltip glide on the `pointer` spring, a pie's slice lifts,
 `onHoverChange` reports the row, and screen readers read the `accessibilityValue` the app gives for it. Its focus ring
-is the app's: a `focus-visible:` class or a `focusStyle` (`focus-visible:outline-2 focus-visible:outline-ring`).
+is the app's: a `focus-visible:` class or a `focusVisibleStyle` (`focus-visible:outline-2 focus-visible:outline-ring`).
 
 | Keys | What they do |
 |---|---|

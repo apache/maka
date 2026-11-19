@@ -11,7 +11,7 @@ supplies padding, colors, borders and state feedback through `classes` and `styl
 
 | File | What |
 |---|---|
-| `mod.rs` | The component: `DataTableProps`, `DataTableEvent`, `DataTableApi` (the ref's methods); the values: `DataTableAlign`, `DataTableSortDirection` (`PropEnum`s), `DataTableColumn`, `DataTableColumnGroup`, `DataTableSort`, `DataTableSelection`, `DataTableRange`, `DataTableCell`, ... (`JsObject`s) |
+| `mod.rs` | The component: `DataTableProps`, `DataTableEvent`, `DataTableApi` (the ref's methods); the values: `DataTableAlign`, `DataTableSortDirection` (`PropEnum`s), `nsh_base::data_table::ColumnFixed` (`None` / `Left` / `Right`, following GPUI Kit's side naming), `DataTableColumn`, `DataTableColumnGroup`, `DataTableSort`, `DataTableSelection`, `DataTableRange`, `DataTableCell`, ... (`JsObject`s) |
 | `parts.rs` | The parts the app styles: one `parts!` list makes `DataTableClasses`, `DataTableStyles` and `DataTablePart` |
 | `data.rs` | `DataTableRows`: the rows from JS (arrays, or objects by the columns' keys) or from Rust a typed column at a time (`new`, `texts`, `numbers`, `bools`, as the core's `Rows::from_columns`), each field as a `Cell` |
 | `axis.rs` | `Axis`: one axis's real extent against the extent the scroll views get (see "Huge tables") |
@@ -25,14 +25,28 @@ supplies padding, colors, borders and state feedback through `classes` and `styl
 The table is a body, a hit layer over it and a header (`view.rs`), from the bottom:
 
 - the *body* receives no pointer and draws the cells of the rows and columns in view, placed where the table last
-  scrolled to. Its regions are the row headers, the fixed columns (which move with the rows only) and the scrolling
-  columns (which move both ways). The cells a scroll needs come with the next commit, which moves the body with them;
+  scrolled to. Its regions are the row headers, the columns fixed at the start and at the end (which move with the
+  rows only) and the scrolling columns between them (which move both ways). Those fixed at the end stand right after
+  the scrolling columns while these fit, at the view's end once they overflow it (`Columns::end_left`, as CSS's
+  `sticky`). The cells a scroll needs come with the next commit, which moves the body with them;
 - the *hit layer* over it is a vertical scroll view of a horizontal one of an empty box of the content's size. The
   platforms scroll it as they scroll any scroll view (inertia, scroll bars, wheel, touch), and its box takes presses,
   hovers and the context menu. It draws nothing but its scroll bars (the platform's indicator, or the built-in
   `Scrollbar` of the app's theme, both the scroll view's own), which lie over the rows' backgrounds this way: with
   the body above, a striped, hovered or selected row would cover the bar;
 - the *header* above them is interactive: group labels, titles, resize handles and the drop line of a column being moved.
+
+A press on a cell `renderCell` draws is passed on into it first (`Dt::press_with`): the cell's view, registered by
+row and column (`CustomCells`), gets `ElementRef::press_at` with the press, and the core presses the innermost view of
+the app's there that hears presses, with the commit's layout (`Core::press_target`). Only when none takes it does the
+press select and report `onRowPress`. That view gets `onPress`, not press states: the pointer stays on the hit layer.
+The pointer moving over the body is passed on the same way (`Dt::hover_at`): the cell under it gets
+`ElementRef::hover_at`, and the core hovers the app's views there with the last layout (`Core::pass_hovers`), so their
+`hover:` classes apply and they hear `onMouseEnter`, `onMouseMove` and `onMouseLeave`; the cell it left, or the hit
+layer's `onMouseLeave`, gets `hover_at(None)`. The hovered row's views in every region are projected hovered
+(`project_hovered`), so with `classes.row: "group"` the `group-hover:` classes of every cell in it apply. Headless tests
+press and hover a view that takes no pointer (the body's) where it is, through the hit layer, as a pointer would
+(`Screen::routed_press`, `Screen::hit_pointer`).
 
 The fixed-column separator sits above each row background and below its cells, so app-supplied cell borders
 remain visible at the fixed boundary.
@@ -48,8 +62,17 @@ Platforms keep scroll offsets and content sizes in 32-bit floats, so ten million
 content. Past `MAX_EXTENT` the scroll view gets a bounded extent and the table maps its offset to the content's
 (`Axis`, `Anchor` in the table's code), so what is drawn is exact at any size, the scroll bar still spans the content
 and offsets the table scrolls to (`scrollToRow`, revealing the selection) land on the row. The columns work the same
-way on the horizontal axis. On touch devices drags move the content one to one; on the desktops dragging the bar
-reaches the whole content.
+way on the horizontal axis. On touch devices drags move the content one to one. Web desktop wheels and keys also
+follow a local anchor, so a small input is independent of the table's size. Explicit web desktop drags span the
+full content from the point where they start; releasing the drag restores local following without moving the rows.
+At rest the invisible hit layer recenters to where its scrollbar represents the content, keeping one-to-one scroll
+room near the top and bottom edges so a reverse gesture does not accelerate into the end. On the desktops dragging
+the bar reaches the whole content.
+
+For a scaled vertical axis on web desktop, the visible bar belongs to a separate bounded scroll view whose offset
+is proportional to the logical content position. Recentering the hit layer therefore leaves the visible thumb
+unchanged. Dragging that bar maps back to the logical position; wheel input over its band still moves by the input's
+distance. The hit layer's own vertical indicator is hidden in this case.
 
 In a terminal a body row is one Cell, whatever `rowHeight` is (`terminal::row_height`): rows on another step
 would land on the Cell grid unevenly. So is a title row, whatever `headerHeight` is: the titles stand apart by their
@@ -59,7 +82,8 @@ draws no line until the pointer is on it (`PointerOnly`), so columns stand apart
 
 ## Columns' own classes, fitting, bounce
 
-A column's `cellClass` and `headerClass` come after the part's classes (`column_parts`, `view.rs`). Two presses of a
+A column's `cellClass` and `headerClass` come after the part's classes (`column_parts`, `view.rs`), and a
+`cellClasses` entry for that cell comes after those. Two presses of a
 resize handle that moved less than `MOVE_SLOP`, within `DOUBLE_PRESS` (400 ms), fit the column (`Dt::resize_end`).
 `bounces` sets the bounce of both scroll views.
 
@@ -128,8 +152,11 @@ methods the ref's. Deliberate differences:
 - No strings and no fixed look: the empty and loading slots are the app's, and every part (the sort button
   among them) takes the app's classes for its appearance (gpui-component draws an inbox icon, a skeleton
   and a translated "Sort by" label).
-- `onRowPress` is gpui-component's `render_tr` click handler, for the app's own selections of several rows;
-  `rowClasses`, data beside `data`, is `render_tr`'s per-row look without a call into JS per row.
+- `onRowPress` and `onColumnPress` are where an app keeps its own selection of several rows, cells or columns.
+  With `selectOnModifierPress` false, a press with Shift or the secondary modifier leaves the table's selection,
+  on a row, a cell or a title. `cellClasses` paints one cell by its data row and column index, after the part's
+  classes and the column's `cellClass`, and the text stays the table's. A column's `headerClass` and `cellClass`
+  paint that column. `rowClasses`, data beside `data`, is the per-row look without a call into JS per row.
 - A fit measures the cells' texts natively; `fitPadding` adds what the app's drawing adds to them (gpui-component
   asks its delegate to measure).
 

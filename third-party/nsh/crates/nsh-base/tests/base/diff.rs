@@ -22,7 +22,7 @@ use nsh_core::{
     prelude::*,
 };
 use nsh_engine::EngineConfig;
-use nsh_testing::Headless;
+use nsh_testing::{Headless, Screen};
 
 #[derive(Clone, PartialEq, Props)]
 struct HarnessProps {
@@ -700,6 +700,54 @@ fn marks_text(list: &[DiffHunkBounds]) -> String {
         .join(" ")
 }
 
+/// What the view reported of its scrolling last (`x y width height
+/// viewport`), `None` before it reported any.
+fn scrolled(screen: &Screen) -> Option<String> {
+    screen
+        .texts()
+        .iter()
+        .find_map(|t| t.trim().strip_prefix("Scrolled ").map(str::to_string))
+        .filter(|s| s != "-")
+}
+
+/// The rows' height the view reported last, `None` before it reported.
+fn rows_height(screen: &Screen) -> Option<f32> {
+    scrolled(screen)?.split(' ').nth(3)?.parse().ok()
+}
+
+/// Waits for the view to report a rows' height that `done` accepts and
+/// gives it: the report comes after the layout it follows, not by a fixed
+/// time.
+fn wait_rows_height(app: &mut Headless, what: &str, done: impl Fn(f32) -> bool) -> f32 {
+    app.wait_until(what, std::time::Duration::from_secs(5), |s| {
+        rows_height(s).is_some_and(&done)
+    })
+    .unwrap();
+    rows_height(app.screen()).unwrap()
+}
+
+/// The hunk bounds the harness read last, as it shows them.
+fn marks_shown(screen: &Screen) -> String {
+    screen
+        .texts()
+        .iter()
+        .find_map(|t| t.trim().strip_prefix("Marks ").map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// Presses `id:marks` and waits for the hunk bounds it reads to show
+/// anew (they differ from `before`).
+fn read_marks(app: &mut Headless, before: &str) {
+    app.press("id:marks").unwrap();
+    let before = before.to_owned();
+    app.wait_until(
+        "the hunk bounds read",
+        std::time::Duration::from_secs(5),
+        move |s| marks_shown(s) != before,
+    )
+    .unwrap();
+}
+
 /// How many times the view reported its scrolling.
 fn scrolls(app: &Headless) -> u32 {
     app.screen()
@@ -759,14 +807,27 @@ fn the_view_reports_where_its_rows_are_scrolled() {
     // Collapsed again, the rows are short again (the scroll view clamps
     // its offset to them).
     app.press("id:collapse-all").unwrap();
-    app.wait(std::time::Duration::from_millis(100)).unwrap();
-    let shown = app
-        .screen()
-        .texts()
-        .iter()
-        .find_map(|t| t.trim().strip_prefix("Scrolled ").map(str::to_string))
+    app.wait_until(
+        "the collapsed rows reported",
+        std::time::Duration::from_secs(5),
+        |s| scrolled(s).is_some_and(|shown| shown.ends_with(" 800 340 300")),
+    )
+    .unwrap_or_else(|e| panic!("{e}; reported: {:?}", scrolled(app.screen())));
+}
+
+/// The rows and sides grow with the user's text size, as the texts drawn in
+/// them do: measured in the app's font alone, a line drawn larger would
+/// wrap within its side and run over the next row.
+#[test]
+fn rows_follow_the_user_s_text_size() {
+    let mut app = start(two_far_changes());
+    see(&mut app, "Scrolled 0 0 800 340 400");
+    app.set_environment("fontScale", |env| env.font_scale = 1.25)
         .unwrap();
-    assert!(shown.ends_with(" 800 340 300"), "{shown}");
+    see(&mut app, "Scrolled 0 0 800 425 400");
+    app.set_environment("fontScale", |env| env.font_scale = 1.0)
+        .unwrap();
+    see(&mut app, "Scrolled 0 0 800 340 400");
 }
 
 /// In a terminal a row is one Cell, as the text engine measures a line,
@@ -776,22 +837,11 @@ fn the_view_reports_where_its_rows_are_scrolled() {
 fn in_a_terminal_a_row_is_one_line_of_the_grid() {
     let mut app = start_on(two_far_changes(), Os::Linux, Idiom::Terminal);
     see(&mut app, "line fifty");
-    let height = |app: &Headless| -> f32 {
-        let shown = app
-            .screen()
-            .texts()
-            .iter()
-            .find_map(|t| t.trim().strip_prefix("Scrolled ").map(str::to_string))
-            .unwrap();
-        shown.split(' ').nth(3).unwrap().parse().unwrap()
-    };
-    app.wait(std::time::Duration::from_millis(100)).unwrap();
     // 17 rows collapsed, 60 expanded, on one step that is not the
     // default 20.
-    let collapsed = height(&app);
+    let collapsed = wait_rows_height(&mut app, "the collapsed rows reported", |_| true);
     app.press("id:expand-all").unwrap();
-    app.wait(std::time::Duration::from_millis(100)).unwrap();
-    let expanded = height(&app);
+    let expanded = wait_rows_height(&mut app, "the expanded rows reported", |h| h != collapsed);
     let cell = expanded / 60.0;
     assert!((cell - 20.0).abs() > 0.1, "{expanded}");
     assert!(
@@ -804,7 +854,7 @@ fn in_a_terminal_a_row_is_one_line_of_the_grid() {
 /// so they never cover its code; elsewhere they overlay its first row.
 #[test]
 fn in_a_terminal_hunk_actions_take_a_row_after_their_change() {
-    let height = |idiom: Idiom, actions: bool| -> f32 {
+    let height = |idiom: Idiom, actions: bool, done: &dyn Fn(f32) -> bool| -> f32 {
         let mut app = start_on(
             HarnessProps {
                 hunk_actions: actions,
@@ -817,21 +867,17 @@ fn in_a_terminal_hunk_actions_take_a_row_after_their_change() {
         if actions {
             see(&mut app, "Act 0");
         }
-        app.wait(std::time::Duration::from_millis(100)).unwrap();
-        let shown = app
-            .screen()
-            .texts()
-            .iter()
-            .find_map(|t| t.trim().strip_prefix("Scrolled ").map(str::to_string))
-            .unwrap();
-        shown.split(' ').nth(3).unwrap().parse().unwrap()
+        wait_rows_height(&mut app, "the rows reported", done)
     };
     // 17 rows, then one more for each of the two changes' actions.
-    let plain = height(Idiom::Terminal, false);
+    let plain = height(Idiom::Terminal, false, &|_| true);
     let cell = plain / 17.0;
-    let with = height(Idiom::Terminal, true);
+    // The actions' rows are laid out with them: a report without them
+    // may come first.
+    let with = height(Idiom::Terminal, true, &|h| (h - cell * 19.0).abs() < 0.1);
     assert!((with - cell * 19.0).abs() < 0.1, "{plain} {with}");
-    assert_eq!(height(Idiom::Desktop, true), height(Idiom::Desktop, false));
+    let desktop = height(Idiom::Desktop, false, &|_| true);
+    assert_eq!(height(Idiom::Desktop, true, &|_| true), desktop);
 }
 
 #[test]
@@ -883,8 +929,7 @@ diff --git a/b.rs b/b.rs
         ..texts("", "")
     });
     see(&mut app, "added b");
-    app.press("id:marks").unwrap();
-    app.wait(std::time::Duration::from_millis(100)).unwrap();
+    read_marks(&mut app, "-");
     let both = marks(&app);
     assert_eq!(both.len(), 2, "{both:?}");
     let (first, second) = (both[0], both[1]);
@@ -898,8 +943,8 @@ diff --git a/b.rs b/b.rs
     // them.
     app.press("id:toggle-a").unwrap();
     see(&mut app, "Toggled 0 true");
-    app.press("id:marks").unwrap();
-    app.wait(std::time::Duration::from_millis(100)).unwrap();
+    let shown = marks_shown(app.screen());
+    read_marks(&mut app, &shown);
     let one = marks(&app);
     assert_eq!(one.len(), 1, "{one:?}");
     assert_eq!(one[0].0, 1);
@@ -969,8 +1014,7 @@ fn file_headers_follow_wrapped_rows() {
                 let into = items.clone();
                 app.observe(move |_, batch| into.lock().unwrap().extend(batch.items.clone()));
                 see(&mut app, "new b");
-                app.press("id:marks").unwrap();
-                app.wait(std::time::Duration::from_millis(100)).unwrap();
+                read_marks(&mut app, "-");
                 let bounds = marks(&app);
                 let first = bounds[0];
                 let unwrapped_height = if layout == DiffLayout::Unified {
@@ -1057,7 +1101,23 @@ fn a_wrapped_lines_later_parts_continue_its_first_for_a_copy() {
     let into = items.clone();
     app.observe(move |_, batch| into.lock().unwrap().extend(batch.items.clone()));
     see(&mut app, "short");
-    app.wait(std::time::Duration::from_millis(100)).unwrap();
+    // The long line's parts are laid out after the short line shows.
+    app.wait_until(
+        "the long line's parts",
+        std::time::Duration::from_secs(5),
+        |s| {
+            let parts: Vec<_> = s
+                .texts()
+                .into_iter()
+                .filter(|t| !t.trim().is_empty() && long.contains(t.trim()))
+                .collect();
+            // All of it, whichever order the parts are in.
+            let letters = |t: &str| t.chars().filter(|c| !c.is_whitespace()).count();
+            let shown: usize = parts.iter().map(|t| letters(t)).sum();
+            parts.len() > 1 && shown == letters(&long)
+        },
+    )
+    .unwrap();
     let items = items.lock().unwrap();
     // The parts of the long line, in order, each with whether it
     // continues the one before.

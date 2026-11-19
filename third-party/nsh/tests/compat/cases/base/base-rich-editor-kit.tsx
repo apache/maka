@@ -43,6 +43,7 @@ import {
   richExtension,
   setTextSelection,
   starterSchema,
+  suggestion,
   textRule,
   toggleMark,
 } from "nsh/base";
@@ -107,6 +108,20 @@ function App() {
       editor.run(setTextSelection(2));
       editor.run(command("shout"));
       return `${(shout.options as { word: string }).word} ${shout.type} ${editor.getText().trim()}`;
+    });
+    step("Suggest", () => {
+      // An extension returns its plugins as a list, a `suggestion(...)` among them.
+      const slash = defineExtension({
+        name: "slashCommand",
+        priority: 1000,
+        addProseMirrorPlugins: () => [suggestion({ key: "slash", char: "/" })],
+      });
+      const editor = createRichEditor({ extensions: [StarterKit, slash], content: "x" });
+      editor.run(setTextSelection(2));
+      // A trigger follows a space or starts the text.
+      editor.run(insertText(" /"));
+      const state = editor.suggestion("slash");
+      return `${state?.active} ${state?.query === ""}`;
     });
     step("Named", () => {
       const text = richExtension("text").name;

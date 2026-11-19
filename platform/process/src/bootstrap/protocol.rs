@@ -55,7 +55,7 @@ pub(crate) enum Transport {
     Terminal {
         input: usize,
         output: usize,
-        size: maka_agent_facts::terminal::TerminalSize,
+        size: maka_plugin_core::terminal::TerminalSize,
     },
 }
 
@@ -63,7 +63,7 @@ pub(crate) enum Transport {
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Control {
     Resize {
-        size: maka_agent_facts::terminal::TerminalSize,
+        size: maka_plugin_core::terminal::TerminalSize,
     },
     Close,
 }

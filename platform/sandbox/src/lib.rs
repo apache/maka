@@ -19,14 +19,26 @@
 
 //! Execution policy and operating-system isolation. This crate neither grants
 //! authority nor retries effects; the Host owns both decisions and their receipts.
+mod account;
+pub use account::account_home;
+#[cfg(unix)]
+pub use account::is_private_account_directory;
 pub mod filesystem;
 pub mod grant;
 mod network;
 mod path;
 mod policy;
+pub mod workspace;
 pub use network::{Destination, Network};
 pub use policy::{Approval, ApprovalKind, Mode, Permissions, Sandbox};
 pub mod launch;
+
+/// Address of the private native-task namespace. This does not grant access.
+pub fn native_task_namespace() -> std::io::Result<std::path::PathBuf> {
+    Ok(std::env::temp_dir()
+        .canonicalize()?
+        .join("maka-native-tasks"))
+}
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]

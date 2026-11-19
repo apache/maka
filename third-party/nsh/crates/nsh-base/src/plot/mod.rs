@@ -787,8 +787,8 @@ fn band_categories(
 /// a mark's `hoverDotClass`, `tooltipContent`), moved and faded natively
 /// with `motion`, the tooltip placed by `tooltipPlacement` and kept inside
 /// the plot on the platform's animator. The keyboard drives the same
-/// hover: the plot is a stop of the focus (the app's `focus:` classes or
-/// `focusStyle` draw its ring), and while it has it Left / Right move to
+/// hover: the plot is a stop of the focus (the app's `focus-visible:`
+/// classes or `focusVisibleStyle` draw its ring), and while it has it Left / Right move to
 /// the row on that side (the row before / after; the other way round on
 /// a reversed x scale), Home / End to the first / last, Escape clears
 /// it (`keys.rs`). It is one element for screen readers, with the image

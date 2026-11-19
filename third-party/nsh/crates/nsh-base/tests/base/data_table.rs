@@ -13,7 +13,7 @@ use nsh_base::{
     resize_handle,
 };
 use nsh_core::{
-    MountItem, NodeId, Size,
+    Command, MountItem, NodeId, Size,
     element::Root,
     platform::{Environment, Idiom, Os},
     prelude::*,
@@ -266,4 +266,353 @@ fn a_desktops_tab_moves_the_chosen_cell_to_the_next_column() {
     let mut app = tab_out_on(Idiom::Desktop);
     app.press_key("tab").unwrap();
     app.wait_for("Chosen Some(0):Some(1) next false").unwrap();
+}
+
+/// A huge table whose visible row is reported without loading row data.
+#[component]
+fn HugeWebTable() -> impl IntoElement {
+    let first = signal(0);
+    view()
+        .child(
+            data_table()
+                .h(px(706.0))
+                .row_height(px(34.0))
+                .header_height(px(34.0))
+                .row_count(Some(2_000_000))
+                .columns(vec![column("name")])
+                .on_visible_rows_change(move |range: &nsh_base::DataTableRange| {
+                    first.set(range.start);
+                }),
+        )
+        .child(text(move || format!("First row {}", first.get())))
+}
+
+#[test]
+fn web_desktop_wheel_offsets_are_not_amplified_by_the_table_extent() {
+    let viewport = Size::new(px(1000.0), px(750.0));
+    let config = EngineConfig {
+        viewport,
+        environment: Environment {
+            os: Os::Web,
+            idiom: Idiom::Desktop,
+            window: viewport,
+            ..Default::default()
+        },
+        ..EngineConfig::new(Root::of::<HugeWebTable>())
+    };
+    let mut app = Headless::start(config).unwrap();
+    let vertical = Arc::new(Mutex::new(None));
+    let found = vertical.clone();
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let MountItem::ScrollConfig {
+                id,
+                horizontal: false,
+                ..
+            } = item
+            {
+                found.lock().unwrap().get_or_insert(*id);
+            }
+        }
+    });
+    app.first_render().unwrap();
+    let id = vertical
+        .lock()
+        .unwrap()
+        .expect("the table's vertical hit layer");
+    // Wheel input has no drag-start event. Forty CSS pixels must show row
+    // 1, regardless of the table's 68-million-pixel logical extent.
+    app.engine()
+        .control()
+        .scroll(id, point(px(0.0), px(40.0)), 0);
+    app.wait_for("First row 1").unwrap();
+    // A quarter-pixel tail accumulates until the next row, without a
+    // scaled jump to row 26 (the old desktop proportional mapping).
+    app.engine()
+        .control()
+        .scroll(id, point(px(0.0), px(67.75)), 0);
+    app.wait_for("First row 1").unwrap();
+    app.engine()
+        .control()
+        .scroll(id, point(px(0.0), px(68.0)), 0);
+    app.wait_for("First row 2").unwrap();
+
+    let control = app.engine().control();
+    control.dispatch_event(
+        id,
+        nsh_core::EventKind::ScrollDragStart,
+        nsh_core::EventPayload::Scroll(point(px(0.0), px(68.0))),
+    );
+    let bottom = point(px(0.0), px(3_000_000.0 - 672.0));
+    control.scroll(id, bottom, 0);
+    app.wait_for("First row 1999980").unwrap();
+    control.dispatch_event(
+        id,
+        nsh_core::EventKind::ScrollDragEnd,
+        nsh_core::EventPayload::Scroll(bottom),
+    );
+    app.wait_for("First row 1999980").unwrap();
+    // Releasing the bar preserves the last row, then local input starts
+    // there. No programmatic recenter is needed at either endpoint.
+    control.scroll(id, point(px(0.0), bottom.y - px(34.0)), 0);
+    app.wait_for("First row 1999979").unwrap();
+    control.dispatch_event(
+        id,
+        nsh_core::EventKind::ScrollDragStart,
+        nsh_core::EventPayload::Scroll(point(px(0.0), bottom.y - px(34.0))),
+    );
+    control.scroll(id, Point::default(), 0);
+    app.wait_for("First row 0").unwrap();
+    control.dispatch_event(
+        id,
+        nsh_core::EventKind::ScrollDragEnd,
+        nsh_core::EventPayload::Scroll(Point::default()),
+    );
+    control.scroll(id, point(px(0.0), px(34.0)), 0);
+    app.wait_for("First row 1").unwrap();
+}
+
+#[test]
+fn touch_reverse_scroll_after_settling_near_top_stays_one_to_one() {
+    let viewport = Size::new(px(390.0), px(844.0));
+    let config = EngineConfig {
+        viewport,
+        environment: Environment {
+            os: Os::Android,
+            idiom: Idiom::Phone,
+            window: viewport,
+            pixel_ratio: 3.0,
+            ..Default::default()
+        },
+        ..EngineConfig::new(Root::of::<HugeWebTable>())
+    };
+    let mut app = Headless::start(config).unwrap();
+    #[derive(Default)]
+    struct Seen {
+        vertical: Option<NodeId>,
+        scroll_to: Vec<Points>,
+    }
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let into = seen.clone();
+    app.observe(move |_, batch| {
+        let mut seen = into.lock().unwrap();
+        for item in &batch.items {
+            match item {
+                MountItem::ScrollConfig {
+                    id,
+                    horizontal: false,
+                    ..
+                } => seen.vertical = Some(*id),
+                MountItem::Command {
+                    id,
+                    command: Command::ScrollTo { y, .. },
+                } if Some(*id) == seen.vertical => seen.scroll_to.push(*y),
+                _ => {}
+            }
+        }
+    });
+    app.first_render().unwrap();
+    let id = seen
+        .lock()
+        .unwrap()
+        .vertical
+        .expect("the table's vertical hit layer");
+
+    let control = app.engine().control();
+    // Scroll down 50 rows (50 * 34 = 1700pt) and let the gesture settle.
+    let down = point(px(0.0), px(1700.0));
+    control.scroll(id, down, 0);
+    app.wait_for("First row 50").unwrap();
+    seen.lock().unwrap().scroll_to.clear();
+    control.dispatch_event(
+        id,
+        nsh_core::EventKind::ScrollEnd,
+        nsh_core::EventPayload::Scroll(down),
+    );
+    assert!(app.settle(), "the scroll-end event is processed");
+    app.wait_for("First row 50").unwrap();
+
+    // Follow the native offset chosen at rest. The old mapping recenters
+    // to 75pt, so a fixed 1496pt would scroll forward instead of reversing.
+    let scroll_to = std::mem::take(&mut seen.lock().unwrap().scroll_to);
+    let at_rest = scroll_to.last().copied().unwrap_or(down.y);
+    // Reversing 68pt (2 rows) must show row 48; the old compressed top
+    // interval accelerates across the content and lands on row 9 instead.
+    let up = point(px(0.0), at_rest - px(68.0));
+    control.scroll(id, up, 0);
+    app.wait_for("First row 48").unwrap();
+    assert!(
+        scroll_to.is_empty(),
+        "a rest within the edge reserve keeps its native offset: {scroll_to:?}"
+    );
+}
+
+#[test]
+fn web_scaled_scrollbar_does_not_follow_the_hit_layers_recenter() {
+    let viewport = Size::new(px(1000.0), px(750.0));
+    let config = EngineConfig {
+        viewport,
+        environment: Environment {
+            os: Os::Web,
+            idiom: Idiom::Desktop,
+            window: viewport,
+            ..Default::default()
+        },
+        ..EngineConfig::new(Root::of::<HugeWebTable>())
+    };
+    let mut app = Headless::start(config).unwrap();
+    let vertical = Arc::new(Mutex::new(Vec::new()));
+    let commands = Arc::new(Mutex::new(HashMap::new()));
+    let (v, c) = (vertical.clone(), commands.clone());
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            match item {
+                MountItem::ScrollConfig {
+                    id,
+                    horizontal: false,
+                    ..
+                } => v.lock().unwrap().push(*id),
+                MountItem::Command {
+                    id,
+                    command: Command::ScrollTo { y, .. },
+                } => {
+                    c.lock().unwrap().insert(*id, *y);
+                }
+                _ => {}
+            }
+        }
+    });
+    app.first_render().unwrap();
+    let ids = vertical.lock().unwrap().clone();
+    assert_eq!(
+        ids.len(),
+        2,
+        "a hit layer and an independent proportional bar"
+    );
+    let (hit, bar) = (ids[0], ids[1]);
+    let control = app.engine().control();
+    let down = point(px(0.0), px(170_000.0));
+    control.scroll(hit, down, 0);
+    app.wait_for("First row 5000").unwrap();
+    let before = commands.lock().unwrap()[&bar];
+    control.dispatch_event(
+        hit,
+        nsh_core::EventKind::ScrollEnd,
+        nsh_core::EventPayload::Scroll(down),
+    );
+    app.settle();
+    app.wait_for("First row 5000").unwrap();
+    assert_eq!(
+        commands.lock().unwrap()[&bar],
+        before,
+        "settling must leave the visible thumb in place"
+    );
+    let rest = commands.lock().unwrap()[&hit];
+    assert_ne!(rest, down.y, "the invisible hit layer still recenters");
+    control.scroll(hit, point(px(0.0), rest - px(68.0)), 0);
+    app.wait_for("First row 4998").unwrap();
+    control.scroll(bar, point(px(0.0), px((3_000_000.0 - 672.0) / 2.0)), 0);
+    app.wait_for("First row 999990").unwrap();
+    control.scroll(bar, point(px(0.0), px(3_000_000.0 - 672.0)), 0);
+    app.wait_for("First row 1999980").unwrap();
+    control.scroll(bar, Point::default(), 0);
+    app.wait_for("First row 0").unwrap();
+}
+
+#[component]
+fn ToggleFixedEdge() -> impl IntoElement {
+    let edge_on = signal(false);
+    let mut fixed = column("id");
+    fixed.fixed = nsh_base::data_table::ColumnFixed::Left;
+    fixed.width = Some(px(80.0));
+    let cols = vec![fixed, column("val")];
+    let rows = DataTableRows::new(4)
+        .texts("id", ["#0", "#1", "#2", "#3"])
+        .numbers("val", [1.0, 2.0, 3.0, 4.0]);
+    view()
+        .size_full()
+        .child(
+            view()
+                .on_press(move || edge_on.set(!edge_on.get()))
+                .child(text("Toggle edge")),
+        )
+        .child(
+            data_table()
+                .columns(cols)
+                .data(rows)
+                .classes(move || {
+                    let mut c = nsh_base::DataTableClasses::default();
+                    if edge_on.get() {
+                        c.fixed_edge = Some("bg-border".into());
+                    }
+                    c
+                })
+                .flex_1(),
+        )
+}
+
+#[test]
+fn unstyled_fixed_edge_mounts_no_separator_views_until_styled() {
+    let mut app = start::<ToggleFixedEdge>();
+    let without_edge = app.screen().layout_nodes().len();
+    app.press("text:Toggle edge").unwrap();
+    let with_edge = app.screen().layout_nodes().len();
+    assert!(
+        with_edge >= without_edge + 5,
+        "expected body + row fixedEdge views when styled ({without_edge} -> {with_edge})"
+    );
+    app.press("text:Toggle edge").unwrap();
+    assert_eq!(app.screen().layout_nodes().len(), without_edge);
+}
+
+/// Wide columns between one fixed at each side.
+#[component]
+fn WideFixed() -> impl IntoElement {
+    let mut columns = Vec::new();
+    for (key, fixed) in [
+        ("a", nsh_base::data_table::ColumnFixed::Left),
+        ("b", nsh_base::data_table::ColumnFixed::None),
+        ("c", nsh_base::data_table::ColumnFixed::None),
+        ("d", nsh_base::data_table::ColumnFixed::None),
+        ("e", nsh_base::data_table::ColumnFixed::Right),
+    ] {
+        let mut c = column(key);
+        c.width = Some(px(if key == "a" || key == "e" {
+            100.0
+        } else {
+            300.0
+        }));
+        c.fixed = fixed;
+        columns.push(c);
+    }
+    data_table()
+        .h(px(200.0))
+        .row_count(Some(2))
+        .columns(columns)
+}
+
+/// The desktops' bar lies under the columns it moves, not under the fixed
+/// ones beside them.
+#[test]
+fn the_horizontal_bar_spans_the_scrolling_columns_only() {
+    let viewport = Size::new(px(600.0), px(300.0));
+    let config = EngineConfig {
+        viewport,
+        environment: Environment {
+            os: Os::MacOs,
+            idiom: Idiom::Desktop,
+            window: viewport,
+            ..Default::default()
+        },
+        ..EngineConfig::new(Root::of::<WideFixed>())
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.first_render().unwrap();
+    let nodes = app.screen().layout_nodes();
+    let bar = nodes
+        .iter()
+        .find(|n| n.test_id.as_deref() == Some("data-table-scrollbar"))
+        .expect("the bar");
+    assert_eq!(bar.bounds.origin.x.0, 100.0);
+    assert_eq!(bar.bounds.size.width.0, 400.0);
 }

@@ -19,11 +19,12 @@
 
 mod edit;
 
+#[cfg(test)]
+mod tests;
+
 use crate::{
-    Error,
-    authorization::Authorization,
-    invalid,
-    task::{Create, Creator, Effect, Intent, Outcome, Run, Status, Task, TaskEffect},
+    Error, invalid,
+    task::{Create, Creator, Intent, Outcome, Run, Status, Task, TaskEffect},
 };
 use jiff::tz::TimeZone;
 use serde::{Deserialize, Serialize};
@@ -38,48 +39,46 @@ pub enum Misfire {
     Latest,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PauseSource {
+    User,
+    Bot,
+}
+
 /// Persist before submitting to Host. A retry uses these frozen bytes and ID,
 /// never the task's potentially edited title, effect or instruction.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(bound(deserialize = "E: Deserialize<'de>, A: Deserialize<'de>"))]
-pub struct Fire<E = Effect, A = Authorization> {
+pub struct Fire<E, A> {
     pub id: String,
     pub task_id: String,
     pub scheduled_at: i64,
     pub title: String,
     pub intent: Intent,
     pub effect: E,
-    /// Notifications cannot be blindly replayed after an unknown external result.
-    pub delivery_started: bool,
     #[serde(default)]
     pub authorization: Option<A>,
 }
-pub type Plan = TaskPlan<Effect, Authorization>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(bound(deserialize = "E: Deserialize<'de>, A: Deserialize<'de>"))]
 pub struct TaskPlan<E, A> {
     pub task: Task<E>,
+    pub edit_revision: u64,
     pub timezone: String,
     pub misfire: Misfire,
     pub pending: Option<Fire<E, A>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    condition_matched: bool,
     #[serde(default)]
     pub authorization: Option<A>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_source: Option<PauseSource>,
 }
 impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
-    pub(crate) fn waiting_notification(&self) -> bool {
-        self.pending
-            .as_ref()
-            .is_some_and(|fire| fire.effect.is_notification() && !fire.delivery_started)
-    }
-    pub(crate) fn cancel_waiting_notification(&mut self) {
-        if self.waiting_notification() {
-            self.pending = None;
-            self.task.last_error = None;
-        }
-    }
     pub fn validate(&self) -> Result<(), Error> {
         crate::task::text(&self.task.id)?;
         if self
@@ -159,10 +158,13 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
                 runs: vec![],
                 last_error: None,
             },
+            edit_revision: 1,
             timezone,
             misfire: Misfire::Skip,
             pending: None,
+            condition_matched: false,
             authorization: None,
+            pause_source: None,
         })
     }
     /// Reopening or enabling skips missed triggers unless catch-up was selected.
@@ -176,12 +178,24 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         if self.task.expires_at.is_some_and(|expires| now >= expires) {
             self.task.status = Status::Expired;
             self.task.next_fire_at = None;
-        } else if self.misfire == Misfire::Skip && self.task.next_fire_at.is_some_and(|at| at < now)
-        {
-            self.advance(now)?;
+        } else if self.task.next_fire_at.is_some_and(|at| at < now) {
+            match self.misfire {
+                Misfire::Skip => self.advance(now, None)?,
+                Misfire::Latest => self.catch_up(now)?,
+            }
         }
         if before != (self.task.status, self.task.next_fire_at) {
             self.task.updated_at = self.task.updated_at.max(now);
+        }
+        Ok(())
+    }
+    fn catch_up(&mut self, now: i64) -> Result<(), Error> {
+        if let Some(next) = self.task.next_fire_at.filter(|at| *at < now) {
+            let latest = self
+                .task
+                .schedule
+                .latest_at(now, &TimeZone::get(&self.timezone)?)?;
+            self.task.next_fire_at = Some(latest.map_or(next, |at| at.max(next)));
         }
         Ok(())
     }
@@ -210,12 +224,40 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             title: self.task.title.clone(),
             intent: self.task.intent.clone(),
             effect: self.task.effect.clone(),
-            delivery_started: false,
             authorization: self.authorization.clone(),
         });
         self.task.updated_at = self.task.updated_at.max(now);
         Ok(self.pending.as_ref())
     }
+    /// Apply a check to its observed due occurrence. A true condition must clear
+    /// before it can create another fire. An error does not rearm it.
+    pub fn record_condition(
+        &mut self,
+        now: i64,
+        result: Result<bool, String>,
+    ) -> Result<(), Error> {
+        if self.task.status != Status::Active || self.pending.is_some() {
+            return Ok(());
+        }
+        if self.task.expires_at.is_some_and(|expires| now >= expires) {
+            return self.advance(now, None);
+        }
+        match result {
+            Ok(matched) => {
+                self.task.last_error = None;
+                let triggered = matched && !self.condition_matched;
+                self.condition_matched = matched;
+                if triggered {
+                    self.claim(now)?;
+                    return Ok(());
+                }
+            }
+            Err(error) => self.task.last_error = Some(error),
+        }
+        self.task.updated_at = self.task.updated_at.max(now);
+        self.advance(now, None)
+    }
+
     pub fn settle(&mut self, run: Run) -> Result<(), Error> {
         let mut next = self.clone();
         next.settle_inner(run)?;
@@ -242,17 +284,17 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         self.task.last_error = (run.outcome != Outcome::Ok).then(|| run.message.clone());
         self.task.runs.insert(0, run);
         self.pending = None;
-        self.advance(self.task.updated_at)?;
+        self.advance(self.task.updated_at, self.task.last_fire_at)?;
         if paused && self.task.status == Status::Active {
             self.task.status = Status::Paused;
         }
         Ok(())
     }
-    fn advance(&mut self, after: i64) -> Result<(), Error> {
-        let next = self
-            .task
-            .schedule
-            .next_after(after, &TimeZone::get(&self.timezone)?)?;
+    fn advance(&mut self, after: i64, settled_at: Option<i64>) -> Result<(), Error> {
+        let next =
+            self.task
+                .schedule
+                .next_due(after, &TimeZone::get(&self.timezone)?, settled_at)?;
         let expired = self
             .task
             .expires_at
@@ -275,55 +317,5 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             .then_some(next)
             .flatten();
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::schedule::Schedule;
-
-    #[test]
-    fn recovery_skips_misfires_but_replays_frozen_pending_intent_until_settlement() {
-        let input = Create {
-            title: "Original".into(),
-            intent_body: "Work".into(),
-            schedule: Schedule::Interval {
-                every_seconds: 10,
-                start_at: 1000,
-            },
-            effect: Effect::SessionResume {
-                session_id: "session".into(),
-            },
-            max_fires: Some(1),
-            expires_at: None,
-        };
-        let mut plan =
-            Plan::create("task".into(), input, Creator::User, "UTC".into(), 1000).unwrap();
-        plan.recover(31_000).unwrap();
-        assert_eq!(plan.task.next_fire_at, Some(41_000));
-        assert_eq!(plan.task.fire_count, 0);
-        let fire = plan.claim(41_000).unwrap().unwrap().clone();
-        let mut reopened: Plan =
-            serde_json::from_slice(&serde_json::to_vec(&plan).unwrap()).unwrap();
-        reopened.task.title = "Edited".into();
-        reopened.task.intent = Intent::Text {
-            body: "Changed".into(),
-        };
-        reopened.recover(61_000).unwrap();
-        assert_eq!(reopened.claim(61_000).unwrap(), Some(&fire));
-        let run = Run {
-            id: fire.id.clone(),
-            at: 61_000,
-            outcome: Outcome::Ok,
-            message: "admitted".into(),
-            session_id: Some("session".into()),
-            run_id: Some("run".into()),
-        };
-        reopened.settle(run.clone()).unwrap();
-        assert_eq!(reopened.task.status, Status::Completed);
-        assert_eq!(reopened.task.fire_count, 1);
-        assert!(reopened.claim(71_000).unwrap().is_none());
-        assert!(reopened.settle(run).is_err());
     }
 }

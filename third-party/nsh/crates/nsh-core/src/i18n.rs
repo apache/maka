@@ -137,7 +137,11 @@ pub fn translate(key: &str, locale: Option<&str>, args: &[(&str, &dyn Display)])
     match locale {
         Some(locale) => translations.translate(locale, key, &args),
         None => {
-            let shown = shown(&translations);
+            let shown = shown(
+                &translations,
+                crate::element::locale(),
+                crate::element::locale_settings().languages,
+            );
             translations.translate(shown.as_str(), key, &args)
         }
     }
@@ -145,11 +149,28 @@ pub fn translate(key: &str, locale: Option<&str>, args: &[(&str, &dyn Display)])
 
 /// The language the app's text shows in: the first of the user's preferred
 /// languages it has translations for, else the locale.
-fn shown(translations: &Translations) -> crate::platform::Locale {
-    let languages = crate::element::locale_settings().languages;
-    translations
-        .pick(languages.iter())
-        .unwrap_or_else(crate::element::locale)
+fn shown(
+    translations: &Translations,
+    locale: crate::platform::Locale,
+    languages: crate::platform::Languages,
+) -> crate::platform::Locale {
+    translations.pick(languages.iter()).unwrap_or(locale)
+}
+
+/// The language of framework-owned text: the app's selected language, or
+/// its English translation fallback. Without an app dictionary, use the
+/// requested locale so a host or a hard-coded app can still select it.
+pub(crate) fn text_locale(
+    translations: &Translations,
+    locale: crate::platform::Locale,
+    languages: crate::platform::Languages,
+) -> crate::platform::Locale {
+    let locale = shown(translations, locale, languages);
+    if translations.locales().is_empty() {
+        locale
+    } else {
+        translations.pick([locale]).unwrap_or_default()
+    }
 }
 
 /// The text of a key in the language the app shows, as rust-i18n's `t!`:

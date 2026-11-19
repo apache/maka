@@ -29,10 +29,10 @@ test("dragging a handle resizes the panels beside it, and the group reports the 
   expect(app.count("role:adjustable")).toBe(2);
   await app.drag("label:Resize the sidebar", { x: 60, y: 0 });
   await waitForSize(app, "Sidebar", 280);
-  expect(app.texts().some((t) => t.startsWith("Last resize: Row: "))).toBe(true);
+  expect(app.texts().some((t) => t.startsWith("Last resize: sidebar "))).toBe(true);
   await app.drag("label:Resize the console", { x: 0, y: -40 });
   await waitForSize(app, "Console", 180);
-  expect(app.texts().some((t) => t.startsWith("Last resize: Column: "))).toBe(true);
+  expect(app.texts().some((t) => t.startsWith("Last resize: editor "))).toBe(true);
 });
 
 test("a panel stops at its minimum and its maximum", async () => {
@@ -47,7 +47,7 @@ test("a hidden panel gives its room back and returns at its size", async () => {
   await waitForSize(app, "Console", 180);
   await app.press("label:Hide the console");
   await app.waitFor("label:Resize the console", { state: "gone" });
-  expect(app.shows("Hidden, it keeps its size")).toBe(false);
+  expect(app.shows("Keeps its size while hidden")).toBe(false);
   await app.press("label:Show the console");
   await app.waitFor("label:Resize the console");
   await waitForSize(app, "Console", 180);

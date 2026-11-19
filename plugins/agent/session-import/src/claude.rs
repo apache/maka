@@ -19,6 +19,8 @@
 
 //! Claude JSONL lineage and response-fragment reconstruction. Every pass reads
 //! the same pinned prefix and verifies its digest before returning any history.
+mod exact;
+pub use exact::read as read_exact;
 mod lineage;
 mod wire;
 pub(crate) use wire::synthetic;

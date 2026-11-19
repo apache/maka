@@ -2,7 +2,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
      viewBox="0 0 880 480" width="100%" role="img" aria-labelledby="t d">
   <title id="t">One module, many hosts</title>
-  <desc id="d">One module, App.tsx, is built once into bundle.nshc. The same Rust runtime runs it everywhere: QuickJS, the reactive graph, the renderer, Taffy layout, text and the components. iOS draws UIKit views from iOS 15.0, embedded as NshAppView. Android draws Android views from API 28, Android 9, embedded as NshView. The desktops draw AppKit views on macOS, Win32 windows with Direct2D on Windows and GTK 4 widgets on Linux, embedded as AppView. GPUI draws GPUI elements on macOS, Windows and Linux, embedded as an AppView in GPUI apps. The web renders HTML in a browser page, embedded with createPlayer. All are supported.</desc>
+  <desc id="d">One module, App.tsx, is built once into bundle.nshc. The same Rust runtime runs it everywhere: QuickJS, the reactive graph, the renderer, Taffy layout, text and the components. iOS draws UIKit views from iOS 15.0, embedded as NshAppView. Android draws Android views from API 26, Android 8, embedded as NshView. The desktops draw AppKit views on macOS, Win32 windows with Direct2D on Windows and GTK 4 widgets on Linux, embedded as AppView. GPUI draws GPUI elements on macOS, Windows and Linux, embedded as an AppView in GPUI apps. The web renders HTML in a browser page, embedded with createPlayer. All are supported.</desc>
 
   <defs>
     <style>
@@ -155,7 +155,7 @@
   <rect class="card stage" x="306" y="312" width="124" height="112" rx="9" style="animation-delay:-2.6s"/>
   <text class="name" x="320" y="337">Android</text>
   <text class="fact" x="320" y="357" font-size="10.5">Android views</text>
-  <text class="note" x="320" y="374" font-size="10">API 28+ (Android 9)</text>
+  <text class="note" x="320" y="374" font-size="10">API 26+ (Android 8)</text>
   <text class="note mono" x="320" y="391">NshView</text>
   <text class="status" x="320" y="412">SUPPORTED</text>
 

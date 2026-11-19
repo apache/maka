@@ -20,8 +20,48 @@ bin="$HOME/.local/bin"
 version="${NSH_VERSION:-latest}"
 
 fail() {
+  [ -z "${tty:-}" ] || printf '\r\033[K' >&2
   echo "nsh: $*" >&2
   exit 1
+}
+
+# Progress goes to stderr, which stays a terminal under `curl ... | sh`.
+# Without a terminal (CI, logs) every step prints one plain line.
+tty=
+if [ -t 2 ] && [ "${TERM:-dumb}" != dumb ]; then
+  tty=1
+fi
+
+# step LABEL COMMAND...: run COMMAND with a spinner, then mark it done.
+step() {
+  label="$1"
+  shift
+  if [ -z "$tty" ]; then
+    echo "$label"
+    "$@"
+    return
+  fi
+  "$@" &
+  pid=$!
+  i=0
+  while kill -0 "$pid" 2> /dev/null; do
+    i=$(((i % 10) + 1))
+    case "$i" in
+      1) frame=⠋ ;; 2) frame=⠙ ;; 3) frame=⠹ ;; 4) frame=⠸ ;; 5) frame=⠼ ;;
+      6) frame=⠴ ;; 7) frame=⠦ ;; 8) frame=⠧ ;; 9) frame=⠇ ;; 10) frame=⠏ ;;
+    esac
+    printf '\r\033[K\033[36m%s\033[0m %s' "$frame" "$label" >&2
+    if [ -n "${download_file:-}" ] && [ -f "$download_file" ]; then
+      size=$(wc -c < "$download_file" | awk '{printf "%.1f", $1 / 1048576}')
+      printf '  \033[2m%s MB\033[0m' "$size" >&2
+    fi
+    sleep 0.1
+  done
+  status=0
+  wait "$pid" || status=$?
+  printf '\r\033[K' >&2
+  [ "$status" -eq 0 ] || return "$status"
+  printf '\033[32m✓\033[0m %s\n' "$label" >&2
 }
 
 source_install() {
@@ -87,10 +127,16 @@ case "$#:${1:-}" in
   *) fail "usage: install.sh [--nightly | --source]" ;;
 esac
 
-case "$(uname -s)/$(uname -m)" in
+machine="$(uname -m)"
+# A shell under Rosetta reports x86_64 on Apple silicon: install the native build.
+if [ "$(uname -s)" = Darwin ] && [ "$(sysctl -n sysctl.proc_translated 2> /dev/null)" = 1 ]; then
+  machine=arm64
+fi
+case "$(uname -s)/$machine" in
   Darwin/arm64) platform="macos-arm64" ;;
+  Darwin/x86_64) platform="macos-x86_64" ;;
   Linux/x86_64 | Linux/amd64) platform="linux-x86_64" ;;
-  Darwin/*) fail "no prebuilt NSH for Intel Macs; build it from source: https://nsh.dev/docs/installation" ;;
+  Linux/aarch64 | Linux/arm64) platform="linux-arm64" ;;
   *) fail "no prebuilt NSH for $(uname -s) $(uname -m); see https://nsh.dev/docs/installation" ;;
 esac
 
@@ -106,35 +152,46 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
 
-echo "Downloading $url"
-curl -fsSL "$url" -o "$work/$asset"
-curl -fsSL "$url.sha256" -o "$work/$asset.sha256"
+echo "Installing NSH $version for $platform"
+if [ -n "$tty" ]; then
+  download_file="$work/$asset"
+  step "Downloading $asset" curl -fsSL "$url" -o "$download_file" || fail "could not download $url"
+  download_file=
+else
+  echo "Downloading $url"
+  curl -fsSL "$url" -o "$work/$asset" || fail "could not download $url"
+fi
+curl -fsSL "$url.sha256" -o "$work/$asset.sha256" || fail "could not download $url.sha256"
 
-(
+verify() {
   cd "$work"
   if command -v shasum > /dev/null 2>&1; then
     shasum -a 256 -c "$asset.sha256" > /dev/null
   else
     sha256sum -c "$asset.sha256" > /dev/null
   fi
-) || fail "the checksum of $asset does not match"
+}
+(step "Verifying checksum" verify) || fail "the checksum of $asset does not match"
 
-tar -xzf "$work/$asset" -C "$work"
+step "Extracting $asset" tar -xzf "$work/$asset" -C "$work" || fail "could not extract $asset"
 [ -x "$work/nsh/bin/nsh" ] || fail "$asset holds no nsh/bin/nsh"
 
 # Replace the whole directory: runtimes of an older release must not stay.
-mkdir -p "$(dirname "$dir")" "$bin"
-rm -rf "$dir.old"
-[ ! -e "$dir" ] || mv "$dir" "$dir.old"
-mv "$work/nsh" "$dir"
-rm -rf "$dir.old"
-ln -sf "$dir/bin/nsh" "$bin/nsh"
+place() {
+  mkdir -p "$(dirname "$dir")" "$bin"
+  rm -rf "$dir.old"
+  [ ! -e "$dir" ] || mv "$dir" "$dir.old"
+  mv "$work/nsh" "$dir"
+  rm -rf "$dir.old"
+  ln -sf "$dir/bin/nsh" "$bin/nsh"
+}
+step "Installing to $dir" place || fail "could not install to $dir"
 
 echo "Installed $("$dir/bin/nsh" --version) to $dir"
 case ":$PATH:" in
   *":$bin:"*) ;;
   *) echo "Add $bin to your PATH: export PATH=\"$bin:\$PATH\"" ;;
 esac
-if [ "$platform" = "linux-x86_64" ]; then
+if [ "$(uname -s)" = Linux ]; then
   echo "The Linux runtime needs GTK 4.14 or newer (Ubuntu 24.04 and later)."
 fi

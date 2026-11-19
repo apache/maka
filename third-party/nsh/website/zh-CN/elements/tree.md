@@ -31,7 +31,7 @@ fn files() -> impl IntoElement {
         .list_class("p-1")
         .item_class(
             "group rounded-md hover:bg-accent selected:bg-primary/10 \
-             focus:outline-2 focus:-outline-offset-2 focus:outline-ring disabled:opacity-50",
+             focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:opacity-50",
         )
         .render_item(|entry: &TreeEntry| {
             view()
@@ -76,7 +76,7 @@ function App() {
       accessibilityLabel="Files"
       class="h-80 w-64 rounded-lg border border-border"
       listClass="p-1"
-      itemClass="group h-8 rounded-md hover:bg-accent selected:bg-primary/10 focus:outline-2 focus:-outline-offset-2 focus:outline-ring disabled:opacity-50"
+      itemClass="group h-8 rounded-md hover:bg-accent selected:bg-primary/10 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
       renderItem={(entry) => (
         <View class="h-8 flex-row items-center gap-2" style={{ paddingLeft: 8 + entry.depth * 16 }}>
           <Text class="w-3 text-muted-foreground transition-transform group-aria-expanded:rotate-90">
@@ -103,6 +103,7 @@ mount(App);
 | `id` | `string` | 在 `expanded`、`selected` 和事件中标识它：在树中唯一（重复的 id 会记录到日志，只有它的第一个项目会展开或被选中）。 |
 | `label` | `string` | 没有 `renderItem` 时行显示的内容，屏幕阅读器读出的内容，以及按首字母跳转匹配的内容。 |
 | `children` | `TreeItem[]` | 它下面的项目，按顺序。有子项目时它是文件夹：可以展开和收起。 |
+| `expandable` | `boolean` | 将空节点视为目录，可在展开时加载子项。 |
 | `disabled` | `boolean` | 用户不能选中、展开或收起它：点按和按键都会跳过它，应用 `disabled:` 样式。它的子项目仍按 `expanded` 显示。 |
 
 `renderItem` 为每个可见行收到一个 `TreeEntry`：项目的 `id`、`label` 和 `disabled`，它的 `depth`（顶层为 0，顶层项目之下为 1，……）以及它是否是 `folder`。它描述项目本身，行的状态则通过行的 class 表达：每个项目的绘制只创建一次，在行被选中、展开或收起时保留其视图，所以箭头能以过渡动画旋转。
@@ -117,6 +118,7 @@ mount(App);
 | `selected` | `.selected(..)` | `string \| null` | 无 | 选中项目的 id（受控），`null` 表示没有。 |
 | `defaultSelected` | `.default_selected(..)` | `string` | 无 | 未设置 `selected` 时，一开始选中的项目。 |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 只读的树：不响应点按和按键，不是键盘焦点的一站，每一行都应用 `disabled:`；显示 `expanded` 和 `selected` 所说的状态。 |
+| `singleClickAction` | `.single_click_action(..)` | `boolean` | `false` | 单击或点按叶节点即触发操作。 |
 | `reveal` | `.reveal(..)` | `boolean` | `false` | 展开和收起时，项目之后的行以弹簧动画移到新位置，由原生执行。开启“减弱动态效果”时关闭。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 屏幕阅读器对树的称呼（“文件”）。 |
 | `renderItem` | `.render_item(..)` | `(entry: TreeEntry) => JSX.Element` | 无 | 可见行的内容；没有它时行显示项目的标签。 |
@@ -150,10 +152,10 @@ mount(App);
 |---|---|---|---|
 | 树 | | `class`、`style` | |
 | 列表 | 树 | `listClass`、`listStyle` | |
-| 行 | 列表 | `itemClass`、`itemStyle` | `selected:`、`aria-expanded:`（展开的文件夹）、`focus:`（树拥有键盘焦点时按键作用的行：选中的行；选中项被收起的项目隐藏时，是那个项目的行；没有选中项时是第一行）、`disabled:`、`hover:`、`active:` |
-| 行的内容 | 行 | `renderItem` | 在 `itemClass` 中加上 `group` 后的 `group-selected:`、`group-aria-expanded:`、`group-focus:`、`group-disabled:` |
+| 行 | 列表 | `itemClass`、`itemStyle` | `selected:`、`aria-expanded:`（展开的文件夹）、`focus:`（树拥有键盘焦点时按键作用的行：选中的行；选中项被收起的项目隐藏时，是那个项目的行；没有选中项时是第一行）、`focus-visible:`（树的焦点显示时的这一行：由按键移来，而不是点击）、`disabled:`、`hover:`、`active:` |
+| 行的内容 | 行 | `renderItem` | 在 `itemClass` 中加上 `group` 后的 `group-selected:`、`group-aria-expanded:`、`group-focus:`、`group-focus-visible:`、`group-disabled:` |
 
-用 `selected:` 表示选中的行，用 `focus:` 表示键盘所在的位置（见[设计指南](../docs/design-guides.md#交互状态)）。把焦点画在行内（`focus:outline-2 focus:-outline-offset-2`）：列表会裁掉超出两侧的部分。
+用 `selected:` 表示选中的行，用 `focus-visible:` 表示键盘所在的位置：按键移动后才显示，点击后不显示（见[设计指南](../docs/design-guides.md#交互状态)）。把焦点画在行内（`focus-visible:outline-2 focus-visible:-outline-offset-2`）：列表会裁掉超出两侧的部分。
 
 ## Ref
 

@@ -35,14 +35,14 @@ pub(super) struct Repository {
     pub head: Option<String>,
     pub tree: gix::hash::ObjectId,
     pub cancel: Arc<AtomicBool>,
-    identity: DirectoryIdentity,
+    identity: Observation,
     private_root: PathBuf,
     index_before: Option<Vec<u8>>,
 }
 impl Repository {
     pub fn open(
         workspace: &Path,
-        identity: &DirectoryIdentity,
+        identity: &Observation,
         private_root: &Path,
         binding: Option<&Binding>,
         cancel: Arc<AtomicBool>,
@@ -64,10 +64,8 @@ impl Repository {
         let metadata = match fs::symlink_metadata(&entry) {
             Ok(m) => m,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                for ancestor in root.ancestors().skip(1) {
-                    if ancestor.join(".git").symlink_metadata().is_ok() {
-                        return Err(failure("git_unsupported"));
-                    }
+                if crate::workspace::git::has_repository(&root)? {
+                    return Err(failure("git_unsupported"));
                 }
                 return Ok(None);
             }
@@ -75,6 +73,9 @@ impl Repository {
         };
         if metadata.file_type().is_symlink() {
             return Err(failure("git_unsupported"));
+        }
+        if crate::workspace::git::is_empty_metadata_directory(&entry)? {
+            return Ok(None);
         }
         let git_dir = if metadata.is_dir() {
             entry.clone()
@@ -306,15 +307,22 @@ impl Repository {
         }
         entries.sort();
         entries.dedup();
+        let baseline = self
+            .repo
+            .index_from_tree(&self.tree)
+            .map_err(io::Error::other)?;
         Ok(GitStatus {
             head: self.head.clone(),
             entries: entries
                 .into_iter()
                 .map(|(area, name, kind)| {
+                    let digest =
+                        super::diff::status_entry_digest(self, &baseline, area, &name, kind)?;
                     Ok(GitStatusEntry {
                         area,
                         path: WorkspacePath::from_bytes(&name)?,
                         kind,
+                        digest,
                     })
                 })
                 .collect::<io::Result<_>>()?,

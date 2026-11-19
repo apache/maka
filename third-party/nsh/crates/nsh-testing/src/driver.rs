@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use nsh_core::{
     Dialog, ResolvedTextStyle,
+    element::ClipboardItem,
     geometry::{Point, Points, Size},
     platform::{ColorScheme, Lifecycle},
 };
@@ -29,10 +30,12 @@ pub(crate) trait Driver: Send {
     fn clear(&mut self, selector: &str) -> Result<(), String>;
     fn scroll(&mut self, selector: &str, distance: Points) -> Result<(), String>;
     fn drag(&mut self, selector: &str, by: Point<Points>) -> Result<(), String>;
+    /// An input method composes `text` in the input `selector` names.
+    fn compose(&mut self, selector: &str, text: &str) -> Result<(), String>;
     /// Drops local files (`file:` URLs) on what `selector` names.
     fn drop_files(&mut self, selector: &str, uris: Vec<String>) -> Result<(), String> {
         let _ = (selector, uris);
-        Err("`dropFiles` runs headless and on Linux for now".into())
+        Err("`dropFiles` runs headless, on Linux and on macOS for now".into())
     }
     /// Drags without lifting, until [`Driver::drop_held`].
     fn drag_and_hold(&mut self, selector: &str, by: Point<Points>) -> Result<(), String> {
@@ -46,8 +49,12 @@ pub(crate) trait Driver: Send {
     fn press_key(&mut self, keys: &str) -> Result<(), String>;
     /// Holds (`down`) or lets go of modifier keys for the pointer's steps.
     fn hold_keys(&mut self, keys: &str, down: bool) -> Result<(), String> {
-        let _ = (keys, down);
-        Err("holding keys (`keyboard.down` / `keyboard.up`) runs headless only for now: run the test without `--target`".into())
+        let _ = keys;
+        Err(headless_only(if down {
+            "keyboard.down"
+        } else {
+            "keyboard.up"
+        }))
     }
     fn hover(&mut self, selector: &str) -> Result<(), String>;
     fn right_click(&mut self, selector: &str) -> Result<(), String>;
@@ -57,6 +64,11 @@ pub(crate) trait Driver: Send {
     fn choose_menu_item(&mut self, label: &str) -> Result<(), String>;
     fn close_menu(&mut self) -> Result<(), String>;
     fn back(&mut self) -> Result<(), String>;
+    /// Goes forward in the browser's history (`app.forward`): the web's
+    /// alone.
+    fn forward(&mut self) -> Result<(), String> {
+        Err(crate::failure::web_only("forward"))
+    }
     fn wait(&mut self, time: Duration) -> Result<(), String>;
     fn wait_for_within(&mut self, selector: &str, timeout: Duration) -> Result<(), String>;
     fn wait_for_gone(&mut self, selector: &str, timeout: Duration) -> Result<(), String>;
@@ -73,6 +85,10 @@ pub(crate) trait Driver: Send {
         let _ = state;
         Err(headless_only("setLifecycle"))
     }
+    /// The system wakes from sleep (`wakeCount()`).
+    fn wake(&mut self) -> Result<(), String> {
+        Err(headless_only("wake"))
+    }
     /// The user's locale settings that `settings` names, as the system
     /// reports them (`localeSettings()`).
     fn set_locale_settings(&mut self, settings: LocaleSettingsOptions) -> Result<(), String> {
@@ -83,6 +99,26 @@ pub(crate) trait Driver: Send {
     fn open_with_url(&mut self, url: &str) -> Result<(), String> {
         let _ = url;
         Err(headless_only("openWithUrl"))
+    }
+    /// The images of `url` (a `*` glob) fail to load (`failImages`).
+    fn fail_images(&mut self, url: &str) -> Result<(), String> {
+        let _ = url;
+        Err(headless_only("failImages"))
+    }
+    /// The URLs matching `url` (a `*` glob) fail to open (`failOpenUrls`).
+    fn fail_open_urls(&mut self, url: &str) -> Result<(), String> {
+        let _ = url;
+        Err(headless_only("failOpenUrls"))
+    }
+    /// The platform shows a share sheet, and the user answers every share
+    /// with `outcome` (`onShare`).
+    fn on_share(&mut self, outcome: nsh_core::share::ShareOutcome) -> Result<(), String> {
+        let _ = outcome;
+        Err(headless_only("onShare"))
+    }
+    /// What the app shared, in order (`shares()`).
+    fn shares(&mut self) -> Result<Vec<nsh_core::share::ShareSheet>, String> {
+        Err(headless_only("`shares()`"))
     }
     fn run_for(&mut self, time: Duration) -> Result<(), String>;
     fn fast_forward(&mut self, time: Duration) -> Result<(), String>;
@@ -132,10 +168,16 @@ pub(crate) trait Driver: Send {
     fn shows(&mut self, selector: &str) -> Result<bool, String>;
     fn value(&mut self, selector: &str) -> Result<Option<String>, String>;
     fn span_style(&mut self, selector: &str) -> Result<ResolvedTextStyle, String>;
+    fn view_style(&mut self, selector: &str) -> Result<Option<crate::screen::ViewStyle>, String>;
     fn dialogs(&mut self) -> Result<Vec<Dialog>, String>;
     /// The open context menu's actions, `None` when none is open.
     fn menu(&mut self) -> Result<Option<Vec<crate::menu::Entry>>, String>;
     fn clipboard(&mut self) -> Result<Option<String>, String>;
+    /// The item on the clipboard, every format (`app.clipboardItem`).
+    /// Only the headless app keeps it.
+    fn clipboard_item(&mut self) -> Result<Option<ClipboardItem>, String> {
+        Err("the clipboard's item is only read in a headless test".into())
+    }
     /// The embedding app sends event `name` with `data` to the app
     /// (`app.host.send`), which then settles.
     fn send_host_event(&mut self, name: &str, data: Value) -> Result<(), String>;
@@ -193,6 +235,9 @@ impl Driver for Headless {
     fn drop_files(&mut self, selector: &str, uris: Vec<String>) -> Result<(), String> {
         Headless::drop_files(self, selector, uris)
     }
+    fn compose(&mut self, selector: &str, text: &str) -> Result<(), String> {
+        Headless::compose(self, selector, text)
+    }
     fn drop_held(&mut self) -> Result<(), String> {
         Headless::drop_held(self)
     }
@@ -249,10 +294,26 @@ impl Driver for Headless {
             e.lifecycle = state;
         })
     }
+    fn wake(&mut self) -> Result<(), String> {
+        self.set_environment("wake()", |e| e.wake_count = e.wake_count.wrapping_add(1))
+    }
     fn set_locale_settings(&mut self, settings: LocaleSettingsOptions) -> Result<(), String> {
         let pins = settings.pins("setLocaleSettings")?;
         let what = format!("setLocaleSettings({})", settings.label());
         self.set_environment(&what, |e| pins.apply(e))
+    }
+    fn fail_images(&mut self, url: &str) -> Result<(), String> {
+        Headless::fail_images(self, url)
+    }
+    fn fail_open_urls(&mut self, url: &str) -> Result<(), String> {
+        Headless::fail_open_urls(self, url)
+    }
+    fn on_share(&mut self, outcome: nsh_core::share::ShareOutcome) -> Result<(), String> {
+        Headless::on_share(self, outcome)
+    }
+    fn shares(&mut self) -> Result<Vec<nsh_core::share::ShareSheet>, String> {
+        self.catch_up();
+        Ok(self.screen().shares().to_vec())
     }
     fn open_with_url(&mut self, url: &str) -> Result<(), String> {
         Headless::open_with_url(self, url)
@@ -328,6 +389,10 @@ impl Driver for Headless {
         self.catch_up();
         self.screen().span_style(selector)
     }
+    fn view_style(&mut self, selector: &str) -> Result<Option<crate::screen::ViewStyle>, String> {
+        self.catch_up();
+        self.screen().view_style(selector)
+    }
     fn dialogs(&mut self) -> Result<Vec<Dialog>, String> {
         self.catch_up();
         Ok(self.screen().dialogs().to_vec())
@@ -339,6 +404,10 @@ impl Driver for Headless {
     fn clipboard(&mut self) -> Result<Option<String>, String> {
         self.catch_up();
         Ok(self.screen().clipboard().map(str::to_owned))
+    }
+    fn clipboard_item(&mut self) -> Result<Option<ClipboardItem>, String> {
+        self.catch_up();
+        Ok(self.screen().clipboard_item().cloned())
     }
     fn send_host_event(&mut self, name: &str, data: Value) -> Result<(), String> {
         Headless::send_host_event(self, name, data)
@@ -465,10 +534,12 @@ fn step_name(step: &TestStep) -> Option<String> {
         TestStep::Hover { selector } => format!("hover({selector})"),
         TestStep::RightClick { selector } => format!("rightClick({selector})"),
         TestStep::Paste { selector, .. } => format!("paste({selector})"),
+        TestStep::Compose { selector, text } => format!("compose({selector}, {text:?})"),
         TestStep::ChooseMenuItem { label } => format!("chooseMenuItem({label})"),
         TestStep::CloseMenu => "closeMenu".to_owned(),
         TestStep::HostSend { name, .. } => format!("host.send({name})"),
         TestStep::Back => "back".to_owned(),
+        TestStep::Forward => "forward".to_owned(),
         TestStep::PressWindowClose { id } => format!("window({id}).pressClose"),
         TestStep::Wait { ms } => format!("wait({ms})"),
         TestStep::Clock {
@@ -495,7 +566,10 @@ fn step_name(step: &TestStep) -> Option<String> {
 
 /// What a test asks of a real platform that only headless runs do.
 pub(crate) fn headless_only(what: &str) -> String {
-    format!("{what} runs headless only for now: run the test without `--target`")
+    crate::failure::unsupported_here(
+        what,
+        "it runs headless only for now; run the test without `--target`",
+    )
 }
 
 fn ms(time: Duration) -> u64 {
@@ -558,6 +632,12 @@ impl Driver for Remote {
     fn drop_held(&mut self) -> Result<(), String> {
         self.action(TestStep::Drop)
     }
+    fn compose(&mut self, selector: &str, text: &str) -> Result<(), String> {
+        self.action(TestStep::Compose {
+            selector: selector.into(),
+            text: text.into(),
+        })
+    }
     fn drop_files(&mut self, selector: &str, uris: Vec<String>) -> Result<(), String> {
         self.action(TestStep::DropFiles {
             selector: selector.into(),
@@ -603,6 +683,9 @@ impl Driver for Remote {
     }
     fn back(&mut self) -> Result<(), String> {
         self.action(TestStep::Back)
+    }
+    fn forward(&mut self) -> Result<(), String> {
+        self.action(TestStep::Forward)
     }
     // On a manual clock the app's time passes too, as headless.
     fn wait(&mut self, time: Duration) -> Result<(), String> {
@@ -672,6 +755,11 @@ impl Driver for Remote {
     fn answer_dialog(&mut self, answer: DialogAnswer) -> Result<(), String> {
         let button = match answer {
             DialogAnswer::Press(text) => Some(text),
+            DialogAnswer::TypeAndPress { .. } => {
+                return Err("a native host answers a dialog with a button only: \
+                     type into its text field in a headless run"
+                    .into());
+            }
             DialogAnswer::Dismiss => None,
         };
         self.action(TestStep::AnswerDialog { button })
@@ -699,6 +787,16 @@ impl Driver for Remote {
             selector: selector.into(),
         })
     }
+    fn view_style(&mut self, selector: &str) -> Result<Option<crate::screen::ViewStyle>, String> {
+        let style: Option<nsh_dev::protocol::ViewStyle> = self.query(TestStep::ViewStyle {
+            selector: selector.into(),
+        })?;
+        Ok(style.map(|s| crate::screen::ViewStyle {
+            background_color: s.background_color,
+            opacity: s.opacity,
+            effective_opacity: s.effective_opacity,
+        }))
+    }
     fn span_style(&mut self, selector: &str) -> Result<ResolvedTextStyle, String> {
         let span: nsh_dev::protocol::SpanStyle = self.query(TestStep::SpanStyle {
             selector: selector.into(),
@@ -716,6 +814,8 @@ impl Driver for Remote {
                 color: nsh_core::Color(color),
                 radius: nsh_core::Points::ZERO,
                 node: 0,
+                top: Default::default(),
+                bottom: Default::default(),
             }),
             ..ResolvedTextStyle::default()
         })

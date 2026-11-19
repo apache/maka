@@ -21,6 +21,7 @@ import { ComposerInput, type ComposerInputRef, type ComposerInputState } from 'm
 import { cleanup, effect, keymap, signal, untracked, View } from 'nsh';
 import type { CaretEvent, StyleProp, TextStyle } from 'nsh';
 import type { ComposerEditor, EditorKeyOptions } from './ComposerEditor';
+import type { ComposerPaste } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { lucide } from './lucide';
 import { C, bodyTextStyle } from './ui';
 
@@ -31,8 +32,6 @@ type Props = {
   accessibilityLabel: string;
   value: string;
   readonly: boolean;
-  fieldText?: typeof bodyTextStyle;
-  onContentHeight?(height: number): void;
   sourceId?: string;
   sourceOffset?: number;
   placeholder: string;
@@ -42,7 +41,8 @@ type Props = {
   onSelectionChange?(event: Selection): void;
   onCaretMove?(event: CaretEvent): void;
   onSubmit?(event: { text: string }): void;
-  onPaste?(event: { text: string; uris: string[]; files: unknown[] }): void;
+  onOpenSessionReference?(event: { sessionId: string }): void;
+  onPaste?(event: ComposerPaste): void;
   onFocus?(): void;
   onBlur?(): void;
   onEscape?(): void;
@@ -52,14 +52,13 @@ type Props = {
 };
 type Binding = { key: string; action: () => void; options?: EditorKeyOptions };
 
-/** Product-owned plain-text composer; skills are inline atoms in the existing rich editor. */
+/** A source-preserving Markdown composer with native reference tokens. */
 export function SkillInput(props: Props) {
   const native = signal<ComposerInputRef | null>(null);
   const status = signal<ComposerInputState | null>(null);
   const composition = signal(false);
   const valueCount = signal(0);
-  const fieldText = () => props.fieldText ?? bodyTextStyle;
-  const height = signal(fieldText().lineHeight);
+  const height = signal(bodyTextStyle.lineHeight);
   let alive = true;
   let frame: ReturnType<typeof requestAnimationFrame> | undefined;
   const captureKeys = signal<{ key: string; fallback: boolean }[]>([]);
@@ -157,10 +156,7 @@ export function SkillInput(props: Props) {
           node.caretBounds(),
         ]);
         if (!alive || native() !== node) return;
-        if (measured !== null && measured > 0) {
-          height.set(measured);
-          props.onContentHeight?.(measured);
-        }
+        if (measured !== null && measured > 0) height.set(measured);
         if (pageBounds) props.onCaretMove?.({ bounds: pageBounds, pageBounds });
       } catch (error) {
         if (alive) throw error;
@@ -177,10 +173,7 @@ export function SkillInput(props: Props) {
   };
   return (
     <View
-      style={[
-        props.style,
-        props.onContentHeight ? {} : { height: height(), minHeight: fieldText().lineHeight },
-      ]}
+      style={[props.style, { height: height(), minHeight: bodyTextStyle.lineHeight }]}
       onFileDrop={props.onFileDrop}
       onFileDragEnter={props.onFileDragEnter}
       onFileDragLeave={props.onFileDragLeave}
@@ -195,17 +188,23 @@ export function SkillInput(props: Props) {
         sourceOffset={props.sourceOffset ?? 0}
         valueCount={valueCount()}
         readOnly={props.readonly}
+        openSessionReferences={props.onOpenSessionReference !== undefined}
+        onOpenSessionReference={props.onOpenSessionReference}
         placeholder={props.placeholder}
         tokenColor={C.accent}
         tokenBackgroundColor={`${C.accent}20`}
         tokenIcon={lucide.book[0].d}
         captureKeys={captureKeys()}
         styles={{
-          root: { ...fieldText(), color: C.text },
+          root: { ...bodyTextStyle, color: C.text },
           content: { padding: 0 },
           caret: { backgroundColor: C.text },
           placeholder: { color: C.muted },
-          nodes: { paragraph: fieldText() },
+          nodes: {
+            paragraph: bodyTextStyle,
+            skill: { verticalAlign: 'text-bottom' },
+            session: { verticalAlign: 'text-bottom' },
+          },
         }}
         style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
         onChange={(event) => {
@@ -220,9 +219,7 @@ export function SkillInput(props: Props) {
         onCompositionChange={({ composing }) => composition.set(composing)}
         onSubmit={props.onSubmit}
         onKey={key}
-        onPasteFiles={(event) =>
-          props.onPaste?.({ text: '', uris: event.uris, files: event.files })
-        }
+        onPasteFiles={props.onPaste}
         onFocus={props.onFocus}
         onBlur={props.onBlur}
       />

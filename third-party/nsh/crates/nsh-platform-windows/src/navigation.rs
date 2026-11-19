@@ -75,11 +75,13 @@ const VK_ESCAPE: u16 = 0x1B;
 const VK_LEFT: u16 = 0x25;
 const VK_BROWSER_BACK: u16 = 0xA6;
 
-/// The window's color, under a screen's content (the platform's, so a
-/// screen moving over another hides it).
+/// Windows 11's window color, under a screen's content, so a screen
+/// moving over another hides it: the system's, as the other desktops draw
+/// theirs there, rather than the color the app's window clears to
+/// ([`crate::system::window_background`], the default theme's).
 fn window_color(dark: bool) -> Color {
     if dark {
-        Color::rgba(0, 0, 0, 255)
+        Color::rgba(32, 32, 32, 255)
     } else {
         Color::rgba(255, 255, 255, 255)
     }
@@ -148,14 +150,16 @@ fn is_shown(view: &NshView) -> bool {
     }
 }
 
-/// Takes the keyboard focus away from a field inside `view` before it is
-/// concealed or removed: typing must not go to a field nobody sees.
+/// Takes the keyboard focus away from a field (or a custom view, which
+/// reports its blur) inside `view` before it is concealed or removed:
+/// typing must not go to a view nobody sees.
 fn drop_focus(surface: &Surface, view: &NshView) {
     if let Some(field) = crate::text_input::focused(surface)
         && is_ancestor(view, &field)
     {
         crate::text_input::blur(&field);
     }
+    crate::keyboard::blur_within(surface, view);
 }
 
 /// Conceals `view` (or shows it again).
@@ -447,6 +451,10 @@ struct ModalNav {
     /// gets it back when the modal closes, as a desktop dialog gives it
     /// back.
     restore: Option<NshView>,
+    /// A custom view of the window with the keyboard focus when it was
+    /// presented: it gets it back when the modal closes, if it is still a
+    /// shown, enabled stop of that window.
+    restore_focus: Option<NshView>,
     /// The root view of the window of the app's own it is presented in
     /// (`ModalConfig::window`); `None`: the main window's.
     host: Option<NshView>,
@@ -1162,6 +1170,7 @@ impl Nav {
         };
         let Some(view) = m.view.take() else { return };
         let restore = m.restore.take();
+        let restore_focus = m.restore_focus.take();
         let host = m.host.take().unwrap_or_else(|| surface.root.clone());
         let own = modal_motion(m.config.animation, reduce_motion(surface));
         let shader = self.shader(surface, id);
@@ -1178,6 +1187,7 @@ impl Nav {
         view.unparent();
         set_shift(&view, (0.0, 0.0));
         set_fade(&view, 1.0);
+        let mut restored = false;
         if let Some(field) = restore
             && field.attached()
             && crate::text_input::focused(surface).is_none()
@@ -1185,6 +1195,19 @@ impl Nav {
         {
             // Not while another modal still covers it.
             crate::text_input::focus(&field);
+            restored = true;
+        }
+        // A custom view that had the focus gets it back too, if it is
+        // still a shown, enabled stop of a window no modal covers; a
+        // removed, disabled, hidden or replaced view restores nothing.
+        if !restored
+            && let Some(focus) = restore_focus
+            && focus.attached()
+            && crate::keyboard::is_stop(&focus)
+            && crate::text_input::focused(surface).is_none()
+            && is_ancestor(&self.focus_scope(surface), &focus)
+        {
+            crate::keyboard::focus_control(surface, &focus);
         }
         match image {
             Some(picture) => {
@@ -1298,7 +1321,12 @@ impl Nav {
     /// Where the keyboard focus may go: the newest modal of the window the
     /// input is in, else that whole window.
     fn focus_scope(&self, surface: &Surface) -> NshView {
-        let window = Self::input_window(surface);
+        self.focus_scope_in(surface, Self::input_window(surface))
+    }
+
+    /// The focus scope of `window` (a window of the app's own, by its root;
+    /// `None` for the main window).
+    fn focus_scope_in(&self, surface: &Surface, window: Option<NshView>) -> NshView {
         self.newest(window.as_ref().map(NshView::id))
             .and_then(|id| self.modals.get(&id))
             .and_then(|m| m.view.clone())
@@ -1536,7 +1564,7 @@ pub(crate) fn modal_config(surface: &Rc<Surface>, view: &NshView, config: &Modal
     }
     let mut nav = surface.nav.borrow_mut();
     let id = view.id();
-    nav.modals.entry(id).or_default().config = *config;
+    nav.modals.entry(id).or_default().config = config.clone();
     nav.size_modal(surface, id);
 }
 
@@ -1589,7 +1617,15 @@ pub(crate) fn present(surface: &Rc<Surface>, view: &NshView) {
     if let Some(field) = &field {
         crate::text_input::blur(field);
     }
+    // A custom view behind the modal would hear keys nobody sees it get
+    // (the modal's own stops take the focus as Tab reaches them). It gets
+    // the focus back when the modal closes, as the field does; another
+    // window keeps its own focus throughout.
+    let window = m.config.window;
+    let focus = crate::keyboard::focused_in(surface, window);
+    crate::keyboard::blur_window(surface, window);
     m.restore = field;
+    m.restore_focus = focus;
     m.view = Some(view.clone());
     m.closed = false;
     m.reported = Reported::default();
@@ -1616,12 +1652,15 @@ pub(crate) fn focus_scope(surface: &Surface) -> NshView {
     surface.nav.borrow().focus_scope(surface)
 }
 
-/// Whether `view` is within the active modal scope (or no modal is active).
+/// Whether `view` is within the active modal scope of the window it is in
+/// (or no modal is active). Focus also comes from outside an event in that
+/// window (`focus()`, `autoFocus`), where the input root is the main window.
 pub(crate) fn in_focus_scope(surface: &Surface, view: &NshView) -> bool {
-    surface
-        .nav
-        .try_borrow()
-        .map_or(true, |nav| is_ancestor(&nav.focus_scope(surface), view))
+    let window = crate::app_window::window_of(surface, view);
+    let window = crate::app_window::root_view(surface, window);
+    surface.nav.try_borrow().map_or(true, |nav| {
+        is_ancestor(&nav.focus_scope_in(surface, window), view)
+    })
 }
 
 /// Modal `view` is shown in a window of its own (`Window.open`) instead:
@@ -1632,7 +1671,10 @@ pub(crate) fn release(surface: &Rc<Surface>, view: &NshView) {
     let id = view.id();
     nav.order.retain(|&m| m != id);
     nav.presenting.retain(|&m| m != id);
-    let restore = nav.modals.remove(&id).and_then(|m| m.restore);
+    let (restore, restore_focus) = nav
+        .modals
+        .remove(&id)
+        .map_or((None, None), |m| (m.restore, m.restore_focus));
     drop(nav);
     view.unparent();
     set_fade(view, 1.0);
@@ -1641,6 +1683,15 @@ pub(crate) fn release(surface: &Rc<Surface>, view: &NshView) {
         && crate::text_input::focused(surface).is_none()
     {
         crate::text_input::focus(&field);
+    }
+    // As the field: a custom view of the window gets the keyboard focus
+    // back when the modal leaves for its own window.
+    if let Some(focus) = restore_focus
+        && focus.attached()
+        && crate::keyboard::is_stop(&focus)
+        && crate::text_input::focused(surface).is_none()
+    {
+        crate::keyboard::focus_control(surface, &focus);
     }
 }
 
@@ -1758,7 +1809,7 @@ mod tests {
     /// A root that counts as attached to a surface, and views under it.
     fn root() -> NshView {
         let root = NshView::new(ROOT_ID, ViewKind::View);
-        root.set_invalidate(Rc::new(|_| {}));
+        root.set_invalidate(Rc::new(|_, _| {}));
         root
     }
 

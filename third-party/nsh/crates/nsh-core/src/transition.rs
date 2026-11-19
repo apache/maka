@@ -31,8 +31,9 @@
 use std::sync::Arc;
 
 use crate::{
-    AttributedText, Bounds, BoxShadow, Color, Corners, Edges, KeyframeAnimation, Keyframes,
-    LayoutCurve, LayoutProperty, LayoutTransition, Points, Transform, TransitionProps, ViewStyle,
+    AttributedText, Bounds, BoxShadow, Color, Corners, Edges, Filter, KeyframeAnimation, Keyframes,
+    LayoutCurve, LayoutProperty, LayoutTransition, Points, Transform, Transition, TransitionProps,
+    ViewStyle,
     geometry::{Percentage, Point, Radians, Size, deg},
 };
 
@@ -382,7 +383,7 @@ pub fn restyle(
     let keyframes_changed = style.animation != old.animation;
     let transition = style.transition.filter(|t| {
         !reduce_motion
-            && t.duration + t.delay > 0.0
+            && t.run_ms() + t.delay > 0.0
             && differs(old, style, t.properties)
             // A view's first style does not transition from the defaults.
             && *old != ViewStyle::default()
@@ -398,7 +399,7 @@ pub fn restyle(
             from: Box::new(old.clone()),
             to,
             props: t.properties,
-            timing: Timing::new(t.delay, t.duration, Curve::Bezier(t.easing)),
+            timing: Timing::transition(&t),
         }
     });
     Some(Restyle { track, keyframes })
@@ -517,7 +518,7 @@ pub fn recolor(
     reduce_motion: bool,
 ) -> Recolor {
     let transition = style.transition.filter(|t| {
-        !reduce_motion && t.duration + t.delay > 0.0 && t.properties.has(TransitionProps::COLORS)
+        !reduce_motion && t.run_ms() + t.delay > 0.0 && t.properties.has(TransitionProps::COLORS)
     });
     // Most texts have no transition: their runs are not looked at.
     let Some((t, to)) = transition.and_then(|t| Some((t, text.uniform_color()?))) else {
@@ -528,7 +529,7 @@ pub fn recolor(
         Some(from) => Recoloring::Start {
             from,
             to,
-            timing: Timing::new(t.delay, t.duration, Curve::Bezier(t.easing)),
+            timing: Timing::transition(&t),
         },
         None => Recoloring::Stop,
     })
@@ -570,6 +571,8 @@ enum Curve {
     Bezier([f32; 4]),
     /// A spring with this damping ratio that settles within the duration.
     Spring(f32),
+    /// A spring's physics, over the time it settles in.
+    Physical(crate::element::Spring),
 }
 
 impl Curve {
@@ -582,7 +585,9 @@ impl Curve {
             LayoutCurve::EaseInEaseOut | LayoutCurve::Keyboard => {
                 Curve::Bezier([0.42, 0.0, 0.58, 1.0])
             }
-            LayoutCurve::Spring { damping } => Curve::Spring(damping),
+            LayoutCurve::FittedSpring { damping_ratio } => Curve::Spring(damping_ratio),
+            LayoutCurve::Spring(spring) => Curve::Physical(spring),
+            LayoutCurve::Bezier(points) => Curve::Bezier(points),
         }
     }
 
@@ -591,6 +596,7 @@ impl Curve {
             Curve::Linear => x,
             Curve::Bezier(b) => cubic_bezier(b, x),
             Curve::Spring(damping) => spring(damping, x),
+            Curve::Physical(spring) => spring.progress(x * spring.settle_ms()),
         }
     }
 }
@@ -689,7 +695,15 @@ impl Timing {
     }
 
     fn layout(t: &LayoutTransition) -> Self {
-        Timing::new(t.delay_ms, t.duration_ms, Curve::of(t.curve))
+        Timing::new(t.delay_ms, t.run_ms(), Curve::of(t.curve))
+    }
+
+    fn transition(t: &Transition) -> Self {
+        let curve = match t.spring {
+            Some(spring) => Curve::Physical(spring),
+            None => Curve::Bezier(t.easing),
+        };
+        Timing::new(t.delay, t.run_ms(), curve)
     }
 
     /// When it ends (ms), `now` before its first step.
@@ -919,7 +933,20 @@ fn box_shadows(s: &ViewStyle) -> &[BoxShadow] {
     s.effects.as_deref().map_or(&[], |e| &e.box_shadows)
 }
 
-/// True if `a` and `b` differ in what `props` animates.
+// Only a lone blur has a scalar contract here. Other filter lists apply at once.
+fn blur_radius(style: &ViewStyle) -> Option<Points> {
+    match style
+        .effects
+        .as_deref()
+        .map_or(&[][..], |e| e.filters.as_slice())
+    {
+        [] => Some(Points::ZERO),
+        [Filter::Blur(radius)] => Some(*radius),
+        _ => None,
+    }
+}
+
+/// Whether the selected property groups have an interpolable change.
 fn differs(a: &ViewStyle, b: &ViewStyle, props: TransitionProps) -> bool {
     (props.has(TransitionProps::COLORS)
         && (a.background_color != b.background_color
@@ -929,6 +956,8 @@ fn differs(a: &ViewStyle, b: &ViewStyle, props: TransitionProps) -> bool {
         || (props.has(TransitionProps::OPACITY) && a.opacity != b.opacity)
         || (props.has(TransitionProps::TRANSFORM) && a.transform != b.transform)
         || (props.has(TransitionProps::SHADOW) && box_shadows(a) != box_shadows(b))
+        || (props.has(TransitionProps::FILTER)
+            && matches!((blur_radius(a), blur_radius(b)), (Some(a), Some(b)) if a != b))
         || (props.has(TransitionProps::SHAPE)
             && (a.border_radius != b.border_radius
                 || a.corner_radius != b.corner_radius
@@ -972,6 +1001,14 @@ fn lerp_style(
             out.effects = Some(Arc::new(effects));
         }
     }
+    if props.has(TransitionProps::FILTER)
+        && let (Some(a), Some(b)) = (blur_radius(from), blur_radius(to))
+        && a != b
+    {
+        // Preserve other effects already interpolated, including box shadows.
+        let effects = Arc::make_mut(out.effects.get_or_insert_with(Default::default));
+        effects.filters = vec![Filter::Blur(lerp_points(a, b, t).max(Points::ZERO))];
+    }
     if props.has(TransitionProps::SHAPE) {
         out.border_radius = lerp_points(from.border_radius, to.border_radius, t).max(Points::ZERO);
         let (ca, cb) = (from.corner_radius.to_array(), to.corner_radius.to_array());
@@ -1010,10 +1047,75 @@ fn lerp_rect(a: Bounds<Points>, b: Bounds<Points>, t: f32) -> Bounds<Points> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LayoutAnimation, TransformKind};
+    use crate::{LayoutAnimation, TransformKind, element::Spring};
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-3
+    }
+
+    fn foreground_style(filter: &str) -> Box<ViewStyle> {
+        let mut style = crate::Style::default();
+        style.set("filter", crate::StyleValue::Str(filter)).unwrap();
+        style
+            .set("transitionProperty", crate::StyleValue::Str("filter"))
+            .unwrap();
+        style
+            .set("transitionDuration", crate::StyleValue::Number(280.0))
+            .unwrap();
+        style
+            .set("transitionTimingFunction", crate::StyleValue::Str("linear"))
+            .unwrap();
+        Box::new(style.view)
+    }
+
+    #[test]
+    fn foreground_blur_reaches_none_in_280ms() {
+        let old = foreground_style("blur(18px)");
+        let mut style = foreground_style("none");
+        let mut live = Live::default();
+        live.restyle(restyle(&old, &mut style, false).unwrap());
+        let mut frame = Bounds::default();
+        assert_eq!(blur_radius(&style), Some(Points(18.0)));
+        live.step(0.0, &mut frame, &mut style);
+        live.step(140.0, &mut frame, &mut style);
+        assert!(close(blur_radius(&style).unwrap().0, 9.0));
+        assert!(live.step(280.0, &mut frame, &mut style).finished);
+        assert!(style.effects.is_none());
+    }
+
+    #[test]
+    fn foreground_blur_reverses_from_the_displayed_radius() {
+        let old = foreground_style("blur(18px)");
+        let mut style = foreground_style("blur(0px)");
+        let mut live = Live::default();
+        live.restyle(restyle(&old, &mut style, false).unwrap());
+        let mut frame = Bounds::default();
+        live.step(0.0, &mut frame, &mut style);
+        live.step(140.0, &mut frame, &mut style);
+        let mut reversed = foreground_style("blur(18px)");
+        live.restyle(restyle(&style, &mut reversed, false).unwrap());
+        assert!(close(blur_radius(&reversed).unwrap().0, 9.0));
+        live.step(140.0, &mut frame, &mut reversed);
+        live.step(280.0, &mut frame, &mut reversed);
+        assert!(close(blur_radius(&reversed).unwrap().0, 13.5));
+        assert!(live.step(420.0, &mut frame, &mut reversed).finished);
+        assert_eq!(blur_radius(&reversed), Some(Points(18.0)));
+    }
+
+    #[test]
+    fn foreground_blur_skips_motion_when_reduced_or_unchanged() {
+        let mut initial = foreground_style("blur(18px)");
+        assert!(restyle(&ViewStyle::default(), &mut initial, false).is_none());
+        assert_eq!(blur_radius(&initial), Some(Points(18.0)));
+        let old = foreground_style("blur(18px)");
+        let mut style = foreground_style("none");
+        assert!(restyle(&old, &mut style, true).is_none());
+        assert_eq!(blur_radius(&style), Some(Points::ZERO));
+        let old = foreground_style("none");
+        let mut style = foreground_style("blur(0px)");
+        assert!(restyle(&old, &mut style, false).is_none());
+        let mut style = foreground_style("brightness(0.5) blur(18px)");
+        assert!(restyle(&old, &mut style, false).is_none());
     }
 
     #[test]
@@ -1059,6 +1161,195 @@ mod tests {
         assert!((spring(1.0, 0.98) - 1.0).abs() < 0.01);
     }
 
+    /// `spring` released at rest at 0 toward 1, stepped by semi-implicit
+    /// Euler at 10 µs: where it is after each of `steps` milliseconds.
+    fn integrate(spring: Spring, steps: usize) -> Vec<f64> {
+        let (k, c, m) = (
+            f64::from(spring.stiffness),
+            f64::from(spring.damping),
+            f64::from(spring.mass),
+        );
+        let (mut x, mut v) = (0.0_f64, 0.0_f64);
+        let mut out = Vec::new();
+        for _ in 0..steps {
+            for _ in 0..100 {
+                v += (-k * (x - 1.0) - c * v) / m * 1e-5;
+                x += v * 1e-5;
+            }
+            out.push(x);
+        }
+        out
+    }
+
+    /// A spring of these physics: stiffness, damping coefficient, mass.
+    fn physics(stiffness: f32, damping: f32, mass: f32) -> Spring {
+        Spring {
+            stiffness,
+            damping,
+            mass,
+            ..Spring::default()
+        }
+    }
+
+    /// M3 Expressive's fast spatial spring (stiffness 800, damping ratio
+    /// 0.6, mass 1), its damping as a coefficient: 2 · 0.6 · √800.
+    const FAST_SPATIAL: Spring = Spring {
+        stiffness: 800.0,
+        damping: 33.941_124,
+        mass: 1.0,
+        velocity: None,
+        frame_rate: None,
+    };
+
+    #[test]
+    fn a_physical_spring_follows_its_physics() {
+        let critical = physics(400.0, 40.0, 1.0);
+        let overdamped = physics(100.0, 40.0, 2.0);
+        for spring in [FAST_SPATIAL, critical, overdamped] {
+            assert_eq!(spring.progress(0.0), 0.0, "{spring:?}");
+            for (ms, expected) in integrate(spring, 600).into_iter().enumerate() {
+                let found = f64::from(spring.progress((ms + 1) as f32));
+                assert!(
+                    (found - expected).abs() < 1e-3,
+                    "{spring:?} at {ms} ms: {found} vs {expected}"
+                );
+            }
+        }
+        // Underdamped, it overshoots; critically damped or overdamped, it does not.
+        assert!((1..400).any(|ms| FAST_SPATIAL.progress(ms as f32) > 1.0));
+        for spring in [critical, overdamped] {
+            assert!(
+                (1..2000).all(|ms| spring.progress(ms as f32) <= 1.0),
+                "{spring:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_physical_spring_settles_within_a_thousandth_by_its_settling_time() {
+        // ln(1000) / (0.6 · √800) s.
+        assert!(
+            (FAST_SPATIAL.settle_ms() - 407.03).abs() < 0.1,
+            "{}",
+            FAST_SPATIAL.settle_ms()
+        );
+        let springs = [
+            FAST_SPATIAL,
+            physics(400.0, 40.0, 1.0),
+            physics(100.0, 40.0, 2.0),
+            physics(1400.0, 67.35, 1.0),
+        ];
+        for spring in springs {
+            let settle = spring.settle_ms();
+            let zeta = spring.damping / (2.0 * (spring.stiffness * spring.mass).sqrt());
+            // Underdamped, its decay is 1/1000 there: the swing is within 1/1000 of 1/√(1-ζ²).
+            let bound = if zeta < 0.999 {
+                1e-3 / (1.0 - zeta * zeta).sqrt()
+            } else {
+                1e-3
+            };
+            for ms in [settle, settle + 50.0, settle * 2.0] {
+                let off = (spring.progress(ms) - 1.0).abs();
+                assert!(off <= bound * 1.01, "{spring:?} at {ms} ms: {off}");
+            }
+            // Not long before: it is still more than a thousandth away somewhere.
+            let earlier =
+                (0..100).any(|i| (spring.progress(settle * 0.7 + i as f32) - 1.0).abs() > 1e-3);
+            assert!(earlier, "{spring:?} settled long before {settle} ms");
+        }
+    }
+
+    #[test]
+    fn a_spring_that_never_settles_is_there_at_once() {
+        for spring in [
+            physics(800.0, 0.0, 1.0),
+            physics(0.0, 30.0, 1.0),
+            physics(800.0, 30.0, 0.0),
+            physics(f32::NAN, 30.0, 1.0),
+            physics(f32::INFINITY, 30.0, 1.0),
+        ] {
+            assert_eq!(spring.progress(10.0), 1.0, "{spring:?}");
+            assert_eq!(spring.settle_ms(), 0.0, "{spring:?}");
+            let mut t = Timing::layout(&LayoutTransition::spring(spring));
+            assert_eq!(t.at(0.0), Some((1.0, true)), "{spring:?}");
+        }
+    }
+
+    #[test]
+    fn a_layout_spring_moves_by_its_physics_and_ends_when_it_settles() {
+        let transition = LayoutTransition::spring(FAST_SPATIAL);
+        assert_eq!(transition.curve, LayoutCurve::Spring(FAST_SPATIAL));
+        assert_eq!(transition.duration_ms, FAST_SPATIAL.settle_ms());
+        assert_eq!(transition.delay_ms, 0.0);
+        let mut t = Timing::layout(&transition);
+        assert_eq!(t.at(1000.0), Some((0.0, false)));
+        for ms in [16.0_f32, 100.0, 250.0, 400.0] {
+            let (value, done) = t.at(1000.0 + f64::from(ms)).unwrap();
+            assert!(
+                close(value, FAST_SPATIAL.progress(ms)) && !done,
+                "{ms} ms: {value}"
+            );
+        }
+        assert_eq!(
+            t.at(1000.0 + f64::from(transition.duration_ms)),
+            Some((1.0, true))
+        );
+    }
+
+    #[test]
+    fn a_layout_spring_times_itself_whatever_its_duration() {
+        let settle = FAST_SPATIAL.settle_ms();
+        for duration in [100.0, 2000.0] {
+            let transition = LayoutTransition::new(LayoutCurve::Spring(FAST_SPATIAL), duration);
+            assert_eq!(transition.run_ms(), settle);
+            let mut t = Timing::layout(&transition);
+            t.at(0.0);
+            assert!(
+                close(t.at(100.0).unwrap().0, FAST_SPATIAL.progress(100.0)),
+                "{duration}"
+            );
+            assert_eq!(t.at(f64::from(settle)), Some((1.0, true)), "{duration}");
+        }
+        // Other curves keep their duration.
+        assert_eq!(
+            LayoutTransition::new(LayoutCurve::Linear, 100.0).run_ms(),
+            100.0
+        );
+    }
+
+    #[test]
+    fn a_spring_is_made_as_gpui_base_makes_one() {
+        // `Spring::new(response)`: one undamped swing in `response`, critically damped.
+        let spring = Spring::new(280.0);
+        let omega = std::f32::consts::TAU / 0.28;
+        assert!(close(spring.stiffness, omega * omega) && close(spring.mass, 1.0));
+        assert!(close(spring.damping, 2.0 * omega));
+        assert!((1..2000).all(|ms| spring.progress(ms as f32) <= 1.0));
+        // `with_damping(0.85)`: ln 1000 / (0.85 · 2π / 0.28 s), what `Tabs` waited by hand.
+        let move_ = spring.damping_ratio(0.85);
+        assert!(
+            (move_.settle_ms() - 362.2).abs() < 0.1,
+            "{}",
+            move_.settle_ms()
+        );
+        assert!((1..400).any(|ms| move_.progress(ms as f32) > 1.0));
+        // From a stiffness token, at another mass: the ratio holds.
+        let mut heavy = Spring::from_stiffness(800.0);
+        heavy.mass = 2.0;
+        let heavy = heavy.damping_ratio(0.6);
+        assert!(close(heavy.damping / (2.0 * (800.0_f32 * 2.0).sqrt()), 0.6));
+        assert!(close(
+            Spring::from_stiffness(800.0).damping_ratio(0.6).damping,
+            FAST_SPATIAL.damping
+        ));
+        // A critically damped 180 ms response settles where `Collapsible` waited by hand.
+        assert!(
+            (Spring::new(180.0).settle_ms() - 264.5).abs() < 0.5,
+            "{}",
+            Spring::new(180.0).settle_ms()
+        );
+    }
+
     #[test]
     fn progress_waits_for_delay() {
         assert_eq!(progress(Curve::Linear, 100.0, 200.0, 50.0), None);
@@ -1071,6 +1362,80 @@ mod tests {
             Some((1.0, true))
         );
         assert_eq!(progress(Curve::Linear, 0.0, 0.0, 0.0), Some((1.0, true)));
+    }
+
+    /// A view scaled from `from` to `to` with `easing` on its transforms:
+    /// the scales it shows every 10 ms until the transition ends.
+    fn scales(
+        easing: [f32; 4],
+        spring: Option<crate::element::Spring>,
+        from: f32,
+        to: f32,
+    ) -> Vec<f32> {
+        let styled = |scale: f32| {
+            let mut transform = Transform::IDENTITY;
+            let _ = transform.push(crate::transform::TransformKind::Scale, scale);
+            ViewStyle {
+                transform,
+                transition: Some(Transition {
+                    properties: TransitionProps(TransitionProps::TRANSFORM),
+                    duration: 200.0,
+                    delay: 0.0,
+                    easing,
+                    spring,
+                }),
+                ..ViewStyle::default()
+            }
+        };
+        let old = styled(from);
+        let mut style = Box::new(styled(to));
+        let mut live = Live::default();
+        live.restyle(restyle(&old, &mut style, false).expect("it transitions"));
+        let mut frame = Bounds::default();
+        let mut out = Vec::new();
+        for i in 0..200 {
+            let step = live.step(f64::from(i) * 10.0, &mut frame, &mut style);
+            out.push(style.transform.ops()[0].value);
+            if step.finished {
+                break;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_style_transition_runs_on_a_spring() {
+        let spring = crate::element::Spring {
+            stiffness: 620.0,
+            damping: 36.0,
+            ..crate::element::Spring::default()
+        };
+        let shown = scales(Transition::EASE, Some(spring), 0.95, 1.0);
+        // It passes its target (by 3.7% of the travel) and settles on it, in
+        // the time the spring takes, not the transition's 200 ms.
+        let peak = shown.iter().copied().fold(f32::MIN, f32::max);
+        assert!(peak > 1.001 && peak < 1.003, "{peak}");
+        assert_eq!(*shown.last().unwrap(), 1.0);
+        let ms = (shown.len() - 1) * 10;
+        assert!((380..=390).contains(&ms), "{ms}");
+        // Its exit waits as long.
+        let t = Transition {
+            properties: TransitionProps(TransitionProps::ALL),
+            duration: 200.0,
+            delay: 20.0,
+            easing: Transition::EASE,
+            spring: Some(spring),
+        };
+        assert!((t.run_ms() - spring.settle_ms()).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn a_bezier_past_one_overshoots() {
+        let shown = scales([0.3, 1.25, 0.6, 1.0], None, 0.95, 1.0);
+        let peak = shown.iter().copied().fold(f32::MIN, f32::max);
+        assert!(peak > 1.0, "{peak}");
+        assert_eq!(*shown.last().unwrap(), 1.0);
+        assert_eq!(shown.len(), 21);
     }
 
     #[test]
@@ -1369,6 +1734,7 @@ mod tests {
                 duration: 150.0,
                 delay: 0.0,
                 easing: [0.0, 0.0, 1.0, 1.0],
+                spring: None,
             }),
             ..ViewStyle::default()
         }

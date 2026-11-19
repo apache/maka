@@ -37,6 +37,7 @@
 
 mod animation;
 mod audio;
+mod browser;
 mod keyboard;
 #[cfg(feature = "live")]
 mod live;
@@ -47,6 +48,7 @@ mod speech;
 mod windows;
 
 pub use audio::AudioCall;
+pub use browser::{Browser, HistoryEntry};
 mod stub;
 
 use std::{
@@ -62,7 +64,10 @@ use crossbeam_channel::{Receiver, Sender};
 use nsh_core::{
     ApproxTextEngine, Command, Dialog, DialogButtonStyle, EventKind, EventPayload, MountBatch,
     MountItem, NodeId, PayloadValue, Point, Points, PressEvent, ROOT_ID, Size, SubmitBehavior,
+    TextEngine,
     geometry::{point, px},
+    platform::{InputModality, Os},
+    text_edit::{char_len, clip_chars},
 };
 use nsh_engine::{
     AppError, AppErrorKind, Clock, Engine, EngineConfig, EngineControl, Environment, MountSink,
@@ -77,7 +82,7 @@ pub use self::{
 };
 use crate::{
     failure,
-    screen::{Back, Pick, Screen},
+    screen::{Back, Pick, Screen, SystemBar},
     selector::Selector,
 };
 
@@ -137,7 +142,8 @@ impl MountSink for ChannelSink {
 /// animations and what waits for a frame run), laying text out with
 /// [`ApproxTextEngine`]: the engine, and the batches it sends.
 pub fn start(config: EngineConfig) -> std::io::Result<(Engine, Receiver<MountBatch>)> {
-    launch(config, Vec::new()).map(|launched| (launched.engine, launched.batches))
+    launch(config, Vec::new(), || ApproxTextEngine, None)
+        .map(|launched| (launched.engine, launched.batches))
 }
 
 /// A started engine and what it sends.
@@ -149,12 +155,49 @@ struct Launched {
     wanted: Option<Arc<AtomicBool>>,
 }
 
+/// Reports `url` as a link the system handed the app.
+fn send_url_scheme(control: &nsh_engine::EngineControl, url: &str) {
+    control.dispatch_event(ROOT_ID, EventKind::UrlScheme, link_payload(url));
+}
+
+/// The root's `UrlScheme` payload of `url`, a link the system handed the
+/// app.
+fn link_payload(url: &str) -> EventPayload {
+    EventPayload::Map(vec![(
+        nsh_core::url_scheme::URL,
+        PayloadValue::Str(url.to_owned()),
+    )])
+}
+
+/// The header bar `config`'s platform draws over its stacks' screens,
+/// placing their header items in it: only iOS and Android draw one;
+/// elsewhere a page's `header` sits at its top as wide as the window, as
+/// those backends configure the engine.
+fn system_bar(config: &EngineConfig) -> Option<SystemBar> {
+    let os = config.environment.os;
+    matches!(os, Os::Ios | Os::Android).then_some(SystemBar {
+        heights: config.header_heights,
+        toolbar: os == Os::Android,
+    })
+}
+
 /// [`start`], the platform reporting `displays` before the app first
-/// renders.
-fn launch(
-    config: EngineConfig,
+/// renders, laying text out with the engine `text_engine` makes; `link`:
+/// the root's `UrlScheme` event that launched it (a link, a page's
+/// address), there before the app's code runs (as a platform sends it).
+fn launch<M, F>(
+    mut config: EngineConfig,
     displays: Vec<nsh_core::desktop::Display>,
-) -> std::io::Result<Launched> {
+    text_engine: F,
+    link: Option<EventPayload>,
+) -> std::io::Result<Launched>
+where
+    M: TextEngine + 'static,
+    F: FnOnce() -> M + Send + 'static,
+{
+    if system_bar(&config).is_none() {
+        config.header_heights = nsh_core::NO_NATIVE_HEADER;
+    }
     let (batches, batches_rx) = crossbeam_channel::unbounded();
     let (errors, errors_rx) = crossbeam_channel::unbounded();
     let control = Arc::new(OnceLock::new());
@@ -165,16 +208,16 @@ fn launch(
         control: control.clone(),
         wanted: wanted.clone(),
     };
-    let engine = Engine::start_with(
-        config,
-        || ApproxTextEngine,
-        sink,
-        |control| {
-            if !displays.is_empty() {
-                control.set_displays(displays);
-            }
-        },
-    )?;
+    let engine = Engine::start_with(config, text_engine, sink, |control| {
+        // Steps reach every view of a page, below its fold too.
+        control.set_content_culling(false);
+        if !displays.is_empty() {
+            control.set_displays(displays);
+        }
+        if let Some(payload) = link {
+            control.dispatch_event(ROOT_ID, EventKind::UrlScheme, payload);
+        }
+    })?;
     let _ = control.set(engine.control());
     Ok(Launched {
         engine,
@@ -194,12 +237,23 @@ type DialogHandler = Box<dyn FnMut(&Dialog) -> DialogAnswer + Send>;
 /// id, the host's function and its argument.
 #[cfg(feature = "js")]
 type HostCalls = Box<dyn FnMut(u64, &str, &nsh_core::JsonValue) + Send>;
+#[cfg(feature = "js")]
+type HostPosts = Box<dyn FnMut(&str, &nsh_core::JsonValue) + Send>;
 
 /// The answer to a dialog (`AlertDialog.show`, an action sheet).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DialogAnswer {
-    /// Press the button with this text.
+    /// Press the button with this text (its text field, if any, keeps the
+    /// text it started with).
     Press(String),
+    /// Type `text` into its text field ([`Dialog::input`]), replacing what
+    /// the field holds, then press the button `button`.
+    TypeAndPress {
+        /// What the field holds when the button is pressed.
+        text: String,
+        /// The text of the button to press.
+        button: String,
+    },
     /// Close it without a button (tapping outside, the back button).
     Dismiss,
 }
@@ -270,10 +324,13 @@ const CLICK_INTERVAL: Duration = Duration::from_millis(500);
 /// It plays the platform's part the NSH protocol defines and nothing
 /// else: the native animation graph runs frame by frame (nsh-core's `animation`),
 /// a back pops screens and closes modals, dialogs are answered (by the
-/// test, else [`default_answer`]), the clipboard holds text, and `nsh
-/// test`'s web page host answers `nsh/host` calls. Images are
-/// not loaded: no `onLoad` comes, and `Image.getSize` / `Image.prefetch`
-/// fail.
+/// test, else [`default_answer`]), the clipboard holds text, a page's
+/// browser history is kept as the web keeps it
+/// ([`Headless::start_at_page`], [`Headless::browser`]), and `nsh test`'s
+/// web page host answers `nsh/host` calls. Images are
+/// not loaded: no `onLoad` comes, nor an error unless the test fails the
+/// image ([`Headless::fail_images`]), and `Image.getSize` /
+/// `Image.prefetch` fail.
 pub struct Headless {
     engine: Engine,
     batches: Receiver<MountBatch>,
@@ -283,6 +340,11 @@ pub struct Headless {
     /// The modifier keys held down (`keyboard.down`), which presses,
     /// drags and hovers carry.
     held: nsh_core::keymap::Modifiers,
+    /// The modals presented on a desktop or the web, oldest first, each
+    /// with the input or Tab stop that had the keyboard focus under it
+    /// when it came, which gets it back when the modal goes
+    /// ([`Headless::modals_closed`]).
+    focus_before: Vec<(NodeId, Option<NodeId>)>,
     /// The finger a `dragAndHold` left down, until `drop()`.
     finger: Option<pointer::Finger>,
     screen: Screen,
@@ -292,12 +354,23 @@ pub struct Headless {
     picks: Picks,
     /// The color the user picks on the screen ([`Headless::on_screen_color`]).
     screen_color: Option<nsh_core::Hsla>,
+    /// How the user answers the share sheet ([`Headless::on_share`]);
+    /// `None`: never (a sheet the platform never answers, in this crate's
+    /// tests).
+    share: Option<nsh_core::share::ShareOutcome>,
+    /// How the user ends the web sign-in sessions
+    /// ([`Headless::on_auth_session`]); `None`: never.
+    auth_session: Option<nsh_core::auth_session::AuthSessionOutcome>,
     /// The paths the user picks in the open dialog
     /// ([`Headless::on_pick_paths`]).
     picked_paths: Vec<std::path::PathBuf>,
     /// The path the user chooses in the save dialog
     /// ([`Headless::on_pick_save_path`]).
     save_path: Option<std::path::PathBuf>,
+    /// The URLs whose images fail to load ([`Headless::fail_images`]).
+    failing_images: Vec<stub::Url>,
+    /// The URLs that fail to open ([`Headless::fail_open_urls`]).
+    failing_url_opens: Vec<stub::Url>,
     /// The recognizer the test speaks into; `None` when the config gave
     /// its own (`EngineConfig::speech`).
     speech: Option<speech::FakeSpeech>,
@@ -326,14 +399,52 @@ pub struct Headless {
     /// Where the app's `nsh/host` calls go (the web page's host).
     #[cfg(feature = "js")]
     host_calls: Option<HostCalls>,
+    #[cfg(feature = "js")]
+    host_posts: Option<HostPosts>,
     /// The app's windows, on a desktop ([`windows`]); `None` elsewhere, and
     /// when the config gives its own windows (`EngineConfig::windows`).
     windows: Option<windows::Windows>,
+    /// The page's history, for an app started at a page's address
+    /// ([`Headless::start_at_page`]).
+    history: Option<browser::History>,
 }
 
 impl Headless {
     /// Starts `config`'s app ([`start`]).
-    pub fn start(mut config: EngineConfig) -> std::io::Result<Headless> {
+    pub fn start(config: EngineConfig) -> std::io::Result<Headless> {
+        Self::launched_with(config, || ApproxTextEngine, None)
+    }
+
+    /// Starts `config`'s app as the link `url` launches it: the app's
+    /// first `UrlScheme.url()` reads it, and its first `open` listener
+    /// gets it.
+    pub fn start_with_link(config: EngineConfig, url: &str) -> std::io::Result<Headless> {
+        Self::launched_with(config, || ApproxTextEngine, Some(link_payload(url)))
+    }
+
+    /// Starts `config`'s app laying text out with the engine
+    /// `text_engine` makes (on the engine's thread) instead of
+    /// [`ApproxTextEngine`]: a platform's, for sizes as on screen.
+    pub fn start_with_text_engine<M, F>(
+        config: EngineConfig,
+        text_engine: F,
+    ) -> std::io::Result<Headless>
+    where
+        M: TextEngine + 'static,
+        F: FnOnce() -> M + Send + 'static,
+    {
+        Self::launched_with(config, text_engine, None)
+    }
+
+    fn launched_with<M, F>(
+        mut config: EngineConfig,
+        text_engine: F,
+        link: Option<EventPayload>,
+    ) -> std::io::Result<Headless>
+    where
+        M: TextEngine + 'static,
+        F: FnOnce() -> M + Send + 'static,
+    {
         let speech = config.speech.is_none().then(speech::FakeSpeech::default);
         if let Some(speech) = &speech {
             config.speech = Some(Arc::new(speech.clone()));
@@ -343,41 +454,67 @@ impl Headless {
             config.audio = Some(Arc::new(audio.clone()));
         }
         // A desktop's windows: the main one, focused, on one display, and
-        // those the app opens.
-        let windows = (config.environment.os.is_desktop() && config.windows.is_none())
-            .then(|| windows::Windows::new(config.viewport));
+        // those the app opens. The main one starts hidden when the app's
+        // nsh.json `window` says so, as a runner opens it.
+        let main_hidden = config
+            .app
+            .main_window()
+            .is_some_and(|options| !options.visible_at_launch());
+        let windows = (config.environment.os.is_desktop() && config.windows.is_none()).then(|| {
+            let mut windows = windows::Windows::new(config.viewport);
+            if main_hidden {
+                windows.start_hidden();
+            }
+            windows
+        });
         if let Some(windows) = &windows
             && config.environment.window_state.is_none()
         {
             config.environment.window_state = Some(windows.main());
         }
         let displays = windows.as_ref().map(|w| w.displays()).unwrap_or_default();
+        // The window is the viewport the app opens in, as the engine starts
+        // it and as a platform reports it: a later `set_environment` sends
+        // this environment whole, so it must not carry an empty window.
+        config.environment.window = config.viewport;
         let environment = config.environment;
         let viewport = config.viewport;
         let clock = config.clock.clone();
         let host = config.host.clone();
+        let system_bar = system_bar(&config);
         let Launched {
             engine,
             batches,
             errors,
             wanted,
-        } = launch(config, displays)?;
+        } = launch(config, displays, text_engine, link)?;
         let mut screen = Screen::default();
         screen.set_viewport(viewport);
+        if let Some(bar) = system_bar {
+            screen.set_system_bar(bar);
+        }
+        if main_hidden && windows.is_some() {
+            screen.set_window_hidden(ROOT_ID, true);
+        }
         Ok(Headless {
             engine,
             batches,
             errors,
             seen: Vec::new(),
             held: nsh_core::keymap::Modifiers::default(),
+            focus_before: Vec::new(),
             finger: None,
             screen,
             animator: Animator::new(clock.clone()),
             dialogs: Dialogs::Default,
             picks: Picks::Default,
             screen_color: None,
+            share: Some(nsh_core::share::ShareOutcome::dismissed()),
+            auth_session: Some(nsh_core::auth_session::AuthSessionOutcome::Cancelled),
             picked_paths: Vec::new(),
             save_path: None,
+            failing_images: Vec::new(),
+            failing_url_opens: Vec::new(),
             speech,
             audio,
             step: "open".to_owned(),
@@ -392,7 +529,10 @@ impl Headless {
             last_press: None,
             #[cfg(feature = "js")]
             host_calls: None,
+            #[cfg(feature = "js")]
+            host_posts: None,
             windows,
+            history: None,
         })
     }
 
@@ -544,17 +684,54 @@ impl Headless {
         self.done()
     }
 
+    /// The images whose source is `url` fail to load from now on, those
+    /// loading now included: each image view reports the failure as a
+    /// platform does (`on_error` / `onError`). `url` is matched whole and
+    /// `*` in it matches anything (`"https://cdn.example.com/avatars/*"`),
+    /// as [`StubNetwork`]'s routes are; an asset's is `asset:/<path>`.
+    /// Other images go on loading forever, as headless runs load none.
+    /// Then waits until the app is quiet.
+    pub fn fail_images(&mut self, url: &str) -> Result<(), String> {
+        self.step(format!("failImages({url})"));
+        self.failing_images.push(stub::Url::of(url));
+        self.fail_matching_images();
+        self.done()
+    }
+
+    /// The URLs the app opens that match `url` fail to open from now on:
+    /// the app's `openUrl` resolves to not opened, as on a device with no
+    /// app for the URL or a browser that refused it, so a test checks what
+    /// the app shows then. Other URLs go on opening. `url` is matched
+    /// whole and `*` in it matches anything (`"https://example.com/*"`),
+    /// as [`StubNetwork`]'s routes are. The URLs are still recorded
+    /// ([`Screen::opened_urls`]): the app asked for them. Then waits until
+    /// the app is quiet.
+    pub fn fail_open_urls(&mut self, url: &str) -> Result<(), String> {
+        self.step(format!("failOpenUrls({url})"));
+        self.failing_url_opens.push(stub::Url::of(url));
+        self.done()
+    }
+
+    /// Fails the loads of the images [`Headless::fail_images`] named.
+    fn fail_matching_images(&mut self) {
+        if self.failing_images.is_empty() {
+            return;
+        }
+        let failing = &self.failing_images;
+        let failed = self
+            .screen
+            .fail_images(|uri| failing.iter().any(|url| url.matches(uri)));
+        let control = self.engine.control();
+        for (id, uri) in failed {
+            let message = format!("failed to load {uri}");
+            control.dispatch_event(id, EventKind::Error, EventPayload::Error { message });
+        }
+    }
+
     /// Reports `url` as a link the system handed the app, without a step:
     /// the one that launches it.
     pub fn send_url_scheme(&self, url: &str) {
-        self.engine.control().dispatch_event(
-            ROOT_ID,
-            EventKind::UrlScheme,
-            EventPayload::Map(vec![(
-                nsh_core::url_scheme::URL,
-                PayloadValue::Str(url.to_owned()),
-            )]),
-        );
+        send_url_scheme(&self.engine.control(), url);
     }
 
     /// The step `setViewport(<w>, <h>)`: the surface becomes `size` (a
@@ -595,6 +772,12 @@ impl Headless {
     /// What is on screen, from the batches applied so far.
     pub fn screen(&self) -> &Screen {
         &self.screen
+    }
+
+    /// Forgets the commands the app sent so far ([`Screen::clear_commands`]),
+    /// for a long test that checks only the commands of its later steps.
+    pub fn clear_commands(&mut self) {
+        self.screen.clear_commands();
     }
 
     /// The engine and the batches not applied yet, for a model of the
@@ -653,6 +836,48 @@ impl Headless {
     pub fn on_screen_color(&mut self, color: Option<nsh_core::Hsla>) -> Result<(), String> {
         self.screen_color = color;
         self.set_environment("onScreenColor", |env| env.screen_color = true)
+    }
+
+    /// The platform shows a share sheet
+    /// ([`nsh_core::platform::Environment::share`]), and the user answers
+    /// every share the app shows (`Share.show`, [`nsh_core::element::share`])
+    /// with `outcome`: shared (to a target, if it names one) or dismissed.
+    /// What the app shares is recorded ([`Screen::shares`]). Then waits
+    /// until the app is quiet.
+    pub fn on_share(&mut self, outcome: nsh_core::share::ShareOutcome) -> Result<(), String> {
+        let what = format!("onShare({})", outcome.action.as_str());
+        self.share = Some(outcome);
+        self.set_environment(&what, |env| env.share = true)
+    }
+
+    /// The platform shows web sign-in sessions in the app
+    /// ([`nsh_core::platform::Environment::auth_session`], as iOS does), and
+    /// the user ends every session the app opens
+    /// ([`nsh_core::element::open_auth_session`]) with `outcome`: a callback
+    /// URL or a cancellation. What the app opens is recorded
+    /// ([`Screen::auth_sessions`]). Then waits until the app is quiet.
+    ///
+    /// Without it, as on desktops, a session opens the page as `open_url`
+    /// does ([`Screen::opened_urls`]) and ends with a link of its callback
+    /// scheme ([`Headless::open_with_url`]).
+    pub fn on_auth_session(
+        &mut self,
+        outcome: nsh_core::auth_session::AuthSessionOutcome,
+    ) -> Result<(), String> {
+        let what = format!("onAuthSession({outcome:?})");
+        self.auth_session = Some(outcome);
+        self.set_environment(&what, |env| env.auth_session = true)
+    }
+
+    /// The platform shows web sign-in sessions in the app, as
+    /// [`Headless::on_auth_session`] does, but the user ends none of them:
+    /// each stays open until the app closes it
+    /// ([`nsh_core::element::close_auth_session`]) or opens another
+    /// ([`Screen::auth_session_showing`]). Then waits until the app is
+    /// quiet.
+    pub fn keep_auth_sessions_open(&mut self) -> Result<(), String> {
+        self.auth_session = None;
+        self.set_environment("keepAuthSessionsOpen", |env| env.auth_session = true)
     }
 
     /// The platform has file dialogs, a file manager and a trash
@@ -780,6 +1005,17 @@ impl Headless {
         self.host_calls = Some(Box::new(calls));
     }
 
+    /// Sends the app's `nsh/host` posts (the root's `Command::HostPost`) to
+    /// `posts` as their batches are applied, as [`Self::on_host_call`]
+    /// does calls.
+    #[cfg(feature = "js")]
+    pub(crate) fn on_host_post(
+        &mut self,
+        posts: impl FnMut(&str, &nsh_core::JsonValue) + Send + 'static,
+    ) {
+        self.host_posts = Some(Box::new(posts));
+    }
+
     /// Puts `text` on the clipboard (`None`: nothing), as the user copying.
     pub fn set_clipboard(&mut self, text: Option<String>) {
         self.screen.set_clipboard(text);
@@ -792,6 +1028,12 @@ impl Headless {
         self.step = name.into();
     }
 
+    /// Tells the engine what the step gives input with, as a platform
+    /// does before acting on it: `focus-visible:` follows it.
+    fn input_with(&self, modality: InputModality) {
+        self.engine.control().set_input_modality(modality);
+    }
+
     /// The batches applied so far.
     pub fn applied(&self) -> u64 {
         self.applied
@@ -799,8 +1041,15 @@ impl Headless {
 
     fn apply(&mut self, batch: &MountBatch) {
         let focused = self.screen.focused();
+        let before = focused.or(self.screen.key_focus());
         self.screen.apply(batch);
+        for (id, states) in self.screen.take_restated() {
+            self.engine.control().set_states(id, states);
+        }
         self.focus_calls(batch, focused);
+        self.modals_presented(before);
+        self.modals_closed();
+        self.leave_covered_pages();
         self.exited |= batch.items.iter().any(|item| {
             matches!(
                 item,
@@ -812,6 +1061,31 @@ impl Headless {
         });
         for item in &batch.items {
             self.animator.apply(item);
+        }
+        for item in &batch.items {
+            match item {
+                MountItem::Command {
+                    id,
+                    command: Command::InsertText(text),
+                } => self.insert_text(*id, text),
+                MountItem::Command {
+                    id: ROOT_ID,
+                    command: Command::SetAppUrl(url),
+                } => self.set_page_url(url, false),
+                // `setFpsEnabled`: a performance monitor for the engine, as
+                // a platform's. It draws no frames: `perfStats()` reads 0 fps.
+                MountItem::Command {
+                    id: ROOT_ID,
+                    command: Command::PerfMonitor(on),
+                } => self.engine.control().set_perf_monitor(
+                    on.then(|| std::sync::Arc::new(nsh_engine::perf::PerfMonitor::new())),
+                ),
+                MountItem::Command {
+                    id: ROOT_ID,
+                    command: Command::PushAppUrl(url),
+                } => self.set_page_url(url, true),
+                _ => {}
+            }
         }
         if let Some(windows) = &mut self.windows {
             for item in &batch.items {
@@ -834,6 +1108,18 @@ impl Headless {
                 } = item
                 {
                     calls(*id, name, args);
+                }
+            }
+        }
+        #[cfg(feature = "js")]
+        if let Some(posts) = &mut self.host_posts {
+            for item in &batch.items {
+                if let MountItem::Command {
+                    id: ROOT_ID,
+                    command: Command::HostPost { name, args },
+                } = item
+                {
+                    posts(name, args);
                 }
             }
         }
@@ -881,12 +1167,15 @@ impl Headless {
             ];
             control.dispatch_event(ROOT_ID, EventKind::ImageInfo, EventPayload::Map(fields));
         }
+        self.fail_matching_images();
         // URLs are recorded (`Screen::opened_urls`) and reported opened, as
-        // a device with an app for every scheme would.
-        for id in self.screen.take_url_opens() {
+        // a device with an app for every scheme would, but for those the
+        // test fails (`fail_open_urls`).
+        for (id, url) in self.screen.take_url_opens() {
+            let opened = !self.failing_url_opens.iter().any(|u| u.matches(&url));
             let fields = vec![
                 ("id", PayloadValue::Number(f64::from(id))),
-                ("opened", PayloadValue::Bool(true)),
+                ("opened", PayloadValue::Bool(opened)),
             ];
             control.dispatch_event(ROOT_ID, EventKind::OpenUrl, EventPayload::Map(fields));
         }
@@ -897,6 +1186,17 @@ impl Headless {
                 fields.push(("color", PayloadValue::Number(f64::from(packed))));
             }
             control.dispatch_event(ROOT_ID, EventKind::ScreenColor, EventPayload::Map(fields));
+        }
+        for id in self.screen.take_share_answers() {
+            if let Some(outcome) = &self.share {
+                control.dispatch_event(ROOT_ID, EventKind::Share, outcome.payload(id));
+            }
+        }
+        for id in self.screen.take_auth_session_answers() {
+            if let Some(outcome) = &self.auth_session {
+                control.dispatch_event(ROOT_ID, EventKind::AuthSession, outcome.payload(id));
+                self.screen.auth_session_ended(id);
+            }
         }
         for (id, request) in self.screen.take_file_answers() {
             use nsh_core::file_dialog::FileRequest;
@@ -914,6 +1214,8 @@ impl Headless {
         if self.screen.take_back_asked() {
             self.go_back(false);
         }
+        // A page's history follows its pages, dialogs and address.
+        self.sync_history();
         self.report_windows();
         self.report_finished();
     }
@@ -1164,15 +1466,36 @@ impl Headless {
 
     /// Applies batches until the app is done with a step, or for 2 s at
     /// most (an app updating all the time never is): false if the limit
-    /// ended it. On the system's clock it is done when no batch came for
-    /// 100 ms and no native animation that ends by itself runs; on a
-    /// manual clock, as soon as the engine says it is idle
+    /// ended it. On the system's clock it is done once the engine has
+    /// handled what the step sent ([`Headless::caught_up`]) and then no
+    /// batch came for 100 ms and no native animation that ends by itself
+    /// runs; on a manual clock, as soon as the engine says it is idle
     /// ([`EngineControl::flush`]), without waiting.
     pub fn settle(&mut self) -> bool {
         if self.clock.is_manual() {
             self.idle_on_manual_clock(SETTLE)
         } else {
-            self.quiet(QUIET, SETTLE)
+            let end = Instant::now() + SETTLE;
+            self.caught_up(end);
+            self.quiet(QUIET, end.saturating_duration_since(Instant::now()))
+        }
+    }
+
+    /// On the system's clock: has the engine run what was sent to it
+    /// ([`EngineControl::flush`]) and applies the batches that brought,
+    /// again while they bring more (what applying them sends back: a
+    /// scroll reported, a focus moved), until `end` at most. The quiet
+    /// that ends a step is then counted from there, so an engine taking
+    /// longer than [`QUIET`] over a step does not end it early, with the
+    /// next step acting on the screen as it was before.
+    fn caught_up(&mut self, end: Instant) {
+        while !self.exited && self.errors.is_empty() && Instant::now() < end {
+            let applied = self.applied;
+            self.flush(end);
+            self.drain();
+            if self.applied == applied {
+                return;
+            }
         }
     }
 
@@ -1237,19 +1560,45 @@ impl Headless {
     /// Answers the oldest dialog not answered yet.
     fn answer(&mut self, answer: DialogAnswer) -> Result<(), String> {
         let dialog = self.screen.pending_dialog().ok_or("no dialog to answer")?;
+        let typed = match &answer {
+            DialogAnswer::TypeAndPress { text, .. } if dialog.input.is_none() => {
+                return Err(format!(
+                    "the dialog {} has no text field to type {text:?} into",
+                    describe(dialog)
+                ));
+            }
+            DialogAnswer::TypeAndPress { text, .. } => Some(text.as_str()),
+            _ => None,
+        };
+        // The field's text as the user leaves it.
+        let value = dialog
+            .input
+            .as_ref()
+            .map(|input| typed.unwrap_or(&input.text).to_owned());
         let index = match &answer {
-            DialogAnswer::Press(text) => dialog
-                .buttons
-                .iter()
-                .position(|b| b.text == *text)
-                .ok_or_else(|| {
-                    let buttons: Vec<&str> =
-                        dialog.buttons.iter().map(|b| b.text.as_str()).collect();
-                    format!(
-                        "the dialog {} has no button {text:?}: {buttons:?}",
+            DialogAnswer::Press(text) | DialogAnswer::TypeAndPress { button: text, .. } => {
+                let index = dialog
+                    .buttons
+                    .iter()
+                    .position(|b| b.text == *text)
+                    .ok_or_else(|| {
+                        let buttons: Vec<&str> =
+                            dialog.buttons.iter().map(|b| b.text.as_str()).collect();
+                        format!(
+                            "the dialog {} has no button {text:?}: {buttons:?}",
+                            describe(dialog)
+                        )
+                    })?;
+                if let (Some(input), Some(value)) = (&dialog.input, &value)
+                    && !input.enables(&dialog.buttons[index], value)
+                {
+                    return Err(format!(
+                        "the button {text:?} of the dialog {} is disabled while its text field is empty",
                         describe(dialog)
-                    )
-                })? as f64,
+                    ));
+                }
+                index as f64
+            }
             DialogAnswer::Dismiss if dialog.cancelable => -1.0,
             DialogAnswer::Dismiss => {
                 return Err(format!(
@@ -1260,13 +1609,17 @@ impl Headless {
         };
         let id = f64::from(dialog.id);
         self.screen.answered();
+        let mut payload = vec![
+            ("id", PayloadValue::Number(id)),
+            ("index", PayloadValue::Number(index)),
+        ];
+        if let Some(value) = value {
+            payload.push(("value", PayloadValue::Str(value)));
+        }
         self.engine.control().dispatch_event(
             ROOT_ID,
             EventKind::Dialog,
-            EventPayload::Map(vec![
-                ("id", PayloadValue::Number(id)),
-                ("index", PayloadValue::Number(index)),
-            ]),
+            EventPayload::Map(payload),
         );
         Ok(())
     }
@@ -1287,6 +1640,28 @@ impl Headless {
                 self.on_screen()
             ));
         }
+        self.done()
+    }
+
+    /// The step `setSheetDetent(<selector>, <detent>)`: the user moves the
+    /// dialog `selector` names, presented as an iOS sheet with `detents`,
+    /// to `detent`, one of them (a drag, its grabber, a screen reader), as
+    /// iOS reports it: it rests there ([`Screen::sheet_detent`]) and the
+    /// dialog hears `onDetentChange({ detent })`. Fails for a dialog that
+    /// is no such sheet, or a detent not among its `detents`.
+    pub fn set_sheet_detent(
+        &mut self,
+        selector: &str,
+        detent: nsh_core::SheetDetent,
+    ) -> Result<(), String> {
+        self.step(format!("setSheetDetent({selector}, {detent:?})"));
+        let id = self.screen.id(selector)?;
+        self.screen
+            .move_sheet(id, detent)
+            .map_err(|e| format!("setSheetDetent({selector}): {e}"))?;
+        self.engine
+            .control()
+            .dispatch_event(id, EventKind::DetentChange, detent.change_payload());
         self.done()
     }
 
@@ -1311,6 +1686,7 @@ impl Headless {
                     control.dispatch_event(screen, EventKind::BackRequest, EventPayload::None);
                 }
                 self.screen.pop(screen);
+                self.leave_covered_pages();
                 control.dispatch_event(screen, EventKind::Dismiss, EventPayload::None);
             }
             Back::Ask(screen) => {
@@ -1325,6 +1701,7 @@ impl Headless {
                 control.dispatch_event(modal, EventKind::RequestClose, reason);
                 if close_on_escape {
                     self.screen.close(modal);
+                    self.modals_closed();
                     control.dispatch_event(modal, EventKind::Dismiss, EventPayload::None);
                 }
             }
@@ -1333,9 +1710,15 @@ impl Headless {
         true
     }
 
-    /// The texts on screen, for errors.
+    /// The texts on screen, for errors: cut to
+    /// [`SCREEN_TEXT_LIMIT`](crate::failure::SCREEN_TEXT_LIMIT) so a long
+    /// document cannot flood the error.
     fn on_screen(&self) -> String {
-        format!("on screen: {:?}", self.screen.texts())
+        let texts = self.screen.texts();
+        format!(
+            "on screen: [{}]",
+            crate::failure::screen_texts(&texts, Some(crate::failure::SCREEN_TEXT_LIMIT))
+        )
     }
 
     /// The first render: waits for the app's first batch ([`WAIT`] at
@@ -1537,16 +1920,36 @@ impl Headless {
     pub fn press(&mut self, selector: &str) -> Result<(), String> {
         let parsed = Selector::parse(selector)?;
         self.step(format!("press({selector})"));
+        self.input_with(InputModality::Pointer);
         let pick = self.screen.pressable(&parsed);
-        let id = self.picked(pick, selector, "pressable view")?;
+        let mut id = self.picked(pick, selector, "pressable view")?;
+        let mut routed = None;
         // A real finger lands where the view is drawn: a view drawn over it
-        // there takes the press, so the step fails as the user would.
+        // there takes the press, so the step fails as the user would. The
+        // finger goes on the part of the view that is visible — a view
+        // across a scroll view's fold is pressed on the half left visible,
+        // its laid-out center lying below the fold, on the bar under it; a
+        // view nothing of which is on screen (a target scrolled out of
+        // view) keeps its laid-out center, which a press still reaches as
+        // before. A view that takes no pointer (in a `pointerEvents: none`
+        // subtree, as a data table's cells under its hit layer) is pressed
+        // where it is, by the view a pointer there reaches.
         if let Some(target) = self.screen.bounds_in_root(id) {
             let point = self
                 .screen
                 .press_point(&parsed, id)
                 .map_or(target.center(), |p| target.origin + p);
-            if let Some(cover) = self.screen.covering(id, point) {
+            let visible = self.screen.visible_bounds_in_root(id);
+            let point = match visible {
+                Some(visible) if visible.contains(&point) => point,
+                Some(visible) => visible.center(),
+                None => point,
+            };
+            if let Some((to, inside)) = self.screen.routed_press(id, point) {
+                (id, routed) = (to, Some(inside));
+            } else if (visible.is_some() || target.is_empty())
+                && let Some(cover) = self.screen.covering(id, point)
+            {
                 return Err(format!(
                     "{}; {}",
                     failure::covered(selector, &self.screen.selector_of(cover)),
@@ -1576,7 +1979,7 @@ impl Headless {
         {
             self.move_focus(Some(id));
         }
-        let inside = self.screen.press_point(&parsed, id);
+        let inside = routed.or_else(|| self.screen.press_point(&parsed, id));
         let payload = self.press_payload(id, inside);
         for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
             self.send(id, kind, payload.clone());
@@ -1594,24 +1997,14 @@ impl Headless {
     pub fn press_at(&mut self, selector: &str, at: Point<Points>) -> Result<(), String> {
         let parsed = Selector::parse(selector)?;
         self.step(format!("pressAt({selector}, {}, {})", at.x.0, at.y.0));
+        self.input_with(InputModality::Pointer);
         let pick = self.screen.pressable(&parsed);
         let id = self.picked(pick, selector, "pressable view")?;
         // `at` is in the view the selector names, which may be inside the
         // pressable the press goes to (a paragraph's text in an editor):
         // it is moved into that view's coordinates. The touch reports it
         // in the root, as `press` reports a canvas node's center.
-        let named = match self.screen.resolve(&parsed)[..] {
-            [named] => named,
-            _ => id,
-        };
-        let page = self
-            .screen
-            .bounds_in_root(named)
-            .map(|bounds| bounds.origin + at);
-        let at = match (page, self.screen.bounds_in_root(id)) {
-            (Some(page), Some(target)) => page - target.origin,
-            _ => at,
-        };
+        let (page, at) = self.press_coordinates(&parsed, id, at);
         self.activate_window_of(id);
         let path = self.screen.touch_path(id);
         if !path.is_empty() {
@@ -1673,28 +2066,67 @@ impl Headless {
         })
     }
 
+    fn press_coordinates(
+        &self,
+        parsed: &Selector,
+        id: NodeId,
+        at: Point<Points>,
+    ) -> (Option<Point<Points>>, Point<Points>) {
+        let named = match self.screen.resolve(parsed)[..] {
+            [named] => named,
+            _ => id,
+        };
+        let page = self
+            .screen
+            .bounds_in_root(named)
+            .map(|bounds| bounds.origin + at);
+        let at = match (page, self.screen.bounds_in_root(id)) {
+            (Some(page), Some(target)) => page - target.origin,
+            _ => at,
+        };
+        (page, at)
+    }
+
     /// The step `longPress(<selector>)`: holds a finger on what `selector`
     /// names (or the nearest view around it that hears long presses or
     /// presses) for its `delayLongPress` (500 ms), as a long press does:
     /// `onPressDown`, `onLongPress`, then `onPressUp`; no `onPress` follows.
     pub fn long_press(&mut self, selector: &str) -> Result<(), String> {
+        self.long_press_position(selector, None)
+    }
+
+    /// Long-press at a point relative to the selected view, as in `press_at`.
+    pub fn long_press_at(&mut self, selector: &str, at: Point<Points>) -> Result<(), String> {
+        self.long_press_position(selector, Some(at))
+    }
+
+    fn long_press_position(
+        &mut self,
+        selector: &str,
+        at: Option<Point<Points>>,
+    ) -> Result<(), String> {
         let parsed = Selector::parse(selector)?;
         self.step(format!("longPress({selector})"));
+        self.input_with(InputModality::Pointer);
         let pick = self.screen.long_pressable(&parsed);
         let id = self.picked(pick, selector, "pressable view")?;
         let delay = self.screen.long_press_delay(id).unwrap_or(500.0).max(0.0);
         self.activate_window_of(id);
         let path = self.screen.touch_path(id);
+        let (page, inside) = at
+            .map(|at| self.press_coordinates(&parsed, id, at))
+            .map(|(page, inside)| (page, Some(inside)))
+            .unwrap_or_else(|| (None, self.screen.press_point(&parsed, id)));
         if !path.is_empty() {
-            self.send_touch(id, nsh_core::TouchPhase::Start, path.clone(), None);
+            self.send_touch(id, nsh_core::TouchPhase::Start, path.clone(), page);
         }
-        let payload = self.press_payload(id, None);
+        let payload = self.press_payload(id, inside);
         self.send(id, EventKind::PressDown, payload.clone());
         self.elapse(Duration::from_secs_f64(f64::from(delay) / 1000.0));
         self.send(id, EventKind::LongPress, payload.clone());
         self.send(id, EventKind::PressUp, payload);
         if !path.is_empty() {
-            self.send_touch(id, nsh_core::TouchPhase::End, path, None);
+            self.send_touch(id, nsh_core::TouchPhase::End, path, page);
         }
         self.done()
     }
@@ -1704,6 +2136,7 @@ impl Headless {
     /// an edit to nothing.
     pub fn clear(&mut self, selector: &str) -> Result<(), String> {
         let id = self.input_step(selector, format!("clear({selector})"))?;
+        self.input_with(InputModality::Keyboard);
         self.key_press(id, "Backspace");
         if let Some(input) = self.screen.input_mut(id)
             && !input.text.is_empty()
@@ -1722,8 +2155,10 @@ impl Headless {
         self.done()
     }
 
-    /// The step `type(<selector>, <text>)`: types `text` at the end of the
-    /// input `selector` names (the matching view, or the first input in
+    /// The step `type(<selector>, <text>)`: types `text` at the caret of
+    /// the input `selector` names (here always the end of its text; a view
+    /// that keeps its own selection, such as `Editor`, types over it, as
+    /// the native drivers do) (the matching view, or the first input in
     /// it; `text:` also matches what an input holds or its placeholder),
     /// as a keyboard does: the input takes the focus, then each character
     /// is a key (`onKeyPress`) and an edit (`onChange`); a line break
@@ -1731,6 +2166,7 @@ impl Headless {
     /// character past `maxLength` is dropped.
     pub fn type_text(&mut self, selector: &str, text: &str) -> Result<(), String> {
         let id = self.input_step(selector, format!("type({selector}, {text:?})"))?;
+        self.input_with(InputModality::Keyboard);
         for c in text.chars() {
             let multiline = self.screen.input(id).is_some_and(|i| i.config.multiline);
             if c == '\n' && !multiline {
@@ -1750,32 +2186,46 @@ impl Headless {
     /// (`onChange`), no keys.
     pub fn paste(&mut self, selector: &str, content: &nsh_core::PasteEvent) -> Result<(), String> {
         let id = self.input_step(selector, format!("paste({selector})"))?;
+        self.paste_into(id, content);
+        self.done()
+    }
+
+    /// The user's paste of `content` into input `id`: it hears `onPaste`,
+    /// then its text goes in as `pasteBehavior` says.
+    pub(crate) fn paste_into(&mut self, id: NodeId, content: &nsh_core::PasteEvent) {
         self.send(
             id,
             EventKind::Paste,
             EventPayload::Paste(Box::new(content.clone())),
         );
         let Some(input) = self.screen.input_mut(id) else {
-            return self.done();
+            return;
         };
         if input.config.paste_behavior != nsh_core::PasteBehavior::Insert || content.text.is_empty()
         {
-            return self.done();
+            return;
         }
-        let mut text = nsh_core::text_edit::pasted(&content.text, input.config.multiline);
+        self.insert_text(id, &content.text);
+    }
+
+    /// `text` goes into input `id` as the user's edit (a paste, the app's
+    /// `insertText`): at the end, where the caret is here (a single line
+    /// takes line breaks as spaces; within `maxLength`), one `onChange`,
+    /// no keys.
+    pub(crate) fn insert_text(&mut self, id: NodeId, text: &str) {
+        let Some(input) = self.screen.input_mut(id) else {
+            return;
+        };
+        if !input.config.editable {
+            return;
+        }
+        let mut text = nsh_core::text_edit::pasted(text, input.config.multiline);
         if let Some(max) = input.config.max_length {
-            let room = (max as usize).saturating_sub(input.text.encode_utf16().count());
-            let mut used = 0;
-            text = text
-                .chars()
-                .take_while(|c| {
-                    used += c.len_utf16();
-                    used <= room
-                })
-                .collect();
+            let room = (max as usize).saturating_sub(char_len(&input.text));
+            text.truncate(clip_chars(&text, room).len());
         }
         if text.is_empty() {
-            return self.done();
+            return;
         }
         input.text.push_str(&text);
         input.count += 1;
@@ -1787,7 +2237,6 @@ impl Headless {
             .control()
             .dispatch_event(id, EventKind::ChangeText, payload);
         self.report_selection(id);
-        self.done()
     }
 
     /// The step `submit(<selector>)`: the return key in the input
@@ -1796,12 +2245,54 @@ impl Headless {
     /// break in a multiline input.
     pub fn submit(&mut self, selector: &str) -> Result<(), String> {
         let id = self.input_step(selector, format!("submit({selector})"))?;
+        self.input_with(InputModality::Keyboard);
         self.return_key(id);
         self.done()
     }
 
-    /// Starts a step on the input `selector` names and focuses it.
+    /// Starts a step on the input `selector` names and focuses it; what an
+    /// input method composes in it ends, as a key or a paste commits it.
     fn input_step(&mut self, selector: &str, step: String) -> Result<NodeId, String> {
+        let id = self.focus_step(selector, step)?;
+        self.set_composition(id, None);
+        Ok(id)
+    }
+
+    /// The step `compose(<selector>, <text>)`: an input method composes
+    /// `text` in the input `selector` names, marked at the end of its
+    /// text in place of what it composed (`onCompositionChange`), as a
+    /// user typing pinyin sees it; empty, the composition ends with
+    /// nothing committed. The core measures the input with it.
+    pub fn compose(&mut self, selector: &str, text: &str) -> Result<(), String> {
+        let id = self.focus_step(selector, format!("compose({selector}, {text:?})"))?;
+        self.set_composition(id, (!text.is_empty()).then(|| text.to_owned()));
+        self.done()
+    }
+
+    /// Input `id`'s composition becomes `marked` (`None`: it ends),
+    /// reported to the core and as `onCompositionChange` if it changed.
+    fn set_composition(&mut self, id: NodeId, marked: Option<String>) {
+        let Some(input) = self.screen.input_mut(id) else {
+            return;
+        };
+        if input.composition == marked {
+            return;
+        }
+        let shown = marked.as_ref().map(|m| format!("{}{m}", input.text));
+        let payload = EventPayload::Map(vec![
+            ("composing", PayloadValue::Bool(marked.is_some())),
+            (
+                "text",
+                PayloadValue::Str(marked.clone().unwrap_or_default()),
+            ),
+        ]);
+        input.composition = marked;
+        self.engine.control().input_composing(id, shown);
+        self.send(id, EventKind::CompositionChange, payload);
+    }
+
+    /// Starts a step on the input `selector` names and focuses it.
+    fn focus_step(&mut self, selector: &str, step: String) -> Result<NodeId, String> {
         let parsed = Selector::parse(selector)?;
         self.step(step);
         let pick = self.screen.input_view(&parsed);
@@ -1848,7 +2339,12 @@ impl Headless {
                 page: at.unwrap_or_default(),
                 location: location.unwrap_or_default(),
                 changed: true,
+                pointer_type: nsh_core::PointerType::Touch,
+                pressure: nsh_core::TouchPoint::default_pressure(phase, true),
+                tilt_x: 0.0,
+                tilt_y: 0.0,
             }],
+            modifiers: self.held,
             activated: None,
         };
         self.engine.control().dispatch_event(
@@ -1880,7 +2376,7 @@ impl Headless {
         let Some(input) = self.screen.input_mut(id) else {
             return;
         };
-        let length = input.text.encode_utf16().count() + c.len_utf16();
+        let length = char_len(&input.text) + 1;
         if input
             .config
             .max_length
@@ -1967,6 +2463,7 @@ impl Headless {
     pub fn scroll(&mut self, selector: &str, distance: Points) -> Result<(), String> {
         let parsed = Selector::parse(selector)?;
         self.step(format!("scroll({selector}, {distance})"));
+        self.input_with(InputModality::Pointer);
         let pick = self.screen.scroll_view(&parsed);
         let id = self.picked(pick, selector, "scroll view")?;
         let at = |screen: &Screen| {
@@ -2019,6 +2516,118 @@ impl Headless {
         self.send(id, EventKind::ScrollDragEnd, offset(&self.screen));
         self.animator.scroll_ended(id);
         self.send(id, EventKind::ScrollEnd, offset(&self.screen));
+        self.done()
+    }
+
+    /// The step `wheel(<selector>, <dx>, <dy>)`: a mouse wheel at the center
+    /// of the view `selector` names, turning by `dx`/`dy` points (positive:
+    /// content moves up / left, as DOM's `deltaY`/`deltaX`). A pointer
+    /// there reaches the innermost view at that place (a dialog over the
+    /// window first, as the screen model hit-tests a pointer): on Linux
+    /// the nearest enabled view around it that listens hears the wheel
+    /// (`onWheel`), and, when no scroll view is nearer than it nor is it
+    /// one, it takes the wheel — nothing scrolls. A listener that only
+    /// observes (a scroll view, or a view around one) lets the scroll view
+    /// the platform's own rule picks move — along the wheel's axis (a
+    /// vertical wheel over a horizontal carousel scrolls the page around
+    /// it), with room left that way (an inner one passing it on at its
+    /// edge). A view that hosts native content scrolls itself: no scroll
+    /// view around it moves. Where nothing takes it, nothing moves.
+    pub fn wheel(&mut self, selector: &str, delta: Point<Points>) -> Result<(), String> {
+        let parsed = Selector::parse(selector)?;
+        self.step(format!("wheel({selector}, {}, {})", delta.x.0, delta.y.0));
+        let named = match self.screen.resolve(&parsed)[..] {
+            [id] => id,
+            [] => {
+                return Err(format!(
+                    "{}; {}",
+                    failure::not_found("view", selector),
+                    self.on_screen()
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "`{selector}` matches more than one view: say which (`{selector} >> nth=0`)"
+                ));
+            }
+        };
+        // The pointer's place: the view's center, and the view a pointer
+        // there reaches (not the view the selector names: a child over it,
+        // or a dialog over the window, takes what comes).
+        let Some(page) = self
+            .screen
+            .bounds_in_root(named)
+            .map(|bounds| bounds.center())
+        else {
+            return Err(format!(
+                "`{selector}` has no place on screen to turn the wheel at; {}",
+                self.on_screen()
+            ));
+        };
+        let hit = self.screen.hit_pointer_at(page, named);
+        // The platforms whose views hear the wheel (`onWheel`: macOS,
+        // Windows, Linux and the web) give the nearest enabled listener
+        // around the pointer the event; the phones and tablets have no
+        // wheel.
+        let mut took = false;
+        if matches!(
+            self.environment.os,
+            Os::MacOs | Os::Windows | Os::Linux | Os::Web
+        ) && let Some((listener, takes)) = self.screen.wheel_listener(hit, delta, self.held.ctrl)
+        {
+            let local = self
+                .screen
+                .bounds_in_root(listener)
+                .map_or(Point::default(), |b| page - b.origin);
+            let wheel = nsh_core::WheelEvent::new(
+                local,
+                page,
+                nsh_core::WheelDelta::Points(delta),
+                self.held,
+            );
+            self.send(listener, EventKind::Wheel, EventPayload::Wheel(wheel));
+            took = takes;
+        }
+        // A view that hosts native content (a web view, a native component)
+        // scrolls itself: the headless screen models no such scroll, and no
+        // scroll view around it moves.
+        if took || self.screen.native_host(hit).is_some() {
+            return self.done();
+        }
+        // Where nothing listens and no scroll view a wheel by this delta
+        // moves is around the pointer, nothing moves.
+        let Some(scroll) = self.screen.wheel_scroll(hit, delta) else {
+            return self.done();
+        };
+        let horizontal = self.screen.scroll(scroll).is_some_and(|s| s.horizontal);
+        // A horizontal view moves by a horizontal wheel, or by a vertical
+        // one where nothing around it scrolls vertically, as the core's
+        // choice ([`nsh_core::input::scroll_target`]) has it.
+        let distance = if horizontal {
+            if delta.x.0 != 0.0 {
+                delta.x.0
+            } else {
+                delta.y.0
+            }
+        } else {
+            delta.y.0
+        };
+        let start = self
+            .screen
+            .scroll(scroll)
+            .map_or(Points::ZERO, |s| if horizontal { s.x } else { s.y });
+        let target = (start + Points(distance)).clamp(Points::ZERO, self.screen.scroll_end(scroll));
+        if let Some(state) = self.screen.scroll_mut(scroll) {
+            if horizontal {
+                state.x = target;
+            } else {
+                state.y = target;
+            }
+            let (x, y, applied) = (state.x, state.y, state.applied);
+            self.engine.control().scroll(scroll, point(x, y), applied);
+            self.animator.scrolled(scroll, point(x, y));
+        }
+        self.display_frame();
         self.done()
     }
 }
@@ -2079,7 +2688,10 @@ pub fn print_batch(out: &mut dyn Write, step: &str, batch: &MountBatch) {
 #[cfg(test)]
 mod tests {
     use nsh_core::{
+        KeyCapture, WheelDelta,
         element::{Root, input},
+        keymap::{Keystroke, When},
+        platform::Os,
         prelude::*,
     };
 
@@ -2111,6 +2723,28 @@ mod tests {
                 .map(|b| b.color),
             Some(marked.color)
         );
+    }
+
+    /// A paragraph whose last words hold their place hidden.
+    #[component]
+    fn Partly() -> impl IntoElement {
+        text("Shown ")
+            .child(text("not yet").invisible())
+            .child(" end")
+    }
+
+    #[test]
+    fn hidden_spans_are_not_on_screen() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Partly>())).unwrap();
+        app.first_render().unwrap();
+        let screen = app.screen();
+        assert_eq!(screen.texts(), ["Shown  end"]);
+        assert!(!screen.shows("not yet"));
+        let nodes = screen.layout_nodes();
+        let text = nodes.iter().find_map(|n| n.text.as_ref()).unwrap();
+        // The characters are still laid out, in the text the platform gets.
+        assert_eq!(text.text.text, "Shown not yet end");
+        assert!(text.text.spans[1].style.hidden);
     }
 
     #[component]
@@ -2149,6 +2783,87 @@ mod tests {
             )
     }
 
+    /// A button that copies how many times it was pressed.
+    #[component]
+    fn Copier() -> impl IntoElement {
+        let count = signal(0_u32);
+        view()
+            .on_press(move || {
+                count.update(|c| *c += 1);
+                set_clipboard(format!("copied {}", count.get_untracked()));
+            })
+            .child(text("Copy"))
+    }
+
+    #[test]
+    fn cleared_commands_are_forgotten_but_their_effects_stay() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Copier>())).unwrap();
+        app.first_render().unwrap();
+        let copies = |app: &Headless| {
+            app.screen()
+                .commands()
+                .iter()
+                .filter(|(_, c)| matches!(c, Command::SetClipboard(_)))
+                .count()
+        };
+        for _ in 0..3 {
+            app.press("Copy").unwrap();
+        }
+        assert_eq!(copies(&app), 3);
+        app.clear_commands();
+        assert!(app.screen().commands().is_empty());
+        assert!(!app.screen().sent(&Command::SetClipboard("copied 3".into())));
+        // What the commands did stays on screen.
+        assert_eq!(app.screen().clipboard(), Some("copied 3"));
+        app.press("Copy").unwrap();
+        assert_eq!(copies(&app), 1);
+        assert!(app.screen().sent(&Command::SetClipboard("copied 4".into())));
+    }
+
+    /// A button that copies text with its HTML, one that copies text only.
+    #[component]
+    fn HtmlCopier() -> impl IntoElement {
+        view()
+            .child(
+                view()
+                    .on_press(|| {
+                        let mut item = ClipboardItem::default();
+                        item.text = "a b".into();
+                        item.html = Some("<p>a <b>b</b></p>".into());
+                        set_clipboard_item(item)
+                    })
+                    .child(text("Rich")),
+            )
+            .child(
+                view()
+                    .on_press(|| set_clipboard("plain"))
+                    .child(text("Plain")),
+            )
+    }
+
+    #[test]
+    fn the_clipboard_keeps_the_html_written_with_its_text() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<HtmlCopier>())).unwrap();
+        app.first_render().unwrap();
+        app.press("Rich").unwrap();
+        assert_eq!(app.screen().clipboard(), Some("a b"));
+        assert_eq!(
+            app.screen()
+                .clipboard_item()
+                .and_then(|item| item.html.as_deref()),
+            Some("<p>a <b>b</b></p>")
+        );
+        // Text alone replaces both.
+        app.press("Plain").unwrap();
+        assert_eq!(app.screen().clipboard(), Some("plain"));
+        assert_eq!(
+            app.screen()
+                .clipboard_item()
+                .and_then(|item| item.html.as_deref()),
+            None
+        );
+    }
+
     /// A pad under a 10-point strip. A press reports where it was in the
     /// pad and in the root.
     #[component]
@@ -2170,6 +2885,42 @@ mod tests {
                 },
             ))
             .child(text(move || format!("seen: {}", seen.get())))
+    }
+
+    #[component]
+    fn EmptyCovered() -> impl IntoElement {
+        view()
+            .w(px(390.0))
+            .h(px(844.0))
+            .child(
+                view()
+                    .w(px(0.0))
+                    .h(px(0.0))
+                    .on_press(|| {})
+                    .child(text("Zero").w(px(120.0)).h(px(20.0))),
+            )
+            .child(
+                view()
+                    .absolute()
+                    .left(px(0.0))
+                    .top(px(0.0))
+                    .w(px(200.0))
+                    .h(px(70.0)),
+            )
+    }
+
+    #[test]
+    fn an_empty_press_target_keeps_its_covering_check() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<EmptyCovered>())).unwrap();
+        app.first_render().unwrap();
+        let target = app.screen().press_target("Zero").unwrap().unwrap();
+        assert!(app.screen().bounds_in_root(target).unwrap().is_empty());
+        assert!(app.screen().visible_bounds_in_root(target).is_none());
+        assert!(
+            app.press("Zero")
+                .unwrap_err()
+                .starts_with("`Zero` is covered:")
+        );
     }
 
     #[test]
@@ -2250,6 +3001,146 @@ mod tests {
         app.wait_for("wide true inner 200").unwrap();
     }
 
+    /// A page whose `header` holds a back button, a one-line title far
+    /// wider than the window and a button after it.
+    #[component]
+    fn LongTitle() -> impl IntoElement {
+        let button = |id: &'static str| view().test_id(id).size(px(44.0)).flex_shrink_0();
+        nsh_core::element::stack().flex_1().child(
+            nsh_core::element::screen()
+                .header(
+                    view()
+                        .test_id("bar")
+                        .flex_row()
+                        .child(button("back"))
+                        .child(
+                            view().test_id("title").flex_1().min_w(px(0.0)).child(
+                                text("A title far too long for one line of the header ".repeat(4))
+                                    .number_of_lines(1),
+                            ),
+                        )
+                        .child(button("action")),
+                )
+                .child(view().flex_1()),
+        )
+    }
+
+    /// On a desktop, as its backends run it, a page's `header` is placed
+    /// by NSH as wide as the window: a long title shrinks and the button
+    /// after it stays in the window, whatever the window's width.
+    #[test]
+    fn a_desktop_page_header_is_as_wide_as_the_window() {
+        let mut config = EngineConfig::new(Root::of::<LongTitle>());
+        config.viewport = Size::new(px(360.0), px(600.0));
+        config.environment.os = Os::MacOs;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        for width in [360.0, 600.0] {
+            app.set_viewport(Size::new(px(width), px(600.0))).unwrap();
+            let nodes = app.screen().layout_nodes();
+            let bounds = |id: &str| {
+                nodes
+                    .iter()
+                    .find(|n| n.test_id.as_deref() == Some(id))
+                    .unwrap_or_else(|| panic!("no {id}"))
+                    .bounds
+            };
+            let header = nodes
+                .iter()
+                .find(|n| n.kind == nsh_core::ViewKind::HeaderItem)
+                .expect("the header")
+                .bounds;
+            assert_eq!(header.size.width, px(width), "the header at {width}");
+            assert_eq!(bounds("bar").size.width, px(width), "its row at {width}");
+            let action = bounds("action");
+            assert_eq!(
+                action.origin.x + action.size.width,
+                px(width),
+                "the button after the title at {width}"
+            );
+            assert_eq!(bounds("title").size.width, px(width - 88.0));
+        }
+    }
+
+    /// A page whose system header holds a button at each end and a title
+    /// view with a dot to press, each counting its presses.
+    #[component]
+    fn HeaderSlots() -> impl IntoElement {
+        let presses = signal(String::new());
+        let pressable = move |id: &'static str, size: f32| {
+            view()
+                .test_id(id)
+                .size(px(size))
+                .on_press(move || presses.update(|p| p.push_str(id)))
+        };
+        nsh_core::element::stack().flex_1().child(
+            nsh_core::element::screen()
+                .header_left(pressable("menu", 40.0))
+                .header_title(
+                    view()
+                        .test_id("tabs")
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(text("Tabs"))
+                        .child(pressable("dot", 8.0)),
+                )
+                .header_right(pressable("action", 46.0))
+                .child(text(move || format!("pressed {}", presses.get()))),
+        )
+    }
+
+    /// iOS and Android place a page's header items in their bar side by
+    /// side, the leading one at its start, the trailing one at its end and
+    /// the title between them: headless runs place them so too, and a
+    /// press reaches each of them.
+    #[test]
+    fn system_header_items_sit_side_by_side() {
+        for os in [Os::Ios, Os::Android] {
+            let mut config = EngineConfig::new(Root::of::<HeaderSlots>());
+            config.viewport = Size::new(px(390.0), px(800.0));
+            config.environment.os = os;
+            let mut app = Headless::start(config).unwrap();
+            app.first_render().unwrap();
+            let nodes = app.screen().layout_nodes();
+            let bounds = |id: &str| {
+                nodes
+                    .iter()
+                    .find(|n| n.test_id.as_deref() == Some(id))
+                    .unwrap_or_else(|| panic!("no {id} on {os:?}"))
+                    .bounds
+            };
+            let (menu, tabs, action) = (bounds("menu"), bounds("tabs"), bounds("action"));
+            let end = |b: Bounds<Points>| b.origin.x + b.size.width;
+            assert!(end(menu) <= tabs.origin.x, "{os:?}: {menu:?} {tabs:?}");
+            assert!(end(tabs) <= action.origin.x, "{os:?}: {tabs:?} {action:?}");
+            assert!(end(action) < px(390.0), "{os:?}: {action:?}");
+            assert!(menu.origin.x > px(0.0), "{os:?}: {menu:?}");
+            // The bar's height, from the screen's top: each item stands in
+            // its middle.
+            let bar = 44.0;
+            for item in [menu, tabs, action] {
+                let middle = item.origin.y + item.size.height / 2.0;
+                assert_eq!(middle, px(bar / 2.0), "{os:?}: {item:?}");
+            }
+            if os == Os::Ios {
+                // iOS centers the title in the bar.
+                assert_eq!(tabs.origin.x + tabs.size.width / 2.0, px(195.0));
+            }
+            for (selector, pressed) in [
+                ("id:dot", "pressed dot"),
+                ("id:action", "pressed dotaction"),
+                ("id:menu", "pressed dotactionmenu"),
+            ] {
+                app.press(selector)
+                    .unwrap_or_else(|e| panic!("{os:?}: {selector}: {e}"));
+                app.wait_for(pressed)
+                    .unwrap_or_else(|e| panic!("{os:?}: {e}"));
+            }
+        }
+    }
+
     /// A press whose task finishes a turn later, with no time passing.
     #[component]
     fn Deferred() -> impl IntoElement {
@@ -2294,6 +3185,290 @@ mod tests {
         // `QUIET` each at least.
         let took = started.elapsed();
         assert!(took < QUIET * STEPS, "{took:?}");
+    }
+
+    /// An avatar that falls back to initials when its picture fails, and a
+    /// logo whose `src` a press changes.
+    #[component]
+    fn Pictures() -> impl IntoElement {
+        let avatar_failed = signal(String::new());
+        let logo = signal("asset:/logo.png");
+        let logo_failed = signal(false);
+        view()
+            .child(
+                image("https://cdn.test/ada.png")
+                    .on_error(move |message: &str| avatar_failed.set(message.to_owned())),
+            )
+            .child(text(move || {
+                let message = avatar_failed.get();
+                if message.is_empty() {
+                    "avatar: picture".to_owned()
+                } else {
+                    format!("avatar: AL ({message})")
+                }
+            }))
+            .child(image(move || logo.get()).on_error(move |_: &str| logo_failed.set(true)))
+            .child(text(move || format!("logo failed: {}", logo_failed.get())))
+            .child(
+                view()
+                    .on_press(move || logo.set("https://cdn.test/logos/b.png"))
+                    .child(text("Switch")),
+            )
+    }
+
+    #[test]
+    fn a_test_fails_the_loads_of_the_images_it_names() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Pictures>())).unwrap();
+        app.first_render().unwrap();
+        app.wait(Duration::from_millis(50)).unwrap();
+        assert!(app.shows("avatar: picture"), "no failure unasked");
+
+        // An image already shown fails when the test names it.
+        app.fail_images("https://cdn.test/ada.png").unwrap();
+        app.wait_for("text:avatar: AL (failed to load https://cdn.test/ada.png)")
+            .unwrap();
+        assert!(app.shows("logo failed: false"), "only the URL named");
+
+        // One loaded later fails as it starts loading.
+        app.fail_images("https://cdn.test/logos/*").unwrap();
+        assert!(app.shows("logo failed: false"));
+        app.press("Switch").unwrap();
+        app.wait_for("text:logo failed: true").unwrap();
+    }
+
+    /// Opens a page or a help address and shows whether it opened.
+    #[component]
+    fn Links() -> impl IntoElement {
+        let result = signal(String::from("nothing"));
+        let open = move |url: &'static str| {
+            move |_: &()| {
+                let opened = open_url(url);
+                spawn(async move { result.set(format!("{url} {}", opened.await)) });
+            }
+        };
+        view()
+            .child(text(move || result.get()))
+            .child(text("Page").on_press(open("https://example.com/docs/a")))
+            .child(text("Mail").on_press(open("mailto:help@example.com")))
+    }
+
+    #[test]
+    fn a_test_fails_the_urls_it_names_to_open() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Links>())).unwrap();
+        app.first_render().unwrap();
+        app.press("Page").unwrap();
+        app.wait_for("text:https://example.com/docs/a true")
+            .unwrap();
+
+        app.fail_open_urls("https://example.com/docs/*").unwrap();
+        app.press("Page").unwrap();
+        app.wait_for("text:https://example.com/docs/a false")
+            .unwrap();
+        // Only the URLs named.
+        app.press("Mail").unwrap();
+        app.wait_for("text:mailto:help@example.com true").unwrap();
+        // The app asked for each of them.
+        assert_eq!(
+            app.screen().opened_urls(),
+            [
+                "https://example.com/docs/a",
+                "https://example.com/docs/a",
+                "mailto:help@example.com"
+            ]
+        );
+    }
+
+    /// Shares a link and shows how the share ended.
+    #[component]
+    fn Sharing() -> impl IntoElement {
+        let result = signal(String::from("nothing"));
+        let share_link = move |_: &()| {
+            let shared = share(
+                nsh_core::share::ShareRequest::new()
+                    .title("Docs")
+                    .url("https://example.com/docs"),
+            );
+            spawn(async move {
+                result.set(match shared.await {
+                    Ok(outcome) => match outcome.target {
+                        Some(target) => format!("{} {target}", outcome.action.as_str()),
+                        None => outcome.action.as_str().to_owned(),
+                    },
+                    Err(error) => error.code.unwrap_or_default(),
+                })
+            });
+        };
+        view()
+            .child(text(move || result.get()))
+            .child(text("Share").on_press(share_link))
+    }
+
+    #[test]
+    fn a_test_answers_the_share_sheet() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Sharing>())).unwrap();
+        app.first_render().unwrap();
+        // No share sheet until the test gives the platform one.
+        app.press("Share").unwrap();
+        app.wait_for("text:ERR_FEATURE_UNAVAILABLE_ON_PLATFORM")
+            .unwrap();
+        assert!(app.screen().shares().is_empty());
+
+        app.on_share(nsh_core::share::ShareOutcome::shared(Some("mail".into())))
+            .unwrap();
+        app.press("Share").unwrap();
+        app.wait_for("text:shared mail").unwrap();
+        app.on_share(nsh_core::share::ShareOutcome::dismissed())
+            .unwrap();
+        app.press("Share").unwrap();
+        app.wait_for("text:dismissed").unwrap();
+        let shares = app.screen().shares();
+        assert_eq!(shares.len(), 2);
+        assert_eq!(shares[0].url.as_deref(), Some("https://example.com/docs"));
+        assert_eq!(shares[0].title.as_deref(), Some("Docs"));
+        assert_eq!(shares[0].anchor, None);
+    }
+
+    #[test]
+    fn a_share_never_answered_does_not_hold_the_next_back() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Sharing>())).unwrap();
+        app.first_render().unwrap();
+        app.on_share(nsh_core::share::ShareOutcome::shared(None))
+            .unwrap();
+        // The platform loses the first sheet's answer.
+        app.share = None;
+        app.press("Share").unwrap();
+        app.wait_for("text:nothing").unwrap();
+        assert_eq!(app.screen().shares().len(), 1);
+        // The next share still reaches the platform, and the first ends as
+        // dismissed.
+        app.press("Share").unwrap();
+        app.wait_for("text:dismissed").unwrap();
+        assert_eq!(app.screen().shares().len(), 2);
+        app.share = Some(nsh_core::share::ShareOutcome::shared(Some("mail".into())));
+        app.press("Share").unwrap();
+        app.wait_for("text:shared mail").unwrap();
+        assert_eq!(app.screen().shares().len(), 3);
+    }
+
+    /// Opens a sign-in session ending with a `demo:` callback (closes it)
+    /// and shows how it ended; the links the app hears otherwise show
+    /// after it.
+    #[component]
+    fn SigningIn() -> impl IntoElement {
+        let result = signal(String::from("nothing"));
+        spawn(async move {
+            loop {
+                let link = next_url_scheme_open().await;
+                result.set(format!("link {link}"));
+            }
+        });
+        let sign_in = move |_: &()| {
+            let session = open_auth_session(
+                nsh_core::auth_session::AuthSessionRequest::new(
+                    "https://example.com/authorize",
+                    "demo",
+                )
+                .ephemeral(true),
+            );
+            spawn(async move {
+                use nsh_core::auth_session::AuthSessionOutcome;
+                result.set(match session.await {
+                    Ok(AuthSessionOutcome::Completed(url)) => format!("signed in {url}"),
+                    Ok(_) => "cancelled".into(),
+                    Err(error) => error.code.unwrap_or(error.message),
+                })
+            });
+        };
+        view()
+            .child(text(move || result.get()))
+            .child(text("Sign in").on_press(sign_in))
+            .child(text("Close").on_press(|_: &()| close_auth_session()))
+    }
+
+    #[test]
+    fn a_test_ends_the_in_app_sign_in_session() {
+        use nsh_core::auth_session::AuthSessionOutcome;
+        let mut app = Headless::start(EngineConfig::new(Root::of::<SigningIn>())).unwrap();
+        app.first_render().unwrap();
+        app.on_auth_session(AuthSessionOutcome::Completed("demo://done?code=7".into()))
+            .unwrap();
+        app.press("Sign in").unwrap();
+        app.wait_for("text:signed in demo://done?code=7").unwrap();
+        app.on_auth_session(AuthSessionOutcome::Cancelled).unwrap();
+        app.press("Sign in").unwrap();
+        app.wait_for("text:cancelled").unwrap();
+        let sessions = app.screen().auth_sessions();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].url, "https://example.com/authorize");
+        assert_eq!(sessions[0].callback_scheme, "demo");
+        assert!(sessions[0].ephemeral);
+        // The page opened in the app, not in the browser.
+        assert!(app.screen().opened_urls().is_empty());
+    }
+
+    #[test]
+    fn without_an_in_app_session_the_callback_link_ends_it() {
+        let root = || Root::of::<SigningIn>().url_schemes(["demo"]);
+        let mut app = Headless::start(EngineConfig::new(root())).unwrap();
+        app.first_render().unwrap();
+        app.press("Sign in").unwrap();
+        assert_eq!(
+            app.screen().opened_urls(),
+            ["https://example.com/authorize"]
+        );
+        app.wait_for("text:nothing").unwrap();
+        // The callback is the session's answer, not a link the app hears.
+        app.open_with_url("demo://done?code=8").unwrap();
+        app.wait_for("text:signed in demo://done?code=8").unwrap();
+        app.open_with_url("demo://later").unwrap();
+        app.wait_for("text:link demo://later").unwrap();
+        // A second session replaces one never answered.
+        app.press("Sign in").unwrap();
+        app.press("Sign in").unwrap();
+        app.wait_for("text:cancelled").unwrap();
+        // A browser that does not open fails it.
+        app.fail_open_urls("https://example.com/authorize").unwrap();
+        app.press("Sign in").unwrap();
+        app.wait_for("text:openAuthSession: the browser did not open the sign-in page")
+            .unwrap();
+
+        // Nothing brings a callback of a scheme the app does not claim back.
+        let mut app = Headless::start(EngineConfig::new(Root::of::<SigningIn>())).unwrap();
+        app.first_render().unwrap();
+        app.press("Sign in").unwrap();
+        app.wait_for("text:ERR_FEATURE_UNAVAILABLE_ON_PLATFORM")
+            .unwrap();
+        assert!(app.screen().opened_urls().is_empty());
+    }
+
+    #[test]
+    fn the_app_closes_its_sign_in_session() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<SigningIn>())).unwrap();
+        app.first_render().unwrap();
+        // With no session waiting, closing does nothing.
+        app.press("Close").unwrap();
+        app.wait_for("text:nothing").unwrap();
+        app.keep_auth_sessions_open().unwrap();
+        app.press("Sign in").unwrap();
+        assert_eq!(app.screen().auth_sessions().len(), 1);
+        assert!(app.screen().auth_session_showing());
+        app.wait_for("text:nothing").unwrap();
+        // Closed: answered as cancelled, and off the screen.
+        app.press("Close").unwrap();
+        app.wait_for("text:cancelled").unwrap();
+        assert!(!app.screen().auth_session_showing());
+
+        // In the system browser, the session ends as cancelled too; the
+        // callback link that comes later is an ordinary link.
+        let root = || Root::of::<SigningIn>().url_schemes(["demo"]);
+        let mut app = Headless::start(EngineConfig::new(root())).unwrap();
+        app.first_render().unwrap();
+        app.press("Sign in").unwrap();
+        app.press("Close").unwrap();
+        app.wait_for("text:cancelled").unwrap();
+        app.open_with_url("demo://done?code=9").unwrap();
+        app.wait_for("text:link demo://done?code=9").unwrap();
+        assert!(app.screen().auth_sessions().is_empty());
     }
 
     #[test]
@@ -2487,8 +3662,8 @@ mod tests {
         ))
     }
 
-    /// The approximate engine's line: characters 0.55 em wide, the line
-    /// 1.2 em with its baseline at the bottom, so the ascent is the line
+    /// The approximate engine's unspaced line: characters 0.55 em wide, the
+    /// line 1.2 em with its baseline at the bottom, so the ascent is the line
     /// and the descent is 0.
     #[test]
     fn text_metrics_are_the_engines_line() {
@@ -2552,6 +3727,54 @@ mod tests {
                 .unwrap_err()
                 .starts_with("no input matches `id:none`")
         );
+    }
+
+    /// A chat composer: a multiline input that submits on return, and a
+    /// single-line one beside it.
+    #[component]
+    fn Composer() -> impl IntoElement {
+        let draft = signal(String::new());
+        let sent = signal(String::new());
+        let title = signal(String::new());
+        view()
+            .child(
+                input()
+                    .test_id("draft")
+                    .multiline(true)
+                    .submit_behavior(SubmitBehavior::Submit)
+                    .value(move || draft.get())
+                    .on_change(move |text: &str| draft.set(text.to_owned()))
+                    .on_submit(move |text: &str| sent.set(text.to_owned())),
+            )
+            .child(
+                input()
+                    .test_id("title")
+                    .on_submit(move |text: &str| title.set(text.to_owned())),
+            )
+            .child(text(move || format!("Draft: {:?}", draft.get())))
+            .child(text(move || format!("Sent: {:?}", sent.get())))
+            .child(text(move || format!("Title: {:?}", title.get())))
+    }
+
+    #[test]
+    fn shift_or_alt_return_breaks_the_line_of_a_multiline_input_that_submits() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Composer>())).unwrap();
+        app.first_render().unwrap();
+        app.type_text("id:draft", "Hi").unwrap();
+        // Shift+Return and Alt (Option)+Return break the line, as on every
+        // platform; Return sends.
+        app.press_key("shift+enter").unwrap();
+        app.type_text("id:draft", "there").unwrap();
+        app.press_key("alt+enter").unwrap();
+        app.type_text("id:draft", "!").unwrap();
+        app.wait_for(r#"Draft: "Hi\nthere\n!""#).unwrap();
+        assert!(app.shows(r#"Sent: """#));
+        app.press_key("enter").unwrap();
+        app.wait_for(r#"Sent: "Hi\nthere\n!""#).unwrap();
+        // A single line holds no line break: Shift+Return submits it.
+        app.type_text("id:title", "Plan").unwrap();
+        app.press_key("shift+enter").unwrap();
+        app.wait_for(r#"Title: "Plan""#).unwrap();
     }
 
     /// A list of rows taller than the screen, saying where it is.
@@ -2815,10 +4038,332 @@ mod tests {
             }))
     }
 
+    /// A page with two buttons and a dialog over it, open at first, with
+    /// two buttons of its own.
+    #[component]
+    fn PageUnderDialog() -> impl IntoElement {
+        let open = signal(true);
+        let button = move |id: &'static str| {
+            view()
+                .test_id(id)
+                .on_press(move || {
+                    if id == "close" {
+                        open.set(false);
+                    }
+                })
+                .child(text(id))
+        };
+        view()
+            .flex_1()
+            .child(button("settings"))
+            .child(button("help"))
+            .child(dynamic(move || {
+                open.get().then(|| {
+                    nsh_base::dialog()
+                        .child(button("confirm"))
+                        .child(button("close"))
+                })
+            }))
+    }
+
+    #[test]
+    fn tab_stays_in_the_newest_dialog_as_on_the_desktops() {
+        let mut config = EngineConfig::new(Root::of::<PageUnderDialog>());
+        config.environment.os = Os::MacOs;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        let id = |app: &Headless, s: &str| match app.screen().view(&Selector::parse(s).unwrap()) {
+            crate::screen::Pick::One(id) => id,
+            _ => panic!("{s} is shown"),
+        };
+        let (confirm, close) = (id(&app, "id:confirm"), id(&app, "id:close"));
+        // Into the dialog, around inside it, never to the page under it.
+        app.press_key("tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(confirm));
+        app.press_key("tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(close));
+        app.press_key("tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(confirm));
+        app.press_key("shift+tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(close));
+        // Closed: Tab goes through the page again.
+        app.press_key("return").unwrap();
+        app.wait_for_gone("id:close", Duration::from_secs(2))
+            .unwrap();
+        let (settings, help) = (id(&app, "id:settings"), id(&app, "id:help"));
+        app.press_key("tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(settings));
+        app.press_key("tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(help));
+    }
+
+    /// A page with a button before the one that opens a dialog, which
+    /// closes on Escape or on its own `close` button.
+    #[component]
+    fn DialogFromButton() -> impl IntoElement {
+        let open = signal(false);
+        let button = move |id: &'static str| {
+            view()
+                .test_id(id)
+                .on_press(move || open.set(id == "open"))
+                .child(text(id))
+        };
+        view()
+            .flex_1()
+            .child(button("other"))
+            .child(button("open"))
+            .child(dynamic(move || {
+                open.get().then(|| {
+                    nsh_base::dialog()
+                        .close_on_escape(true)
+                        .on_close(move || open.set(false))
+                        .child(button("confirm"))
+                        .child(button("close"))
+                })
+            }))
+    }
+
+    #[test]
+    fn a_closed_dialog_gives_the_focus_back_as_on_the_desktops() {
+        for os in [Os::MacOs, Os::Linux, Os::Web] {
+            let mut config = EngineConfig::new(Root::of::<DialogFromButton>());
+            config.environment.os = os;
+            config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+            let mut app = Headless::start(config).unwrap();
+            app.first_render().unwrap();
+            let id = |app: &Headless, s: &str| match app.screen().view(&Selector::parse(s).unwrap())
+            {
+                crate::screen::Pick::One(id) => id,
+                _ => panic!("{s} is shown"),
+            };
+            let opener = id(&app, "id:open");
+            app.press_key("tab").unwrap();
+            app.press_key("tab").unwrap();
+            for close in ["escape", "app"] {
+                assert_eq!(app.screen().key_focus(), Some(opener), "{os:?}");
+                app.press_key("return").unwrap();
+                app.wait_for("id:close").unwrap();
+                // The focus leaves the page under the dialog: Return
+                // presses nothing there.
+                assert_eq!(app.screen().key_focus(), None, "{os:?}");
+                let (confirm, closer) = (id(&app, "id:confirm"), id(&app, "id:close"));
+                app.press_key("tab").unwrap();
+                assert_eq!(app.screen().key_focus(), Some(confirm), "{os:?}");
+                app.press_key("tab").unwrap();
+                assert_eq!(app.screen().key_focus(), Some(closer), "{os:?}");
+                app.press_key("tab").unwrap();
+                assert_eq!(app.screen().key_focus(), Some(confirm), "{os:?}");
+                app.press_key("shift+tab").unwrap();
+                assert_eq!(app.screen().key_focus(), Some(closer), "{os:?}");
+                if close == "escape" {
+                    app.press_key("escape").unwrap();
+                } else {
+                    app.press_key("return").unwrap();
+                }
+                app.wait_for_gone("id:close", Duration::from_secs(2))
+                    .unwrap();
+                // Back on the button that opened it, whichever way it
+                // closed.
+                assert_eq!(app.screen().key_focus(), Some(opener), "{os:?} {close}");
+            }
+        }
+    }
+
+    /// A stack whose first page has a button with a tooltip that pushes
+    /// the next page, which has a button of its own; it counts the pages,
+    /// the presses of the first page's button and the buttons' blurs.
+    #[component]
+    fn PushFromButton() -> impl IntoElement {
+        let pages = signal(vec![0_u32]);
+        let nexts = signal(0_u32);
+        let blurs = signal(0_u32);
+        view()
+            .flex_1()
+            .child(text(move || {
+                format!(
+                    "pages {} nexts {} blurs {}",
+                    pages.get().len(),
+                    nexts.get(),
+                    blurs.get()
+                )
+            }))
+            .child(nsh_base::nav_stack().flex_1().child(each(
+                move || pages.get(),
+                |&page: &u32| page,
+                move |page, _| {
+                    let page = page.get_untracked();
+                    let content = if page == 0 {
+                        view().child(
+                            view()
+                                .test_id("next")
+                                .on_press(move || {
+                                    nexts.update(|n| *n += 1);
+                                    pages.update(|p| p.push(1));
+                                })
+                                .on_blur(move || blurs.update(|n| *n += 1))
+                                .tooltip(nsh_base::tooltip().child(text("Opens the next page")))
+                                .child(text("Next")),
+                        )
+                    } else {
+                        view().child(text("Second page")).child(
+                            view()
+                                .test_id("done")
+                                .on_press(|| {})
+                                .on_blur(move || blurs.update(|n| *n += 1))
+                                .child(text("Done")),
+                        )
+                    };
+                    nsh_base::nav_page()
+                        .on_dismiss(move |_: &()| pages.update(|p| p.retain(|p| *p < page)))
+                        .child(content)
+                },
+            )))
+    }
+
+    #[test]
+    fn a_pushed_page_takes_the_keyboard_focus_off_the_page_it_covers() {
+        for os in [Os::MacOs, Os::Linux, Os::Web] {
+            let mut config = EngineConfig::new(Root::of::<PushFromButton>());
+            config.environment.os = os;
+            config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+            let mut app = Headless::start(config).unwrap();
+            app.first_render().unwrap();
+            // Tab to the button: its tooltip shows for the keyboard's focus.
+            app.press_key("tab").unwrap();
+            app.wait_for("Opens the next page")
+                .unwrap_or_else(|e| panic!("{os:?}: {e}"));
+            app.press_key("return").unwrap();
+            app.wait_for("Second page").unwrap();
+            // The covered page's button lost the focus, as the platforms
+            // hand it to the window before they hide the page: it heard
+            // its blur and its tooltip went.
+            assert_eq!(app.screen().key_focus(), None, "{os:?}");
+            app.wait_for("pages 2 nexts 1 blurs 1")
+                .unwrap_or_else(|e| panic!("{os:?}: {e}"));
+            app.wait_for_gone("Opens the next page", Duration::from_secs(2))
+                .unwrap_or_else(|e| panic!("{os:?}: {e}"));
+            // Return presses nothing on the page nobody sees.
+            app.press_key("return").unwrap();
+            app.wait_for("pages 2 nexts 1 blurs 1").unwrap();
+            // The first Escape goes back: no tooltip is left to take it.
+            app.press_key("escape").unwrap();
+            app.wait_for_gone("Second page", Duration::from_secs(2))
+                .unwrap_or_else(|e| panic!("{os:?}: {e}"));
+            app.wait_for("pages 1 nexts 1 blurs 1").unwrap();
+        }
+    }
+
+    #[test]
+    fn a_back_takes_the_keyboard_focus_off_the_page_it_pops() {
+        for os in [Os::MacOs, Os::Linux, Os::Web] {
+            let mut config = EngineConfig::new(Root::of::<PushFromButton>());
+            config.environment.os = os;
+            config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+            let mut app = Headless::start(config).unwrap();
+            app.first_render().unwrap();
+            app.press_key("tab").unwrap();
+            app.press_key("return").unwrap();
+            app.wait_for("Second page").unwrap();
+            app.press_key("tab").unwrap();
+            let crate::screen::Pick::One(done) =
+                app.screen().view(&Selector::parse("id:done").unwrap())
+            else {
+                panic!("one done button");
+            };
+            assert_eq!(app.screen().key_focus(), Some(done), "{os:?}");
+            // Escape pops the page natively: the focus leaves it first,
+            // and its button hears that, as before the platforms take
+            // the page away.
+            app.press_key("escape").unwrap();
+            app.wait_for_gone("Second page", Duration::from_secs(2))
+                .unwrap_or_else(|e| panic!("{os:?}: {e}"));
+            assert_eq!(app.screen().key_focus(), None, "{os:?}");
+            app.wait_for("pages 1 nexts 1 blurs 2")
+                .unwrap_or_else(|e| panic!("{os:?}: {e}"));
+        }
+    }
+
+    /// A page with a button that opens a dialog, which has a button that
+    /// moves the focus back to the page's button (the app's `focus()`)
+    /// while the dialog stays, and a binding of Return that confirms.
+    #[component]
+    fn FocusUnderDialog() -> impl IntoElement {
+        let open = signal(false);
+        let opens = signal(0_u32);
+        let confirms = signal(0_u32);
+        let opener = element_ref();
+        on_key_with(
+            "enter",
+            KeyOptions {
+                when: When::NotEditing,
+                ..Default::default()
+            },
+            move |_| {
+                if open.get_untracked() {
+                    confirms.update(|n| *n += 1);
+                }
+            },
+        );
+        view()
+            .flex_1()
+            .child(text(move || {
+                format!("opens {} confirms {}", opens.get(), confirms.get())
+            }))
+            .child(
+                view()
+                    .test_id("open")
+                    .element_ref(&opener)
+                    .on_press(move || {
+                        opens.update(|n| *n += 1);
+                        open.set(true);
+                    })
+                    .child(text("Open")),
+            )
+            .child(dynamic(move || {
+                open.get().then(|| {
+                    nsh_base::dialog().child(
+                        view()
+                            .test_id("refocus")
+                            .on_press(move || opener.focus())
+                            .child(text("Refocus")),
+                    )
+                })
+            }))
+    }
+
+    #[test]
+    fn return_presses_no_control_outside_the_newest_dialog() {
+        for os in [Os::MacOs, Os::Linux, Os::Web] {
+            let mut config = EngineConfig::new(Root::of::<FocusUnderDialog>());
+            config.environment.os = os;
+            config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+            let mut app = Headless::start(config).unwrap();
+            app.first_render().unwrap();
+            app.press("id:open").unwrap();
+            app.wait_for("id:refocus").unwrap();
+            // The app gives the focus to the button under the dialog.
+            app.press("id:refocus").unwrap();
+            let crate::screen::Pick::One(opener) =
+                app.screen().view(&Selector::parse("id:open").unwrap())
+            else {
+                panic!("one open button");
+            };
+            assert_eq!(app.screen().key_focus(), Some(opener), "{os:?}");
+            // Return leaves that button alone and goes to the bindings, as
+            // the platforms press only a control in the newest dialog.
+            app.press_key("return").unwrap();
+            app.wait_for("opens 1 confirms 1")
+                .unwrap_or_else(|e| panic!("{os:?}: {e}"));
+            app.press_key("space").unwrap();
+            app.wait_for("opens 1 confirms 1").unwrap();
+        }
+    }
+
     #[test]
     fn tab_stops_at_a_focusable_view_that_takes_no_presses() {
         let mut config = EngineConfig::new(Root::of::<FocusStops>());
-        config.environment.os = nsh_core::platform::Os::MacOs;
+        config.environment.os = Os::MacOs;
         config.environment.idiom = nsh_core::platform::Idiom::Desktop;
         let mut app = Headless::start(config).unwrap();
         app.first_render().unwrap();
@@ -2861,6 +4406,119 @@ mod tests {
         app.press("id:chart").unwrap();
         app.wait_for("Opens 1 presses 1 steps 1 focused false")
             .unwrap();
+    }
+
+    /// A dialog whose Return allows (a global binding, outside text
+    /// fields), Mod+Return too, with an input and two buttons.
+    #[component]
+    fn ReturnAllows() -> impl IntoElement {
+        let allows = signal(0_u32);
+        let denies = signal(0_u32);
+        let cancels = signal(0_u32);
+        let sends = signal(0_u32);
+        on_key_with(
+            "enter",
+            KeyOptions {
+                when: nsh_core::keymap::When::NotEditing,
+                ..Default::default()
+            },
+            move |_| allows.update(|a| *a += 1),
+        );
+        on_key("mod+enter", move |_| sends.update(|s| *s += 1));
+        view()
+            .flex_1()
+            .child(input().test_id("note"))
+            .child(
+                view()
+                    .test_id("deny")
+                    .on_press(move || denies.update(|d| *d += 1))
+                    .child(text("Deny")),
+            )
+            .child(
+                view()
+                    .test_id("cancel")
+                    .on_press(move || cancels.update(|c| *c += 1))
+                    .child(text("Cancel")),
+            )
+            .child(text(move || {
+                format!(
+                    "Allows {} denies {} cancels {} sends {}",
+                    allows.get(),
+                    denies.get(),
+                    cancels.get(),
+                    sends.get()
+                )
+            }))
+    }
+
+    #[test]
+    fn return_and_space_press_the_focused_control_before_the_shortcuts() {
+        for os in [Os::MacOs, Os::Web, Os::Linux] {
+            let mut config = EngineConfig::new(Root::of::<ReturnAllows>());
+            config.environment.os = os;
+            config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+            let mut app = Headless::start(config).unwrap();
+            app.first_render().unwrap();
+            // The focus on no control: Return is the dialog's.
+            app.press_key("enter").unwrap();
+            app.wait_for("Allows 1 denies 0 cancels 0 sends 0").unwrap();
+            // Tab to Deny, then Cancel: Return and Space press the control
+            // the focus is on, not the binding.
+            app.press_key("tab").unwrap();
+            app.press_key("tab").unwrap();
+            app.press_key("enter").unwrap();
+            app.wait_for("Allows 1 denies 1 cancels 0 sends 0")
+                .unwrap_or_else(|e| panic!("{os:?}: {e}"));
+            app.press_key("space").unwrap();
+            app.wait_for("Allows 1 denies 2 cancels 0 sends 0").unwrap();
+            app.press_key("tab").unwrap();
+            app.press_key("enter").unwrap();
+            app.wait_for("Allows 1 denies 2 cancels 1 sends 0").unwrap();
+            // With Mod held the binding of that keystroke fires.
+            app.press_key("mod+enter").unwrap();
+            app.wait_for("Allows 1 denies 2 cancels 1 sends 1").unwrap();
+            // In the text field Return is the field's: no binding (it fires
+            // outside text fields), no control.
+            app.type_text("id:note", "Hi").unwrap();
+            app.press_key("enter").unwrap();
+            app.wait_for("Allows 1 denies 2 cancels 1 sends 1").unwrap();
+            app.press_key("mod+enter").unwrap();
+            app.wait_for("Allows 1 denies 2 cancels 1 sends 2").unwrap();
+        }
+    }
+
+    #[test]
+    fn tab_stops_at_fields_and_controls_on_windows() {
+        let mut config = EngineConfig::new(Root::of::<ReturnAllows>());
+        config.environment.os = Os::Windows;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        let id = |app: &Headless, s: &str| match app.screen().view(&Selector::parse(s).unwrap()) {
+            crate::screen::Pick::One(id) => id,
+            _ => panic!("{s} is shown"),
+        };
+        let (note, deny, cancel) = (
+            id(&app, "id:note"),
+            id(&app, "id:deny"),
+            id(&app, "id:cancel"),
+        );
+        // The field, then the views that take presses, in tree order, as
+        // the Windows backend's traversal (`keyboard::is_stop`) runs it.
+        app.press_key("tab").unwrap();
+        assert_eq!(app.screen().focused(), Some(note));
+        app.press_key("tab").unwrap();
+        assert_eq!(app.screen().focused(), None);
+        assert_eq!(app.screen().key_focus(), Some(deny));
+        app.press_key("tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(cancel));
+        app.press_key("shift+tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(deny));
+        // Around from the last stop to the field.
+        app.press_key("tab").unwrap();
+        app.press_key("tab").unwrap();
+        assert_eq!(app.screen().focused(), Some(note));
+        assert_eq!(app.screen().key_focus(), None);
     }
 
     /// A list of 200 rows of its own, each a button showing its row.
@@ -2942,6 +4600,247 @@ mod tests {
         assert_eq!(app.screen().tab_stops().len(), rows.len());
     }
 
+    /// A short list of 30 rows of its own, four on screen, each a button
+    /// that says when it has the focus, and a button after it.
+    #[component]
+    fn TabbedList() -> impl IntoElement {
+        let focused = signal(String::from("none"));
+        view()
+            .flex_1()
+            .child(
+                virtual_list(30, move |at| {
+                    view()
+                        .h(px(40.0))
+                        .on_press(|| {})
+                        .on_focus(move || focused.set(format!("row {}", at.index())))
+                        .child(text(move || format!("Row {}", at.index())))
+                })
+                .test_id("list")
+                .estimated_item_size(px(40.0))
+                .h(px(160.0)),
+            )
+            .child(
+                view()
+                    .test_id("after")
+                    .h(px(40.0))
+                    .on_press(|| {})
+                    .on_focus(move || focused.set("after".into()))
+                    .child(text("After")),
+            )
+            .child(text(move || format!("Focused {}.", focused.get())))
+    }
+
+    /// Tab walks a list's rows one by one, those not rendered yet too, the
+    /// list scrolling each into view, and leaves it after its last row;
+    /// Shift+Tab walks them back.
+    #[test]
+    fn tab_walks_every_row_of_a_list() {
+        let mut config = EngineConfig::new(Root::of::<TabbedList>());
+        config.environment.os = Os::MacOs;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        let id = |app: &Headless, s: &str| match app.screen().view(&Selector::parse(s).unwrap()) {
+            crate::screen::Pick::One(id) => id,
+            _ => panic!("{s} is shown"),
+        };
+        let list = id(&app, "id:list");
+        let shows = |app: &Headless| {
+            let view = app.screen().key_focus().expect("a focus");
+            let (Some(row), Some(list)) = (
+                app.screen().bounds_in_root(view),
+                app.screen().bounds_in_root(list),
+            ) else {
+                return false;
+            };
+            row.origin.y >= list.origin.y
+                && row.origin.y + row.size.height <= list.origin.y + list.size.height
+        };
+        let rows = (0..30).map(|i| format!("row {i}"));
+        for row in rows.clone() {
+            app.press_key("tab").unwrap();
+            app.wait_for(&format!("Focused {row}.")).unwrap();
+            assert!(shows(&app), "{row} is scrolled into view");
+        }
+        app.press_key("tab").unwrap();
+        app.wait_for("Focused after.").unwrap();
+        for row in rows.rev() {
+            app.press_key("shift+tab").unwrap();
+            app.wait_for(&format!("Focused {row}.")).unwrap();
+            assert!(shows(&app), "{row} is scrolled into view");
+        }
+        // Scrolled far from the focus, Tab goes on from it, to the row
+        // after it, not to the rows on screen.
+        app.scroll("id:list", px(900.0)).unwrap();
+        assert!(!shows(&app));
+        app.press_key("tab").unwrap();
+        app.wait_for("Focused row 1.").unwrap();
+        assert!(shows(&app), "row 1 is scrolled into view");
+    }
+
+    /// A card's height once its content is loaded: never the list's
+    /// estimate, cards before the 50th growing by `grown` once "Grow" is
+    /// pressed. Before, a placeholder of 30 points.
+    fn card_height(i: usize, loaded: bool, grown: f32) -> f32 {
+        if !loaded {
+            return 30.0;
+        }
+        60.0 + (i % 4) as f32 * 50.0 + if i < 50 { grown } else { 0.0 }
+    }
+
+    /// 200 cards estimated at 40 points, placeholders until "Load" is
+    /// pressed, in a list of its own or in a page's viewport (below a
+    /// header); "Go" scrolls the list to card 50, "Grow" makes the cards
+    /// before it taller.
+    fn cards(viewport: nsh_core::ListViewport, alignment: nsh_core::ListAlignment) -> AnyElement {
+        let list = element_ref();
+        let loaded = signal(false);
+        let grown = signal(0.0f32);
+        let cards = virtual_list(200, move |at| {
+            view()
+                .h(move || Length::from(px(card_height(at.index(), loaded.get(), grown.get()))))
+                .child(text(move || format!("Card {}", at.index())))
+        })
+        .element_ref(&list)
+        .estimated_item_size(px(40.0))
+        .viewport(viewport)
+        .alignment(alignment);
+        let controls =
+            view()
+                .flex_row()
+                .child(text("Go").on_press(move |_: &()| {
+                    list.scroll_to_index(50, percentage(0.0), px(0.0), false)
+                }))
+                .child(text("Load").on_press(move |_: &()| loaded.set(true)))
+                .child(text("Grow").on_press(move |_: &()| grown.set(40.0)));
+        match viewport {
+            nsh_core::ListViewport::Own => view()
+                .flex_1()
+                .child(controls)
+                .child(cards.test_id("viewport").flex_1())
+                .into_element(),
+            _ => view()
+                .flex_1()
+                .child(controls)
+                .child(
+                    scroll()
+                        .test_id("viewport")
+                        .flex_1()
+                        .child(text("Header").h(px(120.0)))
+                        .child(cards),
+                )
+                .into_element(),
+        }
+    }
+
+    #[component]
+    fn OwnCards() -> impl IntoElement {
+        cards(nsh_core::ListViewport::Own, nsh_core::ListAlignment::Top)
+    }
+
+    #[component]
+    fn PageCards() -> impl IntoElement {
+        cards(nsh_core::ListViewport::Parent, nsh_core::ListAlignment::Top)
+    }
+
+    #[component]
+    fn BottomCards() -> impl IntoElement {
+        cards(nsh_core::ListViewport::Own, nsh_core::ListAlignment::Bottom)
+    }
+
+    /// The distance from the top of the viewport to the top of `label`'s
+    /// text, `None` while it is not shown.
+    fn from_top(app: &Headless, label: &str) -> Option<f32> {
+        let pick = |s: &str| match app.screen().view(&Selector::parse(s).unwrap()) {
+            crate::screen::Pick::One(id) => app.screen().bounds_in_root(id),
+            _ => None,
+        };
+        let viewport = pick("id:viewport")?;
+        let card = pick(label)?;
+        Some(card.origin.y.0 - viewport.origin.y.0)
+    }
+
+    /// Scrolled to a card, a list keeps it at the top of its viewport as
+    /// the cards above it are measured at heights other than the estimate,
+    /// as their content loads after the scroll (all the cards around the
+    /// viewport changing in one layout) and as they grow later: the rows
+    /// above the viewport anchor the visible ones, whether the list scrolls
+    /// itself or its page does.
+    #[test]
+    fn rows_measured_above_the_viewport_keep_the_visible_row_in_place() {
+        let at_top = |app: &Headless, by: f32, what: &str| {
+            let at = from_top(app, "Card 50");
+            assert!(
+                at.is_some_and(|y| (y + by).abs() < 1.0),
+                "{what}: card 50 at {at:?}"
+            );
+        };
+        for (name, root) in [
+            ("own", Root::of::<OwnCards> as fn() -> Root),
+            ("page", Root::of::<PageCards>),
+        ] {
+            // Measured from the estimate.
+            let mut app = Headless::start(EngineConfig::new(root())).unwrap();
+            app.first_render().unwrap();
+            app.press("Load").unwrap();
+            app.press("Go").unwrap();
+            app.wait(Duration::from_millis(500)).unwrap();
+            at_top(&app, 0.0, &format!("{name}, measured"));
+
+            // Placeholders, then content.
+            let mut app = Headless::start(EngineConfig::new(root())).unwrap();
+            app.first_render().unwrap();
+            app.press("Go").unwrap();
+            app.wait(Duration::from_millis(500)).unwrap();
+            at_top(&app, 0.0, &format!("{name}, placeholders"));
+            // Scrolled a little, the scroll command's target is let go.
+            app.scroll("id:viewport", px(10.0)).unwrap();
+            app.wait(Duration::from_millis(200)).unwrap();
+            at_top(&app, 10.0, &format!("{name}, scrolled"));
+            app.press("Load").unwrap();
+            app.wait(Duration::from_millis(500)).unwrap();
+            at_top(&app, 10.0, &format!("{name}, loaded"));
+            // The cards above it grow: it stays where it is.
+            app.press("Grow").unwrap();
+            app.wait(Duration::from_millis(500)).unwrap();
+            at_top(&app, 10.0, &format!("{name}, grown"));
+        }
+    }
+
+    /// A bottom-aligned list rests at its end while the cards above the
+    /// viewport are measured and their content loads: it anchors to its
+    /// end, not to its first visible row.
+    #[test]
+    fn a_bottom_aligned_list_stays_at_its_end_as_rows_above_are_measured() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<BottomCards>())).unwrap();
+        app.first_render().unwrap();
+        app.wait(Duration::from_millis(500)).unwrap();
+        // How far above the viewport's end card 199's text starts: at the
+        // top of its card.
+        let from_end = |app: &Headless| {
+            let pick = |s: &str| match app.screen().view(&Selector::parse(s).unwrap()) {
+                crate::screen::Pick::One(id) => app.screen().bounds_in_root(id),
+                _ => None,
+            };
+            let viewport = pick("id:viewport")?;
+            let card = pick("Card 199")?;
+            Some(viewport.origin.y.0 + viewport.size.height.0 - card.origin.y.0)
+        };
+        let at = from_end(&app);
+        assert!(
+            at.is_some_and(|d| (d - 30.0).abs() < 1.0),
+            "placeholder {at:?} above the end"
+        );
+        app.press("Load").unwrap();
+        app.wait(Duration::from_millis(500)).unwrap();
+        // 210 points tall loaded.
+        let at = from_end(&app);
+        assert!(
+            at.is_some_and(|d| (d - 210.0).abs() < 1.0),
+            "card 199 {at:?} above the end"
+        );
+    }
+
     #[cfg(feature = "js")]
     #[test]
     fn a_step_fails_when_the_app_throws() {
@@ -3013,5 +4912,1456 @@ mod tests {
             FileRequest::SaveDialog(save) if save.file_name.as_deref() == Some("Untitled.md")
         ));
         assert_eq!(requests[2], FileRequest::RevealPath("/docs/a.md".into()));
+    }
+
+    /// A clipping box with padding that holds a label, a box wider than it,
+    /// a hidden box and a horizontal scroll view.
+    #[component]
+    fn Laid() -> impl IntoElement {
+        view()
+            .test_id("outer")
+            .w(px(200.0))
+            .h(px(100.0))
+            .p(px(10.0))
+            .overflow_hidden()
+            .child(text("Label").test_id("label"))
+            .child(view().test_id("wide").w(px(300.0)).h(px(20.0)))
+            .child(view().test_id("ghost").w(px(10.0)).h(px(10.0)).invisible())
+            .child(
+                scroll()
+                    .test_id("strip")
+                    .horizontal()
+                    .w(px(100.0))
+                    .h(px(30.0))
+                    .child(view().test_id("long").w(px(400.0)).h(px(30.0))),
+            )
+    }
+
+    fn node<'a>(nodes: &'a [crate::LayoutNode], test_id: &str) -> &'a crate::LayoutNode {
+        nodes
+            .iter()
+            .find(|n| n.test_id.as_deref() == Some(test_id))
+            .unwrap_or_else(|| panic!("no {test_id} in {nodes:?}"))
+    }
+
+    #[test]
+    fn layout_nodes_give_each_views_box_parent_clip_and_text_box() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Laid>())).unwrap();
+        app.first_render().unwrap();
+        let nodes = app.screen().layout_nodes();
+
+        // Tree order, the root left out, and every parent is in the list.
+        let ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+        let outer = node(&nodes, "outer");
+        assert_eq!(outer.parent, ROOT_ID);
+        assert_eq!(outer.kind, nsh_core::ViewKind::View);
+        assert_eq!(ids[0], outer.id);
+        for n in nodes.iter().filter(|n| n.id != outer.id) {
+            assert!(ids.contains(&n.parent), "{n:?}");
+        }
+
+        // Boxes are in the root's points; padding moves the children.
+        assert_eq!(outer.bounds.size, Size::new(px(200.0), px(100.0)));
+        assert!(outer.clips);
+        assert!(outer.scroll.is_none() && outer.text.is_none() && !outer.hidden);
+        let wide = node(&nodes, "wide");
+        assert_eq!(wide.parent, outer.id);
+        assert_eq!(wide.bounds.origin.x, outer.bounds.origin.x + px(10.0));
+        // It is wider than the box that clips it: the audit's evidence.
+        assert!(wide.bounds.right() > outer.bounds.right());
+
+        // A hidden view keeps its box; a scroll view says which way it
+        // scrolls and how large its content is.
+        assert!(node(&nodes, "ghost").hidden);
+        let strip = node(&nodes, "strip");
+        let scrolling = strip.scroll.as_ref().unwrap();
+        assert!(scrolling.horizontal);
+        assert_eq!(scrolling.content_size.map(|s| s.width), Some(px(400.0)));
+        assert_eq!(node(&nodes, "long").parent, strip.id);
+
+        // A text keeps its attributed text and the box it was laid out in,
+        // in the root's points as its own box.
+        let label = node(&nodes, "label");
+        let text = label.text.as_ref().unwrap();
+        assert_eq!(text.text.text, "Label");
+        assert!(text.content.size.width.0 > 0.0);
+        assert!(text.content.origin.x >= label.bounds.origin.x);
+        assert!(text.content.right() <= label.bounds.right());
+    }
+
+    #[test]
+    fn layout_nodes_follow_scroll_offsets() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Rows>())).unwrap();
+        app.first_render().unwrap();
+        let row = |app: &Headless| {
+            let nodes = app.screen().layout_nodes();
+            let text = nodes
+                .iter()
+                .find(|n| n.text.as_ref().is_some_and(|t| t.text.text == "Row 3"))
+                .unwrap()
+                .clone();
+            // The row's box is the text's parent.
+            let parent = nodes.iter().find(|n| n.id == text.parent).unwrap();
+            parent.bounds.origin.y
+        };
+        let before = row(&app);
+        app.scroll("Row 3", px(100.0)).unwrap();
+        app.wait_for("At 100").unwrap();
+        assert_eq!(row(&app), before - px(100.0));
+    }
+
+    /// Counts the texts it prepares, so a test sees which engine laid out.
+    #[derive(Clone, Default)]
+    struct Counting(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl TextEngine for Counting {
+        type Prepared = <ApproxTextEngine as TextEngine>::Prepared;
+
+        fn prepare(&self, text: &nsh_core::AttributedText) -> Self::Prepared {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            ApproxTextEngine.prepare(text)
+        }
+
+        fn measure(&self, prepared: &Self::Prepared, max_width: Option<Points>) -> Size<Points> {
+            ApproxTextEngine.measure(prepared, max_width)
+        }
+
+        fn layout(&self, prepared: &Self::Prepared, size: Size<Points>) -> nsh_core::TextLayout {
+            ApproxTextEngine.layout(prepared, size)
+        }
+    }
+
+    #[test]
+    fn start_with_text_engine_lays_text_out_with_the_given_engine() {
+        let counting = Counting::default();
+        let seen = counting.0.clone();
+        let mut app =
+            Headless::start_with_text_engine(EngineConfig::new(Root::of::<Laid>()), move || {
+                counting
+            })
+            .unwrap();
+        app.first_render().unwrap();
+        assert!(seen.load(Ordering::Relaxed) > 0);
+        assert!(app.shows("Label"));
+    }
+
+    // Escape bound in the main window and in a window of the app's own.
+    #[component]
+    fn WindowKeys() -> impl IntoElement {
+        let main = signal(0);
+        let settings = signal(0);
+        on_key("escape", move |_| main.update(|n| *n += 1));
+        view()
+            .child(
+                text(move || format!("keys {} {}", main.get(), settings.get()))
+                    .test_id("in-main")
+                    .on_press(|_: &()| {}),
+            )
+            .child(
+                nsh_core::element::desktop::window()
+                    .id("settings")
+                    .default_size(size(px(300.0), px(100.0)))
+                    .content(move || {
+                        on_key("escape", move |_| settings.update(|n| *n += 1));
+                        view()
+                            .test_id("in-settings")
+                            .on_press(|_: &()| {})
+                            .w(px(100.0))
+                            .h(px(40.0))
+                    }),
+            )
+    }
+
+    #[test]
+    fn a_key_fires_the_bindings_of_the_focused_window() {
+        let mut config = EngineConfig::new(Root::of::<WindowKeys>());
+        config.environment.os = Os::MacOs;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        app.wait_for("keys 0 0").unwrap();
+        // Settings opened focused: its binding takes the key, main's not.
+        app.press_key("escape").unwrap();
+        app.wait_for("keys 0 1").unwrap();
+        // A press in the main window focuses it, and then its binding.
+        app.press("id:in-main").unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("keys 1 1").unwrap();
+        app.press("id:in-settings").unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("keys 1 2").unwrap();
+    }
+
+    /// A layout chosen by the window's width, and the color scheme.
+    #[component]
+    fn ByWidth() -> impl IntoElement {
+        text(move || {
+            let width = nsh_core::element::window().width.0;
+            let layout = if width < 600.0 { "narrow" } else { "wide" };
+            let scheme = if nsh_core::element::dark() {
+                "dark"
+            } else {
+                "light"
+            };
+            format!("{layout} {width} {scheme}")
+        })
+    }
+
+    fn open_by_width(os: nsh_core::platform::Os) -> Headless {
+        let mut config = EngineConfig::new(Root::of::<ByWidth>());
+        config.environment.os = os;
+        config.viewport = Size::new(px(800.0), px(600.0));
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        app
+    }
+
+    #[test]
+    fn a_changed_environment_keeps_the_window_size() {
+        for os in [nsh_core::platform::Os::Ios, nsh_core::platform::Os::MacOs] {
+            let mut app = open_by_width(os);
+            app.wait_for("wide 800 light").unwrap();
+            // A step that changes only the color scheme keeps the window.
+            app.set_environment("setColorScheme(dark)", |env| {
+                env.color_scheme = nsh_core::platform::ColorScheme::Dark;
+            })
+            .unwrap();
+            app.wait_for("wide 800 dark").unwrap();
+            // A resized window, then another change of the environment.
+            app.set_viewport(Size::new(px(390.0), px(844.0))).unwrap();
+            app.wait_for("narrow 390 dark").unwrap();
+            app.set_environment("setColorScheme(light)", |env| {
+                env.color_scheme = nsh_core::platform::ColorScheme::Light;
+            })
+            .unwrap();
+            app.wait_for("narrow 390 light").unwrap();
+        }
+    }
+
+    /// `root` on Linux, the platform whose views get the keyboard focus
+    /// (a ref's `focus()`, Tab) and the wheel.
+    fn start_linux(root: Root) -> Headless {
+        let mut config = EngineConfig::new(root);
+        config.environment.os = nsh_core::platform::Os::Linux;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        Headless::start(config).unwrap()
+    }
+
+    /// `event`'s key as a test names it (`"a"`, `"Enter"`, `"Space"`); a
+    /// space is `"Space"` here, not the `" "` a payload calls it.
+    fn key_name(event: &KeyEvent) -> String {
+        match event.key.as_ref() {
+            " " => "Space".to_owned(),
+            name => name.to_owned(),
+        }
+    }
+
+    /// Two focusable pads, each focused through its ref; what each heard.
+    #[component]
+    fn FocusPads() -> impl IntoElement {
+        let first = element_ref();
+        let second = element_ref();
+        let first_focus = signal(0_u32);
+        let second_focus = signal(0_u32);
+        let key = signal(String::from("none"));
+        view()
+            .flex_1()
+            .child(text(move || format!("first {}", first_focus.get())))
+            .child(text(move || format!("second {}", second_focus.get())))
+            .child(text(move || format!("key {}", key.get())))
+            .child(
+                view()
+                    .test_id("first")
+                    .h(px(40.0))
+                    .focusable(true)
+                    .element_ref(&first)
+                    .on_press(move |_: &()| {})
+                    .on_focus(move |_: &()| first_focus.update(|n| *n += 1))
+                    .on_key_down(move |e: &KeyEvent| {
+                        key.set(format!("first {}", e.key.as_ref()));
+                    }),
+            )
+            .child(
+                view()
+                    .test_id("second")
+                    .h(px(40.0))
+                    .focusable(true)
+                    .element_ref(&second)
+                    .on_focus(move |_: &()| second_focus.update(|n| *n += 1))
+                    .on_key_down(move |e: &KeyEvent| {
+                        key.set(format!("second {}", e.key.as_ref()));
+                    }),
+            )
+            .child(
+                view()
+                    .test_id("focus-first")
+                    .on_press(move |_: &()| first.focus())
+                    .child(text("Focus first")),
+            )
+            .child(
+                view()
+                    .test_id("take")
+                    .on_press(move |_: &()| second.focus())
+                    .child(text("Take")),
+            )
+    }
+
+    #[test]
+    fn a_ref_focuses_a_focusable_view_and_its_keys_reach_it() {
+        let mut app = start_linux(Root::of::<FocusPads>());
+        app.first_render().unwrap();
+        // `focus()` on the first pad's ref takes the keyboard focus there,
+        // and the pad hears the keys while it has it.
+        app.press("id:focus-first").unwrap();
+        app.wait_for("first 1").unwrap();
+        app.press_key("j").unwrap();
+        app.wait_for("key first j").unwrap();
+        // `focus()` on the other pad's ref moves it there.
+        app.press("id:take").unwrap();
+        app.wait_for("second 1").unwrap();
+        app.press_key("k").unwrap();
+        app.wait_for("key second k").unwrap();
+        let Pick::One(second) = app.screen().view(&Selector::parse("id:second").unwrap()) else {
+            panic!("one second pad");
+        };
+        assert_eq!(app.screen().key_focus(), Some(second));
+    }
+
+    /// A focusable pad in a view that hears the keys it lets through.
+    #[component]
+    fn KeyBubble() -> impl IntoElement {
+        let down = signal(String::from("none"));
+        let up = signal(String::from("none"));
+        let prevented = signal(false);
+        let ancestor = signal(String::from("none"));
+        view()
+            .flex_1()
+            .on_key_down(move |e: &KeyEvent| {
+                ancestor.set(format!("{} {}", e.key.as_ref(), e.default_prevented));
+            })
+            .child(
+                view()
+                    .test_id("pad")
+                    .h(px(40.0))
+                    .focusable(true)
+                    .on_press(move |_: &()| {})
+                    .on_key_down(move |e: &KeyEvent| {
+                        down.set(e.key.as_ref().to_owned());
+                        prevented.set(e.default_prevented);
+                    })
+                    .on_key_up(move |e: &KeyEvent| up.set(e.key.as_ref().to_owned())),
+            )
+            .child(text(move || format!("down {}", down.get())))
+            .child(text(move || format!("prevented {}", prevented.get())))
+            .child(text(move || format!("up {}", up.get())))
+            .child(text(move || format!("ancestor {}", ancestor.get())))
+    }
+
+    #[test]
+    fn key_downs_reach_the_focused_view_then_its_ancestors_and_key_ups_come_back() {
+        let mut app = start_linux(Root::of::<KeyBubble>());
+        app.first_render().unwrap();
+        // Tab stops at the pad: it has the keyboard focus.
+        app.press_key("tab").unwrap();
+        app.press_key("a").unwrap();
+        app.wait_for("down a").unwrap();
+        // It captures nothing: the press is not the platform's, and its
+        // ancestor hears the same key.
+        app.wait_for("prevented false").unwrap();
+        app.wait_for("ancestor a false").unwrap();
+        // The key came up on the focused view.
+        app.wait_for("up a").unwrap();
+        app.press_key("b").unwrap();
+        app.wait_for("down b").unwrap();
+        app.wait_for("ancestor b false").unwrap();
+        app.wait_for("up b").unwrap();
+    }
+
+    /// Two pads, each telling which view heard a key up.
+    #[component]
+    fn ReleaseFocus() -> impl IntoElement {
+        let up = signal(String::from("none"));
+        view()
+            .flex_1()
+            .child(
+                view()
+                    .test_id("first")
+                    .h(px(40.0))
+                    .focusable(true)
+                    .on_press(move |_: &()| {})
+                    .on_key_up(move |_: &KeyEvent| up.set("first".into())),
+            )
+            .child(
+                view()
+                    .test_id("second")
+                    .h(px(40.0))
+                    .focusable(true)
+                    .on_press(move |_: &()| {})
+                    .on_key_up(move |_: &KeyEvent| up.set("second".into())),
+            )
+            .child(text(move || format!("up {}", up.get())))
+    }
+
+    #[test]
+    fn a_key_up_goes_to_the_view_focused_when_the_source_reports_it() {
+        let mut app = start_linux(Root::of::<ReleaseFocus>());
+        app.first_render().unwrap();
+        // Tab focuses the first pad; the next Tab is heard by it, moves the
+        // focus to the second pad, and its release belongs to that one.
+        app.press_key("tab").unwrap();
+        app.press_key("tab").unwrap();
+        app.wait_for("up second").unwrap();
+    }
+
+    /// A pad reporting the raw key event's logical key and its code.
+    #[component]
+    fn RawKey() -> impl IntoElement {
+        let heard = signal(String::from("none"));
+        view()
+            .flex_1()
+            .child(
+                view()
+                    .test_id("pad")
+                    .h(px(40.0))
+                    .focusable(true)
+                    .on_press(move |_: &()| {})
+                    .on_key_down(move |e: &KeyEvent| {
+                        heard.set(format!("{} {:?}", e.key, e.code.as_str()));
+                    }),
+            )
+            .child(text(move || format!("heard {}", heard.get())))
+    }
+
+    #[test]
+    fn a_raw_key_reports_the_simulated_source_without_inventing_a_code() {
+        let mut app = start_linux(Root::of::<RawKey>());
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        // Shift's case is the reported logical key, and the simulation has
+        // no hardware identity to report.
+        app.press_key("shift+k").unwrap();
+        app.wait_for("heard K \"\"").unwrap();
+        app.press_key("enter").unwrap();
+        app.wait_for("heard Enter \"\"").unwrap();
+    }
+
+    /// A view that hears raw keys around a text input.
+    #[component]
+    fn InputOwnsKeys() -> impl IntoElement {
+        let heard = signal(String::from("none"));
+        let value = signal(String::new());
+        view()
+            .flex_1()
+            .on_key_down(move |e: &KeyEvent| heard.set(e.key.as_ref().to_owned()))
+            .child(
+                input()
+                    .test_id("name")
+                    .value(move || value.get())
+                    .on_change(move |text: &str| value.set(text.to_owned())),
+            )
+            .child(text(move || format!("heard {}", heard.get())))
+            .child(text(move || format!("text {}", value.get())))
+    }
+
+    #[test]
+    fn a_native_input_owns_its_keys_and_a_listener_around_it_hears_none() {
+        let mut app = start_linux(Root::of::<InputOwnsKeys>());
+        app.first_render().unwrap();
+        app.type_text("id:name", "x").unwrap();
+        // The press edits the focused input; the ancestor's raw listener
+        // never intercepts it.
+        app.press_key("a").unwrap();
+        app.wait_for("text xa").unwrap();
+        app.wait_for("heard none").unwrap();
+    }
+
+    /// A pad that captures "a", in a view that hears the keys it lets
+    /// through.
+    #[component]
+    fn KeyCaptured() -> impl IntoElement {
+        let down = signal(String::from("none"));
+        let up = signal(String::from("none"));
+        let ancestor = signal(String::from("none"));
+        view()
+            .flex_1()
+            .on_key_down(move |e: &KeyEvent| {
+                ancestor.set(format!("{} {}", e.key.as_ref(), e.default_prevented));
+            })
+            .child(
+                view()
+                    .test_id("pad")
+                    .h(px(40.0))
+                    .focusable(true)
+                    .on_press(move |_: &()| {})
+                    .capture_keys(KeyCapture::keys([
+                        Keystroke::parse("a", Os::Linux).unwrap(),
+                        Keystroke::parse("shift+a", Os::Linux).unwrap(),
+                    ]))
+                    .on_key_down(move |e: &KeyEvent| {
+                        down.set(format!("{} {}", e.key.as_ref(), e.default_prevented));
+                    })
+                    .on_key_up(move |e: &KeyEvent| {
+                        up.set(format!("{} {}", key_name(e), e.default_prevented));
+                    }),
+            )
+            .child(text(move || format!("down {}", down.get())))
+            .child(text(move || format!("up {}", up.get())))
+            .child(text(move || format!("ancestor {}", ancestor.get())))
+    }
+
+    #[test]
+    fn a_captured_key_is_marked_and_its_ancestors_hear_it_too() {
+        let mut app = start_linux(Root::of::<KeyCaptured>());
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        // Captured: the view and its ancestor hear it, marked captured, so
+        // no default follows. The release says the same.
+        app.press_key("a").unwrap();
+        app.wait_for("down a true").unwrap();
+        app.wait_for("up a true").unwrap();
+        app.wait_for("ancestor a true").unwrap();
+        // The raw key reports Shift's case ("A"), while the mounted capture
+        // rule is the canonical shortcut "shift+a": matching is over the
+        // keystroke, not the raw key text.
+        app.press_key("shift+a").unwrap();
+        app.wait_for("down A true").unwrap();
+        app.wait_for("up A true").unwrap();
+        app.wait_for("ancestor A true").unwrap();
+        // Not captured: the notification says so, the release too, and the
+        // platform runs its defaults.
+        app.press_key("b").unwrap();
+        app.wait_for("down b false").unwrap();
+        app.wait_for("up b false").unwrap();
+        app.wait_for("ancestor b false").unwrap();
+    }
+
+    /// A portaled pad in a view that hears and captures "a", and a second
+    /// portal under an unrelated view.
+    #[component]
+    fn PortalKeys() -> impl IntoElement {
+        let heard = signal(String::from("none"));
+        let sibling = signal(String::from("none"));
+        view()
+            .flex_1()
+            .child(
+                view()
+                    .test_id("host")
+                    .on_key_down(move |e: &KeyEvent| {
+                        heard.set(format!("{} {}", e.key.as_ref(), e.default_prevented));
+                    })
+                    .capture_keys(KeyCapture::keys(
+                        [Keystroke::parse("a", Os::Linux).unwrap()],
+                    ))
+                    .child(text("host"))
+                    .child(
+                        overlay().child(
+                            view()
+                                .test_id("pad")
+                                .w(px(120.0))
+                                .h(px(40.0))
+                                .focusable(true)
+                                .on_press(move |_: &()| {}),
+                        ),
+                    ),
+            )
+            .child(
+                view().test_id("other").child(text("other")).child(
+                    overlay().child(
+                        view()
+                            .test_id("sibling")
+                            .w(px(120.0))
+                            .h(px(40.0))
+                            .focusable(true)
+                            .on_press(move |_: &()| {})
+                            .on_key_down(move |e: &KeyEvent| {
+                                sibling.set(format!("{} {}", e.key.as_ref(), e.default_prevented));
+                            }),
+                    ),
+                ),
+            )
+            .child(text(move || format!("heard {}", heard.get())))
+            .child(text(move || format!("sibling {}", sibling.get())))
+    }
+
+    #[test]
+    fn a_portaled_view_uses_its_logical_parent_for_keys_and_capture() {
+        let mut app = start_linux(Root::of::<PortalKeys>());
+        app.first_render().unwrap();
+        // Tab enters the first portal: its pad has no listener, but the
+        // view around the Overlay hears the key and its capture applies.
+        app.press_key("tab").unwrap();
+        app.press_key("a").unwrap();
+        app.wait_for("heard a true").unwrap();
+        // Tab moves to the unrelated portal; its key is not captured by the
+        // first portal's rule.
+        app.press_key("tab").unwrap();
+        app.wait_for("heard Tab false").unwrap();
+        app.press_key("b").unwrap();
+        app.wait_for("sibling b false").unwrap();
+        app.wait_for("heard Tab false").unwrap();
+    }
+
+    /// A focusable pad with no key listener of its own, under a view that
+    /// hears keys and captures "a".
+    #[component]
+    fn KeyAncestorOnly() -> impl IntoElement {
+        let heard = signal(String::from("none"));
+        view()
+            .flex_1()
+            .capture_keys(KeyCapture::keys(
+                [Keystroke::parse("a", Os::Linux).unwrap()],
+            ))
+            .on_key_down(move |e: &KeyEvent| {
+                heard.set(format!("{} {}", key_name(e), e.default_prevented));
+            })
+            .child(
+                view()
+                    .test_id("pad")
+                    .h(px(40.0))
+                    .focusable(true)
+                    .on_press(move |_: &()| {}),
+            )
+            .child(text(move || format!("heard {}", heard.get())))
+    }
+
+    #[test]
+    fn a_listener_above_a_silent_view_hears_the_key_captured_or_not() {
+        let mut app = start_linux(Root::of::<KeyAncestorOnly>());
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        // The pad itself listens to nothing: the view around it hears the
+        // press anyway, and its capture rule marks it.
+        app.press_key("a").unwrap();
+        app.wait_for("heard a true").unwrap();
+        // An uncaptured key reaches the listener too.
+        app.press_key("b").unwrap();
+        app.wait_for("heard b false").unwrap();
+    }
+
+    /// A pad that captures every key, with a shortcut on "a" that takes the
+    /// key and one on "b" that passes it through.
+    #[component]
+    fn KeyPrecedence() -> impl IntoElement {
+        let heard = signal(String::from("none"));
+        let fired = signal(String::from("none"));
+        on_key_with(
+            "a",
+            KeyOptions {
+                when: When::Auto,
+                repeat: false,
+                pass_through: false,
+                ..Default::default()
+            },
+            move |_| fired.set("a".into()),
+        );
+        on_key_with(
+            "b",
+            KeyOptions {
+                when: When::Always,
+                repeat: false,
+                pass_through: true,
+                ..Default::default()
+            },
+            move |_| fired.set("b".into()),
+        );
+        view()
+            .flex_1()
+            .child(
+                view()
+                    .test_id("pad")
+                    .h(px(40.0))
+                    .focusable(true)
+                    .on_press(move |_: &()| {})
+                    .capture_keys(KeyCapture::All)
+                    .on_key_down(move |e: &KeyEvent| {
+                        heard.set(format!("{} {}", e.key.as_ref(), e.default_prevented));
+                    }),
+            )
+            .child(text(move || format!("heard {}", heard.get())))
+            .child(text(move || format!("fired {}", fired.get())))
+    }
+
+    #[test]
+    fn an_app_shortcut_beats_a_capture_and_a_passing_one_lets_it_through() {
+        let mut app = start_linux(Root::of::<KeyPrecedence>());
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        // The shortcut on "a" takes the key first: the view never hears it,
+        // though it captures every key.
+        app.press_key("a").unwrap();
+        app.wait_for("fired a").unwrap();
+        app.wait_for("heard none").unwrap();
+        // The one on "b" passes the key through: the view hears it, marked
+        // captured by its own rule.
+        app.press_key("b").unwrap();
+        app.wait_for("fired b").unwrap();
+        app.wait_for("heard b true").unwrap();
+    }
+
+    /// A wheel listener in a scroll view of tall rows (and rows it does
+    /// not cover, without one).
+    #[component]
+    fn Wheeled() -> impl IntoElement {
+        let wheel = signal(String::from("none"));
+        view()
+            .flex_1()
+            .child(text(move || format!("wheel {}", wheel.get())))
+            .child(
+                scroll()
+                    .test_id("rows")
+                    .flex_1()
+                    .child(
+                        view()
+                            .test_id("pad")
+                            .h(px(40.0))
+                            .on_wheel(move |e: &WheelEvent| {
+                                let WheelDelta::Points(delta) = &e.delta else {
+                                    return;
+                                };
+                                wheel.set(format!("{:.0} {:.0}", delta.x.0, delta.y.0));
+                            }),
+                    )
+                    .children((0..100).map(|i| view().h(px(50.0)).child(text(format!("Row {i}"))))),
+            )
+    }
+
+    #[test]
+    fn the_wheel_reaches_a_listener_and_otherwise_scrolls_the_scroll_view() {
+        let mut app = start_linux(Root::of::<Wheeled>());
+        app.first_render().unwrap();
+        let Pick::One(rows) = app
+            .screen()
+            .scroll_view(&Selector::parse("id:rows").unwrap())
+        else {
+            panic!("one scroll view");
+        };
+        // The innermost view that listens takes the wheel: the scroll
+        // view around it does not scroll.
+        app.wheel("id:pad", point(px(0.0), px(3.0))).unwrap();
+        app.wait_for("wheel 0 3").unwrap();
+        assert_eq!(app.screen().scroll(rows).unwrap().y, Points::ZERO);
+        // No listener around Row 3: the nearest scroll view scrolls.
+        app.wheel("Row 3", point(px(0.0), px(120.0))).unwrap();
+        assert_eq!(app.screen().scroll(rows).unwrap().y, px(120.0));
+    }
+
+    /// A horizontal timeline (a wheel listener with a horizontal pan) in a
+    /// scroll view of tall rows.
+    #[component]
+    fn WheeledTimeline() -> impl IntoElement {
+        let wheel = signal(String::from("none"));
+        view()
+            .flex_1()
+            .child(text(move || format!("wheel {}", wheel.get())))
+            .child(
+                scroll()
+                    .test_id("rows")
+                    .flex_1()
+                    .child(
+                        view()
+                            .test_id("timeline")
+                            .h(px(40.0))
+                            .claim_touches(TouchClaim::on_pan(PanActivation::horizontal(
+                                px(10.0),
+                                px(10.0),
+                            )))
+                            .on_wheel(move |e: &WheelEvent| {
+                                let WheelDelta::Points(delta) = &e.delta else {
+                                    return;
+                                };
+                                wheel.set(format!("{:.0} {:.0}", delta.x.0, delta.y.0));
+                            }),
+                    )
+                    .children((0..100).map(|i| view().h(px(50.0)).child(text(format!("Row {i}"))))),
+            )
+    }
+
+    #[test]
+    fn a_listener_with_a_pan_axis_takes_only_wheels_along_it() {
+        let mut app = start_linux(Root::of::<WheeledTimeline>());
+        app.first_render().unwrap();
+        let Pick::One(rows) = app
+            .screen()
+            .scroll_view(&Selector::parse("id:rows").unwrap())
+        else {
+            panic!("one scroll view");
+        };
+        // A horizontal wheel is the timeline's: the page stays.
+        app.wheel("id:timeline", point(px(30.0), px(0.0))).unwrap();
+        app.wait_for("wheel 30 0").unwrap();
+        assert_eq!(app.screen().scroll(rows).unwrap().y, Points::ZERO);
+        // A vertical one scrolls the page; the timeline only hears it.
+        app.wheel("id:timeline", point(px(0.0), px(40.0))).unwrap();
+        app.wait_for("wheel 0 40").unwrap();
+        assert_eq!(app.screen().scroll(rows).unwrap().y, px(40.0));
+    }
+
+    /// A root that listens to the wheel around a scroll view of tall rows.
+    #[component]
+    fn WheelRootObserver() -> impl IntoElement {
+        let wheel = signal(String::from("none"));
+        view()
+            .flex_1()
+            .on_wheel(move |e: &WheelEvent| {
+                let WheelDelta::Points(delta) = &e.delta else {
+                    return;
+                };
+                wheel.set(format!("{:.0} {:.0}", delta.x.0, delta.y.0));
+            })
+            .child(text(move || format!("wheel {}", wheel.get())))
+            .child(
+                scroll()
+                    .test_id("rows")
+                    .flex_1()
+                    .children((0..100).map(|i| view().h(px(50.0)).child(text(format!("Row {i}"))))),
+            )
+    }
+
+    #[test]
+    fn a_listener_around_a_scroll_view_observes_the_wheel_and_the_scroll_happens() {
+        let mut app = start_linux(Root::of::<WheelRootObserver>());
+        app.first_render().unwrap();
+        let Pick::One(rows) = app
+            .screen()
+            .scroll_view(&Selector::parse("id:rows").unwrap())
+        else {
+            panic!("one scroll view");
+        };
+        // The listener is around the scroll view, so it only observes: the
+        // wheel reaches it and the scroll view still scrolls by the same
+        // 120 points.
+        app.wheel("Row 3", point(px(0.0), px(120.0))).unwrap();
+        app.wait_for("wheel 0 120").unwrap();
+        assert_eq!(app.screen().scroll(rows).unwrap().y, px(120.0));
+    }
+
+    /// A scroll view of tall rows with a disabled wheel listener over the
+    /// first row.
+    #[component]
+    fn WheelDisabled() -> impl IntoElement {
+        let wheel = signal(String::from("none"));
+        view()
+            .flex_1()
+            .child(text(move || format!("wheel {}", wheel.get())))
+            .child(
+                scroll()
+                    .test_id("rows")
+                    .flex_1()
+                    .child(
+                        view()
+                            .test_id("off")
+                            .h(px(40.0))
+                            .disabled(true)
+                            .on_wheel(move |_: &WheelEvent| wheel.set("off".into())),
+                    )
+                    .children((0..100).map(|i| view().h(px(50.0)).child(text(format!("Row {i}"))))),
+            )
+    }
+
+    #[test]
+    fn a_disabled_wheel_listener_lets_the_scroll_view_scroll() {
+        let mut app = start_linux(Root::of::<WheelDisabled>());
+        app.first_render().unwrap();
+        let Pick::One(rows) = app
+            .screen()
+            .scroll_view(&Selector::parse("id:rows").unwrap())
+        else {
+            panic!("one scroll view");
+        };
+        // A disabled view takes nothing: the wheel scrolls the view around
+        // it instead.
+        app.wheel("id:off", point(px(0.0), px(60.0))).unwrap();
+        assert_eq!(app.screen().scroll(rows).unwrap().y, px(60.0));
+        app.wait_for("wheel none").unwrap();
+    }
+
+    /// A pad whose capture rule is there while a signal holds, built by a
+    /// region that rebuilds it without the rule when the signal stops:
+    /// what it heard.
+    #[component]
+    fn KeyCaptureLive() -> impl IntoElement {
+        let armed = signal(true);
+        let heard = signal(String::from("none"));
+        view()
+            .flex_1()
+            .child(dynamic(move || {
+                view()
+                    .test_id("pad")
+                    .h(px(40.0))
+                    .focusable(true)
+                    .on_press(move |_: &()| {})
+                    // The rule is left out of the view's props, not turned
+                    // to `None`: the view stays mounted as the region
+                    // rebuilds it.
+                    .when(armed.get(), |pad| pad.capture_keys(KeyCapture::All))
+                    .on_key_down(move |e: &KeyEvent| {
+                        heard.set(format!("{} {}", key_name(e), e.default_prevented));
+                    })
+            }))
+            .child(
+                view()
+                    .test_id("toggle")
+                    .on_press(move |_: &()| armed.update(|a| *a = !*a))
+                    .child(text("Capture")),
+            )
+            .child(text(move || format!("armed {}", armed.get())))
+            .child(text(move || format!("heard {}", heard.get())))
+    }
+
+    #[test]
+    fn capture_stops_when_the_view_is_built_without_it() {
+        let mut app = start_linux(Root::of::<KeyCaptureLive>());
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        // The rule is in the view's props: the press is the platform's.
+        // `.All` keeps Tab from moving the focus too.
+        app.press_key("tab").unwrap();
+        app.wait_for("heard Tab true").unwrap();
+        let Pick::One(pad) = app.screen().view(&Selector::parse("id:pad").unwrap()) else {
+            panic!("one pad");
+        };
+        assert_eq!(app.screen().key_focus(), Some(pad));
+        app.press_key("a").unwrap();
+        app.wait_for("heard a true").unwrap();
+        // The region rebuilds the same view without the rule (the press on
+        // the toggle takes the focus off the pad): the next key is the
+        // platform's defaults again.
+        app.press("id:toggle").unwrap();
+        app.wait_for("armed false").unwrap();
+        app.press_key("tab").unwrap();
+        app.press_key("b").unwrap();
+        app.wait_for("heard b false").unwrap();
+    }
+
+    /// A pad under a view that captures every key, a second pad after it,
+    /// and a press that unmounts the capturing view with its pad.
+    #[component]
+    fn KeyCaptureUnmounted() -> impl IntoElement {
+        let mounted = signal(true);
+        let heard = signal(String::from("none"));
+        view()
+            .flex_1()
+            .child(when(
+                move || mounted.get(),
+                move || {
+                    view().capture_keys(KeyCapture::All).child(
+                        view()
+                            .test_id("first")
+                            .h(px(40.0))
+                            .focusable(true)
+                            .on_press(move |_: &()| {})
+                            .on_key_down(move |e: &KeyEvent| {
+                                heard.set(format!("first {} {}", key_name(e), e.default_prevented));
+                            }),
+                    )
+                },
+            ))
+            .child(
+                view()
+                    .test_id("second")
+                    .h(px(20.0))
+                    .focusable(true)
+                    .on_press(move |_: &()| {})
+                    .on_key_down(move |e: &KeyEvent| {
+                        heard.set(format!("second {} {}", key_name(e), e.default_prevented));
+                    }),
+            )
+            .child(
+                view()
+                    .test_id("drop")
+                    .on_press(move |_: &()| mounted.set(false))
+                    .child(text("Drop")),
+            )
+            .child(text(move || format!("mounted {}", mounted.get())))
+            .child(text(move || format!("heard {}", heard.get())))
+    }
+
+    #[test]
+    fn a_capture_rule_goes_away_with_the_view_that_holds_it() {
+        let mut app = start_linux(Root::of::<KeyCaptureUnmounted>());
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        app.press_key("a").unwrap();
+        app.wait_for("heard first a true").unwrap();
+        // The capturing view and its pad unmount: the next pad stays, and
+        // no rule is over it.
+        app.press("id:drop").unwrap();
+        app.wait_for("mounted false").unwrap();
+        app.press_key("tab").unwrap();
+        app.press_key("b").unwrap();
+        app.wait_for("heard second b false").unwrap();
+    }
+
+    /// A pad that listens to keys without capturing them, a next stop, and
+    /// a view around it that hears context menus.
+    #[component]
+    fn KeyDefaults() -> impl IntoElement {
+        let presses = signal(0_u32);
+        let heard = signal(String::from("none"));
+        let next = signal(false);
+        let menu = signal(false);
+        view()
+            .flex_1()
+            .on_context_menu(move |_: &ContextMenuEvent| menu.set(true))
+            .child(
+                view()
+                    .test_id("pad")
+                    .h(px(40.0))
+                    .focusable(true)
+                    .on_press(move |_: &()| presses.update(|p| *p += 1))
+                    .on_key_down(move |e: &KeyEvent| heard.set(key_name(e))),
+            )
+            .child(
+                view()
+                    .test_id("next")
+                    .h(px(20.0))
+                    .focusable(true)
+                    .on_focus(move |_: &()| next.set(true)),
+            )
+            .child(text(move || format!("presses {}", presses.get())))
+            .child(text(move || format!("heard {}", heard.get())))
+            .child(text(move || format!("next {}", next.get())))
+            .child(text(move || format!("menu {}", menu.get())))
+    }
+
+    #[test]
+    fn a_listening_view_keeps_tabs_enters_spaces_and_context_menu_keys() {
+        let mut app = start_linux(Root::of::<KeyDefaults>());
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        // Enter and Space press the pad, as the platform does: merely
+        // hearing a key takes nothing from what it does with it.
+        app.press_key("enter").unwrap();
+        app.wait_for("presses 1").unwrap();
+        app.wait_for("heard Enter").unwrap();
+        app.press_key("space").unwrap();
+        app.wait_for("presses 2").unwrap();
+        app.wait_for("heard Space").unwrap();
+        // Shift+F10 asks the view around it for its context menu.
+        app.press_key("shift+f10").unwrap();
+        app.wait_for("menu true").unwrap();
+        // Tab still moves on to the next stop.
+        app.press_key("tab").unwrap();
+        app.wait_for("next true").unwrap();
+    }
+
+    /// A pad that disables itself on Delete while it has the keyboard
+    /// focus, and a button that enables it again.
+    #[component]
+    fn KeyDisabled() -> impl IntoElement {
+        let disabled = signal(false);
+        let downs = signal(0_u32);
+        view()
+            .flex_1()
+            .child(
+                view()
+                    .test_id("pad")
+                    .h(px(40.0))
+                    .focusable(true)
+                    .disabled(move || disabled.get())
+                    .on_press(move |_: &()| {})
+                    .on_key_down(move |e: &KeyEvent| {
+                        downs.update(|n| *n += 1);
+                        if e.key == "Delete" {
+                            disabled.set(true);
+                        }
+                    }),
+            )
+            .child(
+                view()
+                    .test_id("enable")
+                    .on_press(move |_: &()| disabled.set(false))
+                    .child(text("Enable")),
+            )
+            .child(text(move || format!("downs {}", downs.get())))
+    }
+
+    #[test]
+    fn a_view_that_loses_the_focus_to_disabling_takes_no_input_and_comes_back() {
+        let mut app = start_linux(Root::of::<KeyDisabled>());
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        // Its keys reach it while it can hold the focus.
+        app.press_key("a").unwrap();
+        app.wait_for("downs 1").unwrap();
+        // Delete disables it while it has the focus: from then on it hears
+        // no key down.
+        app.press_key("delete").unwrap();
+        app.wait_for("downs 2").unwrap();
+        app.press_key("b").unwrap();
+        app.wait_for("downs 2").unwrap();
+        // Enabled again, Tab takes the focus back and its keys reach it.
+        app.press("id:enable").unwrap();
+        app.press_key("tab").unwrap();
+        app.press_key("c").unwrap();
+        app.wait_for("downs 3").unwrap();
+    }
+
+    /// The main window captures every key; a window of the app's own holds
+    /// a pad, whose own view in that window captures too when asked.
+    #[component]
+    fn KeyWindows() -> impl IntoElement {
+        let inner_capture = signal(false);
+        let main_heard = signal(String::from("none"));
+        let pad_heard = signal(String::from("none"));
+        let pad = element_ref();
+        view()
+            .flex_1()
+            .capture_keys(KeyCapture::All)
+            .on_key_down(move |e: &KeyEvent| {
+                main_heard.set(key_name(e));
+            })
+            .child(
+                nsh_core::element::desktop::window()
+                    .id("own")
+                    .default_size(size(px(300.0), px(200.0)))
+                    .content(move || {
+                        dynamic(move || {
+                            view()
+                                .when(inner_capture.get(), |view| {
+                                    view.capture_keys(KeyCapture::All)
+                                })
+                                .child(
+                                    view()
+                                        .test_id("pad")
+                                        .h(px(40.0))
+                                        .focusable(true)
+                                        .element_ref(&pad)
+                                        .on_press(move || pad.focus())
+                                        .on_key_down(move |e: &KeyEvent| {
+                                            pad_heard.set(format!(
+                                                "{} {}",
+                                                key_name(e),
+                                                e.default_prevented
+                                            ));
+                                        }),
+                                )
+                        })
+                    }),
+            )
+            .child(
+                view()
+                    .test_id("toggle")
+                    .on_press(move |_: &()| inner_capture.update(|c| *c = !*c))
+                    .child(text("Capture")),
+            )
+            .child(text(move || format!("main {}", main_heard.get())))
+            .child(text(move || format!("pad {}", pad_heard.get())))
+    }
+
+    #[test]
+    fn a_capture_rule_stops_at_the_root_of_its_window() {
+        let mut app = start_linux(Root::of::<KeyWindows>());
+        app.first_render().unwrap();
+        app.press("id:pad").unwrap();
+        // The main window captures every key, but the pad is in a window
+        // of its own: that window's views are not under the main window's
+        // rule, so the key is not captured.
+        app.press_key("a").unwrap();
+        app.wait_for("pad a false").unwrap();
+        app.wait_for("main none").unwrap();
+        // A rule inside the window still captures it.
+        app.press("id:toggle").unwrap();
+        app.press("id:pad").unwrap();
+        app.press_key("b").unwrap();
+        app.wait_for("pad b true").unwrap();
+        app.wait_for("main none").unwrap();
+    }
+
+    /// A container that listens to the wheel with a child that fills it and
+    /// listens too.
+    #[component]
+    fn WheelNested() -> impl IntoElement {
+        let outer = signal(String::from("none"));
+        let inner = signal(String::from("none"));
+        view()
+            .flex_1()
+            .child(text(move || format!("outer {}", outer.get())))
+            .child(text(move || format!("inner {}", inner.get())))
+            .child(
+                view()
+                    .test_id("box")
+                    .flex_1()
+                    .on_wheel(move |_: &WheelEvent| outer.set("outer".into()))
+                    .child(
+                        view()
+                            .test_id("pad")
+                            .flex_1()
+                            .on_wheel(move |_: &WheelEvent| inner.set("inner".into())),
+                    ),
+            )
+    }
+
+    #[test]
+    fn the_wheel_goes_to_the_view_a_pointer_over_the_selector_reaches() {
+        let mut app = start_linux(Root::of::<WheelNested>());
+        app.first_render().unwrap();
+        // The selector names the container, but a pointer at its center is
+        // over the child: the child's listener takes the wheel.
+        app.wheel("id:box", point(px(0.0), px(2.0))).unwrap();
+        app.wait_for("inner inner").unwrap();
+        app.wait_for("outer none").unwrap();
+        // No listener or scroll view at that place: nothing moves, and the
+        // step is not an error.
+        app.wheel("inner inner", point(px(0.0), px(2.0))).unwrap();
+    }
+
+    /// A scroll view the user cannot scroll, inside one they can.
+    #[component]
+    fn WheelLocked() -> impl IntoElement {
+        view().flex_1().child(
+            scroll()
+                .test_id("outer")
+                .flex_1()
+                .child(
+                    scroll()
+                        .test_id("locked")
+                        .h(px(100.0))
+                        .scrollable(false)
+                        .child(view().test_id("inside").h(px(40.0))),
+                )
+                .children((0..100).map(|i| view().h(px(50.0)).child(text(format!("Row {i}"))))),
+        )
+    }
+
+    #[test]
+    fn a_locked_scroll_view_leaves_the_wheel_to_one_around_it() {
+        let mut app = start_linux(Root::of::<WheelLocked>());
+        app.first_render().unwrap();
+        let id = |app: &Headless, s: &str| match app.screen().view(&Selector::parse(s).unwrap()) {
+            Pick::One(id) => id,
+            _ => panic!("{s} is shown"),
+        };
+        let (outer, locked) = (id(&app, "id:outer"), id(&app, "id:locked"));
+        // The scroll view under the pointer cannot scroll: the one around
+        // it moves, and the locked one stays where it is.
+        app.wheel("id:inside", point(px(0.0), px(70.0))).unwrap();
+        assert_eq!(app.screen().scroll(locked).unwrap().y, Points::ZERO);
+        assert_eq!(app.screen().scroll(outer).unwrap().y, px(70.0));
+    }
+
+    /// A pad whose press reads whether its key is still down, and one whose
+    /// release it reads.
+    #[component]
+    fn KeyHeld() -> impl IntoElement {
+        let held = signal(false);
+        let presses = signal(0_u32);
+        let released = signal(0_u32);
+        view()
+            .flex_1()
+            .child(
+                view()
+                    .test_id("pad")
+                    .h(px(40.0))
+                    .focusable(true)
+                    .on_key_down(move |_: &KeyEvent| held.set(true))
+                    .on_key_up(move |_: &KeyEvent| {
+                        held.set(false);
+                        released.update(|n| *n += 1);
+                    })
+                    .on_press(move |_: &()| {
+                        if held.get() {
+                            presses.update(|n| *n += 1);
+                        }
+                    }),
+            )
+            .child(text(move || format!("pressed down {}", presses.get())))
+            .child(text(move || format!("released {}", released.get())))
+    }
+
+    #[test]
+    fn the_release_follows_the_press_it_belongs_to() {
+        let mut app = start_linux(Root::of::<KeyHeld>());
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        // Enter and Space press the pad while their key is down; the
+        // release comes after what the key did, never before it.
+        app.press_key("enter").unwrap();
+        app.wait_for("pressed down 1").unwrap();
+        app.wait_for("released 1").unwrap();
+        app.press_key("space").unwrap();
+        app.wait_for("pressed down 2").unwrap();
+        app.wait_for("released 2").unwrap();
+    }
+
+    /// A disabled view in the main window around a window of the app's own,
+    /// whose pad disables itself on Delete.
+    #[component]
+    fn KeyWindowFocus() -> impl IntoElement {
+        let pad_disabled = signal(false);
+        let downs = signal(0_u32);
+        let pad = element_ref();
+        view()
+            .flex_1()
+            .child(
+                view().disabled(true).child(
+                    nsh_core::element::desktop::window()
+                        .id("own")
+                        .default_size(size(px(300.0), px(200.0)))
+                        .content(move || {
+                            view().child(
+                                view()
+                                    .test_id("pad")
+                                    .element_ref(&pad)
+                                    .h(px(40.0))
+                                    .focusable(true)
+                                    .disabled(move || pad_disabled.get())
+                                    .on_press(move |_: &()| pad.focus())
+                                    .on_key_down(move |e: &KeyEvent| {
+                                        downs.update(|n| *n += 1);
+                                        if e.key == "Delete" {
+                                            pad_disabled.set(true);
+                                        }
+                                    }),
+                            )
+                        }),
+                ),
+            )
+            .child(
+                view()
+                    .test_id("enable")
+                    .on_press(move |_: &()| pad_disabled.set(false))
+                    .child(text("Enable")),
+            )
+            .child(text(move || format!("downs {}", downs.get())))
+    }
+
+    #[test]
+    fn a_disabled_view_in_the_main_window_is_not_over_another_windows_pad() {
+        let mut app = start_linux(Root::of::<KeyWindowFocus>());
+        app.first_render().unwrap();
+        // Activate the pad's own window; Tab stays within the active window.
+        // The disabled ancestor in the main window must not suppress it.
+        app.press("id:pad").unwrap();
+        app.press_key("a").unwrap();
+        app.wait_for("downs 1").unwrap();
+        // The pad disables itself on Delete; it takes no subsequent key
+        // down.
+        app.press_key("delete").unwrap();
+        app.wait_for("downs 2").unwrap();
+        app.press_key("b").unwrap();
+        app.wait_for("downs 2").unwrap();
+        // Enable it from the main window, then activate its own window again.
+        app.press("id:enable").unwrap();
+        app.press("id:pad").unwrap();
+        app.press_key("c").unwrap();
+        app.wait_for("downs 3").unwrap();
+    }
+
+    /// A web view in a view that listens to the wheel itself.
+    #[component]
+    fn WheelWebView() -> impl IntoElement {
+        let wrapper = signal(String::from("none"));
+        view()
+            .flex_1()
+            .child(text(move || format!("wrapper {}", wrapper.get())))
+            .child(
+                view()
+                    .test_id("wrap")
+                    .h(px(200.0))
+                    .on_wheel(move |_: &WheelEvent| wrapper.set("wheel".into()))
+                    .child(
+                        web_view("https://example.com")
+                            .test_id("page")
+                            .w(px(100.0))
+                            .h(px(60.0)),
+                    )
+                    .child(view().test_id("plain").h(px(30.0))),
+            )
+    }
+
+    #[test]
+    fn a_native_view_does_not_hide_a_listener_around_it_from_the_wheel() {
+        let mut app = start_linux(Root::of::<WheelWebView>());
+        app.first_render().unwrap();
+        // A web view over the pointer scrolls itself, but the nearest
+        // listener around it still hears the wheel: it observes, and no
+        // scroll view around it moves.
+        app.wheel("id:page", point(px(0.0), px(40.0))).unwrap();
+        app.wait_for("wrapper wheel").unwrap();
+        // The view around it hears the wheel over its ordinary child too.
+        app.wheel("id:wrap", point(px(0.0), px(40.0))).unwrap();
+        app.wait_for("wrapper wheel").unwrap();
+    }
+
+    /// A horizontal scroll view in a vertical one, and a short vertical one
+    /// in that too.
+    #[component]
+    fn WheelAxes() -> impl IntoElement {
+        view().flex_1().child(
+            scroll()
+                .test_id("page")
+                .flex_1()
+                .child(
+                    scroll()
+                        .test_id("strip")
+                        .horizontal()
+                        .h(px(60.0))
+                        .child(view().test_id("slide").w(px(400.0)).h(px(60.0))),
+                )
+                .child(
+                    scroll()
+                        .test_id("inner")
+                        .h(px(100.0))
+                        .child(view().test_id("short").h(px(120.0))),
+                )
+                .children((0..100).map(|i| view().h(px(50.0)).child(text(format!("Row {i}"))))),
+        )
+    }
+
+    #[test]
+    fn the_wheel_scrolls_along_its_axis_and_passes_on_at_an_edge() {
+        let mut app = start_linux(Root::of::<WheelAxes>());
+        app.first_render().unwrap();
+        let id = |app: &Headless, s: &str| match app.screen().view(&Selector::parse(s).unwrap()) {
+            Pick::One(id) => id,
+            _ => panic!("{s} is shown"),
+        };
+        let (page, strip, inner) = (
+            id(&app, "id:page"),
+            id(&app, "id:strip"),
+            id(&app, "id:inner"),
+        );
+        // A vertical wheel over the horizontal strip scrolls the page
+        // around it, not the strip.
+        app.wheel("id:slide", point(px(0.0), px(30.0))).unwrap();
+        assert_eq!(app.screen().scroll(strip).unwrap().x, Points::ZERO);
+        assert_eq!(app.screen().scroll(page).unwrap().y, px(30.0));
+        // The inner vertical view moves first, up to its end; then the page
+        // around it takes the wheel.
+        app.wheel("id:short", point(px(0.0), px(30.0))).unwrap();
+        assert_eq!(app.screen().scroll(inner).unwrap().y, px(20.0));
+        app.wheel("id:short", point(px(0.0), px(30.0))).unwrap();
+        assert_eq!(app.screen().scroll(inner).unwrap().y, px(20.0));
+        assert_eq!(app.screen().scroll(page).unwrap().y, px(60.0));
+    }
+
+    #[component]
+    fn KeyBack() -> impl IntoElement {
+        let held = signal(false);
+        let canceled_while_held = signal(false);
+        nsh_base::dialog()
+            .close_on_escape(false)
+            .on_cancel(move || canceled_while_held.set(held.get()))
+            .child(
+                view()
+                    .focusable(true)
+                    .h(px(40.0))
+                    .on_key_down(move |_: &KeyEvent| held.set(true))
+                    .on_key_up(move |_: &KeyEvent| held.set(false)),
+            )
+            .child(text(move || {
+                format!("cancel while held {}", canceled_while_held.get())
+            }))
+            .child(text(move || format!("held {}", held.get())))
+    }
+
+    #[test]
+    fn a_back_attempt_precedes_the_keys_release() {
+        let mut app = start_linux(Root::of::<KeyBack>());
+        app.first_render().unwrap();
+        app.press_key("tab").unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("cancel while held true").unwrap();
+        app.wait_for("held false").unwrap();
     }
 }

@@ -20,13 +20,15 @@
 use crate::contract::*;
 use maka_agent_facts::configuration::*;
 use maka_agent_facts::provider::Identity;
-use maka_agent_ports::provider::Definition;
+use maka_agent_ports::provider::{self, Definition};
 use maka_config::ConfigurationStore;
 use maka_plugin_core::scope::Scope;
 use maka_providers::catalog::Snapshot;
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 pub(crate) fn encode(value: impl Serialize) -> Result<Value, String> {
     let value = serde_json::to_value(value).map_err(|_| "settings_output_invalid")?;
@@ -68,17 +70,19 @@ pub(crate) async fn page(
     let end = (offset + 16).min(catalog.connections.len());
     let connections = catalog.connections[offset..end]
         .iter()
-        .map(|row| ConnectionSummary {
-            editable: definition(&row.provider, snapshot.clone()).is_ok(),
-            basis: ConnectionVersionBasis {
-                connection_id: row.basis.connection_id.clone(),
-                revision: row.basis.revision,
-            },
-            slug: row.slug.clone(),
-            name: row.name.clone(),
-            provider: row.provider.clone(),
-            enabled: row.enabled,
-            enabled_model_count: row.enabled_model_count,
+        .map(|row| {
+            let provider = definition(&row.provider, snapshot.clone()).ok();
+            ConnectionSummary {
+                editable: provider.is_some(),
+                basis: row.basis.clone(),
+                slug: row.slug.clone(),
+                name: row.name.clone(),
+                provider: row.provider.clone(),
+                enabled: row.enabled,
+                enabled_model_count: row.enabled_model_count,
+                usage_limits: provider
+                    .is_some_and(|provider| provider.descriptor().usage_authentication.is_some()),
+            }
         })
         .collect();
     encode(ConnectionsPage::Ready {
@@ -88,6 +92,209 @@ pub(crate) async fn page(
         next: (end < catalog.connections.len()).then_some(end),
     })
 }
+
+fn official_deepseek(row: &ConnectionCatalogEntry) -> bool {
+    let provider = &row.provider;
+    provider.name == "deepseek"
+        && provider.package_id == maka_providers::api::ID
+        && provider.entry_id == provider.package_id
+        && provider.scope == Scope::Profile
+        && matches!(
+            row.configuration
+                .get("baseUrl")
+                .and_then(Value::as_str)
+                .map(|url| url.trim_end_matches('/')),
+            Some("https://api.deepseek.com" | "https://api.deepseek.com/v1")
+        )
+}
+
+pub(crate) async fn dictation_connections(store: &ConfigurationStore) -> Result<Value, String> {
+    let catalog = store
+        .catalog()
+        .await
+        .map_err(|_| "Could not read model connections")?;
+    let mut options = Vec::new();
+    for row in catalog
+        .connections
+        .into_iter()
+        .filter(|row| row.enabled && official_deepseek(row))
+    {
+        let status = store
+            .credential_status(CredentialLocator::Connection {
+                connection_id: row.connection_id.clone(),
+                kind: ConnectionCredentialKind::Provider,
+            })
+            .await
+            .map_err(|_| "Could not read credential status")?;
+        if matches!(status, CredentialVaultQueryResult::Status {status} if status.basis().is_some())
+        {
+            options.push(DictationConnection {
+                name: row.name,
+                basis: ConnectionVersionBasis {
+                    connection_id: row.connection_id,
+                    revision: row.revision,
+                },
+            });
+        }
+    }
+    encode(options)
+}
+
+pub(crate) async fn transcribe(
+    store: &ConfigurationStore,
+    input: DictationInput,
+) -> Result<Value, String> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let observation = store
+        .observe_usage(input.connection)
+        .await
+        .map_err(|_| "Could not read model connection")?
+        .ok_or("The selected DeepSeek connection has changed")?;
+    let row = &observation.connection;
+    if !official_deepseek(row) {
+        return Err("Select an official DeepSeek connection".into());
+    }
+    let key = observation
+        .provider_credential()
+        .map_err(|_| "Could not read credential")?
+        .ok_or("Configure the DeepSeek model connection API key first")?;
+    let wav = STANDARD
+        .decode(input.audio)
+        .map_err(|_| "Invalid recording")?;
+    if wav.len() > 4_000_000 || !wav.starts_with(b"RIFF") || wav.get(8..12) != Some(b"WAVE") {
+        return Err("Invalid WAV recording".into());
+    }
+    let network = &observation.network;
+    let policy =
+        maka_network::Policy::from_host_settings(&network.proxy, network.password.as_deref())
+            .map_err(|_| "Invalid network configuration")?;
+    let file = reqwest::multipart::Part::bytes(wav)
+        .file_name("speech.wav")
+        .mime_str("audio/wav")
+        .map_err(|e| e.to_string())?;
+    let response = policy
+        .client_builder()
+        .timeout(Duration::from_secs(90))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?
+        .post("https://api.deepseek.com/v1/tools/asr")
+        .bearer_auth(key.secret)
+        .multipart(reqwest::multipart::Form::new().part("file", file))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| e.to_string())?;
+    let result: Value = serde_json::from_slice(&response.bytes().await.map_err(|e| e.to_string())?)
+        .map_err(|_| "Invalid transcription response")?;
+    result
+        .get("text")
+        .filter(|v| v.is_string())
+        .cloned()
+        .ok_or_else(|| "Missing transcript".into())
+}
+
+pub(crate) async fn usage_limits(
+    store: &Arc<ConfigurationStore>,
+    input: Value,
+    snapshot: Arc<Snapshot>,
+    cancellation: CancellationToken,
+) -> Result<Value, String> {
+    let expected: ConnectionVersionBasis =
+        serde_json::from_value(input).map_err(|_| "settings_input_invalid")?;
+    let Some(observation) = store
+        .observe_usage(expected)
+        .await
+        .map_err(|_| "settings_store_unavailable")?
+    else {
+        return encode(ConnectionUsageLimits::Superseded);
+    };
+    let row = &observation.connection;
+    let provider = definition(&row.provider, snapshot)?;
+    let Some(authentication) = provider.descriptor().usage_authentication else {
+        return encode(ConnectionUsageLimits::Unsupported);
+    };
+    let uses_access_key = authentication != provider::UsageAuthentication::Provider;
+    let credential = if uses_access_key {
+        let Some(key) = observation
+            .access_key()
+            .map_err(|_| "settings_store_unavailable")?
+        else {
+            return encode(ConnectionUsageLimits::UsageCredentialRequired);
+        };
+        provider::UsageCredential::AccessKey(key)
+    } else {
+        let Some(credential) = observation
+            .provider_credential()
+            .map_err(|_| "settings_store_unavailable")?
+        else {
+            return encode(ConnectionUsageLimits::AuthenticationRequired);
+        };
+        provider::UsageCredential::Provider {
+            credential,
+            request_headers: observation
+                .request_headers()
+                .map_err(|_| "settings_store_unavailable")?,
+        }
+    };
+    let network = &observation.network;
+    let policy =
+        maka_network::Policy::from_host_settings(&network.proxy, network.password.as_deref())
+            .map_err(|_| "settings_network_unavailable")?;
+    let transport =
+        maka_model::provider_transport(&policy).map_err(|_| "settings_network_unavailable")?;
+    let cancellation = cancellation.child_token();
+    let _cancel_on_drop = cancellation.clone().drop_guard();
+    let call = provider.usage_limits(
+        provider::UsageLimitsRequest {
+            connection: provider::Connection {
+                id: row.connection_id.clone(),
+                revision: row.revision,
+                configuration: row.configuration.clone(),
+            },
+            credential,
+        },
+        provider::Context {
+            transport,
+            cancellation: cancellation.clone(),
+            interaction: None,
+        },
+    );
+    tokio::pin!(call);
+    let result = tokio::select! {
+        result = &mut call => result,
+        _ = tokio::time::sleep(Duration::from_secs(15)) => {
+            cancellation.cancel();
+            let settled = call.await;
+            tracing::warn!(error = ?settled.err(), connection_id = %row.connection_id, "Provider usage request timed out");
+            Err(provider::Error::Cancelled)
+        }
+    };
+    if !store
+        .usage_observation_current(&observation, uses_access_key)
+        .await
+        .map_err(|_| "settings_store_unavailable")?
+    {
+        return encode(ConnectionUsageLimits::Superseded);
+    }
+    let result = match result {
+        Ok(limits) => ConnectionUsageLimits::Ready { limits },
+        Err(provider::Error::AuthenticationRequired) if uses_access_key => {
+            ConnectionUsageLimits::UsageCredentialRequired
+        }
+        Err(provider::Error::AuthenticationRequired) => {
+            ConnectionUsageLimits::AuthenticationRequired
+        }
+        Err(provider::Error::Unavailable) => ConnectionUsageLimits::Unsupported,
+        Err(provider::Error::Cancelled) => ConnectionUsageLimits::Unavailable,
+        Err(error) => {
+            tracing::warn!(%error, connection_id = %row.connection_id, "Provider usage limits unavailable");
+            ConnectionUsageLimits::Unavailable
+        }
+    };
+    encode(result)
+}
+
 pub(crate) async fn detail(store: &ConfigurationStore, input: Value) -> Result<Value, String> {
     let expected: ConnectionRead =
         serde_json::from_value(input).map_err(|_| "settings_input_invalid")?;
@@ -118,7 +325,12 @@ pub(crate) async fn detail(store: &ConfigurationStore, input: Value) -> Result<V
                 enabled_model_count: row.enabled_model_ids.len(),
                 editing: expected
                     .include_editing_facts
-                    .then_some(ConnectionEditingFacts {
+                    .then(|| ConnectionEditingFacts {
+                        discovered_model_ids: row
+                            .models
+                            .into_iter()
+                            .map(|model| model.id)
+                            .collect(),
                         enabled_model_ids: row.enabled_model_ids,
                         model_overrides: row.model_overrides,
                         request_body_overlay: row.request_body_overlay,

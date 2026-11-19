@@ -1,6 +1,6 @@
 import { effect, List, type ListRef, mount, signal, Text, View } from "nsh";
 import { windowSize } from "nsh";
-import { focusRing, hoverFill, size, tint, ui, wide } from "./palette";
+import { focusRing, hoverFill, sectionSurface, size, tint, ui, wide } from "./palette";
 
 /** In a wide window the lists sit in one centered region, 760 points across. */
 const REGION = 760;
@@ -30,7 +30,7 @@ function Feed() {
       each={posts()}
       keyExtractor={(p) => String(p.id)}
       estimatedItemSize={wide() ? size.row : 56}
-      style={wide() ? { ...ui().card, flex: 1, margin: 20, marginTop: 12, borderRadius: 12, overflow: "hidden" } : { flex: 1 }}
+      style={wide() ? { ...sectionSurface(), flex: 1, margin: 20, marginTop: 12, overflow: "hidden" } : { flex: 1 }}
       contentStyle={wide() ? {} : { padding: 12, gap: 8 }}
       onLoadMore={() => posts.update((p) => [...p, ...make(20)])}
       loadMoreThreshold={0.5}
@@ -58,10 +58,10 @@ function Feed() {
           <Text style={{ flex: 1, color: ui().muted, fontSize: wide() ? 13 : undefined }}>
             {posts().length} posts, visible {visible()}
           </Text>
-          <Text onPress={() => list.scrollToIndex({ index: 30, viewPosition: 0.5 })} style={{ color: ui().accent, fontSize: wide() ? 13 : undefined }} hoverStyle={hoverFill()} focusStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
+          <Text onPress={() => list.scrollToIndex({ index: 30, viewPosition: 0.5 })} style={{ color: ui().accent, fontSize: wide() ? 13 : undefined }} hoverStyle={hoverFill()} focusVisibleStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
             #30
           </Text>
-          <Text onPress={() => list.scrollToOffset({ offset: 0 })} style={{ color: ui().accent, fontSize: wide() ? 13 : undefined }} hoverStyle={hoverFill()} focusStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
+          <Text onPress={() => list.scrollToOffset({ offset: 0 })} style={{ color: ui().accent, fontSize: wide() ? 13 : undefined }} hoverStyle={hoverFill()} focusVisibleStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
             Top
           </Text>
         </View>
@@ -120,7 +120,7 @@ function Contacts() {
       estimatedItemSize={wide() ? size.rowSm : 44}
       style={
         wide()
-          ? { ...ui().card, flex: 1, margin: 20, marginTop: 12, borderRadius: 12, overflow: "hidden" }
+          ? { ...sectionSurface(), flex: 1, margin: 20, marginTop: 12, overflow: "hidden" }
           : { flex: 1, backgroundColor: ui().card.backgroundColor }
       }
     >
@@ -169,7 +169,7 @@ function App() {
         boxShadow: tab() === id ? ui().raised.boxShadow : "none",
       }}
       hoverStyle={{ opacity: 0.88 }}
-      focusStyle={focusRing()}
+      focusVisibleStyle={focusRing()}
       activeStyle={{ opacity: 0.7 }}
     >
       {label}

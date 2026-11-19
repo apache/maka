@@ -19,6 +19,7 @@
 
 use maka_capabilities::call;
 use maka_capabilities::http;
+use maka_plugin_core::http::Method;
 use std::sync::Arc;
 use url::{Host, Url};
 
@@ -85,7 +86,7 @@ impl Fetcher {
             }
             let response = self.http.request(scope.clone(), http::Request {
                 url: url.to_string(),
-                method: http::Method::Get,
+                method: Method::Get,
                 headers: vec![
                     ("Accept".into(), "text/markdown, text/plain;q=0.9, text/html;q=0.8, application/xhtml+xml;q=0.8".into()),
                     ("User-Agent".into(), concat!("Maka/", env!("CARGO_PKG_VERSION"), " WebFetch").into()),

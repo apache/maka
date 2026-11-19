@@ -18,6 +18,7 @@
 //! `onOpenChange`), so the app's names are not the core's events'.
 
 use std::{
+    collections::{HashMap, VecDeque},
     ffi::{CStr, CString, c_int},
     ptr,
 };
@@ -138,6 +139,17 @@ export interface NavStackProps<R> {
   class?: string;
   /** Renders a route; return a `<NavPage>` for header options. */
   children: (route: R, index: Accessor<number>) => JSX.Element;
+  /** The routes changed: pushed, popped, replaced or set by the app, or a
+   * page the user went back from (a back button, a swipe, the browser's
+   * back). After the change is rendered; not for the routes the stack
+   * starts with. */
+  onChange?: (event: NavStackChangeEvent<R>) => void;
+}
+
+/** What a `<NavStack>`'s `onChange` gets. */
+export interface NavStackChangeEvent<R> {
+  /** The routes now, bottom to top. */
+  routes: readonly R[];
 }
 
 /** The color of the status bar's content. */
@@ -168,6 +180,7 @@ export interface NavPageProps extends NavPageHostProps {
   /** Finds the page in tests and `nsh test --trace`. */
   testID?: string;
   ios?: IOSNavPageHostProps;
+  android?: AndroidNavPageHostProps;
   /** The app's header on the desktops and the web, which have no system
    * header: placed at the top of the page, as wide as the page and as tall
    * as it lays out, with the content below it. NSH draws nothing else
@@ -208,6 +221,15 @@ export interface DialogProps extends DialogHostProps {
   open?: boolean;
   /** How it comes in and goes (default `"slide"`). */
   animation?: "slide" | "fade" | "none";
+  /** What screen readers call it as the focus enters it: its title. */
+  accessibilityLabel?: string;
+  /** What screen readers read after its name: its message (an alert
+   * dialog's "This can't be undone."). */
+  accessibilityDescription?: string;
+  /** What it is for screen readers (default `"dialog"`): `"alertdialog"`
+   * for one that asks the user to confirm something or tells them
+   * something urgent. */
+  role?: "dialog" | "alertdialog";
   /** It finished appearing. */
   onOpen?: () => void;
   /** It went away: the user closed it, or the app removed it. */
@@ -242,20 +264,22 @@ export interface DialogProps extends DialogHostProps {
 
 // --- The navigator --------------------------------------------------------------
 
-/// The routes (a JS array) as values (owned).
-fn routes_of(cx: *mut JsContext, routes: JsValue) -> Vec<JsValue> {
-    let mut len: i64 = 0;
-    let mut out = Vec::new();
-    // SAFETY: reads of a live array.
-    unsafe {
-        if !qjs::JS_IsArray(routes) || qjs::JS_GetLength(cx, routes, &mut len) != 0 {
-            return out;
-        }
-        for i in 0..len.max(0) {
-            out.push(qjs::JS_GetPropertyInt64(cx, routes, i));
-        }
+/// The routes (a JS array) as values (owned), none for other values;
+/// `None` (an exception pending) when the array's length throws or is
+/// longer than [`dom::MAX_ARRAY_ITEMS`].
+fn routes_of(cx: *mut JsContext, routes: JsValue) -> Option<Vec<JsValue>> {
+    // SAFETY: an inline tag check.
+    if !unsafe { qjs::JS_IsArray(routes) } {
+        return Some(Vec::new());
     }
-    out
+    // Read natively: a sparse array is as long as it says.
+    let len = dom::checked_len(cx, routes)?;
+    // SAFETY: reads of a live array.
+    Some(
+        (0..len)
+            .map(|i| unsafe { qjs::JS_GetPropertyUint32(cx, routes, i) })
+            .collect(),
+    )
 }
 
 /// `createNavStack(routes)`: the route stack of a `<NavStack>`.
@@ -273,10 +297,10 @@ unsafe extern "C" fn create_nav_stack(
             qjs::JS_ThrowTypeError(cx, c"createNavStack: an array of routes".as_ptr())
         };
     }
-    let mut entries: Vec<JsValue> = routes_of(cx, initial)
-        .into_iter()
-        .map(|route| entry(cx, route))
-        .collect();
+    let Some(routes) = routes_of(cx, initial) else {
+        return qjs::JS_EXCEPTION;
+    };
+    let mut entries: Vec<JsValue> = routes.into_iter().map(|route| entry(cx, route)).collect();
     // SAFETY: a new array taking the entries.
     let entries = unsafe { qjs::JS_NewArrayFrom(cx, entries.len() as c_int, entries.as_mut_ptr()) };
     let signal = reactive::new_signal(cx, entries);
@@ -332,6 +356,102 @@ fn route_of(cx: *mut JsContext, entry: JsValue) -> JsValue {
     get(cx, entry, c"route")
 }
 
+/// What `===` compares a route by, where it can be looked up: a string by
+/// its atom (one per content), an object by identity.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum RouteKey {
+    Atom(qjs::JSAtom),
+    Object(usize),
+}
+
+/// `route`'s key (borrowed; an atom made is the caller's), `None` for a
+/// route `===` compares otherwise (a number, a symbol, ...).
+fn route_key(cx: *mut JsContext, route: JsValue) -> Option<RouteKey> {
+    // SAFETY: inline tag and pointer reads of a live value, an atom made of
+    // a string (owned by the caller) or a pending exception cleared.
+    unsafe {
+        if qjs::JS_IsObject(route) {
+            return Some(RouteKey::Object(qjs::JS_VALUE_GET_PTR(route) as usize));
+        }
+        if qjs::JS_IsString(route) {
+            let atom = qjs::JS_ValueToAtom(cx, route);
+            if atom != qjs::JS_ATOM_NULL {
+                return Some(RouteKey::Atom(atom));
+            }
+            qjs::JS_FreeValue(cx, qjs::JS_GetException(cx));
+        }
+    }
+    None
+}
+
+/// A stack's entries by route (`setRoutes`): a route's first unused entry
+/// is found without comparing the route with every entry, so replacing n
+/// routes with n others takes n lookups, not n² reads of entries' routes
+/// in a native loop the time budget cannot interrupt. Routes without a
+/// key are compared one by one, as before.
+struct RouteIndex {
+    keyed: HashMap<RouteKey, VecDeque<usize>>,
+    others: Vec<usize>,
+    /// The atoms of `keyed` (owned).
+    atoms: Vec<qjs::JSAtom>,
+}
+
+impl RouteIndex {
+    /// The routes of `entries` (borrowed, kept alive until [`free`]d: the
+    /// keys of objects are their addresses).
+    ///
+    /// [`free`]: RouteIndex::free
+    fn new(cx: *mut JsContext, entries: &[JsValue]) -> Self {
+        let mut index = RouteIndex {
+            keyed: HashMap::new(),
+            others: Vec::new(),
+            atoms: Vec::new(),
+        };
+        for (i, &e) in entries.iter().enumerate() {
+            let route = route_of(cx, e);
+            match route_key(cx, route) {
+                Some(key) => {
+                    if let RouteKey::Atom(atom) = key {
+                        index.atoms.push(atom);
+                    }
+                    index.keyed.entry(key).or_default().push_back(i);
+                }
+                None => index.others.push(i),
+            }
+            free(cx, route);
+        }
+        index
+    }
+
+    /// The first entry of `entries` not taken yet whose route is `route`
+    /// (borrowed), now taken.
+    fn take(&mut self, cx: *mut JsContext, entries: &[JsValue], route: JsValue) -> Option<usize> {
+        let Some(key) = route_key(cx, route) else {
+            let at = self.others.iter().position(|&i| {
+                let r = route_of(cx, entries[i]);
+                // SAFETY: an identity comparison of live values.
+                let same = unsafe { qjs::JS_IsStrictEqual(cx, r, route) };
+                free(cx, r);
+                same
+            })?;
+            return Some(self.others.remove(at));
+        };
+        let at = self.keyed.get_mut(&key).and_then(VecDeque::pop_front);
+        if let RouteKey::Atom(atom) = key {
+            // SAFETY: the atom made for this lookup.
+            unsafe { qjs::JS_FreeAtom(cx, atom) };
+        }
+        at
+    }
+
+    fn free(self, cx: *mut JsContext) {
+        for atom in self.atoms {
+            // SAFETY: an atom this index made.
+            unsafe { qjs::JS_FreeAtom(cx, atom) };
+        }
+    }
+}
+
 unsafe extern "C" fn read_routes(
     cx: *mut JsContext,
     _this: JsValue,
@@ -342,7 +462,11 @@ unsafe extern "C" fn read_routes(
 ) -> JsValue {
     // SAFETY: one data value: the entries' signal.
     let entries = unsafe { qjs::JS_Call(cx, *data, UNDEFINED, 0, ptr::null_mut()) };
-    let mut routes: Vec<JsValue> = routes_of(cx, entries)
+    let Some(entries_got) = routes_of(cx, entries) else {
+        free(cx, entries);
+        return qjs::JS_EXCEPTION;
+    };
+    let mut routes: Vec<JsValue> = entries_got
         .into_iter()
         .map(|e| {
             let route = route_of(cx, e);
@@ -368,10 +492,26 @@ unsafe extern "C" fn navigate(
     // SAFETY: one data value (the signal); values got are freed or moved.
     let signal = unsafe { *data };
     let current = reactive::peek(cx, signal);
-    let mut routes = routes_of(cx, current);
+    let Some(mut routes) = routes_of(cx, current) else {
+        return qjs::JS_EXCEPTION;
+    };
     let a0 = arg(argc, argv, 0);
     let dup = |v: JsValue| unsafe { qjs::JS_DupValue(cx, v) };
     match magic {
+        // A stack is read as the arrays apps hand in are: one longer than
+        // the bound could no longer be navigated, so it does not grow past it.
+        0 if routes.len() >= dom::MAX_ARRAY_ITEMS as usize => {
+            for e in routes {
+                free(cx, e);
+            }
+            let message = CString::new(format!(
+                "nsh: a navigation stack holds at most {} screens",
+                dom::MAX_ARRAY_ITEMS
+            ))
+            .unwrap_or_default();
+            // SAFETY: throwing in the calling context.
+            return unsafe { qjs::JS_ThrowRangeError(cx, c"%s".as_ptr(), message.as_ptr()) };
+        }
         0 => routes.push(entry(cx, dup(a0))),
         1 => {
             let mut count = 1f64;
@@ -398,20 +538,20 @@ unsafe extern "C" fn navigate(
         4 => {
             // A route that stays keeps its page (its entry), in order: the
             // first unused entry of the same route.
-            let mut old: Vec<Option<JsValue>> = routes.drain(..).map(Some).collect();
-            routes = routes_of(cx, a0)
+            let Some(next) = routes_of(cx, a0) else {
+                for e in routes {
+                    free(cx, e);
+                }
+                return qjs::JS_EXCEPTION;
+            };
+            let entries = std::mem::take(&mut routes);
+            let mut index = RouteIndex::new(cx, &entries);
+            let mut old: Vec<Option<JsValue>> = entries.iter().copied().map(Some).collect();
+            routes = next
                 .into_iter()
                 .map(|route| {
-                    let kept = old.iter_mut().find(|slot| {
-                        slot.is_some_and(|e| {
-                            let r = route_of(cx, e);
-                            // SAFETY: an identity comparison of live values.
-                            let same = unsafe { qjs::JS_IsStrictEqual(cx, r, route) };
-                            free(cx, r);
-                            same
-                        })
-                    });
-                    match kept.and_then(Option::take) {
+                    let kept = index.take(cx, &entries, route).and_then(|i| old[i].take());
+                    match kept {
                         Some(e) => {
                             free(cx, route);
                             e
@@ -420,6 +560,7 @@ unsafe extern "C" fn navigate(
                     }
                 })
                 .collect();
+            index.free(cx);
             for e in old.into_iter().flatten() {
                 free(cx, e);
             }
@@ -468,7 +609,9 @@ unsafe extern "C" fn stack(
         Err(e) => return e,
     };
     let result = (|| -> Result<(), JsValue> {
-        dom::spread_except(cx, node, props, &["state", "children"])?;
+        dom::spread_except(cx, node, props, &["state", "children", "onChange"])?;
+        let change = native(cx, stack_change, 1, &mut [props]);
+        reactive::user_effect(cx, change);
         let navigator = get(cx, props, c"state");
         let entries = get(cx, navigator, ENTRIES);
         free(cx, navigator);
@@ -493,6 +636,64 @@ unsafe extern "C" fn stack(
             e
         }
     }
+}
+
+/// The stack's `onChange({ routes })`: an effect reading its routes, which
+/// calls the app after each change (not for the routes it starts with).
+unsafe extern "C" fn stack_change(
+    cx: *mut JsContext,
+    _this: JsValue,
+    argc: c_int,
+    argv: *mut JsValue,
+    _magic: c_int,
+    data: *mut JsValue,
+) -> JsValue {
+    // SAFETY: one data value (the stack's props).
+    let props = unsafe { *data };
+    // SAFETY: an inline tag check of the last run's value.
+    let first = unsafe { qjs::JS_IsUndefined(arg(argc, argv, 0)) };
+    let navigator = get(cx, props, c"state");
+    let read = get(cx, navigator, c"routes");
+    free(cx, navigator);
+    // SAFETY: the state's accessor, tracked.
+    let routes = unsafe { qjs::JS_Call(cx, read, UNDEFINED, 0, ptr::null_mut()) };
+    free(cx, read);
+    // SAFETY: an inline tag check.
+    if unsafe { qjs::JS_IsException(routes) } {
+        return routes;
+    }
+    if !first {
+        // Untracked: a handler that changes is no change of the routes.
+        let failed = reactive::untracked_with(cx, || {
+            let on_change = get(cx, props, c"onChange");
+            // SAFETY: an inline check; the event object takes a dup of `routes`.
+            if !unsafe { qjs::JS_IsFunction(cx, on_change) } {
+                free(cx, on_change);
+                return None;
+            }
+            let event = unsafe { qjs::JS_NewObject(cx) };
+            unsafe {
+                qjs::JS_SetPropertyStr(cx, event, c"routes".as_ptr(), qjs::JS_DupValue(cx, routes))
+            };
+            let mut args = [event];
+            // SAFETY: the app's function.
+            let r = unsafe { qjs::JS_Call(cx, on_change, UNDEFINED, 1, args.as_mut_ptr()) };
+            free(cx, event);
+            free(cx, on_change);
+            // SAFETY: an inline tag check.
+            if unsafe { qjs::JS_IsException(r) } {
+                return Some(r);
+            }
+            free(cx, r);
+            None
+        });
+        if let Some(e) = failed {
+            free(cx, routes);
+            return e;
+        }
+    }
+    free(cx, routes);
+    qjs::JS_TRUE
 }
 
 /// One route of a stack: its screen (the app's `<NavPage>`, or one around
@@ -569,7 +770,20 @@ unsafe extern "C" fn screen_of_accessor(
 ) -> JsValue {
     // SAFETY: two data values: the accessor and the pop callback.
     let (accessor, popped) = unsafe { (*data, *data.add(1)) };
-    let rendered = unsafe { qjs::JS_Call(cx, accessor, UNDEFINED, 0, ptr::null_mut()) };
+    let mut rendered = unsafe { qjs::JS_Call(cx, accessor, UNDEFINED, 0, ptr::null_mut()) };
+    // A component rendering another gives an accessor around the next one
+    // (each made hot is one): read them all, tracked, down to what the
+    // innermost rendered, so a `<NavPage>` there is the screen itself and
+    // an edit of any of them renders the screen again.
+    while !unsafe { qjs::JS_IsException(rendered) }
+        && unsafe { qjs::JS_IsFunction(cx, rendered) }
+        && dom::node_id(cx, rendered).is_none()
+    {
+        // SAFETY: an owned function, freed once called.
+        let next = unsafe { qjs::JS_Call(cx, rendered, UNDEFINED, 0, ptr::null_mut()) };
+        free(cx, rendered);
+        rendered = next;
+    }
     if unsafe { qjs::JS_IsException(rendered) } {
         return rendered;
     }
@@ -1044,6 +1258,7 @@ unsafe extern "C" fn modal_run(
                     "children",
                     "open",
                     "animation",
+                    "role",
                     "class",
                     "style",
                     "backdropClass",
@@ -1070,6 +1285,12 @@ unsafe extern "C" fn modal_run(
                 free(cx, read);
                 r?;
             }
+            // A dialog for screen readers unless the app says otherwise
+            // (`"alertdialog"`), named by its `accessibilityLabel`.
+            let read = native(cx, dialog_role, 0, &mut [props]);
+            let r = dom::bind_prop_with(cx, node, "role", read);
+            free(cx, read);
+            r?;
             let (insets, on_insets) = native_insets(cx, false);
             let id = dom::node_id(cx, node).expect("a node");
             let r = dom::set_handler(cx, id, EventKind::Insets, on_insets);
@@ -1237,6 +1458,28 @@ unsafe extern "C" fn has_backdrop(
         free(cx, v);
     }
     if has { qjs::JS_TRUE } else { qjs::JS_FALSE }
+}
+
+/// The dialog's role for assistive technologies: the app's `role`, else
+/// `"dialog"`.
+unsafe extern "C" fn dialog_role(
+    cx: *mut JsContext,
+    _this: JsValue,
+    _argc: c_int,
+    _argv: *mut JsValue,
+    _magic: c_int,
+    data: *mut JsValue,
+) -> JsValue {
+    // SAFETY: one data value (the props).
+    let props = unsafe { *data };
+    let role = get(cx, props, c"role");
+    // SAFETY: an inline check of a live value.
+    if unsafe { qjs::JS_IsUndefined(role) || qjs::JS_IsNull(role) } {
+        free(cx, role);
+        // SAFETY: a new string the caller takes.
+        return unsafe { qjs::JS_NewStringLen(cx, c"dialog".as_ptr(), 6) };
+    }
+    role
 }
 
 /// The backdrop: a view filling the dialog behind the popup, with the

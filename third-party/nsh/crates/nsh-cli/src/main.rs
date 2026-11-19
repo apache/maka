@@ -9,17 +9,22 @@ mod bindgen;
 mod build;
 mod cdp;
 mod check;
+mod component;
 mod dev;
 mod dev_port;
 mod entry;
+mod extensions;
 mod init;
 mod logger;
+mod native_features;
 mod package;
+mod platforms;
 mod play;
 mod publish_ios;
 mod run;
 mod runtime;
 mod rust_app;
+mod self_update;
 mod sign;
 mod test;
 mod test_android;
@@ -79,7 +84,7 @@ pub(crate) fn set_app_sets(app: Vec<SetDescription>) {
 }
 
 #[derive(Parser)]
-#[command(name = "nsh", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("NSH_GIT_SHA"), ")"), about = "Build and run nsh apps")]
+#[command(name = "nsh", version = env!("NSH_VERSION_TEXT"), about = "Build and run nsh apps")]
 struct Cli {
     /// Show everything: log lines with their targets, cargo's output and
     /// the hosts' own.
@@ -183,18 +188,24 @@ enum Command {
         /// `nsh/host` calls of each app the tests open and sends its events.
         #[arg(long, value_name = "JS")]
         web_host: Option<PathBuf>,
-        /// With `--target macos`: the display the apps' windows open on,
-        /// centered: 1 is the primary display (the one with the menu bar),
-        /// 2 the next, and so on; the main one when there is no such
-        /// display. Default: the first display besides the primary one
-        /// (not a mirror of it), so that a run keeps off the screen in use;
-        /// the primary one when there is no other.
+        /// With `--target ios`: the simulator the apps run in (name or
+        /// UDID); default: a booted one, else the newest iPhone.
+        #[arg(long, value_name = "DEVICE")]
+        device: Option<String>,
+        /// With `--target macos` or `gpui`: the display the apps' windows
+        /// open on, centered: 1 is the primary display (on macOS the one with
+        /// the menu bar), 2 the next, and so on; the main one when there is
+        /// no such display. Default: the first display besides the primary
+        /// one (not a mirror of it), so that a run keeps off the screen in
+        /// use; the primary one when there is no other.
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
         display: Option<u32>,
-        /// With `--target macos`: lets the apps become the active app, as
-        /// they would run for a user. By default they run in the
-        /// background: their windows show but never take the keyboard from
-        /// the app in use, and the tests' input goes to them directly.
+        /// With `--target macos`, `windows`, `gpui` or `linux`: lets the apps
+        /// become the active app, as they would run for a user. By default
+        /// they run in the background: their windows show but never take the
+        /// keyboard from the app in use, and the tests' input goes to them
+        /// directly (on Linux the keys go to the widgets, as on Wayland,
+        /// except on a display nobody types on, such as Xvfb).
         #[arg(long)]
         foreground: bool,
     },
@@ -278,10 +289,11 @@ enum Command {
         #[arg(long)]
         trace: bool,
         /// Show the performance monitor over the app: frame rate, frame and
-        /// commit costs, CPU, GPU, memory (`--target macos`, which also logs
-        /// its readings once a second; `--target linux`, `windows` and `ios`
-        /// log them). On `tui`, show FPS/idle, frame p95, apply/draw/flush
-        /// times, bytes and changed Cells; C-h p toggles the line.
+        /// commit costs, CPU, GPU, memory (`--target macos` and `linux`; on
+        /// `macos`, `linux`, `windows` and `ios` the host also logs its
+        /// readings once a second, shown with `-v`). On `tui`, show FPS/idle,
+        /// frame p95, apply/draw/flush times, bytes and changed Cells; C-h p
+        /// toggles the line.
         #[arg(long)]
         fps: bool,
         /// Where to run.
@@ -315,6 +327,43 @@ enum Command {
         /// Path and name of the key files, e.g. `keys/root`.
         name: PathBuf,
     },
+    /// Update this nsh to the latest release, or to the latest nightly
+    /// build of `main` (`nsh update nightly`, as `rustup update nightly`);
+    /// it stays on the channel it was installed from unless one is named.
+    Update {
+        /// `stable` (the releases) or `nightly` (every night `main` changes);
+        /// default: the channel this nsh is on.
+        #[arg(value_enum)]
+        channel: Option<self_update::Channel>,
+    },
+    /// Add a third-party extension to the app in this directory: a Rust
+    /// crate with components, modules and classes for its Rust and TSX
+    /// code, from crates.io (`nsh add acme-ui[@1.2]`), Git (`nsh add
+    /// https://github.com/acme/ui`) or a directory (`nsh add --path
+    /// ../ui`). Listed in `nsh.json` `"extensions"`, the version or commit
+    /// it resolved to pinned in `nsh.lock`.
+    Add {
+        /// A crate name (with `@<version>`), `github:<owner>/<repo>` (with
+        /// `@<tag>`) or a Git repository URL.
+        #[arg(required_unless_present = "path", conflicts_with = "path")]
+        source: Option<String>,
+        /// A local directory with the extension.
+        #[arg(long)]
+        path: Option<String>,
+        /// The tag to take from Git (default: the default branch).
+        #[arg(long, conflicts_with_all = ["rev", "path"])]
+        tag: Option<String>,
+        /// The commit or branch to take from Git.
+        #[arg(long, conflicts_with = "path")]
+        rev: Option<String>,
+    },
+    /// Add, remove or list the runtimes installed beside this nsh: those
+    /// of other platforms than this machine's (`android`, `ios`, `web`,
+    /// `gpui`, `tui`), which a command that needs one also adds itself.
+    Component {
+        #[command(subcommand)]
+        action: ComponentAction,
+    },
     /// Write an app's update manifest (`latest.json`, signed with `--key`)
     /// from the archives `nsh package` made for each platform; publish them
     /// together.
@@ -333,9 +382,12 @@ enum Command {
         /// The secret key (`nsh keygen`'s `.secret`) of the app's `updater.publicKey`.
         #[arg(long)]
         key: Option<PathBuf>,
-        /// A text file with what changed.
+        /// A text file with what changed; `<tag>=<file>` for another
+        /// language, a BCP 47 tag such as `en`, `zh-TW` or `ja`, written
+        /// beside the manifest as `notes.<tag>.md` (repeatable; the
+        /// untagged one is needed with tagged ones).
         #[arg(long)]
-        notes: Option<PathBuf>,
+        notes: Vec<String>,
         /// Where iOS or Android users get it: `ios=<url>`, `android=<url>` (repeatable).
         #[arg(long = "link")]
         links: Vec<String>,
@@ -537,6 +589,11 @@ struct PackageArgs {
     /// App Bundle (`aab`, uploaded to Google Play).
     #[arg(long, value_enum, default_value_t)]
     format: crate::android::Format,
+    /// macOS: the processors the app runs on, `arm64` (Apple silicon),
+    /// `x86_64` (Intel) or `universal` (both, in one executable). Default:
+    /// this Mac's.
+    #[arg(long, value_enum)]
+    arch: Option<package::Arch>,
     /// Install and launch the app in the simulator or on the Android device
     /// afterwards (Linux, macOS, Windows: launch it; web: serve it on this
     /// machine at the address it prints).
@@ -548,6 +605,33 @@ struct PackageArgs {
     /// relatively, so the site runs from any directory.
     #[arg(long, value_name = "URL", conflicts_with = "run")]
     asset_url: Option<String>,
+}
+
+/// `nsh component`'s actions.
+#[derive(Subcommand, Clone)]
+enum ComponentAction {
+    /// The components of this machine's release, installed or not.
+    List,
+    /// Download and install components of this nsh's release.
+    Add {
+        /// Their names (`nsh component list`).
+        #[arg(required = true)]
+        names: Vec<String>,
+    },
+    /// Remove installed components.
+    Remove {
+        /// Their names.
+        #[arg(required = true)]
+        names: Vec<String>,
+    },
+    /// Move each component out of this distribution into its release
+    /// archive (the release workflow's).
+    #[command(hide = true)]
+    Pack {
+        /// The directory the archives are written to.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 impl Command {
@@ -563,6 +647,9 @@ impl Command {
             Command::Package(args) => Some(&mut args.entry),
             Command::Init { .. }
             | Command::Keygen { .. }
+            | Command::Update { .. }
+            | Command::Component { .. }
+            | Command::Add { .. }
             | Command::UpdateManifest { .. }
             | Command::Certify { .. }
             | Command::Verify { .. }
@@ -574,7 +661,17 @@ impl Command {
 
 /// Runs the command line; errors are printed.
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    // `--target` naming a platform outside NSH: its executable runs the
+    // command (`platforms.rs`).
+    let args: Vec<_> = std::env::args_os().collect();
+    if let Some(result) = platforms::dispatch(&args) {
+        return result.unwrap_or_else(|e| {
+            ui::init(false);
+            ui::report(&e);
+            ExitCode::FAILURE
+        });
+    }
+    let cli = Cli::parse_from(args);
     ui::init(cli.verbose);
     logger::init();
     let result = run(cli.command);
@@ -706,6 +803,11 @@ fn run(mut command: Command) -> anyhow::Result<()> {
                 ..
             }
     );
+    // An app written for other NSH versions says so before anything else
+    // fails on what this one lacks.
+    if let Some(entry) = command.entry_mut() {
+        package::check_nsh_version(entry)?;
+    }
     if let Some(entry) = command.entry_mut()
         && rust_app::is_root(entry)
         && !rust_command
@@ -717,8 +819,24 @@ fn run(mut command: Command) -> anyhow::Result<()> {
             ui::path(entry)
         );
     }
+    // Only commands that build this machine's headless runner, host or
+    // runner after the describing program share one build with it; the
+    // others (a bundle, a check, a package or a host for another target)
+    // build only the describing program for this machine.
+    let here = |target: run::Target| target == run::Target::native() && target != run::Target::Web;
+    let unify = match &command {
+        Command::Test { .. } => true,
+        Command::Run { target, .. } => here(*target),
+        Command::Dev {
+            target,
+            server_only: false,
+            ..
+        } => here(*target),
+        Command::Package(args) => Some(args.target) == package::PackageTarget::desktop(),
+        _ => false,
+    };
     let app = match command.entry_mut() {
-        Some(entry) => rust_app::of(entry)?,
+        Some(entry) => rust_app::of(entry, unify)?,
         None => None,
     };
     let Some(app) = app else {
@@ -806,6 +924,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             target,
             browser,
             web_host,
+            device,
             display,
             foreground,
         } => test::test(
@@ -818,6 +937,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             target,
             browser.as_deref(),
             web_host,
+            device.as_deref(),
             display.map(|n| n as usize),
             foreground,
         ),
@@ -876,6 +996,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
                 keystore_password,
                 abi,
                 format,
+                arch,
                 run,
                 asset_url,
             } = *args;
@@ -884,7 +1005,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             config.id = id.or(config.id);
             config.version = version.or(config.version);
             config.build = build.or(config.build);
-            config.icon = icon.or(config.icon);
+            config.icon = icon.map(package::AppIcon::All).or(config.icon);
             package::package(package::PackageOptions {
                 entry: &entry,
                 target,
@@ -901,8 +1022,10 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
                 }),
                 abis: &abi,
                 format,
+                arch,
                 run,
                 asset_url: asset_url.as_deref(),
+                development: false,
             })
         }
         Command::Run {
@@ -943,6 +1066,22 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             )
         }
         Command::Keygen { name } => sign::keygen(&name),
+        Command::Update { channel } => self_update::update(channel),
+        Command::Add {
+            source,
+            path,
+            tag,
+            rev,
+        } => extensions::add(
+            &std::env::current_dir()?,
+            extensions::Source::parse(source, path, tag, rev)?,
+        ),
+        Command::Component { action } => match action {
+            ComponentAction::List => component::list(),
+            ComponentAction::Add { names } => component::add_named(&names),
+            ComponentAction::Remove { names } => component::remove_named(&names),
+            ComponentAction::Pack { out } => component::pack(&out),
+        },
         Command::UpdateManifest {
             archives,
             package,
@@ -957,7 +1096,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             package: package.as_deref(),
             entry: &entry,
             key: key.as_deref(),
-            notes: notes.as_deref(),
+            notes: &notes,
             links: &links,
             base_url: base_url.as_deref(),
             out: &out,
@@ -1116,14 +1255,21 @@ mod command_tests {
                 .err()
                 .expect("version exits");
             assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
-            assert_eq!(
-                error.to_string(),
-                format!(
-                    "nsh {} ({})\n",
-                    env!("CARGO_PKG_VERSION"),
-                    env!("NSH_GIT_SHA")
-                )
-            );
+            let text = error.to_string();
+            let prefix = format!("nsh {} ({}", env!("CARGO_PKG_VERSION"), env!("NSH_GIT_SHA"));
+            let rest = text.strip_prefix(&prefix).expect("version and revision");
+            if env!("NSH_CHANNEL") == "nightly" {
+                // ` nightly YYYY-MM-DD)`: the date it was built.
+                let date = rest
+                    .strip_prefix(" nightly ")
+                    .and_then(|r| r.strip_suffix(")\n"))
+                    .expect("nightly build date");
+                assert!(
+                    date.len() == 10 && date.as_bytes()[4] == b'-' && date.as_bytes()[7] == b'-'
+                );
+            } else {
+                assert_eq!(rest, ")\n");
+            }
         }
     }
 
@@ -1141,6 +1287,32 @@ mod command_tests {
         assert!(
             matches!(cli.command, Command::Build { out, .. } if out == std::path::Path::new("custom"))
         );
+    }
+
+    #[test]
+    fn macos_packages_name_their_processors() {
+        use super::package::Arch;
+        let arch = |args: &[&str]| {
+            let mut line = vec!["nsh", "package", "--target", "macos"];
+            line.extend_from_slice(args);
+            match Cli::try_parse_from(line).map(|cli| cli.command) {
+                Ok(Command::Package(args)) => Ok(args.arch),
+                Ok(_) => panic!("expected nsh package"),
+                Err(e) => Err(e),
+            }
+        };
+        assert_eq!(arch(&[]).unwrap(), None);
+        for (value, expected) in [
+            ("arm64", Arch::Arm64),
+            ("aarch64", Arch::Arm64),
+            ("x86_64", Arch::X86_64),
+            ("universal", Arch::Universal),
+        ] {
+            assert_eq!(arch(&["--arch", value]).unwrap(), Some(expected), "{value}");
+        }
+        for value in ["x86-64", "i386", "x86_64-apple-darwin"] {
+            assert!(arch(&["--arch", value]).is_err(), "{value}");
+        }
     }
 
     #[test]

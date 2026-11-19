@@ -15,22 +15,26 @@ const scanned = [
   'examples/nsh-gallery-ui/demo.ts',
   'examples/nsh-gallery-ui/palette.ts',
   'examples/nsh-gallery-ui/look',
-  // The overlays' demos, on the shared overlay and menu looks.
-  'website/demos/el-alert-dialog.tsx',
-  'website/demos/el-dialog.tsx',
-  'website/demos/el-hover-card.tsx',
-  'website/demos/el-menu.tsx',
-  'website/demos/el-popover.tsx',
-  'website/demos/el-sheet.tsx',
-  'website/demos/el-toast.tsx',
-  'website/demos/el-tooltip.tsx',
+  // Every website demo: the interface on the theme, content allowed below.
+  'website/demos',
 ];
 
 /** Files the guard skips, each with why its colors are content rather than
  * the interface's look (a canvas's drawing, a shader, a color picker's
- * swatches). Empty while only the shared layer and the demos on it are
- * scanned. */
-const allowed: Record<string, string> = {};
+ * swatches). */
+const allowed: Record<string, string> = {
+  'website/demos/el-avatar.tsx': "the initials' identity color, a hue per person's name (`avatarIdentity`), not the interface's",
+  'website/demos/el-carousel.tsx': "white captions over the slides' photographs and the scrim under them",
+  'website/demos/el-color-picker.tsx': 'the swatches and colors picked, the content of a color picker',
+  'website/demos/el-image.tsx': "an SVG picture's drawing, the image shown",
+  'website/demos/el-shader.tsx': "the shader's palettes and the white text over what it draws",
+  'website/demos/el-text.tsx': 'the text styles shown: a highlight and a text shadow',
+  'website/demos/el-video.tsx': "a video's black letterbox",
+  'website/demos/guide-scrolling.tsx': "the tiles' own hues, the content scrolled",
+  'website/demos/guide-styling.tsx': 'the gradients the styling guide shows',
+  'website/demos/guide-tailwind.tsx': "Tailwind's own palette, arbitrary values and dark: variants, what the Tailwind guide shows",
+  'website/demos/home-chat.tsx': "the home page's chat, drawn in that showcase's own system palette",
+};
 
 /** Color literals and spliced token values, by what each is. */
 const rules: [string, RegExp][] = [
@@ -202,7 +206,8 @@ test('the overlay guards find a menu item without its look and a scrim of its ow
   expect(openingTags('<MenuItems>', 'MenuItem')).toEqual([]);
   expect(backdropViolations('<Dialog open={a()} backdropStyle={{ backgroundColor: tint("#000000", 0.45) }} style={card}>')).toHaveLength(1);
   expect(backdropViolations('<Sheet backdropClass="bg-black/40">')).toEqual(['sets backdropClass']);
-  expect(backdropViolations('<Menu popupStyle={menuSheet()} backdropStyle={backdrop()} trigger={t}>')).toEqual([]);
+  expect(backdropViolations('<Menu popupStyle={popoverLook()} backdropStyle={backdrop()} trigger={t}>')).toEqual([]);
+  expect(backdropViolations('<Menu {...menuPopup()} trigger={t}>')).toEqual([]);
   expect(backdropViolations('<Popover trigger={t}>')).toEqual([]);
 });
 
@@ -235,16 +240,24 @@ test('the demos\' menus and overlays spread the shared looks', () => {
 // gallery's as the copies did (radii from 10 to 16 on one page, a check
 // box's off state lighter than the field it stood for).
 
-const ownCardCorners = /\{\s*\.\.\.ui\(\)\.card,\s*borderRadius:/;
+/** Whether a source has a card with corners of its own: an object (one
+ * level of braces) that spreads `ui().card` and sets `borderRadius`, before
+ * the spread (which overrides it) or after it. */
+function ownCardCorners(source: string): boolean {
+  return [...code(source).matchAll(/\{[^{}]*\.\.\.ui\(\)\.card\b[^{}]*\}/g)].some((m) => /\bborderRadius:/.test(m[0]));
+}
 
 test('the card guard finds a card with corners of its own', () => {
-  expect(ownCardCorners.test('<View style={{ ...ui().card, borderRadius: 14, padding: 16 }}>')).toBe(true);
-  expect(ownCardCorners.test('<View style={{ ...sectionSurface(), padding: 16 }}>')).toBe(false);
+  expect(ownCardCorners('<View style={{ ...ui().card, borderRadius: 14, padding: 16 }}>')).toBe(true);
+  expect(ownCardCorners('<View style={{ borderRadius: 14, padding: 16, ...ui().card }}>')).toBe(true);
+  expect(ownCardCorners('<View style={{ ...ui().card, flex: 1, borderRadius: 12, overflow: "hidden" }}>')).toBe(true);
+  expect(ownCardCorners('<View style={{ ...sectionSurface(), padding: 16 }}>')).toBe(false);
+  expect(ownCardCorners('<Dot style={{ borderRadius: 4, backgroundColor: ui().card.backgroundColor }} />')).toBe(false);
 });
 
 test('the demos\' cards are the shared section surface', () => {
   const report = files('website/demos')
-    .filter((file) => ownCardCorners.test(readFileSync(join(root, file), 'utf8')))
+    .filter((file) => ownCardCorners(readFileSync(join(root, file), 'utf8')))
     .map((file) => `${file}: spreads ui().card with a radius of its own (use sectionSurface())`);
   expect(report).toEqual([]);
 });

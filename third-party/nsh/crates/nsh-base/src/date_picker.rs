@@ -392,6 +392,24 @@ pub struct DatePickerProps {
     /// The inline style of the popup or sheet, over its classes.
     #[prop(default)]
     pub popup_style: Prop<Style>,
+    /// Desktops: classes the popup has in its first frame, which its
+    /// `transition` classes animate from (Tailwind's `starting:`, CSS's
+    /// `@starting-style`): its entrance. A state's classes apply over
+    /// `popupClass` and `popupStyle`, as a state's styles do. A sheet
+    /// comes in with its own motion.
+    pub popup_starting_class: Prop<Option<SharedString>>,
+    /// Desktops: the inline style of the popup in its first frame, over
+    /// `popupStyle`.
+    #[prop(default)]
+    pub popup_starting_style: Prop<Style>,
+    /// Desktops: classes the popup has while it goes: it stays, taking no
+    /// presses, until the transitions it has then ran (`onClose` after),
+    /// so they run its exit.
+    pub popup_ending_class: Prop<Option<SharedString>>,
+    /// Desktops: the inline style of the popup while it goes, over
+    /// `popupStyle`.
+    #[prop(default)]
+    pub popup_ending_style: Prop<Style>,
     /// Touch screens: the classes of the backdrop behind the sheet.
     pub backdrop_class: Prop<Option<SharedString>>,
     /// The inline style of the backdrop, over its classes.
@@ -444,7 +462,7 @@ pub struct DatePickerProps {
     #[prop(default)]
     pub row_style: Prop<Style>,
     /// The classes of each item of the calendar (`selected:`, `disabled:`,
-    /// `focus:` and the days' `data-range-start:`, `data-range-end:`,
+    /// `focus-visible:` and the days' `data-range-start:`, `data-range-end:`,
     /// `data-range-middle:`, `data-today:`, `data-outside:` as
     /// `Calendar`'s).
     pub item_class: Prop<Option<SharedString>>,
@@ -627,6 +645,7 @@ pub fn DatePicker(props: DatePickerProps, cx: Scope<DatePickerEvent>) -> impl In
                 KeyOptions {
                     when: When::NotEditing,
                     repeat: false,
+                    for_focus: true,
                     ..Default::default()
                 },
                 move |_| change(!open.get_untracked(), OpenChangeReason::TriggerPress),
@@ -666,8 +685,12 @@ pub fn DatePicker(props: DatePickerProps, cx: Scope<DatePickerEvent>) -> impl In
                 return;
             }
             cx.emit(DatePickerEvent::Close);
-            if is_desktop() && closed_by.replace(None) != Some(OpenChangeReason::PressOutside) {
-                anchor.focus();
+        }),
+        // Back to the trigger, unless a press outside or the app's
+        // `onChange` took the keyboard somewhere else.
+        back: Rc::new(move |popup| {
+            if closed_by.replace(None) != Some(OpenChangeReason::PressOutside) {
+                anchor.focus_back(popup);
             }
         }),
     };
@@ -678,6 +701,10 @@ pub fn DatePicker(props: DatePickerProps, cx: Scope<DatePickerEvent>) -> impl In
         margin: props.margin,
         popup_class: props.popup_class,
         popup_style: props.popup_style,
+        popup_starting_class: props.popup_starting_class,
+        popup_starting_style: props.popup_starting_style,
+        popup_ending_class: props.popup_ending_class,
+        popup_ending_style: props.popup_ending_style,
         backdrop_class: props.backdrop_class,
         backdrop_style: props.backdrop_style,
     };

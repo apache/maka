@@ -268,7 +268,12 @@ export function ComputerPermissionSetup(props: {
       <If when={model().error || closeError()}>
         <View class="gap-2">
           <Text role="alert" style={{ ...bodyTextStyle, color: C.danger }}>
-            {renderText(errorText(closeError() ?? model().error))}
+            {renderText(
+              errorText(
+                closeError() ?? model().error,
+                'Could not update the computer permission request.',
+              ),
+            )}
           </Text>
           <If when={!status()}>
             <PermissionButton

@@ -27,46 +27,54 @@ impl Driver<'_> {
         &self,
         connection: &Connection,
     ) -> Result<Vec<T>, Error> {
-        let (image, embedded) = match connection.peer.as_ref() {
-            Some(Peer::V1(_, peer)) => (
-                peer.agent_capabilities.prompt_capabilities.image,
-                peer.agent_capabilities.prompt_capabilities.embedded_context,
-            ),
-            Some(Peer::V2(_, peer)) => peer
-                .capabilities
-                .session
-                .as_ref()
-                .and_then(|session| session.prompt.as_ref())
-                .map_or((false, false), |caps| {
-                    (caps.image.is_some(), caps.embedded_context.is_some())
-                }),
-            None => return Err(Error::Invalid("ACP peer has not initialized")),
-        };
-        let attachments = if let Some(scope) = &self.context.call {
-            self.host
-                .callbacks
-                .prompt_attachments(scope)
-                .map_err(|error| Error::Output(executor::Error::Provider(error)))?
-        } else {
-            vec![]
-        };
-        let text = prompt(
-            &self.request.content,
-            self.request.instructions.as_deref(),
-            self.request.language,
-        )?;
-        let content = blocks(
-            text,
-            attachments,
-            image,
-            embedded,
-            self.request.language,
-            &self.context.cancellation,
-        )?;
-        content
-            .into_iter()
-            .map(|block| serde_json::from_value(block).map_err(Error::from))
-            .collect()
+        let prepared: Result<Vec<T>, Error> = (|| {
+            let (image, embedded) = match connection.peer.as_ref() {
+                Some(Peer::V1(_, peer)) => (
+                    peer.agent_capabilities.prompt_capabilities.image,
+                    peer.agent_capabilities.prompt_capabilities.embedded_context,
+                ),
+                Some(Peer::V2(_, peer)) => peer
+                    .capabilities
+                    .session
+                    .as_ref()
+                    .and_then(|session| session.prompt.as_ref())
+                    .map_or((false, false), |caps| {
+                        (caps.image.is_some(), caps.embedded_context.is_some())
+                    }),
+                None => return Err(Error::Invalid("ACP peer has not initialized")),
+            };
+            let attachments = if let Some(scope) = &self.context.call {
+                self.host
+                    .callbacks
+                    .prompt_attachments(scope)
+                    .map_err(|error| Error::Output(executor::Error::Provider(error)))?
+            } else {
+                vec![]
+            };
+            let text = prompt(
+                &self.request.content,
+                self.request.instructions.as_deref(),
+                self.request.language,
+            )?;
+            let content = blocks(
+                text,
+                attachments,
+                image,
+                embedded,
+                self.request.language,
+                &self.context.cancellation,
+            )?;
+            content
+                .into_iter()
+                .map(|block| serde_json::from_value(block).map_err(Error::from))
+                .collect()
+        })();
+        prepared.map_err(|error| match error {
+            error @ (Error::Invalid(_) | Error::Decode(_)) => {
+                Error::RejectedBeforePrompt(Box::new(error))
+            }
+            error => error,
+        })
     }
 }
 fn blocks(

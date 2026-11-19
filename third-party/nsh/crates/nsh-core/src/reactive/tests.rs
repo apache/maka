@@ -268,6 +268,28 @@ fn context_passes_to_what_is_made_under_its_owner() {
 }
 
 #[test]
+fn a_root_keeps_updating_after_its_parent_slot_is_reused() {
+    let value = signal(0);
+    let (parent, (root, ())) = with_root(Test, || with_root(Test, || ()));
+    dispose_owner(Test, parent);
+
+    let seen = Rc::new(Cell::new(0));
+    let output = seen.clone();
+    let effect = with_owner(Test, root, || render_effect(move || output.set(get(value))));
+    assert_eq!(
+        effect, parent,
+        "the effect must reuse the original parent slot"
+    );
+    // Looking up the root's parent must stop here, before following a cycle
+    // would hang the update below.
+    assert_eq!(graph().parent(root), NONE);
+
+    set(value, 42);
+    assert_eq!(seen.get(), 42);
+    dispose_owner(Test, root);
+}
+
+#[test]
 fn an_effect_that_keeps_writing_what_it_reads_runs_away() {
     let a = signal(0);
     render_effect(move || {
@@ -529,4 +551,93 @@ fn compacting_gives_back_the_slots_of_a_tree_that_is_gone() {
     assert_ne!(graph().generation(again), last_generation);
     assert!(!graph().live(last, last_generation, u32::MAX));
     check_links();
+}
+
+/// A root made under an owner that is disposed before it keeps naming the
+/// owner's slot; once the slot is reused by a node made under the root, the
+/// root's `owner` link closes a loop. A write then must not hang `runTop`.
+#[test]
+fn a_root_whose_owner_went_does_not_loop_through_its_reused_slot() {
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = done.clone();
+    std::thread::spawn(move || {
+        let tick = signal(0);
+        let mut root = NONE;
+        // The owner: a computation the root is made under (not owned by it).
+        let owner = render_effect(|| {});
+        with_owner(Test, owner, || {
+            root = with_root(Test, || ()).0;
+        });
+        // The owner goes; the root does not.
+        dispose(Test, owner);
+        // A computation made under the root takes the owner's freed slot.
+        let effect = with_owner(Test, root, || {
+            render_effect(move || {
+                get(tick);
+            })
+        });
+        assert_eq!(effect, owner, "the freed slot is reused");
+        assert_eq!(
+            graph().parent(effect),
+            root,
+            "the slot's new node is under the root"
+        );
+        set(tick, 1);
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    for _ in 0..50 {
+        if done.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("runTop looped through the root's stale owner");
+}
+
+/// A memo whose function fails, as an effect's: what reads it hears of the
+/// next change of what it read, and keeps the last value meanwhile.
+#[test]
+fn a_memo_that_failed_once_still_tells_its_readers_of_changes() {
+    let a = signal(0);
+    let m = memo(
+        Test,
+        Rc::new(move |_| {
+            let v = get(a);
+            (v != 1).then_some(v * 10)
+        }),
+        0,
+        Equals::Default,
+        false,
+    );
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let log = seen.clone();
+    render_effect(move || log.borrow_mut().push(get(m)));
+    set(a, 1);
+    assert_eq!(get(m), 0, "a failed run keeps the last value");
+    set(a, 2);
+    set(a, 3);
+    assert_eq!(*seen.borrow(), vec![0, 20, 30]);
+}
+
+/// The same through a memo that reads the failed one.
+#[test]
+fn a_memo_that_failed_once_still_updates_the_memos_that_read_it() {
+    let a = signal(0);
+    let m = memo(
+        Test,
+        Rc::new(move |_| {
+            let v = get(a);
+            (v != 1).then_some(v)
+        }),
+        0,
+        Equals::Default,
+        false,
+    );
+    let n = computed(move || get(m) + 100);
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let log = seen.clone();
+    user_effect(move || log.borrow_mut().push(get(n)));
+    set(a, 1);
+    set(a, 2);
+    assert_eq!(*seen.borrow(), vec![100, 102]);
 }

@@ -149,6 +149,16 @@ function takeContent(copy, tag) {
   if (existsSync(types)) cpSync(types, join(copy, 'demos', '.nsh'), { recursive: true });
 }
 
+/**
+ * The toolchain's own Cargo, which huacnlee/cargo stands in front of on the
+ * PATH: a release's xtask (v0.4.0 and earlier) builds the playground with
+ * `--target-dir` and reads the file from there, which huacnlee/cargo ignores.
+ */
+function toolchainCargo(cwd) {
+  const which = spawnSync('rustup', ['which', 'cargo'], { cwd, encoding: 'utf8' });
+  return which.status === 0 ? which.stdout.trim() : 'cargo';
+}
+
 /** The tag's player and demos, built by its own `cargo xtask web` once. */
 function releasePlayer(tag) {
   const dir = join(cache, tag, 'play');
@@ -156,8 +166,9 @@ function releasePlayer(tag) {
   const checkout = join(work, `checkout-${tag}`);
   run('git', ['-C', root, 'worktree', 'add', '--detach', checkout, tag]);
   console.log(`[versions] building the player of ${tag}`);
-  // In the tag's own target directory, where its xtask reads what it built.
-  run('cargo', ['xtask', 'web'], { cwd: checkout });
+  // In the tag's own target directory, where its xtask reads what it built;
+  // the xtask builds with the Cargo that runs it (`CARGO`).
+  run(toolchainCargo(checkout), ['xtask', 'web'], { cwd: checkout });
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(cache, tag), { recursive: true });
   cpSync(join(checkout, 'website', 'public', 'play'), dir, { recursive: true });

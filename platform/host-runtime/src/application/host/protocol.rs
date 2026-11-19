@@ -153,6 +153,8 @@ pub enum Request {
     Publication,
     Quit {
         session: Uuid,
+        #[serde(default)]
+        ephemeral_only: bool,
     },
     /// Current-account owner only. Source/packages remain a separate CAS operation.
     Configure {

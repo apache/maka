@@ -1,13 +1,13 @@
 ---
 title: nsh/base
-description: 应用界面的无样式基础组件：按钮、链接、头像、轮播、复选框、单选框、开关、标签页、开关按钮、工具栏、树、选择框、组合框、命令面板、日历、日期选择器、时间输入框、可调整大小的面板、可停靠的工作区、Markdown 与 HTML 文档、代码编辑器、diff、文本输入框、导航栈与对话框、系统警告对话框，以及页面和对话框的状态栏。
+description: 应用界面的无样式基础组件：按钮、链接、头像、轮播、复选框、单选框、开关、标签页、开关按钮、工具栏、树、选择框、组合框、命令面板、表情选择面板、日历、日期选择器、时间输入框、可调整大小的面板、可停靠的工作区、Markdown 与 HTML 文档、代码编辑器、diff、文本输入框、导航栈与对话框、系统警告对话框，以及页面和对话框的状态栏。
 order: 2.5
 demo: ui-navigation
 ---
 
 # nsh/base
 
-`nsh/base` 是应用界面的基础组件层：不带样式、负责行为、状态、焦点和无障碍的组件，各平台通用。它位于基础元素（`nsh`、`nsh/mobile` 和 `nsh/desktop`）与应用自己的组件库之间，就像 GPUI Kit 中 `gpui-base` 位于 `gpui` 与带样式的组件库之间（见[模块](./index.md#three-layers)）。它提供控件（`Button`、`Link`、`Checkbox`、带 `ColorArea`、`ColorSlider`、`ColorField`、`ColorSwatch` 和 `ColorEyeDropper` 部件的 `ColorPicker`、`NumberInput`、放在 `RadioGroup` 里的 `Radio`、`Slider`、`Switch`、放在 `Tabs` 里的 `Tab`、放在 `ToggleGroup` 里的 `Toggle`、`Select`、`Combobox`、`Calendar`、`TimeField`、`DatePicker`）、命令面板（`Command`）、控件栏（带 `ToolbarGroup` 和 `ToolbarSeparator` 的 `Toolbar`）、应用自己外观的滚动条（`Scrollbar`）、可展开和收起的区域（`Collapsible`，以及带 `AccordionItem`、`AccordionHeader`、`AccordionTrigger` 和 `AccordionPanel` 部件的 `Accordion`）、进度条（`Progress`）、一次性验证码（`OtpInput`）、一组内容的分页（`Pagination`）、包含子项目的项目（`Tree`）、构建图表的部件（`nsh/base/plot` 中的 `Plot` 及 `Line`、`Area`、`Bar`、`Rule`、`Dot`、`Cell`、`Grid`、`Pie`、`Arc`）、由用户自行安排的工作区（放在 `ResizablePanelGroup` 里的 `ResizablePanel`，以及 `DockArea` 的分栏、标签组和停靠区）、Markdown 或 HTML 文档（`TextView`）、代码编辑器（`Editor`）、文本之间的改动（`DiffView`）、表格（`Table` 及其部件、`DataTable`）、文本输入框（`Input`）、显示在一切之上的弹出层（`Popover`，`Menu` 和 `ContextMenu` 及其 `MenuItem`、`MenuSeparator` 和 `Submenu`，`Tooltip`，`Sheet`）、toast（放在 `ToastStack` 中的 `Toast`，生命周期由 `ToastManager` 管理）、导航（由 `createNavStack` 创建的状态驱动、由多个 `NavPage` 组成的 `NavStack`，以及在所有内容之上展示内容的 `Dialog`）和系统警告对话框（`AlertDialog`）。页面和对话框还决定状态栏（`statusBar`）。
+`nsh/base` 是应用界面的基础组件层：不带样式、负责行为、状态、焦点和无障碍的组件，各平台通用。它位于基础元素（`nsh`、`nsh/mobile` 和 `nsh/desktop`）与应用自己的组件库之间，就像 GPUI Kit 中 `gpui-base` 位于 `gpui` 与带样式的组件库之间（见[模块](./index.md#three-layers)）。它提供控件（`Button`、`Link`、`Checkbox`、带 `ColorArea`、`ColorSlider`、`ColorField`、`ColorSwatch` 和 `ColorEyeDropper` 部件的 `ColorPicker`、`NumberInput`、放在 `RadioGroup` 里的 `Radio`、`Slider`、`Switch`、放在 `Tabs` 里的 `Tab`、放在 `ToggleGroup` 里的 `Toggle`、`Select`、`Combobox`、`Calendar`、`TimeField`、`DatePicker`）、命令面板（`Command`）、表情选择面板（`EmojiPicker`）、控件栏（带 `ToolbarGroup` 和 `ToolbarSeparator` 的 `Toolbar`）、应用自己外观的滚动条（`Scrollbar`）、可展开和收起的区域（`Collapsible`，以及带 `AccordionItem`、`AccordionHeader`、`AccordionTrigger` 和 `AccordionPanel` 部件的 `Accordion`）、进度条（`Progress`）、一次性验证码（`OtpInput`）、一组内容的分页（`Pagination`）、包含子项目的项目（`Tree`）、构建图表的部件（`nsh/base/plot` 中的 `Plot` 及 `Line`、`Area`、`Bar`、`Rule`、`Dot`、`Cell`、`Grid`、`Pie`、`Arc`）、由用户自行安排的工作区（放在 `ResizablePanelGroup` 里的 `ResizablePanel`，以及 `DockArea` 的分栏、标签组和停靠区）、Markdown 或 HTML 文档（`TextView`）、代码编辑器（`Editor`）、文本之间的改动（`DiffView`）、表格（`Table` 及其部件、`DataTable`）、文本输入框（`Input`）、显示在一切之上的弹出层（`Popover`，`Menu` 和 `ContextMenu` 及其 `MenuItem`、`MenuSeparator` 和 `Submenu`，`Tooltip`，`Sheet`）、toast（放在 `ToastStack` 中的 `Toast`，生命周期由 `ToastManager` 管理）、导航（由 `createNavStack` 创建的状态驱动、由多个 `NavPage` 组成的 `NavStack`，`SplitView` 中由导航栈组成的分栏，以及在所有内容之上展示内容的 `Dialog`）和系统警告对话框（`AlertDialog`）。页面和对话框还决定状态栏（`statusBar`）。
 
 基础组件还包括 `Avatar` 和 `AvatarGroup`（原生管理图片加载状态），以及用于逐页浏览内容的 `Carousel` 和其部件。
 
@@ -19,7 +19,7 @@ use nsh_base::{
     alert_dialog, button, carousel, carousel_content, carousel_item, carousel_next,
     carousel_pagination, carousel_pagination_item, carousel_previous, checkbox, color_area, color_field, color_picker,
     color_slider, color_swatch, dialog, diff_view, dock_area, editor, hover_card, link,
-    calendar, combobox, command, date_picker, h_resizable, nav_page, nav_stack, radio, radio_group, resizable_panel, select, switch, tab, tabs, text_view, theme, time_field, toast, toast_stack, toggle, toggle_group, toolbar, toolbar_group, toolbar_separator, tree, v_resizable,
+    calendar, combobox, command, date_picker, emoji_picker, h_resizable, nav_page, nav_stack, radio, radio_group, resizable_panel, select, split_view, switch, tab, tabs, text_view, theme, time_field, toast, toast_stack, toggle, toggle_group, toolbar, toolbar_group, toolbar_separator, tree, v_resizable,
 };
 ```
 
@@ -75,12 +75,14 @@ import {
   Select,
   Combobox,
   Command,
+  EmojiPicker,
   Calendar,
   TimeField,
   DatePicker,
   Sheet,
   NumberInput,
   Slider,
+  SplitView,
   Submenu,
   Switch,
   Tab,
@@ -184,6 +186,13 @@ import type {
   CommandEntry,
   CommandGroup,
   CommandItem,
+  EmojiAnnotation,
+  EmojiEntry,
+  EmojiGroup,
+  EmojiGroupId,
+  EmojiGroupLabels,
+  EmojiPickerProps,
+  EmojiSkinTone,
   CommandProps,
   CalendarProps,
   TimeFieldProps,
@@ -196,6 +205,8 @@ import type {
   ScrollbarProps,
   ScrollbarTheme,
   SliderProps,
+  SplitViewProps,
+  ColumnVisibility,
   SliderScale,
   SliderValue,
   StatusBarForeground,
@@ -255,6 +266,7 @@ import type {
 | [`ResizablePanelGroup`、`ResizablePanel`](../elements/resizable.md) | `h_resizable()`、`v_resizable()`、`resizable_panel()` | 并排或上下排列的面板，用户拖动它们之间的手柄调整大小。 |
 | [`DockArea`](../elements/dock.md) | `dock_area()` | 由分栏、标签组和边缘停靠区组成、用户自行安排的工作区；它的布局是应用的数据。 |
 | [`NavStack`、`NavPage`、`createNavStack`](../elements/nav-stack.md) | `nav_stack()`、`nav_page()` | 原生导航栈及其页面。 |
+| [`SplitView`](../elements/split-view.md) | `split_view()` | 并排显示的导航栈分栏（iOS 上是 `UISplitViewController`），空间紧凑时一次显示一栏；`columnVisibility` 由应用持有。 |
 | [`Dialog`](../elements/dialog.md) | `dialog()` | 在所有内容之上呈现的内容：sheet、全屏流程、对话框。 |
 | [`AlertDialog`](../elements/alert-dialog.md) | `alert_dialog()` | 平台的警告框或操作表。 |
 | [`TextView`](../elements/text-view.md) | `text_view()` | 用文字和视图绘制的 Markdown、HTML 或文档块组成的文档，适用于流式输出的 AI 回复。 |
@@ -265,7 +277,7 @@ import type {
 | [`Input`](../elements/input.md) | `nsh_base::input()` | 平台原生的文本输入框，单行或多行。 |
 | [`Popover`](../elements/popover.md) | `popover()` | 锚定在触发元素上、显示在一切之上的内容。 |
 | [`HoverCard`](../elements/hover-card.md) | `hover_card()` | 预览触发元素所指向的内容，在指针停留在它上面时显示（触摸屏上为按压）。 |
-| [`Menu`、`ContextMenu`、`MenuItem`、`MenuSeparator`、`Submenu`](../elements/menu.md) | `menu()`、... | 菜单：桌面上是带级联子菜单的弹出层，手机上是 sheet；支持可勾选的条目和单选的一组选项。 |
+| [`Menu`、`ContextMenu`、`MenuItem`、`MenuSeparator`、`Submenu`](../elements/menu.md) | `menu()`、... | 菜单：桌面和常规宽度的 iPad 上是带级联子菜单的弹出层，手机上是 sheet；支持可勾选的条目和单选的一组选项。 |
 | [`Tooltip`](../elements/tooltip.md) | `tooltip()` | 显示在触发元素旁的提示。 |
 | [`Sheet`](../elements/sheet.md) | `sheet()` | 位于屏幕一侧边缘、覆盖在背景层之上的面板。 |
 | [`Toast`、`ToastStack`、`ToastManager`](../elements/toast.md) | `toast()`、`toast_stack()`、`ToastManager` | 无样式的 toast：语义根、层叠的栈、它们的生命周期。 |
@@ -465,7 +477,7 @@ import type {
 
 ### DataTable
 
-`DataTable` 显示行和列，并向两个方向滚动，行数和列数不限，只创建视野中的单元格。行、列或单元格可以选择；列可以调整宽度、移动、固定和排序（由应用排序）；行由应用分页提供，单元格和标题可以由应用绘制。见 [DataTable](../elements/data-table.md)。
+`DataTable` 显示行和列，并向两个方向滚动，行数和列数不限，只创建视野中的单元格。行、列或单元格可以选择；应用也可以自己保存多个单元格或列的选择（`selectOnModifierPress`、`onRowPress`、`onColumnPress`、`cellClasses`）。列可以调整宽度、移动、固定和排序（由应用排序）；行由应用分页提供，单元格和标题可以由应用绘制。见 [DataTable](../elements/data-table.md)。
 
 <a id="selection"></a>
 
@@ -602,6 +614,6 @@ nav_page()
 
 - [导航指南](../docs/navigation.md)。
 - [表单与键盘](../docs/forms-and-keyboard.md)。
-- [Avatar](../elements/avatar.md)、[Button](../elements/button.md)、[Carousel](../elements/carousel.md)、[Link](../elements/link.md)、[Checkbox](../elements/checkbox.md)、[Radio](../elements/radio.md)、[Switch](../elements/switch.md)、[Tabs](../elements/tabs.md)、[Toggle](../elements/toggle.md)、[Toolbar](../elements/toolbar.md)、[Select](../elements/select.md)、[Combobox](../elements/combobox.md)、[Calendar](../elements/calendar.md)、[TimeField](../elements/time-field.md)、[DatePicker](../elements/date-picker.md)、[Collapsible](../elements/collapsible.md)、[HoverCard](../elements/hover-card.md)、[Accordion](../elements/accordion.md)、[Progress](../elements/progress.md)、[Terminal](../elements/terminal.md)、[Slider](../elements/slider.md)、[ColorPicker](../elements/color-picker.md)、[Scrollbar](../elements/scrollbar.md)、[NumberInput](../elements/number-input.md)、[OtpInput](../elements/otp-input.md)、[Pagination](../elements/pagination.md)、[Tree](../elements/tree.md)、[Plot](../elements/plot.md)、[NavStack](../elements/nav-stack.md)、[Dialog](../elements/dialog.md)、[AlertDialog](../elements/alert-dialog.md)、[TextView](../elements/text-view.md)、[Editor](../elements/editor.md)、[DiffView](../elements/diff-view.md)、[Table](../elements/table.md)、[DataTable](../elements/data-table.md)、[Text](../elements/text.md) 与 [Input](../elements/input.md)。
+- [Avatar](../elements/avatar.md)、[Button](../elements/button.md)、[Carousel](../elements/carousel.md)、[Link](../elements/link.md)、[Checkbox](../elements/checkbox.md)、[Radio](../elements/radio.md)、[Switch](../elements/switch.md)、[Tabs](../elements/tabs.md)、[Toggle](../elements/toggle.md)、[Toolbar](../elements/toolbar.md)、[Select](../elements/select.md)、[Combobox](../elements/combobox.md)、[Calendar](../elements/calendar.md)、[TimeField](../elements/time-field.md)、[DatePicker](../elements/date-picker.md)、[Collapsible](../elements/collapsible.md)、[HoverCard](../elements/hover-card.md)、[Accordion](../elements/accordion.md)、[Progress](../elements/progress.md)、[Terminal](../elements/terminal.md)、[Slider](../elements/slider.md)、[ColorPicker](../elements/color-picker.md)、[Scrollbar](../elements/scrollbar.md)、[NumberInput](../elements/number-input.md)、[OtpInput](../elements/otp-input.md)、[Pagination](../elements/pagination.md)、[Tree](../elements/tree.md)、[Plot](../elements/plot.md)、[NavStack](../elements/nav-stack.md)、[SplitView](../elements/split-view.md)、[Dialog](../elements/dialog.md)、[AlertDialog](../elements/alert-dialog.md)、[TextView](../elements/text-view.md)、[Editor](../elements/editor.md)、[DiffView](../elements/diff-view.md)、[Table](../elements/table.md)、[DataTable](../elements/data-table.md)、[Text](../elements/text.md) 与 [Input](../elements/input.md)。
 - [设备与环境](../docs/device-and-environment.md)。
 - [`BackHandler`](./nsh-mobile.md#backhandler)：`BackHandler` 及其他 Android 专用 API。

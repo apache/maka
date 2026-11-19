@@ -14,11 +14,6 @@ on:
     paths:
       - ".github/workflows/packages.yml"
       - ".github/packages/**"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/packages.yml"
-      - ".github/packages/**"
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
@@ -51,7 +46,7 @@ jobs:
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_ANALYTICS: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
@@ -124,7 +119,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
@@ -133,7 +128,7 @@ jobs:
           name: nsh-homebrew-formula
           path: formula
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: longbridge/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

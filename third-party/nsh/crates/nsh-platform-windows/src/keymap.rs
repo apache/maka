@@ -2,9 +2,12 @@
 //! mounts ([`MountItem::Keymap`](nsh_core::MountItem::Keymap)), matched on
 //! every key down the window gets ([`crate::input::key`]): after the dialogs
 //! the surface shows, before the focused field, selectable text, navigation
-//! and scroll views. A key that fires a binding is consumed (its `WM_CHAR`
-//! too) and reported to JS with the root's `KeyCommand` event; JS runs the
-//! handler afterwards.
+//! and scroll views. A key that fires a binding is consumed and reported to
+//! JS with the root's `KeyCommand` event; JS runs the handler afterwards.
+//! Only a key whose message `TranslateMessage` actually translated has
+//! characters to remove ([`KeyEvent::translated`]): an untranslated key (a
+//! captured private message, input synthesized inside the backend) made
+//! none, and none are taken for it.
 //!
 //! Keys are matched by virtual key code: letters and digits are the same
 //! on every layout (a Cyrillic layout's keys have the US layout's codes),
@@ -66,11 +69,18 @@ fn key_in_phase(surface: &Rc<Surface>, event: &KeyEvent, fallback: bool) -> bool
         return false;
     }
     let editing = crate::text_input::focused(surface).is_some();
+    let control = crate::keyboard::focused_control(surface).is_some()
+        || crate::input::focused_control(surface).is_some();
     let path = surface.focus_path();
+    let window = surface.input_root().id();
     let found = if fallback {
-        table.find_fallback_with(keystroke, editing, event.repeat, |id| path.contains(&id))
+        table.find_fallback_at_with(window, keystroke, editing, control, event.repeat, |id| {
+            path.contains(&id)
+        })
     } else {
-        table.find_with(keystroke, editing, event.repeat, |id| path.contains(&id))
+        table.find_at_with(window, keystroke, editing, control, event.repeat, |id| {
+            path.contains(&id)
+        })
     };
     if let Some(id) = found.fired() {
         surface.event(
@@ -82,23 +92,21 @@ fn key_in_phase(surface: &Rc<Surface>, event: &KeyEvent, fallback: bool) -> bool
             crate::text_input::arm(surface);
         }
     }
-    if found.consumed() {
+    if found.consumed() && event.translated {
+        // Only characters this key's translation made may go: a key that
+        // was never translated (a captured private message, input
+        // synthesized in the backend) queued none, and anything found
+        // would be someone else's.
         drop_char(surface);
     }
     found.consumed()
 }
 
-/// Removes the character `TranslateMessage` queued for the consumed key:
+/// Removes the characters `TranslateMessage` queued for the consumed key:
 /// in the window that has the keyboard (the main one or a window of the
 /// app's own; every window's keys go through the app's keymap).
 pub(crate) fn drop_char(surface: &Surface) {
-    // SAFETY: a plain query of this thread's focus.
-    let focus = unsafe { GetFocus() };
-    let hwnd = if focus.is_invalid() {
-        surface.hwnd()
-    } else {
-        focus
-    };
+    let hwnd = keyboard_window(surface);
     let mut msg = MSG::default();
     for kind in [WM_CHAR, WM_SYSCHAR] {
         // SAFETY: a plain call with a local out value, for a window of
@@ -106,6 +114,18 @@ pub(crate) fn drop_char(surface: &Surface) {
         unsafe {
             let _ = PeekMessageW(&mut msg, Some(hwnd), kind, kind, PM_REMOVE);
         }
+    }
+}
+
+/// The window whose queue `TranslateMessage` queued the character in: the
+/// window that has the keyboard, else the surface's.
+fn keyboard_window(surface: &Surface) -> windows::Win32::Foundation::HWND {
+    // SAFETY: a plain query of this thread's focus.
+    let focus = unsafe { GetFocus() };
+    if focus.is_invalid() {
+        surface.hwnd()
+    } else {
+        focus
     }
 }
 
@@ -131,7 +151,44 @@ fn key_of(vk: u16) -> Option<Key> {
 
 #[cfg(test)]
 mod tests {
-    use nsh_core::keymap::Key;
+    use nsh_core::keymap::{Key, KeyBinding, When};
+
+    use super::*;
+    use crate::{input, view::NshView};
+
+    #[test]
+    fn focused_controls_keep_activation_keys_unless_the_binding_is_theirs() {
+        let surface = Surface::new(Default::default());
+        let button = NshView::new(2, nsh_core::ViewKind::View);
+        button.state_mut().events.set(EventKind::Press, true);
+        button.insert_before(&surface.root, None);
+        crate::text_input::focus_view(&surface, &button);
+
+        for fallback in [false, true] {
+            for vk in [0x0D, 0x20] {
+                let event = KeyEvent::synthetic(vk, true, false, input::Modifiers::default());
+                for (for_focus, within, window, expected) in [
+                    (false, Some(button.id()), Some(ROOT_ID), false),
+                    (true, Some(button.id()), Some(ROOT_ID), true),
+                    (true, Some(99), Some(ROOT_ID), false),
+                    (true, Some(button.id()), Some(99), false),
+                ] {
+                    let mut binding =
+                        KeyBinding::new(1, keystroke(&event).unwrap(), When::Always, false);
+                    binding.for_focus = for_focus;
+                    binding.fallback = fallback;
+                    binding.within = within;
+                    binding.window = window;
+                    set(&surface, Arc::new(Keymap::new(vec![binding])));
+                    assert_eq!(
+                        key_in_phase(&surface, &event, fallback),
+                        expected,
+                        "vk={vk} fallback={fallback} for_focus={for_focus} within={within:?} window={window:?}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn virtual_keys() {

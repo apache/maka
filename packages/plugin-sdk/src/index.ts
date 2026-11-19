@@ -27,16 +27,29 @@ export { defineUiViewContract } from './workbench.js';
 
 import type {
   HostRequest,
+  CallerIntent,
   HostObservation,
   OperationReply,
   ResourceMetadata,
+  StateRecord,
+  StatePage,
 } from './generated/runtime.js';
 
 /** Provided by the actual invocation. Retaining it does not retain request resources. */
 export interface RequestContext {
+  invoke(request: Extract<HostRequest, { operation: 'stateRead' }>): Promise<StateRecord | null>;
+  invoke(request: Extract<HostRequest, { operation: 'stateScan' }>): Promise<StatePage>;
+  /** Seal final state writes; return this same value from the callback. No later Host requests. */
+  invoke<T>(
+    request: Extract<HostRequest, { operation: 'completeState' }> & { value: T },
+  ): Promise<T>;
   invoke(request: Extract<HostRequest, { operation: 'emit' }>): Promise<null>;
+  /** Caller-owned opaque recovery must describe the exact final input and resource sources. */
   invoke(request: Extract<HostRequest, { operation: 'mutate' }>): Promise<OperationReply>;
   invoke(request: Extract<HostRequest, { operation: 'recover' }>): Promise<OperationReply>;
+  invoke(
+    request: Extract<HostRequest, { operation: 'lookupIntent' }>,
+  ): Promise<CallerIntent | null>;
   invoke(request: Extract<HostRequest, { operation: 'metadata' }>): Promise<ResourceMetadata>;
   invoke(request: Extract<HostRequest, { operation: 'read' }>): Promise<number[]>;
   invoke(request: HostRequest): Promise<unknown>;

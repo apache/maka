@@ -96,8 +96,7 @@ impl WindowsNative {
         f: impl FnOnce(&Rc<Surface>) -> R + Send + 'static,
     ) -> Option<R> {
         self.on_main(move |s| {
-            // SAFETY: a plain query.
-            let active = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+            let active = crate::window::foreground();
             let _root = crate::window::app_window_root(active)
                 .filter(|_| crate::window::surface_of(active).is_some_and(|w| Rc::ptr_eq(&w, s)))
                 .and_then(|id| crate::app_window::enter(s, id));
@@ -381,7 +380,9 @@ impl Native for WindowsNative {
     }
 }
 
-/// Activates the window whose root node is `window`, as pressing in it does.
+/// Activates the window whose root node is `window`, as pressing in it does
+/// (in a background app: it gets the keyboard, nothing comes to the
+/// foreground).
 fn activate(surface: &Surface, window: NodeId) {
     let hwnd = if window == ROOT_ID {
         surface.hwnd()
@@ -396,10 +397,7 @@ fn activate(surface: &Surface, window: NodeId) {
     {
         return;
     }
-    // SAFETY: a plain call on a live window of this thread.
-    unsafe {
-        let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
-    }
+    crate::window::set_foreground(hwnd);
 }
 
 /// The box `(x, y, width, height)` of a view (in its coordinates) in the

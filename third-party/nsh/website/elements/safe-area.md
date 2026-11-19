@@ -9,7 +9,8 @@ demo: el-safe-area
 # Safe area
 
 The safe area keeps content clear of the notch or Dynamic Island, the status bar, the home indicator, a navigation
-header and the Mac Catalyst title bar. Any view pads itself by it with CSS's `env()`:
+header, the Mac Catalyst title bar and the window controls of an iPad app in a window (on iPadOS 26 and later, the
+leading inset of a windowed app is as wide as those controls). Any view pads itself by it with CSS's `env()`:
 `env(safe-area-inset-top)`, `env(safe-area-inset-right)`, `env(safe-area-inset-bottom)` and
 `env(safe-area-inset-left)`, in its padding or margin. They are the insets of the root view the node renders in:
 inside a [NavPage](./nav-stack.md) the insets below the page's header, inside a [Dialog](./dialog.md) the dialog's

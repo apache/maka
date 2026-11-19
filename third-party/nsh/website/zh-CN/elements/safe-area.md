@@ -8,7 +8,7 @@ demo: el-safe-area
 
 # 安全区
 
-安全区让内容避开刘海或灵动岛、状态栏、主屏幕指示条、导航标题栏以及 Mac Catalyst 的窗口标题栏。任何视图都可以用 CSS 的 `env()` 按它添加内边距：在 padding 或 margin 中使用 `env(safe-area-inset-top)`、`env(safe-area-inset-right)`、`env(safe-area-inset-bottom)` 和 `env(safe-area-inset-left)`。它们是节点所在根视图的边距：在 [NavPage](./nav-stack.md) 中是页面标题栏下方的边距，在 [Dialog](./dialog.md) 中是对话框的边距，其他地方是界面的安全区。在浏览器中页面就是根视图，这些变量就是浏览器自己的。
+安全区让内容避开刘海或灵动岛、状态栏、主屏幕指示条、导航标题栏、Mac Catalyst 的窗口标题栏以及窗口化 iPad 应用的窗口控件（在 iPadOS 26 及更高版本上，窗口化应用的前缘 inset 与这些控件一样宽）。任何视图都可以用 CSS 的 `env()` 按它添加内边距：在 padding 或 margin 中使用 `env(safe-area-inset-top)`、`env(safe-area-inset-right)`、`env(safe-area-inset-bottom)` 和 `env(safe-area-inset-left)`。它们是节点所在根视图的边距：在 [NavPage](./nav-stack.md) 中是页面标题栏下方的边距，在 [Dialog](./dialog.md) 中是对话框的边距，其他地方是界面的安全区。在浏览器中页面就是根视图，这些变量就是浏览器自己的。
 
 ```rust tabs
 use nsh_core::prelude::*;

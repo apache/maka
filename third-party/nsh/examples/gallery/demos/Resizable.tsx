@@ -1,7 +1,7 @@
 import { signal, Text, untracked, View } from "nsh";
 import { ResizablePanel, ResizablePanelGroup } from "nsh/base";
 import { windowSize } from "nsh";
-import { Button, hint, resizableHandleLook } from "../ui";
+import { hint, resizableHandleLook, ToggleButton } from "../ui";
 
 // `nsh/base`'s resizable panels own the drags (run natively, frame by
 // frame, with no JS on the way), the minimums and maximums and what
@@ -11,7 +11,8 @@ import { Button, hint, resizableHandleLook } from "../ui";
 // classes (`resizableHandleLook`), the line staying as it is while its thumb
 // shows where to drag.
 
-const round = (sizes: number[]) => sizes.map((s) => Math.round(s)).join(" · ");
+/** Two panels' sizes in words: `sidebar 220 pt, editor area 580 pt`. */
+const sized = (names: [string, string], sizes: number[]) => names.map((name, i) => `${name} ${Math.round(sizes[i] ?? 0)} pt`).join(", ");
 
 /** A panel's title, what it does and its size now, on one line. */
 function Pane(props: { title: string; detail: string; size?: string }) {
@@ -20,7 +21,7 @@ function Pane(props: { title: string; detail: string; size?: string }) {
       <Text class="text-sm font-semibold text-foreground">{props.title}</Text>
       <Text class="text-xs text-muted-foreground">{props.detail}</Text>
       <If when={props.size}>
-        <Text class="font-mono text-xs tabular-nums text-foreground" style={{ numberOfLines: 1 }}>{props.size}</Text>
+        <Text class="text-xs tabular-nums text-muted-foreground" style={{ numberOfLines: 1 }}>{props.size}</Text>
       </If>
     </View>
   );
@@ -37,23 +38,16 @@ export function Resizable() {
   const sidebar = signal(untracked(windowSize).width < 600 ? 130 : 220);
   const consoleSize = signal(140);
   const shown = signal(true);
-  const last = signal("—");
+  const last = signal<string | null>(null);
 
   return (
     <View class="flex-1 gap-3 bg-background p-4">
       <View class="flex-row flex-wrap items-center gap-2">
         <Text class="flex-1 text-sm text-muted-foreground">{hint("Drag a line between two panels with your finger", "Drag a line between two panels")}</Text>
-        <Button
-          label="Console"
-          variant="secondary"
-          size="small"
-          selected={shown()}
-          accessibilityLabel={shown() ? "Hide the console" : "Show the console"}
-          onPress={() => shown.set(!shown())}
-        />
+        <ToggleButton label="Console" on={shown()} accessibilityLabel={shown() ? "Hide the console" : "Show the console"} onPress={() => shown.set(!shown())} />
       </View>
       <View class="flex-1 overflow-hidden rounded-lg border border-border bg-background">
-        <ResizablePanelGroup axis="horizontal" {...resizableHandleLook("horizontal")} handleAccessibilityLabel="Resize the sidebar" onResize={({ sizes }) => last.set(`Row: ${round(sizes)}`)}>
+        <ResizablePanelGroup axis="horizontal" {...resizableHandleLook("horizontal")} handleAccessibilityLabel="Resize the sidebar" onResize={({ sizes }) => last.set(sized(["sidebar", "editor area"], sizes))}>
           <ResizablePanel size={sidebar()} minSize={120} maxSize={360} onResize={({ size }) => sidebar.set(size)}>
             <View class="flex-1 bg-muted">
               <Pane title="Files" detail="120 to 360 pt" size={`${Math.round(sidebar())} pt wide`} />
@@ -64,21 +58,23 @@ export function Resizable() {
               axis="vertical"
               {...resizableHandleLook("vertical")}
               handleAccessibilityLabel="Resize the console"
-              onResize={({ sizes }) => last.set(`Column: ${round(sizes)}`)}
+              onResize={({ sizes }) => last.set(sized(["editor", "console"], sizes))}
             >
               <ResizablePanel minSize={80}>
                 <Pane title="Editor" detail="Takes the room the others leave" />
               </ResizablePanel>
               <ResizablePanel size={consoleSize()} minSize={60} visible={shown()} onResize={({ size }) => consoleSize.set(size)}>
                 <View class="flex-1 bg-muted">
-                  <Pane title="Console" detail="Hidden, it keeps its size" size={`${Math.round(consoleSize())} pt tall`} />
+                  <Pane title="Console" detail="Keeps its size while hidden" size={`${Math.round(consoleSize())} pt tall`} />
                 </View>
               </ResizablePanel>
             </ResizablePanelGroup>
           </ResizablePanel>
         </ResizablePanelGroup>
       </View>
-      <Text class="font-mono text-xs text-muted-foreground">{`Last resize: ${last()}`}</Text>
+      <If when={last()}>
+        <Text class="text-xs text-muted-foreground">{`Last resize: ${last()}`}</Text>
+      </If>
     </View>
   );
 }

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/index.js';
 import { textTooltip } from './ui';
 import { tr } from './locale';
 import { Image, inputAction, Scroll, signal, Text, View } from 'nsh';
@@ -24,7 +25,7 @@ import type { JSX, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import type { AgentHistoryAttachment } from '../../../../packages/plugin-sdk/src/index.js';
 import type { ComposerAttachments } from '../../../../packages/plugin-sdk/src/composer-view.js';
-import type { Position } from './history';
+
 import { ImageThumbnail, type ImagePreview } from './ImageThumbnail';
 import { ImageViewer } from './ImageViewer';
 import { C, captionTextStyle, controlStyle } from './ui';
@@ -309,7 +310,8 @@ export function DraftAttachments(props: {
 export function HistoryAttachments(props: {
   sessionId: string;
   through: number;
-  position?: Position;
+  position?: HistoryRowAddress;
+  roomMessageId?: string;
   attachments: AgentHistoryAttachment[];
   preview(image: ImagePreview): void;
   userScroll(): void;
@@ -333,12 +335,19 @@ export function HistoryAttachments(props: {
               const read = {
                 sessionId: props.sessionId,
                 offset: 0,
-                source: {
-                  kind: 'history' as const,
-                  through: props.through,
-                  position: { ...props.position! },
-                  attachmentIndex: original.index,
-                },
+                source:
+                  props.roomMessageId !== undefined
+                    ? {
+                        kind: 'room' as const,
+                        messageId: props.roomMessageId,
+                        attachmentIndex: original.index,
+                      }
+                    : {
+                        kind: 'history' as const,
+                        through: props.through,
+                        position: { ...props.position! },
+                        attachmentIndex: original.index,
+                      },
               };
               return (
                 <ImageThumbnail
@@ -353,7 +362,10 @@ export function HistoryAttachments(props: {
             };
             return (
               <If
-                when={image(original.mimeType) && props.position !== undefined}
+                when={
+                  image(original.mimeType) &&
+                  (props.position !== undefined || props.roomMessageId !== undefined)
+                }
                 else={
                   <View
                     tooltip={textTooltip(

@@ -17,11 +17,6 @@
  * under the License.
  */
 
-import {
-  quickFieldText,
-  quickEditorInset,
-  quickFieldHeight,
-} from '../../../../products/maka/workbench/app/QuickToolsBar';
 import { textTooltip } from '../../../../products/maka/workbench/app/ui';
 import { ProjectMcp } from '../../../../products/maka/workbench/app/ProjectMcpConsent';
 import { tr } from '../../../../products/maka/workbench/app/locale';
@@ -38,6 +33,7 @@ import {
 import { ComposerDetails } from '../../../../products/maka/workbench/app/ComposerDetails';
 import { SessionPermissionsSelect } from '../../../../products/maka/workbench/app/SessionPermissionsSelect';
 import type { AgentExecution } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
+import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type {
   ComposerBackend,
   ComposerSession,
@@ -49,20 +45,34 @@ import {
   inputTextStyle,
   captionTextStyle,
   compact,
-  controlFocusStyle,
   controlStyle,
+  floatingStyle,
+  menuDetailTextStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
   toolbarControlStyle,
+  composerIconSlot,
 } from '../../../../products/maka/workbench/app/ui';
 import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { ContextGauge } from '../../../../products/maka/workbench/app/ContextGauge';
+import {
+  composerToolbar,
+  NARROW_COMPOSER_TOOLBAR_WIDTH,
+  ToolbarCompactProvider,
+  type ComposerToolbarSlot,
+} from '../../../../products/maka/workbench/app/composerToolbar';
 import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHint';
+import { DraftQuotes } from './DraftQuotes';
 import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
-import { createComposerPaste } from './composerPaste';
+import { dictationPreferences } from '../../../../products/maka/workbench/app/dictationPreferences';
+import {
+  attachDictation,
+  DictationBar,
+} from '../../../../products/maka/workbench/app/InlineDictation';
+import { createComposerPaste } from '../../../../products/maka/workbench/app/composerPaste';
 import { SkillInput } from '../../../../products/maka/workbench/app/SkillInput';
 import type { ComposerEditor } from '../../../../products/maka/workbench/app/ComposerEditor';
-import { createQuickComposerHistory } from '../../../application/quick-tools/runtime/composer-history';
-import { qt } from '../../../application/quick-tools/shared/i18n';
 import logo from '../../../../products/maka/workbench/app/assets/maka.png';
 
 export function Composer(props: ComposerViewInput<JSX.Element>) {
@@ -72,18 +82,15 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     commands: props.commands,
     active: props.active,
   });
-  const predictionEditor = signal<{ owner: ComposerSession; node: ComposerEditor } | null>(null);
-  const quickHistory = createQuickComposerHistory({
-    session: props.session,
-    node: () => predictionEditor()?.node ?? null,
-    active: props.active,
-    composing: completion.composing,
-    completionOpen: () => completion.opened() !== null,
+  const dictation = signal<ReturnType<typeof attachDictation> | null>(null);
+  if (platform.os === 'macos' && platform.idiom !== 'terminal')
+    void dictationPreferences.initialize();
+  effect(() => {
+    const target = dictation();
+    if (!dictationPreferences.enabled() && target && target.phase() !== 'idle') target.cancel();
   });
-  const sendWithHistory: typeof completion.send = (action) => {
-    quickHistory.remember(action.text);
-    completion.send(action);
-  };
+  const listening = () => !!dictation() && dictation()!.phase() !== 'idle';
+  const predictionEditor = signal<{ owner: ComposerSession; node: ComposerEditor } | null>(null);
   const suggestedMessage = () => {
     const owner = props.session();
     if (
@@ -94,10 +101,13 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       !owner.editable() ||
       owner.loading() ||
       owner.recovering() ||
-      owner.resuming() ||
-      owner.invocation() !== null ||
+      owner.continuing() ||
+      owner.run() !== null ||
       owner.draft() !== '' ||
+      owner.attachments.restoring() ||
       owner.attachments.files().length > 0 ||
+      !!owner.quotes().length ||
+      owner.attachments.rows().length > 0 ||
       completion.composing() ||
       completion.opened() !== null
     )
@@ -152,6 +162,11 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   // Desktop only: the terminal keeps its start pane as it is.
   const noConnections = () => platform.idiom !== 'terminal' && (props.needsConnection?.() ?? false);
   const pending = () => props.pending?.() ?? null;
+  // External CLIs run outside the session sandbox, so its setting would not apply to them.
+  const externalAgent = () => {
+    const backend = props.session() ? props.session()!.backend() : (pending()?.backend() ?? null);
+    return backend?.kind === 'executor' && backend.selection.executor === 'external';
+  };
   let pendingDrop: ((event: { uris: string[] }) => void) | null = null;
   props.dropFiles?.((event) => {
     const owner = props.session();
@@ -174,7 +189,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   const confirming = () =>
     !!props.session()?.loading() ||
     !!props.session()?.recovering() ||
-    !!props.session()?.resuming() ||
+    !!props.session()?.continuing() ||
     !!pending()?.sending();
   const warning = () => (confirming() ? '' : blocked());
   const cannotSend = () =>
@@ -189,31 +204,34 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       (!!blocked() ||
         (!props.session()?.draft().trim() &&
           !props.session()?.attachments.files().length &&
+          !props.session()?.quotes().length &&
           !pending()?.draft().trim() &&
           !pending()?.files().length)));
-  const hasContent = () =>
-    completion.composing() ||
-    !!props.session()?.draft().trim() ||
-    !!props.session()?.attachments.files().length;
-  const running = () =>
-    props.session()?.connected() === true && props.session()?.invocation() != null;
-  const resumeSource = () => {
-    const value = props.session()?.resumable();
-    return !props.session()?.invocation() && !hasContent() && value?.kind === 'ready'
-      ? value.source
-      : null;
+  const hasContent = () => {
+    const owner = props.session();
+    return (
+      completion.composing() ||
+      (owner !== null &&
+        hasComposerContent(owner.draft().trim(), owner.attachments.files(), owner.quotes()))
+    );
+  };
+  const running = () => props.session()?.connected() === true && props.session()?.run() != null;
+  const continuationSource = () => {
+    const value = props.session()?.continuation();
+    return !props.session()?.run() && !hasContent() && value ? value.source : null;
   };
   const stopPrimary = () => running() && !hasContent();
   const sendDisabled = () => cannotSend() || completion.composing();
   const continueDisabled = () =>
     !!props.blocked?.() ||
-    !!props.session()?.resuming() ||
+    !!props.session()?.continuing() ||
     !!blocked() ||
-    !props.session()?.editable();
+    !props.session()?.editable() ||
+    props.session()?.modelDetails().kind !== 'ready';
   const primaryDisabled = () =>
     stopPrimary()
       ? props.session()!.stopping()
-      : resumeSource() !== null
+      : continuationSource() !== null
         ? continueDisabled()
         : sendDisabled();
   const continueRendered = ({
@@ -227,11 +245,16 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   }) => {
     const session = props.session();
     if (session?.sessionId === owner && props.active() && !continueDisabled())
-      void session.resume(source, backend);
+      void session.continueRun(source, backend);
   };
   let unbind = () => {};
   cleanup(() => unbind());
   const cardRoot = signal<ViewRef | null>(null);
+  const toolbarWidth = signal(0);
+  const narrowToolbar = () =>
+    platform.idiom !== 'terminal' &&
+    toolbarWidth() > 0 &&
+    toolbarWidth() < NARROW_COMPOSER_TOOLBAR_WIDTH;
   const toggleAttachments = () => {
     const owner = props.session();
     if (owner && owner.editable())
@@ -244,10 +267,19 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     platform.idiom !== 'terminal' &&
     (props.session() !== null || pending() !== null) &&
     (draggingOverEditor() || (props.fileDragging?.() ?? false));
+  const controlCClearsDraft =
+    platform.idiom === 'terminal' || keymap.label('mod+c') !== keymap.label('ctrl+c');
   effect(() => {
     const owner = props.session();
     const node = cardRoot();
-    if (node && props.active() && owner?.editable() && owner.invocation() === null && owner.draft())
+    if (
+      controlCClearsDraft &&
+      node &&
+      props.active() &&
+      owner?.editable() &&
+      owner.run() === null &&
+      owner.draft()
+    )
       return keymap.bind('ctrl+c', completion.clearDraft, {
         when: 'notEditing',
         within: node,
@@ -258,20 +290,24 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     const owner = props.session();
     const current = predictionEditor();
     if (
+      controlCClearsDraft &&
       owner &&
       current?.owner === owner &&
       props.active() &&
       owner.editable() &&
-      owner.invocation() === null &&
+      owner.run() === null &&
       owner.draft()
     )
       return current.node.bindKey('ctrl+c', completion.clearDraft, { fallback: true });
   });
   const escapeComposer = () => {
+    if (listening()) {
+      dictation()?.cancel();
+      return;
+    }
     if (completion.composing()) return;
     const suggestion = suggestedMessage();
     if (suggestion) props.session()!.prediction.dismiss(suggestion.sourceTurnId);
-    else if (props.quickToolsBack) props.quickToolsBack();
     else props.stopAction()();
   };
   effect(() => {
@@ -332,33 +368,34 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           ? props.session()!.stopping()
             ? tr('Stopping…')
             : tr('Stop response')
-          : resumeSource() !== null
+          : continuationSource() !== null
             ? tr('Continue response')
             : tr('Send message')
       }
       tooltip={textTooltip(() =>
         stopPrimary()
           ? `${tr('Stop response')} · Esc`
-          : resumeSource() !== null
+          : continuationSource() !== null
             ? tr('Continue response')
             : `${tr('Send message')} · Enter`,
       )}
       disabled={primaryDisabled()}
       onPress={
         stopPrimary()
-          ? inputAction(props.session()!.stop, props.session()!.invocation())
-          : resumeSource() !== null
+          ? inputAction(props.session()!.stop, props.session()!.run())
+          : continuationSource() !== null
             ? inputAction(continueRendered, {
                 owner: props.session()!.sessionId,
-                source: resumeSource()!,
+                source: continuationSource()!,
                 backend: props.session()!.backend(),
               })
             : props.session()
-              ? inputAction(sendWithHistory, {
+              ? inputAction(completion.send, {
                   owner: props.session()!.sessionId,
                   text: props.session()!.draft(),
                   backend: props.session()!.backend(),
                   attachments: props.session()!.attachments.ids(),
+                  quotes: props.session()!.quotes(),
                   delivery: 'steer',
                 })
               : pending()
@@ -386,7 +423,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
         when={stopPrimary() ? props.session()!.stopping() : confirming()}
         else={
           <Icon
-            name={stopPrimary() ? 'stop' : resumeSource() !== null ? 'play' : 'send'}
+            name={stopPrimary() ? 'stop' : continuationSource() !== null ? 'play' : 'send'}
             color={primaryDisabled() ? C.muted : C.background}
           />
         }
@@ -405,15 +442,16 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
         width: '100%',
         // The conversation column's width: the box lines up with the
         // messages and the turn navigation beside them.
-        maxWidth: props.quickTools ? undefined : 800,
+        maxWidth: 800,
         alignSelf: 'center',
-        paddingHorizontal: props.quickTools ? 0 : 16,
-        paddingTop: props.quickTools || hero() || platform.idiom === 'terminal' ? 0 : 12,
-        paddingBottom: props.quickTools ? 0 : hero() || platform.idiom !== 'terminal' ? 16 : 8,
+        paddingHorizontal: 16,
+        paddingTop: hero() || platform.idiom === 'terminal' ? 0 : 12,
+        paddingBottom: hero() || platform.idiom !== 'terminal' ? 16 : 8,
       }}
     >
       <If when={hero()}>
         <View style={{ flexShrink: 0, gap: compact() ? 8 : 16, paddingBottom: 12 }}>
+          {/* The completion menu opens over the greeting: it steps aside rather than show cut. */}
           <View
             style={{
               flexDirection: 'row',
@@ -422,6 +460,13 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               justifyContent: 'center',
               gap: 12,
               paddingVertical: compact() ? 8 : 16,
+              ...(platform.idiom === 'terminal'
+                ? {}
+                : {
+                    opacity: completion.opened() === null ? 1 : 0,
+                    transitionProperty: 'opacity',
+                    transitionDuration: 120,
+                  }),
             }}
           >
             <If when={windowSize().height >= 336}>
@@ -502,9 +547,29 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       {props.request}
       <View style={{ flexShrink: 0 }}>
         <If when={props.session()?.error()}>
-          <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
-            {props.session()?.error()}
-          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Text style={[{ color: C.danger, flex: 1 }, { userSelect: 'text' }]}>
+              {props.session()?.error()}
+            </Text>
+            <Button
+              accessibilityLabel={tr('Dismiss error')}
+              tooltip={textTooltip(() => tr('Dismiss error'))}
+              onPress={() => props.session()?.dismissError()}
+              style={{
+                ...controlStyle,
+                width: 32,
+                height: 32,
+                paddingHorizontal: 8,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 16,
+              }}
+              hoverStyle={{ backgroundColor: C.surface }}
+              focusStyle={{ backgroundColor: C.raised }}
+            >
+              <Icon name="close" color={C.muted} />
+            </Button>
+          </View>
         </If>
         <If when={props.session()?.notice()}>
           <Text
@@ -527,9 +592,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             return (
               <View>
                 <ProjectMcp owner={owner.projectMcp} />
-                <If when={!props.quickTools}>
-                  <ComposerDetails session={owner} />
-                </If>
+                <ComposerDetails session={owner} />
               </View>
             );
           }}
@@ -549,20 +612,14 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           accessibilityLabel={tr('Conversation composer')}
           style={{
             flexShrink: 0,
-            backgroundColor: props.quickTools
-              ? 'transparent'
-              : platform.idiom === 'terminal'
-                ? C.raised
-                : C.card,
-            borderRadius: props.quickTools ? 0 : cardRadius(),
-            borderWidth: props.quickTools ? 0 : 1,
+            backgroundColor: platform.idiom === 'terminal' ? C.raised : C.card,
+            borderRadius: cardRadius(),
+            borderWidth: 1,
             borderColor: fileDragging()
               ? C.accent
               : platform.idiom === 'terminal'
                 ? C.line
-                : props.quickTools
-                  ? 'transparent'
-                  : C.card,
+                : C.card,
             ...(platform.idiom === 'terminal'
               ? {
                   paddingHorizontal: 16,
@@ -570,7 +627,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   paddingBottom: 8,
                   gap: 12,
                 }
-              : { padding: props.quickTools ? 0 : 8, gap: props.quickTools ? 0 : 8 }),
+              : { padding: 8, gap: 8 }),
             minHeight: hero() && !compact() ? 120 : undefined,
           }}
         >
@@ -584,6 +641,38 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               const path = signal('');
               const editor = signal<ComposerEditor | null>(null);
               const selection = signal({ start: 0, end: 0 });
+              if (platform.os === 'macos' && platform.idiom !== 'terminal' && (owner || local)) {
+                const target = attachDictation(owner?.sessionId ?? local!.id, {
+                  editor,
+                  selection,
+                  draft: () => (owner ?? local!).draft(),
+                  active: props.active,
+                  send: (text, previous) => {
+                    const target = owner ?? local!;
+                    if (!props.active() || (props.session() ?? pending()) !== target) return;
+                    // The native editor can acknowledge replacement before its change event arrives.
+                    if (target.draft() === previous) target.changeDraft(text);
+                    if (target.draft() !== text || sendDisabled()) return;
+                    if (owner) {
+                      completion.send({
+                        owner: owner.sessionId,
+                        text,
+                        backend: owner.backend(),
+                        attachments: owner.attachments.ids(),
+                        quotes: owner.quotes(),
+                        delivery: 'steer',
+                      });
+                    } else if (local) completion.submitPending(local, text, local.confirmation());
+                  },
+                  error: (reason) =>
+                    owner ? owner.attachments.reportError(reason) : local!.reportError(reason),
+                });
+                dictation.set(target);
+                cleanup(() => {
+                  target.detach();
+                  if (dictation() === target) dictation.set(null);
+                });
+              }
               const paste = local
                 ? createComposerPaste({
                     owner: pending,
@@ -595,19 +684,13 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   })
                 : null;
               if (local && paste) {
+                paste.bindClipboard();
                 const drop = (event: { uris: string[] }) => paste.drop(local, event);
                 pendingDrop = drop;
                 cleanup(() => {
                   if (pendingDrop === drop) pendingDrop = null;
                 });
               }
-              const measuredRows = signal(1);
-              const quickInputHeight = () => {
-                const draft = owner?.draft() ?? local?.draft() ?? '';
-                const rows = draft ? Math.max(draft.split('\n').length, measuredRows()) : 1;
-                const visible = rows === 1 ? 1 : Math.min(5, Math.max(3, rows));
-                return quickFieldHeight + (visible - 1) * quickFieldText.lineHeight;
-              };
               const focusEditor = () => {
                 if (owner?.editable() || local) editor()?.focus();
               };
@@ -647,16 +730,17 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                       platform.idiom === 'terminal'
                         ? { gap: 8 }
                         : {
-                            gap: props.quickTools ? 0 : 8,
+                            gap: 8,
                             flexGrow: 1,
-                            paddingHorizontal: props.quickTools ? 0 : 8,
-                            paddingTop: props.quickTools ? 0 : 4,
+                            paddingHorizontal: 8,
+                            paddingTop: 4,
                           },
                       { pointerEvents: 'box-none' },
                     ]}
                   >
                     <If when={owner !== null}>
                       <DraftAttachments draft={owner!.attachments} preview={owner!.previewImage} />
+                      <DraftQuotes owner={owner!} />
                     </If>
                     <If when={local !== null}>
                       <StagedAttachments
@@ -682,12 +766,14 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           value={path()}
                           onChange={({ value }) => path.set(value)}
                           onSubmit={() => {
-                            if (path().trim()) local?.selectFiles([path().trim()]);
+                            if (path().trim())
+                              local?.intake({ kind: 'files', paths: [path().trim()] });
                           }}
                         />
                         <Button
                           onPress={() => {
-                            if (path().trim()) local?.selectFiles([path().trim()]);
+                            if (path().trim())
+                              local?.intake({ kind: 'files', paths: [path().trim()] });
                           }}
                           style={controlStyle}
                         >
@@ -697,26 +783,16 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     </If>
                     <View
                       style={{
-                        minHeight: props.quickTools
-                          ? quickFieldHeight
-                          : hero() && !compact()
-                            ? 40
-                            : 24,
-                        height: props.quickTools ? quickInputHeight() : undefined,
-                        maxHeight: props.quickTools ? undefined : compact() ? 64 : 144,
+                        minHeight:
+                          platform.idiom === 'terminal'
+                            ? hero() && !compact()
+                              ? 40
+                              : 24
+                            : 2 * bodyTextStyle.lineHeight,
+                        maxHeight: compact() ? 64 : 144,
                       }}
                     >
                       <SkillInput
-                        fieldText={props.quickTools ? quickFieldText : undefined}
-                        onContentHeight={
-                          props.quickTools
-                            ? (height) => {
-                                measuredRows.set(
-                                  Math.max(1, Math.round(height / quickFieldText.lineHeight)),
-                                );
-                              }
-                            : undefined
-                        }
                         ref={(node) => {
                           editor.set(node);
                           props.attach(node);
@@ -732,10 +808,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         readonly={owner ? !owner.editable() : !local || local.sending()}
                         onChange={
                           owner
-                            ? ({ value }) => {
-                                quickHistory.change(value);
-                                completion.change(owner, value);
-                              }
+                            ? ({ value }) => completion.change(owner, value)
                             : local
                               ? ({ value }) => completion.change(local, value)
                               : undefined
@@ -780,19 +853,11 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                               ? () => paste?.blur(local)
                               : undefined
                         }
-                        onSelectionChange={
-                          owner
-                            ? (event) => {
-                                quickHistory.selection(event);
-                                completion.selection(owner, event);
-                              }
-                            : local
-                              ? (event) => {
-                                  selection.set({ ...event });
-                                  completion.selection(local, event);
-                                }
-                              : undefined
-                        }
+                        onSelectionChange={(event) => {
+                          selection.set({ ...event });
+                          const target = owner ?? local;
+                          if (target) completion.selection(target, event);
+                        }}
                         onCaretMove={
                           owner
                             ? (event) => completion.caret(owner, event)
@@ -803,6 +868,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         onSubmit={
                           owner
                             ? (event) => {
+                                if (listening()) return;
                                 const suggestion = suggestedMessage();
                                 if (suggestion && event.text === '')
                                   acceptSuggestedMessage({
@@ -810,22 +876,19 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                                     sourceTurnId: suggestion.sourceTurnId,
                                     text: suggestion.text,
                                   });
-                                else {
-                                  quickHistory.remember(event.text);
-                                  completion.submit(owner, event);
-                                }
+                                else completion.submit(owner, event);
                               }
                             : local
-                              ? (event) => completion.submitPending(local, event.text)
+                              ? (event) => {
+                                  if (!listening()) completion.submitPending(local, event.text);
+                                }
                               : undefined
                         }
                         placeholder={
                           suggestedMessage() !== null
                             ? ''
                             : owner || local
-                              ? props.quickTools
-                                ? qt('给个人助手发消息…')
-                                : tr('Message or run a task…')
+                              ? tr('Message or run a task…')
                               : tr('Choose a workspace to begin…')
                         }
                         style={[
@@ -835,16 +898,6 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             flexShrink: 1,
                             color: C.text,
                             ...bodyTextStyle,
-                            ...(props.quickTools
-                              ? {
-                                  position: 'absolute',
-                                  top: 0,
-                                  bottom: 0,
-                                  left: 0,
-                                  right: 0,
-                                  paddingTop: quickEditorInset,
-                                }
-                              : {}),
                             ...(owner !== null && suggestedMessage() !== null
                               ? {
                                   position: 'absolute',
@@ -858,67 +911,30 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           { pointerEvents: owner || local ? 'auto' : 'none' },
                         ]}
                       />
-                      <If when={owner !== null && quickHistory.offered()}>
-                        <Text
-                          style={{
-                            ...bodyTextStyle,
-                            ...(props.quickTools ? quickFieldText : {}),
-                            position: 'absolute',
-                            top: props.quickTools ? quickEditorInset : 0,
-                            left: 0,
-                            color: `${C.muted}80`,
-                            pointerEvents: 'none',
-                            numberOfLines: 1,
-                          }}
-                        >
-                          <Text style={{ color: 'transparent' }}>{owner?.draft()}</Text>
-                          {quickHistory.offered()?.slice(owner?.draft().length ?? 0)}
-                        </Text>
-                      </If>
                       <If when={owner !== null && suggestedMessage() !== null}>
                         <Text
                           accessibilityLabel={tr('Suggested message: {message}', {
                             message: suggestedMessage()!.text,
                           })}
-                          style={[
-                            {
-                              ...bodyTextStyle,
-                              color: `${C.muted}80`,
-                              minHeight: 24,
-                              ...(props.quickTools
-                                ? { ...quickFieldText, paddingTop: quickEditorInset }
-                                : {}),
-                            },
-                            { pointerEvents: 'box-none' },
-                          ]}
+                          onPress={inputAction(focusEditor, null)}
+                          style={{ ...bodyTextStyle, color: `${C.muted}80`, minHeight: 24 }}
                         >
                           {suggestedMessage()!.text}{' '}
-                          <Button
+                          <Text
                             accessibilityLabel={tr('Use suggested message')}
-                            tooltip={textTooltip(() => tr('Tab to use · Esc to dismiss'))}
                             onPress={inputAction(acceptSuggestedMessage, {
                               sessionId: owner!.sessionId,
                               sourceTurnId: suggestedMessage()!.sourceTurnId,
                               text: suggestedMessage()!.text,
                             })}
                             style={{
-                              display: props.quickTools ? 'none' : 'flex',
-                              height: 24,
-                              paddingHorizontal: 8,
+                              fontSize: captionTextStyle.fontSize,
                               borderRadius: 4,
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              backgroundColor: `${C.text}08`,
-                              verticalAlign: 'middle',
-                              pointerEvents: 'auto',
+                              backgroundColor: `${C.text}0f`,
                             }}
-                            hoverStyle={{ backgroundColor: C.cardRaised }}
-                            focusStyle={controlFocusStyle()}
                           >
-                            <Text style={{ ...captionTextStyle, color: `${C.muted}80` }}>
-                              {tr('Press Tab to accept')}
-                            </Text>
-                          </Button>
+                            {`\u00a0\u00a0${tr('Press Tab to accept')}\u00a0\u00a0`}
+                          </Text>
                         </Text>
                       </If>
                     </View>
@@ -927,139 +943,249 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               );
             }}
           </Each>
-          <View
-            style={[
-              {
-                display: props.quickTools ? 'none' : 'flex',
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: platform.idiom === 'terminal' ? 8 : 4,
-              },
-              { pointerEvents: 'box-none' },
-            ]}
-          >
-            <Button
-              ref={completion.addButton}
-              onPress={inputAction(completion.toggleAdd, {
-                owner: props.session()?.sessionId ?? pending()?.id ?? null,
-              })}
-              accessibilityLabel={tr('Add to message')}
-              tooltip={textTooltip(() => tr('Add to message'))}
-              disabled={
-                completion.composing() ||
-                (pending() ? pending()!.sending() : !props.session()?.editable())
+          <ToolbarCompactProvider value={narrowToolbar}>
+            <View
+              onLayout={
+                platform.idiom === 'terminal'
+                  ? undefined
+                  : ({ bounds }) => toolbarWidth.set(bounds.size.width)
               }
-              style={{
-                width: 32,
-                height: 32,
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: 16,
-              }}
-              hoverStyle={{ backgroundColor: C.line }}
-              focusStyle={{ backgroundColor: C.line }}
-              activeStyle={{ backgroundColor: C.surface }}
+              style={[
+                {
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: platform.idiom === 'terminal' ? 8 : 4,
+                },
+                { pointerEvents: 'box-none' },
+              ]}
             >
-              <Icon name="plus" color={C.secondary} />
-            </Button>
-            <SessionPermissionsSelect
-              owner={props.session()?.permissions ?? null}
-              pending={pending()?.permissions ?? null}
-            />
-            {/* After the sandbox, so leaving the start pane moves neither. */}
-            <If when={platform.idiom !== 'terminal' && hero()}>{workspaceControl()}</If>
-            <If when={props.session() !== null || pending() !== null}>
-              <View
-                style={[
-                  platform.idiom === 'terminal'
-                    ? { flex: 1, minWidth: 0 }
-                    : {
-                        flex: 1,
-                        minWidth: 0,
-                        flexDirection: 'row',
-                        justifyContent: 'flex-end',
-                        alignItems: 'center',
-                        gap: 4,
-                      },
-                  { pointerEvents: 'box-none' },
-                ]}
-              >
-                {/* The desktop shows context use beside the model; the terminal
-                    keeps it in the line under the composer. */}
-                <If when={platform.idiom !== 'terminal' && props.session()?.contextUsage?.()}>
-                  <ContextGauge usage={() => props.session()!.contextUsage!()!} />
-                </If>
-                {props.models}
-              </View>
-            </If>
-            <If when={props.session() === null && pending() === null}>
-              <View style={[{ flex: 1 }, { pointerEvents: 'none' }]} />
-            </If>
-            <If when={running() && hasContent()} else={primaryButton()}>
-              <ContextMenu
-                offset={8}
-                margin={8}
-                popupStyle={{ padding: 8, backgroundColor: C.surface, borderRadius: 12 }}
-                trigger={primaryButton()}
-              >
-                <Each
-                  of={running() && hasContent() ? [props.session()!] : []}
-                  key={(owner) => owner.sessionId}
+              <If when={listening()}>
+                <DictationBar state={dictation()!} />
+              </If>
+              <If when={!listening()}>
+                <Button
+                  ref={completion.addButton}
+                  onPress={inputAction(completion.toggleAdd, {
+                    owner: props.session()?.sessionId ?? pending()?.id ?? null,
+                  })}
+                  accessibilityLabel={tr('Add to message')}
+                  tooltip={textTooltip(() => tr('Add to message'))}
+                  disabled={
+                    completion.composing() ||
+                    (pending() ? pending()!.sending() : !props.session()?.editable())
+                  }
+                  style={{ ...composerIconSlot, borderRadius: 16, flexShrink: 0 }}
+                  hoverStyle={{ backgroundColor: C.line }}
+                  focusStyle={{ backgroundColor: C.line }}
+                  activeStyle={{ backgroundColor: C.surface }}
                 >
-                  {(owner) => (
-                    <>
-                      <MenuItem
-                        accessibilityLabel={tr('Add to queue')}
-                        tooltip={textTooltip(() => tr('Send after this turn'))}
-                        disabled={sendDisabled() || completion.isCommand()}
-                        onSelect={inputAction(sendWithHistory, {
-                          owner: owner().sessionId,
-                          text: owner().draft(),
-                          backend: owner().backend(),
-                          attachments: owner().attachments.ids(),
-                          delivery: 'queue' as const,
-                        })}
-                        style={{
-                          ...controlStyle,
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: 8,
-                        }}
-                        hoverStyle={{ backgroundColor: C.raised }}
-                        focusStyle={controlFocusStyle()}
-                      >
-                        <Icon name="queue" color={C.secondary} />
-                        <Text style={{ ...captionTextStyle, color: C.text }}>
-                          {tr('Add to queue')}
-                        </Text>
-                      </MenuItem>
-                      <MenuItem
-                        accessibilityLabel={
-                          owner().stopping() ? tr('Stopping…') : tr('Stop response')
-                        }
-                        tooltip={textTooltip(() => `${tr('Stop response')} · Esc`)}
-                        disabled={owner().stopping()}
-                        onSelect={inputAction(owner().stop, owner().invocation())}
-                        style={{
-                          ...controlStyle,
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: 8,
-                        }}
-                        hoverStyle={{ backgroundColor: C.raised }}
-                        focusStyle={controlFocusStyle()}
-                      >
-                        <Icon name="stop" color={C.secondary} />
-                        <Text style={{ ...captionTextStyle, color: C.text }}>
-                          {tr('Stop response')}
-                        </Text>
-                      </MenuItem>
-                    </>
-                  )}
-                </Each>
-              </ContextMenu>
-            </If>
-          </View>
+                  <Icon name="plus" color={C.secondary} />
+                </Button>
+                <If when={platform.idiom === 'terminal'}>
+                  <If when={!externalAgent()}>
+                    <SessionPermissionsSelect
+                      owner={props.session()?.permissions ?? null}
+                      pending={pending()?.permissions ?? null}
+                    />
+                  </If>
+                  <If when={props.session() !== null || pending() !== null}>
+                    <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'box-none' }]}>
+                      {props.models}
+                    </View>
+                  </If>
+                  <If when={props.session() === null && pending() === null}>
+                    <View style={[{ flex: 1 }, { pointerEvents: 'none' }]} />
+                  </If>
+                </If>
+                <If when={platform.idiom !== 'terminal'}>
+                  <Each<ComposerToolbarSlot>
+                    of={composerToolbar.layout()}
+                    key={(slot: ComposerToolbarSlot) => slot}
+                  >
+                    {(item) => {
+                      const slot = item();
+                      if (slot === 'spacer') {
+                        return (
+                          <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'none' }]} />
+                        );
+                      }
+                      if (slot === 'permissions') {
+                        return (
+                          <If when={!externalAgent()}>
+                            <SessionPermissionsSelect
+                              owner={props.session()?.permissions ?? null}
+                              pending={pending()?.permissions ?? null}
+                            />
+                          </If>
+                        );
+                      }
+                      if (slot === 'workspace') {
+                        return (
+                          <>
+                            <If when={hero()}>{workspaceControl()}</If>
+                            <If
+                              when={
+                                !hero() &&
+                                props.openFiles !== undefined &&
+                                Boolean(props.session()?.workspace())
+                              }
+                            >
+                              <Button
+                                accessibilityLabel={tr('Browse workspace files')}
+                                tooltip={textTooltip(
+                                  () =>
+                                    props.session()?.workspace() || tr('Browse workspace files'),
+                                )}
+                                ref={
+                                  props.filesOpener ? (node) => props.filesOpener!(node) : undefined
+                                }
+                                onPress={props.openFiles!}
+                                style={{
+                                  ...toolbarControlStyle,
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  maxWidth: narrowToolbar() ? 32 : 200,
+                                  minWidth: 0,
+                                  flexShrink: narrowToolbar() ? 0 : 1,
+                                  gap: 4,
+                                }}
+                                hoverStyle={{ backgroundColor: C.line }}
+                                focusStyle={{ backgroundColor: C.line }}
+                                activeStyle={{ backgroundColor: C.surface }}
+                              >
+                                <Icon name="folder" color={C.muted} />
+                                <If when={!narrowToolbar()}>
+                                  <Text
+                                    style={[
+                                      {
+                                        ...captionTextStyle,
+                                        color: C.secondary,
+                                        flexShrink: 1,
+                                        minWidth: 0,
+                                      },
+                                      { numberOfLines: 1 },
+                                    ]}
+                                  >
+                                    {workspaceLabel()}
+                                  </Text>
+                                </If>
+                              </Button>
+                            </If>
+                          </>
+                        );
+                      }
+                      if (slot === 'usage') {
+                        return (
+                          <If
+                            when={
+                              props.usageLimits !== undefined &&
+                              (props.session() !== null || pending() !== null)
+                            }
+                          >
+                            {props.usageLimits}
+                          </If>
+                        );
+                      }
+                      if (slot === 'context') {
+                        return (
+                          <If when={props.session()?.contextUsage?.()}>
+                            <ContextGauge usage={() => props.session()!.contextUsage!()!} />
+                          </If>
+                        );
+                      }
+                      return (
+                        <If when={props.session() !== null || pending() !== null}>
+                          <View
+                            style={[
+                              {
+                                minWidth: 0,
+                                flexShrink: 1,
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                              },
+                              { pointerEvents: 'box-none' },
+                            ]}
+                          >
+                            {props.models}
+                          </View>
+                        </If>
+                      );
+                    }}
+                  </Each>
+                </If>
+                <If when={dictation() !== null && dictationPreferences.enabled()}>
+                  <Button
+                    accessibilityLabel={tr('Dictate a message')}
+                    tooltip={textTooltip(() => tr('Dictate a message'))}
+                    disabled={
+                      completion.composing() ||
+                      (pending() ? pending()!.sending() : !props.session()?.editable())
+                    }
+                    onPress={() => void dictation()?.start()}
+                    style={{ ...composerIconSlot, borderRadius: 16, flexShrink: 0 }}
+                    hoverStyle={{ backgroundColor: C.line }}
+                    focusStyle={{ backgroundColor: C.line }}
+                  >
+                    <Icon name="mic" color={C.secondary} />
+                  </Button>
+                </If>
+                <If when={running() && hasContent()} else={primaryButton()}>
+                  <ContextMenu
+                    offset={8}
+                    margin={8}
+                    popupStyle={floatingStyle()}
+                    trigger={primaryButton()}
+                  >
+                    <Each
+                      of={running() && hasContent() ? [props.session()!] : []}
+                      key={(owner) => owner.sessionId}
+                    >
+                      {(owner) => (
+                        <>
+                          <MenuItem
+                            accessibilityLabel={tr('Add to queue')}
+                            disabled={sendDisabled() || completion.isCommand()}
+                            onSelect={inputAction(completion.send, {
+                              owner: owner().sessionId,
+                              text: owner().draft(),
+                              backend: owner().backend(),
+                              attachments: owner().attachments.ids(),
+                              quotes: owner().quotes(),
+                              delivery: 'queue' as const,
+                            })}
+                            style={menuRowStyle()}
+                            hoverStyle={menuRowHoverStyle()}
+                            focusStyle={menuRowHoverStyle()}
+                          >
+                            <Icon name="queue" color={C.secondary} />
+                            <Text style={{ ...captionTextStyle, color: C.text }}>
+                              {tr('Add to queue')}
+                            </Text>
+                          </MenuItem>
+                          <MenuItem
+                            accessibilityLabel={
+                              owner().stopping() ? tr('Stopping…') : tr('Stop response')
+                            }
+                            disabled={owner().stopping()}
+                            onSelect={inputAction(owner().stop, owner().run())}
+                            style={menuRowStyle()}
+                            hoverStyle={menuRowHoverStyle()}
+                            focusStyle={menuRowHoverStyle()}
+                          >
+                            <Icon name="stop" color={C.secondary} />
+                            <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
+                              {tr('Stop response')}
+                            </Text>
+                            <Text style={{ ...menuDetailTextStyle, color: C.muted }}>Esc</Text>
+                          </MenuItem>
+                        </>
+                      )}
+                    </Each>
+                  </ContextMenu>
+                </If>
+              </If>
+            </View>
+          </ToolbarCompactProvider>
           <If when={fileDragging()}>
             <FileDropHint radius={cardRadius()} />
           </If>

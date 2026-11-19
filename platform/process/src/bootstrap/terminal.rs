@@ -21,7 +21,7 @@ use super::{
     Channel, Runner,
     protocol::{Control, Controlled},
 };
-use maka_agent_facts::terminal::TerminalSize;
+use maka_plugin_core::terminal::TerminalSize;
 use std::{io, time::Duration};
 use tokio::{
     sync::{mpsc, oneshot},

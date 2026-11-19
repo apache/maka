@@ -48,6 +48,12 @@ pub trait Transport: Send + Sync {
         cancellation: CancellationToken,
     ) -> BoxFuture<'_, Result<http::Response, Error>>;
     fn connect(&self, request: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, Error>>;
+    /// Dispatch through the current call, even when reusing a session socket.
+    fn send_text(
+        &self,
+        socket: Arc<dyn Socket>,
+        chunks: TextStream,
+    ) -> BoxFuture<'_, Result<(), Error>>;
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Connect {
@@ -109,6 +115,9 @@ pub struct MaterializedPrompt {
 /// Rebuilds only frozen request bytes using the original scoped authority.
 /// Implementations must not retain the preceding materialization.
 pub trait FrozenPrompt: Send + Sync {
+    fn authorize(&self, cancellation: CancellationToken) -> BoxFuture<'_, Result<(), Error>>;
+    /// The original local refusal survives opaque HTTP upload error conversion.
+    fn authorization_failure(&self) -> Option<Error>;
     fn open(
         &self,
         cancellation: CancellationToken,
@@ -132,6 +141,11 @@ pub struct Context {
 /// Disposable per-conversation optimization state, never a history authority.
 pub trait Session: Send + Sync {
     fn stream(&self, request: Request, context: Context) -> BoxFuture<'static, Result<(), Error>>;
+    fn fallback_availability(
+        &self,
+    ) -> maka_agent_facts::model::retry_transport::FallbackAvailability {
+        maka_agent_facts::model::retry_transport::FallbackAvailability::Unavailable
+    }
     /// Observe semantic transport consumption, including automatic fallback.
     fn retry_transport_phase(&self) -> RetryTransportPhase {
         RetryTransportPhase::Primary
@@ -171,7 +185,33 @@ pub enum Lifetime {
     Request,
     Conversation,
 }
+/// A decoder implementation's stateless replay contract, not an authorization grant.
+/// Its request must contain only Host-executed function tools.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecoveryContract {
+    pub protocol: String,
+    pub version: u32,
+}
+
 pub trait ProviderAdapter: Send + Sync {
+    fn recovery_contract(
+        &self,
+        _kind: &ProviderKind,
+        _tools: &[Arc<maka_agent_facts::tools::ToolDefinition>],
+    ) -> Option<RecoveryContract> {
+        None
+    }
+
+    /// Called only for a complete decoder item. Unknown signature shapes are not replayable.
+    fn continuation_cursor(
+        &self,
+        _contract: &RecoveryContract,
+        _part: &maka_agent_facts::model::ModelPart,
+    ) -> Option<serde_json::Value> {
+        None
+    }
+
     /// Complete stream items have provider-confirmed boundaries, rather than
     /// being synthesized by an SDK when an incomplete stream is closed.
     fn supports_item_acceptance(&self) -> bool {
@@ -204,6 +244,20 @@ impl Binding {
         source: maka_agent_facts::composition::SourceRevision,
     ) -> Self {
         Self(Arc::new(BoundAdapter { provider, source }))
+    }
+    pub fn recovery_contract(
+        &self,
+        kind: &ProviderKind,
+        tools: &[Arc<maka_agent_facts::tools::ToolDefinition>],
+    ) -> Option<RecoveryContract> {
+        self.0.provider.recovery_contract(kind, tools)
+    }
+    pub fn continuation_cursor(
+        &self,
+        contract: &RecoveryContract,
+        part: &maka_agent_facts::model::ModelPart,
+    ) -> Option<serde_json::Value> {
+        self.0.provider.continuation_cursor(contract, part)
     }
     pub fn supports_item_acceptance(&self) -> bool {
         self.0.provider.supports_item_acceptance()

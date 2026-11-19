@@ -18,7 +18,7 @@
  */
 
 import { dirname, relative, resolve } from 'node:path';
-import { suites, workers } from './suites.mjs';
+import { suites, taskHelperBinaries, taskHelperConsumers, workers } from './suites.mjs';
 
 export function contains(directory, path) {
   return path === directory || path.startsWith(`${directory}/`);
@@ -45,7 +45,9 @@ export function documentation(path) {
   return (
     contains('docs', path) ||
     contains('website', path) ||
-    (/\.md$/.test(path) && (!path.includes('/') || /(^|\/)README(?:\.[^/]+)?\.md$/.test(path)))
+    (/\.md$/.test(path) &&
+      !/\/src\//.test(path) &&
+      (!path.includes('/') || /(^|\/)README(?:\.[^/]+)?\.md$/.test(path)))
   );
 }
 
@@ -73,6 +75,15 @@ function graph(root, metadata) {
       }
     }
   }
+  // Agent tests launch the packaged isolation helper and Python worker.
+  for (const artifact of taskHelperBinaries) {
+    const helper = [...packages].find(([, pkg]) => pkg.name === artifact.package)?.[0];
+    if (helper === undefined) continue;
+    if (!reverse.has(helper)) reverse.set(helper, new Set());
+    for (const [key, pkg] of packages) {
+      if (taskHelperConsumers.includes(pkg.name)) reverse.get(helper).add(key);
+    }
+  }
   return { packages, reverse, members };
 }
 
@@ -92,7 +103,72 @@ function suitePackage(suite, key, packages, members) {
     : suite.packages.includes(pkg.name);
 }
 
-export function createPlan({ root, changes = null, metadata = {}, revision, baseline = null }) {
+function matchesEntry(entry, path, owner) {
+  return contains(entry, path) && (!(owner && path.endsWith('.rs')) || entry === path);
+}
+
+function suiteExtraInput(suite, path, owner) {
+  return Boolean(suite.extraInputs?.some((entry) => matchesEntry(entry, path, owner)));
+}
+
+function suiteScopedPackages(suite, path, owner) {
+  if (!suite.extraInputPackages) return [];
+  const matched = [];
+  for (const rule of suite.extraInputPackages) {
+    if (rule.inputs.some((entry) => matchesEntry(entry, path, owner))) {
+      matched.push(...rule.packages);
+    }
+  }
+  return matched;
+}
+
+const scopedShellOwners = new Set([
+  'maka-workbench',
+  'maka-cli',
+  'maka-terminal-shell',
+  'maka-desktop-shell',
+  'maka-ui-build',
+]);
+
+function isScopedNonRustInput(path, owner, packages) {
+  const pkgName = packages.get(owner)?.name;
+  return (
+    !path.endsWith('.rs') &&
+    scopedShellOwners.has(pkgName) &&
+    Object.values(suites).some((suite) => suiteScopedPackages(suite, path, owner).length > 0)
+  );
+}
+
+export function createPlan({
+  root,
+  changes = null,
+  metadata = {},
+  revision,
+  baseline = null,
+  worker = null,
+  fullRoot = false,
+}) {
+  if (worker !== null) {
+    const target = workers.find((entry) => entry.id === worker);
+    if (!target) throw new Error(`Unknown CI worker: ${worker}`);
+    const reason = `manual worker validation: ${worker}`;
+    return {
+      revision,
+      baseline,
+      full: false,
+      reasons: [reason],
+      suites: Object.fromEntries(
+        target.suites.map((id) => [
+          id,
+          {
+            filter: suites[id].filter ?? 'all()',
+            reason,
+          },
+        ]),
+      ),
+      workers: [target],
+    };
+  }
   const selected = {};
   const fullReasons =
     changes === null ? ['full validation requested'] : changes.filter(sharedInput);
@@ -104,11 +180,6 @@ export function createPlan({ root, changes = null, metadata = {}, revision, base
     const owners = new Map(
       inputs.map((path) => [path, ownership.find(([, pkg]) => contains(pkg.path, path))?.[0]]),
     );
-    const extraInput = (suite, path) =>
-      suite.extraInputs?.some(
-        (entry) =>
-          contains(entry, path) && (!(owners.get(path) && path.endsWith('.rs')) || entry === path),
-      );
     const supported = new Set(
       [...packages.keys()].filter((key) =>
         Object.values(suites).some((suite) => suitePackage(suite, key, packages, members)),
@@ -117,8 +188,11 @@ export function createPlan({ root, changes = null, metadata = {}, revision, base
     const seeds = new Set();
     for (const path of inputs) {
       const owner = owners.get(path);
-      if (owner) seeds.add(owner);
-      const extra = Object.values(suites).some((suite) => extraInput(suite, path));
+      if (owner && !isScopedNonRustInput(path, owner, packages)) seeds.add(owner);
+      const extra = Object.values(suites).some(
+        (suite) =>
+          suiteExtraInput(suite, path, owner) || suiteScopedPackages(suite, path, owner).length > 0,
+      );
       if (!owner && !extra) fullReasons.push(`unmapped input: ${path}`);
       if (owner && !extra && ![...expanded([owner], reverse)].some((key) => supported.has(key)))
         fullReasons.push(`outside maintained suites: ${path}`);
@@ -127,11 +201,24 @@ export function createPlan({ root, changes = null, metadata = {}, revision, base
     if (!full) {
       const reached = expanded(seeds, reverse);
       for (const [id, suite] of Object.entries(suites)) {
-        const extras = inputs.filter((path) => extraInput(suite, path));
-        const affected = [...reached]
-          .filter((key) => suitePackage(suite, key, packages, members))
-          .map((key) => packages.get(key).name)
-          .sort();
+        const extras = inputs.filter((path) => suiteExtraInput(suite, path, owners.get(path)));
+        const scopedPaths = [];
+        const scopedPackages = new Set();
+        for (const path of inputs) {
+          const matched = suiteScopedPackages(suite, path, owners.get(path));
+          if (matched.length) {
+            scopedPaths.push(path);
+            for (const pkg of matched) scopedPackages.add(pkg);
+          }
+        }
+        const affected = [
+          ...new Set([
+            ...[...reached]
+              .filter((key) => suitePackage(suite, key, packages, members))
+              .map((key) => packages.get(key).name),
+            ...scopedPackages,
+          ]),
+        ].sort();
         if (suite.always || extras.length || affected.length) {
           selected[id] = {
             filter:
@@ -142,7 +229,9 @@ export function createPlan({ root, changes = null, metadata = {}, revision, base
               ? 'always checked'
               : extras.length
                 ? `runtime inputs: ${extras.join(', ')}`
-                : `affected packages: ${affected.join(', ')}`,
+                : scopedPaths.length
+                  ? `runtime inputs: ${scopedPaths.join(', ')}`
+                  : `affected packages: ${affected.join(', ')}`,
           };
         }
       }
@@ -151,12 +240,34 @@ export function createPlan({ root, changes = null, metadata = {}, revision, base
   if (full) {
     for (const [id, suite] of Object.entries(suites))
       selected[id] = { filter: suite.filter ?? 'all()', reason: fullReasons.join(', ') };
-  } else if (inputs.length) {
-    selected.tooling = { filter: 'all()', reason: 'always checked' };
+  } else {
+    if (fullRoot && inputs.length) {
+      for (const [id, suite] of Object.entries(suites)) {
+        if (suite.always || suite.workspace === 'root') {
+          selected[id] = {
+            filter: suite.filter ?? 'all()',
+            reason: 'branch push root validation',
+          };
+        }
+      }
+    }
+    if (inputs.length) {
+      selected.tooling = { filter: 'all()', reason: 'always checked' };
+    }
   }
   const matrix = workers.flatMap((worker) => {
     const entries = worker.suites.filter((id) => selected[id]);
-    return entries.length ? [{ ...worker, suites: entries }] : [];
+    return entries.length
+      ? [
+          {
+            ...worker,
+            suites: entries,
+            saveCache: Boolean(
+              worker.saveCache && (!worker.cargoScope || entries.length === worker.suites.length),
+            ),
+          },
+        ]
+      : [];
   });
   return { revision, baseline, full, reasons: fullReasons, suites: selected, workers: matrix };
 }
@@ -166,13 +277,16 @@ export function checkResults(plan, results, hasRootTests) {
   if (plan.suites.tooling) required.push('tooling');
   if (plan.workers.length) required.push('suites');
   if (plan.suites.root) {
-    if (typeof hasRootTests !== 'boolean')
-      throw new Error('Root producer did not report whether tests were selected');
-    if (!hasRootTests && plan.suites.root.filter === 'all()')
-      throw new Error('The full root test selection was unexpectedly empty');
-    required.push('root-build');
-    if (hasRootTests) required.push('root-tests');
+    required.push('root-build', 'root-tests');
   }
   const failures = required.filter((id) => results[id]?.result !== 'success');
   if (failures.length) throw new Error(`Required CI jobs did not succeed: ${failures.join(', ')}`);
+  if (plan.suites.root) {
+    if (typeof hasRootTests !== 'boolean')
+      throw new Error('Root producer did not report whether tests were selected');
+    if (!hasRootTests)
+      throw new Error(
+        `The planned root test selection was unexpectedly empty: ${plan.suites.root.filter}`,
+      );
+  }
 }

@@ -8,7 +8,7 @@ use std::{
 
 use crossbeam_channel::{Receiver, Sender};
 use nsh_core::{MountBatch, NodeId, Points, Size};
-use nsh_engine::{AppError, Engine, EngineControl, LocalEngine, MountSink};
+use nsh_engine::{AppError, Engine, EngineControl, LocalEngine, MainThreadTask, MountSink};
 
 use crate::{CellTextEngine, WakeCallback};
 
@@ -56,6 +56,10 @@ pub(crate) enum Message {
         key: crate::image::SixelKey,
         sixel: String,
     },
+    /// A function the app runs on the main thread, the one drawing the
+    /// terminal ([`MountSink::run_on_main_thread`]), after the batches
+    /// before it.
+    Run(MainThreadTask),
     #[cfg(feature = "dev")]
     Reload,
 }
@@ -130,6 +134,9 @@ impl MountSink for Sink {
     }
     fn resized(&self, size: Size<Points>) {
         self.send(Message::Resized(size));
+    }
+    fn run_on_main_thread(&self, task: MainThreadTask) {
+        self.send(Message::Run(task));
     }
 }
 

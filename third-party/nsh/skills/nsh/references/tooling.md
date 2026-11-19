@@ -14,17 +14,15 @@ rather than updating it as a side effect of a feature change.
 Rust and mixed apps also need Cargo and the target’s native build prerequisites;
 TSX apps use the prebuilt runtime. Check only the target the user needs in
 [Platforms and prerequisites](#platforms-and-prerequisites). Follow the environment’s
-permissions when installing tools. If setup is unavailable, continue with code and
+permissions when installing tools, and leave installing toolchains to the user: never
+pipe a downloaded script into a shell. If setup is unavailable, continue with code and
 state which checks remain unverified.
 
-For Cargo, recommend [huacnlee/cargo](https://github.com/huacnlee/cargo), the Cargo
-NSH is developed with: dependencies built once for every project and Git worktree, and
-a build directory that stays under a size limit. It replaces `~/.cargo/bin/cargo`, so
-install it only when the user agrees; `cargo -V` names it.
-
-```sh
-curl -fsSL https://huacnlee.github.io/cargo/install.sh | sh     # Windows: irm https://huacnlee.github.io/cargo/install.ps1 | iex
-```
+For Cargo, the user may prefer [huacnlee/cargo](https://github.com/huacnlee/cargo), the
+Cargo NSH is developed with: dependencies built once for every project and Git worktree,
+and a build directory that stays under a size limit. It replaces `~/.cargo/bin/cargo`,
+so mention it and let the user install it from its README; `cargo -V` names it. The
+standard Cargo works the same.
 
 For a new app, choose an unused destination and pass an explicit template:
 
@@ -122,7 +120,7 @@ Each desktop packages only on itself. Phones are reached from a computer.
 | `windows` | Windows 10 1809+ | WebView2 for web views | Rust |
 | `ios`, `ios-simulator` (package only) | iOS 15+; from macOS | Xcode and a simulator runtime | `rustup target add aarch64-apple-ios-sim aarch64-apple-ios` |
 | `catalyst` (run only) | Mac, iPhone-sized window | Xcode | `rustup target add aarch64-apple-ios-macabi` |
-| `android` | API 28+; from macOS, Linux or Windows | Android SDK (`ANDROID_HOME`), a JDK, a device or emulator | The NDK, and `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android` |
+| `android` | API 26+; from macOS, Linux or Windows | Android SDK (`ANDROID_HOME`), a JDK, a device or emulator | The NDK, and `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android` |
 | `web` | Modern browsers | - | `rustup target add wasm32-unknown-unknown`, `clang`, `llvm-ar` |
 | `gpui` (run only) | macOS, Windows, Linux with a GPU | Inside a GPUI app | TSX and mixed entries; a Rust root embeds instead |
 | `tui` (run only) | A terminal | - | - |
@@ -154,7 +152,7 @@ Notes:
 - Desktop means macOS, Windows, Linux, and browsers in the desktop idiom. Mobile means iOS, Android, Mac Catalyst and browsers in the phone or tablet idiom.
 - Gate layout and input on `platform.desktop`. Gate windows and `Menu` calls on `isAvailable` from `nsh/desktop`, which is false in browsers.
 - Mac Catalyst reports `"ios"` and takes `ios={{…}}` props.
-- Web has no registered native components. On the desktops, `#[native_components]` is one function per platform, each registering the same names, with `nsh-platform-*` per-target dependencies.
+- Web has no registered native components. On the desktops, iOS and Android, `#[native_components]` is one function per platform, each registering the same names, with `nsh-platform-*` per-target dependencies.
 
 ```tsx
 import { platform, Text } from "nsh";
@@ -228,7 +226,7 @@ nsh package --target web              # static site
 { "version": "1.2.0", "updater": { "github": "owner/repo" } }
 ```
 
-With your own host, `"updater": { "url": "https://dl.example.com/app/latest.json", "publicKey": "<keys/update.pub>" }`; the key is required there.
+With your own host, `"updater": { "url": "https://dl.example.com/app/latest.json", "publicKey": "<keys/update.pub>" }`; the key is required there. A beta for users who opt in: add `"channels": { "beta": "<its latest.json URL>" }` (needs `publicKey`) and call `checkForUpdate({ channel: "beta" })`; the code can pass only a declared name.
 
 ```tsx
 import { openUrl } from "nsh";
@@ -244,6 +242,8 @@ export async function update() {
   }
 }
 ```
+
+`installOnQuit()` instead of `installAndRestart()` checks the update now and installs it when the app quits, without a restart (an "Install on Quit" button).
 
 Release: raise `version` (semver), run `nsh package` per platform to get its archive, then run `nsh update-manifest *.tar.gz *.zip --notes CHANGES.md --key keys/update.secret`, and upload the archives, `latest.json` and `latest.json.sig`. In a development run, `checkForUpdate` resolves `null`. Drafts and prereleases on GitHub are not offered.
 

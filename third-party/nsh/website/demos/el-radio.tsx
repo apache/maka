@@ -26,7 +26,7 @@ function App() {
 
       <Split gap={14} inspector={<Log title={`onChange({ checked }) · ${plan()}, ${cycle()}`} lines={events()} minHeight={76} />}>
         {/* A segmented choice: each radio is a segment, `checkedStyle` raises the checked one. */}
-        <RadioGroup style={segments.style}>
+        <RadioGroup accessibilityLabel="Billing cycle" style={segments.style}>
           <Each of={cycles}>
             {(c) => (
               <Radio
@@ -45,7 +45,7 @@ function App() {
         </RadioGroup>
 
         {/* A list of options, each row the radio: a ring that lights up, its dot growing in (in place with reduced motion). */}
-        <RadioGroup style={sectionSurface({ padded: true })}>
+        <RadioGroup accessibilityLabel="Plan" style={sectionSurface({ padded: true })}>
           <Each of={plans}>
             {(item, i) => (
               <Radio

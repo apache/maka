@@ -18,11 +18,17 @@
  */
 
 use super::*;
-use maka_host_runtime::application::Context;
+use maka_host_runtime::application::{Context, HandlerValue};
+use maka_plugin_core::operation::OperationResult;
 
 use maka_agent_api::executor::setup::{Input, Outcome};
 impl Executors {
-    pub(crate) async fn setup(&self, input: Input, context: Context) -> Result<Value, String> {
+    pub(crate) async fn setup(
+        &self,
+        input: Input,
+        context: &Context,
+        authority: Arc<maka_agent_authority::setup::ActualSetupContext>,
+    ) -> Result<HandlerValue, String> {
         if !matches!(context.scope().identity, Identity::Remote { .. }) {
             return Err("executor_setup_requires_application_request".into());
         }
@@ -41,12 +47,16 @@ impl Executors {
             .setup
             .as_ref()
             .ok_or("agent_executor_setup_unavailable")?;
-        let request = backend.services.request(
-            Identity::Remote {
-                request_id: operation,
-            },
-            context.scope().cancellation.clone(),
-        )?;
+        let request = backend
+            .services
+            .request_with_context(
+                Identity::Remote {
+                    request_id: operation,
+                },
+                context.scope().cancellation.clone(),
+                authority.clone(),
+            )?
+            .with_sandbox_floor(context.scope().sandbox_floor())?;
         let mut ticket = context
             .scope()
             .resources
@@ -55,14 +65,33 @@ impl Executors {
         ticket.start();
         let result =
             async {
+                let action = serde_json::to_value(input.action).map_err(|e| e.to_string())?;
+                let resources = maka_host_runtime::application::CallResources::default();
+                let recovery = serde_json::json!({
+                    "kind": "agent_executor_setup",
+                    "version": 1,
+                    "correlation": {
+                        "caller": context.scope().identity,
+                        "operation": context.operation(),
+                        "executor": input.executor,
+                    },
+                    "target": {"kind": "import", "name": setup.import, "member": setup.member},
+                    "method": "setup",
+                    "input": action,
+                    "resources": {
+                        "descriptors": resources.descriptors()?,
+                        "reacquisition": {"kind": "none"},
+                    },
+                });
                 let mut mutation = request
                     .begin_mutation(
                         &setup.import,
                         setup.member,
                         "setup".into(),
-                        serde_json::to_value(input.action).map_err(|e| e.to_string())?,
+                        action,
                         operation,
-                        maka_capabilities::call::Attachments::default(),
+                        recovery,
+                        resources,
                     )?
                     .await?;
                 while let Some(value) = mutation.recv().await {
@@ -72,7 +101,10 @@ impl Executors {
                 completed.cleanup?;
                 match completed.reply.receipt {
                     Receipt::Recorded {
-                        outcome: OperationOutcome::Returned { value },
+                        outcome:
+                            OperationOutcome::Returned {
+                                result: OperationResult::Success { value },
+                            },
                         cleanup: OperationCleanup::Confirmed,
                     } => Ok(value),
                     Receipt::Recorded {
@@ -80,6 +112,21 @@ impl Executors {
                         cleanup: OperationCleanup::Confirmed,
                     } => serde_json::to_value(Outcome::Unresolved { diagnostic })
                         .map_err(|e| e.to_string()),
+                    Receipt::Recorded {
+                        outcome:
+                            OperationOutcome::Returned {
+                                result: OperationResult::Failure { diagnostic },
+                            },
+                        cleanup: OperationCleanup::Confirmed,
+                    } => Err(diagnostic),
+                    Receipt::Recorded {
+                        outcome: OperationOutcome::NotExecuted { .. },
+                        cleanup: OperationCleanup::Confirmed,
+                    } => Err("Original setup operation was prevented before execution".into()),
+                    Receipt::Recorded {
+                        cleanup: OperationCleanup::Unconfirmed | OperationCleanup::Failed { .. },
+                        ..
+                    } => Err("Original setup cleanup is unconfirmed".into()),
                     _ => serde_json::to_value(Outcome::Unresolved {
                         diagnostic:
                             "Original setup outcome is unconfirmed; do not repeat authentication"
@@ -92,6 +139,23 @@ impl Executors {
         let cleanup = request.finish().await;
         ticket.complete(cleanup.clone());
         cleanup?;
-        result
+        let value = result?;
+        let outcome: Outcome = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+        if !matches!(outcome, Outcome::Authenticated) {
+            return Ok(value.into());
+        }
+        match authority.0.prepare_profile(context).await {
+            Ok(Some(state)) => Ok(HandlerValue::Commit { value, state }),
+            Ok(None) => serde_json::to_value(Outcome::Unresolved {
+                diagnostic: "Authentication was acknowledged, but no original credential profile was staged; do not repeat authentication automatically".into(),
+            })
+            .map(Into::into)
+            .map_err(|e| e.to_string()),
+            Err(error) => serde_json::to_value(Outcome::Unresolved {
+                diagnostic: format!("Authentication was acknowledged, but credential-profile persistence is unresolved: {error}; do not repeat authentication automatically"),
+            })
+            .map(Into::into)
+            .map_err(|e| e.to_string()),
+        }
     }
 }

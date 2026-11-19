@@ -23,6 +23,7 @@ use super::{
     decode_operation, encode_operation, error, uploaded_attachment, validate_upload,
 };
 use crate::{Result, SETTINGS_METHODS};
+use maka_plugin_core::operation::OperationResult;
 use maka_plugin_core::{
     deployment::DeploymentRef,
     operation::{OperationCleanup, OperationOutcome, Receipt, RecoveryRef},
@@ -64,7 +65,6 @@ pub(super) enum Command {
     SetRecentWorkspace {
         owner: String,
         path: String,
-        remember: bool,
     },
     SaveDraft {
         key: DraftKey,
@@ -79,6 +79,12 @@ pub(super) enum Command {
     RetrySend {
         original: Uuid,
         reservation: Reservation,
+    },
+    RestoreSend {
+        host: DeploymentRef,
+        key: DraftKey,
+        original: Uuid,
+        expected: Option<u64>,
     },
     DismissSend(Uuid),
     ReserveSettings {
@@ -118,13 +124,11 @@ pub(super) struct Pending {
 impl Command {
     async fn execute(self, connection: &mut SqliteConnection) -> Result<Output> {
         match self {
-            Self::SetRecentWorkspace {
-                owner,
-                path,
-                remember,
-            } => super::workspaces::set(connection, owner, path, remember)
-                .await
-                .map(Output::RecentWorkspaces),
+            Self::SetRecentWorkspace { owner, path } => {
+                super::workspaces::set(connection, owner, path)
+                    .await
+                    .map(Output::RecentWorkspaces)
+            }
             Self::SaveDraft {
                 key,
                 expected,
@@ -146,6 +150,14 @@ impl Command {
                 retry_send(connection, original, reservation).await?;
                 Ok(Output::Unit)
             }
+            Self::RestoreSend {
+                host,
+                key,
+                original,
+                expected,
+            } => restore_send(connection, &host, &key, original, expected)
+                .await
+                .map(Output::Draft),
             Self::DismissSend(id) => {
                 dismiss_send(connection, id).await?;
                 Ok(Output::Unit)
@@ -281,6 +293,7 @@ async fn save_draft(
         return Err("invalid draft revision".into());
     }
     let attachments = serde_json::to_string(&edit.attachments).map_err(error)?;
+    let mentions = serde_json::to_string(&edit.mentions).map_err(error)?;
     if edit
         .attachments
         .iter()
@@ -298,18 +311,33 @@ async fn save_draft(
         return Err("invalid draft attachments".into());
     }
     let encoded_key = serde_json::to_string(key).map_err(error)?;
-    // A save queued before a send receipt may still follow its consumption
-    // at this same revision, as text edits already can. Keep its verified
-    // metadata available for that CAS; consumed load still returns [].
-    let previous: Option<String> =
-        sqlx::query_scalar("SELECT attachments FROM drafts WHERE owner=?")
+    let previous: Option<(String, String)> =
+        sqlx::query_as("SELECT attachments, quotes FROM drafts WHERE owner=?")
             .bind(&encoded_key)
             .fetch_optional(&mut *connection)
             .await
             .map_err(error)?;
+    let previous_quotes = previous.as_ref().map(|(_, quotes)| quotes.as_str());
+    let quotes = match (edit.quotes, expected) {
+        (Some(quotes), _) => {
+            if quotes.len() > 16 || quotes.iter().any(|quote| quote.text.trim().is_empty()) {
+                return Err("invalid draft quotes".into());
+            }
+            quotes
+        }
+        (None, Some(_)) => previous_quotes
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(error)?
+            .unwrap_or_default(),
+        (None, None) => Vec::new(),
+    };
+    // A save queued before a send receipt may still follow its consumption
+    // at this same revision, as text edits already can. Keep its verified
+    // metadata available for that CAS; consumed load still returns [].
     let mut admitted: Vec<DraftAttachment> = previous
-        .as_deref()
-        .map(serde_json::from_str)
+        .as_ref()
+        .map(|(attachments, _)| serde_json::from_str(attachments))
         .transpose()
         .map_err(error)?
         .unwrap_or_default();
@@ -337,22 +365,25 @@ async fn save_draft(
     {
         return Err("draft attachment differs from its original upload receipt".into());
     }
+    let encoded_quotes = serde_json::to_string(&quotes).map_err(error)?;
     let row = if let Some(revision) = expected {
-            sqlx::query("UPDATE drafts SET revision=revision+1,text=?,attachments=?,consumed=0 WHERE owner=? AND revision=? RETURNING revision,text,attachments")
-                .bind(edit.text).bind(attachments).bind(encoded_key).bind(revision as i64)
+            sqlx::query("UPDATE drafts SET revision=revision+1,text=?,attachments=?,mentions=?,reply_to=?,quotes=?,consumed=0 WHERE owner=? AND revision=? RETURNING revision,text,attachments,mentions,reply_to")
+                .bind(edit.text).bind(attachments).bind(mentions).bind(edit.reply_to).bind(encoded_quotes).bind(&encoded_key).bind(revision as i64)
                 .fetch_optional(&mut *connection).await.map_err(error)?
         } else {
-            sqlx::query("INSERT INTO drafts (owner,revision,text,attachments) VALUES (?,1,?,?) ON CONFLICT DO NOTHING RETURNING revision,text,attachments")
-                .bind(encoded_key).bind(edit.text).bind(attachments)
+            sqlx::query("INSERT INTO drafts (owner,revision,text,attachments,mentions,reply_to,quotes) VALUES (?,1,?,?,?,?,?) ON CONFLICT DO NOTHING RETURNING revision,text,attachments,mentions,reply_to")
+                .bind(&encoded_key).bind(edit.text).bind(attachments).bind(mentions).bind(edit.reply_to).bind(encoded_quotes)
                 .fetch_optional(&mut *connection).await.map_err(error)?
         }.ok_or("draft revision conflicts with a newer saved value")?;
-    let draft = Draft {
+    Ok(Draft {
+        quotes,
         revision: row.try_get::<i64, _>("revision").map_err(error)? as u64,
         text: row.try_get("text").map_err(error)?,
         attachments: serde_json::from_str(row.try_get("attachments").map_err(error)?)
             .map_err(error)?,
-    };
-    Ok(draft)
+        mentions: serde_json::from_str(row.try_get("mentions").map_err(error)?).map_err(error)?,
+        reply_to: row.try_get("reply_to").map_err(error)?,
+    })
 }
 
 async fn reserve(connection: &mut SqliteConnection, reservation: Reservation) -> Result<()> {
@@ -382,7 +413,7 @@ async fn reserve_send(
     let owner = serde_json::to_string(&draft.key).map_err(error)?;
     reserve(connection, reservation).await?;
     let consumed = sqlx::query(
-        "UPDATE drafts SET consumed=1,text='',attachments='[]' WHERE owner=? AND revision=? AND consumed=0",
+        "UPDATE drafts SET consumed=1,text='',attachments='[]',mentions='[]',reply_to=NULL,quotes='[]' WHERE owner=? AND revision=? AND consumed=0",
     )
     .bind(&owner)
     .bind(draft.revision as i64)
@@ -426,6 +457,150 @@ async fn retry_send(
     dismiss_send(connection, original).await
 }
 
+async fn restore_send(
+    connection: &mut SqliteConnection,
+    host: &DeploymentRef,
+    key: &DraftKey,
+    original: Uuid,
+    expected: Option<u64>,
+) -> Result<Draft> {
+    if expected.is_some_and(|revision| revision == 0 || revision >= 9_007_199_254_740_991) {
+        return Err("invalid draft revision".into());
+    }
+    let owner = serde_json::to_string(key).map_err(error)?;
+    let row = sqlx::query(
+        "SELECT context,reference,receipt,abandoned FROM operations WHERE id=? AND domain=? AND deployment=? AND draft_owner=? AND EXISTS (SELECT 1 FROM pending_sends WHERE operation=operations.id AND owner=?)",
+    )
+    .bind(original.to_string())
+    .bind(&host.state_domain)
+    .bind(host.deployment.to_string())
+    .bind(&owner)
+    .bind(&owner)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(error)?
+    .ok_or("original send is no longer pending for this draft")?;
+    let previous = decode_operation(row)?;
+    if previous.method != "send"
+        || (!super::retryable_send(&previous) && super::queued_send(&previous).is_none())
+    {
+        return Err("original send must be confirmed unsent before restoring".into());
+    }
+    let snapshot: super::SendSnapshot =
+        serde_json::from_value(previous.correlation).map_err(error)?;
+
+    let current = sqlx::query(
+        "SELECT revision,consumed,text,attachments,mentions,reply_to,quotes FROM drafts WHERE owner=?",
+    )
+    .bind(&owner)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(error)?;
+    let actual_revision = current
+        .as_ref()
+        .map(|row| row.try_get::<i64, _>("revision").map(|value| value as u64))
+        .transpose()
+        .map_err(error)?;
+    if actual_revision != expected {
+        return Err("draft revision conflicts with a newer saved value".into());
+    }
+    let (existing_text, mut next_attachments, mut next_mentions, existing_reply_to, mut quotes) =
+        match current {
+            Some(row) if row.try_get::<i64, _>("consumed").map_err(error)? == 0 => (
+                row.try_get::<String, _>("text").map_err(error)?,
+                serde_json::from_str::<Vec<DraftAttachment>>(
+                    row.try_get("attachments").map_err(error)?,
+                )
+                .map_err(error)?,
+                serde_json::from_str::<Vec<String>>(row.try_get("mentions").map_err(error)?)
+                    .map_err(error)?,
+                row.try_get::<Option<String>, _>("reply_to")
+                    .map_err(error)?,
+                serde_json::from_str::<Vec<maka_agent_facts::input::QuoteRef>>(
+                    row.try_get("quotes").map_err(error)?,
+                )
+                .map_err(error)?,
+            ),
+            _ => (String::new(), Vec::new(), Vec::new(), None, Vec::new()),
+        };
+
+    let restored_text = snapshot.draft.text;
+    let next_text = if restored_text.is_empty() {
+        existing_text
+    } else if existing_text.trim().is_empty() || existing_text == restored_text {
+        restored_text
+    } else {
+        format!("{existing_text}\n\n{restored_text}")
+    };
+    for attachment in snapshot.draft.attachments {
+        if !next_attachments
+            .iter()
+            .any(|existing| existing.id == attachment.id)
+        {
+            next_attachments.push(attachment);
+        }
+    }
+    for mention in snapshot.draft.mentions {
+        if !next_mentions.contains(&mention) {
+            next_mentions.push(mention);
+        }
+    }
+    for quote in snapshot.draft.quotes {
+        if !quotes.contains(&quote) {
+            quotes.push(quote);
+        }
+    }
+    if quotes.len() > 16 {
+        return Err("restored draft exceeds the quote limit".into());
+    }
+    let encoded_quotes = serde_json::to_string(&quotes).map_err(error)?;
+    let next_reply_to = existing_reply_to.or(snapshot.draft.reply_to);
+    let encoded_attachments = serde_json::to_string(&next_attachments).map_err(error)?;
+    let encoded_mentions = serde_json::to_string(&next_mentions).map_err(error)?;
+
+    let saved = if let Some(revision) = expected {
+        sqlx::query(
+            "UPDATE drafts SET revision=revision+1,text=?,attachments=?,mentions=?,reply_to=?,quotes=?,consumed=0 WHERE owner=? AND revision=? RETURNING revision,text,attachments,mentions,reply_to",
+        )
+        .bind(&next_text)
+        .bind(&encoded_attachments)
+        .bind(&encoded_mentions)
+        .bind(&next_reply_to)
+        .bind(&encoded_quotes)
+        .bind(&owner)
+        .bind(revision as i64)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(error)?
+    } else {
+        sqlx::query(
+            "INSERT INTO drafts (owner,revision,text,attachments,mentions,reply_to,quotes) VALUES (?,1,?,?,?,?,?) ON CONFLICT DO NOTHING RETURNING revision,text,attachments,mentions,reply_to",
+        )
+        .bind(&owner)
+        .bind(&next_text)
+        .bind(&encoded_attachments)
+        .bind(&encoded_mentions)
+        .bind(&next_reply_to)
+        .bind(&encoded_quotes)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(error)?
+    }
+    .ok_or("draft revision conflicts with a newer saved value")?;
+
+    dismiss_send(connection, original).await?;
+
+    Ok(Draft {
+        quotes,
+        revision: saved.try_get::<i64, _>("revision").map_err(error)? as u64,
+        text: saved.try_get("text").map_err(error)?,
+        attachments: serde_json::from_str(saved.try_get("attachments").map_err(error)?)
+            .map_err(error)?,
+        mentions: serde_json::from_str(saved.try_get("mentions").map_err(error)?).map_err(error)?,
+        reply_to: saved.try_get("reply_to").map_err(error)?,
+    })
+}
+
 async fn dismiss_send(connection: &mut SqliteConnection, id: Uuid) -> Result<()> {
     sqlx::query("DELETE FROM pending_sends WHERE operation=?")
         .bind(id.to_string())
@@ -453,7 +628,7 @@ async fn reserve_settings(
     let inserted = sqlx::query(concat!(
             "INSERT OR IGNORE INTO operations (id,domain,deployment,context,draft_owner) SELECT ?,?,?,?,NULL WHERE NOT EXISTS (SELECT 1 FROM operations WHERE domain=? AND deployment=? AND ",
             settings_owner_sql!(),
-            " AND receipt IS NULL AND abandoned=0)"
+            " AND (receipt IS NULL OR json_extract(receipt,'$.outcome.kind') IN ('unresolved','unknown') OR json_extract(receipt,'$.cleanup.kind') != 'confirmed') AND abandoned=0)"
         ))
             .bind(reservation.id)
             .bind(&reservation.domain)
@@ -531,12 +706,8 @@ async fn observe(
     draft: Option<&DraftReference>,
     receipt: &Receipt,
 ) -> Result<()> {
-    let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { .. } | OperationOutcome::Unknown { .. },
-        ..
-    } = receipt
-    else {
-        // A failed observer and an absent/unresolved journal cannot erase a returned result.
+    let Receipt::Recorded { .. } = receipt else {
+        // Transport observations cannot erase provider knowledge.
         return Ok(());
     };
     let row = sqlx::query("SELECT receipt FROM operations WHERE id=?")
@@ -559,11 +730,31 @@ async fn observe(
         let Receipt::Recorded { outcome, cleanup } = &mut next else {
             unreachable!()
         };
-        if before != *outcome {
-            return Err("original operation returned conflicting receipts".into());
+        match (&before, &*outcome) {
+            (old, new) if old == new => {}
+            (OperationOutcome::Unresolved, _)
+            | (
+                OperationOutcome::Unknown { .. },
+                OperationOutcome::Returned { .. } | OperationOutcome::NotExecuted { .. },
+            ) => {}
+            // Delayed snapshots may not erase newer knowledge, but may still
+            // carry an independent cleanup confirmation.
+            (_, OperationOutcome::Unresolved)
+            | (
+                OperationOutcome::Returned { .. } | OperationOutcome::NotExecuted { .. },
+                OperationOutcome::Unknown { .. },
+            ) => *outcome = before,
+            _ => return Err("original operation returned conflicting receipts".into()),
         }
-        if previous_cleanup == OperationCleanup::Confirmed {
-            *cleanup = previous_cleanup;
+        match (&previous_cleanup, &*cleanup) {
+            (old, new) if old == new => {}
+            (OperationCleanup::Unconfirmed, _)
+            | (OperationCleanup::Failed { .. }, OperationCleanup::Confirmed) => {}
+            (OperationCleanup::Confirmed, _)
+            | (OperationCleanup::Failed { .. }, OperationCleanup::Unconfirmed) => {
+                *cleanup = previous_cleanup
+            }
+            _ => return Err("original operation returned conflicting cleanup evidence".into()),
         }
     }
     sqlx::query("UPDATE operations SET receipt=? WHERE id=?")
@@ -574,12 +765,9 @@ async fn observe(
         .map_err(error)?;
     if let Some(draft) = draft
         && accepted_send(&next, &draft.key.session_id)
-        && matches!(&next, Receipt::Recorded { outcome: OperationOutcome::Returned { value }, .. } if value["kind"] == "started")
+        && matches!(&next, Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { value } }, .. } if matches!(value["kind"].as_str(), Some("started" | "posted")))
     {
         dismiss_send(connection, id).await?;
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

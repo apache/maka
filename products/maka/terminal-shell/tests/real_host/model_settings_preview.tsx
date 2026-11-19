@@ -111,13 +111,18 @@ function Preview() {
       provider,
       configuration: definition.descriptor.configurationDefaults,
     },
-    editing: { enabledModelIds: modelIds, modelOverrides: overrides, requestBodyOverlay: overlay },
+    editing: {
+      discoveredModelIds: discoveries >= 2 ? ['gpt-6.2-sol', 'gpt-4.1', 'gpt-4.1-mini'] : [],
+      enabledModelIds: modelIds,
+      modelOverrides: overrides,
+      requestBodyOverlay: overlay,
+    },
   });
   const receipt = (value: unknown) => ({
     reply: {
       receipt: {
         kind: 'recorded',
-        outcome: { kind: 'returned', value },
+        outcome: { kind: 'returned', result: { kind: 'success', value } },
         cleanup: { kind: 'confirmed' },
       },
     },
@@ -311,12 +316,7 @@ function Preview() {
     },
   } as unknown as Host;
   const operations = createSettingsOperations(api);
-  const owner = createModelSettings(
-    api,
-    () => {},
-    operations,
-    () => true,
-  );
+  const owner = createModelSettings(api, operations, () => true);
   const instance = ['settings'];
   const contribution = {
     key: 'connections',
@@ -325,8 +325,8 @@ function Preview() {
     declaration: {
       kind: 'settings',
       title: {
-        fallback: 'Connections & models',
-        translations: { 'zh-CN': '连接与模型', 'zh-TW': '連線與模型' },
+        fallback: 'Models',
+        translations: { 'zh-CN': '模型', 'zh-TW': '模型' },
       },
     },
   };
@@ -340,7 +340,7 @@ function Preview() {
               ? tr('Add connection')
               : owner.page() === 'model'
                 ? tr('Model settings')
-                : tr('Connections & models'),
+                : tr('Models'),
         action: () =>
           owner.page() === 'connections' && !owner.confirmation()
             ? { label: tr('Add connection'), run: owner.newConnection, disabled: owner.loading() }
@@ -356,6 +356,7 @@ function Preview() {
   }
   const context = {
     runtime: {
+      contributions: () => [contribution],
       ready: () => true,
       settings: () => [contribution],
       render: (_: unknown, props: { input: SettingsPageInput }) => <Page input={props.input} />,
@@ -365,7 +366,7 @@ function Preview() {
     <HostProvider value={api}>
       <ModelSettings
         context={context}
-        input={{ opened: () => true, close() {}, changed() {} }}
+        input={{ opened: () => true, close() {} }}
         defaultRoute={{ instance, id: 'connections' }}
         route={signal({ instance, id: 'connections' })}
         operations={operations}

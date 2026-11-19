@@ -23,6 +23,11 @@ on:
   push:
     branches: [main, rust-preview]
   workflow_dispatch:
+    inputs:
+      worker:
+        description: "Validate one registered worker (leave empty for full CI)"
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -37,6 +42,10 @@ defaults:
 
 env:
   CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG: "0"
+  CARGO_PROFILE_TEST_BUILD_OVERRIDE_DEBUG: "0"
 
 jobs:
   plan:
@@ -55,6 +64,8 @@ jobs:
           node-version: "26"
           package-manager-cache: false
       - id: plan
+        env:
+          MAKA_CI_WORKER: ${{ inputs.worker }}
         run: node scripts/ci.mjs plan
       - name: Check documentation source headers
         if: steps.plan.outputs.tooling != 'true'
@@ -94,10 +105,7 @@ jobs:
       filter: ${{ steps.archive.outputs.filter }}
       native: ${{ steps.upload-native.outputs.artifact-id }}
       cli: ${{ steps.upload-cli.outputs.artifact-id }}
-      rest-1: ${{ steps.upload-rest-1.outputs.artifact-id }}
-      rest-2: ${{ steps.upload-rest-2.outputs.artifact-id }}
-      rest-3: ${{ steps.upload-rest-3.outputs.artifact-id }}
-      rest-4: ${{ steps.upload-rest-4.outputs.artifact-id }}
+      rest: ${{ steps.upload-rest.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -133,35 +141,11 @@ jobs:
           compression-level: 0
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v7
-        id: upload-rest-1
+        id: upload-rest
         if: steps.archive.outputs.has_tests == 'true'
         with:
-          name: root-tests-rest-1-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/root-tests-rest-1.tar.zst
-          compression-level: 0
-          if-no-files-found: ignore
-      - uses: actions/upload-artifact@v7
-        id: upload-rest-2
-        if: steps.archive.outputs.has_tests == 'true'
-        with:
-          name: root-tests-rest-2-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/root-tests-rest-2.tar.zst
-          compression-level: 0
-          if-no-files-found: ignore
-      - uses: actions/upload-artifact@v7
-        id: upload-rest-3
-        if: steps.archive.outputs.has_tests == 'true'
-        with:
-          name: root-tests-rest-3-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/root-tests-rest-3.tar.zst
-          compression-level: 0
-          if-no-files-found: ignore
-      - uses: actions/upload-artifact@v7
-        id: upload-rest-4
-        if: steps.archive.outputs.has_tests == 'true'
-        with:
-          name: root-tests-rest-4-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/root-tests-rest-4.tar.zst
+          name: root-tests-rest-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-rest.tar.zst
           compression-level: 0
           if-no-files-found: ignore
       - uses: ./.github/actions/ci-cache
@@ -191,8 +175,8 @@ jobs:
       - uses: ./.github/actions/ci-setup
         with:
           role: replay
-          dependencies: headless
-          javascript: "true"
+          dependencies: replay
+          javascript: ${{ matrix.group == 'rest' }}
           compile: "false"
           nextest: ${{ needs.root-build.outputs.nextest }}
       - uses: actions/download-artifact@v8
@@ -203,7 +187,8 @@ jobs:
       - name: Execute the produced test partition
         env:
           MAKA_CI_FILTER: ${{ needs.root-build.outputs.filter }}
-        run: node scripts/ci.mjs replay '${{ matrix.group }}' '${{ matrix.partition }}' -E "$MAKA_CI_FILTER"
+          MAKA_CI_HELPERS: ${{ toJSON(matrix.helpers) }}
+        run: node scripts/ci.mjs replay '${{ matrix.group }}' '${{ matrix.partition }}' "$MAKA_CI_HELPERS" -E "$MAKA_CI_FILTER"
 
   suites:
     needs: plan
@@ -223,6 +208,7 @@ jobs:
         id: setup
         with:
           role: ${{ matrix.id }}
+          cache_role: ${{ matrix.cacheRole || matrix.id }}
           workspace: ${{ matrix.workspace }}
           dependencies: ${{ matrix.dependencies }}
           javascript: ${{ matrix.javascript }}
@@ -237,7 +223,10 @@ jobs:
         run: node scripts/ci.mjs prepare '${{ matrix.id }}'
       - name: Verify selected suites
         id: verify
+        if: ${{ !cancelled() && (steps.compile.outcome == 'success' || steps.compile.outcome == 'failure') }}
         shell: bash
+        env:
+          MAKA_UI_ARTIFACT_DIR: ${{ runner.temp }}/maka-ui-artifacts
         run: |
           set -o pipefail
           node scripts/ci.mjs verify '${{ matrix.id }}' 2>&1 | tee "$RUNNER_TEMP/maka-suite-verify.log"
@@ -245,10 +234,12 @@ jobs:
         if: ${{ failure() && steps.verify.outcome == 'failure' }}
         with:
           name: ${{ matrix.id }}-failure-log-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/maka-suite-verify.log
+          path: |
+            ${{ runner.temp }}/maka-suite-verify.log
+            ${{ runner.temp }}/maka-ui-artifacts
           if-no-files-found: error
       - uses: ./.github/actions/ci-cache
-        if: ${{ !cancelled() && matrix.compile && steps.compile.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.compile && matrix.saveCache && steps.compile.outcome == 'success' }}
         env:
           MAKA_CI_ROLE: ${{ matrix.id }}
         with:
@@ -262,6 +253,7 @@ jobs:
           if [ -d target ]; then du -sh target; fi
 
   test:
+    name: ${{ inputs.worker && format('test ({0})', inputs.worker) || 'test' }}
     needs: [plan, tooling, root-build, root-tests, suites]
     if: always()
     runs-on: ubuntu-latest

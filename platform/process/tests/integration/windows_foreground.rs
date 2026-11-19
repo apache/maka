@@ -204,20 +204,24 @@ async fn cancellation_timeout_and_dropped_caller_terminate_the_owned_job() {
 async fn normal_shell_exit_preserves_background_descendants_but_bounds_pipe_drain() {
     let dir = tempfile::tempdir().unwrap();
     let executor = ShellExecutor::new(dir.path(), maka_sandbox::Sandbox::Disabled).unwrap();
+    let token = CancellationToken::new();
+    let _cancel_on_drop = token.clone().drop_guard();
     let task = tokio::spawn(executor.invoke(
         SHELL_NAME.into(),
         json!({
-            "command":format!("{CHILD}; [Console]::Write('done')")
+            "command":format!("{CHILD}; while (!(Test-Path release)) {{ Start-Sleep -Milliseconds 10 }}; [Console]::Write('done')")
         }),
-        CancellationToken::new(),
+        token,
     ));
+    // Establish the live child (and its cleanup handle) before measuring drain.
+    // Cold PowerShell startup is not part of the post-exit pipe-drain bound.
+    let child = LiveProcess::read(&dir.path().join("child")).await;
+    std::fs::write(dir.path().join("release"), b"exit").unwrap();
     let result = tokio::time::timeout(Duration::from_secs(5), task)
         .await
-        .unwrap()
+        .expect("ready shell exits and drains output within the bound")
         .unwrap()
         .unwrap();
-    assert!(dir.path().join("child").exists(), "{result}");
-    let child = LiveProcess::read(&dir.path().join("child")).await;
     assert_eq!(result["status"], "completed");
     assert_eq!(result["output"]["stdout"], "done");
     assert_eq!(result["output"]["stdoutTruncated"], true);

@@ -26,7 +26,7 @@ use crate::{
         tables::{
             Axis, CellSelection, TableMap, TableRole, cell_around, column_widths,
             commands::{move_table_column, move_table_row, set_column_width, set_row_height},
-            find_table, is_cell, is_table, next_cell, table_role,
+            find_table, is_cell, next_cell, table_role,
         },
     },
     theme,
@@ -222,7 +222,9 @@ pub(crate) fn grid(wrapper: View, rv: &Rv, item: ReadSignal<BlockItem>) -> View 
         .grid_template_columns(move || {
             let it = item.get();
             let preview = match cols_rv.table_preview.get() {
-                Some(TablePreview::ColWidth { table, col, width }) if table == it.pos => {
+                Some(TablePreview::ColWidth { table, col, width })
+                    if cols_rv.block_pos(it.id) == Some(table) =>
+                {
                     Some((col, width))
                 }
                 _ => None,
@@ -232,7 +234,9 @@ pub(crate) fn grid(wrapper: View, rv: &Rv, item: ReadSignal<BlockItem>) -> View 
         .grid_template_rows(move || {
             let it = item.get();
             let preview = match rows_rv.table_preview.get() {
-                Some(TablePreview::RowHeight { table, row, height }) if table == it.pos => {
+                Some(TablePreview::RowHeight { table, row, height })
+                    if rows_rv.block_pos(it.id) == Some(table) =>
+                {
                     Some((row, height))
                 }
                 _ => None,
@@ -260,18 +264,24 @@ pub(crate) fn cell(wrapper: View, rv: &Rv, item: ReadSignal<BlockItem>) -> View 
     let at = computed(move || {
         place_rv.doc_rev.get();
         let it = item.get();
+        let Some(pos) = place_rv.block_pos(it.id) else {
+            return (1, 2, 1, 2);
+        };
         let state = place_rv.st.borrow();
-        placement(state.doc(), it.pos).unwrap_or((1, 2, 1, 2))
+        placement(state.doc(), pos).unwrap_or((1, 2, 1, 2))
     });
     let selected_rv = rv.clone();
     let selected = move || {
         selected_rv.sel_rev.get();
         let it = item.get();
         let state = selected_rv.st.borrow();
-        state
-            .selection()
-            .as_custom::<CellSelection>()
-            .is_some_and(|cells| cells.contains_cell(it.pos))
+        let Some(cells) = state.selection().as_custom::<CellSelection>() else {
+            return false;
+        };
+        selected_rv.doc_rev.get();
+        selected_rv
+            .block_pos(it.id)
+            .is_some_and(|pos| cells.contains_cell(pos))
     };
     let overlay_rv = rv.clone();
     wrapper
@@ -305,13 +315,13 @@ pub(crate) fn cell(wrapper: View, rv: &Rv, item: ReadSignal<BlockItem>) -> View 
 /// The handles, grips and drop line of the tables, over the content.
 pub(crate) fn controls(rv: Rv) -> impl IntoElement {
     dynamic(move || {
-        rv.layout_rev.get();
         rv.doc_rev.get();
-        rv.sel_rev.get();
         let preview = rv.table_preview.get();
-        if !rv.props.editable.get() {
+        if !rv.props.editable.get() || (rv.tree.borrow().tables.is_empty() && preview.is_none()) {
             return Vec::new();
         }
+        rv.layout_rev.get();
+        rv.sel_rev.get();
         let layouts = rv.table_layouts();
         let active = rv.active_table();
         let mut out: Vec<AnyElement> = Vec::new();
@@ -522,8 +532,9 @@ impl Rv {
         let range = {
             let tree = self.tree.borrow();
             let geo = self.geo.borrow();
-            tree.children
-                .values()
+            tree.tables
+                .iter()
+                .filter_map(|(id, _)| tree.children.get(id))
                 .flatten()
                 .filter(|b| is_cell(&b.node))
                 .filter(|b| {
@@ -533,7 +544,10 @@ impl Rv {
                     contains(&Bounds::new(o, f.size), at)
                 })
                 .min_by_key(|b| b.node.node_size())
-                .map(|b| (b.pos, b.pos + b.node.node_size()))
+                .and_then(|b| {
+                    let pos = tree.pos(b.id)?;
+                    Some((pos, pos + b.node.node_size()))
+                })
         };
         let geo = self.geo.borrow();
         range
@@ -545,26 +559,27 @@ impl Rv {
     pub(crate) fn table_layouts(&self) -> Vec<TableLayout> {
         let tree = self.tree.borrow();
         let geo = self.geo.borrow();
-        let mut out = Vec::new();
-        for item in tree.children.values().flatten() {
-            if !is_table(&item.node) {
+        let mut out = Vec::with_capacity(tree.tables.len());
+        for (table_id, table_node) in &tree.tables {
+            let Some(table_pos) = tree.pos(*table_id) else {
                 continue;
-            }
-            let (Some(origin), Some((_, frame))) = (geo.origin(item.id), geo.frames.get(&item.id))
+            };
+            let (Some(origin), Some((_, frame))) =
+                (geo.origin(*table_id), geo.frames.get(table_id))
             else {
                 continue;
             };
             let bounds = Bounds::new(origin, frame.size);
-            let map = TableMap::get(&item.node);
-            let start = item.pos + 1;
+            let map = TableMap::get(table_node);
+            let start = table_pos + 1;
             let mut lefts = vec![None; map.width];
             let mut rights = vec![None; map.width];
             let mut tops = vec![None; map.height];
             let mut bottoms = vec![None; map.height];
-            for cell in tree.children.get(&item.id).into_iter().flatten() {
-                let Some(rect) = cell
-                    .pos
-                    .checked_sub(start)
+            for cell in tree.children.get(table_id).into_iter().flatten() {
+                let Some(rect) = tree
+                    .pos(cell.id)
+                    .and_then(|p| p.checked_sub(start))
                     .and_then(|p| map.try_find_cell(p))
                 else {
                     continue;
@@ -590,9 +605,9 @@ impl Rv {
                 bounds.origin.y,
                 bounds.origin.y + bounds.size.height,
             );
-            let (min_width, resizable, last_column_resizable) = options(&item.node);
+            let (min_width, resizable, last_column_resizable) = options(table_node);
             out.push(TableLayout {
-                pos: item.pos,
+                pos: table_pos,
                 bounds,
                 cols,
                 rows,
@@ -866,13 +881,12 @@ impl Rv {
         };
         let tree = self.tree.borrow();
         let geo = self.geo.borrow();
-        tree.children
-            .values()
-            .flatten()
-            .filter(|b| positions.contains(&b.pos))
-            .filter_map(|b| {
-                let origin = geo.origin(b.id)?;
-                let (_, frame) = geo.frames.get(&b.id)?;
+        positions
+            .iter()
+            .filter_map(|pos| {
+                let id = tree.id_at(*pos)?;
+                let origin = geo.origin(id)?;
+                let (_, frame) = geo.frames.get(&id)?;
                 Some(Bounds::new(origin, frame.size))
             })
             .reduce(|a, b| a.union(&b))
@@ -905,16 +919,8 @@ impl Rv {
         let frame = {
             let tree = self.tree.borrow();
             let geo = self.geo.borrow();
-            tree.children
-                .values()
-                .flatten()
-                .find(|b| b.pos == next.pos)
-                .and_then(|b| {
-                    Some(Bounds::new(
-                        geo.origin(b.id)?,
-                        geo.frames.get(&b.id)?.1.size,
-                    ))
-                })
+            tree.id_at(next.pos)
+                .and_then(|id| Some(Bounds::new(geo.origin(id)?, geo.frames.get(&id)?.1.size)))
         };
         let doc = head.doc();
         if let Some(frame) = frame {

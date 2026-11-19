@@ -21,13 +21,13 @@
 
 use super::{Computer, admission, browser_access, failed, message};
 use maka_agent_facts::tools::ToolError;
-use maka_capabilities::authorization::{Boundary, SessionBoundary};
 use maka_computer_use::{
     AuthorizationFuture, BrowserAccess, BrowserAttachmentAuthorization, BrowserAttachmentOrigin,
     BrowserAuthorization, BrowserHostEffects, BrowserLeaseChildRequest, BrowserSessionPreparation,
     InvocationContext,
 };
 use maka_event_log::effects::{NativeOwner, Operation, Outcome, Owner, Request};
+use maka_plugin_core::authorization::Boundary;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -250,54 +250,14 @@ async fn boundary(
     attachment: &browser_access::Attachment,
 ) -> Result<(Boundary, maka_agent_facts::language::Language), ToolError> {
     let configuration = attachment.current_global(owner).await?;
-    // This ordinary Session handle is fresh. It carries no ended Run's pin.
-    let store = owner
-        .store
-        .session(attachment.session())
-        .await
-        .map_err(|error| ToolError::Persistence(message(error)))?;
-    let projection = store
-        .session_projection::<maka_agent_api::session::StoredSessionConfiguration>(
-            attachment.session(),
-        )
-        .await
-        .map_err(|error| ToolError::Persistence(message(error)))?
-        .filter(|projection| !projection.session.archived)
-        .ok_or_else(|| failed("Browser lease-child Session is no longer active"))?;
-    let turn = projection
-        .root_turn
-        .filter(|turn| {
-            turn.invocation.turn_id == attachment.turn() && turn.state.terminal_outcome().is_none()
-        })
-        .ok_or_else(|| failed("Browser lease-child turn is no longer active"))?;
-    let snapshot = store
-        .invocation_configuration(&turn.invocation)
-        .await
-        .map_err(|error| ToolError::Persistence(message(error)))?
-        .ok_or_else(|| failed("Browser lease-child canonical boundary is unavailable"))?;
-    if snapshot.boundary_revision != configuration.boundary_revision
-        || snapshot.workspace_binding != Some(configuration.binding)
-        || snapshot.workspace_identity.as_ref() != Some(&configuration.workspace.identity)
-        || snapshot.cwd != configuration.workspace.path
-        || configuration.permission_basis() != attachment.basis()
-    {
+    if configuration.permission_basis() != attachment.basis() {
         return Err(failed(
             "Browser lease-child boundary changed before admission",
         ));
     }
     Ok((
-        Boundary::Session {
-            boundary: SessionBoundary {
-                workspace_origin: snapshot.workspace_origin,
-                session_id: attachment.session().to_owned(),
-                boundary_revision: snapshot.boundary_revision,
-                sandbox_mode: snapshot.sandbox_mode,
-                approval_policy: snapshot.approval_policy,
-                cwd: snapshot.cwd,
-            },
-            workspace_identity: configuration.workspace.identity,
-        },
-        snapshot.language,
+        attachment.authority.boundary().await?,
+        attachment.authority.language(),
     ))
 }
 
@@ -322,12 +282,7 @@ pub(super) async fn wait_native_current<'a>(
     gate: &admission::Gate,
     cancellation: &CancellationToken,
 ) -> Result<tokio::sync::MutexGuard<'a, maka_computer_use::Session>, ToolError> {
-    let store = owner
-        .store
-        .session(attachment.session())
-        .await
-        .map_err(|error| ToolError::Persistence(message(error)))?;
-    let mut changes = store.subscribe_commits().map_err(failed)?;
+    let mut changes = attachment.authority.changes().map_err(failed)?;
     loop {
         changes.borrow_and_update();
         attachment.alive(cancellation)?;
@@ -370,7 +325,9 @@ pub(super) async fn run(
     }
     let cancellation = owner.stopping.child_token();
     attachment.alive(&cancellation)?;
-    if request.turn_id != attachment.turn() {
+    if request.turn_id != attachment.turn()
+        || request.execution != attachment.execution_correlation()
+    {
         return Err(failed(
             "Browser lease-child request belongs to another turn",
         ));
@@ -389,10 +346,11 @@ pub(super) async fn run(
     // future. The existing Host resource ticket already owns this service job.
     let receipt = store
         .begin_browser_lease_child(Request {
-            source: maka_capabilities::call::Identity::BrowserLease {
+            source: serde_json::to_value(maka_capabilities::call::Identity::BrowserLease {
                 session_id: attachment.session().to_owned(),
                 turn_id: attachment.turn().to_owned(),
-            },
+            })
+            .map_err(|error| ToolError::Persistence(message(error)))?,
             owner: provenance.owner(attachment.session()),
             boundary,
             operation: Operation::BrowserLeaseChild {
@@ -424,24 +382,28 @@ pub(super) async fn run(
             ),
         );
         let settlement = admission::host_service_settlement(&owner, &native, gate.clone());
-        let context = InvocationContext::new(attachment.session(), attachment.turn())
-            .with_operation_id(operation_id)
-            .with_browser_authorization(authorization)
-            .with_browser_preparation_policy(maka_computer_use::BrowserPreparationPolicy {
-                popup_enabled: owner.configuration.browser_preparation.popup,
-                headers: owner
-                    .configuration
-                    .browser_preparation
-                    .request_headers
-                    .iter()
-                    .map(|header| maka_computer_use::BrowserPreparationHeader {
-                        name: header.name.clone(),
-                        value: header.value.clone(),
-                    })
-                    .collect(),
-            })
-            .with_operation_settlement(settlement)
-            .with_browser_host_effects(effects);
+        let context = InvocationContext::new(
+            attachment.session(),
+            attachment.turn(),
+            attachment.execution_correlation(),
+        )
+        .with_operation_id(operation_id)
+        .with_browser_authorization(authorization)
+        .with_browser_preparation_policy(maka_computer_use::BrowserPreparationPolicy {
+            popup_enabled: owner.configuration.browser_preparation.popup,
+            headers: owner
+                .configuration
+                .browser_preparation
+                .request_headers
+                .iter()
+                .map(|header| maka_computer_use::BrowserPreparationHeader {
+                    name: header.name.clone(),
+                    value: header.value.clone(),
+                })
+                .collect(),
+        })
+        .with_operation_settlement(settlement)
+        .with_browser_host_effects(effects);
         wait_native_current(&owner, &native, &attachment, &gate, &cancellation)
             .await?
             .adopt_browser_lease_child(request, &context, &cancellation, language)

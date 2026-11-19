@@ -44,22 +44,6 @@ type JsContext = qjs::JSContext;
 
 const UNDEFINED: JsValue = qjs::JS_UNDEFINED;
 
-/// What the props a component's host takes as a view are called.
-const HOST_PROPS: &[&str] = &[
-    "class",
-    "classList",
-    "style",
-    "activeStyle",
-    "hoverStyle",
-    "focusStyle",
-    "focusWithinStyle",
-    "disabledStyle",
-    "testID",
-    "focusable",
-    "tooltip",
-    "onLayout",
-];
-
 /// The components' part of a context's state.
 #[derive(Default)]
 pub(crate) struct Components {
@@ -73,6 +57,21 @@ pub(crate) struct Components {
     /// an event nobody handles is not converted to JS (a component may
     /// report on every scroll frame).
     handled: RefCell<FxHashMap<nsh_core::NodeId, Box<[&'static str]>>>,
+    /// What the functions components hold themselves rendered
+    /// (`JsEvent::Render` with a function), by (host, prop U+001F key).
+    fn_renders: RefCell<FxHashMap<(nsh_core::NodeId, String), FnRender>>,
+    /// `(read) => props` reading the latest value of signal `read`, made
+    /// the first time a component's function renders (owned).
+    props_of: Cell<Option<JsValue>>,
+}
+
+/// What a component's own function rendered for a key: JS's holder, the
+/// root it was rendered in and the signal of the value its props read
+/// (both values owned).
+struct FnRender {
+    holder: JsValue,
+    root: u32,
+    value: JsValue,
 }
 
 impl Components {
@@ -84,6 +83,17 @@ impl Components {
                 qjs::JS_FreeValue(raw, resolve);
                 qjs::JS_FreeValue(raw, reject);
             }
+        }
+        for (_, r) in self.fn_renders.borrow_mut().drain() {
+            // SAFETY: as above.
+            unsafe {
+                qjs::JS_FreeValue(raw, r.holder);
+                qjs::JS_FreeValue(raw, r.value);
+            }
+        }
+        if let Some(f) = self.props_of.take() {
+            // SAFETY: as above.
+            unsafe { qjs::JS_FreeValue(raw, f) };
         }
     }
 }
@@ -159,15 +169,126 @@ pub(crate) fn promise(cx: *mut JsContext, call: u32) -> JsValue {
     promise
 }
 
+/// `ref.evaluate(script, { timeout })` of a web view: a promise the core
+/// settles with `{ value }` or the failure. A wrong argument rejects it too
+/// (a `TypeError` / `RangeError`), as every call that returns a promise.
+pub(crate) fn evaluate(
+    cx: *mut JsContext,
+    id: Option<u32>,
+    script: JsValue,
+    options: JsValue,
+) -> JsValue {
+    use nsh_core::element::{IntoThrown, JsError};
+    let call = next_call(cx);
+    let promise = promise(cx, call);
+    // SAFETY: an inline tag check of the newly allocated promise.
+    if unsafe { qjs::JS_IsException(promise) } {
+        return promise;
+    }
+    let reject = |error: JsError| {
+        let _ = settle(cx, call, Err(error.into_thrown()));
+        promise
+    };
+    // SAFETY: checks the borrowed argument's tag; no user conversion runs.
+    let script = match unsafe { qjs::JS_IsString(script) }
+        .then(|| string_arg(cx, script))
+        .flatten()
+    {
+        Some(script) => script,
+        None => return reject(JsError::Type("evaluate expects a script string".into())),
+    };
+    let timeout = match evaluate_timeout(cx, options) {
+        Ok(timeout) => timeout,
+        Err(error) => return reject(error),
+    };
+    let Some(id) = id else {
+        return reject(JsError::Type("nsh: not a node".into()));
+    };
+    if dom::push_op(
+        cx,
+        Op::Evaluate {
+            id,
+            call,
+            script,
+            timeout,
+        },
+    )
+    .is_err()
+    {
+        // The op limit stops the engine; the promise still rejects.
+        // SAFETY: take the exception push_op raised on this live VM.
+        unsafe { qjs::JS_FreeValue(cx, qjs::JS_GetException(cx)) };
+        return reject(JsError::Error(
+            "the engine stopped before evaluating".into(),
+        ));
+    }
+    promise
+}
+
+/// `evaluate`'s `options.timeout` (milliseconds, 30 seconds when absent).
+fn evaluate_timeout(
+    cx: *mut JsContext,
+    options: JsValue,
+) -> Result<std::time::Duration, nsh_core::element::JsError> {
+    use nsh_core::element::{EvaluateOptions, JsError};
+    // SAFETY: tag checks of a borrowed argument.
+    if unsafe { qjs::JS_IsUndefined(options) } {
+        return Ok(EvaluateOptions::default().timeout);
+    }
+    // SAFETY: as above.
+    if !unsafe { qjs::JS_IsObject(options) } {
+        return Err(JsError::Type("evaluate's options must be an object".into()));
+    }
+    // SAFETY: reads a property of a live object; the value is freed below.
+    let timeout = unsafe { qjs::JS_GetPropertyStr(cx, options, c"timeout".as_ptr()) };
+    // SAFETY: tag checks and a number conversion of the owned value.
+    let result = unsafe {
+        if qjs::JS_IsException(timeout) {
+            qjs::JS_FreeValue(cx, qjs::JS_GetException(cx));
+            Err(JsError::Type("evaluate's timeout could not be read".into()))
+        } else if qjs::JS_IsUndefined(timeout) {
+            Ok(EvaluateOptions::default().timeout)
+        } else if !qjs::JS_IsNumber(timeout) {
+            Err(JsError::Type("evaluate's timeout must be a number".into()))
+        } else {
+            let mut ms = 0f64;
+            qjs::JS_ToFloat64(cx, &mut ms, timeout);
+            if ms.is_finite() && ms > 0.0 && ms <= u32::MAX as f64 {
+                Ok(std::time::Duration::from_secs_f64(ms / 1000.0))
+            } else {
+                Err(JsError::Range(
+                    "evaluate's timeout must be a positive number of milliseconds".into(),
+                ))
+            }
+        }
+    };
+    // SAFETY: frees the owned property value.
+    unsafe { qjs::JS_FreeValue(cx, timeout) };
+    result
+}
+
 /// `ref.measure()`: a promise of where node `id` is after this turn's
 /// layout, which the core answers on the root (`Command::Measure`).
 pub(crate) fn measure(cx: *mut JsContext, id: u32) -> JsValue {
+    measure_with(cx, id, |call| Command::Measure { call })
+}
+
+/// `ref.measureScrollPosition()`: a promise of where list `id`'s viewport
+/// starts among its rows after this turn's layout, which the core answers
+/// on the root (`Command::MeasureScrollPosition`).
+pub(crate) fn measure_scroll_position(cx: *mut JsContext, id: u32) -> JsValue {
+    measure_with(cx, id, |call| Command::MeasureScrollPosition { call })
+}
+
+/// A promise of the core's answer to `command` (for a new call) on node
+/// `id`.
+fn measure_with(cx: *mut JsContext, id: u32, command: impl FnOnce(u32) -> Command) -> JsValue {
     let call = next_call(cx);
     if let Err(e) = dom::push_op(
         cx,
         Op::Command {
             id,
-            command: Command::Measure { call },
+            command: command(call),
         },
     ) {
         return e;
@@ -229,6 +350,7 @@ pub(crate) fn deliver(cx: *mut JsContext, event: JsEvent) -> Result<(), JsValue>
             prop,
             key,
             value,
+            func,
         } => {
             let host_js = crate::classes::host_outside_calls(cx);
             let converted = catch_unwind(AssertUnwindSafe(|| {
@@ -251,15 +373,24 @@ pub(crate) fn deliver(cx: *mut JsContext, event: JsEvent) -> Result<(), JsValue>
                     return Ok(());
                 }
             };
+            if let Some(func) = func {
+                return fn_render(cx, host, &format!("{prop}\u{1f}{key}"), value, &*func);
+            }
             let data = render_data(cx, prop, &key);
             // SAFETY: the object takes the value.
             unsafe { qjs::JS_SetPropertyStr(cx, data, c"value".as_ptr(), value) };
             component_event(cx, host, RENDER, data)
         }
         JsEvent::Unrender { host, prop, key } => {
+            let slot = format!("{prop}\u{1f}{key}");
+            let taken = components(cx).fn_renders.borrow_mut().remove(&(host, slot));
+            if let Some(r) = taken {
+                return fn_unrender(cx, host, r);
+            }
             let data = render_data(cx, prop, &key);
             component_event(cx, host, UNRENDER, data)
         }
+        JsEvent::Rows(ids) => dom::render_rows(cx, &ids),
         JsEvent::Reply { call, result } => settle(cx, call, result),
     }
 }
@@ -281,6 +412,118 @@ fn render_data(ctx: *mut JsContext, prop: &str, key: &str) -> JsValue {
         qjs::JS_SetPropertyStr(ctx, data, c"key".as_ptr(), new_string(ctx, key));
         data
     }
+}
+
+/// Renders `value` (owned) with `func`, a function component host `host`
+/// holds itself, for `slot`: the first time, `func` gets props reading
+/// the value's signal, its content goes into a new holder inserted into
+/// the host (rendered under the owner the host was made under, so it
+/// sees the context around the host, as on the web); after that the signal takes the value (nothing is made
+/// again).
+fn fn_render(
+    cx: *mut JsContext,
+    host: nsh_core::NodeId,
+    slot: &str,
+    value: JsValue,
+    func: &dyn nsh_core::element::CallbackHandle,
+) -> Result<(), JsValue> {
+    let value = Owned(cx, value);
+    let key = (host, slot.to_owned());
+    if let Some(r) = components(cx).fn_renders.borrow().get(&key) {
+        reactive::set_signal(cx, r.value, value.take());
+        return Ok(());
+    }
+    let js_host = crate::classes::host_outside_calls(cx);
+    let Some(f) = func.value(&js_host) else {
+        return Ok(());
+    };
+    let f = Owned(cx, crate::classes::from_raw(f));
+    let props_of = props_of(cx)?;
+    let signal = Owned(cx, reactive::new_signal(cx, value.1));
+    // Under the owner the host was made under: the content sees the
+    // context around the component, as its children would.
+    let owner = dom::owner_of_node(cx, host);
+    let (root, made) = reactive::untracked_with(cx, || {
+        reactive::with_root_under(cx, owner, || -> Result<Owned, JsValue> {
+            let props = Owned(
+                cx,
+                crate::web::js::call(cx, props_of, UNDEFINED, &[signal.1])
+                    .map(|v| v.take())
+                    .map_err(|_| qjs::JS_EXCEPTION)?,
+            );
+            let holder = Owned(cx, dom::create_element(cx, nsh_core::Tag::View)?);
+            let name = Owned(cx, new_string(cx, slot));
+            dom::set_prop_value(cx, holder.1, "componentRender", name.1)?;
+            let content = Owned(
+                cx,
+                crate::web::js::call(cx, f.1, UNDEFINED, &[props.1])
+                    .map(|v| v.take())
+                    .map_err(|_| qjs::JS_EXCEPTION)?,
+            );
+            dom::insert_value_at(cx, holder.1, content.1, None)?;
+            Ok(holder)
+        })
+    });
+    let holder = match made {
+        Ok(holder) => holder,
+        Err(e) => {
+            reactive::dispose_owner(cx, root);
+            return Err(e);
+        }
+    };
+    let node = Owned(cx, dom::node_value(cx, host));
+    dom::insert_node(cx, node.1, holder.1, None)?;
+    components(cx).fn_renders.borrow_mut().insert(
+        key,
+        FnRender {
+            holder: holder.take(),
+            root,
+            value: signal.take(),
+        },
+    );
+    Ok(())
+}
+
+/// What a component's own function rendered goes: its root is disposed,
+/// its holder leaves the host.
+fn fn_unrender(cx: *mut JsContext, host: nsh_core::NodeId, r: FnRender) -> Result<(), JsValue> {
+    let holder = Owned(cx, r.holder);
+    drop(Owned(cx, r.value));
+    reactive::dispose_owner(cx, r.root);
+    let node = Owned(cx, dom::node_value(cx, host));
+    dom::remove_node(cx, node.1, holder.1)
+}
+
+/// The function making the props a component's own function renders
+/// with: `(read) => props`, each property read from the latest value of
+/// signal `read` (a method bound to it), so what reads them follows it.
+/// Borrowed (the components' state owns it).
+fn props_of(cx: *mut JsContext) -> Result<JsValue, JsValue> {
+    let state = components(cx);
+    if let Some(made) = state.props_of.get() {
+        return Ok(made);
+    }
+    const SOURCE: &str = "(read) => new Proxy({}, {\n\
+        get(_, key) { const value = read(); const field = value == null ? undefined : value[key]; return typeof field === \"function\" ? field.bind(value) : field; },\n\
+        has(_, key) { const value = read(); return value != null && key in Object(value); },\n\
+        getPrototypeOf() { const value = read(); return value == null ? null : Object.getPrototypeOf(Object(value)); },\n\
+      })\0";
+    // SAFETY: a NUL-terminated script evaluated in the context.
+    let f = unsafe {
+        qjs::JS_Eval(
+            cx,
+            SOURCE.as_ptr().cast(),
+            (SOURCE.len() - 1) as _,
+            c"<nsh:props>".as_ptr(),
+            qjs::JS_EVAL_TYPE_GLOBAL as c_int,
+        )
+    };
+    // SAFETY: an inline tag check.
+    if unsafe { qjs::JS_IsException(f) } {
+        return Err(qjs::JS_EXCEPTION);
+    }
+    state.props_of.set(Some(f));
+    Ok(f)
 }
 
 /// Calls the native-event handler of Rust component host `host` with
@@ -874,7 +1117,7 @@ unsafe extern "C" fn props_run(
         .iter()
         .filter(|p| matches!(p.kind, PropKind::Value | PropKind::Renderer))
         .map(|p| (p.name, p.decode))
-        .chain(HOST_PROPS.iter().map(|&h| (h, None)));
+        .chain(spec.host_props().map(|h| (h, None)));
     // Every prop is read and set whatever another one did, so each stays
     // tracked and the good ones reach the view; the first error is thrown
     // at the end (an uncatchable one, an interrupt, at once).

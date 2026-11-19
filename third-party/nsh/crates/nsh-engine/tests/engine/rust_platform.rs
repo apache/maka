@@ -51,6 +51,7 @@ fn config(app: App) -> EngineConfig {
         app,
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -61,7 +62,7 @@ fn config(app: App) -> EngineConfig {
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -74,6 +75,8 @@ fn config(app: App) -> EngineConfig {
         chunk_loader: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     }
 }
 
@@ -265,6 +268,86 @@ fn tasks_wait_for_display_frames() {
     // Each frame asked for the next; none is asked for once the task ended.
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(frames.load(Ordering::SeqCst), 3);
+}
+
+/// What a platform's UI thread gets, in the order the engine sends it.
+enum ToMain {
+    Batch(MountBatch),
+    Task(nsh_engine::MainThreadTask),
+}
+
+/// Sends batches and the app's functions for the main thread down one
+/// channel, as a platform's UI thread gets them.
+struct MainThreadSink(Sender<ToMain>);
+
+impl MountSink for MainThreadSink {
+    fn submit(&self, batch: MountBatch) {
+        let _ = self.0.send(ToMain::Batch(batch));
+    }
+
+    fn run_on_main_thread(&self, task: nsh_engine::MainThreadTask) {
+        let _ = self.0.send(ToMain::Task(task));
+    }
+}
+
+/// Asks the main thread for its name, and for a function that panics.
+#[component]
+fn OnMain() -> impl IntoElement {
+    let shown = signal(String::from("asking"));
+    spawn(async move {
+        shown.set("calling".into());
+        let name = run_on_main_thread(|| std::thread::current().name().map(str::to_owned))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let failed = run_on_main_thread(|| -> u8 { panic!("no AppKit here") }).await;
+        shown.set(format!("{name} {}", failed.is_err()));
+    });
+    text(move || shown.get())
+}
+
+#[test]
+fn functions_run_on_the_platforms_main_thread_and_answer_the_engine() {
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let (main_tx, main_rx) = crossbeam_channel::unbounded::<ToMain>();
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let seen = order.clone();
+    std::thread::Builder::new()
+        .name("ui".into())
+        .spawn(move || {
+            for message in main_rx {
+                match message {
+                    ToMain::Batch(batch) => {
+                        for item in &batch.items {
+                            if let MountItem::Text { text, .. } = item {
+                                seen.lock().unwrap().push(text.text.clone());
+                            }
+                        }
+                        let _ = tx.send(batch);
+                    }
+                    ToMain::Task(task) => {
+                        seen.lock().unwrap().push("task".into());
+                        task.run();
+                    }
+                }
+            }
+        })
+        .unwrap();
+    let engine = Engine::start(
+        config(App::Rust(Root::of::<OnMain>())),
+        || ApproxTextEngine,
+        MainThreadSink(main_tx),
+    )
+    .unwrap();
+    let (texts, ..) = until(&rx, "ui true");
+    assert_eq!(texts.last().map(String::as_str), Some("ui true"));
+    // The batch of the turn that asked reaches the UI thread before the function.
+    let order = order.lock().unwrap();
+    let calling = order.iter().position(|t| t == "calling").unwrap();
+    let task = order.iter().position(|t| t == "task").unwrap();
+    assert!(calling < task, "{order:?}");
+    drop(engine);
 }
 
 /// A Rust app's root, laid out in the surface's direction.
@@ -790,6 +873,64 @@ fn components_read_the_window_once_it_stops_and_the_displays() {
     assert_eq!(last_text(&rx, &mut last), "no window, displays 0");
 }
 
+/// A login item the system keeps on until it is turned off.
+struct FakeLoginItem(Mutex<bool>);
+
+impl nsh_core::desktop::LoginItemBackend for FakeLoginItem {
+    fn status(&self) -> std::io::Result<nsh_core::desktop::LoginItemStatus> {
+        Ok(match *self.0.lock().unwrap() {
+            true => nsh_core::desktop::LoginItemStatus::Enabled,
+            false => nsh_core::desktop::LoginItemStatus::Disabled,
+        })
+    }
+
+    fn set(&self, enabled: bool) -> std::io::Result<nsh_core::desktop::LoginItemStatus> {
+        *self.0.lock().unwrap() = enabled;
+        self.status()
+    }
+}
+
+/// Reads whether the app launches at login, turns it off and shows both
+/// answers.
+#[component]
+fn LoginItemInfo() -> impl IntoElement {
+    use nsh_core::element::desktop::{launch_at_login, set_launch_at_login};
+    let shown = signal(String::from("login"));
+    spawn(async move {
+        let read = launch_at_login().await;
+        let set = set_launch_at_login(false).await;
+        shown.set(format!("login {read} {set:?}"));
+    });
+    view().child(text(move || shown.get()))
+}
+
+#[test]
+fn a_rust_app_reads_and_changes_launch_at_login() {
+    // The last text the app shows, once it is `expected` (or 5 seconds
+    // passed).
+    let shown = |backend: Option<Arc<dyn nsh_core::desktop::LoginItemBackend>>, expected| {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let config = EngineConfig {
+            login_item: backend,
+            ..config(App::Rust(Root::of::<LoginItemInfo>()))
+        };
+        let sink = FrameSink {
+            batches: tx,
+            frames: Arc::default(),
+        };
+        let _engine = Engine::start(config, || ApproxTextEngine, sink).unwrap();
+        let (texts, ..) = until(&rx, expected);
+        texts.last().cloned().unwrap_or_default()
+    };
+    let backend = Arc::new(FakeLoginItem(Mutex::new(true)));
+    let expected = "login true Ok(())";
+    assert_eq!(shown(Some(backend), expected), expected);
+    // Without one (a view embedded in another app, `nsh run`) it is off and
+    // cannot be turned on.
+    let expected = "login false Err(Unavailable)";
+    assert_eq!(shown(None, expected), expected);
+}
+
 /// Shows whether the performance monitor measures and turns it on.
 #[component]
 fn FpsSwitch() -> impl IntoElement {
@@ -843,12 +984,13 @@ fn components_turn_the_performance_monitor_on_and_follow_it() {
 
 /// A Rust app's `nsh.json` `"window"` (its root's, as the generated code
 /// sets it) reaches the main window as a TSX app's bundle's does: its
-/// attributes with the first frame, the options for the runners.
+/// attributes with the first frame, the options for the runners. A phone's
+/// surface has no window: nothing is sent there.
 #[test]
 fn a_rust_apps_main_window_takes_its_launch_options() {
     use nsh_core::desktop::DesktopCommand;
     let root = Root::of::<Label>().main_window_json(
-        r#"{"title":"Notes","defaultSize":{"width":900,"height":600},"restoreBounds":true}"#,
+        r#"{"title":"Notes","titleBar":{"style":"hidden","height":40},"defaultSize":{"width":900,"height":600},"restoreBounds":true}"#,
     );
     let options = root
         .main_window_ref()
@@ -856,32 +998,37 @@ fn a_rust_apps_main_window_takes_its_launch_options() {
         .expect("the window's options");
     assert_eq!(options.attributes.title.as_deref(), Some("Notes"));
     assert!(options.restore_bounds);
-    let config = EngineConfig {
-        environment: Environment {
-            os: Os::MacOs,
-            idiom: Idiom::Desktop,
-            ..Environment::default()
-        },
-        ..config(App::Rust(root))
-    };
-    // What the runners read before they make the window.
-    assert_eq!(config.app.main_window(), Some(&options));
-    let (tx, rx) = crossbeam_channel::unbounded();
-    let _engine = Engine::start(
-        config,
-        || ApproxTextEngine,
-        FrameSink {
-            batches: tx,
-            frames: Arc::default(),
-        },
-    )
-    .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut set = None;
-    while set.is_none()
-        && let Ok(batch) = rx.recv_deadline(deadline)
-    {
-        set = batch.items.into_iter().find_map(|item| match item {
+    for (os, idiom) in [
+        (Os::MacOs, Idiom::Desktop),
+        (Os::Web, Idiom::Desktop),
+        (Os::Ios, Idiom::Phone),
+        (Os::Android, Idiom::Phone),
+    ] {
+        let config = EngineConfig {
+            environment: Environment {
+                os,
+                idiom,
+                ..Environment::default()
+            },
+            ..config(App::Rust(root.clone()))
+        };
+        // What the runners read before they make the window.
+        assert_eq!(config.app.main_window(), Some(&options));
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let _engine = Engine::start(
+            config,
+            || ApproxTextEngine,
+            FrameSink {
+                batches: tx,
+                frames: Arc::default(),
+            },
+        )
+        .unwrap();
+        // The first frame: the label, and the attributes where they go.
+        let batch = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the first frame");
+        let set = batch.items.into_iter().find_map(|item| match item {
             MountItem::Command {
                 id: ROOT_ID,
                 command: Command::Desktop(command),
@@ -891,7 +1038,11 @@ fn a_rust_apps_main_window_takes_its_launch_options() {
             },
             _ => None,
         });
+        if os.is_desktop() || os == Os::Web {
+            let set = set.unwrap_or_else(|| panic!("{os:?}: the main window's attributes"));
+            assert_eq!(set.title.as_deref(), Some("Notes"), "{os:?}");
+        } else {
+            assert_eq!(set, None, "{os:?}");
+        }
     }
-    let set = set.expect("the main window's attributes");
-    assert_eq!(set.title.as_deref(), Some("Notes"));
 }

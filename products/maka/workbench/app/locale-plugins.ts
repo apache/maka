@@ -20,6 +20,25 @@
 import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const pluginMessages = {
+  'Plugin marketplace': ['Plugin marketplace', '插件市场', '外掛市集'],
+  'Installed plugins': ['Installed plugins', '已安装插件', '已安裝外掛'],
+  'Search plugins': ['Search plugins', '搜索插件', '搜尋外掛'],
+  'All plugins': ['All', '全部', '全部'],
+  'Other plugins': ['Other plugins', '其他插件', '其他外掛'],
+  'Installing…': ['Installing…', '正在安装…', '正在安裝…'],
+  Installed: ['Installed', '已安装', '已安裝'],
+  Install: ['Install', '安装', '安裝'],
+  'Refresh and try again.': ['Refresh and try again.', '请刷新后重试。', '請重新整理後重試。'],
+  'GitHub rate limit reached. Try again later.': [
+    'GitHub rate limit reached. Try again later.',
+    '已达到 GitHub 请求限制，请稍后重试。',
+    '已達 GitHub 請求限制，請稍後再試。',
+  ],
+  'Could not load this panel.': [
+    'Could not load this panel.',
+    '无法加载此面板。',
+    '無法載入此面板。',
+  ],
   'This deployment has no root UI selected.': [
     'This deployment has no root UI selected.',
     '当前部署没有选择根界面。',

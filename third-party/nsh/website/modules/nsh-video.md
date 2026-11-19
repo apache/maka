@@ -24,6 +24,9 @@ interface VideoProps extends Omit<ViewProps, "children">, VideoHostProps {
 }
 ```
 
+A video the app ships is imported as its URL (`import intro from "./media/intro.mp4"`, also `.mov`, `.m4v` and `.webm`),
+and the file ships with the app.
+
 ```tsx
 import { mount, signal, Text, Video, type VideoRef, View } from "nsh";
 

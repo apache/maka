@@ -18,12 +18,13 @@
  */
 
 import { createText, errorText, errorMessage, isObservationCancelled, UiError } from './text';
-import { batch, cleanup, signal } from 'nsh';
+import { batch, cleanup, platform, signal } from 'nsh';
 import type { Host } from './host';
 import type {
   AgentSessionListScope,
   AgentSessionFilter,
   AgentSession,
+  AgentSessionKind,
   AgentSessionPage,
   AgentProject,
   AgentProjectsPage,
@@ -44,6 +45,7 @@ export type Browsing = {
   sessions(): BrowserSession[];
   needsYouCount(): number;
   projects(): BrowserProject[];
+  hasMore(): boolean;
   loading(): boolean;
   error(): string;
   projectError(): string;
@@ -76,12 +78,13 @@ const uniqueSessions = (items: BrowserSession[]) => [
 
 // One mounted read projection serves the workspace browser and session picker.
 // Host revisions own paging; these snapshots grant no mutation authority.
-export function createBrowsing(host: Host): Browsing {
+export function createBrowsing(host: Host, kind: AgentSessionKind = 'agent'): Browsing {
   const scope = signal<BrowserScope>({ kind: 'all' });
   const filter = signal<AgentSessionFilter>('all');
   const sessions = signal<BrowserSession[]>([]);
   const needsYouCount = signal(0);
   const projects = signal<BrowserProject[]>([]);
+  const hasMore = signal(false);
   const loading = signal(true);
   const error = createText();
   const projectError = createText();
@@ -91,10 +94,14 @@ export function createBrowsing(host: Host): Browsing {
   let continuation: SessionPage | null = null;
   let projectRead: object | null = null;
   const owns = (read: CatalogRead) => alive && current === read;
+  // The desktop lists child conversations under the ones that created them.
+  const rootsOnly = (read: CatalogRead) =>
+    read.filter !== 'needs_you' && platform.idiom === 'terminal';
   const list = async (read: CatalogRead, position: AgentSessionPosition): Promise<SessionPage> =>
     host.query('agent', 'list', {
+      kind,
       filter: read.filter,
-      rootsOnly: read.filter !== 'needs_you',
+      rootsOnly: rootsOnly(read),
       scope: read.scope,
       position,
     });
@@ -150,6 +157,7 @@ export function createBrowsing(host: Host): Browsing {
       error.set('');
       if (clear) {
         sessions.set([]);
+        hasMore.set(false);
         needsYouCount.set(0);
       }
     });
@@ -158,8 +166,9 @@ export function createBrowsing(host: Host): Browsing {
         let opened: Subscription | null = null;
         try {
           opened = await host.subscribe('agent', 'catalog', {
+            kind,
             filter: read.filter,
-            rootsOnly: read.filter !== 'needs_you',
+            rootsOnly: rootsOnly(read),
             scope: read.scope,
             position: { kind: 'start' },
           });
@@ -218,6 +227,7 @@ export function createBrowsing(host: Host): Browsing {
             read.extend = false;
             batch(() => {
               sessions.set(snapshot);
+              hasMore.set(tail.after !== null);
               needsYouCount.set(next.needsYouCount);
               loading.set(false);
               error.set('');
@@ -248,7 +258,9 @@ export function createBrowsing(host: Host): Browsing {
         page = null;
         continuation = null;
         batch(() => {
-          error.set(errorText(reason));
+          error.set(
+            errorText(reason, 'Conversation list is temporarily unavailable. Try reconnecting.'),
+          );
           loading.set(false);
         });
       })
@@ -277,7 +289,10 @@ export function createBrowsing(host: Host): Browsing {
       page = next;
       read.extent = snapshot.at(-1)?.id ?? null;
       read.extend = false;
-      sessions.set(snapshot);
+      batch(() => {
+        sessions.set(snapshot);
+        hasMore.set(next.after !== null);
+      });
       return 'advanced';
     } catch (reason) {
       if (!owns(read) || continuation !== original) return 'waiting';
@@ -285,7 +300,7 @@ export function createBrowsing(host: Host): Browsing {
         waitForCatalog = true;
         return 'waiting';
       }
-      error.set(errorText(reason));
+      error.set(errorText(reason, 'Could not update the conversation.'));
       return 'complete';
     } finally {
       if (owns(read) && continuation === original) {
@@ -327,7 +342,8 @@ export function createBrowsing(host: Host): Browsing {
       }
       throw new UiError('Projects changed while reading. Refresh to try again.');
     } catch (reason) {
-      if (alive && projectRead === reading) projectError.set(errorText(reason));
+      if (alive && projectRead === reading)
+        projectError.set(errorText(reason, 'Projects are unavailable.'));
     }
   };
 
@@ -368,6 +384,7 @@ export function createBrowsing(host: Host): Browsing {
     sessions,
     needsYouCount,
     projects,
+    hasMore,
     loading,
     error,
     projectError,

@@ -25,6 +25,7 @@ fn config() -> EngineConfig {
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
     })
     .unwrap();
     let bytecode = nsh_js::compile_bytecode(&bundle.code, false).unwrap();
@@ -33,6 +34,7 @@ fn config() -> EngineConfig {
         app: nsh_engine::App::Js(unsafe { Bundle::bytecode(bytecode) }),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -44,7 +46,7 @@ fn config() -> EngineConfig {
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -56,6 +58,8 @@ fn config() -> EngineConfig {
         speech: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     }
 }
 

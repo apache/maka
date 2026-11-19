@@ -17,59 +17,62 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
 import {
   batch,
   cleanup,
   computed,
   effect,
   inputAction,
+  keymap,
+  List,
+  platform,
   Scroll,
   signal,
   Text,
   View,
-  List,
+  windowSize,
+  type ListRef,
 } from 'nsh';
-import { Input } from 'nsh/base';
-import type { ListRef, ViewRef } from 'nsh';
-import type {
-  ModelSelection,
-  AgentModelsPage,
-} from '../../../../packages/plugin-sdk/src/generated/runtime';
-import { Button, Popover } from 'nsh/base';
-import { keymap } from 'nsh';
-import { platform, windowSize } from 'nsh';
-import { useHost } from './host';
-import { tr } from './locale';
-import { createText, errorText, UiError } from './text';
+import { Button, Input, Popover } from 'nsh/base';
+import type { AgentModelsPage } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import type { ConversationHandle } from '../../../../plugins/agent/conversations/ui/Conversation';
+import { delayed } from './delayed';
+import { useHost } from './host';
+import { Icon } from './Icon';
+import { tr } from './locale';
 import {
+  availableSpeeds,
   effectiveThinkingLevel,
   effortCaption,
   modelCaption,
-  sameRoute,
-  sameBackend,
   routeKey,
+  sameBackend,
+  sameRoute,
+  selectionForChoice,
+  serviceTier,
+  speedCaption,
   thinkingLevel,
   withThinkingLevel,
+  type BackendIdentity,
+  type ModelBackend,
+  type ModelChoice,
 } from './modelSelection';
-import type { BackendIdentity, ModelBackend, ModelChoice } from './modelSelection';
-import { ChoiceIndicator } from './ChoiceIndicator';
-import { Icon } from './Icon';
+import { SettingsSegmented } from './SettingsPage';
+import { createText, errorText, UiError } from './text';
 import {
   C,
   captionTextStyle,
-  inputTextStyle,
-  inputBorderRadius,
-  controlStyle,
-  controlHoverStyle,
-  controlFocusStyle,
   controlDisabledStyle,
+  floatingStyle,
+  menuDetailTextStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
+  menuSeparatorStyle,
   shortcut,
+  textTooltip,
   toolbarControlStyle,
 } from './ui';
 
-type Pane = 'root' | 'models' | 'effort';
 type SelectionAction = {
   instance: number;
   sessionId: string;
@@ -81,19 +84,21 @@ type ModelsPage = Pick<
   Extract<AgentModelsPage, { kind: 'ready' }>,
   'revision' | 'next' | 'choices'
 >;
-
-type ModelMenuHandle = { instance: number; back(): void; dismiss(): void };
+type ModelMenuHandle = { instance: number; cancel(): void; dismiss(): void };
 type ModelTarget = { sessionId: string; instance: number | null };
 type ModelOwner = Pick<
   ConversationHandle,
   'sessionId' | 'backend' | 'modelDetails' | 'refreshModel'
 >;
-const modelRowHeight = platform.idiom === 'terminal' ? 48 : 40;
-// Notes under the model list start where the rows' text does.
-const listFill = () => (platform.idiom === 'terminal' ? C.surface : C.background);
-const listTextInset = {
-  paddingHorizontal: platform.idiom === 'terminal' ? 0 : controlStyle.paddingHorizontal,
-};
+
+const ROW = 32;
+const noteStyle = () => ({
+  ...menuDetailTextStyle,
+  color: C.muted,
+  paddingHorizontal: 8,
+  paddingTop: 4,
+  paddingBottom: 8,
+});
 
 export function ModelSelect(props: {
   owner: ModelOwner;
@@ -103,12 +108,7 @@ export function ModelSelect(props: {
   toggle(target: ModelTarget): void;
   close(instance: number): boolean;
   select(instance: number, backend: ModelBackend): Promise<void>;
-  manage(target: {
-    sessionId: string;
-    instance: number;
-    model?: ModelSelection;
-    page?: string;
-  }): void;
+  manage(target: { sessionId: string; instance: number }): void;
 }) {
   const owner = props.owner;
   let menu: ModelMenuHandle | null = null;
@@ -119,20 +119,26 @@ export function ModelSelect(props: {
       if (next) {
         if (instance === null) props.toggle({ sessionId: owner.sessionId, instance });
       } else if (instance !== null && menu?.instance === instance) {
-        if (reason === 'cancel') menu.back();
+        if (reason === 'cancel') menu.cancel();
         else menu.dismiss();
       }
     };
   });
   const model = () => {
     const details = owner.modelDetails();
-    return details.kind === 'ready' && sameRoute(owner.backend(), details.choice.selection)
+    return details.kind === 'ready' && selectionForChoice(owner.backend(), details.choice)
       ? details.choice.label
       : modelCaption(owner.backend(), details);
   };
-  const effort = () => effortCaption(owner.backend(), owner.modelDetails());
+  const modifiers = () =>
+    [
+      effortCaption(owner.backend(), owner.modelDetails()),
+      speedCaption(owner.backend(), owner.modelDetails()),
+    ]
+      .filter(Boolean)
+      .join(' · ');
   const tooltipLabel = () =>
-    [modelCaption(owner.backend(), owner.modelDetails()), effort()].filter(Boolean).join(' · ');
+    [modelCaption(owner.backend(), owner.modelDetails()), modifiers()].filter(Boolean).join(' · ');
   return (
     <Popover
       open={props.instance() !== null}
@@ -143,15 +149,9 @@ export function ModelSelect(props: {
       margin={8}
       style={{ minWidth: 0, alignItems: 'flex-end' }}
       popupStyle={{
+        ...floatingStyle(),
         width: platform.idiom === 'terminal' ? 420 : 340,
-        maxWidth: Math.max(0, windowSize().width - 16),
-        maxHeight: Math.min(360, Math.max(0, windowSize().height - 16)),
-        minHeight: 0,
-        padding: 8,
-        backgroundColor: C.surface,
-        borderWidth: 1,
-        borderColor: C.line,
-        borderRadius: 12,
+        maxHeight: Math.min(380, Math.max(0, windowSize().height - 16)),
       }}
       trigger={
         <Button
@@ -197,11 +197,11 @@ export function ModelSelect(props: {
             >
               {model()}
             </Text>
-            <If when={effort()}>
+            <If when={modifiers()}>
               <Text
                 style={[{ color: C.secondary, fontSize: 13, flexShrink: 0 }, { numberOfLines: 1 }]}
               >
-                {` · ${effort()}`}
+                {` · ${modifiers()}`}
               </Text>
             </If>
           </View>
@@ -210,17 +210,7 @@ export function ModelSelect(props: {
       }
     >
       <If when={props.running?.()}>
-        <Text
-          style={{
-            ...captionTextStyle,
-            color: C.muted,
-            paddingHorizontal: controlStyle.paddingHorizontal,
-            paddingVertical: 8,
-            flexShrink: 0,
-          }}
-        >
-          {tr('Model for queued and future messages')}
-        </Text>
+        <Text style={noteStyle()}>{tr('Model for queued and future messages')}</Text>
       </If>
       <Each
         of={props.instance() === null ? [] : [props.instance()!]}
@@ -235,18 +225,9 @@ export function ModelSelect(props: {
               current={() => props.current() && props.instance() === instance}
               close={props.close}
               select={(backend) => props.select(instance, backend)}
-              manage={(model, page) => {
-                if (
-                  props.current() &&
-                  props.instance() === instance &&
-                  (!model || sameRoute(owner.backend(), { kind: 'model', ...model }))
-                )
-                  props.manage({
-                    sessionId: owner.sessionId,
-                    instance,
-                    model: model ?? undefined,
-                    page,
-                  });
+              manage={() => {
+                if (props.current() && props.instance() === instance)
+                  props.manage({ sessionId: owner.sessionId, instance });
               }}
               attach={(handle) => {
                 menu = handle;
@@ -268,46 +249,58 @@ function ModelMenu(props: {
   current(): boolean;
   close(instance: number): boolean;
   select(backend: ModelBackend): Promise<void>;
-  manage(model: ModelSelection | null, page?: string): void;
+  manage(): void;
   attach(handle: ModelMenuHandle): void;
   detach(handle: ModelMenuHandle): void;
 }) {
   const host = useHost();
   const owner = props.owner;
-  const pane = signal<Pane>(owner.backend() ? 'root' : 'models');
   const query = signal('');
   const page = signal<ModelsPage | null>(null);
   const choices = () => page()?.choices ?? [];
   const selected = signal(0);
   const loading = signal(false);
+  const refreshing = signal(false);
   const pending = signal(false);
+  const saving = delayed(pending);
+  const effortOpen = signal(false);
   const error = createText();
   let alive = true;
   let generation = 0;
   let modelsQueued = false;
+  let restartQueued = false;
+  let pageSearch = '';
+  let subscription: { close(): Promise<void> } | null = null;
   let removeSearchKeys = () => {};
   let list: ListRef | undefined;
-  let focusIntent: 'model' | 'effort' | null = null;
   cleanup(() => {
     alive = false;
     generation += 1;
     removeSearchKeys();
+    void subscription?.close();
   });
 
   const active = () => alive && props.current();
   const readyChoice = () => {
     const details = owner.modelDetails();
-    return details.kind === 'ready' && sameRoute(owner.backend(), details.choice.selection)
+    return details.kind === 'ready' && selectionForChoice(owner.backend(), details.choice)
       ? details.choice
       : null;
   };
+  const speeds = computed(() => availableSpeeds(readyChoice()));
   const hasEffortControls = () => {
     const choice = readyChoice();
     return (
       choice !== null &&
-      (choice.thinkingLevels.length > 0 || thinkingLevel(owner.backend()) != null)
+      (choice.thinkingLevels.length > 0 ||
+        thinkingLevel(selectionForChoice(owner.backend(), choice)) != null)
     );
   };
+  effect(() => {
+    if (effortOpen() && owner.modelDetails().kind === 'ready' && !hasEffortControls())
+      effortOpen.set(false);
+  });
+
   const action = (backend: ModelBackend): SelectionAction => ({
     instance: props.instance,
     sessionId: owner.sessionId,
@@ -323,17 +316,14 @@ function ModelMenu(props: {
       !sameBackend(request.expected, owner.backend())
     )
       return;
-    if (sameBackend(request.backend, request.expected)) {
-      props.close(request.instance);
-      return;
-    }
+    effortOpen.set(false);
+    if (sameBackend(request.backend, request.expected)) return;
     pending.set(true);
     error.set('');
     try {
       await props.select(request.backend);
-      if (active()) props.close(request.instance);
     } catch (reason) {
-      if (active()) error.set(errorText(reason));
+      if (active()) error.set(errorText(reason, 'Could not change the model.'));
     } finally {
       if (alive) pending.set(false);
     }
@@ -342,7 +332,7 @@ function ModelMenu(props: {
     const choice = readyChoice();
     if (
       !choice ||
-      !sameRoute(request.backend, choice.selection) ||
+      !selectionForChoice(request.backend, choice) ||
       !choice.thinkingLevels.includes(request.level) ||
       effectiveThinkingLevel(request.backend, choice) !== request.level
     )
@@ -353,58 +343,38 @@ function ModelMenu(props: {
     const choice = readyChoice();
     if (
       !choice ||
-      !sameRoute(request.backend, choice.selection) ||
+      !selectionForChoice(request.backend, choice) ||
       choice.defaultThinkingLevel != null ||
       thinkingLevel(request.backend) !== null
     )
       return;
     void submit(request);
   };
-  const close = ({ instance, from }: { instance: number; from: Pane }) => {
-    if (active() && !pending() && pane() === from) props.close(instance);
-  };
-  const back = () => {
-    if (!active() || pending()) return;
-    if (pane() === 'root') props.close(props.instance);
-    else {
-      focusIntent = pane() === 'models' ? 'model' : 'effort';
-      pane.set('root');
-      error.set('');
-    }
-  };
-  const changePane = ({ instance, to, from }: { instance: number; to: Pane; from: Pane }) => {
-    if (!active() || pending() || instance !== props.instance || pane() !== from) return;
-    if (to === 'effort' && !hasEffortControls()) return;
-    if (to === 'root') focusIntent = from === 'models' ? 'model' : 'effort';
-    error.set('');
-    pane.set(to);
-    if (to === 'models') void loadModels(true);
-  };
+
   const loadModels = async (restart = false) => {
-    if (!active() || pane() !== 'models' || (!restart && !page()?.next)) return;
+    if (!active() || (!restart && !page()?.next)) return;
     if (restart) {
       generation += 1;
-      batch(() => {
-        page.set(null);
-        selected.set(0);
-        error.set('');
-      });
+      restartQueued = true;
     }
     modelsQueued = true;
-    // Discarding a Promise cannot cancel admitted Host work. Keep one query
-    // in flight, then read the latest search or the next published page.
     if (loading()) return;
     loading.set(true);
     error.set('');
     try {
       do {
         modelsQueued = false;
+        const reset = restartQueued;
+        restartQueued = false;
         const reading = generation;
         const search = query();
+        const sameSearch = search === pageSearch;
+        const focused = () => (sameSearch ? choices()[index()] : undefined);
+        const count = reset ? (sameSearch ? Math.max(16, choices().length) : 16) : 0;
+        let previousPage = reset ? null : page();
         let changed = false;
         try {
           do {
-            const previousPage = page();
             if (previousPage && !previousPage.next) break;
             const result = await host.query(
               'agent',
@@ -413,52 +383,95 @@ function ModelMenu(props: {
                 ? { kind: 'continue', revision: previousPage.revision, cursor: previousPage.next }
                 : { kind: 'start', query: search },
             );
-            if (!active() || pane() !== 'models' || reading !== generation) break;
+            if (!active() || reading !== generation) break;
             if (result.kind === 'changed') {
               if (changed)
                 throw new UiError(
                   'The model catalog keeps changing. Retry to read the current choices.',
                 );
               changed = true;
-              page.set(null);
-              selected.set(0);
+              previousPage = null;
               continue;
             }
-            page.set({
+            const nextPage = {
               revision: result.revision,
               next: result.next,
               choices: [...(previousPage?.choices ?? []), ...result.choices],
+            };
+            refreshing.set(result.refreshing);
+            if (
+              nextPage.next &&
+              (nextPage.choices.length < count ||
+                (focused() &&
+                  !nextPage.choices.some((choice) =>
+                    sameRoute(focused()!.selection, choice.selection),
+                  )))
+            ) {
+              previousPage = nextPage;
+              continue;
+            }
+            const focus = focused()?.selection ?? (!search ? owner.backend() : null);
+            const currentIndex = focus
+              ? nextPage.choices.findIndex((choice) => selectionForChoice(focus, choice))
+              : -1;
+            batch(() => {
+              page.set(nextPage);
+              pageSearch = search;
+              selected.set(
+                currentIndex >= 0
+                  ? currentIndex
+                  : Math.min(selected(), Math.max(0, nextPage.choices.length - 1)),
+              );
             });
             break;
-          } while (active() && pane() === 'models' && reading === generation);
+          } while (active() && reading === generation);
         } catch (reason) {
-          if (active() && pane() === 'models' && reading === generation) {
+          if (active() && reading === generation) {
             modelsQueued = false;
-            error.set(errorText(reason));
+            error.set(errorText(reason, 'Could not load models.'));
           }
         }
-      } while (active() && pane() === 'models' && modelsQueued);
+      } while (active() && modelsQueued);
     } finally {
       if (alive) loading.set(false);
     }
   };
-  const retry = ({ instance, from }: { instance: number; from: Pane }) => {
-    if (!active() || pending() || instance !== props.instance || pane() !== from) return;
-    if (from === 'models') void loadModels(true);
-    else void owner.refreshModel();
+
+  void (async () => {
+    try {
+      const opened = await host.subscribe('agent', 'watchModels', {});
+      if (!active()) {
+        await opened.close();
+        return;
+      }
+      subscription = opened;
+      for (;;) {
+        const result = await opened.next();
+        if (!active() || result === null) break;
+        if (result.kind !== 'ready') continue;
+        refreshing.set(result.refreshing);
+        if (page()?.revision !== result.revision) {
+          void loadModels(true);
+          void owner.refreshModel();
+        }
+      }
+    } catch (reason) {
+      if (active()) error.set(errorText(reason, 'Could not load models.'));
+    }
+  })();
+
+  const retryCatalog = () => {
+    if (active() && !pending()) void loadModels(true);
+  };
+  const retryPolicy = () => {
+    if (active() && !pending()) void owner.refreshModel();
   };
   const index = () => Math.min(selected(), Math.max(0, choices().length - 1));
   const routeId = (choice: ModelChoice) => routeKey(choice.selection);
   const byId = computed(() => new Map(choices().map((choice) => [routeId(choice), choice])));
   const ids = computed(() => choices().map(routeId));
   const modelAction = (choice: ModelChoice) =>
-    action(sameRoute(owner.backend(), choice.selection) ? owner.backend()! : choice.selection);
-  const nativeSelection = (): ModelSelection | null => {
-    const selection = readyChoice()?.selection;
-    return selection?.kind === 'model'
-      ? { connectionId: selection.connectionId, modelId: selection.modelId }
-      : null;
-  };
+    action(selectionForChoice(owner.backend(), choice) ?? choice.selection);
   const move = (delta: number) => {
     const next = Math.max(0, Math.min(choices().length - 1, index() + delta));
     selected.set(next);
@@ -469,161 +482,30 @@ function ModelMenu(props: {
     const choice = choices()[index()];
     if (choice) void submit(modelAction(choice));
   };
-  const focusRoot = (which: 'model' | 'effort', node: ViewRef) => {
-    if (focusIntent !== which) return;
-    focusIntent = null;
-    node.focus();
+  const dismiss = () => {
+    effortOpen.set(false);
+    if (active()) props.close(props.instance);
   };
+  const cancel = () => {
+    if (effortOpen()) {
+      effortOpen.set(false);
+      return;
+    }
+    dismiss();
+  };
+
   const handle: ModelMenuHandle = {
     instance: props.instance,
-    back,
-    dismiss: () => close({ instance: props.instance, from: pane() }),
+    cancel,
+    dismiss,
   };
-  effect(() => {
-    if (pane() === 'effort' && owner.modelDetails().kind === 'ready' && !hasEffortControls()) {
-      focusIntent = 'model';
-      pane.set('root');
-    }
-  });
   props.attach(handle);
   cleanup(() => props.detach(handle));
-  void owner.refreshModel();
-  if (pane() === 'models') void loadModels(true);
 
   return (
-    <View style={{ minHeight: 0, flexShrink: 1, gap: 4 }}>
-      <If when={platform.idiom === 'terminal' || pane() !== 'root'}>
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 8,
-          }}
-        >
-          <Text
-            style={{
-              ...captionTextStyle,
-              color: C.secondary,
-              fontWeight: '600',
-              paddingHorizontal: 8,
-            }}
-          >
-            {tr('Models')}
-          </Text>
-          <Button
-            disabled={pending()}
-            accessibilityLabel={
-              pane() === 'root' ? tr('Close model selection') : tr('Back to model settings')
-            }
-            onPress={
-              pane() === 'root'
-                ? inputAction(close, { instance: props.instance, from: pane() })
-                : inputAction(changePane, { instance: props.instance, from: pane(), to: 'root' })
-            }
-            tooltip={textTooltip(() => (pane() === 'root' ? tr('Close') : tr('Back')))}
-            style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Icon name={pane() === 'root' ? 'close' : 'back'} color={C.muted} />
-          </Button>
-        </View>
-      </If>
-      <If when={pane() === 'root'}>
-        <Button
-          ref={(node) => focusRoot('model', node)}
-          disabled={pending()}
-          accessibilityLabel={tr('Choose model')}
-          onPress={inputAction(changePane, {
-            instance: props.instance,
-            from: 'root',
-            to: 'models',
-          })}
-          style={{
-            ...controlStyle,
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 8,
-          }}
-          hoverStyle={{ backgroundColor: C.raised }}
-          focusStyle={{ backgroundColor: C.raised }}
-          disabledStyle={controlDisabledStyle}
-        >
-          <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Model')}</Text>
-          <Text
-            style={[
-              {
-                ...captionTextStyle,
-                color: C.muted,
-                flex: 1,
-                minWidth: 0,
-                textAlign: 'right',
-              },
-              { numberOfLines: 1 },
-            ]}
-          >
-            {modelCaption(owner.backend(), owner.modelDetails())}
-          </Text>
-          <Icon name="right" color={C.muted} />
-        </Button>
-        <If when={hasEffortControls()}>
-          <Button
-            ref={(node) => focusRoot('effort', node)}
-            disabled={pending() || !readyChoice()}
-            accessibilityLabel={tr('Choose reasoning effort')}
-            onPress={inputAction(changePane, {
-              instance: props.instance,
-              from: 'root',
-              to: 'effort',
-            })}
-            style={{
-              ...controlStyle,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 8,
-            }}
-            hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.raised }}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Reasoning effort')}</Text>
-            <Text
-              style={[
-                {
-                  ...captionTextStyle,
-                  color: C.muted,
-                  flex: 1,
-                  minWidth: 0,
-                  textAlign: 'right',
-                },
-                { numberOfLines: 1 },
-              ]}
-            >
-              {effortCaption(owner.backend(), owner.modelDetails())}
-            </Text>
-            <Icon name="right" color={C.muted} />
-          </Button>
-        </If>
-        <If when={nativeSelection()}>
-          <Button
-            disabled={pending()}
-            accessibilityLabel={tr('Edit current model settings')}
-            onPress={inputAction(props.manage, nativeSelection())}
-            style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-            hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.raised }}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
-              {tr('Model settings')}
-            </Text>
-            <Icon name="right" color={C.muted} />
-          </Button>
-        </If>
-      </If>
-      <If when={pane() === 'models'}>
+    <View style={{ minHeight: 0, flexShrink: 1 }}>
+      <View style={menuRowStyle()}>
+        <Icon name="search" color={C.muted} />
         <Input
           ref={(node) => {
             removeSearchKeys();
@@ -631,14 +513,14 @@ function ModelMenu(props: {
               keymap.bind('up', () => move(-1), { when: 'always', repeat: true, within: node }),
               keymap.bind('down', () => move(1), { when: 'always', repeat: true, within: node }),
               keymap.bind('enter', activate, { when: 'always', within: node }),
-              keymap.bind('escape', back, { when: 'always', within: node }),
+              keymap.bind('escape', cancel, { when: 'always', within: node }),
             ];
             removeSearchKeys = () => unbind.forEach((remove) => remove());
           }}
           autoFocus
           accessibilityLabel={tr('Search models and sources')}
           value={query()}
-          readonly={pending()}
+          readonly={saving()}
           onChange={({ value: text }) => {
             batch(() => {
               query.set(text);
@@ -649,33 +531,29 @@ function ModelMenu(props: {
           }}
           placeholder={tr('Search models and sources…')}
           style={{
-            ...inputTextStyle,
-            placeholderColor: C.muted,
+            ...captionTextStyle,
+            flex: 1,
+            minWidth: 0,
             color: C.text,
-            height: 32,
-            backgroundColor: C.background,
-            borderRadius: inputBorderRadius,
-            paddingHorizontal: 12,
+            placeholderColor: C.muted,
           }}
         />
+      </View>
+      <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
+      <If when={choices().length > 0}>
         <List
           each={ids()}
           ref={(node) => {
             list = node;
           }}
-          estimatedItemSize={modelRowHeight}
+          estimatedItemSize={ROW}
           onLoadMore={() => {
             if (!error()) void loadModels();
           }}
           style={{
-            height: choices().length * modelRowHeight,
-            minHeight: modelRowHeight,
+            height: choices().length * ROW,
+            minHeight: ROW,
             flexShrink: 1,
-            // On the desktop the list is a field like the search above it, so
-            // a row cut off at its edge does not run into the count below.
-            ...(platform.idiom === 'terminal'
-              ? {}
-              : { borderRadius: 8, backgroundColor: C.background }),
           }}
         >
           {(id) => (
@@ -684,6 +562,7 @@ function ModelMenu(props: {
                 const initial = byId().get(key());
                 if (!initial) return <View />;
                 const choice = () => byId().get(key()) ?? initial;
+                const checked = () => selectionForChoice(owner.backend(), choice()) !== null;
                 return (
                   <Button
                     accessibilityLabel={tr('Use {model} · {connection}', {
@@ -691,123 +570,184 @@ function ModelMenu(props: {
                       connection: choice().sourceName,
                     })}
                     disabled={pending()}
-                    selected={sameRoute(owner.backend(), choice().selection)}
+                    selected={checked()}
                     onPress={inputAction(submit, modelAction(choice()))}
                     style={{
-                      height: modelRowHeight,
-                      paddingHorizontal: 12,
-                      paddingVertical: platform.idiom === 'terminal' ? 8 : 4,
-                      borderRadius: 8,
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 12,
+                      ...menuRowStyle(),
+                      height: ROW,
                       backgroundColor:
                         choices()[index()] && routeId(choices()[index()]) === key()
-                          ? C.line
-                          : listFill(),
+                          ? C.floatingRaised
+                          : undefined,
                     }}
-                    hoverStyle={{ backgroundColor: C.raised }}
-                    focusStyle={{ backgroundColor: C.raised }}
-                    disabledStyle={controlDisabledStyle}
+                    hoverStyle={menuRowHoverStyle()}
+                    focusStyle={menuRowHoverStyle()}
+                    disabledStyle={saving() ? controlDisabledStyle : undefined}
                   >
-                    <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'none' }]}>
+                    <Icon name="bot" color={C.secondary} />
+                    <View
+                      style={[
+                        {
+                          flex: 1,
+                          minWidth: 0,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 8,
+                        },
+                        { pointerEvents: 'none' },
+                      ]}
+                    >
                       <Text
                         style={[
-                          { ...captionTextStyle, color: C.text, fontSize: 14 },
+                          { ...captionTextStyle, color: C.text, flexShrink: 0, maxWidth: '70%' },
                           { numberOfLines: 1 },
                         ]}
                       >
                         {choice().label}
                       </Text>
-                      <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
+                      <Text
+                        style={[
+                          { ...captionTextStyle, color: C.muted, flex: 1, minWidth: 0 },
+                          { numberOfLines: 1 },
+                        ]}
+                      >
                         {choice().sourceName}
                       </Text>
                     </View>
-                    <ChoiceIndicator
-                      kind="radio"
-                      checked={sameRoute(owner.backend(), choice().selection)}
-                      disabled={pending()}
-                    />
+                    <View style={[{ width: 16 }, { pointerEvents: 'none' }]}>
+                      <If when={checked()}>
+                        <Icon name="check" color={C.accent} />
+                      </If>
+                    </View>
                   </Button>
                 );
               }}
             </Each>
           )}
         </List>
-        <If when={!loading() && !error() && choices().length === 0}>
-          <Text style={{ ...captionTextStyle, color: C.muted, ...listTextInset }}>
-            {tr('No models match this search.')}
-          </Text>
-        </If>
-        <Text style={{ ...captionTextStyle, color: C.muted, ...listTextInset }}>
-          {loading()
-            ? tr('Loading…')
-            : choices().length === 1
-              ? tr('{count} model', { count: choices().length })
-              : tr('{count} models', { count: choices().length })}
-        </Text>
       </If>
-      <If when={pane() === 'effort'}>
+      <If
+        when={(loading() || refreshing() || page() === null) && !error() && choices().length === 0}
+      >
+        <Text style={noteStyle()}>{tr('Loading…')}</Text>
+      </If>
+      <If
+        when={page() !== null && !loading() && !refreshing() && !error() && choices().length === 0}
+      >
+        <Text style={noteStyle()}>{tr('No models match this search.')}</Text>
+      </If>
+      <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
+      <Popover
+        open={effortOpen() && hasEffortControls()}
+        onOpenChange={({ open }) => {
+          if (!pending() && hasEffortControls()) effortOpen.set(open);
+          else if (!open) effortOpen.set(false);
+        }}
+        placement="left"
+        align="end"
+        offset={8}
+        margin={8}
+        style={{ alignSelf: 'stretch' }}
+        popupStyle={{
+          ...floatingStyle(),
+          width: 200,
+          maxHeight: Math.min(280, Math.max(0, windowSize().height - 16)),
+        }}
+        trigger={
+          <Button
+            disabled={pending() || !hasEffortControls()}
+            selected={effortOpen() && hasEffortControls()}
+            accessibilityLabel={tr('Choose reasoning effort')}
+            style={{
+              ...menuRowStyle(),
+              backgroundColor: effortOpen() && hasEffortControls() ? C.floatingRaised : undefined,
+            }}
+            hoverStyle={menuRowHoverStyle()}
+            focusStyle={menuRowHoverStyle()}
+            disabledStyle={!hasEffortControls() || saving() ? controlDisabledStyle : undefined}
+          >
+            <Icon name="thinking" color={C.secondary} />
+            <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
+              {tr('Reasoning effort')}
+            </Text>
+            <Text
+              style={[{ ...captionTextStyle, color: C.muted, flexShrink: 1 }, { numberOfLines: 1 }]}
+            >
+              {hasEffortControls()
+                ? effortCaption(owner.backend(), owner.modelDetails()) || tr('Default')
+                : tr('Unsupported')}
+            </Text>
+            <Icon name="right" color={C.muted} />
+          </Button>
+        }
+      >
         <Scroll style={{ minHeight: 0, flexShrink: 1 }}>
           <Each<ModelChoice>
             of={readyChoice() ? [readyChoice()!] : []}
             key={(choice: ModelChoice) => routeId(choice)}
           >
             {(item) => (
-              <View style={{ gap: 8 }}>
+              <View>
                 <Each<string> of={item().thinkingLevels} key={(level: string) => level}>
-                  {(level) => (
-                    <Button
-                      disabled={pending()}
-                      accessibilityLabel={tr('Use effort {level}', { level: level() })}
-                      selected={effectiveThinkingLevel(owner.backend(), item()) === level()}
-                      onPress={inputAction(selectEffort, {
-                        ...action(
-                          withThinkingLevel(
-                            owner.backend() ?? item().selection,
-                            item().defaultThinkingLevel === level() ? null : level(),
-                          ),
-                        ),
-                        level: level(),
-                      })}
-                      style={{
-                        ...controlStyle,
-                        backgroundColor: C.background,
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 12,
-                      }}
-                      hoverStyle={{ backgroundColor: C.raised }}
-                      focusStyle={{ backgroundColor: C.raised }}
-                      disabledStyle={controlDisabledStyle}
-                    >
-                      <ChoiceIndicator
-                        kind="radio"
-                        checked={effectiveThinkingLevel(owner.backend(), item()) === level()}
+                  {(level) => {
+                    const checked = () =>
+                      effectiveThinkingLevel(owner.backend(), item()) === level();
+                    return (
+                      <Button
                         disabled={pending()}
-                      />
-                      <Text style={{ ...captionTextStyle, color: C.text }}>{level()}</Text>
-                    </Button>
-                  )}
+                        accessibilityLabel={tr('Use effort {level}', { level: level() })}
+                        selected={checked()}
+                        onPress={inputAction(selectEffort, {
+                          ...action(
+                            withThinkingLevel(
+                              selectionForChoice(owner.backend(), item()) ?? item().selection,
+                              item().defaultThinkingLevel === level() ? null : level(),
+                            ),
+                          ),
+                          level: level(),
+                        })}
+                        style={menuRowStyle()}
+                        hoverStyle={menuRowHoverStyle()}
+                        focusStyle={menuRowHoverStyle()}
+                        disabledStyle={saving() ? controlDisabledStyle : undefined}
+                      >
+                        <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
+                          {level()}
+                        </Text>
+                        <View style={[{ width: 16 }, { pointerEvents: 'none' }]}>
+                          <If when={checked()}>
+                            <Icon name="check" color={C.accent} />
+                          </If>
+                        </View>
+                      </Button>
+                    );
+                  }}
                 </Each>
                 <If
                   when={
-                    item().defaultThinkingLevel == null && thinkingLevel(owner.backend()) != null
+                    item().defaultThinkingLevel == null &&
+                    thinkingLevel(selectionForChoice(owner.backend(), item())) != null
                   }
                 >
+                  <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
                   <Button
                     disabled={pending()}
                     accessibilityLabel={tr('Use provider settings')}
                     onPress={inputAction(
                       resetEffort,
-                      action(withThinkingLevel(owner.backend() ?? item().selection, null)),
+                      action(
+                        withThinkingLevel(
+                          selectionForChoice(owner.backend(), item()) ?? item().selection,
+                          null,
+                        ),
+                      ),
                     )}
-                    style={controlStyle}
-                    hoverStyle={controlHoverStyle()}
-                    focusStyle={controlFocusStyle()}
-                    disabledStyle={controlDisabledStyle}
+                    style={menuRowStyle()}
+                    hoverStyle={menuRowHoverStyle()}
+                    focusStyle={menuRowHoverStyle()}
+                    disabledStyle={saving() ? controlDisabledStyle : undefined}
                   >
-                    <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                    <Text style={{ ...captionTextStyle, color: C.secondary, flex: 1 }}>
                       {tr('Use provider settings')}
                     </Text>
                   </Button>
@@ -816,89 +756,77 @@ function ModelMenu(props: {
             )}
           </Each>
         </Scroll>
+      </Popover>
+      <If when={speeds().length > 0}>
+        <SettingsSegmented
+          label={tr('Speed')}
+          value={serviceTier(owner.backend()) ?? ''}
+          choices={[
+            { value: '', title: tr('Default') },
+            ...speeds().map((tier) => ({
+              value: tier.id,
+              title: tier.name,
+            })),
+          ]}
+          disabled={pending()}
+          change={(value) => {
+            const current = owner.backend();
+            if (current?.kind === 'model')
+              void submit(action({ ...current, serviceTier: value || null }));
+          }}
+        />
       </If>
-      <If when={pane() !== 'models' && owner.modelDetails().kind !== 'ready'}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {owner.modelDetails().kind === 'loading'
-            ? tr('Loading model policy…')
-            : tr('The saved model policy is unavailable. Its selection is preserved.')}
+      <Button
+        disabled={pending()}
+        accessibilityLabel={tr('Manage models')}
+        onPress={inputAction(props.manage, null)}
+        style={menuRowStyle()}
+        hoverStyle={menuRowHoverStyle()}
+        focusStyle={menuRowHoverStyle()}
+        disabledStyle={saving() ? controlDisabledStyle : undefined}
+      >
+        <Icon name="settings" color={C.secondary} />
+        <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>{tr('Manage models…')}</Text>
+      </Button>
+      <If when={owner.backend() !== null && owner.modelDetails().kind === 'unavailable'}>
+        <Text style={noteStyle()}>
+          {tr('The saved model policy is unavailable. Its selection is preserved.')}
         </Text>
         <Button
           disabled={pending()}
-          onPress={inputAction(retry, { instance: props.instance, from: pane() })}
+          onPress={retryPolicy}
           accessibilityLabel={tr('Retry model policy')}
-          style={controlStyle}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-          disabledStyle={controlDisabledStyle}
+          style={menuRowStyle()}
+          hoverStyle={menuRowHoverStyle()}
+          focusStyle={menuRowHoverStyle()}
+          disabledStyle={saving() ? controlDisabledStyle : undefined}
         >
           <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
         </Button>
       </If>
-      <If when={platform.idiom !== 'terminal'}>
-        <View style={{ height: 1, backgroundColor: C.line }} />
-      </If>
-      <Button
-        disabled={pending()}
-        accessibilityLabel={tr('Manage external agents')}
-        onPress={inputAction(() => props.manage(null, 'external-agents'), null)}
-        style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-        hoverStyle={controlHoverStyle()}
-        focusStyle={controlFocusStyle()}
-        disabledStyle={controlDisabledStyle}
-      >
-        <Text style={{ ...captionTextStyle, color: C.accent, flex: 1 }}>
-          {tr('External agents')}
-        </Text>
-        <Icon name="right" color={C.muted} />
-      </Button>
-      <Button
-        disabled={pending()}
-        accessibilityLabel={tr('Manage connections and models')}
-        onPress={inputAction(props.manage, null)}
-        style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-        hoverStyle={controlHoverStyle()}
-        focusStyle={controlFocusStyle()}
-        disabledStyle={controlDisabledStyle}
-      >
-        <Text
-          style={{
-            ...captionTextStyle,
-            color: platform.idiom === 'terminal' ? C.accent : C.secondary,
-            flex: 1,
-          }}
-        >
-          {tr('Manage connections & models')}
-        </Text>
-        <If when={platform.idiom !== 'terminal'}>
-          <Icon name="right" color={C.muted} />
-        </If>
-      </Button>
       <If when={error()}>
         <Scroll
           accessibilityLabel={tr('Model selection error')}
           style={{ minHeight: 16, flexShrink: 1 }}
         >
-          <Text style={[{ ...captionTextStyle, color: C.danger }, { userSelect: 'text' }]}>
+          <Text style={[{ ...noteStyle(), color: C.danger }, { userSelect: 'text' }]}>
             {error()}
           </Text>
         </Scroll>
-        <If when={pane() === 'models'}>
-          <Button
-            disabled={pending()}
-            onPress={inputAction(retry, { instance: props.instance, from: pane() })}
-            accessibilityLabel={tr('Retry model catalog')}
-            style={controlStyle}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
-          </Button>
-        </If>
+        <Button
+          disabled={pending()}
+          onPress={retryCatalog}
+          accessibilityLabel={tr('Retry model catalog')}
+          style={menuRowStyle()}
+          hoverStyle={menuRowHoverStyle()}
+          focusStyle={menuRowHoverStyle()}
+          disabledStyle={saving() ? controlDisabledStyle : undefined}
+        >
+          <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+        </Button>
       </If>
-      <If when={pending()}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Saving selection…')}</Text>
+      <If when={saving()}>
+        <Text style={noteStyle()}>{tr('Saving selection…')}</Text>
       </If>
     </View>
   );

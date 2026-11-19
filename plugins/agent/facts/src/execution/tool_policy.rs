@@ -38,16 +38,11 @@ impl CodeLanguage {
 }
 
 impl ToolMode {
-    /// Product default, not capability detection. A model override always wins.
-    pub fn for_model(model_id: &str, request_url: &str, enabled: Option<bool>) -> Self {
-        let enabled = enabled.unwrap_or_else(|| {
-            let model = model_id.to_ascii_lowercase();
-            model.contains("gpt-") || model.contains("deepseek") || deepseek_endpoint(request_url)
-        });
-        if enabled {
-            Self::CodeMode
-        } else {
+    pub fn from_override(enabled: Option<bool>) -> Self {
+        if enabled == Some(false) {
             Self::Direct
+        } else {
+            Self::default()
         }
     }
 }
@@ -86,7 +81,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_work_through_gateways_and_overrides_remain_independent() {
+    fn code_mode_is_default_and_can_be_disabled() {
+        assert_eq!(ToolMode::from_override(None), ToolMode::CodeMode);
+        assert_eq!(ToolMode::from_override(Some(true)), ToolMode::CodeMode);
+        assert_eq!(ToolMode::from_override(Some(false)), ToolMode::Direct);
+    }
+
+    #[test]
+    fn editing_defaults_work_through_gateways() {
         for (model, url, enabled) in [
             ("openai/gpt-next", "https://openrouter.ai/api/v1", true),
             ("GPT-5.6-luna", "http://localhost:8888/v1", true),
@@ -102,25 +104,14 @@ mod tests {
             ("other", "not a URL", false),
         ] {
             assert_eq!(
-                ToolMode::for_model(model, url, None) == ToolMode::CodeMode,
-                enabled
-            );
-            assert_eq!(
                 EditingTools::for_model(model, url, None) == EditingTools::ApplyPatch,
                 enabled
             );
-            for code in [false, true] {
-                for patch in [false, true] {
-                    assert_eq!(
-                        ToolMode::for_model(model, url, Some(code)) == ToolMode::CodeMode,
-                        code
-                    );
-                    assert_eq!(
-                        EditingTools::for_model(model, url, Some(patch))
-                            == EditingTools::ApplyPatch,
-                        patch
-                    );
-                }
+            for patch in [false, true] {
+                assert_eq!(
+                    EditingTools::for_model(model, url, Some(patch)) == EditingTools::ApplyPatch,
+                    patch
+                );
             }
         }
     }

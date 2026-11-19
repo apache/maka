@@ -19,12 +19,9 @@
 
 use super::*;
 use maka_agent_facts::language::Language;
-use maka_agent_facts::{
-    artifact::{ArtifactKind, ArtifactSource},
-    event::Invocation,
-    tool_output::ToolContent,
-};
+use maka_agent_facts::tool_output::ToolContent;
 use maka_code_runtime::CellOutput;
+use maka_plugin_core::operation::OperationResult;
 use maka_workspace_api::computer::ResultValue;
 
 pub(super) fn title(method: &str, input: &Value) -> maka_agent_facts::display::Text {
@@ -43,23 +40,25 @@ pub(super) fn title(method: &str, input: &Value) -> maka_agent_facts::display::T
 }
 
 pub(super) async fn project(
-    store: &SessionStore,
-    invocation: &Invocation,
+    access: &Arc<RunAccess>,
     reply: OperationReply,
     language: Language,
 ) -> Result<ToolSuccess, ToolError> {
-    mutation_result(reply.clone(), language)?;
+    let projected = mutation_result(reply.clone(), language)?;
     let Receipt::Recorded {
-        outcome: OperationOutcome::Returned { value },
+        outcome:
+            OperationOutcome::Returned {
+                result: OperationResult::Success { value },
+            },
         ..
     } = &reply.receipt
     else {
-        unreachable!("validated receipt")
+        return Ok(projected);
     };
     let result = serde_json::from_value(value.clone());
     let failed = matches!(result, Ok(ResultValue::Failed { .. }));
     let raw = ToolOutput::Operation(Box::new(reply));
-    match parts(store, invocation, result, language).await {
+    match parts(access, result, language).await {
         Ok(parts) => Ok(ToolSuccess::content(raw, parts).reporting_error(failed)),
         // A display failure cannot erase a completed native effect or its original receipt.
         Err(_) => Ok(ToolSuccess::projected(
@@ -69,8 +68,7 @@ pub(super) async fn project(
     }
 }
 async fn parts(
-    store: &SessionStore,
-    invocation: &Invocation,
+    access: &Arc<RunAccess>,
     result: Result<ResultValue, serde_json::Error>,
     language: Language,
 ) -> Result<Vec<ToolContent>, ToolError> {
@@ -86,36 +84,11 @@ async fn parts(
             serde_json::to_string(&state).expect("state")
         ))],
         ResultValue::Completed { artifact, state } => {
-            let bytes = store
-                .with_artifact(
-                    maka_event_log::artifacts::ArtifactReadScope::Execution(invocation),
-                    &artifact,
-                    |record, reader| {
-                        if record.source != ArtifactSource::SessionEffect
-                            || record.kind != ArtifactKind::File
-                            || record.mime_type.as_deref() != Some("application/json")
-                        {
-                            return Err(ToolError::Failed(
-                                "Computer output does not belong to the original invocation".into(),
-                            ));
-                        }
-                        let mut bytes = Vec::with_capacity(record.size_bytes as usize);
-                        reader
-                            .read_to_end(&mut bytes)
-                            .map_err(|_| ToolError::Failed("Computer output unavailable".into()))?;
-                        if bytes.len() as u64 != record.size_bytes {
-                            return Err(ToolError::Failed("Computer output unavailable".into()));
-                        }
-                        Ok(bytes)
-                    },
+            let bytes = access.computer_output(artifact).await?.ok_or_else(|| {
+                ToolError::Failed(
+                    "Computer output does not belong to the original execution".into(),
                 )
-                .await
-                .map_err(|error| ToolError::Persistence(error.to_string()))?
-                .ok_or_else(|| {
-                    ToolError::Failed(
-                        "Computer output does not belong to the original invocation".into(),
-                    )
-                })??;
+            })?;
             let outputs: Vec<CellOutput> = serde_json::from_slice(&bytes)
                 .map_err(|_| ToolError::Failed("Computer output invalid".into()))?;
             if outputs

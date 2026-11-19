@@ -132,10 +132,15 @@ const ratio = signal(16 / 9);
 ## Capabilities
 
 When the app declares [capabilities](../docs/sandbox-and-capabilities.md), video sources load from the hosts `network`
-allows; a source on another host shows an empty view and reports `onError` with `code` `"ERR_ACCESS_DENIED"`.
+allows; a source on another host shows an empty view and reports `onError` with `code` `"ERR_ACCESS_DENIED"`. A local
+file (an absolute path or a `file:` URL) plays on the desktops when `fs.read` holds it, and not on mobile or the web; a
+relative path plays only on the web, as the page's.
 
 ## Platform notes
 
 - iOS draws the video in an `AVPlayerLayer`, or in the system player view with `controls`; AVFoundation is loaded the
   first time a video is created.
+- On iOS, `audioSession="playback"` or `"mixWithOthers"` allows playback to continue in the background when the app's
+  `Info.plist` includes `UIBackgroundModes: ["audio"]` (set through `ios.infoPlist` in `nsh.json` for packaged apps).
+  Switching back to `"default"` restores the system's automatic background playback policy.
 - Android plays with MediaPlayer on a TextureView, with a MediaController for `controls`.

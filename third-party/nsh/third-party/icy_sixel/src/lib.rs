@@ -41,9 +41,9 @@ pub mod sixel_image;
 pub use decoder::DcsSettings;
 #[allow(deprecated)]
 pub use decoder::{sixel_decode, sixel_decode_from_dcs};
+pub use encoder::{EncodeOptions, QuantizeMethod, sixel_encode_into};
 #[allow(deprecated)]
 pub use encoder::{sixel_encode, sixel_encode_default};
-pub use encoder::{sixel_encode_into, EncodeOptions, QuantizeMethod};
 pub use sixel_image::{BackgroundMode, PixelAspectRatio, SixelImage};
 
 /// Errors that can occur during SIXEL encoding or decoding.

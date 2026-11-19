@@ -17,7 +17,17 @@
  * under the License.
  */
 
-import { effect, inputAction, signal, View, platform, windowSize, type JSX } from 'nsh';
+import {
+  cleanup,
+  effect,
+  inputAction,
+  keymap,
+  signal,
+  View,
+  platform,
+  windowSize,
+  type JSX,
+} from 'nsh';
 import { Dialog, ResizablePanel, ResizablePanelGroup } from 'nsh/base';
 import { C } from './ui';
 import { tr } from './locale';
@@ -46,11 +56,34 @@ export const sidePaneRoom = (browser: boolean, preview: boolean) =>
     ) - 1,
   );
 
+export function createPreviewDialog(props: {
+  shown(): boolean;
+  suppressed(): boolean;
+  focused(): boolean;
+  close(): void;
+}) {
+  const open = signal(false);
+  let wasDocked = canDockPreview();
+  effect(() => {
+    const docked = canDockPreview();
+    if (!props.shown() || docked || props.suppressed()) open.set(false);
+    else if (!wasDocked || props.focused()) open.set(true);
+    else {
+      props.close();
+      open.set(false);
+    }
+    wasDocked = docked;
+  });
+  return open;
+}
+
 export function Workbench(props: {
   expanded(): boolean;
   previewShown(): boolean;
-  previewSuppressed(): boolean;
-  previewFocused(): boolean;
+  previewFullscreen?(): boolean;
+  togglePreviewFullscreen?(): void;
+  floatingComposer?(): JSX.Element | null;
+  previewDialog(): boolean;
   closePreview(): void;
   navigation(): JSX.Element;
   preview(docked: boolean): JSX.Element;
@@ -59,27 +92,36 @@ export function Workbench(props: {
   children: JSX.Element;
 }) {
   const preferredWidth = signal(32 * CELL);
-  const preferredPreviewWidth = signal(48 * CELL);
+  const preferredPreviewWidth = signal(platform.idiom === 'terminal' ? 48 * CELL : 62 * CELL);
   const preview = () => props.previewShown() && canDockPreview();
-  const browser = () => props.expanded() && canDockBrowser(props.previewShown());
-  const room = () => sidePaneRoom(browser(), preview());
+  const fullscreen = () => props.previewFullscreen?.() ?? false;
+  const browser = () => props.expanded() && canDockBrowser(props.previewShown() && !fullscreen());
+  const room = () => (fullscreen() ? 0 : sidePaneRoom(browser(), preview()));
+  let unbindFullscreen: (() => void) | undefined;
+  cleanup(() => unbindFullscreen?.());
   const panes = () => (
     <>
-      <ResizablePanel minSize={CENTER_MIN} style={{ minHeight: 0 }}>
+      <ResizablePanel visible={!fullscreen()} minSize={CENTER_MIN} style={{ minHeight: 0 }}>
         {props.children}
       </ResizablePanel>
       <Each of={props.sides?.() ?? []} key={(pane) => pane}>
         {(pane, index) => (
-          <ResizablePanel visible={index() < room()} minSize={CENTER_MIN} style={{ minHeight: 0 }}>
+          <ResizablePanel
+            visible={!fullscreen() && index() < room()}
+            minSize={CENTER_MIN}
+            style={{ minHeight: 0 }}
+          >
             {pane().render()}
           </ResizablePanel>
         )}
       </Each>
       <ResizablePanel
         visible={preview()}
-        size={preferredPreviewWidth()}
+        size={fullscreen() ? undefined : preferredPreviewWidth()}
         minSize={PREVIEW_MIN}
-        onResize={({ size }) => preferredPreviewWidth.set(size)}
+        onResize={({ size }) => {
+          if (!fullscreen()) preferredPreviewWidth.set(size);
+        }}
         style={{ minHeight: 0 }}
       >
         <If when={preview()}>{props.preview(true)}</If>
@@ -88,23 +130,27 @@ export function Workbench(props: {
   );
   // The desktop's panel holds the panes, so it needs their minimums and its own insets.
   const panesMin = () =>
-    CENTER_MIN * (1 + Math.min(room(), props.sides?.().length ?? 0)) +
-    (preview() ? PREVIEW_MIN : 0) +
+    (fullscreen()
+      ? PREVIEW_MIN
+      : CENTER_MIN * (1 + Math.min(room(), props.sides?.().length ?? 0)) +
+        (preview() ? PREVIEW_MIN : 0)) +
     INSET * (browser() ? 1 : 2);
-  const previewDialog = signal(false);
-  let wasDocked = canDockPreview();
-  effect(() => {
-    const nowDocked = canDockPreview();
-    if (!props.previewShown() || nowDocked || props.previewSuppressed()) previewDialog.set(false);
-    else if (!wasDocked || props.previewFocused()) previewDialog.set(true);
-    else {
-      props.closePreview();
-      previewDialog.set(false);
-    }
-    wasDocked = nowDocked;
-  });
   return (
-    <View style={{ flex: 1, flexDirection: 'row', minHeight: 0 }}>
+    <View
+      ref={(node) => {
+        unbindFullscreen?.();
+        unbindFullscreen = node
+          ? keymap.bind(
+              'shift+mod+f',
+              () => {
+                if (preview()) props.togglePreviewFullscreen?.();
+              },
+              { within: node },
+            )
+          : undefined;
+      }}
+      style={{ flex: 1, flexDirection: 'row', minHeight: 0 }}
+    >
       <ResizablePanelGroup
         axis="horizontal"
         handleAccessibilityLabel={tr('Resize workspace panels')}
@@ -145,11 +191,27 @@ export function Workbench(props: {
               >
                 {panes()}
               </ResizablePanelGroup>
+              <If when={fullscreen() && props.floatingComposer !== undefined}>
+                <View
+                  style={[
+                    {
+                      position: 'absolute',
+                      left: 24,
+                      right: 24,
+                      bottom: 16,
+                      alignItems: 'center',
+                    },
+                    { pointerEvents: 'box-none' },
+                  ]}
+                >
+                  {props.floatingComposer!()}
+                </View>
+              </If>
             </View>
           </ResizablePanel>
         )}
       </ResizablePanelGroup>
-      <If when={previewDialog()}>
+      <If when={props.previewDialog()}>
         <Dialog
           animation="none"
           onOpenChange={inputAction(props.closePreview, null)}

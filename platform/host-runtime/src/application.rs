@@ -21,6 +21,7 @@
 pub mod abi;
 pub mod backend;
 mod caller;
+mod completion;
 mod context;
 pub mod host;
 pub mod logs;
@@ -28,9 +29,12 @@ pub mod management;
 mod native_context;
 pub mod operations;
 mod owner;
+mod provider_journal;
 mod resource_ingress;
+mod sql_completion;
 pub mod transport;
 pub use caller::Caller;
+pub use completion::{HandlerError, HandlerResult, HandlerValue};
 pub use context::Context;
 pub use native_context::{
     NativeContext, NativePersistence, NativeRequest, NativeServices, SelectedNativeMethod,
@@ -47,16 +51,16 @@ use futures_util::future::BoxFuture;
 use maka_capabilities::call::Attachments;
 use maka_capabilities::call::Issuer;
 use maka_capabilities::call::Scope;
-use maka_capabilities::call::Ticket;
-use maka_event_log::applications::intents::{CallerConfirmation, RecordedIntent};
+use maka_event_log::applications::intents::{CallerConfirmation, CallerIntent, RecordedIntent};
 use maka_packages::Package;
+use maka_plugin_core::work::resources::Ticket;
 use maka_plugin_core::{
     composition::{Input, InstanceId},
     contract::{Contract, Interface, MethodMode},
     deployment::DeploymentRef,
     operation::{
-        OperationCleanup, OperationObservation, OperationOutcome, OperationReply, Receipt,
-        RecoveryRef,
+        OperationCleanup, OperationObservation, OperationOutcome, OperationReply, OperationResult,
+        Receipt, RecoveryRef,
     },
     package::{Implementation, PackageRef, Packages},
     plan::{Plan, RemoteExports},
@@ -85,7 +89,7 @@ pub trait Handler: Send + Sync + 'static {
         method: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value>>;
+    ) -> BoxFuture<'static, HandlerResult>;
 }
 
 /// Trusted Host policy, checked in the same owner turn as core admission.
@@ -108,6 +112,10 @@ pub trait Policy: Send + Sync + 'static {
         _intent: &CallerConfirmation,
     ) -> Result<()> {
         Err("peer caller confirmation is not authorized".into())
+    }
+    /// Reading caller history is independent of mutation and receipt admission.
+    fn lookup_intent(&self, _invocation: IntentLookupInvocation<'_>) -> Result<()> {
+        Err("caller intent lookup is not authorized".into())
     }
     /// Mutation admission never grants access to historical operation records.
     fn recover(&self, _invocation: RecoveryInvocation<'_>) -> Result<()> {
@@ -133,6 +141,17 @@ pub struct Invocation<'a> {
     pub method: &'a str,
     pub input: &'a Value,
     pub attachments: &'a Attachments,
+}
+
+/// The Host derives this caller namespace from the captured active consumer.
+/// A lookup grants no dispatch authority; a found reference requires recovery policy too.
+pub struct IntentLookupInvocation<'a> {
+    pub scope: &'a Scope,
+    pub native_origin: Option<&'a Activation>,
+    pub selected_native_method: Option<&'a SelectedNativeMethod>,
+    pub consumer: &'a Activation,
+    pub source: &'a DeploymentRef,
+    pub operation: Uuid,
 }
 
 pub struct RecoveryInvocation<'a> {
@@ -400,7 +419,8 @@ impl Drop for PreparedMutation {
 pub struct Mutation {
     pub id: Uuid,
     pub reference: RecoveryRef,
-    result: oneshot::Receiver<MutationCompletion>,
+    result: oneshot::Receiver<OperationReply>,
+    completion: oneshot::Receiver<MutationCompletion>,
     progress: Option<subscriptions::Items>,
 }
 /// Receipt knowledge and this request's actual executor cleanup are independent.
@@ -420,25 +440,46 @@ impl Mutation {
         }
     }
     /// Observe original receipt knowledge only; this does not acknowledge cleanup.
-    pub async fn result(self) -> OperationReply {
-        self.completion().await.reply
+    pub async fn result(mut self) -> OperationReply {
+        let result = tokio::select! {
+            result = &mut self.result => result,
+            () = Self::drain_progress(&mut self.progress) => self.result.await,
+        };
+        result.unwrap_or_else(|_| OperationReply {
+            reference: self.reference,
+            receipt: Receipt::Unavailable {
+                diagnostic: "Host executor owner disappeared; read original receipt".into(),
+            },
+        })
     }
     /// Original owner reports actual cleanup independently of receipt persistence.
     /// Losing this observer neither cancels execution nor acknowledges cleanup.
     pub async fn completion(mut self) -> MutationCompletion {
-        // Receipt-only callers still consume progress, avoiding backpressure
-        // deadlock without pretending that these items were durably recorded.
-        while self.recv().await.is_some() {}
-        drop(self.progress.take());
-        self.result.await.unwrap_or_else(|_| MutationCompletion {
-            reply: OperationReply {
-                reference: self.reference,
-                receipt: Receipt::Unavailable {
-                    diagnostic: "Host executor owner disappeared; read original receipt".into(),
-                },
+        let completion = tokio::select! {
+            completion = &mut self.completion => completion,
+            () = Self::drain_progress(&mut self.progress) => self.completion.await,
+        };
+        match completion {
+            Ok(completion) => completion,
+            Err(_) => MutationCompletion {
+                // Losing cleanup evidence cannot erase an already published receipt.
+                reply: self.result.await.unwrap_or_else(|_| OperationReply {
+                    reference: self.reference,
+                    receipt: Receipt::Unavailable {
+                        diagnostic: "Host executor owner disappeared; read original receipt".into(),
+                    },
+                }),
+                cleanup: Err("Host executor cleanup unconfirmed: owner disappeared".into()),
             },
-            cleanup: Err("Host executor cleanup unconfirmed: owner disappeared".into()),
-        })
+        }
+    }
+    async fn drain_progress(progress: &mut Option<subscriptions::Items>) {
+        // Drain while the handler can still be backpressured; stop waiting if
+        // its independent result/cleanup channel closes even with a retained Context.
+        if let Some(items) = progress {
+            while items.recv().await.is_some() {}
+        }
+        drop(progress.take());
     }
 }
 
@@ -509,6 +550,14 @@ pub(super) enum Command {
         reply: oneshot::Sender<Result<Vec<Binding>>>,
     },
     Call(Box<Call>),
+    LookupIntent {
+        consumer: Activation,
+        operation: Uuid,
+        scope: Scope,
+        parent: Ticket,
+        reply: oneshot::Sender<Result<Option<CallerIntent>>>,
+        _bytes: OwnedSemaphorePermit,
+    },
     Recover {
         consumer: Activation,
         reference: Box<RecoveryRef>,
@@ -540,6 +589,11 @@ pub(super) enum CallKind {
     Subscription {
         reply: oneshot::Sender<Result<Subscription>>,
     },
+    PendingMutation {
+        operation: Uuid,
+        recovery: Value,
+        reply: oneshot::Sender<Result<Mutation>>,
+    },
     Mutation {
         operation: Uuid,
         confirmation: Option<Confirmation>,
@@ -552,6 +606,10 @@ pub(super) enum Confirmation {
     Recorded(Box<RecordedIntent>),
     Peer(Box<CallerConfirmation>),
 }
+enum MutationAdmission {
+    Owned { recovery: Value },
+    Confirmed(Confirmation),
+}
 impl Confirmation {
     fn reference(&self) -> &RecoveryRef {
         match self {
@@ -561,19 +619,41 @@ impl Confirmation {
     }
 }
 impl CallKind {
+    fn recovery(&self) -> Option<&Value> {
+        match self {
+            Self::PendingMutation { recovery, .. } => Some(recovery),
+            Self::Mutation {
+                confirmation: Some(Confirmation::Recorded(recorded)),
+                ..
+            } => Some(&recorded.intent().recovery),
+            _ => None,
+        }
+    }
+    fn input_size(&self, input: &Value) -> Result<usize> {
+        let input = maka_plugin_core::json::value_size(input, usize::MAX)?;
+        let recovery = self
+            .recovery()
+            .map(maka_event_log::applications::intents::validate_recovery)
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .unwrap_or(0);
+        input
+            .checked_add(recovery)
+            .ok_or_else(|| "Host mutation input length overflow".into())
+    }
     fn operation(&self) -> Option<Uuid> {
         match self {
             Self::Query(_) | Self::Subscription { .. } => None,
-            Self::Mutation { operation, .. } | Self::PrepareMutation { operation, .. } => {
-                Some(*operation)
-            }
+            Self::Mutation { operation, .. }
+            | Self::PrepareMutation { operation, .. }
+            | Self::PendingMutation { operation, .. } => Some(*operation),
         }
     }
     fn closed(&self) -> bool {
         match self {
             Self::Query(reply) => reply.is_closed(),
             Self::Subscription { reply, .. } => reply.is_closed(),
-            Self::Mutation { reply, .. } => reply.is_closed(),
+            Self::Mutation { reply, .. } | Self::PendingMutation { reply, .. } => reply.is_closed(),
             Self::PrepareMutation { reply, .. } => reply.is_closed(),
         }
     }
@@ -585,7 +665,7 @@ impl CallKind {
             Self::Subscription { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
-            Self::Mutation { reply, .. } => {
+            Self::Mutation { reply, .. } | Self::PendingMutation { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
             Self::PrepareMutation { reply, .. } => {
@@ -626,7 +706,9 @@ impl CallKind {
         stop: CancellationToken,
     ) -> (Reply, Option<subscriptions::Emitter>) {
         match self {
-            Self::PrepareMutation { .. } => unreachable!("preparation cannot accept execution"),
+            Self::PrepareMutation { .. } | Self::PendingMutation { .. } => {
+                unreachable!("uncommitted mutation cannot accept execution")
+            }
             Self::Query(reply) => {
                 let (output, result) = oneshot::channel();
                 let _ = reply.send(Ok(Accepted { id, result }));
@@ -641,7 +723,8 @@ impl CallKind {
             }
             Self::Mutation { reply, .. } => {
                 let reference = reference.expect("admitted mutation reference");
-                let (output, result) = oneshot::channel();
+                let (output, completion) = oneshot::channel();
+                let (outcome, result) = oneshot::channel();
                 let (progress, emitter) = match progress {
                     Some(validator) => {
                         let (items, emitter) = subscriptions::items(validator, stop.child_token());
@@ -653,11 +736,13 @@ impl CallKind {
                     id,
                     reference: reference.clone(),
                     result,
+                    completion,
                     progress,
                 }));
                 (
                     Reply::Mutation {
                         reference: Box::new(reference),
+                        result: Some(outcome),
                         reply: output,
                     },
                     emitter,
@@ -670,39 +755,61 @@ pub(super) enum Reply {
     Query(oneshot::Sender<QueryCompletion>),
     Mutation {
         reference: Box<RecoveryRef>,
+        result: Option<oneshot::Sender<OperationReply>>,
         reply: oneshot::Sender<MutationCompletion>,
     },
 }
 impl Reply {
+    fn operation_reply(
+        reference: RecoveryRef,
+        receipt: Result<OperationObservation>,
+    ) -> OperationReply {
+        let receipt = match receipt {
+            Ok(observation) => {
+                assert_eq!(reference, observation.reference);
+                Receipt::Recorded {
+                    outcome: observation.outcome,
+                    cleanup: observation.cleanup,
+                }
+            }
+            Err(error) => Receipt::Unavailable {
+                diagnostic: owner::diagnostic(&error),
+            },
+        };
+        OperationReply { reference, receipt }
+    }
+    // Publishing knowledge does not move any executor or caller custody.
+    fn publish_receipt(&mut self, receipt: &Result<OperationObservation>) {
+        if let Self::Mutation {
+            reference, result, ..
+        } = self
+            && let Some(result) = result.take()
+        {
+            let _ = result.send(Self::operation_reply(
+                (**reference).clone(),
+                receipt.clone(),
+            ));
+        }
+    }
     fn send(
-        self,
+        mut self,
         result: Result<Value>,
         cleanup: Result<()>,
         receipt: Option<Result<OperationObservation>>,
     ) {
+        if let Some(receipt) = &receipt {
+            self.publish_receipt(receipt);
+        }
         match self {
             Self::Query(reply) => {
                 let _ = reply.send(QueryCompletion { result, cleanup });
             }
-            Self::Mutation { reference, reply } => {
-                let receipt = match receipt.expect("mutation completion carries receipt knowledge")
-                {
-                    Ok(observation) => {
-                        assert_eq!(*reference, observation.reference);
-                        Receipt::Recorded {
-                            outcome: observation.outcome,
-                            cleanup: observation.cleanup,
-                        }
-                    }
-                    Err(error) => Receipt::Unavailable {
-                        diagnostic: owner::diagnostic(&error),
-                    },
-                };
+            Self::Mutation {
+                reference, reply, ..
+            } => {
+                let receipt = receipt.expect("mutation completion carries receipt knowledge");
                 let _ = reply.send(MutationCompletion {
-                    reply: OperationReply {
-                        reference: *reference,
-                        receipt,
-                    },
+                    reply: Self::operation_reply(*reference, receipt),
                     cleanup,
                 });
             }
@@ -1158,8 +1265,11 @@ impl Client {
         prepared: PreparedMutation,
         recorded: RecordedIntent,
     ) -> Result<Mutation> {
-        self.dispatch_mutation(prepared, Some(Confirmation::Recorded(Box::new(recorded))))
-            .await
+        self.dispatch_mutation(
+            prepared,
+            MutationAdmission::Confirmed(Confirmation::Recorded(Box::new(recorded))),
+        )
+        .await
     }
     /// Dispatches an authenticated peer adapter's caller-commit attestation.
     /// JSON observations do not prove commit or authorize execution: the Host's
@@ -1174,23 +1284,29 @@ impl Client {
         intent: CallerConfirmation,
     ) -> Result<Mutation> {
         intent.validate().map_err(|e| e.to_string())?;
-        self.dispatch_mutation(prepared, Some(Confirmation::Peer(Box::new(intent))))
-            .await
+        self.dispatch_mutation(
+            prepared,
+            MutationAdmission::Confirmed(Confirmation::Peer(Box::new(intent))),
+        )
+        .await
     }
     /// The trusted Host gateway is the caller: persist its original intent in
     /// this Application's Root before final admission and execution. Ordinary
     /// peer transports must use their caller's recorded confirmation instead.
-    pub async fn mutate_owned(&self, prepared: PreparedMutation) -> Result<Mutation> {
-        self.dispatch_mutation(prepared, None).await
+    pub async fn mutate_owned(
+        &self,
+        prepared: PreparedMutation,
+        recovery: Value,
+    ) -> Result<Mutation> {
+        self.dispatch_mutation(prepared, MutationAdmission::Owned { recovery })
+            .await
     }
     async fn dispatch_mutation(
         &self,
         mut prepared: PreparedMutation,
-        confirmation: Option<Confirmation>,
+        admission: MutationAdmission,
     ) -> Result<Mutation> {
-        if confirmation
-            .as_ref()
-            .is_some_and(|value| &prepared.reference != value.reference())
+        if matches!(&admission, MutationAdmission::Confirmed(value) if &prepared.reference != value.reference())
         {
             return Err("caller intent disagrees with original preparation".into());
         }
@@ -1203,20 +1319,41 @@ impl Client {
             attachments,
             capture,
             admitted,
-            bytes,
+            mut bytes,
             resources,
             parent,
         } = prepared.invocation.take().expect("original invocation");
         let (reply, result) = oneshot::channel();
+        let kind = match admission {
+            MutationAdmission::Owned { recovery } => CallKind::PendingMutation {
+                operation: reference.operation,
+                recovery,
+                reply,
+            },
+            MutationAdmission::Confirmed(confirmation) => CallKind::Mutation {
+                operation: reference.operation,
+                confirmation: Some(confirmation),
+                reply,
+            },
+        };
+        let required =
+            resource_ingress::input_charge(kind.input_size(&input)?, admitted.descriptors)?;
+        let held = u32::try_from(bytes.num_permits()).map_err(|_| "invalid input reservation")?;
+        let additional = required
+            .checked_sub(held)
+            .ok_or("invalid mutation input reservation")?;
+        bytes.merge(
+            self.dispatch
+                .bytes
+                .clone()
+                .try_acquire_many_owned(additional)
+                .map_err(|_| "Host mutation recovery budget exhausted")?,
+        );
         self.dispatch
             .commands
             .send(Command::Call(Box::new(Call {
                 parent,
-                kind: CallKind::Mutation {
-                    operation: reference.operation,
-                    confirmation,
-                    reply,
-                },
+                kind,
                 binding,
                 method,
                 input,
@@ -1306,7 +1443,7 @@ impl Dispatch {
     ) -> Result<()> {
         // Early validation also drops physical input before its inert ticket.
         let custody = (attachments, parent);
-        let size = maka_plugin_core::json::value_size(&input, usize::MAX)?;
+        let size = kind.input_size(&input)?;
         if method.is_empty() {
             return Err("invalid service method".into());
         }
@@ -1335,6 +1472,37 @@ impl Dispatch {
             })))
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+    fn lookup_intent(
+        &self,
+        consumer: Activation,
+        operation: Uuid,
+        scope: Scope,
+        parent: Ticket,
+    ) -> Result<oneshot::Receiver<Result<Option<CallerIntent>>>> {
+        if operation.is_nil() {
+            return Err("invalid caller intent operation identity".into());
+        }
+        let bytes = self
+            .bytes
+            .clone()
+            .try_acquire_many_owned(resource_ingress::charge(
+                json_size(&operation)?,
+                resource_ingress::INPUT_WINDOW,
+            ))
+            .map_err(|_| "Host caller intent lookup budget exhausted")?;
+        let (reply, result) = oneshot::channel();
+        self.commands
+            .send(Command::LookupIntent {
+                consumer,
+                operation,
+                scope,
+                parent,
+                reply,
+                _bytes: bytes,
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(result)
     }
     fn recover(
         &self,

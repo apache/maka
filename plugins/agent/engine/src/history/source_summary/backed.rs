@@ -124,7 +124,6 @@ impl ByteCursor for OwnedCursor {
 
 const MEDIA_BYTES: u64 = 64;
 const SYSTEM_BYTES: u64 = 40;
-const HASH_BYTES: u64 = 32;
 const COMPOSITE_PIECES: usize = 3;
 const EXCERPT_PIECES: usize = 2 * COMPOSITE_PIECES + 1;
 const TEXT_PIECES: usize = 1 + 1 + 3 + 7 + 3 * EXCERPT_PIECES;
@@ -179,7 +178,6 @@ impl MediaRecord {
 struct Tables {
     media: Range<u64>,
     systems: Range<u64>,
-    prefixes: Range<u64>,
 }
 fn offset(start: u64, index: usize, width: u64) -> io::Result<u64> {
     start
@@ -284,12 +282,6 @@ impl Index<'_> {
         Ok(())
     }
     async fn build(&mut self) -> io::Result<()> {
-        write::<32>(
-            self.arena,
-            self.tables.prefixes.start,
-            self.hash.clone().finalize().into(),
-        )
-        .await?;
         let mut cursor = self.source.open(0);
         let mut message = 0usize;
         while let Some(recipe) = cursor.next().await? {
@@ -317,12 +309,6 @@ impl Index<'_> {
                     self.system_breakdown.accumulate(&descriptor.breakdown);
                     self.hash.update(descriptor.commitment);
                     self.systems = self.systems.checked_add(1).ok_or_else(overflow)?;
-                    write::<32>(
-                        self.arena,
-                        offset(self.tables.prefixes.start, self.systems, HASH_BYTES)?,
-                        self.hash.clone().finalize().into(),
-                    )
-                    .await?;
                 }
                 MessageRecipe::User { content, .. } => self.content(content, message, 0, 0).await?,
                 MessageRecipe::Assistant { content, .. } => {
@@ -637,7 +623,6 @@ struct Directory {
     systems: usize,
     user: MessageRecipe,
     user_metadata: MessageMetadata,
-    final_prefix: [u8; 32],
 }
 struct Messages(Arc<Directory>);
 struct MessageCursor {
@@ -698,25 +683,6 @@ impl MessageSource for Messages {
             position: start,
         })
     }
-    fn prefix_identity(&self, messages: usize) -> RecipeIdentity<'_> {
-        Box::pin(async move {
-            if messages > self.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "summary prefix exceeds directory",
-                ));
-            }
-            if messages == self.len() {
-                return Ok(hex::encode(self.0.final_prefix));
-            }
-            let hash: [u8; 32] = read(
-                &self.0.view.arena,
-                offset(self.0.view.tables.prefixes.start, messages, HASH_BYTES)?,
-            )
-            .await?;
-            Ok(hex::encode(hash))
-        })
-    }
 }
 impl RecipeCursor<MessageMetadata> for MetadataCursor {
     fn next(&mut self) -> NextRecipe<'_, MessageMetadata> {
@@ -743,6 +709,7 @@ impl RecipeCursor<MessageMetadata> for MetadataCursor {
                 logical_identity: hex::encode(&record[8..]).into(),
                 role: MessageRole::System,
                 last_is_tool_result: false,
+                is_native_checkpoint: false,
                 local_tool_names: self.directory.user_metadata.local_tool_names.clone(),
                 settled_tool_call_ids: self.directory.user_metadata.settled_tool_call_ids.clone(),
             }))
@@ -890,7 +857,6 @@ pub(super) async fn fit(
     tokens: u64,
     language: Language,
     cancel: &CancellationToken,
-    active: &ActivePreparation,
 ) -> Result<PreparedPrompt, FitError> {
     let resources = prompt.resources().ok_or_else(|| {
         failure(io::Error::other(
@@ -925,7 +891,7 @@ pub(super) async fn fit(
     let media = usize::try_from(prompt.breakdown().counts.media)
         .map_err(|error| failure(io::Error::other(error)))?;
     let bytes = allocation_bytes(language).map_err(failure)?;
-    let lease = active.directory(bytes).map_err(failure)?;
+    let lease = prompt.plan_directory(bytes).map_err(failure)?;
     let required = prompt
         .resident_bytes()
         .checked_add(prompt.overlay_bytes())
@@ -972,21 +938,9 @@ pub(super) async fn fit(
     )
     .await
     .map_err(failure)?;
-    let prefix_region = reserve(
-        &arena,
-        u64::try_from(systems)
-            .map_err(|error| failure(io::Error::other(error)))?
-            .checked_add(1)
-            .and_then(|count| count.checked_mul(HASH_BYTES))
-            .ok_or_else(|| failure(overflow()))?,
-        &fit,
-    )
-    .await
-    .map_err(failure)?;
     let tables = Tables {
         media: media_region,
         systems: system_region,
-        prefixes: prefix_region,
     };
     let mut hash = Sha256::new();
     hash.update(b"maka.logical-prefix\0");
@@ -1144,6 +1098,7 @@ pub(super) async fn fit(
                 logical_identity: descriptor.logical_identity.clone(),
                 role: MessageRole::User,
                 last_is_tool_result: false,
+                is_native_checkpoint: false,
                 local_tool_names: descriptor.local_tool_names.clone(),
                 settled_tool_call_ids: descriptor.settled_tool_call_ids.clone(),
             };
@@ -1157,7 +1112,6 @@ pub(super) async fn fit(
                 systems,
                 user,
                 user_metadata,
-                final_prefix,
             });
             let mut body = Prompt::from_recipes(
                 Arc::new(Messages(directory)),
@@ -1183,88 +1137,5 @@ pub(super) async fn fit(
         } else {
             selected = selected.checked_add(1).ok_or_else(|| failure(overflow()))?;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use futures_util::poll;
-
-    #[tokio::test]
-    async fn cancelled_backed_metadata_observer_keeps_full_until_worker_completion() {
-        let (_directory, root, execution, captured) =
-            super::super::tests::captured_summary_source().await;
-        let arena = CaptureArena::new(captured, None).await.unwrap();
-        let record = arena
-            .with_writer(|writer| writer.append_bytes(&17_u64.to_le_bytes()))
-            .await
-            .unwrap();
-        arena.seal().await.unwrap();
-        let (prompt, _, _) = super::super::tests::fixture();
-        let bytes = allocation_bytes(Language::En).unwrap();
-        let full = bytes + prompt.overlay_bytes() + PreparedPrompt::backed_wire_bytes();
-        let resources = maka_model::ModelPreparationResources::new(maka_model::PreparationPolicy {
-            resident_bytes: full,
-            ..Default::default()
-        })
-        .unwrap();
-        let prompt = prompt
-            .with_resources(resources.clone())
-            .with_arena(arena.clone());
-        let active = resources
-            .reserve_staging(0)
-            .await
-            .unwrap()
-            .promote(full)
-            .await
-            .unwrap();
-        let owned = OwnedArena {
-            arena: arena.clone(),
-            owner: Arc::new(Owner {
-                _input: prompt.without_wire(),
-                _lease: active.directory(bytes).unwrap(),
-            }),
-        };
-        let (entered, in_worker) = tokio::sync::oneshot::channel();
-        let (release, released) = tokio::sync::oneshot::channel();
-        let (finished, completed) = tokio::sync::oneshot::channel();
-        let mut observer = Box::pin(owned.with_writer(move |writer| {
-            let mut bytes = [0; 8];
-            writer.read_exact_at(record.start, &mut bytes)?;
-            let _ = entered.send(u64::from_le_bytes(bytes));
-            released.blocking_recv().map_err(io::Error::other)?;
-            let _ = finished.send(());
-            Ok(())
-        }));
-        let value = tokio::select! {
-            result = &mut observer => panic!("metadata observer finished before callback release: {result:?}"),
-            result = tokio::time::timeout(std::time::Duration::from_secs(2), in_worker) => {
-                result.expect("metadata callback must execute on the original worker").unwrap()
-            }
-        };
-        assert_eq!(value, 17);
-        let mut competing = Box::pin(resources.reserve_staging(0).await.unwrap().promote(full));
-        drop(observer);
-        drop((owned, prompt, active));
-        assert!(
-            poll!(competing.as_mut()).is_pending(),
-            "accepted metadata callback must retain Full after observer cancellation"
-        );
-        release.send(()).unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), completed)
-            .await
-            .expect("accepted metadata callback must finish")
-            .unwrap();
-        drop(
-            tokio::time::timeout(std::time::Duration::from_secs(2), competing)
-                .await
-                .expect("Full must advance after the accepted metadata callback")
-                .unwrap(),
-        );
-        arena.close().await.unwrap();
-        drop(arena);
-        execution.finish();
-        root.shutdown().await.unwrap();
     }
 }

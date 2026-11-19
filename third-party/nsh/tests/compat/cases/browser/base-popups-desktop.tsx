@@ -1,8 +1,10 @@
 // A case of the API's test suite (docs/dev/compatibility.md): the popups of
 // `nsh/base` on a desktop: a `Popover` that a press outside leaves open
 // (`closeOnPressOutside`), a `Menu` as a popup on a side of its trigger
-// (its side, alignment, gap and margin), a `ContextMenu` the secondary
-// button opens where the pointer is (its gap and margin), a `Tooltip` (an element's
+// (its side, alignment, gap and margin) whose items a letter reaches
+// (typeahead), a `ContextMenu` the secondary
+// button opens where the pointer is (its gap and margin) and one the app
+// opens (`open`) below its trigger, a `Tooltip` (an element's
 // `tooltip`) shown after the pointer rests on its trigger (`delay`) and hidden when it leaves,
 // and an element's `tooltip` that is a plain element. Its script
 // checks each.
@@ -12,6 +14,7 @@ import { ContextMenu, Menu, MenuItem, Popover, Tooltip } from "nsh/base";
 function App() {
   const log = signal("Log: none");
   const lifecycle = signal("Tip: none");
+  const shown = signal(false);
   return (
     <View style={{ flex: 1, paddingTop: 300, paddingLeft: 20, gap: 8 }}>
       <Text>{log()}</Text>
@@ -33,7 +36,7 @@ function App() {
         popupStyle={{ width: 90, height: 600 }}
         trigger={<View style={{ height: 30 }}><Text>DeskMenu</Text></View>}
       >
-        <MenuItem><Text>DeskItem</Text></MenuItem>
+        <MenuItem onSelect={() => log.set("Log: chose DeskItem")}><Text>DeskItem</Text></MenuItem>
       </Menu>
       <ContextMenu
         offset={3}
@@ -43,6 +46,17 @@ function App() {
       >
         <MenuItem><Text>DeskCopy</Text></MenuItem>
       </ContextMenu>
+      <View style={{ position: "absolute", top: 100, left: 200, width: 120 }}>
+        <ContextMenu
+          open={shown()}
+          onOpenChange={({ open }) => shown.set(open)}
+          popupStyle={{ width: 90, height: 40 }}
+          trigger={<View style={{ height: 30 }} />}
+        >
+          <MenuItem><Text>ShownCopy</Text></MenuItem>
+        </ContextMenu>
+      </View>
+      <View onPress={() => shown.set(true)} style={{ height: 30 }}><Text>ShowAppMenu</Text></View>
       <View
         style={{ height: 30 }}
         tooltip={

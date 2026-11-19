@@ -132,6 +132,26 @@ mod tests {
     }
 
     #[test]
+    fn log_file_getter_reports_the_process_loggers_file() {
+        // The process's one log file, as a release runner's logger records
+        // it (no other test in this binary reads it).
+        let path = std::path::PathBuf::from("/app-data/logs/app.log");
+        nsh_core::log_file::set(path.clone());
+        let host = Host::new().unwrap();
+        host.eval_source(
+            r#"
+            import process from 'process'; import {text} from 'nsh:rt';
+            text(JSON.stringify([process.logFile, globalThis.process.logFile === process.logFile]));
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            result(&host),
+            format!("[{:?},true]", path.to_string_lossy())
+        );
+    }
+
+    #[test]
     fn environment_is_a_fresh_granted_snapshot_and_exit_is_a_checked_host_request() {
         use std::{cell::Cell, rc::Rc};
         let host = Host::new().unwrap();

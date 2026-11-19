@@ -10,8 +10,9 @@
 //!   commit is one hop to the main queue ([`surface`]).
 //! - Text is typeset by CoreText on the engine thread; the main thread
 //!   only draws the lines it produced ([`text`]).
-//! - Native animations run on the root view's display link
-//!   ([`animation`]).
+//! - Native animations run on the surface's display link, made from the
+//!   root view of one of its windows that shows ([`surface`],
+//!   [`animation`]).
 //! - Desktop input as the Linux backend has it: the root view takes the
 //!   mouse, wheel, trackpad and keyboard and picks views itself
 //!   ([`input`]); scroll views keep offsets of their own ([`scroll`]).
@@ -41,7 +42,9 @@ mod global_shortcut;
 mod gpu;
 mod image;
 mod input;
+mod keyboard;
 mod keymap;
+mod login_item;
 mod mount;
 mod native;
 #[cfg(any(feature = "terminal", test))]
@@ -53,10 +56,10 @@ mod screen_color;
 mod scroll;
 mod selectable_view;
 mod shader;
+mod share;
 mod sight;
 // Shared with iOS.
 use nsh_platform_apple::{audio, notifications, speech};
-mod status_menu;
 mod surface;
 #[cfg(feature = "dev")]
 mod synth;
@@ -86,11 +89,10 @@ pub use terminal::TerminalSurface;
 pub use crate::app::set_root;
 pub use crate::{
     app::{
-        AppOptions, AppSource, AppView, WindowDisplay, quit_app, run_app, run_app_with_config,
-        run_resident_app_with_config, set_components, set_ui_sets, with_running_view,
+        ActivationPolicy, AppOptions, AppSource, AppView, WindowDisplay, quit_app, run_app,
+        run_app_with_config, set_components, set_ui_sets, with_running_view,
     },
     image::AssetBase,
     native::{ComponentContext, ComponentFactory, Components, NativeComponent},
-    status_menu::{StatusMenu, StatusMenuOptions},
     text::CoreTextEngine,
 };

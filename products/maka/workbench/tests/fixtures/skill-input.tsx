@@ -20,7 +20,7 @@
 import { keymap, mount, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import { SkillInput } from '../../app/SkillInput';
-import { SkillMessage } from '../../app/SkillMessage';
+import { SkillMessage, userMessagePresentation } from '../../app/SkillMessage';
 import type { ComposerEditor } from '../../app/ComposerEditor';
 import type { Row } from '../../app/history';
 
@@ -74,7 +74,14 @@ mount(() => {
       >
         <Text>Reset</Text>
       </Button>
-      <SkillMessage row={() => ({ text: initial }) as Row} sourceId="fixture/message" />
+      <SkillMessage
+        row={() => ({ text: initial }) as Row}
+        presentation={() => userMessagePresentation({ text: initial } as Row)}
+        sourceId="fixture/message"
+        sessionId="fixture/session"
+        openLink={async () => {}}
+        userScroll={() => {}}
+      />
     </View>
   );
 });

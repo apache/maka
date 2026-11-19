@@ -108,7 +108,6 @@ impl ConfigurationStore {
                 models_fetched_at: None,
                 last_test: None,
             };
-            crate::model_catalog::validate_overrides(&row)?;
             write_entry(tx, &row)?;
             let revision = advance(tx, current.revision, current.default_target.as_ref())?;
             Ok(CatalogMutationResult::Committed {

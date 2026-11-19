@@ -280,7 +280,7 @@ function WindowRow(props: { win: WindowRef; first: boolean }) {
           }}
           hoverStyle={hovered()}
           activeStyle={{ backgroundColor: alpha(colors.text, 0.08) }}
-          focusStyle={focusRing()}
+          focusVisibleStyle={focusRing()}
         >
           <IconTile name={info().icon} size={size.tile} />
           <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
@@ -788,11 +788,11 @@ const TODAY = new Date().toLocaleDateString("en-US", { month: "long", day: "nume
 function DocumentWindow() {
   const win = currentWindow();
   const active = () => win.state()?.focused ?? true;
-  // The window's title, the unsaved dot (macOS) and the export's progress
-  // on the Dock or the taskbar follow the document.
+  // The window's title and the export's progress on the Dock or the
+  // taskbar follow the document.
   effect(() => {
     const share = doc.exporting();
-    win.set({ title: doc.title() || "Untitled", edited: edited(), progress: share == null ? null : { value: share } });
+    win.set({ title: doc.title() || "Untitled", progress: share == null ? null : { value: share } });
   });
   // Autosave: a moment after the last edit.
   effect(() => {
@@ -855,7 +855,7 @@ function DocumentWindow() {
               onChange={({ value }) => doc.title.set(value)}
               placeholder="Untitled"
               accessibilityLabel="Title"
-              style={{ fontSize: 26, fontWeight: "700", letterSpacing: -0.4, color: colors.text, placeholderColor: colors.faint, caretColor: colors.accent, selectionColor: colors.accent }}
+              style={{ fontSize: 26, fontWeight: "700", letterSpacing: -0.4, color: colors.text, placeholderColor: colors.muted, caretColor: colors.accent, selectionColor: colors.accent }}
             />
             <Text style={{ marginTop: 6, marginBottom: 20, fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>{`${TODAY} · ${minutes()} min read`}</Text>
             <Each of={doc.blocks}>{(b, i) => <BlockInput block={b()} first={i() === 0} />}</Each>

@@ -1,12 +1,12 @@
 //! Typed native events: what the `on_*` methods of elements hand their
 //! listeners, decoded from the platform's [`EventPayload`].
 
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, cell::RefCell, rc::Weak, sync::Arc};
 
-use super::builder::Listener;
+use super::{builder::Listener, task::Executor};
 use crate::{
-    Bounds, ContextMenuEvent, EventPayload, JsonValue, MouseEvent, PayloadValue, Point, Points,
-    PressEvent, Size, TouchEvent,
+    Bounds, ContextMenuEvent, EventPayload, JsonValue, MouseEvent, PayloadValue, PinchEvent, Point,
+    Points, PressEvent, Size, TouchEvent, WheelEvent,
     geometry::{DevicePixels, Radians},
 };
 
@@ -16,9 +16,32 @@ use crate::{
 pub struct FileDropEvent {
     /// Absolute `file:` URLs in platform order; encoded filenames are preserved.
     pub uris: Vec<String>,
+    /// The MIME type of each of `uris`, in their order, by the file's name
+    /// (TS: `mimeTypes`): `""` when the name says none (a directory, no
+    /// extension), as the DOM's `File.type`.
+    pub mime_types: Vec<String>,
     /// Where the files were let go, in the window's coordinates (TS:
     /// `pagePosition`), on backends that know it (Linux).
     pub page_position: Option<Point<Points>>,
+}
+
+/// Local files or directories a drag offers to an element while it enters
+/// (`on_file_drag_enter`); nothing has been dropped yet, and no file has
+/// been read.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
+pub struct FileDragEvent {
+    /// Absolute `file:` URLs in platform order; encoded filenames are preserved.
+    pub uris: Vec<String>,
+    /// The MIME type of each of `uris`, as [`FileDropEvent::mime_types`].
+    pub mime_types: Vec<String>,
+}
+
+/// The MIME types of the files `uris` name, in their order.
+fn mime_types(uris: &[String]) -> Vec<String> {
+    uris.iter()
+        .map(|uri| crate::platform::file_mime_type(uri).to_owned())
+        .collect()
 }
 
 /// A scroll view moved (`on_scroll`): the offset, and the sizes it moves in.
@@ -109,6 +132,15 @@ pub struct TextSelectionEvent {
     /// Where it starts in the copy of the whole view (what a select all
     /// would copy), in UTF-16 code units, when the platform knows it.
     pub start: Option<u32>,
+    /// The box around the selected text in the view's coordinates (its
+    /// border box), when something is selected and the platform knows it:
+    /// a bar of actions on the selection goes above it.
+    pub bounds: Option<Bounds<Points>>,
+    /// The same box in the view's root view (the surface, or the dialog
+    /// around it), as of the event:
+    /// [`crate::overlay::OverlayAnchor::Bounds`] places an overlay against
+    /// it.
+    pub page_bounds: Option<Bounds<Points>>,
 }
 
 /// Where an input's caret is (`on_caret_move`): what opens at it (an `@`
@@ -180,6 +212,132 @@ pub struct ImageProgress {
     pub loaded: f64,
     /// Bytes in all, 0 when unknown.
     pub total: f64,
+}
+
+/// A web view download started, finished, failed or was cancelled
+/// (`WebView::on_download`, the core's `onDownload` payload).
+pub(crate) fn web_download(p: &EventPayload) -> Option<Cow<'_, crate::webview::WebDownload>> {
+    let EventPayload::Map(entries) = p else {
+        return None;
+    };
+    let text = |key: &str| match entries.iter().find(|(k, _)| *k == key) {
+        Some((_, PayloadValue::Str(value))) => Some(value.clone()),
+        _ => None,
+    };
+    let number = |key: &str| match entries.iter().find(|(k, _)| *k == key) {
+        Some((_, PayloadValue::Number(n))) => Some(*n),
+        _ => None,
+    };
+    let state = crate::webview::WebDownloadState::parse(text("state")?.as_str())?;
+    let id = text("id")?;
+    // Only a running download can be cancelled by its event.
+    let handle = (state == crate::webview::WebDownloadState::Started)
+        .then(|| download_handle(id.clone()))
+        .flatten();
+    Some(Cow::Owned(crate::webview::WebDownload {
+        state,
+        id,
+        url: text("url")?,
+        filename: text("filename")?,
+        path: std::path::PathBuf::from(text("path")?),
+        bytes: number("bytes").map(|n| n.max(0.0) as u64),
+        message: text("message"),
+        source: text("source")
+            .as_deref()
+            .and_then(crate::webview::WebDownloadSource::parse)
+            .unwrap_or_default(),
+        code: text("code"),
+        reason: text("reason").as_deref().and_then(cancel_reason),
+        handle,
+    }))
+}
+
+fn cancel_reason(name: &str) -> Option<crate::webview::CancelReason> {
+    use crate::webview::CancelReason;
+    match name {
+        "app" => Some(CancelReason::App),
+        "timeout" => Some(CancelReason::Timeout),
+        "teardown" => Some(CancelReason::Teardown),
+        "noListener" => Some(CancelReason::NoListener),
+        _ => None,
+    }
+}
+
+thread_local! {
+    /// The web view a download event is being dispatched to: its node and
+    /// the executor that reaches it. Set only while its listener runs, so
+    /// the event's handle cannot be made anywhere else.
+    static DOWNLOAD_TARGET: RefCell<Option<(crate::NodeId, Weak<Executor>)>> =
+        const { RefCell::new(None) };
+}
+
+/// Makes `node` the target of the download events dispatched while it
+/// lives (the previous target is restored when it drops).
+pub(crate) struct DownloadTarget {
+    previous: Option<(crate::NodeId, Weak<Executor>)>,
+}
+
+impl Drop for DownloadTarget {
+    fn drop(&mut self) {
+        DOWNLOAD_TARGET.with(|target| {
+            *target.borrow_mut() = self.previous.take();
+        });
+    }
+}
+
+/// Sets the web view a download event dispatched now belongs to.
+pub(crate) fn download_target(node: crate::NodeId, executor: Weak<Executor>) -> DownloadTarget {
+    let previous = DOWNLOAD_TARGET.with(|target| target.borrow_mut().replace((node, executor)));
+    DownloadTarget { previous }
+}
+
+/// The handle of download `id` of the web view being dispatched to, or
+/// `None` outside a download event's dispatch.
+fn download_handle(id: String) -> Option<crate::webview::DownloadHandle> {
+    DOWNLOAD_TARGET.with(|target| {
+        target
+            .borrow()
+            .clone()
+            .map(|(node, executor)| crate::webview::DownloadHandle::new(node, executor, id))
+    })
+}
+
+/// A web view's page asked to download a file
+/// (`WebView::on_download_pending`).
+pub(crate) fn web_download_pending(
+    p: &EventPayload,
+) -> Option<Cow<'_, crate::webview::WebDownloadPending>> {
+    let EventPayload::Json(value) = p else {
+        return None;
+    };
+    let id = value.get("id")?.as_str()?.to_owned();
+    let handle = download_handle(id.clone())?;
+    Some(Cow::Owned(crate::webview::WebDownloadPending {
+        id,
+        url: value.get("url")?.as_str()?.to_owned(),
+        filename: value.get("filename")?.as_str()?.to_owned(),
+        source: value
+            .get("source")
+            .and_then(|v| v.as_str())
+            .and_then(crate::webview::WebDownloadSource::parse)
+            .unwrap_or_default(),
+        mime_type: value
+            .get("mime_type")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+        bytes: value.get("bytes").and_then(|v| {
+            v.as_u64().or_else(|| {
+                v.as_f64()
+                    .filter(|n| n.is_finite() && *n >= 0.0 && n.fract() == 0.0)
+                    .map(|n| n as u64)
+            })
+        }),
+        method: value
+            .get("method")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+        handle: Some(handle),
+    }))
 }
 
 /// An event of a registered native component (`on_native_event`).
@@ -302,6 +460,14 @@ pub(crate) fn typed<T: ?Sized + ToOwned + 'static>(
     })
 }
 
+/// A sheet's new detent (`{ detent }`, [`crate::SheetDetent::change_payload`]).
+pub(crate) fn sheet_detent(p: &EventPayload) -> Option<Cow<'_, crate::SheetDetent>> {
+    let EventPayload::Json(value) = p else {
+        return None;
+    };
+    crate::SheetDetent::from_json(value.get("detent")?).map(Cow::Owned)
+}
+
 /// Events without data.
 pub(crate) fn unit(_: &EventPayload) -> Option<Cow<'_, ()>> {
     Some(Cow::Owned(()))
@@ -360,6 +526,22 @@ pub(crate) fn data(p: &EventPayload) -> Option<Cow<'_, str>> {
     string(p, "data").map(Cow::Borrowed)
 }
 
+/// An error's message when its `code` says the platform has no such
+/// feature (`ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`).
+pub(crate) fn unavailable(p: &EventPayload) -> Option<Cow<'_, str>> {
+    (string(p, "code") == Some(crate::element::codes::UNAVAILABLE))
+        .then(|| message(p))
+        .flatten()
+}
+
+/// An error's message when its `code` says the web view's web content
+/// process ended (`ERR_NSH_WEBVIEW_TERMINATED`).
+pub(crate) fn terminated(p: &EventPayload) -> Option<Cow<'_, str>> {
+    (string(p, "code") == Some(crate::element::codes::WEBVIEW_TERMINATED))
+        .then(|| message(p))
+        .flatten()
+}
+
 pub(crate) fn selection(p: &EventPayload) -> Option<Cow<'_, Selection>> {
     Some(Cow::Owned(Selection {
         start: number(p, "start") as u32,
@@ -373,9 +555,15 @@ pub(crate) fn selected_text(p: &EventPayload) -> Option<Cow<'_, TextSelectionEve
         Some(PayloadValue::Number(n)) if *n >= 0.0 => Some(*n as u32),
         _ => None,
     };
+    let optional_bounds = |key| match field(p, key) {
+        Some(PayloadValue::Bounds(b)) => Some(*b),
+        _ => None,
+    };
     Some(Cow::Owned(TextSelectionEvent {
         text: string(p, "text").unwrap_or_default().to_owned(),
         start,
+        bounds: optional_bounds("bounds"),
+        page_bounds: optional_bounds("pageBounds"),
     }))
 }
 
@@ -578,10 +766,31 @@ pub(crate) fn context_menu(p: &EventPayload) -> Option<Cow<'_, ContextMenuEvent>
     }
 }
 
+pub(crate) fn touchpad_pinch(p: &EventPayload) -> Option<Cow<'_, PinchEvent>> {
+    match p {
+        EventPayload::Pinch(e) => Some(Cow::Borrowed(e)),
+        _ => None,
+    }
+}
+
+pub(crate) fn key_event(p: &EventPayload) -> Option<Cow<'_, crate::KeyEvent>> {
+    match p {
+        EventPayload::Key(event) => Some(Cow::Borrowed(event)),
+        _ => None,
+    }
+}
+pub(crate) fn wheel(p: &EventPayload) -> Option<Cow<'_, WheelEvent>> {
+    match p {
+        EventPayload::Wheel(e) => Some(Cow::Borrowed(e)),
+        _ => None,
+    }
+}
+
 pub(crate) fn file_drop(p: &EventPayload) -> Option<Cow<'_, FileDropEvent>> {
     match p {
         EventPayload::FileDrop(uris) => Some(Cow::Owned(FileDropEvent {
             uris: uris.clone(),
+            mime_types: mime_types(uris),
             page_position: None,
         })),
         EventPayload::FileDropAt {
@@ -589,8 +798,21 @@ pub(crate) fn file_drop(p: &EventPayload) -> Option<Cow<'_, FileDropEvent>> {
             page_position,
         } => Some(Cow::Owned(FileDropEvent {
             uris: uris.clone(),
+            mime_types: mime_types(uris),
             page_position: Some(*page_position),
         })),
+        _ => None,
+    }
+}
+
+pub(crate) fn file_drag(p: &EventPayload) -> Option<Cow<'_, FileDragEvent>> {
+    match p {
+        EventPayload::FileDrop(uris) | EventPayload::FileDropAt { uris, .. } => {
+            Some(Cow::Owned(FileDragEvent {
+                uris: uris.clone(),
+                mime_types: mime_types(uris),
+            }))
+        }
         _ => None,
     }
 }
@@ -624,6 +846,29 @@ mod tests {
                 .uris,
             uris
         );
+    }
+
+    #[test]
+    fn file_drags_and_drops_type_each_offered_file_by_its_name() {
+        use crate::{EventPayload, Points, geometry::point};
+        let uris: Vec<String> = vec![
+            "file:///tmp/a%20b.png".into(),
+            "file:///tmp/c.JPG".into(),
+            "file:///tmp/folder/".into(),
+        ];
+        let types = ["image/png", "image/jpeg", ""];
+        let offered = EventPayload::FileDrop(uris.clone());
+        let drag = super::file_drag(&offered).unwrap();
+        assert_eq!(drag.uris, uris);
+        assert_eq!(drag.mime_types, types);
+        let at = EventPayload::FileDropAt {
+            uris: uris.clone(),
+            page_position: point(Points(3.0), Points(4.0)),
+        };
+        let drop = super::file_drop(&at).unwrap();
+        assert_eq!(drop.mime_types, types);
+        assert_eq!(drop.page_position, Some(point(Points(3.0), Points(4.0))));
+        assert!(super::file_drag(&EventPayload::None).is_none());
     }
 
     #[test]

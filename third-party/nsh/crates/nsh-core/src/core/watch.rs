@@ -76,14 +76,21 @@ impl<M: TextEngine> Core<M> {
         let _entered = self.components.runtime.enter();
         let mut ran = false;
         for w in seen {
-            let Some(node) = untracked(|| (w.target)()) else {
-                continue;
+            // An element gone from the tree (removed, or the ref on none)
+            // holds no focus: one gone with the focus inside is left, and
+            // the ref's next element starts from outside, so the focus
+            // coming into it is heard. One never found stays unfound.
+            let now = match untracked(|| (w.target)()) {
+                Some(node) => self.has_focus_within(node),
+                None if w.last.is_some() => false,
+                None => continue,
             };
-            let now = self.has_focus_within(node);
             if let Some(kept) = watches.borrow_mut().focus.iter_mut().find(|k| k.id == w.id) {
                 kept.last = Some(now);
             }
-            // Found just now: what holds is where it starts, not a move.
+            // Found for the first time: what holds is where it starts, not
+            // a move (a watch made while the focus is inside hears it
+            // leave, not come).
             if w.last.is_none_or(|last| last == now) {
                 continue;
             }

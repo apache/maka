@@ -71,7 +71,7 @@ function App() {
     </Radio>
   );
   return (
-    <RadioGroup class="gap-3">
+    <RadioGroup accessibilityLabel="Plan" class="gap-3">
       {option("basic", "Basic")}
       {option("pro", "Pro")}
     </RadioGroup>
@@ -106,6 +106,7 @@ typed style methods and `.child(..)` for their content.
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
+| `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | The name of the set ("Plan", "Sort by"), which screen readers say as they enter it. |
 | `children` | `.child(..)` | `JSX.Element` | none | The radios of the set, and whatever the app lays out between them. |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The group's layout and look: a column by default, `flex-row` for a row. |
 
@@ -172,7 +173,8 @@ sides named (`{ top: 8, bottom: 8 }`), as a [view's `hitSlop`](./index.md#presse
   checked, since some screen readers read the one and some the other (UI Automation's radios are selection items). Its
   indicator and label are parts of it; its label is the text of its children, or `accessibilityLabel`.
 - A `RadioGroup` has the role `"radiogroup"`: screen readers hear the radios inside it as one set, each still an
-  element of its own.
+  element of its own. Its `accessibilityLabel` names the set; give one wherever no text next to the group says what is
+  chosen.
 - `disabled` is announced as the platform announces it (VoiceOver, TalkBack, UI Automation, the browser's accessibility
   tree).
 - On macOS and the web a `RadioGroup` is one stop of the keyboard focus, and the arrow keys move between its radios
@@ -194,7 +196,7 @@ On macOS and the web, where Tab reaches the views that take presses, a `RadioGro
 
 The arrow keys skip disabled radios; the radio they move to asks to be checked with `onChange`, and the app checks it.
 In a right-to-left layout Left and Right trade places: Left moves to the next radio and Right to the previous; Up and
-Down keep theirs. `focus:` styles show where the focus is. A `Radio` outside a `RadioGroup` is a stop of its own, which Tab reaches
+Down keep theirs. `focus-visible:` styles show where the focus is. A `Radio` outside a `RadioGroup` is a stop of its own, which Tab reaches
 and Space and Return check.
 
 ## Platform notes

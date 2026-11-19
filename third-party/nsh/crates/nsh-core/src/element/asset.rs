@@ -122,6 +122,40 @@ impl From<&ImageAsset> for ImageSrc {
 }
 
 impl ImageSrc {
+    /// The natural size in points that [`super::image`] lays out at when
+    /// its style leaves width or height unset. A single styled dimension
+    /// keeps this size's aspect ratio; two styled dimensions set the box.
+    /// The source's pixels and their dimensions stay the same.
+    ///
+    /// ```
+    /// use nsh_core::{
+    ///     element::ImageSrc,
+    ///     geometry::{Size, px},
+    /// };
+    ///
+    /// let pixels = vec![7u8; 200 * 100 * 4];
+    /// let src = ImageSrc::rgba(200, 100, pixels).size(Size::new(px(100.0), px(50.0)));
+    /// ```
+    pub fn size(mut self, size: Size<Points>) -> Self {
+        self.size = Some((size.width.0, size.height.0));
+        self
+    }
+
+    /// An encoded live image frame. Decoded pixels live only while displayed;
+    /// this source owns the bytes, without registering an object URL.
+    pub fn live_frame(mime: &str, data: crate::ImageData) -> Self {
+        let source = crate::ImageSource::default().with_bytes(mime, data);
+        Self {
+            uri: source
+                .uri
+                .replace(";nsh-key=", ";nsh-live=1;nsh-key=")
+                .into(),
+            size: None,
+            scales: crate::ImageScales::NONE,
+            data: source.data,
+        }
+    }
+
     /// Whether its URL is empty: no image, as an `<Image>` whose `src`
     /// is `""` shows none.
     pub fn is_empty(&self) -> bool {
@@ -139,6 +173,33 @@ impl ImageSrc {
             }
             .inline()
         })
+    }
+
+    /// A `width` × `height` pixel buffer as a source: straight (not
+    /// premultiplied) 8-bit RGBA, rows top to bottom with no padding,
+    /// `width * height * 4` bytes, held as they are (`Vec<u8>`,
+    /// `Arc<[u8]>`, ...; not copied). It lays out at `width` × `height`
+    /// points, as a `data:` image does; [`Self::size`] sets its natural
+    /// layout size for a buffer drawn at another pixel density. Frames
+    /// made elsewhere (a renderer, a camera, a thread drawing a preview)
+    /// show without being encoded; each buffer is an image of its own,
+    /// which the caches drop once no view shows it.
+    ///
+    /// ```ignore
+    /// let pixels: Arc<[u8]> = render_page(); // 1192 × 1684 × 4 bytes
+    /// image(ImageSrc::rgba(1192, 1684, pixels)).w_full()
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// When `pixels` is not `width * height * 4` bytes long, or a side is 0.
+    pub fn rgba(width: u32, height: u32, pixels: impl AsRef<[u8]> + Send + Sync + 'static) -> Self {
+        Self {
+            uri: crate::image::rgba_key().into(),
+            size: Some((width as f32, height as f32)),
+            scales: crate::ImageScales::NONE,
+            data: Some(crate::ImageData::from_rgba(width, height, pixels)),
+        }
     }
 
     /// The SVG document `markup` itself as a source ([`super::svg`],

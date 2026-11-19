@@ -53,16 +53,22 @@ async function run(args, env) {
   });
 }
 
+export async function productTests(root = repository) {
+  const directory = 'products/maka/bundle/tests';
+  const tests = (await readdir(join(root, directory)))
+    .filter((name) => name.endsWith('.test.mjs'))
+    .sort()
+    .map((name) => join(directory, name));
+  if (!tests.length) throw new Error(`No product tests found in ${directory}`);
+  return tests;
+}
+
 async function product(action, args) {
   if (!['build', 'test'].includes(action)) throw new Error('Usage: product.mjs build|test');
+  const tests = action === 'test' ? await productTests() : [];
   const env = { ...process.env, MAKA_UI_BUNDLER: await uiCompiler() };
   await run(['products/maka/bundle/scripts/build.mjs', ...(action === 'build' ? args : [])], env);
   if (action === 'test') {
-    const directory = 'products/maka/bundle/tests';
-    const tests = (await readdir(join(repository, directory)))
-      .filter((name) => name.endsWith('.test.mjs'))
-      .sort()
-      .map((name) => join(directory, name));
     await run(['--test', '--test-concurrency=1', ...args, ...tests], env);
   }
 }

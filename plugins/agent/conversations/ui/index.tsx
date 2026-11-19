@@ -17,7 +17,9 @@
  * under the License.
  */
 
-import { cleanup, signal, type JSX } from 'nsh';
+import { cleanup, effect, signal, Text, View, type JSX } from 'nsh';
+import { Button } from 'nsh/base';
+import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
 import type {
   UiCommandContext,
   UiExports,
@@ -28,6 +30,8 @@ import {
   conversationNavigationView,
   conversationSessionView,
   conversationPreviewView,
+  roomWorkspaceView,
+  type RoomWorkspaceInput,
   type ConversationNavigationInput,
   type ConversationSessionInput,
   type ConversationPreviewInput,
@@ -35,31 +39,157 @@ import {
 import { createConversationUi, type ConversationWindow } from './SessionSurface';
 import { invokeFocusedConversation } from '../../../../products/maka/workbench/app/conversationCommands';
 import type { WorkspaceViewHandle } from '../../../../packages/plugin-sdk/src/workspace-view.js';
+import { RoomView } from './RoomView';
 import { createHost, HostProvider } from '../../../../products/maka/workbench/app/host';
+import { initializeComposerToolbar } from '../../../../products/maka/workbench/app/composerToolbar';
+import {
+  createRoomPeople,
+  RoomTimeline,
+} from '../../../../products/maka/workbench/app/RoomWorkspace';
+import type { RoomComposerHandle } from '../../../../products/maka/workbench/app/RoomComposer';
+import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
+import { tr } from '../../../../products/maka/workbench/app/locale';
+import { C, controlStyle, Header } from '../../../../products/maka/workbench/app/ui';
+import { createText, errorText } from '../../../../products/maka/workbench/app/text';
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const host = createHost(context.application);
+  initializeComposerToolbar();
   const sides = signal<ReturnType<typeof createConversationUi>[]>([]);
+  const rooms = signal<{ id: string; flush(): Promise<void> }[]>([]);
   const window: ConversationWindow = {
     workspace: signal<WorkspaceViewHandle | null>(null),
-    sessions: () =>
-      [views, ...sides()].flatMap((pane) => {
+    sessions: () => [
+      ...[views, ...sides()].flatMap((pane) => {
         const id = pane.sessionId();
         return id === null ? [] : [id];
       }),
+      ...rooms().map((room) => room.id),
+    ],
     command: (id) => invokeFocusedConversation([views, ...sides()], id),
+    prompt: (sessionId, action) =>
+      [views, ...sides()].find((pane) => pane.sessionId() === sessionId)?.deliverPrompt(action) ??
+      false,
   };
   const views = createConversationUi(context, host, window);
   const owner = (sessionId: string | null) =>
     [views, ...sides()].find((pane) => pane.sessionId() === sessionId);
-  const Navigation = (props: { input: ConversationNavigationInput }) =>
+  const Navigation = (props: { input: ConversationNavigationInput<JSX.Element> }) =>
     views.navigation(props.input);
-  const Session = (props: { input: ConversationSessionInput }) => {
-    if (!props.input.shell.closePane) return views.session(props.input);
+  const AgentSide = (props: { input: ConversationSessionInput }) => {
     const side = createConversationUi(context, host, window, { browsing: views.browsing });
     sides.set([...sides(), side]);
     cleanup(() => sides.set(sides().filter((pane) => pane !== side)));
     return side.session(props.input);
+  };
+  const SplitHeader = (props: { title: string; close(): void }) => (
+    <Header
+      title={props.title}
+      commands={() => {}}
+      browser={{
+        navigationDocked: true,
+        previewDocked: false,
+        expanded: true,
+        hidden: false,
+        toggle() {},
+        close: props.close,
+      }}
+    />
+  );
+  const RoomSide = (props: { room: AgentSession; input: ConversationSessionInput }) => {
+    const people = createRoomPeople(host);
+    const { shell } = props.input;
+    const id = props.room.id;
+    let composer: RoomComposerHandle | null = null;
+    const pane = { id, flush: () => composer?.flush() ?? Promise.resolve() };
+    rooms.set([...rooms(), pane]);
+    cleanup(() => rooms.set(rooms().filter((room) => room !== pane)));
+    const title = () => props.room.title;
+    props.input.attach({
+      ...views.sessionHandle,
+      title,
+      async leave() {
+        await pane.flush();
+        return true;
+      },
+    });
+    return (
+      <View style={{ flex: 1, minHeight: 0 }}>
+        <SplitHeader title={title()} close={shell.closePane!} />
+        <RoomTimeline
+          sessionId={id}
+          host={host}
+          visible={shell.visible}
+          name={people.name}
+          resolveNames={people.resolveNames}
+          searchSessions={people.searchSessions}
+          openAgent={(id) => void shell.openSession(id)}
+          openLink={async (target, restoreFocus) => {
+            const workspace = window.workspace();
+            if (!workspace) throw new Error(tr('Workspace preview is unavailable.'));
+            await workspace.openLink(id, target, restoreFocus);
+          }}
+          attach={(handle) => {
+            composer = handle;
+          }}
+        />
+      </View>
+    );
+  };
+  const Split = (props: { input: ConversationSessionInput }) => {
+    const { shell } = props.input;
+    const target = signal<AgentSession | null>(null);
+    const failure = createText();
+    let alive = true;
+    cleanup(() => {
+      alive = false;
+    });
+    const resolve = async (sessionId: string) => {
+      failure.set('');
+      try {
+        const { session } = await host.query('agent', 'observe', { sessionId });
+        if (alive && shell.sessionId() === sessionId) target.set(session);
+      } catch (reason) {
+        if (alive && shell.sessionId() === sessionId)
+          failure.set(errorText(reason, 'Could not open the conversation.'));
+      }
+    };
+    effect(() => {
+      const id = shell.sessionId();
+      if (id) void resolve(id);
+    });
+    const agentInput = {
+      ...props.input,
+      shell: { ...shell, sessionId: () => target()?.id ?? null },
+    };
+    return (
+      <If
+        when={target() && !failure()}
+        else={
+          <View style={{ flex: 1 }}>
+            <SplitHeader title="" close={shell.closePane!} />
+            <If when={failure()} else={<LoadingIndicator />}>
+              <Text style={{ color: C.warning, padding: 12 }}>{failure()}</Text>
+              <Button style={controlStyle} onPress={() => void resolve(shell.sessionId()!)}>
+                <Text>{tr('Retry')}</Text>
+              </Button>
+            </If>
+          </View>
+        }
+      >
+        <If when={target()?.kind === 'room'} else={<AgentSide input={agentInput} />}>
+          <Each of={(props.input.active?.() ?? true) ? [target()!] : []} key={(room) => room.id}>
+            {(room) => <RoomSide room={room()} input={props.input} />}
+          </Each>
+        </If>
+      </If>
+    );
+  };
+  const Session = (props: { input: ConversationSessionInput }) => {
+    const { shell } = props.input;
+    if (!shell.closePane) return views.session(props.input);
+    if (props.input.compact) return <AgentSide input={props.input} />;
+    return <Split input={props.input} />;
   };
   const Preview = (props: { input: ConversationPreviewInput }) => views.preview(props.input);
   const commands: UiExports<JSX.Element> = Object.fromEntries(
@@ -93,10 +223,19 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   return {
     exports: {
       ...commands,
+      rooms: {
+        kind: 'view',
+        contract: roomWorkspaceView.id,
+        render({ input }: UiEmbeddedViewProps<RoomWorkspaceInput<JSX.Element>, JSX.Element>) {
+          return <RoomView host={host} input={input} />;
+        },
+      },
       navigation: {
         kind: 'view',
         contract: conversationNavigationView.id,
-        render({ input }: UiEmbeddedViewProps<ConversationNavigationInput, JSX.Element>) {
+        render({
+          input,
+        }: UiEmbeddedViewProps<ConversationNavigationInput<JSX.Element>, JSX.Element>) {
           return (
             <HostProvider value={host}>
               <Navigation input={input} />
@@ -128,7 +267,10 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
       },
     },
     prepareReload: async () => {
-      await Promise.all(sides().map((pane) => pane.prepareReload()));
+      await Promise.all([
+        ...sides().map((pane) => pane.prepareReload()),
+        ...rooms().map((room) => room.flush()),
+      ]);
       return views.prepareReload();
     },
   };

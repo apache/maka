@@ -137,6 +137,10 @@ impl SelectionTexts for Texts {
         &self.items[i].text.text
     }
 
+    fn copied(&self, i: usize, range: std::ops::Range<u32>) -> String {
+        self.items[i].text.copied_text(range)
+    }
+
     fn frame(&self, i: usize) -> Bounds<Points> {
         self.items[i].frame
     }
@@ -226,7 +230,7 @@ pub(crate) fn takes_part(view: &NshView) -> bool {
         .text
         .as_ref()
         .is_some_and(|t| t.text.selectable != Some(false));
-    part && area_of(view).is_some()
+    part && area_of(view).is_some() && !in_control(view)
 }
 
 /// A point in root coordinates in `area`'s.
@@ -362,7 +366,13 @@ impl Area {
                 return;
             };
             let Some(view) = c.widget() else { return };
-            if !c.is_focus() && view.root().and_then(|r| r.focus()).as_ref() != Some(&view) {
+            // Its edit menu (a popover, which leaves the window with no
+            // focus widget) keeps it too.
+            let inside = view
+                .root()
+                .and_then(|r| r.focus())
+                .is_none_or(|f| f == view || f.is_ancestor(&view));
+            if !c.is_focus() && !inside {
                 clear(&surface, id);
             }
         });
@@ -690,7 +700,16 @@ fn selected_text(surface: &Surface, id: NodeId) -> Option<(NshView, String)> {
         }
         model.text(&texts)
     };
+    // A selection of hidden characters only copies nothing.
+    if text.is_empty() {
+        return None;
+    }
     Some((area, text))
+}
+
+/// Whether selectable view `area` has a selection to copy.
+pub(crate) fn has_selection(surface: &Surface, area: &NshView) -> bool {
+    selected_text(surface, area.state().id).is_some()
 }
 
 /// Copies area `id`'s selection to the clipboard.
@@ -820,4 +839,46 @@ fn unhighlight(old: &[glib::WeakRef<NshView>], keep: &[NshView]) {
             view.queue_draw();
         }
     }
+}
+
+/// Whether `view` sits in a control (a button, link, tab…) inside its
+/// area, or in a view that takes presses: its text then keeps the control's pointer, not the I-beam.
+fn in_control(view: &NshView) -> bool {
+    let mut current = Some(view.clone());
+    while let Some(v) = current {
+        let s = v.state();
+        if s.props.selectable_view {
+            return false;
+        }
+        // A role, or a press handler on a row the app built itself.
+        if s.props.accessibility.role.is_control()
+            || [EventKind::Press, EventKind::LongPress, EventKind::PressDown]
+                .iter()
+                .any(|&k| s.events.contains(k))
+        {
+            return true;
+        }
+        drop(s);
+        current = v.parent_view();
+    }
+    false
+}
+
+/// Whether a view between text `view` and its area (the area included)
+/// sets a cursor: as CSS inherits `cursor`, the texts inside show it, not
+/// the I-beam.
+pub(crate) fn cursor_above(view: &NshView) -> bool {
+    let mut current = view.parent_view();
+    while let Some(v) = current {
+        let s = v.state();
+        if s.style.cursor != nsh_core::Cursor::Auto {
+            return true;
+        }
+        if s.props.selectable_view {
+            return false;
+        }
+        drop(s);
+        current = v.parent_view();
+    }
+    false
 }

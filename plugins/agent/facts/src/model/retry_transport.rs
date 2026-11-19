@@ -29,3 +29,19 @@ pub enum RetryTransportPhase {
     Primary,
     Fallback,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FallbackAvailability {
+    Unavailable,
+    /// A captured Primary route with no active lease; a reusable socket is not required.
+    WarmIdlePrimary,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelTransportEvidence {
+    pub adapter: crate::composition::SourceRevision,
+    pub route_identity: String,
+    pub fallback: FallbackAvailability,
+}

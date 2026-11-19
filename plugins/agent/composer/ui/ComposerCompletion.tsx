@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, effect, inputAction, List, Overlay, signal, Text, View } from 'nsh';
+import { cleanup, effect, inputAction, List, Overlay, platform, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import type { Bounds, CaretEvent, InputRef, ListRef, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
@@ -38,18 +38,29 @@ import {
   completionToken,
   fileInvocation,
   referenceEdit,
+  sessionInvocation,
   validSelection,
 } from './composerCompletionSyntax.ts';
 import type { CompletionToken, Selection } from './composerCompletionSyntax.ts';
-import { C, bodyTextStyle, captionTextStyle } from '../../../../products/maka/workbench/app/ui';
+import {
+  C,
+  captionTextStyle,
+  controlDisabledStyle,
+  floatingStyle,
+  menuDetailTextStyle,
+  menuLabelStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
+  menuSeparatorStyle,
+} from '../../../../products/maka/workbench/app/ui';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
-import { createComposerPaste } from './composerPaste';
+import { createComposerPaste } from '../../../../products/maka/workbench/app/composerPaste';
 import {
   inputEditor,
   type ComposerEditor,
 } from '../../../../products/maka/workbench/app/ComposerEditor';
 
-type Source = 'add' | 'files' | 'skills' | 'commands' | 'slash';
+type Source = 'add' | 'references' | 'files' | 'skills' | 'commands' | 'slash';
 type Pending = NonNullable<ReturnType<NonNullable<ComposerViewInput['pending']>>>;
 type Owner = ComposerSession | Pending;
 const isSession = (owner: Owner): owner is ComposerSession => 'sessionId' in owner;
@@ -72,11 +83,18 @@ type Read = {
   context: string;
   commands: ComposerCommand[];
 };
+type IconName = Parameters<typeof Icon>[0]['name'];
 type Row = {
   id: string;
   title: string;
   detail?: string;
-  icon: 'paperclip' | 'file' | 'folder' | 'book' | 'code' | 'command';
+  /** The keys or trigger that reach this row directly, in the row's trailing lane. */
+  shortcut?: string;
+  /** The section the row belongs to, named above its first row. */
+  heading?: string;
+  /** A separator above the row, between unnamed groups. */
+  divider?: boolean;
+  icon: IconName;
   disabled?: boolean;
   action: { read: number; id: string };
 } & (
@@ -204,6 +222,7 @@ export function createComposerCompletion(options: Options) {
     composing,
     dismiss: close,
   });
+  paste.bindClipboard();
   const row = <T extends Omit<Row, 'action'>>(read: Read, value: T): Row =>
     Object.assign(value, {
       action: { read: read.serial, id: value.id },
@@ -229,7 +248,10 @@ export function createComposerCompletion(options: Options) {
           command,
           title: `/${command.trigger}`,
           detail: command.title,
-          icon: 'command',
+          get heading() {
+            return tr('Commands');
+          },
+          icon: commandIcons[command.trigger] ?? 'command',
         }),
       );
   const localRows = (read: Read): Row[] => {
@@ -239,9 +261,9 @@ export function createComposerCompletion(options: Options) {
           id: 'add:attachment',
           kind: 'attachment',
           get title() {
-            return tr('Attach files');
+            return tr('Attach files…');
           },
-          detail: keymap.label('mod+u'),
+          shortcut: keymap.label('mod+u'),
           icon: 'paperclip',
           disabled: isSession(read.owner)
             ? read.owner.attachments.restoring()
@@ -254,7 +276,7 @@ export function createComposerCompletion(options: Options) {
           get title() {
             return tr('Reference a workspace file');
           },
-          detail: '@',
+          shortcut: '@',
           icon: 'file',
           disabled: read.owner.completion.files === null,
         }),
@@ -265,7 +287,8 @@ export function createComposerCompletion(options: Options) {
           get title() {
             return tr('Use a skill');
           },
-          detail: '/',
+          shortcut: '/',
+          divider: true,
           icon: 'book',
         }),
         ...options
@@ -277,8 +300,8 @@ export function createComposerCompletion(options: Options) {
               kind: 'command',
               command,
               title: command.title,
-              detail: '/goal',
-              icon: 'command',
+              shortcut: '/goal',
+              icon: 'goal',
             }),
           ),
         row(read, {
@@ -288,7 +311,7 @@ export function createComposerCompletion(options: Options) {
           get title() {
             return tr('Message commands');
           },
-          detail: '/',
+          shortcut: '/',
           icon: 'command',
         }),
       ];
@@ -296,84 +319,129 @@ export function createComposerCompletion(options: Options) {
       ? commandRows(read)
       : [];
   };
-  const appendRows = (read: Read, matches: Row[]) => {
+  const appendRows = (read: Read, matches: Row[], prepend = false) => {
     if (current !== read || !owns(read) || matches.length === 0) return;
-    const first = rows().length === 0;
-    rows.set([...rows(), ...matches]);
-    if (first) list?.scrollToIndex({ index: 0, animated: false, viewPosition: 0 });
+    const previous = rows();
+    rows.set(prepend ? [...matches, ...previous] : [...previous, ...matches]);
+    if (prepend && selected() > 0) selected.set(selected() + matches.length);
+    if (previous.length === 0 || (prepend && selected() === 0))
+      list?.scrollToIndex({ index: 0, animated: false, viewPosition: 0 });
+  };
+  const lookupFiles = async (read: Read) => {
+    const owner = read.owner;
+    const files = owner.completion.files;
+    if (!files) return;
+    const stream = await files(read.query, read.directory);
+    const active: FileRead = { close: () => stream.close(), closing: null };
+    fileRead = active;
+    const decoder = new TextDecoder('utf-8', {
+      fatal: true,
+      ignoreBOM: true,
+    });
+    const seen = new Set<string>();
+    try {
+      while (current === read && owns(read)) {
+        const result = await stream.next();
+        if (result === null || current !== read || !owns(read)) break;
+        const matches = result.entries
+          .filter((entry) => {
+            const key = entry.path.bytesBase64;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          })
+          .map((entry) => {
+            let insert: string | null = null;
+            let path: string | null = null;
+            let title: string;
+            try {
+              const bytes = Uint8Array.from(atob(entry.path.bytesBase64), (value) =>
+                value.charCodeAt(0),
+              );
+              path = decoder.decode(bytes);
+              insert = fileInvocation(path);
+              title = path.replace(/\p{Cc}/gu, '�');
+            } catch {
+              // Opaque bytes stay authoritative; display labels are never decoded back into paths.
+              title = owner.completion.pathLabel(entry.path);
+            }
+            const common = {
+              id: `file:${entry.path.bytesBase64}`,
+              get heading() {
+                return tr('Files');
+              },
+              title: title + (entry.kind === 'directory' ? '/' : ''),
+              get detail() {
+                return insert === null
+                  ? tr('This file name cannot be inserted as text.')
+                  : undefined;
+              },
+              disabled: insert === null,
+            };
+            return entry.kind === 'directory'
+              ? row(read, {
+                  ...common,
+                  kind: 'directory',
+                  path: path ?? '',
+                  directory: entry.path,
+                  icon: 'folder',
+                })
+              : row(read, {
+                  ...common,
+                  kind: 'insert',
+                  insert: insert ?? '',
+                  icon: 'file',
+                });
+          });
+        appendRows(read, matches);
+      }
+    } finally {
+      await releaseFile(active);
+      if (fileRead === active) fileRead = null;
+    }
+  };
+  const lookupSessions = async (read: Read) => {
+    const sessions = (await read.owner.completion.sessions(read.inputQuery)).filter(
+      (session) => session.id !== sessionId(read.owner),
+    );
+    const rooms = sessions.filter((session) => session.kind === 'room').slice(0, 8);
+    const conversations = sessions.filter((session) => session.kind === 'agent').slice(0, 8);
+    appendRows(
+      read,
+      [rooms, conversations].flatMap((group) =>
+        group.map((session, index) => {
+          const room = session.kind === 'room';
+          const duplicate = group.some(
+            (other) => other !== session && other.title === session.title,
+          );
+          return row(read, {
+            id: `session:${session.id}`,
+            kind: 'insert',
+            insert: sessionInvocation(session),
+            title: session.title,
+            detail: duplicate
+              ? session.workspace.path.split(/[\\/]/).filter(Boolean).at(-1)
+              : undefined,
+            get heading() {
+              return tr(room ? 'Rooms' : 'Conversations');
+            },
+            divider: !room && index === 0 && rooms.length > 0,
+            icon: room ? 'symbol' : 'conversation',
+          });
+        }),
+      ),
+      true,
+    );
   };
   const lookup = async (read: Read): Promise<void> => {
-    const owner = read.owner;
-    if (read.source === 'files') {
-      const files = owner.completion.files;
-      if (!files) return;
-      const stream = await files(read.query, read.directory);
-      const active: FileRead = { close: () => stream.close(), closing: null };
-      fileRead = active;
-      const decoder = new TextDecoder('utf-8', {
-        fatal: true,
-        ignoreBOM: true,
-      });
-      const seen = new Set<string>();
-      try {
-        while (current === read && owns(read)) {
-          const result = await stream.next();
-          if (result === null || current !== read || !owns(read)) break;
-          const matches = result.entries
-            .filter((entry) => {
-              const key = entry.path.bytesBase64;
-              if (seen.has(key)) return false;
-              seen.add(key);
-              return true;
-            })
-            .map((entry) => {
-              let insert: string | null = null;
-              let path: string | null = null;
-              let title: string;
-              try {
-                const bytes = Uint8Array.from(atob(entry.path.bytesBase64), (value) =>
-                  value.charCodeAt(0),
-                );
-                path = decoder.decode(bytes);
-                insert = fileInvocation(path);
-                title = path.replace(/\p{Cc}/gu, '�');
-              } catch {
-                // Opaque bytes stay authoritative; display labels are never decoded back into paths.
-                title = owner.completion.pathLabel(entry.path);
-              }
-              const common = {
-                id: `file:${entry.path.bytesBase64}`,
-                title: title + (entry.kind === 'directory' ? '/' : ''),
-                get detail() {
-                  return insert === null
-                    ? tr('This file name cannot be inserted as text.')
-                    : undefined;
-                },
-                disabled: insert === null,
-              };
-              return entry.kind === 'directory'
-                ? row(read, {
-                    ...common,
-                    kind: 'directory',
-                    path: path ?? '',
-                    directory: entry.path,
-                    icon: 'folder',
-                  })
-                : row(read, {
-                    ...common,
-                    kind: 'insert',
-                    insert: insert ?? '',
-                    icon: 'file',
-                  });
-            });
-          appendRows(read, matches);
-        }
-      } finally {
-        await releaseFile(active);
-        if (fileRead === active) fileRead = null;
+    if (read.source === 'files') return lookupFiles(read);
+    if (read.source === 'references') {
+      for (const result of await Promise.allSettled([lookupSessions(read), lookupFiles(read)])) {
+        if (result.status === 'rejected') throw result.reason;
       }
       return;
     }
+    const owner = read.owner;
     const backend = owner.backend();
     const details = owner.modelDetails();
     if (!backend || details.kind !== 'ready' || !sameRoute(backend, details.choice.selection))
@@ -391,6 +459,9 @@ export function createComposerCompletion(options: Options) {
           insert: skill.invocation,
           title: skill.name,
           detail: skill.description,
+          get heading() {
+            return tr('Skills');
+          },
           icon: 'book',
         }),
       ),
@@ -408,7 +479,7 @@ export function createComposerCompletion(options: Options) {
           if (current === read && owns(read)) loading.set(false);
         } catch (reason) {
           if (current === read && owns(read)) {
-            error.set(errorText(reason));
+            error.set(errorText(reason, 'Could not load suggestions.'));
             loading.set(false);
           }
         }
@@ -453,7 +524,7 @@ export function createComposerCompletion(options: Options) {
     const source =
       requested ??
       (token?.kind === 'file'
-        ? 'files'
+        ? 'references'
         : token?.kind === 'skill'
           ? 'skills'
           : token
@@ -467,7 +538,9 @@ export function createComposerCompletion(options: Options) {
       source === 'commands' || (source === 'slash' && token?.leading) ? options.commands() : [];
     const inputQuery = requested === null ? (token?.query ?? '') : query();
     const location =
-      source === 'files' ? fileQuery(inputQuery) : { query: inputQuery, directory: null };
+      source === 'files' || source === 'references'
+        ? fileQuery(inputQuery)
+        : { query: inputQuery, directory: null };
     const read: Read = {
       serial: serial + 1,
       owner: currentOwner,
@@ -490,14 +563,15 @@ export function createComposerCompletion(options: Options) {
     error.set('');
     rows.set(localRows(read));
     list?.scrollToIndex({ index: 0, animated: false, viewPosition: 0 });
-    const remote = source === 'files' || source === 'skills' || source === 'slash';
     const model = currentOwner.modelDetails();
-    const available =
-      source === 'files'
-        ? currentOwner.completion.files !== null
-        : model.kind === 'ready' && sameRoute(currentOwner.backend(), model.choice.selection);
-    loading.set(remote && available);
-    wanted = remote && available ? read : null;
+    const canLookup =
+      source === 'references' ||
+      (source === 'files' && currentOwner.completion.files !== null) ||
+      ((source === 'skills' || source === 'slash') &&
+        model.kind === 'ready' &&
+        sameRoute(currentOwner.backend(), model.choice.selection));
+    loading.set(canLookup);
+    wanted = canLookup ? read : null;
     if (wanted) void pump();
   });
   const command = (text: string) => matchComposerCommand(options.commands(), text);
@@ -660,18 +734,25 @@ export function createComposerCompletion(options: Options) {
       viewPosition: delta > 0 ? 1 : 0,
     });
   };
+  const acceptSelected = (action: { read: number }) => {
+    if (!current || current.serial !== action.read || !owns(current)) return;
+    const item = rows()[index()];
+    if (item) accept(item.action);
+  };
   effect(() => {
     const read = opened();
     if (!read || composing() || queryComposing()) return;
     const target = read.explicit && read.source !== 'add' ? queryInput() : read.editor;
     if (!target) return;
     const valid = () => current === read && owns(read);
+    const select = () => acceptSelected({ read: read.serial });
     const unbind = [
       target.bindKey('escape', () => {
         if (valid()) dismiss();
       }),
     ];
-    if (loading() || rows().some((item) => !item.disabled)) {
+    const hasChoices = rows().some((item) => !item.disabled);
+    if (loading() || hasChoices) {
       unbind.push(
         target.bindKey(
           'down',
@@ -691,13 +772,14 @@ export function createComposerCompletion(options: Options) {
             repeat: true,
           },
         ),
-        target.bindKey('enter', () => {
-          if (!valid()) return;
-          const item = rows()[index()];
-          if (item) accept(item.action);
-        }),
+        target.bindKey('enter', select),
       );
     }
+    if (
+      hasChoices &&
+      (read.source === 'slash' || read.source === 'skills' || read.source === 'references')
+    )
+      unbind.push(target.bindKey('tab', select));
     return () => unbind.forEach((remove) => remove());
   });
   cleanup(() => {
@@ -744,7 +826,12 @@ export function createComposerCompletion(options: Options) {
       });
       close();
     },
-    anchor: () => (opened()?.explicit ? addAnchor : (caret() ?? editor()?.node.anchor)),
+    anchor: () =>
+      opened()?.explicit
+        ? addAnchor
+        : platform.idiom === 'terminal'
+          ? (caret() ?? editor()?.node.anchor)
+          : caret(),
     addButton(node: ViewRef) {
       addAnchor = node;
     },
@@ -759,13 +846,14 @@ export function createComposerCompletion(options: Options) {
     change(target: Owner, text: string) {
       if (owner() !== target) return;
       textVersion += 1;
+      if (platform.idiom !== 'terminal' && opened() === null) caret.set(null);
       target.changeDraft(text);
     },
     caret(target: Owner, event: CaretEvent) {
       if (owner() === target) caret.set(event.pageBounds);
     },
     selection(target: Owner, event: Selection) {
-      if (owner() === target) selection.set({ ...event });
+      if (owner() === target && !sameSelection(selection(), event)) selection.set({ ...event });
     },
     toggleAdd(target: { owner: string | null }) {
       const currentOwner = owner();
@@ -837,11 +925,7 @@ export function createComposerCompletion(options: Options) {
     queryComposition(event: { composing: boolean }) {
       queryComposing.set(event.composing);
     },
-    acceptSelected(action: { read: number }) {
-      if (!current || current.serial !== action.read || !owns(current)) return;
-      const item = rows()[index()];
-      if (item) accept(item.action);
-    },
+    acceptSelected,
     queryPlaceholder: () =>
       opened()?.source === 'files'
         ? tr('Search files…')
@@ -849,28 +933,32 @@ export function createComposerCompletion(options: Options) {
           ? tr('Search commands…')
           : tr('Search skills…'),
     title: () =>
-      opened()?.source === 'add'
+      opened()?.source === 'add' || opened()?.source === 'references'
         ? tr('Add to message')
         : opened()?.source === 'files'
           ? tr('Files')
           : opened()?.source === 'commands'
             ? tr('Commands')
-            : tr('Skills'),
+            : opened()?.source === 'slash'
+              ? tr('Commands and skills')
+              : tr('Skills'),
     empty: () =>
-      opened()?.source === 'files'
-        ? tr('No matching files.')
-        : opened()?.source === 'commands'
-          ? tr('No matching commands.')
-          : owner()?.backend() === null || owner()?.modelDetails().kind !== 'ready'
-            ? tr('Choose a model to browse skills.')
-            : tr('No matching skills.'),
+      opened()?.source === 'references'
+        ? tr('No matching references')
+        : opened()?.source === 'files'
+          ? tr('No matching files.')
+          : opened()?.source === 'commands'
+            ? tr('No matching commands.')
+            : owner()?.backend() === null || owner()?.modelDetails().kind !== 'ready'
+              ? tr('Choose a model to browse skills.')
+              : tr('No matching skills.'),
   };
 }
 
 export type ComposerCompletionState = ReturnType<typeof createComposerCompletion>;
 export type ComposerCompletionRow = Pick<
   Row,
-  'action' | 'detail' | 'disabled' | 'icon' | 'id' | 'title'
+  'action' | 'detail' | 'disabled' | 'divider' | 'heading' | 'icon' | 'id' | 'shortcut' | 'title'
 >;
 export type ComposerCompletionView = Pick<
   ComposerCompletionState,
@@ -898,117 +986,154 @@ export type ComposerCompletionView = Pick<
 
 export function ComposerCompletion(props: { state: ComposerCompletionView }) {
   const state = props.state;
+  // The room on the side the menu went: held to it, the list scrolls instead of
+  // the menu sliding over the line being typed.
+  const room = signal<number | null>(null);
+  const noteHeight = signal(0);
   return (
-    <If when={state.opened() !== null}>
+    <If when={state.opened() !== null && state.anchor() != null}>
       <Overlay
         anchor={state.anchor()}
         placement="top"
         align="start"
-        offset={8}
+        // From the first line: the composer's top padding, then an 8pt gap.
+        offset={20}
         margin={16}
+        onPosition={({ available }) => room.set(available.height)}
         onPressOutside={state.close}
         onCancel={state.dismiss}
         accessibilityLabel={state.title()}
         style={{
+          ...floatingStyle(),
           width: Math.min(480, Math.max(0, windowSize().width - 32)),
-          maxHeight: Math.max(0, windowSize().height - 32),
-          borderRadius: 12,
-          borderWidth: 1,
-          borderColor: C.line,
-          backgroundColor: C.surface,
-          padding: 8,
-          gap: 6,
+          maxHeight: room() ?? Math.max(0, windowSize().height - 32),
         }}
       >
-        <Text style={{ ...captionTextStyle, color: C.muted, paddingHorizontal: 8 }}>
-          {state.title()}
-        </Text>
         <If when={state.opened()?.explicit && state.opened()?.source !== 'add'}>
-          <Input
-            ref={state.queryInput}
-            value={state.query()}
-            onChange={({ value: text }) => state.query.set(text)}
-            onSelectionChange={state.querySelection}
-            onSubmit={inputAction(state.acceptSelected, {
-              read: state.opened()!.serial,
-            })}
-            onCompositionChange={state.queryComposition}
-            placeholder={state.queryPlaceholder()}
-            accessibilityLabel={state.queryPlaceholder()}
-            style={{
-              ...bodyTextStyle,
-              color: C.text,
-              placeholderColor: C.muted,
-              backgroundColor: C.background,
-              borderRadius: 8,
-              paddingHorizontal: 10,
-              height: 36,
-            }}
-          />
+          <View style={menuRowStyle()}>
+            <Icon name="search" color={C.muted} />
+            <Input
+              ref={state.queryInput}
+              value={state.query()}
+              onChange={({ value: text }) => state.query.set(text)}
+              onSelectionChange={state.querySelection}
+              onSubmit={inputAction(state.acceptSelected, {
+                read: state.opened()!.serial,
+              })}
+              onCompositionChange={state.queryComposition}
+              placeholder={state.queryPlaceholder()}
+              accessibilityLabel={state.queryPlaceholder()}
+              style={{
+                ...captionTextStyle,
+                flex: 1,
+                minWidth: 0,
+                color: C.text,
+                placeholderColor: C.muted,
+              }}
+            />
+          </View>
+          <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
         </If>
-        <If when={state.loading()}>
-          <Text style={{ ...captionTextStyle, color: C.muted, padding: 8 }}>
-            {state.opened()?.source === 'files' ? tr('Searching files…') : tr('Loading skills…')}
-          </Text>
-        </If>
-        <If when={state.error()}>
-          <Text
-            style={[{ ...captionTextStyle, color: C.danger, padding: 8 }, { userSelect: 'text' }]}
-          >
-            {state.error()}
-          </Text>
-        </If>
+        <View
+          style={{ flexShrink: 0 }}
+          onLayout={({ bounds }) => noteHeight.set(bounds.size.height)}
+        >
+          <If when={state.loading()}>
+            <Text style={noteStyle()}>
+              {state.opened()?.source === 'references'
+                ? tr('Loading…')
+                : state.opened()?.source === 'files'
+                  ? tr('Searching files…')
+                  : tr('Loading skills…')}
+            </Text>
+          </If>
+          <If when={state.error()}>
+            <Text style={[{ ...noteStyle(), color: C.danger }, { userSelect: 'text' }]}>
+              {state.error()}
+            </Text>
+          </If>
+        </View>
         <If when={!state.queryComposing()}>
           <List
             each={state.rows()}
             keyExtractor={(row) => row.id}
             ref={state.list}
-            estimatedItemSize={52}
+            estimatedItemSize={ROW}
             style={{
-              height: Math.min(Math.max(1, state.rows().length) * 52, windowSize().height / 2),
+              height: shownListHeight(
+                state.rows(),
+                Math.min(
+                  windowSize().height / 2,
+                  // The menu frame, status notes and search row sit above the list.
+                  (room() ?? Infinity) -
+                    10 -
+                    noteHeight() -
+                    (state.opened()?.explicit && state.opened()?.source !== 'add'
+                      ? ROW + DIVIDER
+                      : 0),
+                ),
+              ),
               flexShrink: 1,
               minHeight: 0,
             }}
             empty={
               !state.loading() && !state.error() ? (
-                <Text style={{ ...captionTextStyle, color: C.muted, padding: 8 }}>
-                  {state.empty()}
-                </Text>
+                <Text style={noteStyle()}>{state.empty()}</Text>
               ) : (
                 <View />
               )
             }
           >
             {(row, index) => (
-              <Button
-                accessibilityLabel={row().title}
-                disabled={row().disabled}
-                onPress={inputAction(state.accept, row().action)}
-                style={{
-                  height: 52,
-                  borderRadius: 8,
-                  paddingHorizontal: 10,
-                  gap: 10,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  backgroundColor: state.index() === index() ? C.raised : C.surface,
-                }}
-                hoverStyle={{ backgroundColor: C.raised }}
-                focusStyle={{ backgroundColor: C.line }}
-                disabledStyle={{ opacity: 0.5 }}
-              >
-                <Icon name={row().icon} color={C.secondary} />
-                <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                  <Text style={[{ ...bodyTextStyle, color: C.text }, { numberOfLines: 1 }]}>
-                    {row().title}
-                  </Text>
-                  <If when={row().detail}>
-                    <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
-                      {row().detail}
+              <View>
+                <If when={row().divider && index() > 0}>
+                  <View style={[menuSeparatorStyle(), { pointerEvents: 'none' }]} />
+                </If>
+                <If when={opensSection(state.rows(), index())}>
+                  <Text style={menuLabelStyle()}>{row().heading}</Text>
+                </If>
+                <Button
+                  accessibilityLabel={row().title}
+                  disabled={row().disabled}
+                  onPress={inputAction(state.accept, row().action)}
+                  style={{
+                    ...menuRowStyle(),
+                    height: ROW,
+                    backgroundColor: state.index() === index() ? C.floatingRaised : undefined,
+                  }}
+                  hoverStyle={menuRowHoverStyle()}
+                  focusStyle={menuRowHoverStyle()}
+                  disabledStyle={controlDisabledStyle}
+                >
+                  <Icon name={row().icon} color={C.secondary} />
+                  <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', gap: 8 }}>
+                    <Text
+                      style={[
+                        { ...captionTextStyle, color: C.text, flexShrink: 0, maxWidth: '70%' },
+                        { numberOfLines: 1 },
+                      ]}
+                    >
+                      {row().title}
                     </Text>
+                    <If when={row().detail}>
+                      <Text
+                        style={[
+                          { ...captionTextStyle, color: C.muted, flex: 1, minWidth: 0 },
+                          { numberOfLines: 1 },
+                        ]}
+                      >
+                        {row().detail}
+                      </Text>
+                    </If>
+                  </View>
+                  <If when={row().shortcut}>
+                    <Text style={{ ...menuDetailTextStyle, color: C.muted }}>{row().shortcut}</Text>
                   </If>
-                </View>
-              </Button>
+                  <If when={state.opened()?.source === 'references' && state.index() === index()}>
+                    <Text style={{ ...menuDetailTextStyle, color: C.muted }}>↵</Text>
+                  </If>
+                </Button>
+              </View>
             )}
           </List>
         </If>
@@ -1016,3 +1141,45 @@ export function ComposerCompletion(props: { state: ComposerCompletionView }) {
     </If>
   );
 }
+
+/** Maka's own commands by what they do; a plugin's keep the command mark. */
+const commandIcons: Partial<Record<string, IconName>> = {
+  resume: 'conversation',
+  find: 'search',
+  new: 'plus',
+  bot: 'bot',
+  workspace: 'folder',
+  model: 'thinking',
+  settings: 'settings',
+  files: 'file',
+  goal: 'goal',
+  compact: 'compaction',
+  latest: 'latest',
+  history: 'up',
+  activity: 'activity',
+  stop: 'stop',
+};
+
+const ROW = 32;
+const HEADING = 28;
+const DIVIDER = 9;
+const opensSection = (rows: readonly ComposerCompletionRow[], index: number) =>
+  !!rows[index]?.heading && rows[index]?.heading !== rows[index - 1]?.heading;
+/** The list's height within `room`: all of it when it fits, else as many whole
+ * rows as fit, so the menu's edge falls between rows rather than through one. */
+const shownListHeight = (rows: readonly ComposerCompletionRow[], room: number) => {
+  let bottom = 0;
+  let shown = 0;
+  rows.forEach((row, index) => {
+    bottom +=
+      ROW + (opensSection(rows, index) ? HEADING : 0) + (row.divider && index > 0 ? DIVIDER : 0);
+    if (bottom <= room) shown = bottom;
+  });
+  return Math.max(ROW, shown);
+};
+const noteStyle = () => ({
+  ...menuDetailTextStyle,
+  color: C.muted,
+  paddingHorizontal: 8,
+  paddingVertical: 8,
+});

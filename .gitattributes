@@ -14,12 +14,12 @@
 # working notes are not source-release inputs.
 /.claude export-ignore
 /.maka-shots export-ignore
-/docs/_pr export-ignore
 
 # Preserve verbatim whitespace in the pinned NSH source snapshot.
 /third-party/nsh/.gitattributes whitespace=-blank-at-eof
 /third-party/nsh/docs/dev/browser-js-size.md whitespace=-blank-at-eof
 /third-party/nsh/docs/dev/data-table.md whitespace=-blank-at-eof
+/third-party/nsh/docs/dev/elements.md whitespace=-blank-at-eof
 /third-party/nsh/examples/gallery/TitleBar.tsx whitespace=-blank-at-eof
 /third-party/nsh/examples/gallery/demos/chat/markdown.tsx whitespace=-blank-at-eof
 /third-party/nsh/examples/nsh-gallery-ui/theme.ts whitespace=-blank-at-eof

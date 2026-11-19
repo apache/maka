@@ -17,9 +17,9 @@
  * under the License.
  */
 
-use maka_agent_facts::shell_run::ShellObservation;
-use maka_agent_facts::terminal::TerminalSize;
-use maka_agent_facts::terminal::input::InputAction;
+use maka_plugin_core::shell_run::ShellObservation;
+use maka_plugin_core::terminal::TerminalSize;
+use maka_plugin_core::terminal::input::InputAction;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;

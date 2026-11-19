@@ -287,6 +287,12 @@ style id:shape transitionTimingFunction cubic-bezier(0, 0, 0.58, 1)
 style id:none transitionProperty none
 style id:bezier transitionDuration 150
 style id:bezier transitionTimingFunction cubic-bezier(0.4, 0, 0.2, 1)
+style id:overshoot transitionDuration 200
+style id:overshoot transitionTimingFunction cubic-bezier(0.3, 1.25, 0.6, 1)
+# A spring as a style and as a class is accepted; its timing is checked
+# once nsh-compat's values print a transition's spring.
+style id:spring transitionProperty transform
+style id:spring-class transitionProperty transform
 style id:spin animationName spin
 style id:spin animationDuration 1000
 style id:spin animationDelay 0
@@ -418,6 +424,10 @@ style span:gone textUnderlineOffset 2
 style span:SHOUT textTransform uppercase
 style span:outer color #007affff
 style span:inner color #007affff
+# A hidden span keeps its characters and their place: as wide as shown.
+expect Seen unseen words
+frame id:hidden-span 0 942 131 17
+frame id:shown-span 0 959 131 17
 style span:inner fontSize 16
 covers [styles] fontFamily
 covers [styles] fontSize
@@ -651,6 +661,7 @@ style id:icon backgroundColor #ffffffff
 style id:busy backgroundColor #ff0000ff
 style id:checked backgroundColor #00ff00ff
 style id:selected backgroundColor #0000ffff
+style id:invalid backgroundColor #ff8800ff
 # `data-*:` and `group-data-*:` are known classes; without the attribute
 # (only components' parts show them) the plain ones apply.
 style id:data backgroundColor #ccccccff
@@ -677,6 +688,20 @@ style id:frame backgroundColor #ccccccff
 state id:popup-field none
 style id:holder backgroundColor #ccccccff
 covers [props] focusWithinStyle
+# state-focus-visible
+tap id:case-state-focus-visible
+# No focus: the field's own style.
+style id:ringed backgroundColor #ccccccff
+style id:ringed opacity 0.5
+# A field that edits shows its focus: `focus-visible:` and
+# `focusVisibleStyle`.
+state id:ringed focused
+style id:ringed backgroundColor #3366ffff
+style id:ringed opacity 1
+state id:ringed none
+style id:ringed backgroundColor #ccccccff
+style id:ringed opacity 0.5
+covers [props] focusVisibleStyle
 # paint-inline-align
 tap id:case-paint-inline-align
 # The headless engine's 16.8 pt line has its baseline at the bottom and a
@@ -689,6 +714,12 @@ frame id:icon-bottom 7.7 4.8 4 12
 frame id:icon-middle 7.7 7.3 4 12
 frame id:icon-class 7.7 0 4 12
 covers [styles] verticalAlign
+# A box 20 pt tall with no text stands on its bottom edge: it fills the
+# line from its top. A chip as tall whose label's baseline is 14 pt below
+# its top (2 of padding, a 12 pt line) stands on the line by that
+# baseline, 2.8 pt down.
+frame id:chip-edge 7.7 0 6 20
+frame id:chip-first 15.4 2.8 6 20
 
 # paint-tailwind
 tap id:case-paint-tailwind
@@ -721,6 +752,7 @@ style id:drop-shadow-color filter drop-shadow(0 3 3 #ff000080)
 style id:bg-current backgroundColor #ff000080
 style id:perspective-none transform rotateY(45deg)
 style id:palette backgroundColor #79697bff
+style id:bg-image backgroundImage linear-gradient(180deg, #ff0000ff, #0000ffff)
 covers [styles] borderStyle
 covers [styles] borderWidth
 covers [styles] borderTopWidth

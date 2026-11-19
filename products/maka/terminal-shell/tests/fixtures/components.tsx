@@ -70,10 +70,12 @@ function Sandbox() {
 function Consent() {
   const sent = signal('No answer');
   const record: InteractionRecord = {
-    turnId: 'original-turn',
-    runId: 'original-run',
+    execution: {
+      sessionId: 'original-session',
+      runId: '00000000-0000-4000-8000-000000000001',
+      turnId: 'original-turn',
+    },
     createdAt: 1,
-    sessionId: 'original-session',
     requestId: 'original-consent',
     outcome: null,
     request: {
@@ -110,7 +112,7 @@ function Consent() {
       <View style={{ flex: 1 }}>
         <Text>{sent()}</Text>
         <InteractionComposer
-          sessionId={record.sessionId}
+          sessionId={record.execution.sessionId}
           requestId={record.requestId}
           confirming={() => false}
           focusComposer={() => {}}
@@ -135,7 +137,7 @@ function Consent() {
   );
 }
 
-function CompletionComposer(props: { prediction?: boolean }) {
+function CompletionComposer(props: { prediction?: boolean; switchBackend?: boolean }) {
   const draft = signal('');
   const prediction = signal<{ sourceTurnId: string; text: string } | null>(
     props.prediction ? { sourceTurnId: 'prediction-turn', text: 'Review the changes.' } : null,
@@ -151,7 +153,10 @@ function CompletionComposer(props: { prediction?: boolean }) {
     modelId: 'fixture-model',
     thinkingLevel: null,
   } satisfies AgentBackendPreference;
+  const selectedBackend = signal<AgentBackendPreference>(backend);
   const owner: ComposerSession<JSX.Element> = {
+    quotes: () => [],
+    removeQuote: () => {},
     sessionId: 'original-session',
     connected: () => true,
     draft,
@@ -162,14 +167,17 @@ function CompletionComposer(props: { prediction?: boolean }) {
     workspace: () => '/workspace',
     blockedReason: () => '',
     error: () => '',
+    dismissError: () => {},
     notice: () => '',
     metrics: () => '',
     recovering: () => false,
     sends: () => [],
     retrySend: unexpected,
+    editSend: unexpected,
     checkSend: unexpected,
     dismissSend: unexpected,
-    invocation: () => null,
+    run: () => null,
+    execution: () => null,
     prediction: {
       current: prediction,
       dismiss(sourceTurnId) {
@@ -178,14 +186,14 @@ function CompletionComposer(props: { prediction?: boolean }) {
       },
     },
     stopping: () => false,
-    resumable: () => null,
-    resuming: () => false,
-    resume: unexpected,
-    backend: () => backend,
+    continuation: () => null,
+    continuing: () => false,
+    continueRun: unexpected,
+    backend: selectedBackend,
     modelDetails: () => ({
       kind: 'ready',
       choice: {
-        selection: backend,
+        selection: selectedBackend(),
         sourceName: 'Original route',
         label: 'Fixture model',
         thinkingLevels: [],
@@ -265,8 +273,7 @@ function CompletionComposer(props: { prediction?: boolean }) {
       recovering: () => null,
       renderPicker: () => null,
       imageUri: unexpected,
-      pasteClipboard: unexpected,
-      dropFiles: unexpected,
+      intake: unexpected,
       open: unexpected,
       remove: unexpected,
       reportError: unexpected,
@@ -274,6 +281,7 @@ function CompletionComposer(props: { prediction?: boolean }) {
       clearNotice() {},
     },
     completion: {
+      sessions: async () => [],
       async files(query, directory) {
         lookup.set(`files:${query}:${directory?.bytesBase64 ?? 'root'}`);
         let first = true;
@@ -310,6 +318,28 @@ function CompletionComposer(props: { prediction?: boolean }) {
     <View style={{ flex: 1, justifyContent: 'flex-end' }}>
       <Text>{action()}</Text>
       <Text>{lookup()}</Text>
+      <If when={props.switchBackend}>
+        <Button
+          accessibilityLabel={
+            selectedBackend().kind === 'model' ? 'Use external Agent' : 'Use native model'
+          }
+          onPress={() =>
+            selectedBackend.set(
+              selectedBackend().kind === 'model'
+                ? {
+                    kind: 'executor',
+                    selection: { executor: 'external', settings: { runtime: 'fixture' } },
+                  }
+                : backend,
+            )
+          }
+          style={{ minHeight: 32 }}
+        >
+          <Text>
+            {selectedBackend().kind === 'model' ? 'Use external Agent' : 'Use native model'}
+          </Text>
+        </Button>
+      </If>
       <Text accessibilityLabel={`Draft ${draft()}`}>{draft()}</Text>
       <Composer
         session={() => owner}
@@ -359,8 +389,6 @@ function WorkspacePages(props: { busy: boolean }) {
     },
     workspace: {
       path: `/workspace/${workspace}`,
-      directoryIdentity: workspace,
-      identity: workspace,
     },
   });
   const scope = { kind: 'all' } as const;
@@ -374,6 +402,7 @@ function WorkspacePages(props: { busy: boolean }) {
     filter: () => 'all',
     needsYouCount: () => 0,
     sessions,
+    hasMore: () => page < 3,
     loading,
     projects: () =>
       props.busy
@@ -496,14 +525,14 @@ function ActivityFollow() {
           group={() => ({
             kind: 'process',
             key: 'process',
-            turnId: 'turn',
+            turnKey: 'turn',
             members: [],
             rowIds: ids(),
             toolIds: ['tool'],
             closed: false,
           })}
           turn={() => ({
-            turnId: 'turn',
+            turnKey: 'turn',
             timing: null,
             active: true,
             finalOutputIds: [],
@@ -557,8 +586,13 @@ mount(() =>
     <WorkspacePages busy={scenario === 'workspace-pages-busy'} />
   ) : scenario === 'sandbox' ? (
     <Sandbox />
-  ) : scenario === 'composer' || scenario === 'composer-prediction' ? (
-    <CompletionComposer prediction={scenario === 'composer-prediction'} />
+  ) : scenario === 'composer' ||
+    scenario === 'composer-prediction' ||
+    scenario === 'composer-backends' ? (
+    <CompletionComposer
+      prediction={scenario === 'composer-prediction'}
+      switchBackend={scenario === 'composer-backends'}
+    />
   ) : (
     <Consent />
   ),

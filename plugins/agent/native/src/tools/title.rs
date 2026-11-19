@@ -23,34 +23,31 @@ use serde::Deserialize;
 use serde_json::Value;
 
 #[derive(Clone, Copy)]
-pub(super) enum Kind {
+pub(crate) enum Kind {
     Read,
     Write,
     Edit,
     Patch,
     Glob,
-    Grep,
+    List,
     Fetch,
     Search,
+    CreateSession,
+    ForkSession,
+    SendSession,
 }
 
 impl Kind {
     pub(super) fn render(self, input: &Value) -> Option<Text> {
         // ToolCatalog has validated this already parsed input against its schema.
-        let (target, en, zh, tw) = match self {
-            Self::Read => (&input["path"], "Read file", "读取文件", "讀取檔案"),
-            Self::Write => (&input["path"], "Write file", "写入文件", "寫入檔案"),
-            Self::Edit => (&input["path"], "Edit file", "编辑文件", "編輯檔案"),
-            Self::Patch => (
-                &input["operation"]["path"],
-                "Patch file",
-                "修补文件",
-                "修補檔案",
-            ),
-            Self::Glob => (&input["pattern"], "Find files", "查找文件", "尋找檔案"),
-            Self::Grep => (&input["pattern"], "Search files", "搜索文件", "搜尋檔案"),
-            Self::Fetch => (&input["url"], "Read web page", "读取网页", "讀取網頁"),
-            Self::Search => (&input["query"], "Search the web", "搜索网络", "搜尋網路"),
+        let target = match self {
+            Self::Read | Self::Write | Self::Edit | Self::List => &input["path"],
+            Self::Patch => &input["operation"]["path"],
+            Self::Glob => &input["pattern"],
+            Self::Fetch => &input["url"],
+            Self::CreateSession | Self::ForkSession => &input["title"],
+            Self::SendSession => &input["message"],
+            Self::Search => &input["query"],
         };
         let continuation = match self {
             Self::Read => ReadInput::deserialize(input)
@@ -59,11 +56,46 @@ impl Kind {
                 .filter(ReadRequest::is_continuation),
             _ => None,
         };
+        if matches!(self, Self::CreateSession)
+            && input.get("forkFrom").is_some_and(Value::is_object)
+        {
+            let title = target.as_str()?;
+            return Self::ForkSession.render_target(title, false);
+        }
         let target = continuation
             .as_ref()
             .map_or_else(|| target.as_str(), |read| Some(read.path()))?;
+        if matches!(self, Self::SendSession) {
+            let line = target.lines().find(|line| !line.trim().is_empty())?.trim();
+            let mut chars = line.chars();
+            let mut preview: String = chars.by_ref().take(96).collect();
+            if chars.next().is_some() {
+                preview.push('…');
+            }
+            return self.render_target(&preview, false);
+        }
+        self.render_target(target, continuation.is_some())
+    }
+
+    pub(crate) fn render_target(self, target: &str, continuation: bool) -> Option<Text> {
+        let is_session_uri = matches!(self, Self::Read)
+            && (target.starts_with("maka://session/") || target.starts_with("session:"));
+        let (en, zh, tw) = match self {
+            Self::Read if is_session_uri => ("Read session", "读取会话", "讀取對話"),
+            Self::Read => ("Read file", "读取文件", "讀取檔案"),
+            Self::Write => ("Write file", "写入文件", "寫入檔案"),
+            Self::Edit => ("Edit file", "编辑文件", "編輯檔案"),
+            Self::Patch => ("Patch file", "修补文件", "修補檔案"),
+            Self::Glob => ("Find files", "查找文件", "尋找檔案"),
+            Self::List => ("List directory", "列出目录", "列出目錄"),
+            Self::Fetch => ("Read web page", "读取网页", "讀取網頁"),
+            Self::Search => ("Search the web", "搜索网络", "搜尋網路"),
+            Self::CreateSession => ("Create conversation", "创建会话", "建立對話"),
+            Self::ForkSession => ("Branch conversation", "从会话分支", "從對話建立分支"),
+            Self::SendSession => ("Send message to agent", "向协作者发消息", "傳訊息給協作者"),
+        };
         let target = Text::single_line(target)?.fallback;
-        let (en_more, zh_more, tw_more) = if continuation.is_some() {
+        let (en_more, zh_more, tw_more) = if continuation {
             (" · continued", " · 续读", " · 續讀")
         } else {
             ("", "", "")

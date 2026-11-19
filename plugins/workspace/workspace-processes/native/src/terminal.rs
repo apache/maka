@@ -22,17 +22,20 @@ mod controller;
 mod display;
 mod launch;
 mod output;
-use super::{Processes, ResolvedConfiguration, cancelled, failed, persistence, worker_error};
+use super::{
+    NativeCallContext, Processes, ResolvedConfiguration, cancelled, failed, persistence,
+    worker_error,
+};
 pub(super) use controller::Lease;
 use futures_util::future::BoxFuture;
-use maka_agent_facts::shell_run::ShellObservation;
 use maka_agent_facts::tools::ToolError;
 use maka_event_log::sessions::SessionRecord;
 use maka_host_runtime::shell::request::parse_ref;
 use maka_host_runtime::{
-    application::{Context, Handler},
+    application::{Context, Handler, HandlerError, HandlerResult, HandlerValue},
     shell::ShellError,
 };
+use maka_plugin_core::shell_run::ShellObservation;
 use maka_workspace_api::terminal::*;
 use serde_json::Value;
 use std::sync::Arc;
@@ -49,14 +52,29 @@ impl Handler for Service {
         name: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         let owner = self.0.clone();
-        Box::pin(async move {
+        let result = async move {
             if matches!(name.as_str(), "start" | "stop" | "control" | "release")
                 && context.operation().is_none()
             {
                 return Err("terminal_mutation_required".into());
             }
+            let _native_call = if context.native_context::<NativeCallContext>().is_some() {
+                Some(
+                    owner
+                        .native_call(&context, context.operation().is_some())
+                        .await
+                        .map_err(|error| error.to_string())?,
+                )
+            } else {
+                if context.scope().identity.agent().is_some() {
+                    return Err(
+                        "Agent terminal call requires its original native capability".into(),
+                    );
+                }
+                None
+            };
             let mut ticket = context
                 .scope()
                 .resources
@@ -80,6 +98,10 @@ impl Handler for Service {
                 }
                 Err(error) => Err(error.to_string()),
             }
+        };
+        Box::pin(async move {
+            let result: std::result::Result<Value, String> = result.await;
+            result.map(HandlerValue::Json).map_err(HandlerError::from)
         })
     }
 }
@@ -130,18 +152,11 @@ impl Processes {
         id: &str,
         context: &Context,
     ) -> Result<maka_event_log::SessionStore, ToolError> {
-        if let Some(invocation) = context
-            .scope()
-            .identity
-            .agent()
-            .filter(|invocation| invocation.session_id == id)
-            && let Some(custody) = context.scope().execution()
-        {
-            return maka_agent_authority::permissions::execution(
-                &self.store,
-                invocation,
-                Some(custody.as_ref()),
-            );
+        if let Some(custody) = context.work_custody() {
+            return self
+                .store
+                .session_for_work(custody.as_ref(), id)
+                .map_err(persistence);
         }
         self.store.session(id).await.map_err(|error| match error {
             maka_event_log::StoreError::SessionNotFound => failed("Terminal Session not found"),
@@ -169,7 +184,7 @@ impl Processes {
         let record = self
             .terminal_store(id, context)
             .await?
-            .get_session::<maka_agent_api::session::StoredSessionConfiguration>(id)
+            .get::<maka_agent_api::session::StoredSessionConfiguration>()
             .await
             .map_err(persistence)?
             .ok_or_else(|| failed("Terminal Session not found"))?;
@@ -177,6 +192,21 @@ impl Processes {
             maka_agent_authority::permissions::resolve_session(record).map_err(persistence)?;
         if active && record.archived {
             return Err(failed("Session is archived"));
+        }
+        if let Some(capsule) = context.native_context::<NativeCallContext>() {
+            let access = capsule.access();
+            if access.call().execution.session_id != id {
+                return Err(failed("Terminal capability belongs to another Session"));
+            }
+            let current = access.current().await?;
+            if current.permission_basis() != record.configuration.permission_basis()
+                || current.workspace != record.configuration.workspace
+            {
+                return Err(failed(
+                    "Terminal permissions changed from the actual native call",
+                ));
+            }
+            return Ok(record.map_configuration(|_| current));
         }
         Ok(record)
     }
@@ -240,7 +270,12 @@ impl Processes {
                 .map_err(persistence)?;
             let revision = page.revision.clone();
             let value = completed(Page {
-                resources: page.resources,
+                resources: page
+                    .resources
+                    .into_iter()
+                    .map(maka_presentation::shell::local_metadata)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(persistence)?,
                 revision: page.revision,
                 total: page.total,
                 next_offset: page.next_offset,

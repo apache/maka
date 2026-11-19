@@ -23,6 +23,7 @@ In Rust the accessors are functions of `nsh_core::prelude`; in TSX they come fro
 | `locale()` | `locale()` (`nsh`) | The user's locale as a BCP 47 tag (`"en-US"`, `"zh-Hans-CN"`): what `Intl` formats for by default. |
 | `locale_settings()` | `localeSettings()` (`nsh`) | The user's locale settings: the preferred languages, the time zone, 12- or 24-hour time, the day weeks start on, the units of measurements and of temperatures ([Locale settings](#locale-settings)). |
 | `lifecycle()` | `lifecycle()` (`nsh`) | Whether the app is in use: `active`, `inactive` (visible without the focus) or `background` ([In the background](#in-the-background)). |
+| `wake_count()` | `wakeCount()` (`nsh`) | How many times the system woke from sleep while the app ran ([After a sleep](#after-a-sleep)). |
 | `reduce_motion()`, `screen_reader()` | `reduceMotion()`, `screenReaderEnabled()` (`nsh`) | See [Accessibility](./accessibility.md). |
 
 ```rust tabs
@@ -377,11 +378,31 @@ effect(() => {
 });
 ```
 
-Use `background` to pause work, and save what the user changes as they change it: the system may suspend an app seconds after it moves to the background, before an effect that reads the change has run. An app shown inside a native app follows that app's state, and where an app has several windows (an iPad, a desktop) a view follows the window it is in. In tests, `app.setLifecycle("background")` of `nsh/test` moves the app there ([Testing](./testing-and-trace.md#steps)).
+Use `background` to pause work, and save what the user changes as they change it: the system may suspend an app seconds after it moves to the background, before an effect that reads the change has run. An app shown inside a native app follows that app's state, and where an app has several windows (an iPad, a desktop) a view follows the window it is in. Standalone apps and views embedded in AppKit and Win32 apps are in the `background` too on macOS and Windows while the screen is locked or turned off and while their window is on another desktop (a Space, a virtual desktop). On Windows, an app moves to `background` when the user signs out, Windows shuts down or restarts, or an installer closes it, and its handlers run before the session ends; then the app quits ([`Application.on("quit")`](../modules/nsh-desktop.md#quitting)). A standalone app on Linux does the same when the user signs out or the system shuts down or restarts, and when it is sent `SIGTERM` (as systemd does to end a session or stop a service). In tests, `app.setLifecycle("background")` of `nsh/test` moves the app there ([Testing](./testing-and-trace.md#steps)).
+
+## After a sleep
+
+`wake_count()` (TSX: `wakeCount()`) counts the times the system woke from sleep while the app ran: 0 at the start, one more after each wake. A laptop whose lid closes and opens again with the app in front keeps the app `active` throughout, yet the network connections it held and the timers it set did not live through the sleep. An effect that reads the count runs again after each wake, so the app checks its connections or opens them again there:
+
+```rust tabs
+effect(move || {
+    if wake_count() > 0 {
+        feed.reconnect();
+    }
+});
+```
+
+```tsx tabs
+effect(() => {
+  if (wakeCount() > 0) feed.reconnect();
+});
+```
+
+Standalone apps and views embedded in AppKit, Win32 and GTK apps count wakes on macOS, Windows and Linux (Linux through systemd's `logind`). On iOS and Android a sleeping device takes the app to the background, which `lifecycle()` reports. In tests, `app.wake()` of `nsh/test` wakes the system ([Testing](./testing-and-trace.md#steps)).
 
 ## Safe areas
 
-Notches, the home indicator, the status bar, Android's navigation bar and the Mac Catalyst title bar cover parts of the surface. NSH apps draw edge to edge on every platform, and get the covered parts as insets.
+Notches, the home indicator, the status bar, Android's navigation bar, the Mac Catalyst title bar and the window controls of an iPad app in a window cover parts of the surface. NSH apps draw edge to edge on every platform, and get the covered parts as insets. On iPadOS 26 and later, a windowed app's leading inset is as wide as the window controls in its top-leading corner, over the whole leading edge; in full screen and on iPhone it is the plain safe area.
 
 - `safe_area()` (TSX: `safeArea()`) gives the surface's insets.
 - A component's `cx.insets()` (TSX: `safeAreaInsets()`) gives the insets **where the component renders**: inside a navigation [page](./navigation.md#safe-areas-under-the-header) they are measured below its header, inside a [dialog](../elements/dialog.md) they are the dialog's. Prefer it in components that may be shown in several places.
@@ -492,6 +513,22 @@ come from the browser and follow it live.
 In a terminal ([the terminal backend](./tui.md)), `platform.idiom` is `"terminal"`, `platform.desktop` is `true` and
 `platform.os` is the machine's own system. `colorScheme()` follows the terminal's background, `reduceMotion()` is
 `true`, and the safe area and the keyboard height are 0.
+
+## The app's data directory
+
+`data_dir()` in Rust, `process.dataDir` in TSX, is the directory the app keeps its own files in, such as a SQLite database, beside its `storage.json`, on every native platform, Android and iOS included. By default it is the app's id in the system's directory for apps' data: `~/Library/Application Support/<id>` on macOS, `%APPDATA%\<id>` on Windows, `$XDG_DATA_HOME/<id>` (`~/.local/share/<id>`) on Linux; an app embedded in another keeps it in the embedding app's. A desktop app can name its own with `nsh.json` `dataDir` ([Project structure](./project-structure.md)), and `process.dataDir` and `${dataDir}` follow it. It is `None` (`null`) where the host keeps no files for the app, such as the web. The directory may not exist yet, so create it before writing.
+
+A packaged desktop app writes its log lines to `logs/app.log` there: `log_file()` in Rust, `process.logFile` in TSX
+([Log files and levels on the desktop](./dev-server-and-debugging.md#log-files-and-levels-on-the-desktop)).
+
+```rust
+use nsh_core::prelude::*;
+
+if let Some(dir) = data_dir() {
+    std::fs::create_dir_all(&dir)?;
+    let db = dir.join("app.sqlite");
+}
+```
 
 ## Pixel density
 

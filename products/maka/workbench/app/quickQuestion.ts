@@ -1,33 +1,45 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { cleanup, signal } from 'nsh';
 import { randomUUID } from 'crypto';
 import { host } from 'maka/host';
 import type { OperationReply } from '../../../../packages/plugin-sdk/src/index';
 import type { OriginalMutation } from './host';
-import { qt } from '../../../../plugins/application/quick-tools/shared/i18n';
+import { tr } from './locale';
 
 function returned(reply: OperationReply) {
   const receipt = reply.receipt;
-  if (receipt.kind === 'recorded' && receipt.outcome.kind === 'returned')
-    return receipt.outcome.value;
-  const failure = receipt.kind === 'recorded' ? receipt.outcome : receipt;
+  const outcome = receipt.kind === 'recorded' ? receipt.outcome : receipt;
+  const failure = outcome.kind === 'returned' ? outcome.result : outcome;
+  if (failure.kind === 'success') return;
   if ('diagnostic' in failure) {
     throw Error(
       failure.diagnostic === 'quick_question_model_required'
-        ? qt('请先为个人助手选择模型')
+        ? tr('Select a model for Maka Bot first.')
         : failure.diagnostic,
     );
   }
-  throw Error(qt('提问失败'));
+  throw Error(tr('Quick question failed.'));
 }
 
-export async function personalAssistantId() {
-  const response = (await host.mutation('agent', 'openBot', {})) as { reply: OperationReply };
-  const value = returned(response.reply) as { kind: string; sessionId?: string } | null;
-  if (value?.kind !== 'opened' || !value.sessionId) throw Error(qt('无法打开个人助手'));
-  return value.sessionId;
-}
-
-export function createQuickQuestion() {
+export function createQuickQuestion(openBot: () => Promise<string>) {
   const turns = signal<{ question: string; answer: string }[]>([]);
   const running = signal(false),
     error = signal('');
@@ -55,7 +67,7 @@ export function createQuickQuestion() {
     previous = null;
     turns.set([...history, { question, answer: '' }]);
     try {
-      const sessionId = await personalAssistantId();
+      const sessionId = await openBot();
       if (stopped) return;
       const operation = (await host.beginMutation('agent', 'askQuickQuestion', {
         sessionId,
@@ -67,7 +79,7 @@ export function createQuickQuestion() {
       if (stopped) operation.cancel();
       for (;;) {
         const event = await operation.next();
-        if (!event || event.kind === 'not_dispatched') throw Error(qt('提问失败'));
+        if (!event || event.kind === 'not_dispatched') throw Error(tr('Quick question failed.'));
         if (event.kind === 'progress' && alive && typeof event.value === 'string') {
           previous = requestId;
           turns.set([...history, { question, answer: event.value }]);
@@ -85,5 +97,12 @@ export function createQuickQuestion() {
       if (alive) running.set(false);
     }
   };
-  return { turns, running, error, ask, stop };
+  const reset = () => {
+    if (!running()) {
+      turns.set([]);
+      previous = null;
+      error.set('');
+    }
+  };
+  return { turns, running, error, ask, stop, reset };
 }

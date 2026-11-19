@@ -39,16 +39,29 @@ const SOURCES: &[&str] = &[
     "products/maka/workbench/app/ComputerAppRequest.tsx",
     "products/maka/workbench/app/CapabilityRequest.tsx",
     "products/maka/workbench/tests/fixtures/composer-completion.tsx",
+    "products/maka/workbench/tests/fixtures/computer-stage.tsx",
+    "products/maka/workbench/tests/fixtures/inline-dictation.tsx",
+    "products/maka/workbench/tests/fixtures/discovery.tsx",
+    "products/maka/workbench/tests/fixtures/stage-quotes.tsx",
+    "products/maka/workbench/tests/fixtures/model-select.tsx",
+    "products/maka/workbench/tests/fixtures/models-settings.tsx",
+    "products/maka/workbench/tests/fixtures/terminal-sidebar.tsx",
     "products/maka/workbench/tests/fixtures/skill-input.tsx",
+    "products/maka/workbench/tests/fixtures/subagent-settings.tsx",
     "products/maka/workbench/tests/fixtures/mermaid-view.tsx",
-    "products/maka/terminal-shell/tests/fixtures/components.tsx",
-    "products/maka/terminal-shell/tests/fixtures/turn-navigation.tsx",
+    "products/maka/workbench/tests/fixtures/spec-view.tsx",
     "products/maka/terminal-shell/tests/real_host/mermaid_preview.tsx",
     "products/maka/terminal-shell/tests/real_host/model_settings_preview.tsx",
     "products/maka/terminal-shell/tests/real_host/permission_preview.tsx",
     "plugins/agent/conversations/ui/index.tsx",
     "plugins/agent/composer/ui/index.tsx",
     "plugins/settings/settings/ui.tsx",
+    "plugins/application/applications/ui.tsx",
+    "plugins/application/clipboard-history/ui.tsx",
+    "plugins/application/file-search/ui.tsx",
+    "plugins/application/quick-library/ui.tsx",
+    "plugins/application/screenshot/ui.tsx",
+    "plugins/application/symbols/ui.tsx",
     "plugins/workspace/workspace-files/ui/index.tsx",
     "skills/maka-plugin-authoring/assets/starter/ui.tsx",
     "skills/maka-plugin-authoring/assets/composer-ui/index.tsx",
@@ -85,10 +98,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir(&output)
         .map_err(|source| FileError::new("create fresh output", &output, source))?;
 
-    let ui_sets = [
-        nsh_base::registry().into(),
-        maka_workbench::bindings::ui_set_description(),
-    ];
+    let base = nsh_base::registry();
+    let ui_sets: Vec<_> = base
+        .sets()
+        .into_iter()
+        .map(Into::into)
+        .chain(std::iter::once(
+            maka_workbench::bindings::ui_set_description(),
+        ))
+        .collect();
     let mut definitions = nsh_js::type_definitions(&ui_sets);
     definitions.extend(nsh_bundler::type_definitions());
     let tokens = nsh_base::Theme::default().into_tokens();

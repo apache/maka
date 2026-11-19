@@ -38,11 +38,10 @@ mod authentication;
 mod discovery;
 mod effects;
 mod inventory;
-mod metadata;
 mod options;
 mod output;
-mod preferred;
 mod route;
+mod usage;
 
 pub const ID: &str = "maka.providers";
 
@@ -78,14 +77,21 @@ impl ApiProviders {
         let provider = Self::provider(id, snapshot)?;
         let mut metadata = provider.model_metadata(model.clone(), overrides.as_ref());
         let mut request = Resolve {
+            service_tier: None,
             connection,
             model,
             overrides,
             thinking_level: None,
         };
-        provider
+        let prepared = provider
             .prepare(request.clone())
             .map_err(|error| error.to_string())?;
+        if matches!(
+            prepared.protocol,
+            maka_agent_ports::model::ProviderKind::Anthropic
+        ) {
+            metadata.info.service_tiers.clear();
+        }
         metadata.thinking_levels.retain(|level| {
             request.thinking_level = Some(*level);
             provider.prepare(request.clone()).is_ok()
@@ -133,9 +139,9 @@ struct Configuration {
     base_url: String,
 }
 impl Configuration {
-    fn read(connection: &Connection) -> Result<Self, Error> {
-        let mut configuration: Self = serde_json::from_value(connection.configuration.clone())
-            .map_err(|_| Error::InvalidConfiguration)?;
+    fn read(value: &serde_json::Value) -> Result<Self, Error> {
+        let mut configuration: Self =
+            serde_json::from_value(value.clone()).map_err(|_| Error::InvalidConfiguration)?;
         configuration.base_url = maka_agent_facts::configuration::validation::normalize_base_url(
             &configuration.base_url,
         )
@@ -187,20 +193,14 @@ impl ApiProvider {
                 AuthKind::None | AuthKind::OptionalApiKey
             ),
             discovery: true,
+            usage_authentication: usage::authentication(self.id),
         })
         .map(Arc::new)
         .map_err(|error| error.to_string())
     }
 
     fn model_metadata(&self, model: ModelInfo, overrides: Option<&ModelOverride>) -> ModelMetadata {
-        let reported = metadata::enrich(
-            &self.snapshot,
-            self.id,
-            model,
-            overrides.and_then(|value| value.catalog_model.as_ref()),
-        );
-        let info =
-            overrides.map_or_else(|| reported.clone(), |overrides| overrides.apply(&reported));
+        let info = self.snapshot.resolve(self.id, model, overrides);
         let thinking_levels = overrides
             .and_then(|o| o.thinking_levels.clone())
             .or_else(|| info.thinking_levels.clone())
@@ -216,7 +216,7 @@ impl ApiProvider {
     }
 
     fn prepare(&self, request: Resolve) -> Result<Model, Error> {
-        let configuration = Configuration::read(&request.connection)?;
+        let configuration = Configuration::read(&request.connection.configuration)?;
         let ModelMetadata {
             mut info,
             thinking_levels,
@@ -246,7 +246,14 @@ impl ApiProvider {
         if level.is_some_and(|level| !thinking_levels.contains(&level)) {
             return Err(Error::UnsupportedThinkingLevel);
         }
-        let options = options::resolve(&selection, self.facts, &thinking_levels, level, &route)?;
+        let options = options::resolve(
+            &selection,
+            self.facts,
+            &thinking_levels,
+            level,
+            &route,
+            request.service_tier.as_deref(),
+        )?;
         let output = output::resolve(&selection, route.wire, &options)?;
         let adapter = request
             .overrides
@@ -260,6 +267,23 @@ impl ApiProvider {
                 }
                 .into()
             });
+        if self.id == "deepseek"
+            && canonical_endpoint.as_deref() == Some(configuration.base_url.as_str())
+            && route.wire == Wire::OpenaiResponses
+            && let Some(web_search) = self
+                .facts
+                .models
+                .get(&info.id)
+                .and_then(|model| model.metadata.capabilities)
+                .and_then(|capabilities| capabilities.web_search)
+        {
+            info.capabilities.get_or_insert_default().web_search = request
+                .overrides
+                .as_ref()
+                .and_then(|overrides| overrides.capabilities.as_ref())
+                .and_then(|capabilities| capabilities.web_search)
+                .or(Some(web_search));
+        }
         let model = Model {
             adapter,
             protocol: route.kind,
@@ -275,6 +299,10 @@ impl ApiProvider {
 }
 
 impl Provider for ApiProvider {
+    fn validate_configuration(&self, configuration: &serde_json::Value) -> Result<(), Error> {
+        Configuration::read(configuration).map(|_| ())
+    }
+
     fn resolve(&self, request: Resolve) -> BoxFuture<'_, Result<Model, Error>> {
         Box::pin(async move { self.prepare(request) })
     }
@@ -286,7 +314,7 @@ impl Provider for ApiProvider {
         _: String,
     ) -> BoxFuture<'_, Result<maka_agent_ports::model::Credentials, Error>> {
         Box::pin(async move {
-            Configuration::read(&connection)?;
+            Configuration::read(&connection.configuration)?;
             authentication::authorize(self.facts.auth_kind, credential)
         })
     }
@@ -297,7 +325,7 @@ impl Provider for ApiProvider {
         _: maka_agent_ports::provider::Context,
     ) -> BoxFuture<'_, Result<maka_agent_facts::provider::Credential, Error>> {
         Box::pin(async move {
-            Configuration::read(&request.connection)?;
+            Configuration::read(&request.connection.configuration)?;
             authentication::authenticate(request)
         })
     }
@@ -308,6 +336,14 @@ impl Provider for ApiProvider {
         context: maka_agent_ports::provider::Context,
     ) -> BoxFuture<'_, Result<Vec<ModelInfo>, Error>> {
         Box::pin(async move { effects::discover(self, request, context).await })
+    }
+
+    fn usage_limits(
+        &self,
+        request: maka_agent_ports::provider::UsageLimitsRequest,
+        context: maka_agent_ports::provider::Context,
+    ) -> BoxFuture<'_, Result<Vec<maka_agent_ports::provider::UsageLimit>, Error>> {
+        Box::pin(usage::read(self, request, context))
     }
 
     fn verify(
@@ -333,6 +369,7 @@ mod tests {
         };
         let model = provider
             .prepare(Resolve {
+                service_tier: None,
                 connection: Connection {
                     id: "copilot".into(),
                     revision: 1,

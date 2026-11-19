@@ -38,7 +38,11 @@ impl std::future::Future for YieldNow {
         std::task::Poll::Pending
     }
 }
-const QUEUE: usize = 8;
+/// Commands waiting for the transport. `send()` runs within a JS turn and
+/// the transport drains between turns, so a burst of sends waits here, as
+/// it does in a browser's buffer; what bounds it is `MAX_MESSAGE` of
+/// buffered bytes, and this count only stops a flood of empty messages.
+const QUEUE: usize = 1024;
 
 /// Whether the app may open a WebSocket to `url`, checked before any DNS
 /// lookup: the handshake is a GET of the same URL over HTTP.

@@ -24,14 +24,16 @@ import { PluginInstances, renderContribution } from './plugins/RuntimeView';
 import { errorText, renderText } from './text';
 import { tr } from './locale';
 import { initializeAppearance } from './appearance';
+import { initializeComposerToolbar } from './composerToolbar';
 import { C } from './ui';
-import { initializeQuickPreferences } from './quickPreferences';
 import { LoadingState } from './Loading';
+import { nativeDesktop } from './nativeDesktop';
 
 function Bootstrap() {
+  nativeDesktop();
   initializeAppearance();
+  initializeComposerToolbar();
   const plugins = createPlugins();
-  initializeQuickPreferences(plugins.runtime);
   return (
     <View style={{ flex: 1, minHeight: 0 }}>
       <PluginInstances plugins={plugins} />
@@ -58,7 +60,12 @@ function Bootstrap() {
           <If when={plugins.runtime.updateError() !== null || plugins.runtime.ready()}>
             <Text style={{ fontSize: 14, lineHeight: 20, color: C.secondary }}>
               {plugins.runtime.updateError() !== null
-                ? renderText(errorText(plugins.runtime.updateError()))
+                ? renderText(
+                    errorText(
+                      plugins.runtime.updateError(),
+                      'Could not load the workbench. Retry the connection.',
+                    ),
+                  )
                 : tr('This deployment has no root UI selected.')}
             </Text>
           </If>

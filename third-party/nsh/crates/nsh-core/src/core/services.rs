@@ -24,8 +24,10 @@ impl<M: TextEngine> Core<M> {
     /// Whether a component waits for a display frame: ask the platform for
     /// one, then call [`Self::run_frame`] when it begins.
     pub fn wants_frame(&self) -> bool {
-        // A slot only the core holds is a task that is gone.
-        self.components
+        // A blur held for the frame (`blur_held`) lets go at it.
+        (self.blur_held && self.focus_moved)
+            // A slot only the core holds is a task that is gone.
+            || self.components
             .services
             .frames
             .iter()
@@ -35,6 +37,7 @@ impl<M: TextEngine> Core<M> {
     /// A display frame began at `at`: the tasks waiting for it go on (at
     /// the next [`Self::run_component_tasks`]).
     pub fn run_frame(&mut self, at: Instant) {
+        self.blur_held = false;
         for slot in std::mem::take(&mut self.components.services.frames) {
             slot.borrow_mut().deliver(at);
         }

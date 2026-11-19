@@ -40,8 +40,6 @@ animation::motion::MotionSpec::start_values ->                   # a motion chan
 animation::motion::MotionSpec::values(values)                    # a motion channel's value (an opacity, points or degrees by channel)
 animation::motion::keyframe_ends ->                              # a generic animated value (any prop: opacity, a color channel, a length)
 animation::motion::stagger_delay ->                              # a count of intervals
-animation::ops::AnimationOp::CreateDiffClamp.max                 # a generic animated value (any prop: opacity, a color channel, a length)
-animation::ops::AnimationOp::CreateDiffClamp.min                 # a generic animated value (any prop: opacity, a color channel, a length)
 animation::ops::AnimationOp::CreateInterpolate.input_range       # interpolation input stops (generic animated values)
 animation::ops::AnimationOp::CreateValue.value                   # a generic animated value (any prop: opacity, a color channel, a length)
 animation::ops::AnimationOp::Set.value                           # a generic animated value (any prop: opacity, a color channel, a length)
@@ -87,6 +85,7 @@ audio::check_rate ->                                             # a playback ra
 audio::check_rate(rate)                                          # a playback rate multiplier
 audio::check_volume ->                                           # audio volume, 0..1
 audio::check_volume(volume)                                      # audio volume, 0..1
+canvas::CanvasImage::density ->                                  # a pixel density (a file name's @2x)
 canvas::CanvasOp::MiterLimit.0                                   # a ratio of the stroke width
 canvas::Num::Const.0                                             # a generic number (a JS value, a recorded slot)
 canvas::Num::get ->                                              # a generic number (a JS value, a recorded slot)
@@ -96,6 +95,9 @@ canvas::damage::DamageScan::damage(value)                        # a generic num
 canvas::damage::DamageScan::painted_after(value)                 # a generic number (a JS value, a recorded slot)
 canvas::hit::point_in_path(slot)                                 # a generic number (a JS value, a recorded slot)
 canvas::hit::point_in_stroke(slot)                               # a generic number (a JS value, a recorded slot)
+canvas::render::RenderRequest.scale                              # pixels per point, a ratio
+canvas::render::RenderOptions.scale                              # pixels per point, a ratio
+ops::Command::RenderCanvas.scale                                 # pixels per point, a ratio
 core::Core::scroll_listener ->                                   # time and a zoom scale factor (the sizes it gives are typed)
 core::Core::set_font_scale(scale)                                # a font scale factor
 core::Core::set_zoom(scale)                                      # a zoom scale factor
@@ -124,6 +126,7 @@ effects::KeyframeAnimation::frame_rate(hz)                       # a frame rate 
 effects::Transition.delay                                        # time
 effects::Transition.duration                                     # time
 effects::Transition.easing                                       # easing curve coordinates (unit square)
+effects::Transition::run_ms ->                                   # time
 effects::Transition::EASE                                        # easing curve coordinates (unit square)
 effects::compose_color_matrices ->                               # color components
 filesystem::FileMetadata.atime_ms                                # time (milliseconds since the epoch)
@@ -133,8 +136,8 @@ image::decoded::Natural::points(density)                         # a pixel densi
 image::decoded::Want.scale                                       # a pixel density (device pixels per point)
 image::decoded::Want::longest(density)                           # a pixel density (device pixels per point)
 image::decoded::Want::natural(scale)                             # a pixel density (device pixels per point)
+image::density ->                                                # a pixel density (a file name's @2x)
 image::loader::Location::density ->                              # a pixel density (a file name's @2x)
-image::loader::density ->                                        # a pixel density (a file name's @2x)
 input::LONG_PRESS                                                # time (milliseconds)
 input::Pinch::at ->                                              # a scale factor (the rotation is typed)
 input::Press.long_delay                                          # time (milliseconds)
@@ -144,9 +147,11 @@ input::VELOCITY_WINDOW                                           # time (millise
 input::VelocityTracker::add(time)                                # time (milliseconds)
 input::VelocityTracker::velocity ->                              # a rate or a physical constant of an animation
 input::WHEEL_LATCH                                               # time (milliseconds)
+input::WheelStep::Discrete.time                                  # time (milliseconds)
 input::ZOOM_STEP                                                 # a scale factor
 input::latch_holds(last)                                         # time (milliseconds)
 input::latch_holds(time)                                         # time (milliseconds)
+input::pick_press(views)                                         # time (milliseconds): the delayLongPress of each view
 input::touchpad_wait ->                                          # time (milliseconds)
 input::touchpad_wait(last)                                       # time (milliseconds)
 input::touchpad_wait(now)                                        # time (milliseconds)
@@ -185,6 +190,12 @@ ops::IMAGE_SCALES                                                # pixel densiti
 ops::ImageProp::FadeDuration.0                                   # time
 ops::ImageScales::iter ->                                        # pixel densities (device pixels per point)
 ops::ImageSource::at_pixel_ratio(pixel_ratio)                    # device pixels per point, a ratio
+ops::MouseEvent.pressure                                         # a pressure, 0..1 as the DOM PointerEvent's
+ops::MouseEvent.tilt_x                                           # a pen tilt in degrees, as the DOM PointerEvent's tiltX / tiltY
+ops::MouseEvent.tilt_y                                           # a pen tilt in degrees, as the DOM PointerEvent's tiltX / tiltY
+ops::MouseEvent::with_pointer(pressure)                          # a pressure, 0..1 as the DOM PointerEvent's
+ops::MouseEvent::with_pointer(tilt_x)                            # a pen tilt in degrees, as the DOM PointerEvent's tiltX / tiltY
+ops::MouseEvent::with_pointer(tilt_y)                            # a pen tilt in degrees, as the DOM PointerEvent's tiltX / tiltY
 ops::NativeProp::ProgressInterval.0                              # time
 ops::NativeProp::Rate.0                                          # a playback rate multiplier
 ops::NativeProp::Volume.0                                        # audio volume, 0..1
@@ -200,22 +211,37 @@ ops::ScrollProp::MaxZoom.0                                       # a zoom scale 
 ops::ScrollProp::MinZoom.0                                       # a zoom scale factor
 ops::ScrollProp::Zoom.0                                          # a zoom scale factor
 ops::TouchEvent.timestamp                                        # time
+ops::TouchPoint.pressure                                         # a pressure, 0..1 as the DOM PointerEvent's
+ops::TouchPoint.tilt_x                                           # a pen tilt in degrees, as the DOM PointerEvent's tiltX / tiltY
+ops::TouchPoint.tilt_y                                           # a pen tilt in degrees, as the DOM PointerEvent's tiltX / tiltY
+ops::TouchPoint::default_pressure ->                             # a pressure, 0..1 as the DOM PointerEvent's
 platform::Environment.font_scale                                 # a font scale factor
 platform::Environment.keyboard_duration                          # time
 platform::Environment.pixel_ratio                                # device pixels per point
 platform::HostEnvironment.font_scale                             # a font scale factor
+platform::PerfStats.fps                                          # a frame rate (frames per second)
+platform::PerfStats.refresh_rate                                 # a refresh rate (Hz)
+platform::PerfStats::new(fps)                                    # a frame rate (frames per second)
 props::AccessibilityValue.max                                    # an app-defined value
 props::AccessibilityValue.min                                    # an app-defined value
 props::AccessibilityValue.now                                    # an app-defined value
-props::LayoutCurve::Spring.damping                               # a rate or a physical constant of an animation
+props::LayoutCurve::FittedSpring.damping_ratio                   # a rate or a physical constant of an animation
+props::LayoutCurve::Bezier.0                                     # easing curve coordinates (unit square)
+props::LayoutCurve::bezier(x1)                                   # easing curve coordinates (unit square)
+props::LayoutCurve::bezier(y1)                                   # easing curve coordinates (unit square)
+props::LayoutCurve::bezier(x2)                                   # easing curve coordinates (unit square)
+props::LayoutCurve::bezier(y2)                                   # easing curve coordinates (unit square)
 props::LayoutTransition.delay_ms                                 # time
 props::LayoutTransition.duration_ms                              # time
 props::LayoutTransition::new(duration_ms)                        # time
+props::LayoutTransition::run_ms ->                               # time
 props::ViewProps.long_press_delay                                # time
 scroll::KeyMove::Pages.0                                         # a number of viewports
 scroll::KeyMove::sign ->                                         # a direction, -1 or 1
 scroll::Live.alpha                                               # an opacity, 0..1
+scroll::ScrollHost::report_zoom(scale)                           # a zoom scale factor
 scroll::ScrollHost::now ->                                       # time
+scroll::ScrollState.zoom                                         # a zoom scale factor
 scroll::drag_end(vx)                                             # a velocity, points per second
 scroll::drag_end(vy)                                             # a velocity, points per second
 scroll::ease_out ->                                              # easing curve coordinates (unit square)
@@ -223,6 +249,7 @@ scroll::ease_out(t)                                              # easing curve 
 scroll::deadline ->                                              # time
 scroll::deadline(now)                                            # time
 scroll::frame(now)                                               # time
+scroll::pinch(scale)                                             # a zoom scale factor (of the zoom the pinch began at)
 scroll::indicator_alpha ->                                       # an opacity, 0..1
 scroll::indicator_alpha(since)                                   # time
 scroll::indicator_hold_left(since)                               # time
@@ -237,6 +264,8 @@ scroll::wheel_end(vy)                                            # a velocity, p
 shader::UniformValue::Number.0                                  # a uniform's value, whatever the app's program makes of it
 shader::TransitionKey::number(n)                                 # a transition's value: a key compared for equality, no quantity
 ops::Prop::TransitionDuration.0                                  # time (milliseconds, as JS gives it)
+ops::WheelDelta::Lines.0                                         # a count of wheel lines (notches)
+ops::WheelDelta::xy ->                                           # a delta in its own unit, lines or points
 shader::NavShaderSpec.duration                                   # time (milliseconds, as JS gives it)
 shader::builtins(scale)                                          # pixels per point, a ratio
 shader::builtins(time)                                           # time
@@ -248,6 +277,7 @@ style::PropertyValue::Easing.0                                   # easing curve 
 style::PropertyValue::Flex.0                                     # a flex grow factor
 style::PropertyValue::Flex.1                                     # a flex shrink factor
 style::PropertyValue::LetterSpacing.1                            # ems of the font size
+style::PropertyValue::FontSize.1                                 # a multiple of the inherited font size (em)
 style::PropertyValue::Ms.0                                       # time
 style::PropertyValue::Number.0                                   # a unitless style number (a flex factor, an opacity, a z-index)
 style::PropertyValue::OptNumber.0                                # an aspect ratio
@@ -258,9 +288,11 @@ style::StyleDecl::SetTransform.1                                 # transform ope
 style::Style::set_transform(steps)                               # transform operands (any of their kinds' units)
 style::StyleValue::Number.0                                      # a generic number (a JS value, a recorded slot)
 style::TextStyle.letter_spacing_em                               # a multiple of the font size (em)
+style::TextStyle.font_size_em                                    # a multiple of the inherited font size (em)
 style::TextStyle.line_height_multiple                            # a multiple of the font's line height
 style::ViewStyle.opacity                                         # an opacity, 0..1
 svg::rasterize_scaled(scale)                                     # a scale factor (device pixels per point)
+svg_off::rasterize_scaled(_scale)                                # a scale factor (device pixels per point); the no-`svg` stub
 text::ResolvedTextStyle.line_height_multiple                     # a multiple of the font's line height
 time::Clock::unix_ms ->                                          # time (milliseconds since the epoch: `Date.now()`)
 time::unix_ms ->                                                 # time
@@ -282,10 +314,6 @@ element::ambient::animated_value(value)                               # an anima
 element::ambient::font_scale ->                                       # a font scale factor
 element::ambient::keyboard_duration ->                                # time
 element::ambient::pixel_ratio ->                                      # device pixels per point
-element::animated::AnimatedNode::diff_clamp(max)                      # an animated value (any quantity)
-element::animated::AnimatedNode::diff_clamp(min)                      # an animated value (any quantity)
-element::animated::AnimatedNode::diff_clamp_with(max)                 # an animated value (any quantity)
-element::animated::AnimatedNode::diff_clamp_with(min)                 # an animated value (any quantity)
 element::animated::AnimatedNode::interpolate(input)                   # an animated value (any quantity)
 element::animated::AnimatedNode::interpolate(output)                  # an animated value (any quantity)
 element::animated::AnimatedNode::interpolate_colors(input)            # an animated value (any quantity)
@@ -296,10 +324,6 @@ element::animated::AnimatedValue::decay_within(_)                     # an anima
 element::animated::AnimatedValue::decay_within(bounce)                # a rate or a physical constant of an animation
 element::animated::AnimatedValue::decay_within(deceleration)          # a rate or a physical constant of an animation
 element::animated::AnimatedValue::decay_within(velocity)              # a rate or a physical constant of an animation
-element::animated::AnimatedValue::diff_clamp(max)                     # an animated value (any quantity)
-element::animated::AnimatedValue::diff_clamp(min)                     # an animated value (any quantity)
-element::animated::AnimatedValue::diff_clamp_with(max)                # an animated value (any quantity)
-element::animated::AnimatedValue::diff_clamp_with(min)                # an animated value (any quantity)
 element::animated::AnimatedValue::interpolate(input)                  # an animated value (any quantity)
 element::animated::AnimatedValue::interpolate(output)                 # an animated value (any quantity)
 element::animated::AnimatedValue::interpolate_colors(input)           # an animated value (any quantity)
@@ -327,6 +351,12 @@ element::animated::Animation::timing(to)                              # an anima
 element::animated::Spring.damping                                     # a rate or a physical constant of an animation
 element::animated::Spring.frame_rate                             # a frame rate (Hz)
 element::animated::Spring::frame_rate(hz)                        # a frame rate (Hz)
+element::animated::Spring::new(response_ms)                      # time
+element::animated::Spring::from_stiffness(stiffness)             # a rate or a physical constant of an animation
+element::animated::Spring::damping_ratio(ratio)                  # a rate or a physical constant of an animation
+element::animated::Spring::progress(ms)                          # time
+element::animated::Spring::progress ->                           # easing curve coordinates (unit square)
+element::animated::Spring::settle_ms ->                          # time
 element::animated::Spring.mass                                        # a rate or a physical constant of an animation
 element::animated::Spring.stiffness                                   # a rate or a physical constant of an animation
 element::animated::Spring.velocity                                    # a rate or a physical constant of an animation

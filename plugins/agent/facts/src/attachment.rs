@@ -121,7 +121,7 @@ pub enum AttachmentKind {
     Other,
 }
 /// Canonical references; client admission must reject host-owned Session context.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -146,7 +146,7 @@ pub enum StorageRef {
 }
 
 impl StorageRef {
-    /// The invocation supplies Session authority; the opaque URI never does.
+    /// The execution supplies Session authority; the opaque URI never does.
     pub fn resource_ref(&self) -> Option<String> {
         match self {
             Self::SessionFile { relative_path, .. }

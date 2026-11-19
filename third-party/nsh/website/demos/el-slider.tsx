@@ -6,7 +6,7 @@ import { desktop, Log, Panel, sliderFill, sliderLook, sliderValueClass, sliderVa
 // slider in the palette's tones): an 8-point rail, a fill that deepens at its
 // start and fades into the thumb at the thumb, a 16 × 8 pill thumb that
 // brightens under the pointer and while dragged, the keyboard's focus ring
-// around the rail, and 35% when disabled. The spread holds only what never
+// around the thumb, and 35% when disabled. The spread holds only what never
 // changes; the fill follows the value as a prop of its own. The demo shows a slider with its value column, a
 // bare one, a range, a disabled one and vertical bands, each named above it.
 const show = (v: SliderValue) => (typeof v === "number" ? `${v}` : `${v[0]}–${v[1]}`);

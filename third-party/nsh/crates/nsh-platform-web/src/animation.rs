@@ -2,6 +2,8 @@
 //! `requestAnimationFrame` ticks, drags and scroll offsets update it;
 //! bound view properties go to the DOM as `["a", view, prop, value]`
 //! items (the Android animator's design, `nsh-platform-android/src/animation.rs`).
+//! After a batch every bound value goes; on a frame or a gesture only the
+//! ones that changed since they last went ([`UiAnimation::outputs`]).
 
 use nsh_core::{
     Color, GestureValues, MAX_TRANSFORMS, MountItem, Transform,
@@ -16,6 +18,27 @@ struct Gestures {
     values: GestureValues,
     /// Values when the gesture began: pan x, pan y, pinch, rotation.
     start: [f32; 4],
+}
+
+/// A bound property a value was sent for ([`UiAnimation::outputs`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    BorderColor,
+    Color,
+    Opacity,
+    BackgroundColor,
+    Canvas(u16),
+    Transform,
+    /// A sticky cell's offset (on the cell).
+    Sticky,
+}
+
+/// What was last sent for a slot: a value, or a transform's animated
+/// entries (its static ones come with the view's style, in a batch).
+#[derive(Clone, Copy, PartialEq)]
+enum Sent {
+    Value(AnimationValue),
+    Transform([Option<f32>; MAX_TRANSFORMS]),
 }
 
 #[derive(Default)]
@@ -39,6 +62,32 @@ pub(crate) struct UiAnimation {
     /// Scroll view id -> its sticky cells that stick an animated value
     /// further in, with that value's node.
     sticky: FxHashMap<u32, Vec<(u32, NodeId)>>,
+    /// View id -> what [`UiAnimation::outputs`] last sent for each of its
+    /// slots.
+    sent: FxHashMap<u32, Vec<(Slot, Sent)>>,
+}
+
+/// Whether `value` goes for `view`'s `slot`: always when `all`, else when
+/// it differs from what went last. It is what went last from then on.
+fn changed(
+    sent: &mut FxHashMap<u32, Vec<(Slot, Sent)>>,
+    view: u32,
+    slot: Slot,
+    value: Sent,
+    all: bool,
+) -> bool {
+    let slots = sent.entry(view).or_default();
+    match slots.iter_mut().find(|(s, _)| *s == slot) {
+        Some((_, last)) if !all && *last == value => false,
+        Some((_, last)) => {
+            *last = value;
+            true
+        }
+        None => {
+            slots.push((slot, value));
+            true
+        }
+    }
 }
 
 /// The CSS property `nsh.js` writes a bound property into (`op_a`), for
@@ -86,6 +135,7 @@ impl UiAnimation {
                 } else {
                     self.bindings.insert(*id, bindings.clone());
                 }
+                self.sent.remove(id);
             }
             MountItem::ViewStyle { id, style } => {
                 self.statics.insert(*id, style.transform);
@@ -138,6 +188,7 @@ impl UiAnimation {
                 self.gestures.remove(id);
                 self.scrolls.remove(id);
                 self.pulls.remove(id);
+                self.sent.remove(id);
             }
             _ => {}
         }
@@ -256,9 +307,14 @@ impl UiAnimation {
         }
     }
 
-    /// Every bound property's current value, after clearing the ones bound
-    /// no more (`nsh.js` removes an inline property set to "").
-    pub(crate) fn outputs(&mut self, out: &mut Out) {
+    /// The bound properties' current values, after clearing the ones bound
+    /// no more (`nsh.js` removes an inline property set to ""). `all` after
+    /// a batch: every value, so views it inserted (again) and inline styles
+    /// navigation wrote get theirs. Otherwise (a frame, a gesture, a scroll)
+    /// only the values that changed since they last went: a page whose
+    /// views hold many bound values, most of them still, costs the frame
+    /// only what moves.
+    pub(crate) fn outputs(&mut self, out: &mut Out, all: bool) {
         for (view, css) in self.unbound.drain(..) {
             out.animation(view, css, "");
         }
@@ -266,41 +322,55 @@ impl UiAnimation {
             let mut overrides = [None; MAX_TRANSFORMS];
             let mut transformed = false;
             for &(prop, node) in bindings {
-                match prop {
+                let value = self.graph.eval(node);
+                let (slot, css) = match prop {
                     // `nsh.js` puts these on the border overlay and the
                     // text's runs.
-                    AnimationProp::BorderColor => {
-                        out.animation(view, "border-color", &value_css(self.graph.eval(node)));
-                    }
-                    AnimationProp::Color => {
-                        out.animation(view, "color", &value_css(self.graph.eval(node)));
-                    }
-                    AnimationProp::Opacity => {
-                        out.animation(view, "opacity", &self.graph.eval(node).number().to_string());
-                    }
-                    AnimationProp::BackgroundColor => {
-                        out.animation(view, "background-color", &value_css(self.graph.eval(node)));
-                    }
+                    AnimationProp::BorderColor => (Slot::BorderColor, "border-color"),
+                    AnimationProp::Color => (Slot::Color, "color"),
+                    AnimationProp::Opacity => (Slot::Opacity, "opacity"),
+                    AnimationProp::BackgroundColor => (Slot::BackgroundColor, "background-color"),
                     AnimationProp::CanvasArg(k) => {
-                        out.animation(
+                        if changed(
+                            &mut self.sent,
                             view,
-                            &format!("canvas:{k}"),
-                            &value_css(self.graph.eval(node)),
-                        );
+                            Slot::Canvas(k),
+                            Sent::Value(value),
+                            all,
+                        ) {
+                            out.animation(view, &format!("canvas:{k}"), &value_css(value));
+                        }
+                        continue;
                     }
                     AnimationProp::Transform(i) => {
                         if let Some(o) = overrides.get_mut(i as usize) {
-                            *o = Some(self.graph.eval(node).number());
+                            *o = Some(value.number());
                             transformed = true;
                         }
+                        continue;
                     }
                     // The scroll view's (`sticky` below), never bound.
-                    AnimationProp::StickyTop | AnimationProp::StickyLeft => {}
+                    AnimationProp::StickyTop | AnimationProp::StickyLeft => continue,
                     // No registered native components on the web.
-                    AnimationProp::ComponentSlot(_) => {}
+                    AnimationProp::ComponentSlot(_) => continue,
+                };
+                if changed(&mut self.sent, view, slot, Sent::Value(value), all) {
+                    let text = match prop {
+                        AnimationProp::Opacity => value.number().to_string(),
+                        _ => value_css(value),
+                    };
+                    out.animation(view, css, &text);
                 }
             }
-            if transformed {
+            if transformed
+                && changed(
+                    &mut self.sent,
+                    view,
+                    Slot::Transform,
+                    Sent::Transform(overrides),
+                    all,
+                )
+            {
                 let statics = self
                     .statics
                     .get(&view)
@@ -314,8 +384,10 @@ impl UiAnimation {
         // moves their sticky inset).
         for cells in self.sticky.values() {
             for &(cell, node) in cells {
-                let value = self.graph.eval(node).number().to_string();
-                out.animation(cell, "sticky-offset", &value);
+                let value = self.graph.eval(node);
+                if changed(&mut self.sent, cell, Slot::Sticky, Sent::Value(value), all) {
+                    out.animation(cell, "sticky-offset", &value.number().to_string());
+                }
             }
         }
     }

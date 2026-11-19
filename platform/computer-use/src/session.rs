@@ -18,7 +18,10 @@
  */
 
 mod native_computer;
+mod preview;
 
+#[cfg(target_os = "windows")]
+use crate::driver::native_computer::RawTool;
 use crate::{driver::Driver, protocol::*};
 use cua_driver_contract::{
     AppInfo, ListAppsOutput, ListWindowsOutput, WindowInfo, WindowStateOutput,
@@ -45,7 +48,10 @@ pub struct Session {
     state: EpochState,
     browsers: crate::browser::Browsers,
     owner: crate::desktop::SessionOwner,
-    audio: Option<crate::driver::AudioCompletion>,
+    audio: Option<(
+        (String, String, crate::ExecutionCorrelation),
+        crate::driver::AudioCompletion,
+    )>,
 }
 
 enum EpochState {
@@ -54,6 +60,8 @@ enum EpochState {
     Closed,
 }
 struct Target {
+    #[cfg(target_os = "windows")]
+    windows_source: Option<crate::desktop::worker::native_owner::NativePresentationSource>,
     #[cfg(target_os = "macos")]
     macos: Option<crate::macos::controller::Window>,
     #[cfg(target_os = "macos")]
@@ -70,6 +78,7 @@ impl Session {
         epoch: crate::desktop::NativeEpochId,
         owner: crate::desktop::SessionOwner,
     ) -> Self {
+        owner.preview().open_epoch(epoch);
         Self {
             raw_computer: Default::default(),
             native: native.clone(),
@@ -90,6 +99,15 @@ impl Session {
         }
     }
 
+    pub(crate) fn preview_binding(
+        &self,
+    ) -> (
+        crate::desktop::NativeEpochId,
+        crate::preview::PreviewRegistry,
+    ) {
+        (self.epoch, self.owner.preview())
+    }
+
     /// Internal service path for a retained page event, never a model command.
     pub(crate) async fn adopt_browser_lease_child(
         &mut self,
@@ -104,6 +122,7 @@ impl Session {
         self.owner.ensure_open()?;
         if self.id.as_deref() != Some(invocation.session())
             || request.turn_id != invocation.turn()
+            || &request.execution != invocation.execution_correlation()
             || request.native_epoch != self.epoch.to_string()
             || invocation.operation_id().is_none_or(str::is_empty)
         {
@@ -112,9 +131,18 @@ impl Session {
             ));
         }
         let cursor = self.owner.cursor();
-        self.browsers
+        let response = self
+            .browsers
             .adopt_extension_popup(request, invocation, &cursor, cancellation, language)
-            .await
+            .await?;
+        if let Some(value) = response.get("handle") {
+            let Handle::Tab(handle) = serde_json::from_value(value.clone()).map_err(failed)? else {
+                unreachable!("popup adoption returns a tab")
+            };
+            self.browsers
+                .publish_preview(&handle, &self.owner.preview(), invocation);
+        }
+        Ok(response)
     }
 
     async fn invoke_native(
@@ -289,37 +317,39 @@ impl Session {
     }
 
     /// Arm deferred browser waits before the caller releases its Session lock.
-    pub async fn prepare_invoke(
-        &mut self,
+    // Keep operation future sizes out of the enclosing desktop/Host poll stack.
+    pub fn prepare_invoke<'a>(
+        &'a mut self,
         command: Command,
-        invocation: &crate::InvocationContext<'_>,
-        cancellation: &CancellationToken,
+        invocation: &'a crate::InvocationContext<'_>,
+        cancellation: &'a CancellationToken,
         language: Language,
-    ) -> Result<crate::InvocationCompletion, ToolError> {
-        if let Command::BrowserWait { handle, operation } = command {
-            self.admit_invocation(invocation.session(), cancellation)?;
-            return self
-                .browsers
-                .prepare_wait(handle, operation, invocation, cancellation, language)
-                .await;
+    ) -> futures_util::future::BoxFuture<'a, Result<crate::InvocationCompletion, ToolError>> {
+        match command {
+            Command::BrowserWait { handle, operation } => Box::pin(async move {
+                self.admit_invocation(invocation.session(), cancellation)?;
+                self.browsers
+                    .prepare_wait(handle, operation, invocation, cancellation, language)
+                    .await
+            }),
+            Command::BrowserFileChooserWait { handle, options } => Box::pin(async move {
+                self.admit_invocation(invocation.session(), cancellation)?;
+                self.browsers
+                    .prepare_file_chooser(handle, options, invocation, cancellation, language)
+                    .await
+            }),
+            Command::BrowserDownloadWait { handle, options } => Box::pin(async move {
+                self.admit_invocation(invocation.session(), cancellation)?;
+                self.browsers
+                    .prepare_download(handle, options, invocation, cancellation, language)
+                    .await
+            }),
+            command => Box::pin(async move {
+                self.invoke_immediate(command, invocation, cancellation, language)
+                    .await
+                    .map(crate::InvocationCompletion::ready)
+            }),
         }
-        if let Command::BrowserFileChooserWait { handle, options } = command {
-            self.admit_invocation(invocation.session(), cancellation)?;
-            return self
-                .browsers
-                .prepare_file_chooser(handle, options, invocation, cancellation, language)
-                .await;
-        }
-        if let Command::BrowserDownloadWait { handle, options } = command {
-            self.admit_invocation(invocation.session(), cancellation)?;
-            return self
-                .browsers
-                .prepare_download(handle, options, invocation, cancellation, language)
-                .await;
-        }
-        self.invoke_immediate(command, invocation, cancellation, language)
-            .await
-            .map(crate::InvocationCompletion::ready)
     }
 
     fn admit_invocation(
@@ -348,9 +378,47 @@ impl Session {
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<Value, ToolError> {
+        if let Command::BrowserRelease { browser_id } = &command {
+            self.browsers
+                .retire_browser_preview(browser_id, &self.owner.preview());
+        }
+        let bound = command.bound_handle().map(|handle| match handle {
+            Handle::App(id) => Handle::App(id.clone()),
+            Handle::Tab(id) => Handle::Tab(id.clone()),
+        });
+        let binds_target = matches!(
+            &command,
+            Command::GetApp { .. }
+                | Command::GetTab { .. }
+                | Command::CreateBrowserTab { .. }
+                | Command::BrowserTab { .. }
+                | Command::BrowserSelectedTab { .. }
+                | Command::BrowserUserClaimTab { .. }
+        );
         let result = self
             .invoke_in_turn(command, invocation, cancellation, language)
             .await;
+        if let Ok(value) = &result {
+            let returned = if binds_target {
+                value
+                    .get("handle")
+                    .cloned()
+                    .map(serde_json::from_value::<Handle>)
+                    .transpose()
+                    .map_err(failed)?
+            } else {
+                None
+            };
+            if let Some(handle) = returned.or(bound) {
+                match handle {
+                    Handle::App(id) => self.publish_native_preview(&id, invocation),
+                    Handle::Tab(id) => {
+                        self.browsers
+                            .publish_preview(&id, &self.owner.preview(), invocation)
+                    }
+                }
+            }
+        }
         #[cfg(target_os = "macos")]
         if let Err(error) = result {
             return Err(
@@ -395,7 +463,14 @@ impl Session {
                         invocation,
                     )
                     .await?;
-                    self.audio = Some(completion);
+                    self.audio = Some((
+                        (
+                            invocation.session().to_owned(),
+                            invocation.turn().to_owned(),
+                            invocation.execution_correlation().clone(),
+                        ),
+                        completion,
+                    ));
                     Ok(started.structured_content.unwrap_or(Value::Null))
                 }
                 #[cfg(not(target_os = "windows"))]
@@ -410,7 +485,16 @@ impl Session {
                         .await?;
                     let snapshot = self.native.lock().await.audio_completion(self.epoch);
                     match snapshot.await {
-                        Ok(completion) => self.audio = Some(completion),
+                        Ok(completion) => {
+                            self.audio = Some((
+                                (
+                                    invocation.session().to_owned(),
+                                    invocation.turn().to_owned(),
+                                    invocation.execution_correlation().clone(),
+                                ),
+                                completion,
+                            ))
+                        }
                         Err(snapshot) => {
                             return match self.discard_audio().await {
                                 Ok(()) => Err(failed(format!(
@@ -463,19 +547,24 @@ impl Session {
                 )
                 .await
             }
-            Command::ListWindows { .. } => Ok(json!(
-                self.windows(
-                    session,
-                    cancellation,
-                    language,
-                    #[cfg(target_os = "windows")]
-                    invocation,
-                )
-                .await?
-                .iter()
-                .map(window_info)
-                .collect::<Vec<_>>()
-            )),
+            Command::ListWindows { options } => {
+                let windows = self
+                    .windows(
+                        options.pid,
+                        cancellation,
+                        language,
+                        #[cfg(target_os = "windows")]
+                        invocation,
+                    )
+                    .await?;
+                Ok(json!(
+                    window_rows(windows, language)
+                        .await?
+                        .into_iter()
+                        .map(|(_, row)| row)
+                        .collect::<Vec<_>>()
+                ))
+            }
             Command::GetState { .. } => {
                 let (browsers, mut errors) = self.browsers.state().await;
                 let apps = match self
@@ -550,9 +639,16 @@ impl Session {
                     }
                     (target, None) => target,
                 };
+                #[cfg(target_os = "macos")]
+                let pid = expected
+                    .as_ref()
+                    .and_then(|target| target.binding.as_ref())
+                    .map(|binding| binding.pid);
+                #[cfg(not(target_os = "macos"))]
+                let pid = None;
                 let windows = self
                     .windows(
-                        session,
+                        pid,
                         cancellation,
                         language,
                         #[cfg(target_os = "windows")]
@@ -619,79 +715,50 @@ impl Session {
                             .into_iter()
                             .filter(|w| w.pid.is_some_and(|pid| pids.contains(&pid)))
                             .collect();
-                        if selected.is_empty() && cfg!(target_os = "macos") {
-                            #[cfg(target_os = "macos")]
-                            if let Some(expected) = expected.clone() {
-                                if expected.binding.is_some() {
+                        #[cfg(target_os = "macos")]
+                        if selected.is_empty() {
+                            let approved = match &expected {
+                                Some(approved) if approved.binding.is_some() => {
                                     return Err(failed(
                                         "stale_target: approved window is no longer available",
                                     ));
                                 }
-                                tokio::task::spawn_blocking(move || {
-                                    crate::macos::permission_subject::verify_launch(
-                                        &expected, language,
-                                    )
+                                Some(approved) => approved.clone(),
+                                None => tokio::task::spawn_blocking(move || {
+                                    crate::macos::permission_subject::Request::RawApp(name)
+                                        .resolve(language)
                                 })
                                 .await
-                                .map_err(failed)??;
-                            }
-                            let bundle = name.contains('.')
-                                && !name.contains('/')
-                                && !name.contains(' ')
-                                && !name.ends_with(".app")
-                                && name.chars().all(|c| {
-                                    c.is_ascii_lowercase()
-                                        || c.is_ascii_digit()
-                                        || matches!(c, '.' | '-')
-                                });
-                            let args = if bundle {
-                                json!({"bundle_id":name})
-                            } else {
-                                json!({"name":name})
+                                .map_err(failed)??,
                             };
-                            let launched = self
-                                .invoke_native(
-                                    "launch_app",
-                                    args,
-                                    cancellation,
-                                    language,
-                                    #[cfg(target_os = "windows")]
-                                    invocation,
-                                )
-                                .await?;
-                            let pid=launched.structured_content.as_ref().and_then(|value| value["pid"].as_u64()).ok_or_else(|| ToolError::OutcomeUnknown(match language { Language::En => "launch requested but process identity unavailable; inspect inventory before retrying", Language::ZhCn => "已请求启动但无法获取进程标识；重试前请检查清单", Language::ZhTw => "已請求啟動但無法取得程序識別；重試前請檢查清單" }.into()))?;
-                            self.windows(
-                                session,
-                                cancellation,
-                                language,
-                                #[cfg(target_os = "windows")]
-                                invocation,
-                            )
-                            .await?
-                            .into_iter()
-                            .filter(|w| w.pid.map(u64::from) == Some(pid))
-                            .collect()
+                            self.launch_mac_windows(&approved, cancellation, language)
+                                .await?
                         } else {
                             selected
                         }
+                        #[cfg(not(target_os = "macos"))]
+                        selected
                     }
                 };
                 if candidates.len() != 1 {
+                    let windows = window_rows(candidates, language)
+                        .await?
+                        .into_iter()
+                        .filter(|(_, row)| row["bindable"].as_bool() == Some(true))
+                        .map(|(_, row)| row)
+                        .collect::<Vec<_>>();
                     return Err(failed(match language {
                         Language::En => format!(
-                            "App selection requires exactly one open window; found {}. Choose cua.getApp({{windowId}}) from {}",
-                            candidates.len(),
-                            json!(candidates.iter().map(window_info).collect::<Vec<_>>())
+                            "App selection requires one exact open window. Bindable windows: {}",
+                            json!(windows)
                         ),
                         Language::ZhCn => format!(
-                            "应用选择需要恰好一个打开的窗口；找到 {} 个。请从 {} 中选择 cua.getApp({{windowId}})",
-                            candidates.len(),
-                            json!(candidates.iter().map(window_info).collect::<Vec<_>>())
+                            "应用选择需要指定一个打开的窗口。可绑定窗口：{}",
+                            json!(windows)
                         ),
                         Language::ZhTw => format!(
-                            "應用程式選擇需要恰好一個開啟的視窗；找到 {} 個。請從 {} 中選擇 cua.getApp({{windowId}})",
-                            candidates.len(),
-                            json!(candidates.iter().map(window_info).collect::<Vec<_>>())
+                            "應用程式選擇需要指定一個開啟的視窗。可繫結視窗：{}",
+                            json!(windows)
                         ),
                     }));
                 }
@@ -740,6 +807,8 @@ impl Session {
                 self.targets.insert(
                     handle.clone(),
                     Target {
+                        #[cfg(target_os = "windows")]
+                        windows_source: None,
                         #[cfg(target_os = "macos")]
                         macos,
                         #[cfg(target_os = "macos")]
@@ -854,7 +923,7 @@ impl Session {
     }
     pub async fn discard_audio(&mut self) -> Result<(), ToolError> {
         #[cfg(target_os = "windows")]
-        if let Some(crate::driver::AudioCompletion::Worker(capture)) = self.audio.as_ref() {
+        if let Some((_, crate::driver::AudioCompletion::Worker(capture))) = self.audio.as_ref() {
             // This epoch may outlive a replacement input binding. Its exact
             // original output observation, not "current", selects cleanup.
             capture.discard().await?;
@@ -871,7 +940,10 @@ impl Session {
     pub fn wait_audio_finished(
         &self,
     ) -> futures_util::future::BoxFuture<'static, Result<(), ToolError>> {
-        let completion = self.audio.clone();
+        let completion = self
+            .audio
+            .as_ref()
+            .map(|(_, completion)| completion.clone());
         Box::pin(async move {
             completion
                 .ok_or_else(|| failed("Computer audio recording is not active"))?
@@ -885,6 +957,7 @@ impl Session {
         &mut self,
         session: &str,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         language: Language,
     ) -> Result<(), ToolError> {
         if self.id.as_deref().is_some_and(|id| id != session) {
@@ -899,13 +972,18 @@ impl Session {
                 .native
                 .lock()
                 .await
-                .finish_windows_turn(self.epoch, session, turn);
+                .finish_windows_turn(self.epoch, session, turn, execution);
             close.await
         };
         #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-        let raw = Driver::finish_raw_native_turn(&self.native, self.epoch, turn).await;
+        let raw =
+            Driver::finish_raw_native_turn(&self.native, self.epoch, session, turn, execution)
+                .await;
         let cursor = self.owner.cursor();
-        let browsers = self.browsers.finish_turn(turn, &cursor, language).await;
+        let browsers = self
+            .browsers
+            .finish_turn(turn, execution, &cursor, language)
+            .await;
         #[cfg(target_os = "windows")]
         {
             match (native, browsers) {
@@ -920,7 +998,9 @@ impl Session {
         {
             match (raw, browsers) {
                 (Ok(()), Ok(())) => {
-                    self.raw_computer.handles.retain(|_, owner| owner != turn);
+                    self.raw_computer.handles.retain(|_, owner| {
+                        !(owner.0 == session && owner.1 == turn && &owner.2 == execution)
+                    });
                     Ok(())
                 }
                 (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
@@ -939,7 +1019,7 @@ impl Session {
     }
     async fn windows(
         &mut self,
-        _session: &str,
+        pid: Option<u32>,
         cancellation: &CancellationToken,
         language: Language,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
@@ -947,7 +1027,7 @@ impl Session {
         let output: ListWindowsOutput = decode(
             self.invoke_native(
                 "list_windows",
-                json!({}),
+                pid.map_or_else(|| json!({}), |pid| json!({"pid": pid})),
                 cancellation,
                 language,
                 #[cfg(target_os = "windows")]
@@ -959,7 +1039,7 @@ impl Session {
     }
     async fn apps(
         &mut self,
-        session: &str,
+        _session: &str,
         cancellation: &CancellationToken,
         language: Language,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
@@ -977,19 +1057,31 @@ impl Session {
         )?;
         let windows = self
             .windows(
-                session,
+                None,
                 cancellation,
                 language,
                 #[cfg(target_os = "windows")]
                 invocation,
             )
             .await?;
+        let mut by_pid = HashMap::<u32, Vec<Value>>::new();
+        for (pid, row) in window_rows(windows, language).await? {
+            if let Some(pid) = pid {
+                by_pid.entry(pid).or_default().push(row);
+            }
+        }
         Ok(json!(apps.apps.into_iter().map(|app| json!({
             "id":app_id(&app), "displayName":app.name,
-            "isRunning":app.running, "windows":windows.iter().filter(|w| w.pid == Some(app.pid)).map(window_info).collect::<Vec<_>>()
+            "isRunning":app.running, "windows":by_pid.get(&app.pid).map_or(&[][..], Vec::as_slice)
         })).collect::<Vec<_>>()))
     }
     async fn retire_target(&mut self, handle: &str) -> Result<(), ToolError> {
+        if let Some(target) = self.targets.get(handle) {
+            self.owner.preview().remove(
+                self.epoch,
+                &preview::window_key(&target.window, &target.process),
+            );
+        }
         #[cfg(target_os = "macos")]
         {
             self.raw_computer.retiring_mac_window(handle);
@@ -1024,7 +1116,7 @@ impl Session {
     async fn verify(
         &mut self,
         handle: &str,
-        session: &str,
+        _session: &str,
         cancellation: &CancellationToken,
         language: Language,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
@@ -1063,7 +1155,7 @@ impl Session {
         let macos = target.macos.clone();
         let windows = self
             .windows(
-                session,
+                Some(pid),
                 cancellation,
                 language,
                 #[cfg(target_os = "windows")]
@@ -1087,6 +1179,16 @@ impl Session {
             match verified {
                 Ok(bounds) => WindowInfo { bounds, ..window },
                 Err(error) => {
+                    let stale = match &error {
+                        ToolError::Failed(message) => message.starts_with("stale_target:"),
+                        ToolError::Native(error) => {
+                            error.code == platform_macos::ax::bindings::kAXErrorInvalidUIElement
+                        }
+                        _ => false,
+                    };
+                    if stale {
+                        return Err(self.retire_failed_target(handle, error).await);
+                    }
                     // AX timeouts do not prove that the window was replaced.
                     // Keep its retained identity, but require a fresh observation
                     // before any indexed or coordinate input can resume.
@@ -1112,7 +1214,7 @@ impl Session {
         window: &WindowInfo,
         cancellation: &CancellationToken,
     ) -> Result<platform_macos::capture::FrozenWindowCapture, ToolError> {
-        use crate::macos::page_scroll::{PageFrame, SizingPolicy};
+        use crate::macos::page_scroll::PageFrame;
 
         if cancellation.is_cancelled() {
             return Err(failed("Computer Use cancelled before native geometry read"));
@@ -1140,8 +1242,7 @@ impl Session {
             .map_err(|cleanup| ToolError::CleanupUnconfirmed(format!("{error}; {cleanup}")))?;
             return Err(self.retire_failed_target(handle, error).await);
         }
-        let frame =
-            PageFrame::from_native_geometry(geometry.clone(), SizingPolicy::SOURCE_DEFAULTS)?;
+        let frame = PageFrame::from_native_geometry(geometry.clone())?;
         let requested_size = frame.requested_image_size();
         // Geometry belongs to this retained target, independently of AX binding
         // or image success. Observation invalidation does not roll it back.
@@ -1253,6 +1354,8 @@ impl Session {
         #[cfg(not(all(target_os = "linux", not(target_env = "musl"))))]
         let linux_observation: Option<CallResult> = None;
         let native_linux_ax = linux_observation.is_some();
+        #[cfg(target_os = "windows")]
+        let mut windows_source = None;
         let result = if let Some(result) = frozen_result {
             result
         } else if let Some(result) = linux_observation {
@@ -1264,6 +1367,22 @@ impl Session {
                 arguments.as_object_mut().unwrap().remove("max_elements");
                 arguments["full_output"] = json!(true);
             }
+            #[cfg(target_os = "windows")]
+            {
+                let call = self
+                    .raw_windows_tool(
+                        RawTool::GetWindowState,
+                        arguments,
+                        false,
+                        cancellation,
+                        language,
+                        invocation,
+                    )
+                    .await?;
+                windows_source = call.source;
+                call.value
+            }
+            #[cfg(not(target_os = "windows"))]
             self.invoke_native(
                 "get_window_state",
                 arguments,
@@ -1452,6 +1571,10 @@ impl Session {
         target.window = window;
         target.snapshot = Some(snapshot);
         target.capture = capture;
+        #[cfg(target_os = "windows")]
+        {
+            target.windows_source = windows_source;
+        }
         Ok(Value::Object(output))
     }
     #[cfg(all(target_os = "linux", not(target_env = "musl")))]
@@ -2112,6 +2235,32 @@ impl Session {
         };
         let native_window_pixels = cfg!(any(target_os = "linux", target_os = "macos"))
             && (args.get("x").is_some() || name == "drag");
+        #[cfg(target_os = "windows")]
+        let result = {
+            let tool = match name {
+                "click" => RawTool::Click,
+                "drag" => RawTool::Drag,
+                "scroll" => RawTool::Scroll,
+                "press_key" => RawTool::PressKey,
+                "type_text" => RawTool::TypeText,
+                "set_value" => RawTool::SetValue,
+                _ => unreachable!("validated Windows App action"),
+            };
+            self.raw_windows_tool(
+                tool,
+                args,
+                native_window_pixels,
+                cancellation,
+                language,
+                invocation,
+            )
+            .await
+            .map(|call| {
+                self.targets.get_mut(handle).unwrap().windows_source = call.source;
+                call.value
+            })
+        };
+        #[cfg(not(target_os = "windows"))]
         let result = if native_window_pixels {
             self.invoke_native_window_pixels(
                 name,
@@ -2142,6 +2291,7 @@ impl Session {
         result.map(|result| result.structured_content.unwrap_or(Value::Null))
     }
     pub async fn close_native(&mut self) -> Result<(), ToolError> {
+        self.owner.preview().retire_epoch(self.epoch);
         match &self.state {
             EpochState::Closed => return Ok(()),
             EpochState::Open | EpochState::Closing => {}
@@ -2524,8 +2674,103 @@ fn windows_scroll_point(point: [f64; 2]) -> Result<[f64; 2], ToolError> {
     }))
 }
 
+async fn window_rows(
+    windows: Vec<WindowInfo>,
+    language: Language,
+) -> Result<Vec<(Option<u32>, Value)>, ToolError> {
+    if windows.is_empty() {
+        return Ok(Vec::new());
+    }
+    tokio::task::spawn_blocking(move || {
+        #[cfg(not(target_os = "macos"))]
+        let _ = language;
+        let mut owners = HashMap::new();
+        windows
+            .into_iter()
+            .map(|window| {
+                let mut row = window_info(&window);
+                if let Some(pid) = window.pid {
+                    let owner = owners.entry(pid).or_insert_with(|| {
+                        crate::identity::process(pid)?;
+                        #[cfg(target_os = "macos")]
+                        return crate::macos::permission_subject::window_owner(
+                            i32::try_from(pid).map_err(failed)?,
+                            language,
+                        );
+                        #[cfg(not(target_os = "macos"))]
+                        Ok::<(), ToolError>(())
+                    });
+                    match owner {
+                        Ok(_owner) => {
+                            row["bindable"] = json!(true);
+                            #[cfg(target_os = "macos")]
+                            {
+                                row["applicationId"] = json!(_owner.identity.application_id);
+                                row["appPath"] = json!(_owner.display.app_path);
+                            }
+                        }
+                        Err(error) => {
+                            row["bindingError"] = json!(error.to_string());
+                        }
+                    }
+                }
+                (window.pid, row)
+            })
+            .collect()
+    })
+    .await
+    .map_err(failed)
+}
+
 fn window_info(window: &WindowInfo) -> Value {
-    json!({"id":window.window_id,"app":window.app_name,"title":window.title,"isOnScreen":window.is_on_screen,"minimized":window.minimized,"onCurrentSpace":window.on_current_space,"zIndex":window.z_index})
+    let mut row = json!({"id":window.window_id,"app":window.app_name,"pid":window.pid,"bindable":false,"title":window.title,"isOnScreen":window.is_on_screen,"minimized":window.minimized,"onCurrentSpace":window.on_current_space,"zIndex":window.z_index});
+    if window.pid.is_none() {
+        row["bindingError"] = json!("window process identity unavailable");
+    }
+    row
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[tokio::test]
+async fn window_inventory_marks_unbundled_owners_as_unbindable() {
+    use cua_driver_contract::WindowBounds;
+
+    let pid = std::process::id();
+    let rows = window_rows(
+        vec![WindowInfo {
+            window_id: 42,
+            pid: Some(pid),
+            app_name: "unbundled test process".into(),
+            title: String::new(),
+            bounds: WindowBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            },
+            is_on_screen: true,
+            z_index: None,
+            layer: None,
+            minimized: None,
+            current_space_id: None,
+            on_current_space: None,
+            space_ids: None,
+        }],
+        Language::En,
+    )
+    .await
+    .unwrap();
+    let [(owner, row)] = rows.as_slice() else {
+        panic!("expected one window inventory entry");
+    };
+    assert_eq!(*owner, Some(pid));
+    assert_eq!(row["id"], 42);
+    assert_eq!(row["pid"], pid);
+    assert_eq!(row["bindable"], false);
+    assert_eq!(
+        row["bindingError"],
+        "tool failed: window owner has no resolved application bundle identity"
+    );
 }
 fn decode<T: DeserializeOwned>(result: CallResult) -> Result<T, ToolError> {
     serde_json::from_value(
@@ -2626,98 +2871,5 @@ fn launch_args(app: &str, inventory: &[AppInfo], language: Language) -> Result<V
             Language::ZhCn => "此清单条目不支持启动；请选择其已打开的窗口",
             Language::ZhTw => "此清單項目不支援啟動；請選擇其已開啟的視窗",
         }))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn native_geometry_survives_observation_invalidation() {
-        let frame = crate::macos::page_scroll::PageFrame::from_native_geometry(
-            platform_macos::geometry::NativeWindowGeometry {
-                pid: 1,
-                window_id: 1,
-                layer: 0,
-                bounds: platform_macos::windows::WindowBounds {
-                    x: -10.0,
-                    y: 20.0,
-                    width: 100.25,
-                    height: 80.125,
-                },
-                native_scale: 2.0,
-            },
-            crate::macos::page_scroll::SizingPolicy::SOURCE_DEFAULTS,
-        )
-        .unwrap();
-        let mut target = Target {
-            macos: None,
-            page_frame: Some(frame),
-            window: serde_json::from_value(json!({
-                "window_id":1,"pid":1,"app_name":"fixture","title":"fixture",
-                "bounds":{"x":0.0,"y":0.0,"width":100.0,"height":80.0},
-                "is_on_screen":true,"z_index":null
-            }))
-            .unwrap(),
-            process: "fixture".into(),
-            snapshot: None,
-            capture: Some("old-image".into()),
-            previous: Some("old-AX".into()),
-        };
-        target.invalidate_observation();
-        assert!(target.capture.is_none());
-        assert!(target.previous.is_none());
-        let retained = target.page_frame.unwrap();
-        assert_eq!(retained.screen_point([0.0, 0.0]).unwrap(), [-10.0, 20.0]);
-        assert_eq!(retained.requested_image_size(), [200.5, 160.25]);
-    }
-
-    #[test]
-    fn launch_uses_revalidated_inventory_identity_not_pid_zero_or_caller_path() {
-        let app = |path: &str| AppInfo {
-            pid: 0,
-            name: "Installed app".into(),
-            running: false,
-            active: false,
-            bundle_id: None,
-            launch_path: Some(path.into()),
-            kind: Some("desktop".into()),
-            last_used: None,
-        };
-        let first = app(r#""C:\Apps\First.exe" --profile owned"#);
-        let second = app(r#"C:\Apps\Second.exe"#);
-        assert_ne!(app_id(&first), app_id(&second));
-        let id = app_id(&first);
-        let inventory = [first.clone(), second];
-        assert_eq!(
-            launch_args(&id, &inventory, Language::En).unwrap(),
-            json!({"launch_path":first.launch_path})
-        );
-        assert!(
-            matches!(launch_args("C:\\Apps\\First.exe", &inventory, Language::En), Err(ToolError::Failed(message)) if message.contains("app identity missing"))
-        );
-        assert!(
-            matches!(launch_args(&id, &[inventory[1].clone()], Language::En), Err(ToolError::Failed(message)) if message.contains("app identity missing"))
-        );
-        assert!(
-            matches!(launch_args(&id, &[first.clone(), first.clone()], Language::En), Err(ToolError::Failed(message)) if message.contains("app identity ambiguous"))
-        );
-        let mut family_only = first.clone();
-        family_only.kind = Some("uwp".into());
-        family_only.bundle_id = Some("Maka_fixture_family".into());
-        family_only.launch_path = Some(r"shell:appsFolder\Maka_fixture_family!App".into());
-        assert_eq!(
-            launch_args("Maka_fixture_family", &[family_only], Language::En).unwrap(),
-            json!({"launch_path":r"shell:appsFolder\Maka_fixture_family!App"})
-        );
-        let mut packaged = first;
-        packaged.bundle_id = Some("Maka_fixture!App".into());
-        packaged.kind = Some("uwp".into());
-        assert_eq!(
-            launch_args("Maka_fixture!App", &[packaged], Language::En).unwrap(),
-            json!({"aumid":"Maka_fixture!App"})
-        );
     }
 }

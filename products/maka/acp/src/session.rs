@@ -172,8 +172,15 @@ impl Registry {
             .query("agent", "observe", json!({"sessionId":id}))
             .await?;
         let session = observation.session;
-        if list::directory(Path::new(&session.workspace.path))? != cwd {
-            return Err("Resume cwd differs from Host session workspace".into());
+        let workspace = Path::new(&session.workspace.path);
+        if workspace != cwd {
+            let (workspace, requested) = tokio::try_join!(
+                tokio::fs::canonicalize(workspace),
+                tokio::fs::canonicalize(&cwd)
+            )?;
+            if workspace != requested {
+                return Err("Resume cwd differs from Host session workspace".into());
+            }
         }
         if let Some(lease) = local.mcp.lock().await.take() {
             lease.close().await?;

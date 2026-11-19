@@ -1,6 +1,6 @@
 // The popup families' one surface and the motion they come in with.
 import type { JSX, MotionSpec, ViewStyle } from "nsh";
-import { createMotion, Easing, View } from "nsh";
+import { createMotion, Easing, reduceMotion, View } from "nsh";
 import { CheckMark } from "./icons";
 import { finish, terminal } from "./theme";
 
@@ -26,6 +26,11 @@ const origins: Record<PopupSide, string> = { bottom: "top", top: "bottom", left:
  * grows from 96 % and slides the last `distance` points out of its
  * trigger's edge, decelerating into place. Reduced motion lands it at once.
  */
+/** Where a popup goes, in words for its trigger: "Bottom, centered", "Top, at the end". */
+export function placementWords(side: PopupSide, align: "start" | "center" | "end"): string {
+  return `${side[0].toUpperCase()}${side.slice(1)}, ${align === "center" ? "centered" : `at the ${align}`}`;
+}
+
 export function popIn(side: PopupSide = "bottom", distance = 4): MotionSpec {
   const away = side === "top" || side === "left" ? distance : -distance;
   const axis = side === "top" || side === "bottom" ? "translateY" : "translateX";
@@ -37,9 +42,32 @@ export function popIn(side: PopupSide = "bottom", distance = 4): MotionSpec {
 }
 
 /**
+ * `popIn` on a popup's own box, which `nsh/base` makes on each opening (a
+ * `Menu`'s and its submenus', whose surface is that box so it stays put
+ * around the items scrolling in it): `style` the transition and the edge
+ * it grows from, `starting` its first frame's look (the popup's
+ * `popupStartingStyle`), from which it fades up, grows from 96 % and
+ * slides `distance` points out of the trigger's edge in 150 ms. Reduced
+ * motion, and a terminal, land it at once: no transition, no first look.
+ */
+export function popInStyles(side: PopupSide = "bottom", distance = 4): { style: ViewStyle; starting?: ViewStyle } {
+  if (terminal || reduceMotion()) return { style: {} };
+  const away = side === "top" || side === "left" ? distance : -distance;
+  const slide = side === "top" || side === "bottom" ? { translateY: away } : { translateX: away };
+  return {
+    style: {
+      transformOrigin: origins[side],
+      transitionProperty: "opacity, transform",
+      transitionDuration: 150,
+      transitionTimingFunction: "cubic-bezier(0.16, 1, 0.3, 1)",
+    },
+    starting: { opacity: 0, transform: [{ scale: 0.96 }, slide] },
+  };
+}
+
+/**
  * A popup's surface that comes in with `popIn` each time it is made: the
- * content of a `Popover`, a `Menu` or a `Submenu`, which make it on every
- * opening. The look is `class` and `style` (the popup's own box keeps
+ * content of a `Popover`, which makes it on every opening. The look is `class` and `style` (the popup's own box keeps
  * none, so the shadow stays in register with the moving panel); `side` is
  * the trigger's side it opens on.
  */

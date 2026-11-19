@@ -45,6 +45,7 @@ use rmcp::{
 use serde_json::Value;
 use std::{
     collections::HashSet,
+    fmt,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -70,7 +71,7 @@ struct Inner {
     tools: Vec<RemoteTool>,
     invalid: Arc<AtomicBool>,
     stop: CancellationToken,
-    done: owned::Closed,
+    owner: CleanupMaterial,
     timeout: Duration,
     remote: bool,
 }
@@ -93,34 +94,97 @@ impl ClientHandler for Handler {
 }
 type Ready = oneshot::Sender<Result<(Peer<RoleClient>, Vec<RemoteTool>), String>>;
 
-/// A failed startup separately reports whether its owned resources settled.
+/// Actual original cleanup custody, not a connection descriptor or a grant.
+#[derive(Clone)]
+pub struct CleanupMaterial(Arc<RuntimeOwner>);
+struct RuntimeOwner {
+    task: Option<tokio::task::JoinHandle<Result<(), Box<CleanupFailure>>>>,
+    done: watch::Receiver<Option<Result<(), String>>>,
+    stop: CancellationToken,
+}
+struct CleanupFailure {
+    message: String,
+    _transport: Option<owned::Custody>,
+    _child: Option<maka_process::pipe::Child>,
+}
+impl fmt::Debug for CleanupMaterial {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CleanupMaterial { original_owner: .. }")
+    }
+}
+impl CleanupMaterial {
+    /// Observe only the original owner. This supplies neither caller ACK nor a
+    /// Root settlement token; a terminal failure cannot become confirmed later.
+    pub async fn closed(&self) -> Result<(), String> {
+        let mut done = self.0.done.clone();
+        loop {
+            if let Some(result) = done.borrow_and_update().clone() {
+                return result;
+            }
+            done.changed()
+                .await
+                .map_err(|_| "MCP connection owner disappeared".to_owned())?;
+        }
+    }
+}
+impl Drop for RuntimeOwner {
+    fn drop(&mut self) {
+        self.stop.cancel();
+        if let Some(task) = self.task.take() {
+            tokio::spawn(async move {
+                if let Ok(Err(material)) = task.await {
+                    // Even a lost observer cannot dispose of an unconfirmed Child
+                    // or transport. No new registry or synthetic ACK is involved.
+                    std::future::pending::<()>().await;
+                    drop(material);
+                }
+            });
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct StartupError {
     pub message: String,
-    pub cleanup_confirmed: bool,
+    pub material: Option<CleanupMaterial>,
 }
 impl StartupError {
     pub fn clean(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
-            cleanup_confirmed: true,
+            material: None,
         }
     }
-    pub fn unconfirmed(message: impl Into<String>) -> Self {
+    pub fn unconfirmed(message: impl Into<String>, material: CleanupMaterial) -> Self {
         Self {
             message: message.into(),
-            cleanup_confirmed: false,
+            material: Some(material),
         }
     }
 }
+#[derive(Debug)]
+pub struct CloseError {
+    pub message: String,
+    pub material: CleanupMaterial,
+}
+impl fmt::Display for CloseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for CloseError {}
+impl fmt::Display for StartupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for StartupError {}
 impl Connection {
     pub async fn connect(
         configuration: ServerConfiguration,
         network: maka_network::Policy,
-    ) -> Result<Self, String> {
-        Self::connect_cancellable(configuration, network, CancellationToken::new())
-            .await
-            .map_err(|error| error.message)
+    ) -> Result<Self, StartupError> {
+        Self::connect_cancellable(configuration, network, CancellationToken::new()).await
     }
     pub async fn connect_cancellable(
         configuration: ServerConfiguration,
@@ -131,8 +195,6 @@ impl Connection {
         if cancellation.is_cancelled() {
             return Err(StartupError::clean("MCP startup cancelled"));
         }
-        let cleanup_confirmed = Arc::new(AtomicBool::new(false));
-        let cleanup = cleanup_confirmed.clone();
         let stop = CancellationToken::new();
         let cancel_on_drop = stop.clone().drop_guard();
         let invalid = Arc::new(AtomicBool::new(false));
@@ -143,10 +205,21 @@ impl Connection {
         let owner_invalid = invalid.clone();
         // Startup and teardown survive a dropped observer. No child or HTTP worker
         // can lose its owner when the activation request is cancelled.
-        tokio::spawn(async move {
-            let result = own(config, network, owner_invalid, owner_stop, ready, cleanup).await;
-            finished.send_replace(Some(result));
+        let task = tokio::spawn(async move {
+            let result = own(config, network, owner_invalid, owner_stop, ready).await;
+            finished.send_replace(Some(
+                result
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(|failure| failure.message.clone()),
+            ));
+            result
         });
+        let material = CleanupMaterial(Arc::new(RuntimeOwner {
+            task: Some(task),
+            done,
+            stop: stop.clone(),
+        }));
         let result = tokio::select! {
             biased;
             _ = cancellation.cancelled() => Err("MCP startup cancelled".to_owned()),
@@ -156,11 +229,18 @@ impl Connection {
             Ok(ready) => ready,
             Err(error) => {
                 stop.cancel();
-                let cleanup = owned::closed(done).await;
-                return Err(StartupError {
-                    message: cleanup.err().unwrap_or(error),
-                    cleanup_confirmed: cleanup_confirmed.load(Ordering::Acquire),
-                });
+                return Err(
+                    match tokio::time::timeout(CLEANUP, material.closed()).await {
+                        Ok(Ok(())) => StartupError::clean(error),
+                        Ok(Err(cleanup)) => {
+                            StartupError::unconfirmed(format!("{error}; {cleanup}"), material)
+                        }
+                        Err(_) => StartupError::unconfirmed(
+                            format!("{error}; MCP startup cleanup timed out"),
+                            material,
+                        ),
+                    },
+                );
             }
         };
         cancel_on_drop.disarm();
@@ -170,7 +250,7 @@ impl Connection {
             tools,
             invalid,
             stop,
-            done,
+            owner: material,
             timeout: Duration::from_millis(configuration.call_timeout_ms),
             remote: matches!(
                 configuration.transport,
@@ -186,9 +266,19 @@ impl Connection {
             && !self.0.stop.is_cancelled()
             && !self.0.peer.is_transport_closed()
     }
-    pub async fn close(&self) -> Result<(), String> {
+    pub async fn close(&self) -> Result<(), CloseError> {
         self.0.stop.cancel();
-        owned::closed(self.0.done.clone()).await
+        match tokio::time::timeout(CLEANUP, self.0.owner.closed()).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(message)) => Err(CloseError {
+                message,
+                material: self.0.owner.clone(),
+            }),
+            Err(_) => Err(CloseError {
+                message: "MCP cleanup timed out; original owner is still retained".into(),
+                material: self.0.owner.clone(),
+            }),
+        }
     }
     pub async fn call(
         &self,
@@ -290,7 +380,9 @@ impl Connection {
     }
     async fn uncertain(&self, reason: &str) -> Result<ToolSuccess, ToolError> {
         self.0.invalid.store(true, Ordering::Release);
-        self.close().await.map_err(ToolError::CleanupUnconfirmed)?;
+        self.close()
+            .await
+            .map_err(|error| ToolError::CleanupUnconfirmed(error.message))?;
         let message = format!(
             "{}: {reason}; external effects are unconfirmed and the connection was retired",
             self.0.name
@@ -312,185 +404,178 @@ async fn own(
     invalid: Arc<AtomicBool>,
     stop: CancellationToken,
     ready: Ready,
-    cleanup_confirmed: Arc<AtomicBool>,
-) -> Result<(), String> {
+) -> Result<(), Box<CleanupFailure>> {
     let mut ready = Some(ready);
-    let outcome = match &config.transport {
-        TransportConfiguration::Stdio {
-            command,
-            args,
-            cwd,
-            env,
-            pass_env,
-        } => {
-            let setup = (|| {
-                let executable = which::which(command)
-                    .map_err(|_| "MCP executable is unavailable".to_owned())?;
-                let mut plan = maka_process::Command::new(executable, cwd);
-                plan.env_clear();
-                // Basic executable lookup, home/cache and temporary paths only.
-                // Secrets and proxy URLs require explicit env/passEnv entries.
-                for key in [
-                    "PATH",
-                    "HOME",
-                    "USERPROFILE",
-                    "SystemRoot",
-                    "WINDIR",
-                    "TEMP",
-                    "TMP",
-                    "TMPDIR",
-                    "LANG",
-                    "LC_ALL",
-                ] {
-                    if let Some(value) = std::env::var_os(key) {
+    let outcome =
+        match &config.transport {
+            TransportConfiguration::Stdio {
+                command,
+                args,
+                cwd,
+                env,
+                pass_env,
+            } => {
+                let setup = (|| {
+                    let executable = which::which(command)
+                        .map_err(|_| "MCP executable is unavailable".to_owned())?;
+                    let mut plan = maka_process::Command::new(executable, cwd);
+                    plan.env_clear();
+                    // Basic executable lookup, home/cache and temporary paths only.
+                    // Secrets and proxy URLs require explicit env/passEnv entries.
+                    for key in [
+                        "PATH",
+                        "HOME",
+                        "USERPROFILE",
+                        "SystemRoot",
+                        "WINDIR",
+                        "TEMP",
+                        "TMP",
+                        "TMPDIR",
+                        "LANG",
+                        "LC_ALL",
+                    ] {
+                        if let Some(value) = std::env::var_os(key) {
+                            plan.env(key, value);
+                        }
+                    }
+                    for arg in args {
+                        plan.arg(arg);
+                    }
+                    for (key, value) in env {
                         plan.env(key, value);
                     }
-                }
-                for arg in args {
-                    plan.arg(arg);
-                }
-                for (key, value) in env {
-                    plan.env(key, value);
-                }
-                for key in pass_env {
-                    plan.env(
-                        key,
-                        std::env::var_os(key).ok_or_else(|| {
-                            format!("MCP environment variable {key} is not configured")
-                        })?,
-                    );
-                }
-                Ok::<_, String>(plan)
-            })();
-            match setup {
-                Err(error) => {
-                    cleanup_confirmed.store(true, Ordering::Release);
-                    Err(error)
-                }
-                Ok(plan) => match maka_process::pipe::spawn(plan).await {
-                    Err(_) => {
-                        cleanup_confirmed.store(true, Ordering::Release);
-                        Err("MCP process startup failed".into())
+                    for key in pass_env {
+                        plan.env(
+                            key,
+                            std::env::var_os(key).ok_or_else(|| {
+                                format!("MCP environment variable {key} is not configured")
+                            })?,
+                        );
                     }
-                    Ok(spawned) => {
-                        let maka_process::pipe::Spawned {
-                            mut child,
-                            stdin,
-                            stdout,
-                            mut stderr,
-                        } = spawned;
-                        // Drain without publishing potentially secret server diagnostics.
-                        let stderr = tokio::spawn(async move {
-                            tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await
-                        });
-                        let transport = AsyncRwTransport::<RoleClient, _, _>::new(stdout, stdin)
-                            .with_max_line_length(usize::MAX);
-                        let transport_cleaned = AtomicBool::new(false);
-                        let result = run(
-                            transport,
-                            &config,
-                            invalid,
-                            stop,
-                            &mut ready,
-                            &transport_cleaned,
-                        )
-                        .await;
-                        let cleanup = async {
-                            // EOF gives a cooperative stdio server time to process
-                            // its final cancellation/close before forced group teardown.
-                            if tokio::time::timeout(Duration::from_secs(1), child.wait())
-                                .await
-                                .is_err()
-                            {
-                                child
-                                    .terminate()
-                                    .map_err(|_| "MCP process termination failed")?;
+                    Ok::<_, String>(plan)
+                })();
+                match setup {
+                    Err(error) => {
+                        startup_failed(&mut ready, error);
+                        Ok(())
+                    }
+                    Ok(plan) => match maka_process::pipe::spawn(plan).await {
+                        Err(_) => {
+                            startup_failed(&mut ready, "MCP process startup failed");
+                            Ok(())
+                        }
+                        Ok(spawned) => {
+                            let maka_process::pipe::Spawned {
+                                mut child,
+                                stdin,
+                                stdout,
+                                mut stderr,
+                            } = spawned;
+                            // Drain without publishing potentially secret server diagnostics.
+                            let stderr = tokio::spawn(async move {
+                                tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await
+                            });
+                            let transport =
+                                AsyncRwTransport::<RoleClient, _, _>::new(stdout, stdin)
+                                    .with_max_line_length(usize::MAX);
+                            let result = run(transport, &config, invalid, stop, &mut ready).await;
+                            let cleanup =
+                                match tokio::time::timeout(Duration::from_secs(1), child.wait())
+                                    .await
+                                {
+                                    Ok(result) => result
+                                        .map(|_| ())
+                                        .map_err(|_| "MCP process group cleanup unconfirmed"),
+                                    Err(_) => {
+                                        match child.terminate().await {
+                                            Ok(()) => child.wait().await.map(|_| ()).map_err(
+                                                |_| "MCP process group cleanup unconfirmed",
+                                            ),
+                                            Err(_) => Err("MCP process termination failed"),
+                                        }
+                                    }
+                                };
+                            // Only the owned drain task is aborted, never the original
+                            // service waiting future or its process cleanup owner.
+                            stderr.abort();
+                            let _ = stderr.await;
+                            match cleanup {
+                                Ok(()) => result,
+                                Err(message) => match result {
+                                    Ok(()) => Err(Box::new(CleanupFailure {
+                                        message: message.to_owned(),
+                                        _transport: None,
+                                        _child: Some(child),
+                                    })),
+                                    Err(mut failure) => {
+                                        failure.message = format!("{}; {message}", failure.message);
+                                        failure._child = Some(child);
+                                        Err(failure)
+                                    }
+                                },
                             }
-                            child
-                                .wait()
-                                .await
-                                .map_err(|_| "MCP process group cleanup unconfirmed")?;
-                            Ok::<_, &str>(())
                         }
-                        .await;
-                        // A child that escaped the group can keep stderr open; it cannot
-                        // retain this Host's drain task indefinitely.
-                        stderr.abort();
-                        let _ = stderr.await;
-                        if cleanup.is_ok() && transport_cleaned.load(Ordering::Acquire) {
-                            cleanup_confirmed.store(true, Ordering::Release);
-                        }
-                        cleanup.map_err(str::to_owned).and(result)
+                    },
+                }
+            }
+            TransportConfiguration::StreamableHttp {
+                url,
+                headers,
+                header_env,
+            } => {
+                let setup = (|| {
+                    let mut values = std::collections::HashMap::new();
+                    for (name, value) in headers {
+                        values.insert(
+                            reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                                .map_err(|_| "Invalid MCP header")?,
+                            reqwest::header::HeaderValue::from_str(value)
+                                .map_err(|_| "Invalid MCP header")?,
+                        );
                     }
-                },
-            }
-        }
-        TransportConfiguration::StreamableHttp {
-            url,
-            headers,
-            header_env,
-        } => {
-            let setup = (|| {
-                let mut values = std::collections::HashMap::new();
-                for (name, value) in headers {
-                    values.insert(
-                        reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                    for (name, key) in header_env {
+                        values.insert(
+                            reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                                .map_err(|_| "Invalid MCP header")?,
+                            reqwest::header::HeaderValue::from_str(&std::env::var(key).map_err(
+                                |_| "MCP header environment variable is not configured",
+                            )?)
                             .map_err(|_| "Invalid MCP header")?,
-                        reqwest::header::HeaderValue::from_str(value)
-                            .map_err(|_| "Invalid MCP header")?,
-                    );
-                }
-                for (name, key) in header_env {
-                    values.insert(
-                        reqwest::header::HeaderName::from_bytes(name.as_bytes())
-                            .map_err(|_| "Invalid MCP header")?,
-                        reqwest::header::HeaderValue::from_str(
-                            &std::env::var(key)
-                                .map_err(|_| "MCP header environment variable is not configured")?,
-                        )
-                        .map_err(|_| "Invalid MCP header")?,
-                    );
-                }
-                let client = network
-                    .client_builder()
-                    .redirect(reqwest::redirect::Policy::none())
-                    .build()
-                    .map_err(|_| "MCP HTTP client construction failed")?;
-                let config = StreamableHttpClientTransportConfig::with_uri(url.clone())
-                    .custom_headers(values)
-                    .max_sse_event_size(usize::MAX)
-                    .reinit_on_expired_session(false);
-                Ok::<_, String>(StreamableHttpClientTransport::with_client(
-                    http::Client(client),
-                    config,
-                ))
-            })();
-            match setup {
-                Ok(transport) => {
-                    run(
-                        transport,
-                        &config,
-                        invalid,
-                        stop,
-                        &mut ready,
-                        &cleanup_confirmed,
-                    )
-                    .await
-                }
-                Err(error) => {
-                    cleanup_confirmed.store(true, Ordering::Release);
-                    Err(error)
+                        );
+                    }
+                    let client = network
+                        .client_builder()
+                        .redirect(reqwest::redirect::Policy::none())
+                        .build()
+                        .map_err(|_| "MCP HTTP client construction failed")?;
+                    let config = StreamableHttpClientTransportConfig::with_uri(url.clone())
+                        .custom_headers(values)
+                        .max_sse_event_size(usize::MAX)
+                        .reinit_on_expired_session(false);
+                    Ok::<_, String>(StreamableHttpClientTransport::with_client(
+                        http::Client(client),
+                        config,
+                    ))
+                })();
+                match setup {
+                    Ok(transport) => run(transport, &config, invalid, stop, &mut ready).await,
+                    Err(error) => {
+                        startup_failed(&mut ready, error);
+                        Ok(())
+                    }
                 }
             }
-        }
-    };
-    if let Some(ready) = ready {
-        let _ = ready
-            .send(Err(outcome.clone().err().unwrap_or_else(|| {
-                "MCP connection closed during startup".into()
-            })));
+        };
+    if ready.is_some() {
+        startup_failed(&mut ready, "MCP connection closed during startup");
     }
     outcome
+}
+
+fn startup_failed(ready: &mut Option<Ready>, message: impl Into<String>) {
+    if let Some(ready) = ready.take() {
+        let _ = ready.send(Err(message.into()));
+    }
 }
 
 async fn run<T: Transport<RoleClient> + 'static>(
@@ -499,75 +584,103 @@ async fn run<T: Transport<RoleClient> + 'static>(
     invalid: Arc<AtomicBool>,
     stop: CancellationToken,
     ready: &mut Option<Ready>,
-    cleanup_confirmed: &AtomicBool,
-) -> Result<(), String> {
-    let (transport, closed) = owned::track(transport);
-    let handler = Handler(invalid);
-    let startup = async {
-        let service = handler
-            .serve(transport)
-            .await
-            .map_err(|_| "MCP initialization failed".to_owned())?;
-        let mut tools = Vec::new();
-        let mut cursor = None;
-        let mut cursors = HashSet::new();
-        loop {
-            let page = service
-                .list_tools(
-                    cursor
-                        .map(|cursor| PaginatedRequestParams::default().with_cursor(Some(cursor))),
-                )
-                .await
-                .map_err(|_| "MCP tool discovery failed")?;
-            tools.extend(page.tools);
-            cursor = page.next_cursor;
-            if cursor.is_none() {
-                let tools = validation::tools(config, tools)?;
-                return Ok((service, tools));
-            }
-            if !cursors.insert(cursor.clone()) {
-                return Err("MCP pagination cursor repeats".into());
-            }
+) -> Result<(), Box<CleanupFailure>> {
+    let (transport, custody) = owned::track(transport);
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(config.startup_timeout_ms);
+    let started = {
+        let startup = Handler(invalid).serve(transport);
+        tokio::pin!(startup);
+        tokio::select! {
+            result = tokio::time::timeout_at(deadline, &mut startup) => result
+                .map_err(|_| "MCP startup timed out".to_owned())
+                .and_then(|result| result.map_err(|_| "MCP initialization failed".to_owned())),
+            _ = stop.cancelled() => Err("MCP startup cancelled".into()),
         }
     };
-    let started = tokio::select! {
-        result = tokio::time::timeout(Duration::from_millis(config.startup_timeout_ms), startup) => result.map_err(|_| "MCP startup timed out".to_owned()).and_then(|v| v),
-        _ = stop.cancelled() => Err("MCP startup cancelled".into()),
-    };
-    let outcome = match started {
-        Err(error) => Err(error),
-        Ok((service, tools)) => {
+    let joined = match started {
+        Err(error) => {
+            startup_failed(ready, error);
+            Ok(())
+        }
+        Ok(service) => {
             let peer = service.peer().clone();
-            if ready
-                .take()
-                .expect("one startup reply")
-                .send(Ok((peer, tools)))
-                .is_err()
-            {
-                stop.cancel();
-            }
             let sdk_stop = service.cancellation_token();
             let waiting = service.waiting();
             tokio::pin!(waiting);
-            let result = tokio::select! {
-                result = &mut waiting => Some(result),
-                _ = stop.cancelled() => { sdk_stop.cancel(); None },
+            let discovered = {
+                let discovery = discover(&peer, config);
+                tokio::pin!(discovery);
+                tokio::select! {
+                    result = tokio::time::timeout_at(deadline, &mut discovery) => result
+                        .map_err(|_| "MCP startup timed out".to_owned()).and_then(|result| result),
+                    _ = stop.cancelled() => Err("MCP startup cancelled".into()),
+                }
             };
-            match result {
-                Some(result) => result
-                    .map(|_| ())
-                    .map_err(|_| "MCP service cleanup failed".into()),
-                None => tokio::time::timeout(CLEANUP, waiting)
-                    .await
-                    .map_err(|_| "MCP service cleanup timed out".to_owned())?
-                    .map(|_| ())
-                    .map_err(|_| "MCP service cleanup failed".into()),
-            }
+            let result = match discovered {
+                Err(error) => {
+                    startup_failed(ready, error);
+                    sdk_stop.cancel();
+                    waiting.await
+                }
+                Ok(tools) => {
+                    if ready
+                        .take()
+                        .expect("one startup reply")
+                        .send(Ok((peer, tools)))
+                        .is_err()
+                    {
+                        stop.cancel();
+                    }
+                    tokio::select! {
+                        result = &mut waiting => result,
+                        _ = stop.cancelled() => {
+                            sdk_stop.cancel();
+                            // The observer's deadline is outside this owner. Keep
+                            // driving this exact original waiting future to its join.
+                            waiting.await
+                        },
+                    }
+                }
+            };
+            result
+                .map(|_| ())
+                .map_err(|_| "MCP service cleanup failed".to_owned())
         }
     };
-    tokio::time::timeout(CLEANUP, owned::closed(closed))
-        .await
-        .map_err(|_| "MCP transport cleanup unconfirmed".to_owned())??;
-    cleanup_confirmed.store(true, Ordering::Release);
-    outcome
+    let transport = custody.closed().await.map_err(|error| error.to_string());
+    let message = match (joined, transport) {
+        (Ok(()), Ok(())) => return Ok(()),
+        (Err(service), Err(transport)) => format!("{service}; {transport}"),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => error,
+    };
+    Err(Box::new(CleanupFailure {
+        message,
+        _transport: Some(custody),
+        _child: None,
+    }))
+}
+
+async fn discover(
+    peer: &Peer<RoleClient>,
+    config: &ServerConfiguration,
+) -> Result<Vec<RemoteTool>, String> {
+    let mut tools = Vec::new();
+    let mut cursor = None;
+    let mut cursors = HashSet::new();
+    loop {
+        let page = peer
+            .list_tools(
+                cursor.map(|cursor| PaginatedRequestParams::default().with_cursor(Some(cursor))),
+            )
+            .await
+            .map_err(|_| "MCP tool discovery failed")?;
+        tools.extend(page.tools);
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            return validation::tools(config, tools);
+        }
+        if !cursors.insert(cursor.clone()) {
+            return Err("MCP pagination cursor repeats".into());
+        }
+    }
 }

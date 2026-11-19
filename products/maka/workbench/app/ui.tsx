@@ -21,9 +21,8 @@ import { tr } from './locale';
 import { Text, View } from 'nsh';
 import type { JSX, ViewRef } from 'nsh';
 import { Button, Tooltip } from 'nsh/base';
-import { colorScheme, keymap, platform, windowSize } from 'nsh';
+import { colorScheme, keymap, LayoutAnimation, platform, reduceMotion, windowSize } from 'nsh';
 import { Icon } from './Icon';
-import { sessionStatusCaption } from './sessionStatus';
 import {
   controlsLeft,
   controlsRight,
@@ -35,10 +34,39 @@ import {
 import { appearance } from './appearance';
 import { paletteTokens, type PaletteRecipe, type PaletteTokens } from './colorPalette';
 
+/** A text wraps only within a width it is held to; the narrowest window is 640. */
+const TOOLTIP_MAX_WIDTH = 280;
+
+/** NSH's tooltip bubble in Maka's colors: a line, or `richTooltipStyle` for more. */
+export const tooltipStyle = () => ({
+  borderRadius: 6,
+  paddingHorizontal: 8,
+  paddingVertical: 4,
+  backgroundColor: C.floating,
+  borderWidth: 1,
+  borderColor: C.line,
+  maxWidth: TOOLTIP_MAX_WIDTH,
+});
+export const richTooltipStyle = () => ({
+  borderRadius: 8,
+  padding: 10,
+  gap: 8,
+  backgroundColor: C.floating,
+  borderWidth: 1,
+  borderColor: C.line,
+  maxWidth: TOOLTIP_MAX_WIDTH,
+});
+export const tooltipTextStyle = () => ({
+  fontSize: 12,
+  lineHeight: 16,
+  color: C.text,
+  numberOfLines: 4,
+});
+
 export function textTooltip(text: () => string | undefined): JSX.Element {
   return (
-    <Tooltip disabled={!text()} class="rounded-md border border-border bg-popover px-2 py-1">
-      <Text class="text-xs text-popover-foreground">{text()}</Text>
+    <Tooltip disabled={!text()} style={tooltipStyle()}>
+      <Text style={tooltipTextStyle()}>{text()}</Text>
     </Tooltip>
   );
 }
@@ -60,6 +88,8 @@ const DARK = {
   removed: '#382528',
   /** Behind a dialog. */
   scrim: '#00000099',
+  /** Under what floats: menus and popovers. */
+  shadow: '#00000073',
 };
 const LIGHT: typeof DARK = {
   background: '#ffffff',
@@ -77,6 +107,7 @@ const LIGHT: typeof DARK = {
   added: '#e3f3e7',
   removed: '#fbe8e9',
   scrim: '#00000040',
+  shadow: '#0000001f',
 };
 /** The default palette's colors in one appearance. */
 export const defaultColors = (dark: boolean) => (dark ? DARK : LIGHT);
@@ -96,13 +127,16 @@ const paletteColor = (key: string, dark: boolean): string | undefined => {
 type Tone = keyof typeof DARK;
 // The desktop window's regions, by fill: the sidebar (`chrome`) sits one step
 // below the content `panel` in both appearances, and what rests on the panel
-// (`card`, then `cardRaised`) steps up from it. The dark panel is `surface`, so
+// (`card`, then `cardRaised`) steps up from it. What floats (`floating`, its
+// rows' hover `floatingRaised`) sits one step above the panel. The dark panel is `surface`, so
 // there each step is one token higher; terminals keep the light steps.
 const REGIONS = {
   chrome: ['surface', 'background'],
   panel: ['background', 'surface'],
   card: ['surface', 'raised'],
   cardRaised: ['raised', 'line'],
+  floating: ['background', 'raised'],
+  floatingRaised: ['raised', 'line'],
 } satisfies Record<string, [Tone, Tone]>;
 /** The interface's colors, in the appearance and palette in effect: read them where they are drawn. */
 export const C = Object.defineProperties({} as Record<Tone | keyof typeof REGIONS, string>, {
@@ -152,9 +186,25 @@ export const controlStyle = {
   borderRadius: 8,
   justifyContent: 'center',
 } as const;
+export const composerIconSlot = {
+  width: 32,
+  height: 32,
+  flexShrink: 0,
+  alignItems: 'center',
+  justifyContent: 'center',
+} as const;
+
 export const toolbarControlStyle = {
   ...controlStyle,
   paddingHorizontal: platform.idiom === 'terminal' ? 12 : 8,
+} as const;
+export const sidebarDisclosureStyle = {
+  alignSelf: 'flex-start',
+  flexDirection: 'row',
+  alignItems: 'center',
+  paddingHorizontal: 8,
+  paddingVertical: 4,
+  borderRadius: 8,
 } as const;
 /**
  * Horizontal padding of the disclosure rows in a turn (status, process group,
@@ -194,6 +244,47 @@ export const quietFocusStyle = () =>
         outlineOffset: -2,
       };
 export const quietHoverStyle = () => ({ backgroundColor: C.card });
+/** The surface every menu, select, context menu and popover shares. Its inset
+ * keeps its rows' radius (8) concentric with its own (12). */
+export const floatingStyle = () => ({
+  padding: 4,
+  minHeight: 0,
+  maxWidth: Math.max(0, windowSize().width - 16),
+  backgroundColor: C.floating,
+  borderWidth: 1,
+  borderColor: C.line,
+  borderRadius: 12,
+  ...(platform.idiom === 'terminal' ? {} : { boxShadow: `0 8px 24px ${C.shadow}` }),
+});
+/** A menu row: a 16-point icon lane at 12 points from the surface's edge, the
+ * text lane at 36, and a trailing lane for the check, shortcut or chevron. */
+export const menuRowStyle = () => ({
+  minHeight: 32,
+  paddingHorizontal: 8,
+  paddingVertical: 8,
+  borderRadius: 8,
+  flexDirection: 'row' as const,
+  alignItems: 'center' as const,
+  justifyContent: 'flex-start' as const,
+  gap: 8,
+});
+/** Hover and keyboard focus look alike in a menu: one row is current. */
+export const menuRowHoverStyle = () => ({ backgroundColor: C.floatingRaised });
+export const menuDetailTextStyle = { fontSize: 12, lineHeight: 16 };
+export const menuLabelStyle = () => ({
+  ...menuDetailTextStyle,
+  fontWeight: '500' as const,
+  color: C.muted,
+  paddingHorizontal: 8,
+  paddingTop: 8,
+  paddingBottom: 4,
+});
+export const menuSeparatorStyle = () => ({
+  height: 1,
+  backgroundColor: C.line,
+  marginVertical: 4,
+  marginHorizontal: 8,
+});
 export const quietActiveStyle = () => ({ backgroundColor: C.cardRaised });
 
 export function IconButton(props: {
@@ -230,6 +321,34 @@ export function IconButton(props: {
 
 export const disclosureTitleStyle = { ...captionTextStyle, flex: 1, minWidth: 0 } as const;
 
+/**
+ * Glides what a disclosure moves when the user opens or folds it. Rows it
+ * reveals appear in place at once, so they can be pressed from the first frame.
+ */
+export function animateDisclosure() {
+  if (!reduceMotion())
+    LayoutAnimation.configureNext({ duration: 200, update: { type: 'easeInEaseOut' } });
+}
+export function DisclosureChevron(props: { open: boolean; size?: number; color?: string }) {
+  const color = () => props.color ?? C.secondary;
+  return (
+    <If
+      when={platform.idiom !== 'terminal'}
+      else={<Icon name={props.open ? 'down' : 'right'} size={props.size} color={color()} />}
+    >
+      <View
+        style={{
+          rotate: props.open ? '90deg' : '0deg',
+          transitionProperty: 'transform',
+          transitionDuration: 150,
+          transitionTimingFunction: 'ease-out',
+        }}
+      >
+        <Icon name="right" size={props.size} color={color()} />
+      </View>
+    </If>
+  );
+}
 export function Disclosure(props: {
   label: string;
   tooltip?: string;
@@ -285,7 +404,7 @@ export function Disclosure(props: {
                 </If>
               }
             >
-              <Icon name={props.open ? 'down' : 'right'} color={C.secondary} />
+              <DisclosureChevron open={props.open} />
             </If>
           }
         >
@@ -384,13 +503,18 @@ export function ViewSegment(props: { label: string; selected: boolean; onPress: 
 export function Header(props: {
   title: string;
   workspace?: string;
-  status?: 'loading' | 'stopping' | 'failed';
   /** The command palette, which the terminal's header opens; the desktop's is in the menu bar. */
   commands(): void;
   browser: BrowserHeader;
   files?(): void;
   filesOpener?(node: ViewRef): void;
-  /** Extra controls for this conversation, after the files button. */
+  changes?(): void;
+  preset?: { name: string; open(): void };
+  /** Toggles the right-hand session context inspector card (left of Chat / Trajectory). */
+  inspector?: { open: boolean; toggle(): void };
+  /** Proactively opens or closes the right-hand workspace stage pane. */
+  stage?: { open: boolean; toggle(): void };
+  /** Extra controls for this conversation, before the header's view switcher. */
   actions?: JSX.Element;
   views?: JSX.Element;
 }) {
@@ -463,7 +587,7 @@ export function Header(props: {
       >
         {props.title}
       </Text>
-      <If when={props.files}>
+      <If when={!desktop && props.files}>
         <Button
           accessibilityLabel={tr('Browse workspace files')}
           tooltip={textTooltip(() => props.workspace || tr('Browse workspace files'))}
@@ -471,19 +595,52 @@ export function Header(props: {
           onPress={props.files}
           style={{
             ...toolbarControlStyle,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            maxWidth: 240,
+            minWidth: 0,
+            flexShrink: 1,
+          }}
+          hoverStyle={{ backgroundColor: C.surface }}
+          focusStyle={{ backgroundColor: C.raised }}
+        >
+          <Icon name="folder" color={C.secondary} size={16} />
+          <Text
+            style={[
+              {
+                ...captionTextStyle,
+                color: C.secondary,
+                minWidth: 0,
+                flexShrink: 1,
+              },
+              { numberOfLines: 1 },
+            ]}
+          >
+            {workspaceName()}
+          </Text>
+        </Button>
+      </If>
+      <If when={props.preset}>
+        <Button
+          accessibilityLabel={tr('Applied subagent')}
+          tooltip={textTooltip(() => `${tr('Applied subagent')}: ${props.preset!.name}`)}
+          onPress={() => props.preset?.open()}
+          style={{
+            ...toolbarControlStyle,
             ...(desktop ? { minHeight: 28, height: 28, paddingVertical: 0 } : {}),
             flexDirection: 'row',
             alignItems: 'center',
-            gap: desktop ? 4 : 8,
-            maxWidth: 240,
+            gap: desktop ? 4 : 6,
+            maxWidth: 200,
             minWidth: 0,
-            flexShrink: desktop ? 2 : 1,
+            flexShrink: 2,
           }}
           hoverStyle={desktop ? quietHoverStyle() : { backgroundColor: C.surface }}
           activeStyle={desktop ? quietActiveStyle() : undefined}
           focusStyle={desktop ? quietFocusStyle() : { backgroundColor: C.raised }}
         >
-          <Icon name="folder" color={desktop ? C.muted : C.secondary} size={desktop ? 14 : 16} />
+          <Icon name="bot" color={desktop ? C.muted : C.secondary} size={desktop ? 14 : 16} />
           <Text
             style={[
               {
@@ -495,7 +652,7 @@ export function Header(props: {
               { numberOfLines: 1 },
             ]}
           >
-            {workspaceName()}
+            {props.preset!.name}
           </Text>
         </Button>
       </If>
@@ -503,22 +660,71 @@ export function Header(props: {
         <View style={{ flex: 1 }} />
       </If>
       {props.actions}
-      <If when={props.status}>
-        <Text
+      <If when={desktop && props.inspector !== undefined}>
+        <Button
+          accessibilityLabel={tr('Toggle session details')}
+          tooltip={textTooltip(() => tr('Toggle session details'))}
+          selected={props.inspector!.open}
+          onPress={props.inspector!.toggle}
           style={{
-            ...captionTextStyle,
-            color:
-              props.status === 'failed'
-                ? C.danger
-                : props.status === 'stopping'
-                  ? C.accent
-                  : C.muted,
+            ...controlStyle,
+            width: 28,
+            minHeight: 28,
+            height: 28,
+            paddingHorizontal: 0,
+            paddingVertical: 0,
+            alignItems: 'center',
+            backgroundColor: props.inspector!.open ? C.card : 'transparent',
           }}
+          hoverStyle={quietHoverStyle()}
+          activeStyle={quietActiveStyle()}
+          focusStyle={quietFocusStyle()}
         >
-          {props.status ? sessionStatusCaption[props.status] : ''}
-        </Text>
+          <Icon name="inspector" size={15} color={props.inspector!.open ? C.text : C.muted} />
+        </Button>
       </If>
       {props.views}
+      <If when={desktop && props.stage !== undefined && !props.browser.close}>
+        <Button
+          class="group/stage-toggle"
+          accessibilityLabel={tr('Toggle workspace pane')}
+          tooltip={textTooltip(() => tr('Toggle workspace pane'))}
+          selected={props.stage!.open}
+          onPress={props.stage!.toggle}
+          style={{
+            ...controlStyle,
+            width: 28,
+            minHeight: 28,
+            height: 28,
+            paddingHorizontal: 0,
+            paddingVertical: 0,
+            alignItems: 'center',
+            backgroundColor: props.stage!.open ? C.card : 'transparent',
+          }}
+          hoverStyle={quietHoverStyle()}
+          activeStyle={quietActiveStyle()}
+          focusStyle={quietFocusStyle()}
+        >
+          <View
+            accessibilityElementsHidden
+            style={[{ width: 15, height: 15 }, { pointerEvents: 'none' }]}
+          >
+            <View class="group-hover/stage-toggle:opacity-0">
+              <Icon name="panelRight" size={15} color={props.stage!.open ? C.text : C.muted} />
+            </View>
+            <View
+              class="opacity-0 group-hover/stage-toggle:opacity-100"
+              style={{ position: 'absolute', left: 0, top: 0 }}
+            >
+              <Icon
+                name={props.stage!.open ? 'panelRightClose' : 'panelRightOpen'}
+                size={15}
+                color={props.stage!.open ? C.text : C.muted}
+              />
+            </View>
+          </View>
+        </Button>
+      </If>
       <If when={props.browser.close}>
         <Button
           onPress={props.browser.close}

@@ -29,7 +29,19 @@ use std::io;
 pub struct WorkspacePath {
     pub bytes_base64: String,
 }
+/// A file selected for reading. Only workspace paths are accepted by editing APIs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum FileReadPath {
+    Workspace(WorkspacePath),
+    External { absolute: String },
+}
+
 impl WorkspacePath {
+    pub fn from_path(path: &std::path::Path) -> io::Result<Self> {
+        let bytes = gix::path::into_bstr(path).map_err(|_| invalid())?;
+        Self::from_bytes(&gix::path::to_unix_separators_on_windows(bytes))
+    }
     pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
         let path = Self {
             bytes_base64: STANDARD.encode(bytes),

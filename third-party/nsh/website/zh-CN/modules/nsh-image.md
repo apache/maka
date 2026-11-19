@@ -36,6 +36,8 @@ interface PixelSize {
 
 加载图片，并 resolve 为它的像素尺寸（源图片的尺寸，而不是降采样后的副本；SVG 为它以点为单位的固有尺寸，[在 Web 上为浏览器测得的尺寸](../docs/images-and-assets.md#svg-图片)）。带有[像素密度变体](../docs/images-and-assets.md#像素密度)的导入图片会加载视图在当前屏幕上加载的变体，并 resolve 为导入文件的尺寸，无论加载的是哪个变体（显示它的 `<Image>` 在 `onLoad` 中报告所加载变体的像素尺寸）。加载的数据会保留在内存中，接下来显示它的 `<Image>` 不会再次下载。图片无法加载时 Promise 会 reject。
 
+`URL.createObjectURL` 得到的 `blob:` URL（选取或下载的文件）会 resolve 为图片文件头给出的尺寸（PNG、JPEG、GIF、WebP、HEIC、AVIF、TIFF、BMP），直接从已在内存中的数据读取；对它调用 `prefetch` 会立即 resolve。
+
 ```tsx
 import { Image, signal } from "nsh";
 

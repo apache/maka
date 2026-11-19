@@ -17,8 +17,8 @@
  * under the License.
  */
 
-use maka_agent_facts::shell_run::PipeStream;
 use maka_host_runtime::HostError;
+use maka_plugin_core::shell_run::PipeStream;
 use maka_process::{PipeEvent, ProcessOutcome, ShellExecutor, Termination};
 use maka_sandbox::Sandbox;
 use std::{path::PathBuf, process::ExitCode, time::Duration};

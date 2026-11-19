@@ -20,6 +20,11 @@ pub struct ButtonProps {
     /// classes.
     #[prop(default)]
     pub selected_style: Prop<Style>,
+    /// Busy: its action is running (a "Saving…" button), and screen readers
+    /// say so. Presses still count; the app sets `disabled` as well to
+    /// refuse them.
+    #[prop(default)]
+    pub busy: Prop<bool>,
     /// What screen readers say, when its content is not enough (an icon).
     pub accessibility_label: Prop<Option<SharedString>>,
     /// What it is for screen readers (default `"button"`: a link, a tab, a
@@ -46,12 +51,13 @@ pub enum ButtonEvent {
     PressUp,
 }
 
-/// A press target that owns its behavior (presses, the disabled and
-/// selected states, its role for screen readers) and leaves its look to the
+/// A press target that owns its behavior (presses, the disabled, selected
+/// and busy states, its role for screen readers) and leaves its look to the
 /// app: no colors, sizes or label of its own. The app's `class` and `style`
-/// style it, its states with `active:`, `hover:`, `focus:`, `selected:` and
-/// `disabled:` classes or `activeStyle`, `hoverStyle`, `focusStyle`,
-/// `selectedStyle` and `disabledStyle`, and its children are its content.
+/// style it, its states with `active:`, `hover:`, `focus-visible:` (the
+/// keyboard's ring), `selected:` and `disabled:` classes or `activeStyle`,
+/// `hoverStyle`, `focusVisibleStyle`, `selectedStyle` and `disabledStyle`,
+/// and its children are its content.
 /// `hitSlop` widens where presses count past its bounds, as a view's does.
 /// In a `Toolbar` (or a `ToggleGroup`), it is one of the toolbar's items:
 /// a stop of the keyboard focus only while it is the item Tab enters the
@@ -64,6 +70,7 @@ pub fn Button(props: ButtonProps, cx: Scope<ButtonEvent>) -> impl IntoElement {
         .optional_label(props.accessibility_label)
         .accessibility_state(move || AccessibilityState {
             selected: props.selected.get(),
+            busy: props.busy.get(),
             ..AccessibilityState::default()
         })
         .selected_style(props.selected_style)

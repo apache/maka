@@ -5,11 +5,16 @@
 //! back, and lists' items show their markers.
 
 mod commands;
+mod composition;
+mod content_size;
 mod extensions;
 mod marks_clipboard_history;
+mod node_view_presses;
 mod selection;
+mod sizing;
 mod structure;
 mod tiptap;
+mod touch;
 mod typing;
 mod view_features;
 
@@ -18,7 +23,7 @@ use std::{sync::Arc, time::Duration};
 use nsh_base::rich_editor::{
     extensions::{markdown::markdown, starter, suggestion::mention_node},
     model::{Node, NodeSpec, Schema},
-    state::{EditorState, EditorStateConfig},
+    state::{EditorState, EditorStateConfig, NodeSelection},
     view::{EditorSession, NodeView, NodeViewCx, NodeViews, rich_editor},
 };
 use nsh_core::{
@@ -45,7 +50,33 @@ impl NodeView for StockCard {
     }
 }
 
-/// The starter schema with a block atom `stock` and Tiptap's `mention`.
+/// Renders inline `tag` nodes as their position and whether a node
+/// selection holds them; a press selects the node.
+struct TagView;
+
+impl NodeView for TagView {
+    fn create(&self, cx: &NodeViewCx, _node: &Node) -> AnyElement {
+        let (get_pos, selected) = (cx.get_pos(), cx.selected());
+        let (press_pos, session) = (cx.get_pos(), cx.session.clone());
+        view()
+            .test_id("tag")
+            .on_press(move || {
+                let Some(pos) = press_pos() else { return };
+                let state = session.state();
+                let mut tr = state.tr();
+                tr.set_selection(NodeSelection::create(state.doc(), pos));
+                session.dispatch(tr).unwrap();
+            })
+            .child(text(move || {
+                let selected = selected.get();
+                format!("Tag {:?} {selected}", get_pos())
+            }))
+            .into_element()
+    }
+}
+
+/// The starter schema with a block atom `stock`, an inline atom `tag` and
+/// Tiptap's `mention`.
 fn schema() -> Schema {
     let mut spec = starter::schema_spec();
     let mut stock = NodeSpec::default();
@@ -55,6 +86,11 @@ fn schema() -> Schema {
     symbol.default = Some(json!(""));
     stock.attrs = vec![("symbol".into(), symbol)];
     spec.nodes.push(("stock".into(), stock));
+    let mut tag = NodeSpec::default();
+    tag.group = Some("inline".into());
+    tag.inline = true;
+    tag.atom = true;
+    spec.nodes.push(("tag".into(), tag));
     spec.nodes.push(mention_node("mention", "@"));
     Schema::new(spec).unwrap()
 }
@@ -66,7 +102,12 @@ fn session(doc: Value) -> EditorSession {
     let doc = schema.node_from_json(&doc).unwrap();
     let state =
         EditorState::create(EditorStateConfig::new(schema).doc(doc).plugins(plugins)).unwrap();
-    EditorSession::new(state, NodeViews::new().with("stock", Arc::new(StockCard)))
+    EditorSession::new(
+        state,
+        NodeViews::new()
+            .with("stock", Arc::new(StockCard))
+            .with("tag", Arc::new(TagView)),
+    )
 }
 
 #[derive(Clone, PartialEq, Props)]
@@ -139,6 +180,11 @@ fn start(doc: Value) -> Headless {
 /// [`start`] on `os`; in a browser, on an Apple platform or not
 /// (`apple_keyboard`).
 fn start_on(doc: Value, os: Os, apple_keyboard: bool) -> Headless {
+    start_with(doc, os, apple_keyboard, Idiom::Desktop)
+}
+
+/// [`start_on`] in `idiom` (a phone: touch selection).
+fn start_with(doc: Value, os: Os, apple_keyboard: bool, idiom: Idiom) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(900.0)),
         // Made in the engine, so its keymaps are the platform's the engine
@@ -149,7 +195,7 @@ fn start_on(doc: Value, os: Os, apple_keyboard: bool) -> Headless {
     };
     config.environment.os = os;
     config.environment.apple_keyboard = apple_keyboard;
-    config.environment.idiom = Idiom::Desktop;
+    config.environment.idiom = idiom;
     let mut app = Headless::start(config).expect("the engine starts");
     app.wait_for("text:Ready").unwrap();
     app
@@ -164,6 +210,18 @@ fn paragraphs(texts: &[&str]) -> Value {
         })
         .collect();
     json!({"type": "doc", "content": content})
+}
+
+// ApproxTextEngine advances ASCII glyphs by 0.55 em even in a wide paragraph.
+fn text_point(app: &Headless, line: &str, offset: usize) -> Point<Points> {
+    let paragraph = app
+        .screen()
+        .layout_nodes()
+        .into_iter()
+        .find_map(|node| node.text.filter(|value| value.text.text == line))
+        .unwrap();
+    let advance = paragraph.text.spans[0].style.font_size.0 * 0.55;
+    Point::new(px(offset as f32 * advance + 1.0), px(1.0))
 }
 
 fn see(app: &mut Headless, text: &str) {
@@ -281,6 +339,84 @@ fn a_press_places_the_caret() {
     see(&mut app, "Sel 1-1");
 }
 
+/// A paragraph with a link mark that has a title.
+fn linked_doc() -> Value {
+    json!({"type": "doc", "content": [{"type": "paragraph", "content": [
+        {"type": "text", "text": "go "},
+        {"type": "text", "text": "the site", "marks": [{"type": "link", "attrs": {
+            "href": "https://example.com/site", "title": "The site"
+        }}]},
+        {"type": "text", "text": " now"}
+    ]}]})
+}
+
+/// The built-in link mark shows where it goes while the pointer rests on
+/// it, as `TextView`'s links do, and stays the editor's text: a press on
+/// it places the caret, typing in it goes into the link.
+#[test]
+fn a_link_marks_hint_shows_its_destination_and_leaves_editing_alone() {
+    let mut app = start(linked_doc());
+    // A link of its text once its hint watches it (the frame after).
+    app.wait_until("link hover listener", Duration::from_secs(5), |screen| {
+        screen.layout_nodes().iter().any(|node| {
+            node.text.as_ref().is_some_and(|text| {
+                text.text
+                    .links
+                    .iter()
+                    .any(|link| link.events.contains(EventKind::MouseEnter))
+            })
+        })
+    })
+    .unwrap();
+    app.wait_for("text:the site").unwrap();
+    app.hover("text:the site").unwrap();
+    app.wait(Duration::from_millis(600)).unwrap();
+    // The head and the rest of the URL, under the mark's title.
+    see(&mut app, "https://example.com");
+    assert!(app.shows("/site"), "the path, after the host");
+    assert!(app.shows("The site"), "the title, above the URL");
+    // A press on the link is the editor's: the caret goes before its
+    // first character (no link plugin here opens it).
+    let at = text_point(&app, "go the site now", 3);
+    app.press_at("text:go the site now", at).unwrap();
+    see(&mut app, "Sel 4-4");
+    see(&mut app, &doc("go the site now"));
+    // Typing inside the link goes into it.
+    keys(&mut app, &["right", "right"]);
+    app.type_text("id:editor", "x").unwrap();
+    see(&mut app, &doc("go thxe site now"));
+    see(
+        &mut app,
+        r#"Tree doc(paragraph("go ", link("thxe site"), " now"))"#,
+    );
+}
+
+/// The same document on a phone: no hint (a touch screen's long press is
+/// the platform's).
+#[test]
+fn a_link_mark_shows_no_hint_on_a_phone() {
+    let mut config = EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        ..EngineConfig::new(Root::new::<Harness>(|| HarnessProps {
+            session: Some(session(linked_doc())),
+        }))
+    };
+    config.environment.os = Os::Ios;
+    config.environment.idiom = Idiom::Phone;
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.wait_for("text:Ready").unwrap();
+    see(&mut app, &doc("go the site now"));
+    // No hint watches the mark there, so it is no link of its text: the
+    // pointer is over the paragraph.
+    assert!(
+        app.hover("text:go the site now").is_err(),
+        "a phone has no mouse"
+    );
+    app.wait(Duration::from_millis(600)).unwrap();
+    // `shows` compares texts as written (no selector).
+    assert!(!app.shows("https://example.com"));
+}
+
 #[test]
 fn markdown_pastes_as_blocks() {
     let mut app = start(paragraphs(&[""]));
@@ -303,6 +439,21 @@ fn a_node_view_renders_an_atom() {
     app.type_text("id:editor", "").unwrap();
     keys(&mut app, &["end", "right"]);
     see(&mut app, "Sel 8-9");
+}
+
+#[test]
+fn an_inline_node_view_follows_its_position_and_selection() {
+    let mut app = start(json!({"type": "doc", "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "ab"}]},
+        {"type": "paragraph", "content": [{"type": "text", "text": "x"}, {"type": "tag"}]}
+    ]}));
+    see(&mut app, "Tag Some(6) false");
+    // Typing in the block before moves the tag without drawing it again.
+    app.type_text("id:editor", "c").unwrap();
+    see(&mut app, &doc("cab|x@"));
+    app.press("id:tag").unwrap();
+    see(&mut app, "Sel 7-8");
+    see(&mut app, "Tag Some(7) true");
 }
 
 #[test]

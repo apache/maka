@@ -32,6 +32,7 @@ fn start(app: &str) -> (Engine, Receiver<MountBatch>) {
         minify: false,
         split: false,
         ui_sets: ui_sets.iter().map(Into::into).collect(),
+        ..Default::default()
     })
     .unwrap();
     let bytecode = nsh_js::compile_bytecode_with(
@@ -46,6 +47,7 @@ fn start(app: &str) -> (Engine, Receiver<MountBatch>) {
         app: nsh_engine::App::Js(unsafe { Bundle::bytecode(bytecode) }),
         viewport: Size::new(px(800.0), px(600.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -60,7 +62,7 @@ fn start(app: &str) -> (Engine, Receiver<MountBatch>) {
         limits: nsh_engine::Limits::default(),
         ui_sets,
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -72,6 +74,8 @@ fn start(app: &str) -> (Engine, Receiver<MountBatch>) {
         speech: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     (
         Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap(),

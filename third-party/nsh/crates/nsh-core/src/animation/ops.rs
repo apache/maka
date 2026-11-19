@@ -365,10 +365,10 @@ pub enum AnimationOp {
         node: NodeId,
         /// Source node.
         input: NodeId,
-        /// Lower bound.
-        min: f32,
-        /// Upper bound.
-        max: f32,
+        /// Lower bound: a constant or a node read at each evaluation.
+        min: Operand,
+        /// Upper bound: a constant or a node read at each evaluation.
+        max: Operand,
         /// Settles at the nearer bound when the scroll view its input
         /// follows comes to rest ([`super::Graph::settle`]): a floating bar
         /// shows or hides fully.

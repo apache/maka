@@ -26,7 +26,7 @@ use maka_model::prompt::Message;
 
 /// The event identity owns the injection. Equal text in another user message
 /// is never deduplicated or mistaken for a steering directive.
-pub(super) fn project(
+pub(crate) fn project(
     content: &MessageInput,
     resources: &super::resources::Resources<'_>,
     steering: bool,

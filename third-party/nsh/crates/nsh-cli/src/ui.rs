@@ -441,7 +441,12 @@ impl Out {
         let rest: String = rest.chars().take(room).collect();
         let frame = FRAMES[self.frame % FRAMES.len()];
         let rest = if rest.is_empty() { rest } else { dim(rest) };
-        let _ = write!(err, "\r\x1b[2K{} {label}{rest}", cyan(frame));
+        // One write, the line first and its old tail erased after: stderr is
+        // unbuffered, so a `write!` here would reach the terminal in pieces
+        // and one that clears the line first would show it blank between
+        // them (the spinner flickers).
+        let line = format!("\r{} {label}{rest}\x1b[K", cyan(frame));
+        let _ = err.write_all(line.as_bytes());
         let _ = err.flush();
         self.drawn = true;
         SPINNER_DRAWN.store(true, Ordering::SeqCst);
@@ -455,13 +460,18 @@ fn print(text: &str) {
         let _ = writeln!(log, "{text}");
         return;
     }
-    let mut err = std::io::stderr().lock();
-    out.clear(&mut err);
-    let _ = err.write_all(text.as_bytes());
+    // The cleared spinner, the text and the spinner again in one write, so
+    // the terminal never shows the line without its spinner.
+    let mut buf = Vec::with_capacity(text.len() + 128);
+    out.clear(&mut buf);
+    buf.extend_from_slice(text.as_bytes());
     if !text.ends_with('\n') {
-        let _ = err.write_all(b"\n");
+        buf.push(b'\n');
     }
-    out.draw(&mut err);
+    out.draw(&mut buf);
+    let mut err = std::io::stderr().lock();
+    let _ = err.write_all(&buf);
+    let _ = err.flush();
 }
 
 /// The terminal's width, when stderr is one.

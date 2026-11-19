@@ -70,6 +70,8 @@ impl ExecutionRoute {
 #[serde(deny_unknown_fields)]
 pub(crate) struct AcceptedModel {
     pub binding: ModelBinding,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     pub thinking_level: Option<ThinkingLevel>,
     /// Execution policy is captured at message admission. Later model settings
     /// do not reinterpret queued work.
@@ -90,14 +92,66 @@ pub(crate) struct AcceptedModel {
     model_override: Option<ModelOverride>,
     body_overlay: Option<Value>,
 }
+impl AcceptedModel {
+    pub(crate) fn selection(&self) -> ModelSelection {
+        ModelSelection {
+            connection_id: self.binding.connection_id.clone(),
+            model_id: self.binding.model.clone(),
+            service_tier: self.service_tier.clone(),
+        }
+    }
+
+    pub(crate) fn same_execution_route(&self, current: &Self) -> bool {
+        self.binding.connection_id == current.binding.connection_id
+            && self.binding.model == current.binding.model
+            && self.provider == current.provider
+            && self.route == current.route
+    }
+    /// Decodes accepted route data only; the current activation must restore its own authority.
+    pub(crate) fn from_backend(
+        backend: &maka_agent_facts::durable::BackendSpec,
+        bytes: &[u8],
+    ) -> Result<Self, RunError> {
+        let maka_agent_facts::durable::BackendSpec::Model {
+            binding,
+            descriptor,
+        } = backend
+        else {
+            return Err(RunError::InvalidInput("run backend is not a model".into()));
+        };
+        if descriptor.bytes != bytes.len() as u64
+            || descriptor.digest != maka_agent_facts::artifact::content_digest(bytes)
+        {
+            return Err(RunError::ReconciliationRequired(
+                "accepted model descriptor changed".into(),
+            ));
+        }
+        let accepted: Self = serde_json::from_slice(bytes)
+            .map_err(|error| RunError::InvalidInput(format!("invalid accepted model: {error}")))?;
+        if &accepted.binding != binding {
+            return Err(RunError::ReconciliationRequired(
+                "accepted model binding changed".into(),
+            ));
+        }
+        Ok(accepted)
+    }
+}
+
+// The fixture starts at provider observation, not recorded requests or Host authority.
+#[cfg(test)]
+pub(crate) type Observation = fn(&ModelBinding, &mut Model) -> ModelRequestContext;
+
 #[derive(Clone)]
 pub(crate) struct Credentials {
     pub executor: maka_model::ModelExecutor,
     pub refresh: Arc<oauth::Authority>,
     pub inventory: Arc<codex_inventory::Authority>,
+    #[cfg(test)]
+    pub observation: Option<Observation>,
 }
 pub(crate) struct Source {
     configuration: Arc<ConfigurationStore>,
+    pricing: Arc<dyn maka_agent_engine::pricing::Pricing>,
     credentials: Credentials,
     pub accepted: AcceptedModel,
     definition: Arc<Definition>,
@@ -105,6 +159,16 @@ pub(crate) struct Source {
     revision: SourceRevision,
 }
 impl Source {
+    pub(crate) fn for_compaction(&self, accepted: AcceptedModel) -> Result<Self, RunError> {
+        Self::restore(
+            self.configuration.clone(),
+            self.credentials.clone(),
+            accepted,
+            self.session.clone(),
+            self.revision.clone(),
+        )
+    }
+
     pub async fn select(
         configuration: Arc<ConfigurationStore>,
         catalog: Arc<maka_providers::catalog::Catalog>,
@@ -113,7 +177,7 @@ impl Source {
         thinking_level: Option<ThinkingLevel>,
         session: String,
         mut revision: SourceRevision,
-    ) -> Result<(Self, PreparedModel), RunError> {
+    ) -> Result<Self, RunError> {
         let span = tracing::warn_span!("agent_model_preparation", session_id = %session,
             connection_id = %selection.connection_id, activation = %revision.activation);
         async move {
@@ -126,7 +190,7 @@ impl Source {
                     diagnostics::configuration("selected_model_observation", &error, Some(&selection.connection_id));
                     unavailable()
                 })?
-                .ok_or_else(unavailable)?;
+                .ok_or(RunError::ModelUnavailable)?;
             drop(public_guard);
             let define = |snapshot: &maka_providers::catalog::Snapshot,
                           row: &maka_agent_facts::configuration::ConnectionCatalogEntry| {
@@ -146,6 +210,7 @@ impl Source {
             };
             let (mut public_model, mut definition) = define(&snapshot, &material.connection)?;
             let row = &material.connection;
+            let has_model = row.models.iter().any(|info| info.id == selection.model_id);
             let material = if row.provider.package_id == maka_providers::codex::ID
                 && row.provider.name == "chatgpt"
             {
@@ -154,37 +219,62 @@ impl Source {
                     connection_slug: row.slug.clone(),
                     model: selection.model_id.clone(),
                 };
-                credentials.inventory.ensure(
-                    configuration.clone(), credentials.clone(), definition.clone(),
-                    binding.clone(), &material,
-                ).await;
-                let public_guard = catalog.snapshot.read().await;
-                let current_snapshot = public_guard.as_ref().map_err(|_| unavailable())?;
-                let current = configuration.observe_selected_model(selection.clone()).await
-                    .map_err(|_| unavailable())?.ok_or_else(unavailable)?;
-                (public_model, definition) = define(current_snapshot, &current.connection)?;
-                current
+                if has_model {
+                    credentials.inventory.warm(
+                        configuration.clone(),
+                        credentials.clone(),
+                        definition.clone(),
+                        binding,
+                        &material,
+                    );
+                    material
+                } else {
+                    credentials.inventory.ensure(
+                        configuration.clone(), credentials.clone(), definition.clone(),
+                        binding, &material,
+                    ).await;
+                    let public_guard = catalog.snapshot.read().await;
+                    let current_snapshot = public_guard.as_ref().map_err(|_| unavailable())?;
+                    let current = configuration.observe_selected_model(selection.clone()).await
+                        .map_err(|_| unavailable())?.ok_or(RunError::ModelUnavailable)?;
+                    (public_model, definition) = define(current_snapshot, &current.connection)?;
+                    current
+                }
             } else {
                 material
             };
             let row = &material.connection;
+            let binding = ModelBinding {
+                connection_id: row.connection_id.clone(),
+                connection_slug: row.slug.clone(),
+                model: selection.model_id.clone(),
+            };
             let model = resolve(
                 &definition,
                 row,
                 &selection.model_id,
+                selection.service_tier.as_deref(),
                 thinking_level,
                 row.model_overrides.as_ref().and_then(|models| models.get(&selection.model_id)),
             ).await?;
+            #[cfg(test)]
+            let model = {
+                let mut model = model;
+                if let Some(observe) = credentials.observation {
+                    observe(&binding, &mut model);
+                }
+                model
+            };
             revision.name = row.provider.name.clone();
             let source = Self {
+                pricing: Arc::new(ConfigPricing(configuration.clone())),
                 configuration,
                 credentials,
                 accepted: AcceptedModel {
                     public_model,
+                    service_tier: selection.service_tier,
                     editing_tools: Some(editing_tools(row, &selection.model_id, &model.base_url)),
-                    tool_mode: ToolMode::for_model(
-                        &selection.model_id,
-                        &model.base_url,
+                    tool_mode: ToolMode::from_override(
                         row.model_overrides
                             .as_ref()
                             .and_then(|models| models.get(&selection.model_id))
@@ -194,11 +284,7 @@ impl Source {
                         .and_then(|models| models.get(&selection.model_id))
                         .and_then(|overrides| overrides.code_mode_language)
                         .unwrap_or_default(),
-                    binding: ModelBinding {
-                        connection_id: row.connection_id.clone(),
-                        connection_slug: row.slug.clone(),
-                        model: selection.model_id,
-                    },
+                    binding,
                     thinking_level,
                     provider: row.provider.clone(),
                     route: ExecutionRoute::new(&model),
@@ -210,8 +296,8 @@ impl Source {
                 session,
                 revision,
             };
-            let prepared = source.prepare(material, model).await?;
-            Ok((source, prepared))
+            source.prepare_with(material, model, false).await?;
+            Ok(source)
         }.instrument(span).await
     }
 
@@ -239,6 +325,7 @@ impl Source {
             })?);
         revision.name = accepted.provider.name.clone();
         Ok(Self {
+            pricing: Arc::new(ConfigPricing(configuration.clone())),
             configuration,
             credentials,
             accepted,
@@ -252,6 +339,23 @@ impl Source {
         material: ConnectionObservation,
         model: Model,
     ) -> Result<PreparedModel, RunError> {
+        self.prepare_with(material, model, true).await
+    }
+    async fn prepare_with(
+        &self,
+        material: ConnectionObservation,
+        model: Model,
+        refresh_credential: bool,
+    ) -> Result<PreparedModel, RunError> {
+        #[cfg(test)]
+        let (model, observed_context) = {
+            let mut model = model;
+            let context = self
+                .credentials
+                .observation
+                .map(|observe| observe(&self.accepted.binding, &mut model));
+            (model, context)
+        };
         let capabilities = model.info.capabilities.unwrap_or_default();
         if capabilities.chat == Some(false) {
             tracing::warn!(
@@ -275,34 +379,40 @@ impl Source {
             unavailable()
         })?;
         let credential = match material.credential.as_ref() {
-            Some(snapshot) if snapshot.credential().refresh_at.is_some() => Some(
-                self.credentials
-                    .refresh
-                    .bind(snapshot.clone())
-                    .map_err(|_| RunError::InvalidInput("agent_authentication_unavailable".into()))?
-                    .resolve_native(
-                        self.accepted.provider.clone(),
-                        self.definition.clone(),
-                        maka_agent_ports::provider::Context {
-                            transport: self.credentials.executor.transport(&network).map_err(
-                                |error| {
-                                    diagnostics::model(
-                                        "credential_transport",
-                                        &error,
-                                        &self.accepted.binding.connection_id,
-                                    );
-                                    unavailable()
-                                },
-                            )?,
-                            cancellation: tokio_util::sync::CancellationToken::new(),
-                            interaction: None,
-                        },
-                    )
-                    .await
-                    .map_err(|_| RunError::InvalidInput("agent_authentication_unavailable".into()))?
-                    .credential()
-                    .clone(),
-            ),
+            Some(snapshot) if refresh_credential && snapshot.credential().refresh_at.is_some() => {
+                Some(
+                    self.credentials
+                        .refresh
+                        .bind(snapshot.clone())
+                        .map_err(|_| {
+                            RunError::InvalidInput("agent_authentication_unavailable".into())
+                        })?
+                        .resolve_native(
+                            self.accepted.provider.clone(),
+                            self.definition.clone(),
+                            maka_agent_ports::provider::Context {
+                                transport: self.credentials.executor.transport(&network).map_err(
+                                    |error| {
+                                        diagnostics::model(
+                                            "credential_transport",
+                                            &error,
+                                            &self.accepted.binding.connection_id,
+                                        );
+                                        unavailable()
+                                    },
+                                )?,
+                                cancellation: tokio_util::sync::CancellationToken::new(),
+                                interaction: None,
+                            },
+                        )
+                        .await
+                        .map_err(|_| {
+                            RunError::InvalidInput("agent_authentication_unavailable".into())
+                        })?
+                        .credential()
+                        .clone(),
+                )
+            }
             Some(snapshot) => Some(snapshot.credential().clone()),
             None => None,
         };
@@ -327,6 +437,10 @@ impl Source {
             provenance.account_id = account_id;
             request_context.codex = Some(provenance);
         }
+        #[cfg(test)]
+        if let Some(context) = observed_context {
+            request_context = context;
+        }
         let credentials = self
             .definition
             .authorize(connection(row), credential, self.session.clone())
@@ -338,7 +452,14 @@ impl Source {
                     &row.connection_id,
                     &row.provider.name,
                 );
-                RunError::InvalidInput("agent_authentication_unavailable".into())
+                if matches!(
+                    error,
+                    maka_agent_ports::provider::Error::AuthenticationRequired
+                ) {
+                    RunError::AuthenticationRequired
+                } else {
+                    RunError::InvalidInput("agent_authentication_unavailable".into())
+                }
             })?;
         let auth = match credentials {
             maka_agent_ports::model::Credentials::ApiKey(key) => ProviderAuth::ApiKey(key),
@@ -377,27 +498,15 @@ fn request_context(
     model: &ModelInfo,
     overrides: Option<&ModelOverride>,
 ) -> Result<ModelRequestContext, RunError> {
-    if matches!((model.context_window, model.input_limit), (Some(capacity), Some(input)) if input > capacity)
-    {
-        tracing::warn!(stage = "request_context", cause = "input_limit_exceeds_context", connection_id = %row.connection_id, "Model preparation failed");
-        return Err(unavailable());
-    }
-    let input =
-        maka_agent_facts::context::effective_input_limit(model.context_window, model.input_limit);
     let context = ModelRequestContext {
         operation: maka_agent_facts::context::ModelOperation::Inference,
         codex: None,
         provider_id: row.provider.name.clone(),
-        context_window: input,
+        context_window: model.input_limit,
         model_context_window: model.context_window,
         declared_window: overrides
             .and_then(|profile| profile.compaction_threshold)
-            .or_else(|| {
-                maka_agent_facts::context::default_compaction_threshold(
-                    model.context_window,
-                    model.input_limit,
-                )
-            }),
+            .or_else(|| maka_agent_facts::context::default_compaction_threshold(model.input_limit)),
     };
     context.validate().map_err(|_| {
         tracing::warn!(stage = "request_context", cause = "request_context_invalid", connection_id = %row.connection_id, "Model preparation failed");
@@ -445,11 +554,17 @@ impl Source {
                     &material,
                 )
                 .await;
-            self.configuration
+            let observed = self
+                .configuration
                 .observe_model(self.accepted.binding.clone())
                 .await
                 .map_err(|_| unavailable())?
-                .ok_or_else(unavailable)?
+                .ok_or_else(unavailable)?;
+            self.credentials
+                .inventory
+                .settle(&observed, &self.accepted.binding.model)
+                .await;
+            observed
         } else {
             material
         };
@@ -466,10 +581,19 @@ impl Source {
             &self.definition,
             row,
             &self.accepted.binding.model,
+            self.accepted.service_tier.as_deref(),
             self.accepted.thinking_level,
             self.accepted.model_override.as_ref(),
         )
         .await?;
+        #[cfg(test)]
+        let model = {
+            let mut model = model;
+            if let Some(observe) = self.credentials.observation {
+                observe(&self.accepted.binding, &mut model);
+            }
+            model
+        };
         if !self.accepted.route.matches(&model) {
             tracing::warn!(
                 stage = "accepted_model_observation",
@@ -493,6 +617,7 @@ impl Source {
                         &self.definition,
                         &material.connection,
                         &self.accepted.binding.model,
+                        self.accepted.service_tier.as_deref(),
                         Some(level),
                         self.accepted.model_override.as_ref(),
                     )
@@ -550,6 +675,7 @@ pub(crate) async fn candidate_editing_tools(
         &definition,
         row,
         &selection.model_id,
+        selection.service_tier.as_deref(),
         thinking_level,
         row.model_overrides
             .as_ref()
@@ -577,11 +703,13 @@ async fn resolve(
     definition: &Definition,
     row: &maka_agent_facts::configuration::ConnectionCatalogEntry,
     model: &str,
+    service_tier: Option<&str>,
     thinking_level: Option<ThinkingLevel>,
     overrides: Option<&ModelOverride>,
 ) -> Result<Model, RunError> {
     definition
         .prepare(Resolve {
+            service_tier: service_tier.map(str::to_owned),
             connection: connection(row),
             model: row
                 .models
@@ -614,37 +742,65 @@ fn unavailable() -> RunError {
     RunError::InvalidInput("agent_model_unavailable".into())
 }
 
-/// Capture the actual Root rate decision for every physical provider request.
-pub(crate) struct Prices(pub Arc<ConfigurationStore>);
-impl maka_agent_engine::pricing::Pricing for Prices {
+struct ConfigPricing(Arc<ConfigurationStore>);
+impl maka_agent_engine::pricing::Pricing for ConfigPricing {
     fn quote<'a>(
         &'a self,
         provider: &'a str,
         model: &'a str,
     ) -> BoxFuture<'a, Result<maka_agent_facts::pricing::Quote, RunError>> {
-        Box::pin(
-            async move {
-                self.0
-                    .quote_model(provider.into(), model.into())
-                    .await
-                    .map_err(|error| {
-                        diagnostics::configuration("model_pricing", &error, None);
-                        match error {
-                            maka_config::ConfigError::CommitUnknown => {
-                                maka_agent_facts::event::CommitError::OutcomeUnknown(
-                                    error.to_string(),
-                                )
-                                .into()
-                            }
-                            _ => RunError::Internal("model pricing unavailable".into()),
-                        }
-                    })
-            }
-            .instrument(tracing::warn_span!(
-                "agent_model_pricing",
-                provider,
-                model_id = model
-            )),
-        )
+        Box::pin(async move {
+            self.0
+                .quote_model(provider.to_owned(), model.to_owned())
+                .await
+                .map_err(|error| {
+                    diagnostics::configuration("model_pricing", &error, None);
+                    RunError::Internal(format!("model pricing snapshot unavailable: {error}"))
+                })
+        })
+    }
+}
+impl Source {
+    pub(crate) fn with_pricing(
+        mut self,
+        pricing: Arc<dyn maka_agent_engine::pricing::Pricing>,
+    ) -> Self {
+        self.pricing = pricing;
+        self
+    }
+    pub(crate) async fn quote(
+        &self,
+        prepared: &PreparedModel,
+    ) -> Result<maka_agent_facts::pricing::Quote, RunError> {
+        self.pricing
+            .quote(&prepared.provider_id, &prepared.provider.model)
+            .await
+    }
+}
+
+pub(crate) fn inference_outcome(
+    error: &maka_model::ModelError,
+) -> maka_agent_facts::accounting::Outcome {
+    use maka_agent_facts::{
+        accounting::Outcome,
+        model::error::{ModelError, ProviderFailureReason},
+    };
+    match error {
+        ModelError::Cancelled | ModelError::LocalAuthorization(_) => Outcome::Aborted,
+        ModelError::Http { .. }
+        | ModelError::ContextOverflow { .. }
+        | ModelError::ImageInputPayloadTooLarge { .. }
+        | ModelError::ImageInputRejected { .. } => Outcome::Error,
+        ModelError::Provider(failure) => match failure.reason() {
+            ProviderFailureReason::RateLimit
+            | ProviderFailureReason::QuotaExhausted
+            | ProviderFailureReason::ProviderUnavailable => Outcome::Error,
+            ProviderFailureReason::Network
+            | ProviderFailureReason::TimedOut
+            | ProviderFailureReason::StreamTruncated => Outcome::Unknown,
+        },
+        ModelError::Adapter(_) | ModelError::TimedOut | ModelError::CleanupUnconfirmed => {
+            Outcome::Unknown
+        }
     }
 }

@@ -6,7 +6,7 @@ order: 2
 
 # nsh
 
-`nsh` 是核心模块：响应式 API（signal、computed、effect、context）、`mount`、`token`、`setTheme`、宿主元素 `View`、`Text`、`Scroll` 和 `Overlay`，[可选择的视图](#selectable-views)、[安全区域与键盘](#safe-area-and-keyboard)，[动画](#animation)、[设备与环境](#device)、[`PanResponder`](#panresponder)、[剪贴板](#clipboard)、[照片选择器](#picker)、[语音识别](#speech)、[声音](#sound)、[存储](#storage)、[宿主通道](#host)、[键盘快捷键](#keymap)、[原生组件与模块](#nativecomponent-and-nativemodule)、[无障碍](#accessibility)，以及元素、样式和事件的 TypeScript 类型。响应式图本身以 Rust 原生运行；读取一个 signal 是一次对运行时的调用，只需几纳秒，只有你自己写的闭包会在 JavaScript 解释器中执行。
+`nsh` 是核心模块：响应式 API（signal、computed、effect、context）、`mount`、`token`、`setTheme`、宿主元素 `View`、`Text`、`Scroll` 和 `Overlay`，[可选择的视图](#selectable-views)、[安全区域与键盘](#safe-area-and-keyboard)，[动画](#animation)、[设备与环境](#device)、[`PanResponder`](#panresponder)、[剪贴板](#clipboard)、[照片选择器](#picker)、[分享面板](#share)、[语音识别](#speech)、[声音](#sound)、[存储](#storage)、[宿主通道](#host)、[键盘快捷键](#keymap)、[原生组件与模块](#nativecomponent-and-nativemodule)、[无障碍](#accessibility)，以及元素、样式和事件的 TypeScript 类型。响应式图本身以 Rust 原生运行；读取一个 signal 是一次对运行时的调用，只需几纳秒，只有你自己写的闭包会在 JavaScript 解释器中执行。
 
 ```ts
 import { batch, cleanup, computed, context, effect, ErrorBoundary, mount, Overlay, Scroll, signal, split, Text, token, untracked, View } from "nsh";
@@ -283,7 +283,8 @@ interface Theme {
 它立即生效：调用之后 `token()` 马上读到新的令牌，引用令牌的类名、`nsh/base` 和 Rust 组件的 `theme()` 在下一帧跟上，两种外观都是。
 嵌入方应用的[主题覆盖](../docs/tailwind.md#主题-token)仍然优先于它。传 `null` 恢复应用构建时的主题。
 
-主题要整个读得懂：有值读不懂时（NSH 不认识的颜色，如 `#zz` 或 `lab()`；指不到颜色的 `var()`；或一种外观下是颜色、另一种外观下却不是颜色的值），
+主题要整个读得懂：有值读不懂时（NSH 不认识的颜色，如 `#zz`、`lab()` 或 `rgb(255 0 0)garbage`；
+指不到颜色的 `var()`；或一种外观下是颜色、另一种外观下却不是颜色的值），
 `setTheme` 抛出 `TypeError`，逐一列出这些值，正在显示的主题保持不变。阴影这类不属于任何令牌类型的值会被略过，和 `nsh.json`
 的主题一样。新主题请从应用自己的主题出发，只改不同的部分，这样类名引用的令牌都还有值（`up` 在 `nsh.json` 的主题里时的 `bg-up`）。
 Rust：对 `nsh_base::Theme` 调用 `set_tokens(theme.into())`（[主题 token](../docs/tailwind.md#主题-token)）。
@@ -300,6 +301,36 @@ function brand(color: string) {
 
 brand("#e11d48");
 setTheme(null); // 恢复应用的主题
+```
+
+## appInfo
+
+```ts
+function appInfo(): AppInfo;
+
+interface AppInfo {
+  readonly id: string | null;
+  readonly name: string | null;
+  readonly version: string | null;
+  readonly build: number | null;
+  readonly development: boolean;
+}
+```
+
+应用构建时的信息：id、名称、版本号、构建号，以及是否为开发构建。打包产物报告的是 `nsh package`、`nsh publish` 给包的
+名称和版本（包括 `--id`、`--name`、`--version`、`--build`），没有给出时版本为 `1.0.0`、构建号为 `1`；其他构建报告
+`nsh.json` 的 `"id"`、`"name"`、`"version"` 和 `"build"`，没有的项为 `null`。`nsh run`、`nsh dev`、`nsh test` 和不带
+`--release` 的 `nsh build` 是开发构建；`nsh package`、`nsh publish` 和 `nsh build --release` 不是。在任何平台、任何模块中
+都能读取，包括模块顶层的代码：构建会在应用的模块运行之前把这些信息交给运行时。
+
+安装的应用本体的版本见 `nsh/updater` 的 [`shellInfo()`](./nsh-updater.md#shellinfo)。
+
+```tsx
+import { appInfo, Text } from "nsh";
+
+const { version, build, development } = appInfo();
+
+export const About = () => <Text>{`${version} (${build})${development ? " · dev" : ""}`}</Text>;
 ```
 
 ## View、Text、Scroll、Overlay
@@ -491,7 +522,7 @@ class AnimatedNode {
     extrapolateRight?: Extrapolation;
     easing?: Easing;
   }): AnimatedNode;
-  diffClamp(min: number, max: number, options?: { snap?: boolean }): AnimatedNode;
+  diffClamp(min: number | AnimatedNode, max: number | AnimatedNode, options?: { snap?: boolean }): AnimatedNode;
   add(b: AnimatedNode | number): AnimatedNode;
   sub(b: AnimatedNode | number): AnimatedNode;
   mul(b: AnimatedNode | number): AnimatedNode;
@@ -507,7 +538,7 @@ type Extrapolation = "extend" | "clamp" | "identity";
 | 方法 | Rust | 说明 |
 |---|---|---|
 | `interpolate(config)` | `interpolate(&input, &output)`、`interpolate_colors(&input, &colors)`、`interpolate_with(&input, output, Interpolation { … })` | 按分段区间映射输入。`outputRange` 可以是数字、颜色（`"#ff0000"`、`"rgba(…)"`）或角度（`"45deg"`、`"1rad"`）。超出 `inputRange` 时默认钳制（clamp）；`extrapolate`（或 `extrapolateLeft` / `extrapolateRight`）可以是 `"extend"`（沿直线延伸）、`"clamp"` 或 `"identity"`（直接输出输入值）。`easing` 决定每一段的曲线。Rust 接受数字、主题颜色（跟随外观）以及供 `bind_rotate` 使用的角度（度）。 |
-| `diffClamp(min, max, options?)` | `diff_clamp(min, max)`、`diff_clamp_with(min, max, DiffClamp::snapping())` | 跟随输入的变化量，但把结果限制在 `min..max` 内：内容向上滚动时隐藏、一旦向下滚动就重新出现的标题栏。`snap: true` 让它在滚动视图停下时用 200 ms 停到较近的一端；只有输入达到 `max` 后才会停在 `max`。 |
+| `diffClamp(min, max, options?)` | `diff_clamp(min, max)`、`diff_clamp_with(min, max, DiffClamp::snapping())` | 跟随输入的变化量，但把结果限制在 `min..max` 内：内容向上滚动时隐藏、一旦向下滚动就重新出现的标题栏。`snap: true` 让它在滚动视图停下时用 200 ms 停到较近的一端；只有输入达到 `max` 后才会停在 `max`。上下限可以是数字或动画值。 |
 | `add`、`sub`、`mul`、`div` | `add`、`sub`、`mul`、`div` | 与另一个节点或常量做算术运算。 |
 | `mod(b)` | `modulo(b)` | 取模，`b` 为正时结果不会为负（比如把角度保持在 0..360）。 |
 
@@ -588,6 +619,7 @@ interface MotionOptions extends MotionPlayOptions {
 }
 
 interface MotionPlayOptions extends KeyframeTiming {
+  spring?: MotionSpring;             // 用这个弹簧播放每个通道
   ignoreReduceMotion?: boolean;      // 即使用户要求减少动态效果也照常播放
 }
 
@@ -644,8 +676,10 @@ type MotionChannel = "opacity" | "translateX" | "translateY" | "rotate" | "rotat
 
 interface MotionSpec extends KeyframeTiming {
   keyframes: { [C in MotionChannel]?: KeyframeValue[] } | MotionFrame[];
+  spring?: MotionSpring;
   ignoreReduceMotion?: boolean;
 }
+type MotionSpring = { stiffness?: number; damping?: number; mass?: number };   // 170、26、1
 type MotionFrame = { [C in MotionChannel]?: number | string } & { offset?: number; easing?: Easing };
 
 interface MotionPreset extends MotionSpec {
@@ -656,6 +690,22 @@ interface MotionPreset extends MotionSpec {
 现成的动效，以数据形式提供：`motion.play("shake")` 播放的就是 `motions.shake`。`MotionName` 是以下之一：`fadeIn`、`fadeInUp`、`fadeInDown`、`fadeInLeft`、`fadeInRight`、`zoomIn`、`popIn`、`bounceIn`、`slideInUp`、`slideInDown`、`flipInX`、`flipInY`（入场）；`fadeOut`、`fadeOutUp`、`fadeOutDown`、`fadeOutLeft`、`fadeOutRight`、`zoomOut`、`popOut`、`slideOutDown`、`slideOutUp`（退场）；`shake`、`headShake`、`wiggle`、`swing`、`pulse`、`heartbeat`、`rubberBand`、`jello`、`tada`、`jump`、`flash`（吸引注意）；`spin`、`float`、`breathe`、`sway`、`bob`、`glow`（循环）。[动画](../docs/animation.md#预设)逐一介绍了它们。展开一个预设即可修改它：`motion.play({ ...motions.fadeInUp, duration: 600 })`。
 
 `MotionSpec` 是你自己的动效：按通道写的关键帧（`{ opacity: [0, 1], translateY: [24, 0] }`），或像 Web Animations API 那样写的一组帧（`[{ opacity: 0, translateY: 24 }, { opacity: 1, translateY: 0 }]`，没有 offset 的帧按它在列表中的位置排布），再加上[关键帧的时间参数](#关键帧)。Rust：`MotionSpec::new(KeyframeTiming)` 配合 `.values(channel, values)`（均匀分布）、`.track(channel, keyframes)` 和 `.timing(|t| …)`；`MotionPreset::FadeInUp`（或 `.spec()`）是一个预设，`MotionChannel` 命名各通道。
+
+设置 `spring` 后，每个通道从当前所在的位置以弹簧运动到它的关键帧终点，而不是逐帧经过各关键帧：打断另一个动效时，会从那个动效留下的值和速度继续，而关键帧动效会从第一帧重新开始。第一个关键帧仍是 `enter` 让视图起步的位置；`delay` 在弹簧开始前等待，`direction: "reverse"` 让弹簧运动到第一个关键帧，中间的关键帧以及 `duration`、`easing`、`iterations` 不参与。刚度、阻尼和质量与 `Animated.spring` 的相同（默认 170、26、1）。Rust：在 `MotionSpec` 上调用 `.spring(Spring { stiffness, damping, ..Spring::default() })`。用户要求减少动态效果时，弹簧动效和其他动效一样立即落在终点。
+
+```rust tabs
+let spring = Spring { stiffness: 620.0, damping: 36.0, ..Spring::default() };
+let sheet = motion().entering(MotionPreset::SlideInUp.spec().spring(spring));
+// 还在上升时就被收起：从当前位置掉头，保留原有的速度。
+let _ = sheet.play(MotionPreset::SlideOutDown.spec().spring(spring));
+```
+
+```tsx tabs
+const spring = { stiffness: 620, damping: 36 };
+const sheet = createMotion({ enter: "slideInUp", spring });
+// 还在上升时就被收起：从当前位置掉头，保留原有的速度。
+sheet.play("slideOutDown", { spring });
+```
 
 ```rust tabs
 let rise = MotionSpec::new(KeyframeTiming::new(400.0))
@@ -831,11 +881,15 @@ interface LayoutAnimationConfig {
 }
 
 interface LayoutAnimationAnimation {
-  type?: "easeInEaseOut" | "spring" | "linear" | "easeIn" | "easeOut" | "keyboard";
+  type?: "easeInEaseOut" | "spring" | "linear" | "easeIn" | "easeOut" | "keyboard" | "bezier";
   property?: "opacity" | "scaleXY" | "scale";
   duration?: number;
   delay?: number;
-  springDamping?: number;          // 0..1，默认 0.7
+  springDamping?: number;          // 0..1，默认 0.7：按 `duration` 拟合的弹簧
+  stiffness?: number;              // 物理弹簧（默认 170）：持续到停稳为止
+  damping?: number;                // 阻尼系数（默认 26）
+  mass?: number;                   // 质量（默认 1）
+  bezier?: [number, number, number, number];
 }
 ```
 
@@ -915,6 +969,24 @@ const wide = () => windowSize().width >= 600;
 <View style={{ flexDirection: wide() ? "row" : "column" }}>{/* ... */}</View>
 ```
 
+### horizontalSizeClass / verticalSizeClass
+
+```ts
+export type SizeClass = "compact" | "regular";
+const horizontalSizeClass: Accessor<SizeClass>;
+const verticalSizeClass: Accessor<SizeClass>;
+```
+
+读取窗口横向和纵向可用空间的响应式分类。iOS 使用当前视图的 UIKit trait collection，随旋转和分屏变化；系统尚未提供分类时按窗口尺寸回退。其他平台（含桌面、Android 和 Web）分别按窗口的宽、高判断：小于 600pt 为 `compact`，600pt 及以上为 `regular`。横向阈值与 DockArea 一致；Android 的点对应 dp，Web 对应 CSS 像素。分类变化时才通知读取者。
+
+Rust：`horizontal_size_class()` / `vertical_size_class()` 返回 `SizeClass::Compact` 或 `SizeClass::Regular`，由 `nsh_core::prelude` 导出。
+
+```tsx
+import { horizontalSizeClass, Text } from "nsh";
+
+<Text>{horizontalSizeClass() === "compact" ? "Compact layout" : "Expanded layout"}</Text>
+```
+
 ### colorScheme
 
 ```ts
@@ -981,7 +1053,7 @@ interface LocaleSettings {
 const lifecycle: Accessor<"active" | "inactive" | "background">;
 ```
 
-应用是否正在使用，与 React Native 的 `AppState` 含义相同：`"active"` 表示在前台并接收输入；`"inactive"` 表示仍可见但没有焦点（焦点在另一个应用或窗口上，或系统在它上面显示了内容，例如应用切换器或来电）；`"background"` 表示不可见（在后台、已最小化、浏览器中隐藏的标签页）。显示在原生应用中的应用跟随该应用的状态。响应式。Rust：`lifecycle() -> Lifecycle`（`Lifecycle::Active`、`Inactive`、`Background`）。
+应用是否正在使用，与 React Native 的 `AppState` 含义相同：`"active"` 表示在前台并接收输入；`"inactive"` 表示仍可见但没有焦点（焦点在另一个应用或窗口上，或系统在它上面显示了内容，例如应用切换器或来电）；`"background"` 表示不可见（在后台、已最小化、浏览器中隐藏的标签页、浏览器保存在往返缓存中的页面，直到用户回到它）。显示在原生应用中的应用跟随该应用的状态。响应式。Rust：`lifecycle() -> Lifecycle`（`Lifecycle::Active`、`Inactive`、`Background`）。
 
 在 effect 中读取它，即可暂停无人可见的工作，并在应用回来时恢复：
 
@@ -999,6 +1071,28 @@ effect(move || {
 effect(() => {
   if (lifecycle() === "background") feed.pause();
   else feed.resume();
+});
+```
+
+### wakeCount
+
+```ts
+const wakeCount: Accessor<number>;
+```
+
+应用运行期间系统从睡眠中唤醒的次数：启动时为 0，每次唤醒后加一。睡眠可能让 `lifecycle()` 保持不变（笔记本合上再打开、应用一直在前台），但网络连接和定时器并没有挺过这次睡眠。响应式：读取它的 effect 会在每次唤醒后重新运行，应用就在这里检查连接或重新建立连接。macOS、Windows 和 Linux 统计唤醒；在 iOS 和 Android 上，设备睡眠会把应用移到后台，由 `lifecycle()` 报告。Rust：`wake_count() -> u32`。
+
+```rust tabs
+effect(move || {
+    if wake_count() > 0 {
+        feed.reconnect();
+    }
+});
+```
+
+```tsx tabs
+effect(() => {
+  if (wakeCount() > 0) feed.reconnect();
 });
 ```
 
@@ -1021,6 +1115,48 @@ function setFpsEnabled(enabled: boolean): void;
 
 ```tsx
 <Switch checked={fpsEnabled()} onChange={({ checked }) => setFpsEnabled(checked)} />
+```
+
+### setFpsMode
+
+```ts
+function setFpsMode(mode: "expanded" | "collapsed" | "hidden"): void;
+```
+
+性能监视器的显示方式，立即生效，之后再显示时也照此显示：`"expanded"`，完整的面板（默认）；`"collapsed"`，只显示帧率的小药丸，颜色按帧预算区分；`"hidden"`，屏幕上不显示任何东西，但照常测量并记录日志。点击面板会在前两种之间切换。macOS 的面板支持它（见 [macOS](../docs/macos.md#性能监视器)）；没有面板的平台忽略它，Linux 的面板点击可以收起，但暂不支持这个设置。`NSH_FPS=collapsed` 或 `NSH_FPS=hidden` 让监视器以这种方式启动。Rust：`set_fps_mode(FpsMode::Collapsed)`。
+
+### perfStats
+
+```ts
+const perfStats: Accessor<PerfStats | null>;
+
+interface PerfStats {
+  readonly fps: number;
+  readonly refreshRate: number | null;
+  readonly dropped: number;
+}
+```
+
+监视器最近一秒测得的数据：监视器测量时（`fpsEnabled()`）每秒读一次，不测量时以及测满第一秒之前为 `null`，应用可以按自己的样式显示它。`fps` 是每秒显示的帧数：空闲的应用读数偏低，这不代表慢（只有应用有变化的屏幕刷新才计数）。`refreshRate` 是屏幕的刷新率（Hz），监视器见到刷新之前为 `null`；`dropped` 是最近的帧里耗时超过一次刷新的比例，0 到 1（`0.05` 即 5%；Rust 中是 `Percentage`，同样是这个比例）。无头测试也会测量，但不绘制帧，读数为 0 fps。Rust：`perf_stats() -> Option<PerfStats>`。
+
+```tsx
+<If when={perfStats()}>
+  <Text>{`${Math.round(perfStats()!.fps)} FPS`}</Text>
+</If>
+```
+
+### shadersAvailable
+
+```ts
+const shadersAvailable: Accessor<boolean>;
+```
+
+平台能否绘制 shader 视图（`Shader`、`ShaderEffect`、`ShaderTransition`、`ScreenEffect`、`ScreenTransition`），响应式。在 iOS、Android、macOS、Windows、Linux、GPUI、Web 和无头测试中为 `true`；在终端中、以及关闭 `shader` 特性构建的应用中为 `false`。它从 `true` 开始，当第一个 shader 挂载、而 NSH 打不开这台机器的 GPU 时（例如浏览器没有 WebGL 2）变为 `false`，之后不再变回；所以在它为真时显示 shader，否则显示应用自己的绘制（见 [Shader](../elements/shader.md#shader-能否绘制)）。Rust：`shaders_available() -> bool`。
+
+```tsx
+<If when={shadersAvailable()} else={<Image src={backdrop} style={{ flex: 1 }} />}>
+  <Shader source={BACKDROP} style={{ flex: 1 }} />
+</If>
 ```
 
 ### platform
@@ -1071,10 +1207,11 @@ interface PlatformSelectSpec<T> {
   desktop?: T;  // platform.desktop 为 true：macOS、Windows、Linux、桌面浏览器，以及终端
   native?: T;   // 除 Web 外的所有平台
   default?: T;
+  [platform: string]: T | undefined; // 在 NSH 之外构建的平台，按其 platform.name 匹配
 }
 ```
 
-依次返回当前操作系统（`ios`、`android`、`web` 等）对应的值，否则按 `platform.desktop` 取 `desktop` 或 `mobile`，否则 `native`（除 Web 外的所有平台），否则 `default`，都没有则返回 `undefined`。Rust 代码对 `os()` 做 `match`（`mobile` / `desktop` 用 `is_desktop()`）。
+依次返回 `platform.name`（在 NSH 之外构建的平台）对应的值，否则当前操作系统（`ios`、`android`、`web` 等）对应的值，否则按 `platform.desktop` 取 `desktop` 或 `mobile`，否则 `native`（除 Web 外的所有平台），否则 `default`，都没有则返回 `undefined`。Rust 代码对 `os()` 做 `match`（配合 `platform_name()` 和 `is_desktop()`）。
 
 ```rust tabs
 use nsh_core::platform::Os;
@@ -1155,7 +1292,7 @@ button()
 </Button>
 ```
 
-- URL 必须是绝对地址（带 scheme）。会执行代码或访问应用自身数据的 URL，即 `javascript:`、`data:`、`blob:`、`file:`、`about:` 和 `asset:`，以及相对地址，会让 Promise 以 `TypeError` reject。`openUrl` 从不抛出：所有失败都以 reject 报告。
+- URL 必须是绝对地址（带 scheme）。会执行代码或访问应用自身数据的 URL，即 `javascript:`、`data:`、`blob:`、`file:`、`about:` 和 `asset:`，以及相对地址和文件路径（Windows 上的 `C:/…`），会让 Promise 以 `TypeError` reject。`openUrl` 从不抛出：所有失败都以 reject 报告。
 - 声明了能力的应用需要 `openUrl`：`"openUrl": true` 允许所有 scheme，`"openUrl": { "schemes": ["https", "mailto"] }` 只允许列出的 scheme；其他 URL 以一个 `Error` reject，其 `code` 为 `"ERR_ACCESS_DENIED"`，`permission` 为 `"openUrl"`，`resource` 为该 URL（见[沙箱与能力](../docs/sandbox-and-capabilities.md)）。在 Rust 中，`open_url` 对这些 URL 回答 `false`，并在日志中说明原因。
 - 嵌入它的应用先看到这个 URL，可以改由自己的路由处理（Swift `NshAppView.onOpenURL`、Java `NshView.setOpenUrlHandler`、Rust `AppView::host().handle_open_url`；见 [iOS](../docs/ios.md#应用打开的链接) 和 [Android](../docs/android.md#应用打开的链接)），此时 `opened` 为 `true`。
 - 各平台用自己的方式打开：iOS 用 `UIApplication.open`（嵌入时是宿主应用的 application），Android 用 `ACTION_VIEW` Intent，macOS 用 `NSWorkspace`，Windows 用 `ShellExecuteW`，Linux 用 `GtkUriLauncher`，GPUI 用它的 `open_url`，Web 在新标签页中打开。`nsh test` 记录这些 URL，而不真正打开。
@@ -1383,6 +1520,7 @@ import { Clipboard } from "nsh";
 ```ts
 const Clipboard: {
   writeText(text: string): Promise<void>;
+  write(item: ClipboardItem): Promise<void>;
   readText(): Promise<string>;
   hasText(): Promise<boolean>;
   writeImage(src: string): Promise<void>;
@@ -1390,6 +1528,11 @@ const Clipboard: {
   hasImage(): Promise<boolean>;
   readFiles(): Promise<string[]>;
 };
+
+interface ClipboardItem {
+  text: string; // 纯文本形式的内容
+  html?: string; // 同一内容的 HTML 形式
+}
 
 interface ClipboardImage {
   url: string; // Image 能显示、fetch 能读取的 URL
@@ -1400,6 +1543,7 @@ interface ClipboardImage {
 | TS | Rust（`nsh_core::prelude`） |
 |---|---|
 | `await Clipboard.writeText(text)` | `set_clipboard(text)` |
+| `await Clipboard.write({ text, html })` | `set_clipboard_item(item)`（一个 `ClipboardItem`） |
 | `await Clipboard.readText()` | `clipboard_string().await -> String` |
 | `await Clipboard.hasText()` | `clipboard_has_string().await -> bool` |
 | `await Clipboard.writeImage(src)` | `set_clipboard_image(src)` |
@@ -1452,6 +1596,39 @@ const copied = signal(false);
 >
   <Text>{copied() ? "已复制" : "复制"}</Text>
 </View>;
+```
+
+### Clipboard.write
+
+```ts
+write(item: ClipboardItem): Promise<void>;
+```
+
+把同一内容的纯文本和 HTML 一起放到剪贴板上，替换原有内容，和浏览器复制选区的做法一样：能读格式的应用（邮件、文档、富文本编辑器）
+粘贴 HTML，其他应用粘贴文本。`html` 是一个片段（`<p>Hello <b>world</b></p>`），不是整个页面。不给 `html` 时等同于
+`writeText(text)`。Rust：`set_clipboard_item(item)`，参数是一个 `ClipboardItem`。
+
+`ClipboardItem` 是剪贴板上的一项内容，带有几种格式，和 GPUI 的 `ClipboardItem` 一样；在 NSH 中它是一个列出各格式的普通对象
+`{ text, html? }`，只是一个类型（浏览器的 `ClipboardItem` 类仍归页面所用）。一项内容的所有格式在一次写入中放上剪贴板，剪贴板以后支持的格式也加入同一项。
+
+HTML 以各平台的 HTML 类型和文本在同一次写入中放上剪贴板：Web 和 Linux 是 `text/html`，macOS 和 iOS 是 `public.html`，
+Android 是 HTML 剪贴项，Windows 是 `HTML Format`。GPUI 和终端写入文本。在 Web 上，处理用户按键或按下时发起的写入（例如
+`RichEditor` 的复制）经由页面的 copy 事件完成，和浏览器复制选区一样。`Clipboard.readText` 读回的是文本；HTML 由粘贴读取
+（`onPaste` 的 `html`）。
+
+```rust tabs
+use nsh_core::prelude::*;
+
+let mut item = ClipboardItem::default();
+item.text = "Hello world".into();
+item.html = Some("<p>Hello <b>world</b></p>".into());
+set_clipboard_item(item);
+```
+
+```tsx tabs
+import { Clipboard } from "nsh";
+
+await Clipboard.write({ text: "Hello world", html: "<p>Hello <b>world</b></p>" });
 ```
 
 ### Clipboard.readText
@@ -1599,7 +1776,7 @@ hasImage(): Promise<boolean>;
 writeImage(src: string): Promise<void>;
 ```
 
-把 `src`（base64 `data:` URL，或 `readImage` 给的 `url`）的图片放到剪贴板上，替换原有内容。Rust：`set_clipboard_image(src)`。Windows 上接受 PNG，这是浏览器、Office 和截图工具读取的格式。Android 上以 `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` 拒绝。
+把 `src`（base64 `data:` URL，或 `readImage` 给的 `url`）的图片放到剪贴板上，替换原有内容。Rust：`set_clipboard_image(src)`。Windows 上接受 PNG，这是浏览器、Office 和截图工具读取的格式。Web 上图片以 PNG 放到剪贴板，这是浏览器写入的图片格式；其他格式的图片同时原样放上去：作为 HTML（`<img>`，粘贴时在 `html` 里），在 Chromium 系浏览器中还作为原图，`readImage` 读回的就是它，所以 GIF 保留动画。Android 上以 `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` 拒绝。
 
 ```rust tabs
 set_clipboard_image(image.url.clone());
@@ -1669,10 +1846,15 @@ interface PickFilesOptions {
   multiple?: boolean; // 允许选择多个（false：一个）
   limit?: number; // multiple 时最多选几个（最多 100）
   filters?: { name: string; extensions: string[] }[]; // 提供的文件类型（不给：任意文件）
+  maxSize?: number; // 读入的最大文件，单位字节（不给时 512 MiB，也是上限）
 }
 
 interface PickedFile {
-  file: File; // 名称、类型、字节大小和内容，都保持原样
+  file: File | null; // 名称、类型、字节大小和内容，都保持原样；没读入时为 null
+  name: string;
+  type: string;
+  size: number; // 字节数，读没读都有
+  status: "read" | "tooLarge"; // "tooLarge"：超过 maxSize，内容没有读入
 }
 
 interface PickImagesOptions {
@@ -1693,6 +1875,8 @@ interface PickedImage {
 |---|---|
 | `await Picker.pickImages(options)` | `pick_images(request).await -> Vec<PickedFile>` |
 | `await Picker.pickFiles(options)` | `pick_files(request).await -> Vec<PickedFile>` |
+| `maxSize` | `FilePickRequest::new(multiple, limit).max_size(10 << 20)` |
+| `picked.status`、`.size` | `file.status`（`PickedStatus::TooLarge`）、`file.len` |
 | `multiple`、`limit` | `PickRequest::new(multiple, limit)`（`limit` 为 0 表示最多 100） |
 | `maxDimension` | `request.max_dimension = Some(DevicePixels(2048))` |
 | `quality` | `request.quality = Some(Percentage(0.8))` |
@@ -1815,8 +1999,13 @@ pickFiles(options?: PickFilesOptions): Promise<PickedFile[]>;
 const picked = await Picker.pickFiles({
   multiple: true,
   filters: [{ name: "文档", extensions: ["pdf", "md"] }],
+  maxSize: 10 * 1024 * 1024,
 });
-for (const { file } of picked) {
+for (const { file, name } of picked) {
+  if (!file) {
+    showError(`${name} 超过 10 MB`);
+    continue;
+  }
   const form = new FormData();
   form.append("document", file);
   await fetch("https://api.example.com/documents", { method: "POST", body: form });
@@ -1825,7 +2014,7 @@ for (const { file } of picked) {
 
 | 平台 | 选择器 | 过滤器 |
 |---|---|---|
-| macOS | `NSOpenPanel` 表单 | 所有扩展名合为一组 |
+| macOS | `NSOpenPanel`：应用窗口上的表单；该窗口不可见时（如托盘应用隐藏的主窗口）在最前面单独显示 | 所有扩展名合为一组 |
 | Windows | `IFileOpenDialog` | 每个过滤器一个选项，显示其名称 |
 | Linux | `GtkFileDialog`（有 portal 时用 portal 的） | 每个过滤器一个选项，显示其名称 |
 | iOS | `UIDocumentPickerViewController`，以副本形式 | 所有扩展名合为一组 |
@@ -1833,8 +2022,9 @@ for (const { file } of picked) {
 | Web | `<input type=file>` | 所有扩展名合为一组 |
 | GPUI | GPUI 的打开对话框，可选任意文件 | 不符合的文件在选择后被剔除 |
 
-所有平台都不需要权限。文件保持原样：不做转换，文件名不变。文件内容会全部读入内存，因此超过 512 MiB 的文件不会出现在
-结果中，并记录到日志。过滤器只决定选择器提供什么，并不保证结果：请检查拿到的文件。
+所有平台都不需要权限。文件保持原样：不做转换，文件名不变。文件内容会全部读入内存，最多读到 `maxSize`（不给时 512 MiB，
+给了也不超过它）：更大的文件不读入，只带回名称、类型和大小（`file` 为 null，`status` 为 `"tooLarge"`），应用可以据此提示
+用户。过滤器只决定选择器提供什么，并不保证结果：请检查拿到的文件。
 
 ### 嵌入 NSH 的应用
 
@@ -1853,6 +2043,169 @@ for (const { file } of picked) {
 > 并以一个 `Error` reject，其 `code` 为 `"ERR_ACCESS_DENIED"`，`permission` 为 `"picker"`，`resource` 为 `""`。在 Rust
 > 中，`pick_images` 和 `pick_files` 回答没有文件，拒绝会记录在日志中。见[沙箱与能力](../docs/sandbox-and-capabilities.md)。
 
+## Share
+
+分享 API 把文本、链接或本地文件交给系统的分享面板，由用户继续发送：发给另一个应用、消息、邮件、AirDrop 或存成文件。
+iOS 上是 `UIActivityViewController`，Android 上是 `Intent.ACTION_SEND` 的选择器，macOS 上是分享菜单
+（`NSSharingServicePicker`），浏览器里是 `navigator.share`。Rust 代码调用 `nsh_core::prelude` 的 `share`；TSX 从 `nsh`
+导入 `Share`。
+
+```rust tabs
+use nsh_core::share::{ShareAction, ShareRequest};
+use nsh_core::prelude::*; // share, share_available
+```
+
+```tsx tabs
+import { Share, type ShareResult } from "nsh";
+```
+
+```ts
+const Share: {
+  available(): Promise<boolean>;
+  show(content: ShareContent): Promise<ShareResult>;
+};
+
+interface ShareContent {
+  title?: string; // 主题（邮件的主题行），面板有标题时也是它的标题
+  text?: string;
+  url?: string; // 链接：http(s)、mailto、应用自己的 scheme
+  files?: string[]; // 本地文件的绝对路径（最多 100 个）
+  anchor?: ViewRef; // 面板是 popover 时（iPad、macOS）指向的视图
+}
+
+interface ShareResult {
+  action: "shared" | "dismissed";
+  target: string | null; // 用户分享到了哪里，用平台给的名字
+}
+```
+
+| TS | Rust |
+|---|---|
+| `await Share.available()` | `share_available().await -> bool` |
+| `await Share.show(content)` | `share(request).await -> Result<ShareOutcome, ShareError>` |
+| `title`、`text`、`url`、`files` | `ShareRequest::new().title(..).text(..).url(..).file(..)` |
+| `anchor` | `.anchor(&element_ref)` |
+| `result.action`、`.target` | `outcome.action`（`ShareAction`）、`outcome.target` |
+| `error.code` | `error.code` |
+
+### Share.show
+
+```ts
+show(content: ShareContent): Promise<ShareResult>;
+```
+
+显示分享面板，并以用户的操作 resolve：`"shared"`，带上用户分享到的 `target`（iOS 上是 activity type，Android 上是应用的
+包名，macOS 上是服务的标题，平台不告诉时为 `null`）；或 `"dismissed"`，表示用户关掉了面板。关掉面板是用户的回答，不是失败。
+Rust：`share(request)`，在任务中 await 的回答（`spawn`，或 `async` 的模块函数）。
+
+`"shared"` 的含义以平台能知道的为准：
+
+| 平台 | `"shared"` 表示 |
+|---|---|
+| iOS | 目标已完成分享（取消的邮件或消息为 `"dismissed"`） |
+| macOS | 服务报告已完成；或服务没有报告结果，而用户回到了弹出菜单的窗口（拷贝、加入列表之后，邮件草稿仍开着时也算）。服务报告取消时为 `"dismissed"`；服务没有报告、用户十分钟内也没有回来，同样为 `"dismissed"` |
+| Android | 用户选了一个应用；Android 不告诉该应用之后做了什么 |
+| Web | `navigator.share` 已 resolve |
+
+`show` 从不抛出，所有失败都 reject promise：
+
+- `text`、`url`、`files` 一个都没有（空文本视同没有），或 URL 解析不了、会运行代码（`javascript:`）、指向本地文件（`file:`；
+  请用 `files` 分享）：`TypeError`；
+- 超过 100 个文件、文本或标题超过 1 MiB、URL 超过 16 KiB：`RangeError`；
+- 应用的 `capabilities.fs.read` 没有授予的文件：`ERR_ACCESS_DENIED`；不存在的文件：`ENOENT`；
+- 平台没有分享面板时的分享，或平台不分享的内容（Android 应用自有存储之外的文件、浏览器里的文件、浏览器在此不允许分享或仍在显示之前那次分享的面板）：
+  一个 `code` 为 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` 的 `Error`。平台没有面板时，`Share.available()` 可以事先判断。
+
+面板打开时再调用 `show`，之前的 promise 立即 resolve 为 `"dismissed"`。iOS 和 macOS 上新面板取代旧面板；Android 和
+Web 上旧面板留到用户关掉为止，旧面板打开期间浏览器拒绝新的分享。iPad 和 macOS 上面板是
+popover：把打开它的视图（分享按钮，可以在页面、标题栏、对话框或另一个窗口里）交给 `anchor`，没有时显示在窗口中央。
+
+iOS 上，应用说明了写入相册的理由时，面板才提供把图片存到“照片”：在 `ios.infoPlist` 中写
+`NSPhotoLibraryAddUsageDescription`（[Info.plist 键](../docs/packaging.md#infoplist-keys-and-entitlements)）。
+
+一个旅行计划应用从分享按钮分享行程：
+
+```rust tabs
+use nsh_core::prelude::*;
+use nsh_core::share::{ShareAction, ShareRequest};
+
+fn share_button(trip: &'static str) -> impl IntoElement {
+    let button = element_ref();
+    view()
+        .element_ref(&button)
+        .role(AccessibilityRole::Button)
+        .accessibility_label("Share")
+        .on_press(move || {
+            let request = ShareRequest::new()
+                .title("Weekend in Kyoto")
+                .url(format!("https://example.com/trips/{trip}"))
+                .anchor(&button);
+            let shared = share(request);
+            spawn(async move {
+                match shared.await {
+                    Ok(outcome) if outcome.action == ShareAction::Shared => log::info!("shared"),
+                    Ok(_) => {}
+                    Err(error) => log::warn!("cannot share: {error}"),
+                }
+            });
+        })
+        .child(text("Share"))
+}
+```
+
+```tsx tabs
+import { Share, Text, View, type ViewRef } from "nsh";
+
+function ShareButton(props: { trip: string }) {
+  let button: ViewRef | undefined;
+  const share = async () => {
+    try {
+      const { action } = await Share.show({
+        title: "Weekend in Kyoto",
+        url: `https://example.com/trips/${props.trip}`,
+        anchor: button,
+      });
+      if (action === "shared") console.log("shared");
+    } catch (e) {
+      console.warn("cannot share", e);
+    }
+  };
+  return (
+    <View ref={button} role="button" accessibilityLabel="Share" onPress={share}>
+      <Text>Share</Text>
+    </View>
+  );
+}
+```
+
+| 平台 | 分享面板 | 文件 |
+|---|---|---|
+| iOS | `UIActivityViewController`；iPad 上是 popover | 应用能读的任何文件 |
+| Android | `ACTION_SEND` 的选择器（多个文件时 `ACTION_SEND_MULTIPLE`） | 应用自己存储中的文件（`process.dataDir`、缓存），以 `content:` URI 分享 |
+| macOS | 分享菜单 `NSSharingServicePicker` | 应用能读的任何文件 |
+| Web | 浏览器提供的 `navigator.share`，且页面允许 `web-share` | 文本和链接 |
+
+在 Windows、Linux 和 GPUI 窗口中，`Share.available()` resolve 为 `false`，`show` 以
+`ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` reject，应用可以提供别的方式（比如复制链接）。
+
+### Share.available
+
+```ts
+available(): Promise<boolean>;
+```
+
+`show` 在这里能否显示分享面板：平台有分享面板，且应用的能力授予了它。应用据此决定是否显示分享按钮。Rust：`share_available()`。
+
+### 测试
+
+`nsh test` 在无界面运行时回答分享：`app.onShare({ action, target })` 设定回答（没设定时为 `"dismissed"`）并让
+`Share.available()` 为 true，`app.shares()` 返回应用分享过的内容（`{ title, text, url, files }`）。见[测试](../docs/testing-and-trace.md)。
+
+> [!NOTE]
+> 应用在 `nsh.json` 中声明了 `capabilities` 时，需要用 `"share": true` 授予分享面板，分享的每个文件也要能被 `fs.read` 读取。
+> 没有授予时 `Share.available()` resolve 为 `false`，`show` 以一个 `Error` reject，其 `code` 为 `"ERR_ACCESS_DENIED"`，
+> `permission` 为 `"share"`，`resource` 为 `""`。见[沙箱与能力](../docs/sandbox-and-capabilities.md)。
+
 ## Notifications
 
 `Notifications` 显示系统通知并设置应用图标的角标（macOS 上是 Dock 图标）。在用户做了需要通知的操作时再请求权限，然后显示：
@@ -1869,7 +2222,7 @@ async function notifyMe() {
 }
 ```
 
-Rust 代码使用 `nsh_core::prelude` 的 `request_notification_permission`、`show_notification`、`close_notification`、`set_badge` 和 `next_notification_press`。
+Rust 代码使用 `nsh_core::prelude` 的 `request_notification_permission`、`show_notification`、`close_notification`、`close_all_notifications`、`set_badge` 和 `next_notification_press`。
 
 | 平台 | 通知 | 角标 |
 | --- | --- | --- |
@@ -1891,13 +2244,32 @@ Rust 代码使用 `nsh_core::prelude` 的 `request_notification_permission`、`s
 await Notifications.show({ id: "sync", title: "Synced", body: "12 new photos", silent: true });
 ```
 
+`sound` 播放应用自带的声音来代替系统默认提示音，让用户分辨出这个应用的通知（例如新的客户消息）；`silent: true` 优先于它。传入打包的资源路径或导入的声音。`nsh package` 会把应用的声音复制到系统读取的位置：Apple 平台从 `Library/Sounds` 按文件名播放不超过 30 秒的 `.caf`、`.aiff`、`.wav`，所以每个声音的文件名要不同；Android 播放 `.ogg`、`.mp3`、`.wav` 原始资源，每个声音一个通知渠道，用户可在系统设置里修改；Linux 把文件交给通知服务（`sound-file`）。Windows（未打包的应用）、Web，以及找不到声音的平台播放默认提示音。
+
+```tsx
+import ding from "./sounds/message.caf";
+
+await Notifications.show({ id: "chat:42", title: "Ada", body: "Are you there?", sound: ding });
+```
+
+### Notifications.closeAll
+
+`closeAll()` 移除应用显示的全部通知，包括已显示的和等待显示的。在用户退出登录时调用，让通知里的内容随账号一起清掉。Apple 平台、Windows 和 Android 的系统通知中心会跨运行保留通知，`closeAll()` 在这些平台上移除 NSH 显示的通知，包括应用上一次运行留下的，嵌入方自己的通知保留。Linux 和 Web 上它移除当前运行的应用显示的通知。
+
+```tsx
+async function signOut() {
+  await Notifications.closeAll();
+  Notifications.setBadge(0);
+}
+```
+
 ### Notifications.on
 
 `press` 报告用户点击的通知的 `id`。点击可能启动应用：事件会等到第一个监听器注册后送达，所以请在应用启动时监听，并把点击后要打开的内容放在 `id` 里。Android 上，嵌入方的 Activity 要在 `onCreate` 和 `onNewIntent` 里把 Intent 传给 `NshView.handleNotificationIntent`。Apple 平台上，已设置通知中心 delegate 的嵌入方保留自己的 delegate，点击也由它接收。Linux 上点击只传给运行中的应用：应用退出后留下的通知点击后没有反应。
 
 ### Notifications.permission
 
-`permission()` 只查询不询问，`requestPermission()` 首次会显示系统提示。两者的结果都是 `"default"`（尚未询问）、`"granted"`、`"denied"`（只能在系统设置里更改）或 `"unavailable"`。
+`permission()` 只查询不询问，`requestPermission()` 首次会显示系统提示。两者的结果都是 `"default"`（尚未询问）、`"granted"`、`"denied"`（只能在系统设置里更改）或 `"unavailable"`。在 Apple 平台上，`requestPermission()` 询问之后按系统设置里的权限返回：用户关掉了通知的应用得到 `"denied"`。
 
 ## UrlScheme
 
@@ -1933,13 +2305,116 @@ scheme 以字母开头，后面是字母、数字、`+`、`-` 或 `.`，按小�
 | iOS、Mac Catalyst | 应用 `Info.plist` 中的 `CFBundleURLTypes`；包括启动应用的链接和运行中到达的链接 |
 | Android | `nsh package` 写入清单的 `ACTION_VIEW` intent filter；Activity 以 `singleTask` 运行，链接会交给正在运行的应用 |
 | Windows | 应用每次启动时写入 `HKEY_CURRENT_USER\\Software\\Classes`；第二次启动会把 URL 交给正在运行的应用 |
-| Linux | 应用启动时在 `~/.local/share/applications` 写入带 `x-scheme-handler/<scheme>` 的桌面文件并设为默认处理程序；`nsh run` 以同样方式注册开发宿主。第二次启动会把 URL 交给正在运行的应用 |
+| Linux | 应用启动时在 `~/.local/share/applications` 写入带 `x-scheme-handler/<scheme>` 的桌面文件（`<应用 id>.desktop`）。安装器为本可执行文件放在那里的条目会保留，只补上它缺少的 scheme；属于应用另一份副本的条目不会改动。只有某个 scheme 还没有任何应用处理时，应用才设为它的默认处理程序。`nsh run` 以同样方式注册开发宿主。第二次启动会把 URL 交给正在运行的应用 |
 
 `nsh test` 可以把链接交给测试中的应用：`App.open(entry, { url })` 用一个链接启动应用，`app.openWithUrl(url)`
 在运行中打开一个链接，两者都在无头模式下运行。
 
 嵌入 NSH 的应用自己拥有 scheme，把 URL 交给视图：`AppView.open_url`（Linux、iOS）、`NshAppView.openURL`（Swift）、
 `NshView.openUrl` 或 `NshView.handleUrlSchemeIntent`（Android）。
+
+### UrlScheme.url
+
+`url()` 是应用的地址，`setUrl(url)` 设置它，应用借此在每个平台上给自己的页面分配地址：
+
+```ts
+const UrlScheme: {
+  on(event: "open", listener: (event: { url: string }) => void): () => void;
+  /** 地址不是应用自己改的（Web 上的后退和前进、用户输入的地址）。 */
+  on(event: "change", listener: (event: { url: string; reason: "back" | "forward" | "address" }) => void): () => void;
+  /** 应用的地址，没有时为 null。 */
+  url(): string | null;
+  /** 设置当前页面的地址；应用的页面保持不变。 */
+  setUrl(url: string, options?: { history?: "replace" | "push" }): void;
+};
+```
+
+| 平台 | `url()` | `setUrl(url)` |
+| --- | --- | --- |
+| Web，应用占据整个页面 | 页面的地址：加载时的地址、`setUrl` 设置的地址，或浏览器后退回到的那条记录的地址 | 替换当前历史记录的地址，与 `history.replaceState` 一样解析（相对于页面的 `<base href>`），在同一轮压入或弹出的页面的历史记录之后生效；带 `history: "push"` 时，像 `history.pushState` 一样在它之后新建一条自己的记录（见下文） |
+| 原生平台，以及 iframe 中的 Web | 最后一个打开应用的链接（启动应用的链接同时作为第一个 `open` 到达），或之后 `setUrl` 设置的地址；两者都没有时为 `null` | 为 `url()` 保存这个 URL，带 `history: "push"` 时也一样（没有可以压入的历史记录）；在 iOS 和 macOS 上，开启了的应用还会把它交给系统（[见下文](#handoff)） |
+
+URL 不是字符串、超过 16 KiB 或含有空白字符时抛出 `TypeError`；在 Web 上应用占据整个页面时，不是页面同源 URL 的地址同样抛出 `TypeError`。
+应用只有一个地址，Rust 读的也是它，`url()` 直接读取它：链接、Rust 的 `set_app_url` 和 `setUrl` 的改动都立即可见。在上表的平台上，启动应用的链接在应用的代码运行之前就已到达，所以第一次调用 `url()` 就能读到它，它同时也作为第一个 `open` 到达（在 Web 上，页面的地址从一开始就在）。
+在 Web 上，正在显示的栈里压入的每个页面都有自己的历史记录，浏览器的后退就在应用内后退：栈的页面返回，地址变为那条记录的地址，
+和应用自己弹出页面一样不发 `open`（应用用 `popOnBack={false}` 或 `onBackPress` 留下的页面保留它的历史记录和地址）。前进到栈里已经没有的页面，以及回到页面上一次加载留下的历史记录（刷新会保留它们）时，这条记录的地址像链接一样作为 `open` 到达：应用显示它指向的页面（如下例），不处理它的应用停在原处。应用用 `url()` 构建最初的路由，在栈的
+[`onChange`](../elements/nav-stack.md) 里设置顶层页面的地址，并显示链接指向的页面，它的页面就在所有平台上都有了地址：
+
+```tsx
+import { UrlScheme } from "nsh";
+import { NavStack, createNavStack } from "nsh/base";
+
+// 路由是 ""（收件箱）或一条消息的 id：用字符串，同一个地址得到的路由就等于正在显示的路由。
+type Route = string;
+
+function routesOf(url: string | null): Route[] {
+  const id = url && new URL(url, "https://app.invalid/").searchParams.get("message");
+  return id ? ["", id] : [""];
+}
+
+// "." 是页面自己的路径，不带查询参数。
+const urlOf = (route: Route) => (route ? `?message=${encodeURIComponent(route)}` : ".");
+
+const nav = createNavStack<Route>(routesOf(UrlScheme.url()));
+
+// 链接，以及 Web 上靠后退到不了的前进。
+UrlScheme.on("open", ({ url }) => nav.setRoutes(routesOf(url)));
+
+export function App() {
+  return (
+    <NavStack
+      state={nav}
+      style={{ flex: 1 }}
+      onChange={({ routes }) => UrlScheme.setUrl(urlOf(routes[routes.length - 1]))}
+    >
+      {(route) => (route ? <Message id={route} /> : <Inbox onOpen={(id) => nav.push(id)} />)}
+    </NavStack>
+  );
+}
+```
+
+Rust 代码 await `nsh_core::prelude` 的 `app_url()`，调用 `set_app_url(url)`，与 `next_url_scheme_open()` 并列；它们和 `url()`、
+`setUrl` 是同一个地址，`setUrl` 会抛错的 URL，`set_app_url` 返回错误。在 Web 上它和 `setUrl` 一样按页面的基准地址解析 URL，与页面不同源的地址返回错误。
+
+应用里自成一处、却没有为它压入页面的地址（标签页、查询里的筛选或排序、分栏视图选中的行），用 `history: "push"` 设置，
+这样浏览器的后退会回到之前的地址，而不是离开页面。应用通过 [`change`](#urlschemeonchange) 收到这次后退以及之后的前进：
+
+```tsx
+function selectTab(tab: Tab) {
+  current.set(tab);
+  UrlScheme.setUrl(`?tab=${tab}`, { history: "push" });
+}
+UrlScheme.on("change", ({ url }) => current.set(tabOf(url)));
+```
+
+压入的地址是当前条目之后、显示着的页面上的一条记录，并像 `history.pushState` 一样丢弃浏览器的前进记录。在压入页面的那一轮，
+地址归页面的记录，不另建记录（就像 `onChange` 设置的那样）；在弹出页面的那一轮，它是后退落到的那条记录之后的一条记录。压入当前显示的
+地址不会新建记录；同一轮里最后的地址生效，压入优先于替换。`history` 为其他值时抛出 `TypeError`。Rust 调用
+`set_app_url_with(url, HistoryBehavior::Push)`（`nsh_core::url_scheme`）。
+
+#### Handoff
+
+在 iOS 和 macOS 上，应用用 `nsh.json` 的 `"handoff": true` 把地址交给系统（嵌入应用设置 `NshAppView.handoff`，或 Rust 选项中的 `handoff`）：`setUrl` 设置的地址成为当前的 `NSUserActivity`，Handoff 可以在用户的其他设备上接着打开它。`http(s)` 地址是网页，另一台设备在浏览器中打开它。其他绝对地址由另一台设备上的应用自己接着打开（Handoff 只在同一开发团队签名的应用之间进行），作为 `open` 到达的链接（属于 `schemes` 中的 scheme）；`nsh package` 会在 `NSUserActivityTypes` 中声明它的活动类型 `<id>.url`。相对地址只属于应用自己。Android 没有 App Links 的对外对应物，只为 `url()` 保存地址。
+
+### UrlScheme.on("change")
+
+`change` 报告应用的地址发生了变化，而这一变化既不是应用自己做的，也不是它的页面能说明的；事件带有地址和变化的原因。此时
+`url()` 已经读到新地址，应用显示它所指向的内容：
+
+```tsx
+// 标签页在地址里（`?tab=live`）；后退或前进到另一个标签页的条目时，显示那个标签页。
+UrlScheme.on("change", ({ url }) => tab.set(tabOf(url)));
+```
+
+| `reason` | 何时（Web 上，应用占满整个页面时） |
+| --- | --- |
+| `"back"`、`"forward"` | 浏览器的后退或前进到了页面相同、地址不同的条目（用户输入的地址），或者后退弹出了页面，而应用在响应时没有设置地址（没有 `onChange` 设置地址），留下的地址也不是应用设置的 |
+| `"address"` | 用户给页面输入了应用的地址，即在地址栏里输入 `#fragment`：在当前条目之后新建一个条目，应用的页面保持不变 |
+
+栈能说明的情况保持不变：弹出页面的后退归栈处理（`onChange`），前进到栈里已经没有的页面是 `open`，应用自己的 `setUrl`
+不是 `change`。没有监听者时发生的变化不会保留：`url()` 里有它们。原生平台、GPUI 宿主和终端没有地址的历史记录，所以
+`change` 只在 Web 上出现。Rust 代码 await `nsh_core::prelude` 的 `next_app_url_change()`，得到带有 `url` 和 `reason` 的
+`AppUrlChange`。
 
 ## Speech
 
@@ -2095,7 +2570,7 @@ import { AudioPlayer, Sound } from "nsh";
 ```ts
 declare class Sound {
   static available(): Promise<boolean>;
-  static load(src: string): Promise<Sound>;
+  static load(src: string | Uint8Array): Promise<Sound>;
   play(options?: { volume?: number; rate?: number }): void;
   stop(): void;
   readonly duration: number;
@@ -2139,7 +2614,7 @@ type AudioErrorCode =
 
 ### Sound.load
 
-从导入的音频文件（`import click from "./sounds/click.wav"`：导入得到文件的 `asset:/` URL，文件随应用发布）、`file:` URL、`data:` URI 或应用 `network` capability 授权的 `http(s)` URL 加载音效，并解码进内存。引擎已加载过的源会共享：两个组件加载同一个点击音只解码一次。音效在 `dispose()` 时释放，或在加载它的一方离开时（组件卸载）释放。单个音效编码后最大 8 MB、时长最长 5 秒，一个应用同时最多持有 64 个音效、共 16 MB 解码后音频；超出时 `load` 以 `code` 为 `"ERR_NSH_QUOTA_EXCEEDED"` 拒绝。更长的音频交给 `AudioPlayer`。
+从导入的音频文件（`import click from "./sounds/click.wav"`：导入得到文件的 `asset:/` URL，文件随应用发布）、`file:` URL、`data:` URI 或应用 `network` capability 授权的 `http(s)` URL 加载音效，也可以直接给音频文件的字节（应用生成或下载的 `Uint8Array`；Rust 里还可以是嵌进程序的字节，`load_sound(include_bytes!("tick.wav"))`），并解码进内存。字节的格式（WAV、AAC、MP3 等）从字节本身读出。引擎已加载过的源会共享，相同的字节也一样：两个组件加载同一个点击音只解码一次。音效在 `dispose()` 时释放，或在加载它的一方离开时（组件卸载）释放。单个音效编码后最大 8 MB、时长最长 5 秒，一个应用同时最多持有 64 个音效、共 16 MB 解码后音频；超出时 `load` 以 `code` 为 `"ERR_NSH_QUOTA_EXCEEDED"` 拒绝。更长的音频交给 `AudioPlayer`。
 
 ### Sound.play
 
@@ -2244,6 +2719,8 @@ Rust 函数是同步的，因为数据就在内存中：在组件运行的地方
 
 损坏的 `storage.json` 会被保留为同目录下的 `storage.json.corrupt`，应用从空存储开始；读不了的文件则让应用的改动只留在内存中，文件本身永远不会被覆盖。
 
+在 Web 上，应用的多个标签页共用同一份存储：其中一个标签页设置、删除或清空的内容，其他标签页随后都能读到。浏览器拒绝保存的值（浏览器自身的配额用尽，或用户禁止了网站保存数据）会像超过 5 MB 的值一样被拒绝。
+
 app id 是 `nsh.json` 中的 `id`，它随应用一起传递：`nsh build` 和 `nsh package` 把它写在 bundle 旁边，开发服务器会发送它，签名包则带有经发布密钥证书担保的 id。因此无论应用在哪里运行，都无需任何设置就各自保存自己的数据；没有 id 的应用保存在 `default` 下。宿主应用可以另选位置（见[在 iOS 中嵌入](../docs/ios.md)和[在 Android 中嵌入](../docs/android.md)）。
 
 ### Storage.getItem
@@ -2268,7 +2745,7 @@ const theme = (await Storage.getItem("theme")) ?? "system";
 setItem(key: string, value: string): Promise<void>;
 ```
 
-把 `key` 设为 `value`，替换原有的值。如果存储会超过 5 MB，则 Promise 以一个 `code` 为 `"ERR_NSH_QUOTA_EXCEEDED"` 的 `Error` 拒绝，值不会被保存。Rust：`Storage::set_item(key, value)`，此时返回 `Err(StorageFull)`。值都是字符串：结构化数据保存为 JSON（Rust 用 `serde_json::to_string`，TSX 用 `JSON.stringify`），再读回（`serde_json::from_str`、`JSON.parse`）。
+把 `key` 设为 `value`，替换原有的值。如果存储会超过 5 MB，或在 Web 上浏览器拒绝保存这个值，则 Promise 以一个 `code` 为 `"ERR_NSH_QUOTA_EXCEEDED"` 的 `Error` 拒绝，值不会被保存。Rust：`Storage::set_item(key, value)`，此时返回 `Err(StorageFull)`。值都是字符串：结构化数据保存为 JSON（Rust 用 `serde_json::to_string`，TSX 用 `JSON.stringify`），再读回（`serde_json::from_str`、`JSON.parse`）。
 
 ```rust tabs
 let draft = serde_json::json!({ "title": title.get(), "body": body.get() });
@@ -2537,13 +3014,14 @@ interface KeyBindingOptions {
   when?: "always" | "notEditing";
   repeat?: boolean;
   passThrough?: boolean;
+  forFocus?: boolean;
 }
 ```
 
 | TS | Rust |
 |---|---|
 | `keymap.bind(keystroke, handler)` | `on_key(keystroke, handler)` |
-| `keymap.bind(keystroke, handler, { when, repeat, passThrough })` | `on_key_with(keystroke, KeyOptions { when, repeat, pass_through }, handler)`；`when` 是 `nsh_core::keymap::When`（`Auto`、`Always`、`NotEditing`） |
+| `keymap.bind(keystroke, handler, { when, repeat, passThrough, forFocus })` | `on_key_with(keystroke, KeyOptions { when, repeat, pass_through, for_focus }, handler)`；`when` 是 `nsh_core::keymap::When`（`Auto`、`Always`、`NotEditing`） |
 | `keymap.bind({ … })` | 每个按键组合一次 `on_key` |
 | `keymap.label(keystroke)` | `key_label(keystroke)` |
 
@@ -2716,6 +3194,22 @@ on_key_with("tab", KeyOptions { pass_through: true, ..KeyOptions::default() }, m
 ```tsx tabs
 keymap.bind("tab", close, { passThrough: true });
 ```
+
+键盘焦点在能按下的视图（有 `onPress`）上时，不带修饰键的回车或空格（可以带 Shift）会按下这个视图，应用里这两个键的其他绑定都让给它：对话框里代表主操作的回车，不会抢在用户移过去焦点的按钮之前执行。视图自己的回车或空格用 `forFocus: true` 绑定：在视图有焦点时绑上，它就在按下之前拿到这两个键。下面这个卡片按空格翻开关，按回车打开：
+
+```rust tabs
+on_key_with("space", KeyOptions { for_focus: true, ..KeyOptions::default() }, move |_| flip());
+```
+
+```tsx tabs
+<View
+  onPress={open}
+  onFocus={() => (unbind = keymap.bind("space", flip, { forFocus: true }))}
+  onBlur={() => unbind?.()}
+/>
+```
+
+按键归最新的对话框：焦点留在被对话框盖住的视图上时（菜单项打开对话框，菜单关闭时把焦点还给触发器），回车和空格交给对话框的绑定，这个视图的 `forFocus` 绑定和按下都要等对话框关闭后才生效。
 
 菜单快捷键会让位给相同按键组合的绑定：所有桌面平台上的应用菜单（[`nsh/desktop`](./nsh-desktop)），以及 macOS 上的内置菜单（Cmd+W、Cmd+C 等）。使用 `nsh run` 开发时，即使应用绑定了 `mod+r`，Cmd+R / Ctrl+R 也总是重新加载应用；打包后的应用可以绑定它。
 

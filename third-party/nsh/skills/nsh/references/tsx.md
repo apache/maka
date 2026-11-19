@@ -105,6 +105,7 @@ export function Home() {
 ```
 
 - `If` builds a branch only when truthiness flips. A function child gets an accessor of `when`'s value without `null`.
+- To build a branch again for each new value (a component that reads a prop once at setup), use the ternary form, which rebuilds whenever what it reads changes: `{file() ? <Reader file={file()!} /> : null}`. Better, read the prop where it is used (`props.file`) so the existing branch follows it.
 - `cond() && <A />` and `cond() ? <A /> : <B />` work, but rebuild the branch each time anything they read changes, losing its state. Fine for a leaf; use `If` for more.
 - `Each` keeps rows by `key`, by default the item (objects by identity, primitives by value). The row gets **accessors**, so read `todo().title`. Give a `key` whenever items get replaced by new objects, or rows rebuild.
 - `items().map(...)` compiles, and rebuilds every row on any change. Use `Each`.
@@ -293,7 +294,7 @@ export function Chip(props: { label: string; class?: string }) {
 - `style={{ ... }}` wins over classes per property; numbers are points. Use it for computed values and animated values.
 - A `View` is a **column** by default. `flex-row` or `class="flex"` makes a row.
 - Tokens are shadcn's: `bg-background`, `text-foreground`, `bg-card`, `bg-primary`, `text-primary-foreground`, `bg-muted`, `text-muted-foreground`, `border-border`, `border-input`, `text-destructive`, `rounded-(--radius)`. Add roles in the theme file (`nsh.json` `"theme"`): a role `up` gives `bg-up` and `token("up")`, typed.
-- Variants: `active:`, `hover:`, `focus:`, `disabled:`, `dark:`, breakpoints, `ios:`, `android:`, `web:`.
+- Variants: `active:`, `hover:`, `focus:`, `focus-visible:` (the keyboard's ring: not after a click or a tap), `disabled:`, `dark:`, breakpoints, `ios:`, `android:`, `web:`.
 - Safe area: `pt-[env(safe-area-inset-top)]`.
 - `nsh/base` has behaviour and no look. A `Switch` without `trackClass` and `thumbClass` draws nothing, and its test still passes. Style each part and look at it.
 - An unknown static class is a `warn` from `nsh build`, and does nothing. A class built at run time is logged once when first seen. Raw `#hex` and arbitrary values pass every tool; use tokens.
@@ -459,7 +460,7 @@ export function Confirm() {
 - `Dialog` keeps closing if the user closes it, whatever `open` says: keep `open` in sync in `onOpenChange`.
 - `closeOnEscape`, `closeOnBackdropPress`, `closeOnSwipe`, `closeOnPressOutside` decide dismissal up front.
 - `Sheet` takes `open`, `onOpenChange`, `side` and `popupClass`. `Popover` and `Menu` take `trigger` and `popupClass`.
-- `const { action } = await AlertDialog.show({ title, actions: [{ id: "delete", label: "Delete", role: "destructive" }] })` resolves the chosen `id`, or `null` when closed without one.
+- `const { action } = await AlertDialog.show({ title, actions: [{ id: "delete", label: "Delete", role: "destructive" }] })` resolves the chosen `id`, or `null` when closed without one. An alert with `input: { defaultValue, placeholder, selectTextOnFocus, required }` shows the system's text field (iOS, Android, macOS, web) and resolves its text as `value`.
 - `Menu` holds `MenuItem`s, each with `onSelect`.
 - `ToastStack`, `Tooltip`, `HoverCard`, `ContextMenu` and `Command` are also in `nsh/base`.
 

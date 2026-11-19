@@ -81,6 +81,7 @@ fn bundle(name: &str) -> nsh_bundler::Bundle {
         minify: true,
         split: true,
         ui_sets: Vec::new(),
+        ..Default::default()
     })
     .unwrap();
     let _ = std::fs::remove_dir_all(&dir);
@@ -92,6 +93,7 @@ fn config(bundle: Bundle) -> EngineConfig {
         app: nsh_engine::App::Js(bundle),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -103,7 +105,7 @@ fn config(bundle: Bundle) -> EngineConfig {
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -115,6 +117,8 @@ fn config(bundle: Bundle) -> EngineConfig {
         speech: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     }
 }
 

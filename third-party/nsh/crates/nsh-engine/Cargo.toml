@@ -3,6 +3,7 @@ name = "nsh-engine"
 description = "Engine thread that drives the JS host and the core and emits mount batches."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true
@@ -29,7 +30,13 @@ browser = []
 net = ["dep:ureq"]
 # `shader`: the native backends' shader renderer (`shader`), on wgpu. Without
 # it `shader` has the same API and finds no GPU, so shader views draw nothing.
-shader = ["dep:wgpu", "dep:pollster", "nsh-core/shader"]
+shader = ["dep:wgpu", "dep:pollster", "nsh-core/shader", "dep:objc2", "dep:objc2-metal", "dep:objc2-core-foundation", "dep:block2", "dep:windows"]
+
+# The native WebSocket client (tokio-tungstenite, rustls). Without it
+# `connect` of `websocket` rejects with ERR_FEATURE_UNAVAILABLE_ON_PLATFORM.
+websocket = ["nsh-core/websocket"]
+# App self-updates (`nsh/updater`). Without it a check finds no update.
+updater = ["nsh-core/updater"]
 
 [dependencies]
 rustc-hash.workspace = true
@@ -50,14 +57,27 @@ pollster = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 # A packaged app's update configuration (`updates`).
 nsh-updater.workspace = true
+# `RUST_LOG` of the desktop release runners' logger (`logging`).
+env_filter.workspace = true
+
+# Apple: shader frames on IOSurfaces (`shader`; the type is in the API with
+# or without it).
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2-io-surface.workspace = true
+objc2 = { workspace = true, optional = true }
+objc2-metal = { workspace = true, optional = true }
+objc2-core-foundation = { workspace = true, optional = true }
+block2 = { workspace = true, optional = true }
 
 # Thread priority (Apple), process CPU and memory (`perf`).
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
-# Process CPU and memory (`perf`).
+# Process CPU and memory (`perf`); shader frames on textures shared with
+# Direct3D 11 (`shader`; the type is in the API with or without it).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+windows = { workspace = true, optional = true, features = ["Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common", "Win32_Security"] }
 
 [dev-dependencies]
 # The shader tests compile the apps' WGSL (nsh-core `shader`).

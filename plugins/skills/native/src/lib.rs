@@ -31,7 +31,8 @@ use futures_util::future::BoxFuture;
 use maka_capabilities::call::Scope;
 use maka_capabilities::filesystem::ReadRoot;
 use maka_host_runtime::application::{
-    Context, Handler, NativeActivation, NativeContext, NativeOwner, NativeRegistry,
+    Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeActivation, NativeContext,
+    NativeOwner, NativeRegistry,
 };
 use maka_sandbox::filesystem::{Access, Policy, Rule};
 use serde::Serialize;
@@ -106,7 +107,7 @@ async fn activate(context: NativeContext, configuration: Value) -> NativeActivat
 struct Library {
     bundled: bool,
     sources: Vec<CapturedSource>,
-    projects: Vec<Arc<maka_fs_tools::workspace::directory::PublishedDirectory>>,
+    projects: Vec<maka_workspace_support::Root>,
     private: PathBuf,
     workspace: Option<maka_agent_api::contract::Workspace>,
     policy: Arc<maka_sandbox::filesystem::Compiled>,
@@ -160,7 +161,8 @@ impl Library {
             standard.append(&mut sources);
             sources = standard;
         }
-        let projects = sources::projects(configuration.project_roots, &managed)?;
+        let projects = maka_workspace_support::open_projects(configuration.project_roots, &managed)
+            .map_err(|_| "skills_configuration_invalid")?;
         Ok(Self {
             projects,
             private: managed,
@@ -454,9 +456,31 @@ impl Handler for Library {
         method: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         let library = self.clone();
-        Box::pin(async move {
+        if method == "setPreference" {
+            return Box::pin(async move {
+                let input: SetPreference = serde_json::from_value(input)
+                    .map_err(|_| HandlerError::from("skills_preference_invalid"))?;
+                context
+                    .operation()
+                    .ok_or("skills_mutation_required")
+                    .map_err(HandlerError::from)?;
+                if !library.preferences_writable {
+                    return encode(PreferenceResult::Rejected {
+                        reason: "read_only_preferences".into(),
+                    })
+                    .map(HandlerValue::Json)
+                    .map_err(HandlerError::from);
+                }
+                let change = library
+                    .preferences
+                    .set(input, context.scope())
+                    .map_err(HandlerError::from)?;
+                context.complete_result(change).map_err(HandlerError::from)
+            });
+        }
+        let result = async move {
             match method.as_str() {
                 "candidates" => library.candidates(input, context.scope()).await,
                 "prepare" | "search" | "load" => {
@@ -479,18 +503,6 @@ impl Handler for Library {
                         .for_workspace(input.workspace.clone(), context.scope())
                         .await?;
                     encode(library.snapshot(context.scope()).await?.read(input)?)
-                }
-                "setPreference" => {
-                    let input =
-                        serde_json::from_value(input).map_err(|_| "skills_preference_invalid")?;
-                    context.operation().ok_or("skills_mutation_required")?;
-                    let input: SetPreference = input;
-                    if !library.preferences_writable {
-                        return encode(PreferenceResult::Rejected {
-                            reason: "read_only_preferences".into(),
-                        });
-                    }
-                    encode(library.preferences.set(input, context.scope()).await?)
                 }
                 "discoverSource" | "install" | "update" | "delete" => {
                     if context.scope().identity.agent().is_some() {
@@ -532,6 +544,10 @@ impl Handler for Library {
                 }
                 _ => Err("skills_method_unavailable".into()),
             }
+        };
+        Box::pin(async move {
+            let result: std::result::Result<Value, String> = result.await;
+            result.map(HandlerValue::Json).map_err(HandlerError::from)
         })
     }
 }
@@ -546,11 +562,7 @@ impl NativeOwner for Library {
         let projects = self
             .projects
             .iter()
-            .map(|project| {
-                project
-                    .identity()
-                    .map(|identity| (project.path(), identity))
-            })
+            .map(maka_workspace_support::Root::execution_basis)
             .collect::<std::io::Result<Vec<_>>>()
             .ok()?;
         let managed = match &self.managed {
@@ -579,5 +591,3 @@ impl NativeOwner for Library {
         Box::pin(async { Ok(()) })
     }
 }
-#[cfg(test)]
-mod tests;

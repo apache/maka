@@ -164,9 +164,6 @@ pub(super) fn v1(
                     Ok(crate::presentation::Completion::Failed) => {
                         Err("Agent execution failed; see transcript".into())
                     }
-                    Ok(crate::presentation::Completion::Paused) => {
-                        Err("Agent execution paused; continue in the Maka workbench".into())
-                    }
                     Err(error) => Err(error),
                 };
                 respond_v1(responder, response)

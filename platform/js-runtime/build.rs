@@ -17,12 +17,37 @@
  * under the License.
  */
 
+#[path = "src/automation/transpile.rs"]
+mod typescript;
+
 use deno_core::ExtensionFileSourceCode;
 use std::{collections::BTreeSet, error::Error, fmt::Write, fs, path::PathBuf, sync::Arc};
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed=build.rs");
+    println!(
+        "cargo:rustc-env=MAKA_DENO_TARGET={}",
+        std::env::var("TARGET")?
+    );
+    println!("cargo:rerun-if-changed=src/automation/transpile.rs");
+    use deno_resolver::npm::{DenoInNpmPackageChecker, NpmResolver};
+    use sys_traits::impls::RealSys;
     let extensions = [
+        deno_crypto::deno_crypto::init(None),
+        deno_http::deno_http::init(Default::default()),
+        deno_node_crypto::deno_node_crypto::init(),
+        deno_node::deno_node::init::<DenoInNpmPackageChecker, NpmResolver<RealSys>, RealSys>(
+            None,
+            deno_fs::sync::MaybeArc::new(deno_fs::RealFs),
+        ),
+        deno_websocket::deno_websocket::init(),
+        deno_fetch::deno_fetch::init(Default::default()),
+        deno_fs::deno_fs::init(deno_fs::sync::MaybeArc::new(deno_fs::RealFs)),
+        deno_io::deno_io::init(None),
+        deno_net::deno_net::init(None, None),
+        deno_os::deno_os::init(None),
+        deno_process::deno_process::init(None),
+        deno_telemetry::deno_telemetry::init(),
         deno_webidl::deno_webidl::init(),
         deno_web::deno_web::init(
             Arc::new(deno_web::BlobStore::default()),
@@ -74,9 +99,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                     ExtensionFileSourceCode::Computed(code) => code.to_string(),
                     _ => source.load()?.to_string(),
                 };
+                let text = if source.specifier.ends_with("deno_node/_process/process.ts")
+                    || source.specifier == "node:process"
+                {
+                    text.replace("__NODE_VERSION__", deno_node::NODE_VERSION)
+                } else {
+                    text
+                };
+                let path = std::path::Path::new(source.specifier);
+                let is_ts = source.specifier.starts_with("node:")
+                    || path.extension().is_some_and(|extension| extension == "ts");
+                let text = if is_ts || !text.is_ascii() {
+                    typescript::transpile(&text, path, is_ts)?
+                } else {
+                    text
+                };
                 if !text.is_ascii() {
                     return Err(format!(
-                        "cannot embed {}: Deno extension sources must be ASCII",
+                        "Deno extension source is not ASCII: {}",
                         source.specifier
                     )
                     .into());

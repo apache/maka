@@ -1,21 +1,24 @@
 // A case of the API's test suite (docs/dev/compatibility.md):
 // `Notifications` on the headless runtime, where nothing shows them:
 // `permission()` and `requestPermission()` resolve "unavailable", `show`
-// resolves false (a `silent` one too), `setBadge` and `close` resolve, `on`
-// returns a function that stops listening. An empty `id` and a badge that is
-// not a whole number reject with a `RangeError`. Its script checks each.
+// resolves false (a `silent` one too), `setBadge`, `close` and `closeAll`
+// resolve, `on` returns a function that stops listening. An empty `id` and a
+// badge that is not a whole number reject with a `RangeError`. Its script
+// checks each.
 import { Notifications, Text, View, signal } from "nsh";
 
 function App() {
   const permission = signal("unknown");
   const shown = signal("unknown");
   const refused = signal("none");
+  const closed = signal("none");
   const stop = Notifications.on("press", () => {});
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
       <Text>{`Permission: ${permission()}`}</Text>
       <Text>{`Shown: ${shown()}`}</Text>
       <Text>{`Refused: ${refused()}`}</Text>
+      <Text>{`Closed: ${closed()}`}</Text>
       <View
         testID="notify"
         onPress={async () => {
@@ -25,6 +28,7 @@ function App() {
           await Notifications.setBadge(2);
           await Notifications.setBadge(0);
           await Notifications.close("a");
+          closed.set(`${await Notifications.closeAll()}`);
           const empty = await Notifications.show({ id: "", title: "T" }).catch((e: Error) => e.name);
           const count = await Notifications.setBadge(1.5).catch((e: Error) => e.name);
           refused.set(`${empty} ${count}`);

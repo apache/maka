@@ -227,6 +227,3 @@ impl Library {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

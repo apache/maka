@@ -29,6 +29,21 @@ pub enum Recurrence {
     Monthly,
 }
 
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum IntervalCadence {
+    #[default]
+    Fixed,
+    AfterCompletion,
+}
+impl IntervalCadence {
+    fn is_fixed(&self) -> bool {
+        *self == Self::Fixed
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
@@ -37,12 +52,20 @@ pub enum Recurrence {
     deny_unknown_fields
 )]
 pub enum Schedule {
+    Script {
+        source: String,
+        #[serde(default = "script_interval")]
+        every_seconds: u32,
+        start_at: i64,
+    },
     Once {
         run_at: i64,
     },
     Interval {
         every_seconds: u32,
         start_at: i64,
+        #[serde(default, skip_serializing_if = "IntervalCadence::is_fixed")]
+        cadence: IntervalCadence,
     },
     Calendar {
         recurrence: Recurrence,
@@ -53,13 +76,26 @@ pub enum Schedule {
         start_at: i64,
     },
 }
+fn script_interval() -> u32 {
+    60
+}
+
 impl Schedule {
     pub fn validate(&self) -> Result<(), Error> {
+        if let Self::Script { source, .. } = self {
+            crate::task::text(source)?;
+        }
         let anchor = match self {
             Self::Once { run_at } => *run_at,
-            Self::Interval {
+            Self::Script {
                 every_seconds,
                 start_at,
+                ..
+            }
+            | Self::Interval {
+                every_seconds,
+                start_at,
+                ..
             } => {
                 if *every_seconds == 0 {
                     return Err(invalid("interval must be positive"));
@@ -83,13 +119,43 @@ impl Schedule {
     /// The plan's owner supplies its persisted timezone, never a mutable ambient
     /// timezone on each tick. Missed-fire policy is separate from this calculation.
     pub fn next_after(&self, after: i64, zone: &TimeZone) -> Result<Option<i64>, Error> {
+        self.next_due(after, zone, None)
+    }
+
+    pub(crate) fn next_due(
+        &self,
+        after: i64,
+        zone: &TimeZone,
+        settled_at: Option<i64>,
+    ) -> Result<Option<i64>, Error> {
         self.validate()?;
         timestamp(after)?;
+        if let Self::Interval {
+            every_seconds,
+            start_at,
+            cadence: IntervalCadence::AfterCompletion,
+        } = self
+        {
+            let delay = i64::from(*every_seconds) * 1_000;
+            let next = match settled_at {
+                Some(at) => at.checked_add(delay).map(|at| at.max(after)),
+                None if *start_at > after => Some(*start_at),
+                None => after.checked_add(delay),
+            };
+            return Ok(next.filter(|next| timestamp(*next).is_ok()));
+        }
+
         let next = match self {
             Self::Once { run_at } => Some(*run_at),
-            Self::Interval {
+            Self::Script {
                 every_seconds,
                 start_at,
+                ..
+            }
+            | Self::Interval {
+                every_seconds,
+                start_at,
+                ..
             } => {
                 let step = i64::from(*every_seconds) * 1000;
                 if *start_at > after {
@@ -107,7 +173,7 @@ impl Schedule {
                 if *anchor_at > after {
                     Some(*anchor_at)
                 } else {
-                    calendar(*recurrence, *anchor_at, after, zone)?
+                    calendar(*recurrence, *anchor_at, after, zone, false)?
                 }
             }
             Self::Cron {
@@ -116,6 +182,46 @@ impl Schedule {
             } => Cron::parse(expression)?.next(after, *start_at, zone)?,
         };
         Ok(next.filter(|next| *next > after && timestamp(*next).is_ok()))
+    }
+
+    /// The latest occurrence at or before the supplied instant.
+    pub(crate) fn latest_at(&self, at: i64, zone: &TimeZone) -> Result<Option<i64>, Error> {
+        self.validate()?;
+        timestamp(at)?;
+        let latest = match self {
+            Self::Once { run_at } => Some(*run_at),
+            // Completion-based intervals have just the deadline stored by the plan.
+            Self::Interval {
+                cadence: IntervalCadence::AfterCompletion,
+                ..
+            } => None,
+            Self::Script {
+                every_seconds,
+                start_at,
+                ..
+            }
+            | Self::Interval {
+                every_seconds,
+                start_at,
+                ..
+            } if *start_at <= at => {
+                let step = i64::from(*every_seconds) * 1000;
+                Some(at - (at - start_at) % step)
+            }
+            Self::Script { .. } | Self::Interval { .. } => None,
+            Self::Calendar {
+                recurrence,
+                anchor_at,
+            } if *anchor_at <= at => {
+                calendar(*recurrence, *anchor_at, at, zone, true)?.filter(|at| *at >= *anchor_at)
+            }
+            Self::Calendar { .. } => None,
+            Self::Cron {
+                expression,
+                start_at,
+            } => Cron::parse(expression)?.latest(at, *start_at, zone)?,
+        };
+        Ok(latest.filter(|latest| *latest <= at && timestamp(*latest).is_ok()))
     }
 }
 pub(crate) fn timestamp(milliseconds: i64) -> Result<Timestamp, Error> {
@@ -129,10 +235,12 @@ fn calendar(
     anchor: i64,
     after: i64,
     zone: &TimeZone,
+    backward: bool,
 ) -> Result<Option<i64>, Error> {
     let anchor = timestamp(anchor)?.to_zoned(zone.clone());
     let current = timestamp(after)?.to_zoned(zone.clone());
     let date = current.date();
+    let direction = if backward { -1 } else { 1 };
     let mut offset = 0;
     loop {
         let candidate = match recurrence {
@@ -141,9 +249,9 @@ fn calendar(
                 Err(_) => return Ok(None),
             },
             Recurrence::Weekly => {
-                let days = (anchor.weekday().to_monday_zero_offset()
-                    - date.weekday().to_monday_zero_offset())
-                .rem_euclid(7);
+                let difference = anchor.weekday().to_monday_zero_offset()
+                    - date.weekday().to_monday_zero_offset();
+                let days = (difference * direction).rem_euclid(7) * direction;
                 match date.checked_add((i64::from(days) + offset * 7).days()) {
                     Ok(date) => date,
                     Err(_) => return Ok(None),
@@ -169,10 +277,10 @@ fn calendar(
             .compatible()?
             .timestamp()
             .as_millisecond();
-        if at > after {
+        if if backward { at <= after } else { at > after } {
             return Ok(Some(at));
         }
-        offset += 1;
+        offset += i64::from(direction);
     }
 }
 
@@ -204,6 +312,12 @@ mod tests {
                 .next_after(ms("2026-03-08T06:59:00Z"), &ny)
                 .unwrap(),
             Some(ms("2026-03-09T06:30:00Z"))
+        );
+        assert_eq!(
+            cron("30 1 * * *")
+                .latest_at(ms("2026-11-01T06:45:00Z"), &ny)
+                .unwrap(),
+            Some(ms("2026-11-01T06:30:00Z"))
         );
         let utc = TimeZone::UTC;
         assert_eq!(
@@ -266,6 +380,10 @@ mod tests {
             monthly.next_after(february, &ny).unwrap(),
             Some(ms("2026-03-31T13:00:00Z"))
         );
+        assert_eq!(
+            monthly.latest_at(ms("2026-03-30T12:00:00Z"), &ny).unwrap(),
+            Some(february)
+        );
         let daily = Schedule::Calendar {
             recurrence: Recurrence::Daily,
             anchor_at: ms("2026-03-07T07:30:00Z"),
@@ -282,6 +400,7 @@ mod tests {
         let interval = Schedule::Interval {
             every_seconds: 10,
             start_at: 1000,
+            cadence: IntervalCadence::Fixed,
         };
         assert_eq!(interval.next_after(35_999, &ny).unwrap(), Some(41_000));
         assert_eq!(

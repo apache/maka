@@ -190,7 +190,7 @@ Strokes are tested with round joins and without dashes; coordinates given as ani
 
 `cx.canvas.width` and `cx.canvas.height` give the canvas's size in points in TSX.
 
-**The supported set**: drawing operations. Pixels are written by the platform, so `getImageData` / `putImageData` and other pixel access are outside it, as are `filter` and SVG images in `drawImage`. An invalid color or font drops that one operation, as in HTML Canvas.
+**The supported set**: drawing operations. Pixels are written by the platform, so `getImageData` / `putImageData` and other pixel access are outside it, as is `filter`. An invalid color or font drops that one operation, as in HTML Canvas.
 
 ## Paths and SVG path data
 
@@ -312,7 +312,7 @@ Font families are the same as in styles: system families and the names of fonts 
 
 Drawing an image takes a URL in Rust (an asset's is `LOGO.url`), and a URL or an imported asset (`import logo from "./logo.png"`) in TSX. The image is loaded natively, and the canvas draws again once it has loaded, so you do not need to track loading yourself. Remote URLs are subject to the app's [network capabilities](./sandbox-and-capabilities.md).
 
-Canvases on iOS, macOS, Android, Windows, Linux and GPUI draw bitmap images (PNG, JPEG, GIF, WebP, ...); on them, an SVG source is an image that fails to load, and the log names it. Show SVG images with [`<Image>`](./images-and-assets.md#svg-images), or draw their shapes as `Path2D` paths. On the web, a canvas draws what the browser draws, SVG included.
+Canvases on iOS, macOS, Android, Windows, Linux and GPUI draw bitmaps and SVG images: an SVG is rasterized by `nsh_core::svg` and handed to the canvas as its bitmap, sized from the SVG's intrinsic size in points (the loader's size bucket). Draw it into an explicit destination rectangle rather than relying on the raster's pixel size. Drawing it much larger than its intrinsic size enlarges that bitmap and looks soft; draw it at or below its intrinsic size for sharp edges and text. On the web, a canvas draws what the browser draws, SVG included.
 
 ```rust tabs
 const LOGO: ImageAsset = asset!("logo.png");

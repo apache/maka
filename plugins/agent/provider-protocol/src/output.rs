@@ -111,6 +111,15 @@ pub enum Source {
         extensions: Extensions,
     },
 }
+/// Location in one assistant text part. Ranges are half-open Unicode scalar offsets.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CitationAnchor<T> {
+    Range { part: T, start: u64, end: u64 },
+    BlockEnd { part: T },
+}
 #[derive(Debug, Clone)]
 pub struct Citation {
     pub source: Source,
@@ -167,7 +176,10 @@ pub enum Event {
     },
     ToolCall(ToolCall),
     ToolResult(ToolResult),
-    Source(Source),
+    Source {
+        source: Source,
+        anchor: Option<CitationAnchor<String>>,
+    },
     Custom {
         kind: String,
         extensions: Extensions,
@@ -186,7 +198,10 @@ pub enum Part {
     },
     ToolCall(ToolCall),
     ToolResult(ToolResult),
-    Source(Source),
+    Source {
+        source: Source,
+        anchor: Option<CitationAnchor<usize>>,
+    },
     Custom {
         kind: String,
         extensions: Extensions,

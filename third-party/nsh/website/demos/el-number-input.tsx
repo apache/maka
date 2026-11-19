@@ -14,11 +14,12 @@ const split = () => numberInputSteps("split", desktop ? "w-8" : "w-11", desktop 
 const centered = () => ({ ...numberInputText(), textAlign: "center" as const });
 
 /** A setting: its label and detail, the field at the trailing edge, a hairline above all but the first (`plainRow`). */
+// The field: room for "Not set" between a touch screen's 44-point steppers.
 function Row(props: { label: string; detail: string; first?: boolean; children: JSX.Element }) {
   return (
     <View style={plainRow({ first: props.first })}>
       <RowLabel label={props.label} detail={props.detail} />
-      <View style={{ width: desktop ? 132 : 152 }}>{props.children}</View>
+      <View style={{ width: desktop ? 132 : 176 }}>{props.children}</View>
     </View>
   );
 }

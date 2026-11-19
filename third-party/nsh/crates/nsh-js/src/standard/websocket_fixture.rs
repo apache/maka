@@ -88,6 +88,49 @@ fn websocket_echo_binary_protocol_and_close() {
     server.join().unwrap();
 }
 #[test]
+fn websocket_buffers_a_burst_of_sends_as_a_browser_does() {
+    const SENT: usize = 40;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (tcp, _) = listener.accept().unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut ws = tokio_tungstenite::tungstenite::accept(tcp).unwrap();
+        // Echoes until the client closes.
+        loop {
+            let Ok(message) = ws.read() else { break };
+            if message.is_close() {
+                break;
+            }
+            ws.send(message).unwrap();
+        }
+        let _ = ws.flush();
+    });
+    let host = host(true);
+    // Every send of one turn is queued, as a browser's: none throws while
+    // what waits stays under 8 MiB.
+    host.eval_source(&format!(r#"
+        globalThis.echoes = [];
+        const ws = new WebSocket('ws://{address}/');
+        ws.onopen = () => {{
+            let sent = 0;
+            try {{ for (; sent < {SENT}; sent++) ws.send('request ' + sent); }} catch (error) {{ globalThis.wsFailure = error.code + ' at send ' + (sent + 1); globalThis.wsDone = true; }}
+            globalThis.buffered = ws.bufferedAmount;
+        }};
+        ws.onmessage = event => {{ echoes.push(event.data); if (echoes.length === {SENT}) ws.close(); }};
+        ws.onerror = event => {{ globalThis.wsFailure = event.message; }};
+        ws.onclose = () => {{ globalThis.wsDone = true; }};
+    "#)).unwrap();
+    finish(&host);
+    host.eval_source(&format!(r#"
+        if (globalThis.wsFailure) throw Error(wsFailure);
+        if (buffered <= 0) throw Error('bufferedAmount ' + buffered);
+        if (echoes.length !== {SENT} || echoes.some((data, i) => data !== 'request ' + i)) throw Error(JSON.stringify(echoes));
+    "#)).unwrap();
+    server.join().unwrap();
+}
+
+#[test]
 fn websocket_rejects_invalid_protocols_and_close_codes() {
     let host = host(true);
     host.eval_source(r#"

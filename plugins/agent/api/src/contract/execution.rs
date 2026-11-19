@@ -18,6 +18,7 @@
  */
 
 use super::ModelSelection;
+use maka_agent_facts::durable::{BlockerKind, RunId, WaitReason};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -39,9 +40,8 @@ pub struct WorkRead {
 )]
 #[schemars(rename = "AgentWorkTarget")]
 pub enum WorkTarget {
-    Invocation {
-        #[schemars(length(min = 1))]
-        invocation_id: String,
+    Run {
+        run_id: RunId,
     },
     Message {
         #[schemars(length(min = 1))]
@@ -52,8 +52,7 @@ pub enum WorkTarget {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentAnswerCursor")]
 pub struct AnswerCursor {
-    #[schemars(length(min = 1))]
-    pub invocation_id: String,
+    pub run_id: RunId,
     #[schemars(range(max = 9_007_199_254_740_991u64))]
     pub offset: u64,
 }
@@ -72,6 +71,10 @@ pub struct AnswerPage {
     deny_unknown_fields
 )]
 #[schemars(rename = "AgentWork")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one work-query response, not a batch; keep delivered data inline instead of adding a per-response allocation"
+)]
 pub enum Work {
     Missing,
     Pending,
@@ -92,8 +95,17 @@ pub enum Work {
 pub struct ExecutionRead {
     #[schemars(length(min = 1))]
     pub session_id: String,
-    #[schemars(length(min = 1))]
-    pub invocation_id: String,
+    pub run_id: RunId,
+}
+/// Metadata readiness only. Retirement also requires the actual Root work fence
+/// held continuously through the caller's original pending-retirement commit.
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentWorkReadiness")]
+pub enum WorkReadiness {
+    Ready,
+    Pending,
+    Unavailable,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -139,85 +151,98 @@ pub enum PatchPage {
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "AgentExecutionResult")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "single execution lookup result; boxing adds an allocation without demonstrated stack-pressure benefit"
+)]
 pub enum ExecutionResult {
     Missing,
     Found { execution: Execution },
 }
-/// Canonical physical execution receipt, independent of the current Session tip.
+/// Stable logical Run receipt, independent of activations and the current Session tip.
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentExecution")]
 pub struct Execution {
     pub session_id: String,
     pub turn_id: String,
-    pub run_id: String,
-    pub invocation_id: String,
+    pub run_id: RunId,
     /// Run-local event count, not the root-global transcript cursor.
     pub high_water: u64,
     pub state: ExecutionState,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 #[schemars(rename = "AgentExecutionState")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "per-call execution DTO; keep failure detail inline rather than allocate solely to shrink the other states"
+)]
 pub enum ExecutionState {
     Admitted,
     Running,
-    Waiting,
-    Paused,
+    Waiting {
+        waits: Vec<WaitReason>,
+        authority_unavailable: bool,
+    },
     Completed,
-    Failed,
+    Failed {
+        reason: Option<BlockerKind>,
+    },
     Cancelled,
 }
-/// Observe the latest run using the model selected for a possible continuation.
+/// Manual continuation of a terminal Run always admits a new Run. Recovery of an
+/// unfinished Run is internal reconciliation, not this user command.
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentResumableRead")]
-pub struct ResumableRead {
+#[schemars(rename = "AgentContinueRun")]
+pub struct ContinueRun {
     #[schemars(length(min = 1))]
     pub session_id: String,
-    pub model: ModelSelection,
-    pub thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
-}
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[schemars(rename = "AgentResumable")]
-pub enum Resumable {
-    Ready { source: Execution },
-    Unavailable { reason: ResumeParkReason },
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentResume")]
-pub struct Resume {
-    #[schemars(length(min = 1))]
-    pub session_id: String,
-    #[schemars(length(min = 1))]
-    pub source_invocation_id: String,
-    /// Exact Run-local count returned by execution.
+    pub source_run_id: RunId,
+    /// Exact immutable source fence returned by execution.
     #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
     pub source_high_water: u64,
-    /// Explicit model selection for this new continuation; original input is replayed.
     pub model: ModelSelection,
     pub thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[schemars(rename = "AgentResumeResult")]
-pub enum ResumeResult {
+#[schemars(rename = "AgentContinuationResult")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "single continuation command response; keep its execution inline without an extra allocation"
+)]
+pub enum ContinuationResult {
     Started { execution: Execution },
-    Parked { reason: ResumeParkReason },
+    Rejected { reason: ContinuationRejection },
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentContinuationAvailability")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "single continuation admission check; keep the source execution inline rather than allocate an intermediate box"
+)]
+pub enum ContinuationAvailability {
+    Ready { source: Execution },
+    Rejected { reason: ContinuationRejection },
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-#[schemars(rename = "AgentResumeParkReason")]
-pub enum ResumeParkReason {
+#[schemars(rename = "AgentContinuationRejection")]
+pub enum ContinuationRejection {
     Closed,
     Archived,
     Busy,
     SourceMissing,
     SourceChanged,
-    SourceNotResumable,
+    SourceNotTerminal,
     AlreadyContinued,
     WorkspaceChanged,
     SafetyCheckFailed,

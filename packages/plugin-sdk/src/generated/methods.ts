@@ -20,6 +20,74 @@
 // Generated from Rust runtime schemas. Run npm run schema:generate -w @maka-agent/plugin-sdk.
 import type * as Runtime from './runtime.js';
 
+export type AgentChangeMemoryInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentChangeMemoryInput_MemoryEdit =
+  | {
+      kind: 'add_evidence';
+      id: string;
+      expectedRevision: number;
+      assertion: number;
+      reference: AgentChangeMemoryInput_MemoryEvidenceReference;
+    }
+  | {
+      kind: 'create';
+      body: string;
+      metadata?: AgentChangeMemoryInput_MemoryMetadata;
+    }
+  | {
+      kind: 'correct';
+      id: string;
+      expectedRevision: number;
+      body: string;
+      metadata?: AgentChangeMemoryInput_MemoryMetadata;
+    }
+  | {
+      kind: 'set_always';
+      id: string;
+      expectedRevision: number;
+      always: boolean;
+    }
+  | {
+      kind: 'delete';
+      id: string;
+      expectedRevision: number;
+    }
+  | {
+      kind: 'restore';
+      id: string;
+      expectedRevision: number;
+      body: string;
+      metadata?: AgentChangeMemoryInput_MemoryMetadata;
+    };
+export type AgentChangeMemoryInput_MemoryKind =
+  | 'unspecified'
+  | 'fact'
+  | 'preference'
+  | 'instruction';
+export type AgentChangeMemoryInput_MemoryStatement =
+  | 'unspecified'
+  | 'assertion'
+  | 'preference'
+  | 'intention';
+export type AgentChangeMemoryInput_MemoryTemporal =
+  | {
+      kind: 'unspecified';
+    }
+  | {
+      kind: 'timeless';
+    }
+  | {
+      kind: 'interval';
+      start: number;
+      end?: number | null;
+    };
 /**
  * Hierarchical, stable source keys. Display aliases never become data identities.
  */
@@ -36,7 +104,8 @@ export type AgentCheckpointReceiptOutput_InstanceId = string[];
 export type AgentCheckpointReceiptOutput_Transport = 'local' | 'remote';
 export type AgentCheckpointReceiptOutput_RecoveryProtocol = 'journal_v1';
 /**
- * Unresolved means no durable result is known, including after process loss.
+ * Unresolved and Unknown may advance to authoritative original evidence.
+ * Returned and NotExecuted are immutable; handler errors are Returned too.
  */
 export type AgentCheckpointReceiptOutput_OperationOutcome =
   | {
@@ -44,12 +113,35 @@ export type AgentCheckpointReceiptOutput_OperationOutcome =
     }
   | {
       kind: 'returned';
-      value: unknown;
+      result: AgentCheckpointReceiptOutput_OperationResult;
+    }
+  | {
+      kind: 'not_executed';
+      proof: AgentCheckpointReceiptOutput_NotExecutedProof;
     }
   | {
       kind: 'unknown';
       diagnostic: string;
     };
+/**
+ * A definite handler return. Failure does not imply absence of side effects.
+ */
+export type AgentCheckpointReceiptOutput_OperationResult =
+  | {
+      kind: 'success';
+      value: unknown;
+    }
+  | {
+      kind: 'failure';
+      diagnostic: string;
+    };
+/**
+ * An observation of a provider fence, not a capability to create that fence.
+ * Only the original provider may establish this proof before handler start.
+ */
+export type AgentCheckpointReceiptOutput_NotExecutedProof = {
+  kind: 'provider_prevented_before_start';
+};
 export type AgentCheckpointReceiptOutput_OperationCleanup =
   | {
       kind: 'unconfirmed';
@@ -87,20 +179,308 @@ export type AgentCheckpointReceiptOutput_AgentCheckpointWorkspaceConsistency =
   | 'unverified';
 export type AgentCheckpointReceiptOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentCodeDefinitionOutput_AgentCodeBackend =
+  | {
+      kind: 'lsp';
+      server: string;
+    }
+  | {
+      kind: 'indexed';
+    };
+export type AgentCodeHoverOutput_AgentCodeBackend =
+  | {
+      kind: 'lsp';
+      server: string;
+    }
+  | {
+      kind: 'indexed';
+    };
+export type AgentCodeReferencesOutput_AgentCodeBackend =
+  | {
+      kind: 'lsp';
+      server: string;
+    }
+  | {
+      kind: 'indexed';
+    };
+export type AgentCompactOutput_RunId = string;
 export type AgentCompactOutput_AgentExecutionState =
-  | 'admitted'
-  | 'running'
-  | 'waiting'
-  | 'paused'
-  | 'completed'
+  | {
+      kind: 'admitted';
+    }
+  | {
+      kind: 'running';
+    }
+  | {
+      kind: 'waiting';
+      waits: AgentCompactOutput_WaitReason[];
+      authorityUnavailable: boolean;
+    }
+  | {
+      kind: 'completed';
+    }
+  | {
+      kind: 'failed';
+      reason?: AgentCompactOutput_BlockerKind | null;
+    }
+  | {
+      kind: 'cancelled';
+    };
+export type AgentCompactOutput_WaitReason =
+  | {
+      kind: 'cell';
+      cell: AgentCompactOutput_CellId;
+    }
+  | {
+      kind: 'external';
+      task: AgentCompactOutput_ExternalTaskId;
+    }
+  | {
+      kind: 'provider_backoff';
+      attempt: AgentCompactOutput_ModelAttemptId;
+    }
+  | {
+      kind: 'model';
+      attempt: AgentCompactOutput_ModelAttemptId;
+    }
+  | {
+      kind: 'approval';
+      approval: AgentCompactOutput_ApprovalId;
+    }
+  | {
+      kind: 'retry';
+      attempt: AgentCompactOutput_ModelAttemptId;
+    }
+  | {
+      kind: 'operation';
+      tool: AgentCompactOutput_ToolKey;
+    }
+  | {
+      kind: 'child';
+      run: AgentCompactOutput_RunId;
+    }
+  | {
+      kind: 'blocker';
+      blocker: AgentCompactOutput_BlockerId;
+    };
+export type AgentCompactOutput_CellId = string;
+export type AgentCompactOutput_ExternalTaskId = string;
+export type AgentCompactOutput_ModelAttemptId = string;
+export type AgentCompactOutput_ApprovalId = string;
+export type AgentCompactOutput_BlockerId = string;
+export type AgentCompactOutput_BlockerKind =
+  | {
+      kind: 'external_publication_unavailable';
+      publication: AgentCompactOutput_ExternalPublicationId;
+      diagnostic: string;
+    }
+  | {
+      kind: 'external_publication_item';
+      key: AgentCompactOutput_ExternalPublicationKey;
+      reason: AgentCompactOutput_ExternalPublicationBlocker;
+    }
+  | {
+      kind: 'current_authority_unavailable';
+      stage: AgentCompactOutput_AuthorityStage;
+      diagnostic: string;
+    }
+  | {
+      kind: 'external_effect_unknown';
+      task: AgentCompactOutput_ExternalTaskId;
+      operation: string;
+    }
+  | {
+      kind: 'operation_unknown';
+      tool: AgentCompactOutput_ToolKey;
+      reference: AgentCompactOutput_RecoveryRef;
+    }
+  | {
+      kind: 'provider_effect_unknown';
+      attempt: AgentCompactOutput_ModelAttemptId;
+      call: string;
+    }
+  | {
+      kind: 'original_admission_unknown';
+      tool: AgentCompactOutput_ToolKey;
+    }
+  | {
+      kind: 'code_cell_recovery_unavailable';
+      cell: string;
+    }
+  | {
+      kind: 'unsupported_protocol';
+      protocol: string;
+      version: number;
+    }
+  | {
+      kind: 'tool_cleanup_unconfirmed';
+      tool: AgentCompactOutput_ToolKey;
+      diagnostic: string;
+    }
+  | {
+      kind: 'model_cleanup_unconfirmed';
+      attempt: AgentCompactOutput_ModelAttemptId;
+      diagnostic: string;
+    }
+  | {
+      kind: 'cleanup_unconfirmed';
+      reference: AgentCompactOutput_RecoveryRef;
+    }
+  | {
+      kind: 'resources_unavailable';
+      tool: AgentCompactOutput_ToolKey;
+    }
+  | {
+      kind: 'external_task_unobservable';
+      descriptor: AgentCompactOutput_ContentRef;
+    };
+export type AgentCompactOutput_ExternalPublicationId = string;
+export type AgentCompactOutput_ExternalPublicationBlocker =
+  | 'unknown'
+  | 'conflict'
+  | 'unsupported'
   | 'failed'
-  | 'cancelled';
+  | 'not_attempted'
+  | 'cleanup_unconfirmed';
+export type AgentCompactOutput_AuthorityStage =
+  | 'current_session'
+  | 'workspace_scope'
+  | 'tool_bindings'
+  | 'backend_scope'
+  | 'input_codec';
+/**
+ * Hierarchical, stable source keys. Display aliases never become data identities.
+ */
+export type AgentCompactOutput_InstanceId = string[];
+export type AgentCompactOutput_Transport = 'local' | 'remote';
+export type AgentCompactOutput_RecoveryProtocol = 'journal_v1';
 export type AgentCompactOutput_AgentCompactRejection =
   | 'busy'
   | 'closed'
   | 'archived'
   | 'backend_unavailable'
   | 'workspace_changed';
+export type AgentCreatePresetOutput_PresetRevision = number;
+export type AgentCreatePresetOutput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
+export type AgentDeleteGitHubTokenOutput_AgentGitHubTokenSource =
+  | 'manual'
+  | 'env'
+  | 'hosts_file'
+  | 'netrc'
+  | 'gh_cli';
+export type AgentDeletePresetOutput_PresetRevision = number;
+export type AgentDeletePresetOutput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
+export type AgentExternalUsageLimitsOutput_UsageLimit =
+  | {
+      kind: 'window';
+      label?: string | null;
+      period?: AgentExternalUsageLimitsOutput_UsagePeriod | null;
+      /**
+       * Reset time in Unix seconds.
+       */
+      resetsAt?: number | null;
+      usedPercent: number;
+      quantity?: AgentExternalUsageLimitsOutput_UsageQuantity | null;
+    }
+  | {
+      kind: 'balance';
+      label?: string | null;
+      amount: number;
+      unit?: string | null;
+    }
+  | {
+      kind: 'unlimited';
+      label?: string | null;
+    }
+  | {
+      kind: 'disabled';
+      label: string;
+      period: AgentExternalUsageLimitsOutput_UsagePeriod;
+    };
+export type AgentExternalUsageLimitsOutput_UsagePeriod =
+  | {
+      kind: 'duration';
+      seconds: number;
+    }
+  | {
+      kind: 'monthly';
+    };
+export type AgentGitCompareInput_AgentGitCompareSpec =
+  | {
+      kind: 'branch';
+      base: string;
+    }
+  | {
+      kind: 'commit';
+      oid: string;
+    }
+  | {
+      kind: 'range';
+      base: string;
+      head: string;
+    };
+export type AgentGitCompareOutput_GitChangeKind =
+  | 'added'
+  | 'modified'
+  | 'deleted'
+  | 'type_changed'
+  | 'conflicted';
+export type AgentGitCompareDiffInput_AgentGitCompareSpec =
+  | {
+      kind: 'branch';
+      base: string;
+    }
+  | {
+      kind: 'commit';
+      oid: string;
+    }
+  | {
+      kind: 'range';
+      base: string;
+      head: string;
+    };
+export type AgentGithubPullRequestDetailOutput_AgentGitHubTokenSource =
+  | 'manual'
+  | 'env'
+  | 'hosts_file'
+  | 'netrc'
+  | 'gh_cli';
+export type AgentGithubPullRequestDetailOutput_AgentGitHubPullFileStatus =
+  | 'added'
+  | 'modified'
+  | 'removed'
+  | 'renamed'
+  | 'copied'
+  | 'changed';
+export type AgentGithubPullRequestDetailOutput_AgentGitHubDiffSide = 'LEFT' | 'RIGHT';
+export type AgentGithubPullRequestsInput_AgentGitHubPullStateFilter = 'open' | 'closed' | 'all';
+export type AgentGithubPullRequestsOutput_AgentGitHubTokenSource =
+  | 'manual'
+  | 'env'
+  | 'hosts_file'
+  | 'netrc'
+  | 'gh_cli';
+export type AgentGithubSubmitReviewInput_AgentGitHubReviewEvent =
+  | 'comment'
+  | 'approve'
+  | 'request_changes';
+export type AgentGithubSubmitReviewInput_AgentGitHubDiffSide = 'LEFT' | 'RIGHT';
 /**
  * Hierarchical, stable source keys. Display aliases never become data identities.
  */
@@ -114,7 +494,8 @@ export type AgentHistoryCheckpointLoadReceiptOutput_InstanceId = string[];
 export type AgentHistoryCheckpointLoadReceiptOutput_Transport = 'local' | 'remote';
 export type AgentHistoryCheckpointLoadReceiptOutput_RecoveryProtocol = 'journal_v1';
 /**
- * Unresolved means no durable result is known, including after process loss.
+ * Unresolved and Unknown may advance to authoritative original evidence.
+ * Returned and NotExecuted are immutable; handler errors are Returned too.
  */
 export type AgentHistoryCheckpointLoadReceiptOutput_OperationOutcome =
   | {
@@ -122,12 +503,35 @@ export type AgentHistoryCheckpointLoadReceiptOutput_OperationOutcome =
     }
   | {
       kind: 'returned';
-      value: unknown;
+      result: AgentHistoryCheckpointLoadReceiptOutput_OperationResult;
+    }
+  | {
+      kind: 'not_executed';
+      proof: AgentHistoryCheckpointLoadReceiptOutput_NotExecutedProof;
     }
   | {
       kind: 'unknown';
       diagnostic: string;
     };
+/**
+ * A definite handler return. Failure does not imply absence of side effects.
+ */
+export type AgentHistoryCheckpointLoadReceiptOutput_OperationResult =
+  | {
+      kind: 'success';
+      value: unknown;
+    }
+  | {
+      kind: 'failure';
+      diagnostic: string;
+    };
+/**
+ * An observation of a provider fence, not a capability to create that fence.
+ * Only the original provider may establish this proof before handler start.
+ */
+export type AgentHistoryCheckpointLoadReceiptOutput_NotExecutedProof = {
+  kind: 'provider_prevented_before_start';
+};
 export type AgentHistoryCheckpointLoadReceiptOutput_OperationCleanup =
   | {
       kind: 'unconfirmed';
@@ -156,6 +560,25 @@ export type AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceCons
   | 'unverified';
 export type AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentHistoryRequestsInput_HistoryRowAddress = Runtime.HistoryRowAddress;
+export type AgentHistoryRequestsOutput_StepId = string;
+export type AgentHistoryRequestsOutput_ModelAttemptId = string;
+export type AgentHistoryRequestsOutput_ModelPurpose = 'main' | 'summary';
+export type AgentHistoryRequestsOutput_UsageOutcome = ('success' | 'error' | 'aborted') | 'unknown';
+export type AgentHistoryRequestsOutput_AgentHistoryRequestRetry =
+  | {
+      kind: 'scheduled';
+      at: number;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'started';
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'cancelled';
+      [k: string]: unknown | undefined;
+    };
 export type AgentLoadHistoryCheckpointOutput_AgentCheckpointLoadState =
   | {
       kind: 'preparing';
@@ -173,6 +596,36 @@ export type AgentLoadHistoryCheckpointOutput_AgentCheckpointWorkspaceConsistency
   | 'unverified';
 export type AgentLoadHistoryCheckpointOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentLoadedHistoryCheckpointArtifactInput_RunId = string;
+export type AgentLoadedHistoryCheckpointArtifactsInput_RunId = string;
+/**
+ * An original row within the actual read capability supplied by the caller.
+ * Marker paths are relative to that capability; none of these fields grants access.
+ */
+export type AgentLoadedHistoryCheckpointAttachmentImageInput_HistoryRowAddress =
+  | {
+      kind: 'live';
+      sequence: number;
+      fact: AgentLoadedHistoryCheckpointAttachmentImageInput_FactId;
+      itemIndex: number;
+    }
+  | {
+      kind: 'snapshot';
+      path: AgentLoadedHistoryCheckpointAttachmentImageInput_RunId[];
+      snapshot: string;
+      sequence: number;
+      fact: AgentLoadedHistoryCheckpointAttachmentImageInput_FactId;
+      itemIndex: number;
+    }
+  | {
+      kind: 'imported';
+      path: AgentLoadedHistoryCheckpointAttachmentImageInput_RunId[];
+      snapshot: string;
+      messageOrdinal: number;
+      partOrdinal: number;
+    };
+export type AgentLoadedHistoryCheckpointAttachmentImageInput_FactId = string;
+export type AgentLoadedHistoryCheckpointAttachmentImageInput_RunId = string;
 /**
  * Row reveals an exact field; Before/After continue at byte boundaries and
  * Event addresses the raw event log. Returned chunks retain ascending presentation
@@ -186,8 +639,20 @@ export type AgentLoadedHistoryCheckpointHistoryInput_HistoryPosition =
       kind: 'tail';
     }
   | {
+      kind: 'message';
+      messageId: string;
+    }
+  | {
+      kind: 'before_message';
+      messageId: string;
+    }
+  | {
+      kind: 'after_message';
+      messageId: string;
+    }
+  | {
       kind: 'row';
-      position: AgentLoadedHistoryCheckpointHistoryInput_HistoryRowPosition;
+      position: AgentLoadedHistoryCheckpointHistoryInput_HistoryRowAddress;
       field: AgentLoadedHistoryCheckpointHistoryInput_HistoryField;
     }
   | {
@@ -203,14 +668,332 @@ export type AgentLoadedHistoryCheckpointHistoryInput_HistoryPosition =
       sequence: number;
     };
 /**
+ * An original row within the actual read capability supplied by the caller.
+ * Marker paths are relative to that capability; none of these fields grants access.
+ */
+export type AgentLoadedHistoryCheckpointHistoryInput_HistoryRowAddress =
+  | {
+      kind: 'live';
+      sequence: number;
+      fact: AgentLoadedHistoryCheckpointHistoryInput_FactId;
+      itemIndex: number;
+    }
+  | {
+      kind: 'snapshot';
+      path: AgentLoadedHistoryCheckpointHistoryInput_RunId[];
+      snapshot: string;
+      sequence: number;
+      fact: AgentLoadedHistoryCheckpointHistoryInput_FactId;
+      itemIndex: number;
+    }
+  | {
+      kind: 'imported';
+      path: AgentLoadedHistoryCheckpointHistoryInput_RunId[];
+      snapshot: string;
+      messageOrdinal: number;
+      partOrdinal: number;
+    };
+export type AgentLoadedHistoryCheckpointHistoryInput_FactId = string;
+export type AgentLoadedHistoryCheckpointHistoryInput_RunId = string;
+/**
  * A readable field in a conversation window, in presentation order.
  */
 export type AgentLoadedHistoryCheckpointHistoryInput_HistoryField = 'thinking' | 'body';
+/**
+ * Tool output is available through source reads in both views. Conversation
+ * windows carry tool metadata only, keeping large results out of chat paging.
+ */
+export type AgentLoadedHistoryCheckpointHistoryInput_HistoryView =
+  | ('text' | 'conversation')
+  | 'chat'
+  | 'turn'
+  | 'steps';
+/**
+ * An original row within the actual read capability supplied by the caller.
+ * Marker paths are relative to that capability; none of these fields grants access.
+ */
+export type AgentLoadedHistoryCheckpointSourceInput_HistoryRowAddress =
+  | {
+      kind: 'live';
+      sequence: number;
+      fact: AgentLoadedHistoryCheckpointSourceInput_FactId;
+      itemIndex: number;
+    }
+  | {
+      kind: 'snapshot';
+      path: AgentLoadedHistoryCheckpointSourceInput_RunId[];
+      snapshot: string;
+      sequence: number;
+      fact: AgentLoadedHistoryCheckpointSourceInput_FactId;
+      itemIndex: number;
+    }
+  | {
+      kind: 'imported';
+      path: AgentLoadedHistoryCheckpointSourceInput_RunId[];
+      snapshot: string;
+      messageOrdinal: number;
+      partOrdinal: number;
+    };
+export type AgentLoadedHistoryCheckpointSourceInput_FactId = string;
+export type AgentLoadedHistoryCheckpointSourceInput_RunId = string;
+/**
+ * An explicitly selected canonical transcript field, never an execution grant.
+ */
+export type AgentLoadedHistoryCheckpointSourceInput_SourceField =
+  | ('body' | 'thinking' | 'tool_name' | 'failure_message' | 'error_class' | 'arguments' | 'result')
+  | 'receipt'
+  | 'provider_metadata'
+  | 'original';
+/**
+ * A structural selector into an original JSON field. Keys and array indices
+ * remain distinct; neither locates a filesystem resource nor grants access.
+ */
+export type AgentLoadedHistoryCheckpointSourceInput_HistorySourceSegment = string | number;
+export type AgentLoadedHistoryCheckpointSourceInput_SourcePosition =
+  | {
+      kind: 'start';
+    }
+  | {
+      kind: 'tail';
+    }
+  | {
+      kind: 'before';
+      offset: number;
+    }
+  | {
+      kind: 'after';
+      offset: number;
+    };
+/**
+ * An original row within the actual read capability supplied by the caller.
+ * Marker paths are relative to that capability; none of these fields grants access.
+ */
+export type AgentLoadedHistoryCheckpointToolImageInput_HistoryRowAddress =
+  | {
+      kind: 'live';
+      sequence: number;
+      fact: AgentLoadedHistoryCheckpointToolImageInput_FactId;
+      itemIndex: number;
+    }
+  | {
+      kind: 'snapshot';
+      path: AgentLoadedHistoryCheckpointToolImageInput_RunId[];
+      snapshot: string;
+      sequence: number;
+      fact: AgentLoadedHistoryCheckpointToolImageInput_FactId;
+      itemIndex: number;
+    }
+  | {
+      kind: 'imported';
+      path: AgentLoadedHistoryCheckpointToolImageInput_RunId[];
+      snapshot: string;
+      messageOrdinal: number;
+      partOrdinal: number;
+    };
+export type AgentLoadedHistoryCheckpointToolImageInput_FactId = string;
+export type AgentLoadedHistoryCheckpointToolImageInput_RunId = string;
+export type AgentMemoriesInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentMemoriesOutput_MemoryMode = 'auto_recall' | 'user_recall' | 'user_always';
+export type AgentMemoriesOutput_MemoryState = 'active' | 'unresolved' | 'suppressed';
+export type AgentMemoriesOutput_MemoryKind = 'unspecified' | 'fact' | 'preference' | 'instruction';
+export type AgentMemoriesOutput_MemoryStatement =
+  | 'unspecified'
+  | 'assertion'
+  | 'preference'
+  | 'intention';
+export type AgentMemoriesOutput_MemoryTemporal =
+  | {
+      kind: 'unspecified';
+    }
+  | {
+      kind: 'timeless';
+    }
+  | {
+      kind: 'interval';
+      start: number;
+      end?: number | null;
+    };
+export type AgentMemoryInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentMemoryOutput_MemoryMode = 'auto_recall' | 'user_recall' | 'user_always';
+export type AgentMemoryOutput_MemoryState = 'active' | 'unresolved' | 'suppressed';
+export type AgentMemoryOutput_MemoryKind = 'unspecified' | 'fact' | 'preference' | 'instruction';
+export type AgentMemoryOutput_MemoryStatement =
+  | 'unspecified'
+  | 'assertion'
+  | 'preference'
+  | 'intention';
+export type AgentMemoryOutput_MemoryTemporal =
+  | {
+      kind: 'unspecified';
+    }
+  | {
+      kind: 'timeless';
+    }
+  | {
+      kind: 'interval';
+      start: number;
+      end?: number | null;
+    };
+export type AgentMemoryEvidenceInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentMemoryEvidenceOutput_MemorySource =
+  | {
+      kind: 'conversation';
+      reference: AgentMemoryEvidenceOutput_MemoryEvidenceReference;
+      observedAt: number;
+      operationId: string;
+    }
+  | {
+      kind: 'user_operation';
+      operationId: string;
+      observedAt: number;
+    };
+export type AgentMemoryHistoryInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentMemoryHistoryOutput_MemoryKind =
+  | 'unspecified'
+  | 'fact'
+  | 'preference'
+  | 'instruction';
+export type AgentMemoryHistoryOutput_MemoryStatement =
+  | 'unspecified'
+  | 'assertion'
+  | 'preference'
+  | 'intention';
+export type AgentMemoryHistoryOutput_MemoryTemporal =
+  | {
+      kind: 'unspecified';
+    }
+  | {
+      kind: 'timeless';
+    }
+  | {
+      kind: 'interval';
+      start: number;
+      end?: number | null;
+    };
+export type AgentMemoryHistoryOutput_MemorySource =
+  | {
+      kind: 'conversation';
+      reference: AgentMemoryHistoryOutput_MemoryEvidenceReference;
+      observedAt: number;
+      operationId: string;
+    }
+  | {
+      kind: 'user_operation';
+      operationId: string;
+      observedAt: number;
+    };
+export type AgentMemoryHistoryOutput_MemoryGeneration = 'user_input' | 'extraction';
 export type AgentOpenBotOutput_AgentBotRejection =
   | 'disabled'
   | 'creation_rejected'
   | 'no_workspace';
+export type AgentPendingMemoriesInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentPendingMemoriesOutput_MemoryMode = 'auto_recall' | 'user_recall' | 'user_always';
+export type AgentPendingMemoriesOutput_MemoryState = 'active' | 'unresolved' | 'suppressed';
+export type AgentPendingMemoriesOutput_MemoryKind =
+  | 'unspecified'
+  | 'fact'
+  | 'preference'
+  | 'instruction';
+export type AgentPendingMemoriesOutput_MemoryStatement =
+  | 'unspecified'
+  | 'assertion'
+  | 'preference'
+  | 'intention';
+export type AgentPendingMemoriesOutput_MemoryTemporal =
+  | {
+      kind: 'unspecified';
+    }
+  | {
+      kind: 'timeless';
+    }
+  | {
+      kind: 'interval';
+      start: number;
+      end?: number | null;
+    };
 export type AgentPredictNextMessageInput_AgentPredictionTrigger = 'live' | 'catch_up';
+export type AgentPresetOutput_PresetRevision = number;
+export type AgentPresetOutput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
+export type AgentPresetOutput_PresetAvailability =
+  | {
+      kind: 'available';
+    }
+  | {
+      kind: 'disabled';
+    }
+  | {
+      kind: 'modelUnavailable';
+    }
+  | {
+      kind: 'thinkingLevelUnavailable';
+    };
+export type AgentPresetsOutput_PresetRevision = number;
+export type AgentPresetsOutput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
+export type AgentPresetsOutput_PresetAvailability =
+  | {
+      kind: 'available';
+    }
+  | {
+      kind: 'disabled';
+    }
+  | {
+      kind: 'modelUnavailable';
+    }
+  | {
+      kind: 'thinkingLevelUnavailable';
+    };
 export type AgentPublishCheckpointInput_AgentCheckpointWorkspaceConsistency =
   | 'caller_confirmed_quiescent'
   | 'unverified';
@@ -240,6 +1023,14 @@ export type AgentPublishCheckpointOutput_AgentCheckpointWorkspaceConsistency =
   | 'unverified';
 export type AgentPublishCheckpointOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+/**
+ * A file selected for reading. Only workspace paths are accepted by editing APIs.
+ */
+export type AgentReadFileInput_FileReadPath =
+  | AgentReadFileInput_WorkspacePath
+  | {
+      absolute: string;
+    };
 /**
  * All parts are subscription items; only End admits a complete preview.
  * Offsets and byte counts refer to original bytes, not Base64 or UTF-16 lengths.
@@ -290,8 +1081,7 @@ export type AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointFrame =
   | {
       kind: 'checkpoint';
       head: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointHead;
-      inventory: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointInventory;
-      bundle: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointObject;
+      history: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointSnapshot;
       workspace?: AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceSnapshot | null;
     }
   | {
@@ -309,6 +1099,122 @@ export type AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceConsistency
   | 'unverified';
 export type AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentReconcileMemoriesInput_MemoryScope =
+  | {
+      kind: 'personal';
+    }
+  | {
+      kind: 'project';
+      sessionId: string;
+    };
+export type AgentReconcileMemoriesInput_MemoryEdit =
+  | {
+      kind: 'add_evidence';
+      id: string;
+      expectedRevision: number;
+      assertion: number;
+      reference: AgentReconcileMemoriesInput_MemoryEvidenceReference;
+    }
+  | {
+      kind: 'create';
+      body: string;
+      metadata?: AgentReconcileMemoriesInput_MemoryMetadata;
+    }
+  | {
+      kind: 'correct';
+      id: string;
+      expectedRevision: number;
+      body: string;
+      metadata?: AgentReconcileMemoriesInput_MemoryMetadata;
+    }
+  | {
+      kind: 'set_always';
+      id: string;
+      expectedRevision: number;
+      always: boolean;
+    }
+  | {
+      kind: 'delete';
+      id: string;
+      expectedRevision: number;
+    }
+  | {
+      kind: 'restore';
+      id: string;
+      expectedRevision: number;
+      body: string;
+      metadata?: AgentReconcileMemoriesInput_MemoryMetadata;
+    };
+export type AgentReconcileMemoriesInput_MemoryKind =
+  | 'unspecified'
+  | 'fact'
+  | 'preference'
+  | 'instruction';
+export type AgentReconcileMemoriesInput_MemoryStatement =
+  | 'unspecified'
+  | 'assertion'
+  | 'preference'
+  | 'intention';
+export type AgentReconcileMemoriesInput_MemoryTemporal =
+  | {
+      kind: 'unspecified';
+    }
+  | {
+      kind: 'timeless';
+    }
+  | {
+      kind: 'interval';
+      start: number;
+      end?: number | null;
+    };
+export type AgentReconcileMemoriesOutput_MemoryResult =
+  | {
+      kind: 'created';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'revised';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'unresolved';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'retryable';
+      reason: string;
+    }
+  | {
+      kind: 'evidence_added';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'suppressed';
+    }
+  | {
+      kind: 'saved';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'deleted';
+      id: string;
+      revision: number;
+    }
+  | {
+      kind: 'conflict';
+      actual: number;
+    }
+  | {
+      kind: 'not_found';
+    }
+  | {
+      kind: 'invalid_state';
+    };
 export type AgentRequestSystemPermissionOutput_AgentSystemPermissionOutcome =
   | {
       kind: 'system_permission_granted';
@@ -321,8 +1227,8 @@ export type AgentRequestSystemPermissionOutput_AgentSystemPermissionOutcome =
     };
 export type AgentRequestSystemPermissionOutput_ClosureReason =
   | 'steered'
-  | 'turn_stopped'
-  | 'turn_terminal'
+  | 'run_stopped'
+  | 'run_terminal'
   | 'producer_cancelled'
   | 'timed_out'
   | 'host_restarted'
@@ -352,6 +1258,7 @@ export type AgentRestoreSessionCheckpointInput_AgentBackendPreference =
       kind: 'model';
       connectionId: string;
       modelId: string;
+      serviceTier?: string | null;
       thinkingLevel?: AgentRestoreSessionCheckpointInput_ThinkingLevel | null;
     }
   | {
@@ -376,6 +1283,12 @@ export type AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceConsiste
   | 'unverified';
 export type AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentSaveGitHubTokenOutput_AgentGitHubTokenSource =
+  | 'manual'
+  | 'env'
+  | 'hosts_file'
+  | 'netrc'
+  | 'gh_cli';
 /**
  * Hierarchical, stable source keys. Display aliases never become data identities.
  */
@@ -399,6 +1312,7 @@ export type AgentSessionCheckpointRestoreReceiptInput_AgentBackendPreference =
       kind: 'model';
       connectionId: string;
       modelId: string;
+      serviceTier?: string | null;
       thinkingLevel?: AgentSessionCheckpointRestoreReceiptInput_ThinkingLevel | null;
     }
   | {
@@ -425,7 +1339,8 @@ export type AgentSessionCheckpointRestoreReceiptOutput_InstanceId = string[];
 export type AgentSessionCheckpointRestoreReceiptOutput_Transport = 'local' | 'remote';
 export type AgentSessionCheckpointRestoreReceiptOutput_RecoveryProtocol = 'journal_v1';
 /**
- * Unresolved means no durable result is known, including after process loss.
+ * Unresolved and Unknown may advance to authoritative original evidence.
+ * Returned and NotExecuted are immutable; handler errors are Returned too.
  */
 export type AgentSessionCheckpointRestoreReceiptOutput_OperationOutcome =
   | {
@@ -433,12 +1348,35 @@ export type AgentSessionCheckpointRestoreReceiptOutput_OperationOutcome =
     }
   | {
       kind: 'returned';
-      value: unknown;
+      result: AgentSessionCheckpointRestoreReceiptOutput_OperationResult;
+    }
+  | {
+      kind: 'not_executed';
+      proof: AgentSessionCheckpointRestoreReceiptOutput_NotExecutedProof;
     }
   | {
       kind: 'unknown';
       diagnostic: string;
     };
+/**
+ * A definite handler return. Failure does not imply absence of side effects.
+ */
+export type AgentSessionCheckpointRestoreReceiptOutput_OperationResult =
+  | {
+      kind: 'success';
+      value: unknown;
+    }
+  | {
+      kind: 'failure';
+      diagnostic: string;
+    };
+/**
+ * An observation of a provider fence, not a capability to create that fence.
+ * Only the original provider may establish this proof before handler start.
+ */
+export type AgentSessionCheckpointRestoreReceiptOutput_NotExecutedProof = {
+  kind: 'provider_prevented_before_start';
+};
 export type AgentSessionCheckpointRestoreReceiptOutput_OperationCleanup =
   | {
       kind: 'unconfirmed';
@@ -455,6 +1393,847 @@ export type AgentSessionCheckpointRestoreReceiptOutput_AgentCheckpointWorkspaceC
   | 'unverified';
 export type AgentSessionCheckpointRestoreReceiptOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentSessionCreateInput_AgentSessionKind = 'agent' | 'room';
+export type AgentSessionCreateInput_AgentSessionWorkspaceTarget =
+  | {
+      kind: 'same';
+    }
+  | {
+      kind: 'worktree';
+      path?: string | null;
+    }
+  | {
+      kind: 'directory';
+      path: string;
+    }
+  | {
+      kind: 'session';
+      sessionId: string;
+    }
+  | {
+      kind: 'project';
+      projectId: string;
+      path: string;
+    };
+/**
+ * The next turn's choice, independent of an already admitted execution.
+ * Model revisions are resolved afresh; preferences never grant execution authority.
+ */
+export type AgentSessionCreateInput_AgentBackendPreference =
+  | {
+      kind: 'model';
+      connectionId: string;
+      modelId: string;
+      serviceTier?: string | null;
+      thinkingLevel?: AgentSessionCreateInput_ThinkingLevel | null;
+    }
+  | {
+      kind: 'executor';
+      selection: AgentSessionCreateInput_AgentExecutorSelection;
+    };
+export type AgentSessionCreateInput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
+/**
+ * Runtime-native effort, not a Host model's closed reasoning enum.
+ */
+export type AgentSessionCreateInput_ExecutorEffort = string;
+export type AgentSessionListInput_AgentSessionKind = 'agent' | 'room';
+export type AgentSessionListInput_AgentSessionToolScope = ('all' | 'archived') | 'children';
+export type AgentSessionListInput_AgentSessionActivity = 'idle' | 'working' | 'waiting';
+export type AgentSessionListOutput_AgentSessionKind = 'agent' | 'room';
+export type AgentSessionListOutput_AgentSessionActivity = 'idle' | 'working' | 'waiting';
+/**
+ * The next turn's choice, independent of an already admitted execution.
+ * Model revisions are resolved afresh; preferences never grant execution authority.
+ */
+export type AgentSessionListOutput_AgentBackendPreference =
+  | {
+      kind: 'model';
+      connectionId: string;
+      modelId: string;
+      serviceTier?: string | null;
+      thinkingLevel?: AgentSessionListOutput_ThinkingLevel | null;
+    }
+  | {
+      kind: 'executor';
+      selection: AgentSessionListOutput_AgentExecutorSelection;
+    };
+export type AgentSessionListOutput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
+/**
+ * Runtime-native effort, not a Host model's closed reasoning enum.
+ */
+export type AgentSessionListOutput_ExecutorEffort = string;
+/**
+ * Session sandbox policy. Full access disables isolation and permits Computer Use
+ * without additional application, browser or audio consent.
+ */
+export type AgentSessionListOutput_AgentWorkspaceAccess =
+  | 'read_only'
+  | 'workspace_write'
+  | 'danger_full_access';
+export type AgentSessionManageInput_AgentSessionManageAction =
+  | {
+      kind: 'update';
+      title?: string | null;
+      labels?: string[] | null;
+      pinned?: boolean | null;
+      expectedRevision?: number | null;
+    }
+  | {
+      kind: 'archive';
+      expectedRevision?: number | null;
+    }
+  | {
+      kind: 'restore';
+      expectedRevision?: number | null;
+    }
+  | {
+      kind: 'remove';
+      expectedRevision?: number | null;
+    }
+  | {
+      kind: 'edit_queue';
+      edit: AgentSessionManageInput_AgentQueueAction;
+      expectedRevision?: number | null;
+    }
+  | {
+      kind: 'continue_run';
+      model: AgentSessionManageInput_ModelSelection;
+      thinkingLevel?: AgentSessionManageInput_ThinkingLevel | null;
+      sourceRunId?: AgentSessionManageInput_RunId | null;
+      sourceHighWater?: number | null;
+    };
+export type AgentSessionManageInput_AgentQueueAction =
+  | {
+      kind: 'retract';
+      messageId: string;
+    }
+  | {
+      kind: 'promote';
+      messageId: string;
+    }
+  | {
+      kind: 'update';
+      messageId: string;
+      message: string;
+    }
+  | {
+      kind: 'reorder';
+      /**
+       * @minItems 1
+       */
+      messageIds: [string, ...string[]];
+    };
+export type AgentSessionManageInput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
+export type AgentSessionManageInput_RunId = string;
+export type AgentSessionManageOutput_AgentSessionKind = 'agent' | 'room';
+export type AgentSessionManageOutput_AgentSessionActivity = 'idle' | 'working' | 'waiting';
+/**
+ * The next turn's choice, independent of an already admitted execution.
+ * Model revisions are resolved afresh; preferences never grant execution authority.
+ */
+export type AgentSessionManageOutput_AgentBackendPreference =
+  | {
+      kind: 'model';
+      connectionId: string;
+      modelId: string;
+      serviceTier?: string | null;
+      thinkingLevel?: AgentSessionManageOutput_ThinkingLevel | null;
+    }
+  | {
+      kind: 'executor';
+      selection: AgentSessionManageOutput_AgentExecutorSelection;
+    };
+export type AgentSessionManageOutput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
+/**
+ * Runtime-native effort, not a Host model's closed reasoning enum.
+ */
+export type AgentSessionManageOutput_ExecutorEffort = string;
+/**
+ * Session sandbox policy. Full access disables isolation and permits Computer Use
+ * without additional application, browser or audio consent.
+ */
+export type AgentSessionManageOutput_AgentWorkspaceAccess =
+  | 'read_only'
+  | 'workspace_write'
+  | 'danger_full_access';
+export type AgentSessionManageOutput_AgentQueueMutationResult =
+  | {
+      kind: 'committed';
+      revision: number;
+    }
+  | {
+      kind: 'revision_conflict';
+      expected: number;
+      actual: number;
+    }
+  | {
+      kind: 'rejected';
+      reason: AgentSessionManageOutput_AgentQueueRejection;
+    };
+export type AgentSessionManageOutput_AgentQueueRejection =
+  | 'not_your_message'
+  | 'closed'
+  | 'missing'
+  | 'in_flight'
+  | 'invalid_edit'
+  | 'execution_changed'
+  | 'not_running';
+export type AgentSessionManageOutput_RunId = string;
+export type AgentSessionManageOutput_AgentExecutionState =
+  | {
+      kind: 'admitted';
+    }
+  | {
+      kind: 'running';
+    }
+  | {
+      kind: 'waiting';
+      waits: AgentSessionManageOutput_WaitReason[];
+      authorityUnavailable: boolean;
+    }
+  | {
+      kind: 'completed';
+    }
+  | {
+      kind: 'failed';
+      reason?: AgentSessionManageOutput_BlockerKind | null;
+    }
+  | {
+      kind: 'cancelled';
+    };
+export type AgentSessionManageOutput_WaitReason =
+  | {
+      kind: 'cell';
+      cell: AgentSessionManageOutput_CellId;
+    }
+  | {
+      kind: 'external';
+      task: AgentSessionManageOutput_ExternalTaskId;
+    }
+  | {
+      kind: 'provider_backoff';
+      attempt: AgentSessionManageOutput_ModelAttemptId;
+    }
+  | {
+      kind: 'model';
+      attempt: AgentSessionManageOutput_ModelAttemptId;
+    }
+  | {
+      kind: 'approval';
+      approval: AgentSessionManageOutput_ApprovalId;
+    }
+  | {
+      kind: 'retry';
+      attempt: AgentSessionManageOutput_ModelAttemptId;
+    }
+  | {
+      kind: 'operation';
+      tool: AgentSessionManageOutput_ToolKey;
+    }
+  | {
+      kind: 'child';
+      run: AgentSessionManageOutput_RunId;
+    }
+  | {
+      kind: 'blocker';
+      blocker: AgentSessionManageOutput_BlockerId;
+    };
+export type AgentSessionManageOutput_CellId = string;
+export type AgentSessionManageOutput_ExternalTaskId = string;
+export type AgentSessionManageOutput_ModelAttemptId = string;
+export type AgentSessionManageOutput_ApprovalId = string;
+export type AgentSessionManageOutput_BlockerId = string;
+export type AgentSessionManageOutput_BlockerKind =
+  | {
+      kind: 'external_publication_unavailable';
+      publication: AgentSessionManageOutput_ExternalPublicationId;
+      diagnostic: string;
+    }
+  | {
+      kind: 'external_publication_item';
+      key: AgentSessionManageOutput_ExternalPublicationKey;
+      reason: AgentSessionManageOutput_ExternalPublicationBlocker;
+    }
+  | {
+      kind: 'current_authority_unavailable';
+      stage: AgentSessionManageOutput_AuthorityStage;
+      diagnostic: string;
+    }
+  | {
+      kind: 'external_effect_unknown';
+      task: AgentSessionManageOutput_ExternalTaskId;
+      operation: string;
+    }
+  | {
+      kind: 'operation_unknown';
+      tool: AgentSessionManageOutput_ToolKey;
+      reference: AgentSessionManageOutput_RecoveryRef;
+    }
+  | {
+      kind: 'provider_effect_unknown';
+      attempt: AgentSessionManageOutput_ModelAttemptId;
+      call: string;
+    }
+  | {
+      kind: 'original_admission_unknown';
+      tool: AgentSessionManageOutput_ToolKey;
+    }
+  | {
+      kind: 'code_cell_recovery_unavailable';
+      cell: string;
+    }
+  | {
+      kind: 'unsupported_protocol';
+      protocol: string;
+      version: number;
+    }
+  | {
+      kind: 'tool_cleanup_unconfirmed';
+      tool: AgentSessionManageOutput_ToolKey;
+      diagnostic: string;
+    }
+  | {
+      kind: 'model_cleanup_unconfirmed';
+      attempt: AgentSessionManageOutput_ModelAttemptId;
+      diagnostic: string;
+    }
+  | {
+      kind: 'cleanup_unconfirmed';
+      reference: AgentSessionManageOutput_RecoveryRef;
+    }
+  | {
+      kind: 'resources_unavailable';
+      tool: AgentSessionManageOutput_ToolKey;
+    }
+  | {
+      kind: 'external_task_unobservable';
+      descriptor: AgentSessionManageOutput_ContentRef;
+    };
+export type AgentSessionManageOutput_ExternalPublicationId = string;
+export type AgentSessionManageOutput_ExternalPublicationBlocker =
+  | 'unknown'
+  | 'conflict'
+  | 'unsupported'
+  | 'failed'
+  | 'not_attempted'
+  | 'cleanup_unconfirmed';
+export type AgentSessionManageOutput_AuthorityStage =
+  | 'current_session'
+  | 'workspace_scope'
+  | 'tool_bindings'
+  | 'backend_scope'
+  | 'input_codec';
+/**
+ * Hierarchical, stable source keys. Display aliases never become data identities.
+ */
+export type AgentSessionManageOutput_InstanceId = string[];
+export type AgentSessionManageOutput_Transport = 'local' | 'remote';
+export type AgentSessionManageOutput_RecoveryProtocol = 'journal_v1';
+export type AgentSessionManageOutput_AgentContinuationRejection =
+  | 'closed'
+  | 'archived'
+  | 'busy'
+  | 'source_missing'
+  | 'source_changed'
+  | 'source_not_terminal'
+  | 'already_continued'
+  | 'workspace_changed'
+  | 'safety_check_failed';
+export type AgentSessionManageOutput_AgentRejection =
+  | 'preset_not_found'
+  | 'preset_disabled'
+  | 'preset_conflict'
+  | 'preset_model_unavailable'
+  | 'preset_thinking_level_unavailable'
+  | 'preset_backend_conflict'
+  | 'permission_change_requires_user'
+  | 'title_invalid'
+  | 'labels_invalid'
+  | 'tools_unavailable'
+  | 'busy'
+  | 'workspace_unavailable'
+  | 'session_unavailable'
+  | 'history_unavailable'
+  | 'closed';
+export type AgentSessionReadInput_AgentSessionTranscriptView = 'turns' | 'raw' | 'status_only';
+export type AgentSessionReadInput_AgentSessionWindowPosition = 'tail' | 'start';
+export type AgentSessionReadInput_AgentRoomAnchorMode = 'at' | 'before' | 'after';
+/**
+ * An original row within the actual read capability supplied by the caller.
+ * Marker paths are relative to that capability; none of these fields grants access.
+ */
+export type AgentSessionReadInput_HistoryRowAddress =
+  | {
+      kind: 'live';
+      sequence: number;
+      fact: AgentSessionReadInput_FactId;
+      itemIndex: number;
+    }
+  | {
+      kind: 'snapshot';
+      path: AgentSessionReadInput_RunId[];
+      snapshot: string;
+      sequence: number;
+      fact: AgentSessionReadInput_FactId;
+      itemIndex: number;
+    }
+  | {
+      kind: 'imported';
+      path: AgentSessionReadInput_RunId[];
+      snapshot: string;
+      messageOrdinal: number;
+      partOrdinal: number;
+    };
+export type AgentSessionReadInput_FactId = string;
+export type AgentSessionReadInput_RunId = string;
+/**
+ * A readable field in a conversation window, in presentation order.
+ */
+export type AgentSessionReadInput_HistoryField = 'thinking' | 'body';
+export type AgentSessionReadOutput_AgentSessionKind = 'agent' | 'room';
+export type AgentSessionReadOutput_AgentSessionActivity = 'idle' | 'working' | 'waiting';
+/**
+ * The next turn's choice, independent of an already admitted execution.
+ * Model revisions are resolved afresh; preferences never grant execution authority.
+ */
+export type AgentSessionReadOutput_AgentBackendPreference =
+  | {
+      kind: 'model';
+      connectionId: string;
+      modelId: string;
+      serviceTier?: string | null;
+      thinkingLevel?: AgentSessionReadOutput_ThinkingLevel | null;
+    }
+  | {
+      kind: 'executor';
+      selection: AgentSessionReadOutput_AgentExecutorSelection;
+    };
+export type AgentSessionReadOutput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
+/**
+ * Runtime-native effort, not a Host model's closed reasoning enum.
+ */
+export type AgentSessionReadOutput_ExecutorEffort = string;
+/**
+ * Session sandbox policy. Full access disables isolation and permits Computer Use
+ * without additional application, browser or audio consent.
+ */
+export type AgentSessionReadOutput_AgentWorkspaceAccess =
+  | 'read_only'
+  | 'workspace_write'
+  | 'danger_full_access';
+export type AgentSessionReadOutput_RunId = string;
+export type AgentSessionReadOutput_InteractionRequest =
+  | {
+      kind: 'session_approval';
+      toolUseId: string;
+      basis: AgentSessionReadOutput_PermissionBasis;
+      sessionId: string;
+      requestId: string;
+      answer: AgentSessionReadOutput_SessionApprovalAnswer;
+    }
+  | {
+      kind: 'service_approval';
+      toolUseId: string;
+      toolName: string;
+      service: string;
+      method: string;
+      binding: string;
+      through: number;
+    }
+  | {
+      kind: 'permissions';
+      target: AgentSessionReadOutput_AuthorizationObligation;
+      toolUseId: string | null;
+      basis: AgentSessionReadOutput_PermissionBasis;
+      request: AgentSessionReadOutput_PermissionRequest;
+    }
+  | {
+      kind: 'question';
+      toolUseId: string;
+      questions: AgentSessionReadOutput_InteractionQuestion[];
+    }
+  | {
+      kind: 'form';
+      toolUseId: string;
+      message: string;
+      requester: AgentSessionReadOutput_FormRequester;
+      fields: AgentSessionReadOutput_FormField[];
+    }
+  | {
+      kind: 'client_capability';
+      toolUseId: string;
+      target: AgentSessionReadOutput_GrantTarget;
+      /**
+       * Agent-owned approvals expire with this original permission boundary.
+       * Unbound capabilities are explicit; Agent-owned capabilities capture a full binding stamp.
+       */
+      basis?: AgentSessionReadOutput_PermissionBasis | null;
+    }
+  | {
+      kind: 'computer_app';
+      toolUseId: string;
+      nativeOperationId: string;
+      target: AgentSessionReadOutput_GrantTarget;
+      basis: AgentSessionReadOutput_PermissionBasis;
+      display: AgentSessionReadOutput_ComputerAppDisplay;
+      allowAlways: boolean;
+      authorityRevision: number;
+    }
+  | {
+      kind: 'system_permission';
+      toolUseId: string;
+      /**
+       * Distinct missing grants.
+       *
+       * @minItems 1
+       */
+      grants: [
+        AgentSessionReadOutput_SystemPermissionGrant,
+        ...AgentSessionReadOutput_SystemPermissionGrant[],
+      ];
+      /**
+       * The application name the operating system lists in its settings.
+       */
+      application: string;
+      applicationLocation?: AgentSessionReadOutput_SystemPermissionApplicationLocation | null;
+    };
+/**
+ * Only access-expanding child decisions can require a parent's human confirmation.
+ */
+export type AgentSessionReadOutput_SessionApprovalAnswer =
+  | {
+      kind: 'service_approval';
+      decision: AgentSessionReadOutput_ApprovalAllow;
+    }
+  | {
+      kind: 'permissions';
+      decision: AgentSessionReadOutput_PermissionApproval;
+    }
+  | {
+      kind: 'client_capability';
+      decision: AgentSessionReadOutput_ApprovalAllow;
+    }
+  | {
+      kind: 'computer_app';
+      decision: AgentSessionReadOutput_ComputerAppApproval;
+    };
+export type AgentSessionReadOutput_ApprovalAllow = 'allow';
+export type AgentSessionReadOutput_PermissionApproval = {
+  decision: 'allow';
+  permissions: AgentSessionReadOutput_Permissions;
+  scope: AgentSessionReadOutput_PermissionScope;
+};
+export type AgentSessionReadOutput_Scope = 'subtree' | 'exact';
+/**
+ * Equal-path conflict priority is different from authority breadth: deny wins.
+ */
+export type AgentSessionReadOutput_Access = 'read' | 'write' | 'deny';
+export type AgentSessionReadOutput_Network =
+  | ('denied' | 'allowed')
+  | {
+      restricted: {
+        destinations: AgentSessionReadOutput_Destination[];
+      };
+    };
+/**
+ * The Host supplies the real operation description; it is display information,
+ * not authority inferred from a command string or a plugin-supplied Session ID.
+ */
+export type AgentSessionReadOutput_PermissionScope = 'once' | 'run' | 'session';
+export type AgentSessionReadOutput_ComputerAppApproval = 'once' | 'session' | 'always';
+export type AgentSessionReadOutput_AuthorizationObligation =
+  | {
+      kind: 'external';
+      task: AgentSessionReadOutput_ExternalTaskId;
+      operation: string;
+    }
+  | {
+      kind: 'tool';
+      tool: AgentSessionReadOutput_ToolKey;
+    }
+  | {
+      kind: 'cell';
+      cell: AgentSessionReadOutput_CellId;
+      operation: string;
+    };
+export type AgentSessionReadOutput_ExternalTaskId = string;
+export type AgentSessionReadOutput_ModelAttemptId = string;
+export type AgentSessionReadOutput_CellId = string;
+/**
+ * The tool family whose authority raised a permission request.
+ */
+export type AgentSessionReadOutput_PermissionSource = 'processes' | 'web' | 'files';
+export type AgentSessionReadOutput_FormField = {
+  name: string;
+  label: string;
+  required: boolean;
+  description?: string | null;
+  [k: string]: unknown | undefined;
+} & AgentSessionReadOutput_FormField1;
+export type AgentSessionReadOutput_FormField1 =
+  | {
+      kind: 'string';
+      default?: string | null;
+      minLength?: number | null;
+      maxLength?: number | null;
+      format?: AgentSessionReadOutput_FormFormat | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'number';
+      default?: number | null;
+      minimum?: number | null;
+      maximum?: number | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'integer';
+      default?: number | null;
+      minimum?: number | null;
+      maximum?: number | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'boolean';
+      default?: boolean | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'single_select';
+      options: AgentSessionReadOutput_FormOption[];
+      default?: string | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'multi_select';
+      options: AgentSessionReadOutput_FormOption[];
+      default?: string[] | null;
+      minItems?: number | null;
+      maxItems?: number | null;
+      [k: string]: unknown | undefined;
+    };
+export type AgentSessionReadOutput_FormFormat = 'email' | 'uri' | 'date' | 'date-time';
+export type AgentSessionReadOutput_GrantCapability =
+  | ('browser' | 'computer_use' | 'computer_audio' | 'desktop_mcp' | 'mcp')
+  | 'browser_download'
+  | 'browser_history'
+  | 'browser_upload';
+export type AgentSessionReadOutput_GrantScope =
+  | {
+      kind: 'browser_origin';
+      origin: string;
+    }
+  | {
+      kind: 'browser_profile';
+      browserId: string;
+      generation: string;
+    }
+  | {
+      kind: 'capability';
+    }
+  | {
+      kind: 'mcp_tool';
+      serverId: string;
+      toolName: string;
+    }
+  | {
+      kind: 'computer_app';
+      platform: AgentSessionReadOutput_ComputerAppPlatform;
+      applicationId: string;
+    };
+export type AgentSessionReadOutput_ComputerAppPlatform = 'macos' | 'windows';
+export type AgentSessionReadOutput_ComputerAppRisk = 'low' | 'high';
+/**
+ * A macOS privacy grant (TCC) that the Host process itself needs before native
+ * Computer Use can run. This is operating-system state the user changes in
+ * System Settings, not a Maka grant; the Host observes it and commits the outcome.
+ */
+export type AgentSessionReadOutput_SystemPermissionGrant = 'accessibility' | 'screen_recording';
+export type AgentSessionReadOutput_InteractionOutcome =
+  | {
+      kind: 'session_approval_decision';
+      decision: AgentSessionReadOutput_Decision;
+      committedAt: number;
+    }
+  | {
+      kind: 'service_approval_decision';
+      decision: AgentSessionReadOutput_Decision;
+      committedAt: number;
+    }
+  | {
+      kind: 'permissions_decision';
+      decision: AgentSessionReadOutput_PermissionDecision;
+      committedAt: number;
+    }
+  | {
+      kind: 'question_answer';
+      answers: (string | null)[];
+      committedAt: number;
+    }
+  | ((
+      | {
+          action: 'accept';
+          values: {
+            [k: string]: AgentSessionReadOutput_FormValue | undefined;
+          };
+          [k: string]: unknown | undefined;
+        }
+      | {
+          action: 'decline';
+          [k: string]: unknown | undefined;
+        }
+      | {
+          action: 'cancel';
+          [k: string]: unknown | undefined;
+        }
+    ) & {
+      kind: 'form_answer';
+      committedAt: number;
+      [k: string]: unknown | undefined;
+    })
+  | {
+      kind: 'client_capability_decision';
+      decision: AgentSessionReadOutput_Decision;
+      committedAt: number;
+    }
+  | {
+      kind: 'computer_app_decision';
+      decision: AgentSessionReadOutput_ComputerAppDecision;
+      committedAt: number;
+    }
+  | {
+      kind: 'system_permission_granted';
+      committedAt: number;
+    }
+  | {
+      kind: 'closure';
+      reason: AgentSessionReadOutput_ClosureReason;
+      committedAt: number;
+    };
+export type AgentSessionReadOutput_Decision = 'allow' | 'deny';
+export type AgentSessionReadOutput_PermissionDecision =
+  | {
+      decision: 'deny';
+    }
+  | {
+      decision: 'allow';
+      permissions: AgentSessionReadOutput_Permissions;
+      scope: AgentSessionReadOutput_PermissionScope;
+    };
+export type AgentSessionReadOutput_FormValue = string | number | boolean | string[];
+export type AgentSessionReadOutput_ComputerAppDecision = 'once' | 'session' | 'always' | 'deny';
+export type AgentSessionReadOutput_ClosureReason =
+  | 'steered'
+  | 'run_stopped'
+  | 'run_terminal'
+  | 'producer_cancelled'
+  | 'timed_out'
+  | 'host_restarted'
+  | 'provider_disconnected';
+export type AgentSessionReadOutput_AgentSessionTranscript =
+  | {
+      kind: 'agent';
+      items: AgentSessionReadOutput_AgentTranscriptEntry[];
+      beforeCursor?: string | null;
+      afterCursor?: string | null;
+    }
+  | {
+      kind: 'room';
+      items: AgentSessionReadOutput_AgentRoomPostEntry[];
+      beforeCursor?: string | null;
+      afterCursor?: string | null;
+    };
+export type AgentSessionReadOutput_RoomAuthor =
+  | {
+      kind: 'human';
+    }
+  | {
+      kind: 'session';
+      execution: AgentSessionReadOutput_ExecutionIdentity;
+    };
+export type AgentSessionReadOutput_RoomDelivery =
+  | {
+      kind: 'accepted';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'rejected';
+      sessionId: string;
+      reason: string;
+    };
+export type AgentSessionSendInput_AgentSendDelivery = 'steer' | 'queue';
+export type AgentSessionSendInput_AgentSessionNotifyMode = 'notify_caller' | 'none';
+/**
+ * The next turn's choice, independent of an already admitted execution.
+ * Model revisions are resolved afresh; preferences never grant execution authority.
+ */
+export type AgentSessionSendInput_AgentBackendPreference =
+  | {
+      kind: 'model';
+      connectionId: string;
+      modelId: string;
+      serviceTier?: string | null;
+      thinkingLevel?: AgentSessionSendInput_ThinkingLevel | null;
+    }
+  | {
+      kind: 'executor';
+      selection: AgentSessionSendInput_AgentExecutorSelection;
+    };
+export type AgentSessionSendInput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
+/**
+ * Runtime-native effort, not a Host model's closed reasoning enum.
+ */
+export type AgentSessionSendInput_ExecutorEffort = string;
+export type AgentSessionSendInput_RunId = string;
 export type AgentSystemPermissionStatusOutput_AgentSystemPermissionOutcome =
   | {
       kind: 'system_permission_granted';
@@ -467,8 +2246,8 @@ export type AgentSystemPermissionStatusOutput_AgentSystemPermissionOutcome =
     };
 export type AgentSystemPermissionStatusOutput_ClosureReason =
   | 'steered'
-  | 'turn_stopped'
-  | 'turn_terminal'
+  | 'run_stopped'
+  | 'run_terminal'
   | 'producer_cancelled'
   | 'timed_out'
   | 'host_restarted'
@@ -481,12 +2260,44 @@ export type AgentSystemPermissionStatusOutput_ClosureReason =
 export type AgentSystemPermissionStatusOutput_SystemPermissionGrant =
   | 'accessibility'
   | 'screen_recording';
+export type AgentUpdatePresetInput_PresetRevision = number;
+/**
+ * Omission preserves the setting; Default explicitly clears it.
+ */
+export type AgentUpdatePresetInput_PresetThinkingChange =
+  | {
+      kind: 'default';
+    }
+  | {
+      kind: 'set';
+      value: AgentUpdatePresetInput_ThinkingLevel;
+    };
+export type AgentUpdatePresetInput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
+export type AgentUpdatePresetOutput_PresetRevision = number;
+export type AgentUpdatePresetOutput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
 export type SettingsAssistantPreferencesOutput_LanguagePreference =
   | 'auto'
   | 'en'
   | 'zh-CN'
   | 'zh-TW';
 export type SettingsAssistantPreferencesOutput_Language = 'en' | 'zh-CN' | 'zh-TW';
+export type SettingsAssistantPreferencesOutput_ProfileAvatar = 'blue' | 'green' | 'rose' | 'amber';
 /**
  * User-facing isolation preset, independent of whether approval may be requested.
  */
@@ -496,6 +2307,41 @@ export type SettingsAssistantPreferencesOutput_Mode =
   | 'danger-full-access';
 export type SettingsAssistantPreferencesOutput_ShellPreference = 'auto' | 'git_bash';
 export type SettingsCatalogModelsInput_CatalogModelReference = Runtime.CatalogModelReference;
+export type SettingsConnectionUsageLimitsOutput_UsageLimit =
+  | {
+      kind: 'window';
+      label?: string | null;
+      period?: SettingsConnectionUsageLimitsOutput_UsagePeriod | null;
+      /**
+       * Reset time in Unix seconds.
+       */
+      resetsAt?: number | null;
+      usedPercent: number;
+      quantity?: SettingsConnectionUsageLimitsOutput_UsageQuantity | null;
+    }
+  | {
+      kind: 'balance';
+      label?: string | null;
+      amount: number;
+      unit?: string | null;
+    }
+  | {
+      kind: 'unlimited';
+      label?: string | null;
+    }
+  | {
+      kind: 'disabled';
+      label: string;
+      period: SettingsConnectionUsageLimitsOutput_UsagePeriod;
+    };
+export type SettingsConnectionUsageLimitsOutput_UsagePeriod =
+  | {
+      kind: 'duration';
+      seconds: number;
+    }
+  | {
+      kind: 'monthly';
+    };
 export type SettingsResolveModelInput_ModelOverride = Runtime.ModelOverride;
 export type SettingsUpdateInput_Nullable_MapOf_ModelOverride = {
   [k: string]: SettingsUpdateInput_ModelOverride | undefined;
@@ -527,24 +2373,20 @@ export type SettingsUpdateWorkspaceLocationsOutput_ManagementRejection =
   | 'package_unavailable'
   | 'instance_unavailable'
   | 'parent_disabled';
-/**
- * A physical model call or tool attempt, never copied conversation membership.
- */
 export type SettingsUsageOutput_UsageActivity =
   | {
       kind: 'model';
       attempt: SettingsUsageOutput_UsageModelAttempt;
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'tool';
-      attempt: SettingsUsageOutput_UsageToolAttempt;
-      [k: string]: unknown | undefined;
+      attempt: SettingsUsageOutput_ToolUsage;
     };
 export type SettingsUsageOutput_UsageOrigin =
   | {
       kind: 'agent';
-      invocation: SettingsUsageOutput_Invocation;
+      execution: SettingsUsageOutput_ExecutionIdentity;
+      link: SettingsUsageOutput_AgentStepLink;
       purpose: SettingsUsageOutput_ModelPurpose;
       [k: string]: unknown | undefined;
     }
@@ -553,6 +2395,9 @@ export type SettingsUsageOutput_UsageOrigin =
       source: SettingsUsageOutput_UsageAuxiliarySource;
       [k: string]: unknown | undefined;
     };
+export type SettingsUsageOutput_RunId = string;
+export type SettingsUsageOutput_StepId = string;
+export type SettingsUsageOutput_ModelAttemptId = string;
 export type SettingsUsageOutput_ModelPurpose = 'main' | 'summary';
 export type SettingsUsageOutput_UsageAuxiliarySource =
   | {
@@ -561,16 +2406,20 @@ export type SettingsUsageOutput_UsageAuxiliarySource =
       namespace: SettingsUsageOutput_InstanceId;
       operation: string;
       fingerprint: string;
+      /**
+       * Absent for the initial attempt, preserving existing source identities.
+       */
+      attempt?: number | null;
       [k: string]: unknown | undefined;
     }
   | {
       kind: 'session_title';
-      invocation: SettingsUsageOutput_Invocation;
+      execution: SettingsUsageOutput_ExecutionIdentity;
       [k: string]: unknown | undefined;
     }
   | {
       kind: 'agent';
-      invocation: SettingsUsageOutput_Invocation;
+      execution: SettingsUsageOutput_ExecutionIdentity;
       operation_id: string;
       [k: string]: unknown | undefined;
     }
@@ -584,23 +2433,53 @@ export type SettingsUsageOutput_UsageAuxiliarySource =
  */
 export type SettingsUsageOutput_InstanceId = string[];
 export type SettingsUsageOutput_UsageOutcome = ('success' | 'error' | 'aborted') | 'unknown';
+export type SettingsUsageOutput_ToolUsageSource =
+  | {
+      kind: 'agent';
+      execution: SettingsUsageOutput_ExecutionIdentity;
+      call: SettingsUsageOutput_ToolCallIdentity;
+    }
+  | {
+      kind: 'cell';
+      cell: SettingsUsageOutput_CellId;
+      owner: SettingsUsageOutput_CellOwner;
+      operation: string;
+    }
+  | {
+      kind: 'external';
+      task: SettingsUsageOutput_ExternalTaskId;
+      owner: SettingsUsageOutput_RunOwner;
+      operation: string;
+    };
 export type SettingsUsageOutput_ToolOrigin =
   | {
       kind: 'provider';
-      step_id: string;
+      link: SettingsUsageOutput_AgentStepLink;
     }
   | {
       kind: 'code_mode';
+      cell: SettingsUsageOutput_CellId;
+      owner: SettingsUsageOutput_CellOwner;
       parent_operation_id: string;
       parent_tool_call_id: string;
     }
   | {
       kind: 'code_cell';
+      cell: SettingsUsageOutput_CellId;
+      owner: SettingsUsageOutput_CellOwner;
       parent_operation_id: string;
       parent_tool_call_id: string;
     }
   | {
       kind: 'standalone';
+    }
+  | {
+      kind: 'external';
+      task: SettingsUsageOutput_ExternalTaskId;
+      operation: string;
+      package_id: string;
+      entry_id: string;
+      activation: string;
     }
   | {
       kind: 'host_sdk';
@@ -610,21 +2489,36 @@ export type SettingsUsageOutput_ToolOrigin =
       parent_operation_id: string | null;
       parent_relationship?: SettingsUsageOutput_HostSdkRelationship | null;
     };
+export type SettingsUsageOutput_CellId = string;
+export type SettingsUsageOutput_CellOwner =
+  | {
+      kind: 'agent';
+      link: SettingsUsageOutput_AgentStepLink;
+      call: string;
+    }
+  | {
+      kind: 'external';
+      run: SettingsUsageOutput_RunId;
+      key: SettingsUsageOutput_ExternalEffectKey;
+    }
+  | {
+      kind: 'standalone';
+      session: string;
+    };
+export type SettingsUsageOutput_ExternalTaskId = string;
 export type SettingsUsageOutput_HostSdkRelationship = {
   kind: 'evaluation_observer';
   epoch: string;
 };
-export type SettingsUsageOutput_UsageToolResult =
+export type SettingsUsageOutput_ToolUsageResult =
   | {
       kind: 'rejected';
-      reason: SettingsUsageOutput_RejectionKind;
-      [k: string]: unknown | undefined;
+      reason: SettingsUsageOutput_RejectionKind | null;
     }
   | {
       kind: 'settled';
       startedAt: number;
       outcome: SettingsUsageOutput_UsageToolStatus;
-      [k: string]: unknown | undefined;
     };
 /**
  * Refusal category without input-derived explanation text.
@@ -638,10 +2532,25 @@ export type SettingsUsageOutput_RejectionKind =
   | 'exclusive_conflict'
   | 'cancelled';
 export type SettingsUsageOutput_UsageToolStatus = 'success' | 'error' | 'unknown';
+export type SettingsUsageOutput_OperationCleanup =
+  | {
+      kind: 'unconfirmed';
+    }
+  | {
+      kind: 'confirmed';
+    }
+  | {
+      kind: 'failed';
+      diagnostic: string;
+    };
 /**
  * Breakdown selected for a bounded summary page.
  */
 export type SettingsUsageSummaryOutput_UsageGroup = 'byProvider' | 'byModel' | 'byTool';
+export type SettingsAuthenticationProviderOutput_UsageAuthentication =
+  | 'provider'
+  | 'access_key'
+  | 'team_access_key';
 /**
  * A finite transfer of one captured durable display. End installs it; these
  * parts never claim an original-output cursor or a parser continuation point.
@@ -740,6 +2649,10 @@ export interface ServiceMethods {
          */
         through: number;
         /**
+         * Updates existing messages without advancing the unread cursor.
+         */
+        discoveryLink?: AgentBotOutboxOutput_AgentBotDiscoveryLink | null;
+        /**
          * @maxItems 100
          */
         messages: AgentBotOutboxOutput_AgentBotMessage[];
@@ -748,7 +2661,7 @@ export interface ServiceMethods {
          */
         readThrough: number;
         /**
-         * Latest SendUser text, bounded for list previews. Never internal model output.
+         * Latest `SendUser` text, bounded for list previews. Never internal model output.
          */
         preview: string;
         /**
@@ -766,6 +2679,62 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: Runtime.AgentGoalChange;
       output: Runtime.AgentGoalResult;
+    };
+    changeMemory: {
+      mode: 'mutation';
+      input: {
+        scope: AgentChangeMemoryInput_MemoryScope;
+        edit: AgentChangeMemoryInput_MemoryEdit;
+        resolution?: AgentChangeMemoryInput_MemoryResolution | null;
+      };
+      output:
+        | {
+            kind: 'created';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'revised';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'unresolved';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'retryable';
+            reason: string;
+          }
+        | {
+            kind: 'evidence_added';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'suppressed';
+          }
+        | {
+            kind: 'saved';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'deleted';
+            id: string;
+            revision: number;
+          }
+        | {
+            kind: 'conflict';
+            actual: number;
+          }
+        | {
+            kind: 'not_found';
+          }
+        | {
+            kind: 'invalid_state';
+          };
     };
     changeSession: {
       mode: 'mutation';
@@ -796,6 +2765,47 @@ export interface ServiceMethods {
          * Absence is not permission to recapture under a replacement operation.
          */
         publication?: AgentCheckpointReceiptOutput_AgentCheckpointPublication | null;
+      };
+    };
+    codeDefinition: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        path: AgentCodeDefinitionInput_WorkspacePath;
+        position: AgentCodeDefinitionInput_AgentCodePosition;
+        symbol?: string | null;
+        hoverOnly?: boolean;
+      };
+      output: {
+        backend: AgentCodeDefinitionOutput_AgentCodeBackend;
+        symbol: string;
+        originRange: AgentCodeDefinitionOutput_AgentCodeRange | null;
+        locations: AgentCodeDefinitionOutput_AgentCodeLocation[];
+      };
+    };
+    codeHover: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        path: AgentCodeHoverInput_WorkspacePath;
+        position: AgentCodeHoverInput_AgentCodePosition;
+      };
+      output: AgentCodeHoverOutput_AgentCodeHoverResult | null;
+    };
+    codeReferences: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        path: AgentCodeReferencesInput_WorkspacePath;
+        position: AgentCodeReferencesInput_AgentCodePosition;
+        symbol?: string | null;
+        includeDeclaration?: boolean;
+      };
+      output: {
+        backend: AgentCodeReferencesOutput_AgentCodeBackend;
+        symbol: string;
+        locations: AgentCodeReferencesOutput_AgentCodeLocation[];
+        truncated: boolean;
       };
     };
     compact: {
@@ -839,10 +2849,118 @@ export interface ServiceMethods {
       input: Runtime.AgentContextRead;
       output: Runtime.AgentContextReport;
     };
+    continuationAvailability: {
+      mode: 'query';
+      input: Runtime.AgentExecutionRead;
+      output:
+        | {
+            kind: 'ready';
+            source: Runtime.AgentExecution;
+          }
+        | {
+            kind: 'rejected';
+            reason: Runtime.AgentContinuationRejection;
+          };
+    };
+    continueRun: {
+      mode: 'mutation';
+      input: Runtime.AgentContinueRun;
+      output: Runtime.AgentContinuationResult;
+    };
     create: {
       mode: 'mutation';
       input: Runtime.AgentCreate;
       output: Runtime.AgentCreated;
+    };
+    createPreset: {
+      mode: 'mutation';
+      input: {
+        name: string;
+        description: string;
+        instruction?: string;
+        model: Runtime.ModelSelection;
+        thinkingLevel?: Runtime.ThinkingLevel | null;
+        enabled?: boolean;
+      };
+      output:
+        | {
+            kind: 'saved';
+            preset: AgentCreatePresetOutput_Preset;
+          }
+        | {
+            kind: 'deleted';
+            id: string;
+          }
+        | {
+            kind: 'notFound';
+          }
+        | {
+            kind: 'conflict';
+            actual: AgentCreatePresetOutput_PresetRevision;
+          }
+        | {
+            kind: 'nameConflict';
+          }
+        | {
+            kind: 'invalidInput';
+            field: string;
+          }
+        | {
+            kind: 'modelUnavailable';
+          }
+        | {
+            kind: 'thinkingLevelUnavailable';
+          };
+    };
+    deleteGitHubToken: {
+      mode: 'mutation';
+      input: {
+        host: string;
+      };
+      output:
+        | {
+            kind: 'updated';
+            auth: AgentDeleteGitHubTokenOutput_AgentGitHubAuthStatus;
+          }
+        | {
+            kind: 'invalid_token';
+          };
+    };
+    deletePreset: {
+      mode: 'mutation';
+      input: {
+        id: string;
+        expectedRevision: Runtime.PresetRevision;
+      };
+      output:
+        | {
+            kind: 'saved';
+            preset: AgentDeletePresetOutput_Preset;
+          }
+        | {
+            kind: 'deleted';
+            id: string;
+          }
+        | {
+            kind: 'notFound';
+          }
+        | {
+            kind: 'conflict';
+            actual: AgentDeletePresetOutput_PresetRevision;
+          }
+        | {
+            kind: 'nameConflict';
+          }
+        | {
+            kind: 'invalidInput';
+            field: string;
+          }
+        | {
+            kind: 'modelUnavailable';
+          }
+        | {
+            kind: 'thinkingLevelUnavailable';
+          };
     };
     diagnostics: {
       mode: 'query';
@@ -879,6 +2997,23 @@ export interface ServiceMethods {
       input: Runtime.AgentExternalAgentsRead;
       output: Runtime.AgentExternalAgents;
     };
+    externalUsageLimits: {
+      mode: 'query';
+      input: {
+        runtime: Runtime.AgentNativeRuntime;
+      };
+      output:
+        | {
+            kind: 'ready';
+            limits: AgentExternalUsageLimitsOutput_UsageLimit[];
+          }
+        | {
+            kind: 'unsupported';
+          }
+        | {
+            kind: 'unavailable';
+          };
+    };
     fileCandidates: {
       mode: 'subscription';
       input: Runtime.AgentFileCandidatesRead;
@@ -899,15 +3034,232 @@ export interface ServiceMethods {
       input: Runtime.AgentRecapGenerate;
       output: Runtime.AgentRecapReceipt;
     };
+    gitCompare: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        spec: AgentGitCompareInput_AgentGitCompareSpec;
+        includePatch?: boolean;
+        worktreePath?: string | null;
+      };
+      output: AgentGitCompareOutput_AgentGitCompare | null;
+    };
+    gitCompareDiff: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        spec: AgentGitCompareDiffInput_AgentGitCompareSpec;
+        path: AgentGitCompareDiffInput_WorkspacePath;
+        worktreePath?: string | null;
+      };
+      output: Runtime.GitDiff | null;
+    };
     gitDiff: {
       mode: 'query';
       input: Runtime.AgentGitDiffRead;
       output: Runtime.GitDiff | null;
     };
+    gitRevisions: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        worktreePath?: string | null;
+      };
+      output: AgentGitRevisionsOutput_AgentGitRevisions | null;
+    };
     gitStatus: {
       mode: 'query';
-      input: Runtime.AgentSessionRead;
+      input: {
+        sessionId: string;
+        worktreePath?: string | null;
+      };
       output: Runtime.GitStatus | null;
+    };
+    gitWorkspaceDiff: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        area?: Runtime.GitArea | null;
+        worktreePath?: string | null;
+      };
+      output: AgentGitWorkspaceDiffOutput_GitWorkspaceDiff | null;
+    };
+    githubCommentPullRequest: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        repo?: AgentGithubCommentPullRequestInput_AgentGitHubRepoRef | null;
+        number: number;
+        body: string;
+      };
+      output:
+        | {
+            kind: 'replied';
+            comment: AgentGithubCommentPullRequestOutput_AgentGitHubReviewComment;
+          }
+        | {
+            kind: 'unauthorized';
+            message: string;
+          }
+        | {
+            kind: 'rejected';
+            message: string;
+          };
+    };
+    githubPullRequestDetail: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        repo?: AgentGithubPullRequestDetailInput_AgentGitHubRepoRef | null;
+        number: number;
+        includePatch?: boolean;
+      };
+      output:
+        | {
+            kind: 'ready';
+            detail: AgentGithubPullRequestDetailOutput_AgentGitHubPullDetail;
+          }
+        | {
+            kind: 'unauthorized';
+            repo: AgentGithubPullRequestDetailOutput_AgentGitHubRepoRef;
+            auth: AgentGithubPullRequestDetailOutput_AgentGitHubAuthStatus;
+            message: string;
+          }
+        | {
+            kind: 'not_found';
+            repo: AgentGithubPullRequestDetailOutput_AgentGitHubRepoRef;
+            auth: AgentGithubPullRequestDetailOutput_AgentGitHubAuthStatus;
+            number: number;
+          }
+        | {
+            kind: 'error';
+            repo: AgentGithubPullRequestDetailOutput_AgentGitHubRepoRef | null;
+            auth: AgentGithubPullRequestDetailOutput_AgentGitHubAuthStatus;
+            message: string;
+          };
+    };
+    githubPullRequestFileDiff: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        repo?: AgentGithubPullRequestFileDiffInput_AgentGitHubRepoRef | null;
+        number: number;
+        path: string;
+        baseSha?: string | null;
+        headSha?: string | null;
+      };
+      output:
+        | {
+            kind: 'full';
+            patch: string;
+            before: string;
+            after: string;
+            digest: string;
+          }
+        | {
+            kind: 'patch_only';
+            patch: string;
+            digest: string;
+          }
+        | {
+            kind: 'binary';
+          }
+        | {
+            kind: 'large';
+          }
+        | {
+            kind: 'not_found';
+          };
+    };
+    githubPullRequests: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        repo?: AgentGithubPullRequestsInput_AgentGitHubRepoRef | null;
+        state?: AgentGithubPullRequestsInput_AgentGitHubPullStateFilter & string;
+        headBranch?: string | null;
+      };
+      output:
+        | {
+            kind: 'ready';
+            repo: AgentGithubPullRequestsOutput_AgentGitHubRepoRef;
+            remotes: AgentGithubPullRequestsOutput_AgentGitHubRepoRef[];
+            auth: AgentGithubPullRequestsOutput_AgentGitHubAuthStatus;
+            currentBranchPr: number | null;
+            pulls: AgentGithubPullRequestsOutput_AgentGitHubPullSummary[];
+          }
+        | {
+            kind: 'no_remote';
+            remotes: AgentGithubPullRequestsOutput_AgentGitHubRepoRef[];
+          }
+        | {
+            kind: 'unauthorized';
+            repo: AgentGithubPullRequestsOutput_AgentGitHubRepoRef;
+            remotes: AgentGithubPullRequestsOutput_AgentGitHubRepoRef[];
+            auth: AgentGithubPullRequestsOutput_AgentGitHubAuthStatus;
+            message: string;
+          }
+        | {
+            kind: 'error';
+            repo: AgentGithubPullRequestsOutput_AgentGitHubRepoRef | null;
+            remotes: AgentGithubPullRequestsOutput_AgentGitHubRepoRef[];
+            auth: AgentGithubPullRequestsOutput_AgentGitHubAuthStatus;
+            message: string;
+          };
+    };
+    githubReplyComment: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        repo?: AgentGithubReplyCommentInput_AgentGitHubRepoRef | null;
+        number: number;
+        commentId: number;
+        body: string;
+      };
+      output:
+        | {
+            kind: 'replied';
+            comment: AgentGithubReplyCommentOutput_AgentGitHubReviewComment;
+          }
+        | {
+            kind: 'unauthorized';
+            message: string;
+          }
+        | {
+            kind: 'rejected';
+            message: string;
+          };
+    };
+    githubSubmitReview: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        repo?: AgentGithubSubmitReviewInput_AgentGitHubRepoRef | null;
+        number: number;
+        expectedHeadSha: string;
+        event: AgentGithubSubmitReviewInput_AgentGitHubReviewEvent;
+        body?: string;
+        comments?: AgentGithubSubmitReviewInput_AgentGitHubDraftReviewComment[];
+      };
+      output:
+        | {
+            kind: 'submitted';
+            reviewId: number;
+            state: string;
+            htmlUrl: string;
+          }
+        | {
+            kind: 'stale_head';
+            actualHeadSha: string;
+          }
+        | {
+            kind: 'unauthorized';
+            message: string;
+          }
+        | {
+            kind: 'rejected';
+            message: string;
+          };
     };
     globalInstructions: {
       mode: 'query';
@@ -918,11 +3270,6 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentGoalRead;
       output: Runtime.AgentGoalView;
-    };
-    goalReceipt: {
-      mode: 'query';
-      input: Runtime.AgentGoalReceiptRead;
-      output: Runtime.AgentGoalResult | null;
     };
     history: {
       mode: 'query';
@@ -954,6 +3301,24 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentHistoryPromptRead;
       output: Runtime.AgentHistoryPrompt | null;
+    };
+    historyRequests: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        through: number;
+        /**
+         * Any original row in the Run being inspected.
+         */
+        position: AgentHistoryRequestsInput_HistoryRowAddress;
+        after?: number | null;
+      };
+      output: {
+        requests: AgentHistoryRequestsOutput_AgentHistoryRequest[];
+        next?: number | null;
+        runTerminated: boolean;
+        [k: string]: unknown | undefined;
+      };
     };
     import: {
       mode: 'mutation';
@@ -1004,6 +3369,7 @@ export interface ServiceMethods {
       mode: 'subscription';
       input: {
         inspection: AgentLoadedHistoryCheckpointArtifactInput_AgentCheckpointInspection;
+        path?: AgentLoadedHistoryCheckpointArtifactInput_RunId[];
         sessionId: string;
         artifactId: string;
         offset: number;
@@ -1014,12 +3380,37 @@ export interface ServiceMethods {
       mode: 'query';
       input: {
         inspection: AgentLoadedHistoryCheckpointArtifactsInput_AgentCheckpointInspection;
+        /**
+         * Original historical marker path, validated from the inspection root.
+         */
+        path?: AgentLoadedHistoryCheckpointArtifactsInput_RunId[];
         sessionId: string;
         offset: number;
       };
       output: {
         artifacts: AgentLoadedHistoryCheckpointArtifactsOutput_AgentCheckpointArtifact[];
         nextOffset: number | null;
+      };
+    };
+    loadedHistoryCheckpointAttachmentImage: {
+      mode: 'query';
+      input: {
+        inspection: AgentLoadedHistoryCheckpointAttachmentImageInput_AgentCheckpointInspection;
+        position: AgentLoadedHistoryCheckpointAttachmentImageInput_HistoryRowAddress;
+        attachmentIndex: number;
+        offset?: number;
+      };
+      /**
+       * A bounded image read through an actual history source capability, without a live Root fence.
+       */
+      output: {
+        kind: 'ready';
+        position: Runtime.HistoryRowAddress;
+        offset: number;
+        totalBytes: number;
+        mimeType: string;
+        digest: string;
+        data: string;
       };
     };
     loadedHistoryCheckpointHistory: {
@@ -1029,8 +3420,41 @@ export interface ServiceMethods {
         sessionId: string;
         position: AgentLoadedHistoryCheckpointHistoryInput_HistoryPosition;
         includeThinking?: boolean;
+        view?: AgentLoadedHistoryCheckpointHistoryInput_HistoryView & string;
       };
       output: Runtime.AgentHistoryPage;
+    };
+    loadedHistoryCheckpointSource: {
+      mode: 'query';
+      input: {
+        inspection: AgentLoadedHistoryCheckpointSourceInput_AgentCheckpointInspection;
+        address: AgentLoadedHistoryCheckpointSourceInput_HistoryRowAddress;
+        field: AgentLoadedHistoryCheckpointSourceInput_SourceField;
+        path?: AgentLoadedHistoryCheckpointSourceInput_HistorySourceSegment[] | null;
+        position: AgentLoadedHistoryCheckpointSourceInput_SourcePosition;
+      };
+      output: Runtime.HistorySource;
+    };
+    loadedHistoryCheckpointToolImage: {
+      mode: 'query';
+      input: {
+        inspection: AgentLoadedHistoryCheckpointToolImageInput_AgentCheckpointInspection;
+        position: AgentLoadedHistoryCheckpointToolImageInput_HistoryRowAddress;
+        image?: number | null;
+        offset?: number;
+      };
+      /**
+       * A bounded image read through an actual history source capability, without a live Root fence.
+       */
+      output: {
+        kind: 'ready';
+        position: Runtime.HistoryRowAddress;
+        offset: number;
+        totalBytes: number;
+        mimeType: string;
+        digest: string;
+        data: string;
+      };
     };
     manageMcpServer: {
       mode: 'mutation';
@@ -1061,6 +3485,10 @@ export interface ServiceMethods {
          */
         through: number;
         /**
+         * Updates existing messages without advancing the unread cursor.
+         */
+        discoveryLink?: AgentMarkBotReadOutput_AgentBotDiscoveryLink | null;
+        /**
          * @maxItems 100
          */
         messages: AgentMarkBotReadOutput_AgentBotMessage[];
@@ -1069,7 +3497,7 @@ export interface ServiceMethods {
          */
         readThrough: number;
         /**
-         * Latest SendUser text, bounded for list previews. Never internal model output.
+         * Latest `SendUser` text, bounded for list previews. Never internal model output.
          */
         preview: string;
         /**
@@ -1087,6 +3515,77 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentMcpConfigurations;
       output: Runtime.AgentMcpConfigurationList;
+    };
+    memories: {
+      mode: 'query';
+      input: {
+        scope: AgentMemoriesInput_MemoryScope;
+        after?: string | null;
+        limit: number;
+      };
+      output: {
+        records: AgentMemoriesOutput_MemoryRecord[];
+        next?: string | null;
+      };
+    };
+    memory: {
+      mode: 'query';
+      input: {
+        scope: AgentMemoryInput_MemoryScope;
+        id: string;
+      };
+      output: AgentMemoryOutput_MemoryRecord | null;
+    };
+    memoryEvidence: {
+      mode: 'query';
+      input: {
+        scope: AgentMemoryEvidenceInput_MemoryScope;
+        id: string;
+        assertion: number;
+        after?: number | null;
+        limit: number;
+      };
+      output: {
+        evidence: AgentMemoryEvidenceOutput_MemoryEvidence[];
+        next?: number | null;
+      };
+    };
+    memoryHistory: {
+      mode: 'query';
+      input: {
+        scope: AgentMemoryHistoryInput_MemoryScope;
+        id: string;
+        after?: number | null;
+        limit: number;
+      };
+      output: {
+        versions: AgentMemoryHistoryOutput_MemoryVersion[];
+        next?: number | null;
+      };
+    };
+    memorySource: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        sequence: number;
+        itemIndex: number;
+        start: number;
+        end: number;
+        quote: string;
+      };
+      output: {
+        sessionId: string;
+        sequence: number;
+        itemIndex: number;
+        factId: string;
+        fingerprint: string;
+        /**
+         * UTF-8 byte offsets into the immutable message text.
+         */
+        start: number;
+        end: number;
+        quote: string;
+      };
     };
     metadata: {
       mode: 'mutation';
@@ -1137,6 +3636,18 @@ export interface ServiceMethods {
       input: Runtime.AgentSessionRead;
       output: Runtime.AgentPendingInteractions;
     };
+    pendingMemories: {
+      mode: 'query';
+      input: {
+        scope: AgentPendingMemoriesInput_MemoryScope;
+        after?: string | null;
+        limit: number;
+      };
+      output: {
+        records: AgentPendingMemoriesOutput_MemoryRecord[];
+        next?: string | null;
+      };
+    };
     predictNextMessage: {
       mode: 'mutation';
       input: {
@@ -1149,6 +3660,18 @@ export interface ServiceMethods {
         policyRevision: number;
         suggestion?: string | null;
       };
+    };
+    preset: {
+      mode: 'query';
+      input: {
+        id: string;
+      };
+      output: AgentPresetOutput_PresetDetail | null;
+    };
+    presets: {
+      mode: 'query';
+      input: {};
+      output: AgentPresetsOutput_PresetSummary[];
     };
     previewHistoryCheckpoint: {
       mode: 'query';
@@ -1221,18 +3744,6 @@ export interface ServiceMethods {
       input: Runtime.AgentQueueMessage;
       output: Runtime.AgentQueueMessageResult;
     };
-    rankQuickTools: {
-      mode: 'mutation';
-      input: {
-        sessionId: string;
-        query: string;
-        candidates: AgentRankQuickToolsInput_AgentQuickToolCandidate[];
-      };
-      output: {
-        source: string;
-        ids: string[];
-      };
-    };
     readFile: {
       mode: 'subscription';
       /**
@@ -1240,7 +3751,7 @@ export interface ServiceMethods {
        */
       input: {
         sessionId: string;
-        path: Runtime.WorkspacePath;
+        path: AgentReadFileInput_FileReadPath;
         expectedVersion?: string | null;
       };
       output: AgentReadFileOutput_AgentFileReadPart | null;
@@ -1284,6 +3795,23 @@ export interface ServiceMethods {
       input: Runtime.AgentRecapRead;
       output: Runtime.AgentRecapReceipt | null;
     };
+    reconcileMemories: {
+      mode: 'mutation';
+      input: {
+        scope: AgentReconcileMemoriesInput_MemoryScope;
+        writes: AgentReconcileMemoriesInput_MemoryWrite[];
+        resolution?: AgentReconcileMemoriesInput_MemoryResolution | null;
+      };
+      output:
+        | {
+            kind: 'committed';
+            results: AgentReconcileMemoriesOutput_MemoryResult[];
+          }
+        | {
+            kind: 'retryable';
+            reason: string;
+          };
+    };
     requestSystemPermission: {
       mode: 'mutation';
       input: {
@@ -1296,6 +3824,24 @@ export interface ServiceMethods {
         grants: AgentRequestSystemPermissionOutput_AgentSystemPermissionState[];
         requestable: boolean;
       };
+    };
+    resolveFileLink: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        /**
+         * Exact percent-decoded Markdown path bytes.
+         */
+        pathBytes: string;
+      };
+      /**
+       * A file selected for reading. Only workspace paths are accepted by editing APIs.
+       */
+      output:
+        | Runtime.WorkspacePath
+        | {
+            absolute: string;
+          };
     };
     respond: {
       mode: 'mutation';
@@ -1327,25 +3873,40 @@ export interface ServiceMethods {
         path: string;
       };
     };
-    resumable: {
-      mode: 'query';
-      input: Runtime.AgentResumableRead;
-      output: Runtime.AgentResumable;
-    };
-    resume: {
+    saveFile: {
       mode: 'mutation';
-      input: Runtime.AgentResume;
-      output: Runtime.AgentResumeResult;
+      input: {
+        sessionId: string;
+        path: Runtime.WorkspacePath;
+        expectedVersion: string;
+      };
+      output:
+        | {
+            kind: 'saved';
+            version: string;
+          }
+        | {
+            kind: 'conflict';
+          };
+    };
+    saveGitHubToken: {
+      mode: 'mutation';
+      input: {
+        host: string;
+      };
+      output:
+        | {
+            kind: 'updated';
+            auth: AgentSaveGitHubTokenOutput_AgentGitHubAuthStatus;
+          }
+        | {
+            kind: 'invalid_token';
+          };
     };
     schedule: {
       mode: 'mutation';
       input: Runtime.AgentScheduleChange;
       output: Runtime.AgentScheduleResult;
-    };
-    scheduleAlerts: {
-      mode: 'subscription';
-      input: {};
-      output: Runtime.AgentScheduleAlerts;
     };
     schedules: {
       mode: 'query';
@@ -1389,6 +3950,101 @@ export interface ServiceMethods {
         restore?: AgentSessionCheckpointRestoreReceiptOutput_AgentSessionCheckpointRestored | null;
       };
     };
+    sessionCreate: {
+      mode: 'mutation';
+      input: {
+        title: string;
+        kind?: AgentSessionCreateInput_AgentSessionKind | null;
+        labels?: string[];
+        workspace?: AgentSessionCreateInput_AgentSessionWorkspaceTarget | null;
+        presetId?: string | null;
+        backend?: AgentSessionCreateInput_AgentBackendPreference | null;
+        automaticTitle?: boolean | null;
+        tools?: string[] | null;
+        /**
+         * Seed the new conversation from an existing Session prefix instead of starting empty.
+         */
+        forkFrom?: AgentSessionCreateInput_AgentSessionForkFrom | null;
+      };
+      output:
+        | {
+            kind: 'created';
+            session: Runtime.AgentSession;
+          }
+        | {
+            kind: 'forked';
+            session: Runtime.AgentSession;
+          }
+        | {
+            kind: 'revision_conflict';
+            expected: number;
+            actual: number;
+          }
+        | {
+            kind: 'rejected';
+            reason: Runtime.AgentRejection;
+          };
+    };
+    sessionList: {
+      mode: 'query';
+      input: {
+        kind?: AgentSessionListInput_AgentSessionKind | null;
+        scope?: AgentSessionListInput_AgentSessionToolScope & string;
+        /**
+         * Optional parent Session ID when scope is "children"; defaults to your own Session.
+         */
+        parentSessionId?: string | null;
+        /**
+         * Case-insensitive substring matched against title or workspace path.
+         */
+        query?: string | null;
+        workspacePath?: string | null;
+        activity?: AgentSessionListInput_AgentSessionActivity | null;
+        limit?: number | null;
+        cursor?: string | null;
+      };
+      output: {
+        sessions: AgentSessionListOutput_AgentSessionSummary[];
+        nextCursor?: string | null;
+      };
+    };
+    sessionManage: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        action: AgentSessionManageInput_AgentSessionManageAction;
+      };
+      output:
+        | {
+            kind: 'updated';
+            session: AgentSessionManageOutput_AgentSessionSummary;
+          }
+        | {
+            kind: 'removed';
+            sessionId: string;
+          }
+        | {
+            kind: 'queue_edited';
+            result: AgentSessionManageOutput_AgentQueueMutationResult;
+          }
+        | {
+            kind: 'continuation_started';
+            execution: AgentSessionManageOutput_AgentExecution;
+          }
+        | {
+            kind: 'continuation_rejected';
+            reason: AgentSessionManageOutput_AgentContinuationRejection;
+          }
+        | {
+            kind: 'revision_conflict';
+            expected: number;
+            actual: number;
+          }
+        | {
+            kind: 'rejected';
+            reason: AgentSessionManageOutput_AgentRejection;
+          };
+    };
     sessionMcp: {
       mode: 'subscription';
       /**
@@ -1401,6 +4057,80 @@ export interface ServiceMethods {
       };
       output: {
         tools: string[];
+      };
+    };
+    sessionRead: {
+      mode: 'query';
+      input: {
+        /**
+         * Target Session or Room ID. Omit to inspect your own Session.
+         */
+        sessionId?: string | null;
+        view?: AgentSessionReadInput_AgentSessionTranscriptView & string;
+        position?: AgentSessionReadInput_AgentSessionWindowPosition | null;
+        /**
+         * Opaque pagination token (beforeCursor or afterCursor) from a previous SessionRead.
+         */
+        cursor?: string | null;
+        /**
+         * Jump to or around a specific Room messageId.
+         */
+        messageId?: string | null;
+        anchor?: AgentSessionReadInput_AgentRoomAnchorMode | null;
+        /**
+         * Exact historical row lookup emitted by Recall or Code Mode cell references.
+         */
+        row?: AgentSessionReadInput_AgentSessionRowLookup | null;
+      };
+      output: {
+        session: AgentSessionReadOutput_AgentSessionSummary;
+        run?: AgentSessionReadOutput_AgentSessionRunOverview | null;
+        pendingInteractions?: AgentSessionReadOutput_InteractionRecord[];
+        queuedMessages?: AgentSessionReadOutput_AgentQueuedMessageOverview[];
+        queueRevision?: number | null;
+        liveOutputPreview?: string | null;
+        transcript?: AgentSessionReadOutput_AgentSessionTranscript | null;
+      };
+    };
+    sessionSend: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        message: string;
+        /**
+         * Defaults to steer; use queue only to wait until the current turn finishes.
+         */
+        delivery?: AgentSessionSendInput_AgentSendDelivery;
+        /**
+         * For Agent callers sending to a worker Session, defaults to notify_caller. Pass none to silence.
+         */
+        onComplete?: AgentSessionSendInput_AgentSessionNotifyMode | null;
+        backend?: AgentSessionSendInput_AgentBackendPreference | null;
+        expectedRunId?: AgentSessionSendInput_RunId | null;
+        attachments?: string[];
+        /**
+         * Agent Session IDs to notify when posting in a Room.
+         */
+        mentions?: string[];
+        /**
+         * Existing Room messageId being replied to.
+         */
+        replyTo?: string | null;
+      };
+      output: Runtime.AgentSendResult;
+    };
+    sessionStop: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        /**
+         * Optional exact Run ID guard; omit to stop whichever Run is currently active.
+         */
+        runId?: Runtime.RunId | null;
+      };
+      output: {
+        requested: boolean;
+        runId?: Runtime.RunId | null;
       };
     };
     setCompactionPrompt: {
@@ -1502,6 +4232,48 @@ export interface ServiceMethods {
       input: Runtime.AgentGlobalInstructionsUpdate;
       output: Runtime.AgentGlobalInstructionsUpdated;
     };
+    updatePreset: {
+      mode: 'mutation';
+      input: {
+        id: string;
+        expectedRevision: AgentUpdatePresetInput_PresetRevision;
+        name?: string | null;
+        description?: string | null;
+        instruction?: string | null;
+        model?: AgentUpdatePresetInput_ModelSelection | null;
+        thinkingLevel?: AgentUpdatePresetInput_PresetThinkingChange | null;
+        enabled?: boolean | null;
+      };
+      output:
+        | {
+            kind: 'saved';
+            preset: AgentUpdatePresetOutput_Preset;
+          }
+        | {
+            kind: 'deleted';
+            id: string;
+          }
+        | {
+            kind: 'notFound';
+          }
+        | {
+            kind: 'conflict';
+            actual: AgentUpdatePresetOutput_PresetRevision;
+          }
+        | {
+            kind: 'nameConflict';
+          }
+        | {
+            kind: 'invalidInput';
+            field: string;
+          }
+        | {
+            kind: 'modelUnavailable';
+          }
+        | {
+            kind: 'thinkingLevelUnavailable';
+          };
+    };
     uploadAttachment: {
       mode: 'mutation';
       input: Runtime.AgentUploadAttachment;
@@ -1546,6 +4318,10 @@ export interface ServiceMethods {
          */
         through: number;
         /**
+         * Updates existing messages without advancing the unread cursor.
+         */
+        discoveryLink?: AgentWatchBotOutboxOutput_AgentBotDiscoveryLink | null;
+        /**
          * @maxItems 100
          */
         messages: AgentWatchBotOutboxOutput_AgentBotMessage[];
@@ -1554,7 +4330,7 @@ export interface ServiceMethods {
          */
         readThrough: number;
         /**
-         * Latest SendUser text, bounded for list previews. Never internal model output.
+         * Latest `SendUser` text, bounded for list previews. Never internal model output.
          */
         preview: string;
         /**
@@ -1583,6 +4359,13 @@ export interface ServiceMethods {
       input: Runtime.AgentGoalRead;
       output: Runtime.AgentGoalView;
     };
+    watchModels: {
+      mode: 'subscription';
+      input: {
+        query?: string;
+      };
+      output: Runtime.AgentModelsPage;
+    };
     watchSchedules: {
       mode: 'subscription';
       input: Runtime.AgentScheduleRead;
@@ -1592,6 +4375,24 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentWorkRead;
       output: Runtime.AgentWork;
+    };
+    workReadiness: {
+      mode: 'query';
+      input: Runtime.AgentWorkRead;
+      /**
+       * Metadata readiness only. Retirement also requires the actual Root work fence
+       * held continuously through the caller's original pending-retirement commit.
+       */
+      output:
+        | {
+            kind: 'ready';
+          }
+        | {
+            kind: 'pending';
+          }
+        | {
+            kind: 'unavailable';
+          };
     };
   };
   settings: {
@@ -1607,7 +4408,9 @@ export interface ServiceMethods {
         defaultCompactionPrompt: string;
         revision: number;
         displayName: string;
+        avatar: SettingsAssistantPreferencesOutput_ProfileAvatar | null;
         workspaceInstructions: boolean;
+        memory: SettingsAssistantPreferencesOutput_MemoryPolicy;
         defaultSandboxMode: SettingsAssistantPreferencesOutput_Mode;
         shell: SettingsAssistantPreferencesOutput_ShellPolicy;
       };
@@ -1805,6 +4608,30 @@ export interface ServiceMethods {
       };
       output: Runtime.SettingsConnectionDetail;
     };
+    connectionUsageLimits: {
+      mode: 'query';
+      input: Runtime.ConnectionVersionBasis;
+      output:
+        | {
+            kind: 'ready';
+            limits: SettingsConnectionUsageLimitsOutput_UsageLimit[];
+          }
+        | {
+            kind: 'unsupported';
+          }
+        | {
+            kind: 'superseded';
+          }
+        | {
+            kind: 'authentication_required';
+          }
+        | {
+            kind: 'usage_credential_required';
+          }
+        | {
+            kind: 'unavailable';
+          };
+    };
     connections: {
       mode: 'query';
       input: Runtime.SettingsConnectionsRead;
@@ -1824,6 +4651,11 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: Runtime.DeleteCredentialInput;
       output: Runtime.CredentialMutationResult;
+    };
+    dictationConnections: {
+      mode: 'query';
+      input: {};
+      output: SettingsDictationConnectionsOutput_DictationConnection[];
     };
     models: {
       mode: 'query';
@@ -1876,10 +4708,23 @@ export interface ServiceMethods {
       input: Runtime.SettingsSaveCredential;
       output: Runtime.SettingsCredentialSaveResult;
     };
+    saveUsageCredential: {
+      mode: 'mutation';
+      input: Runtime.SettingsSaveCredential;
+      output: Runtime.CredentialMutationResult;
+    };
     setDefault: {
       mode: 'mutation';
       input: Runtime.SetDefaultConnectionTargetInput;
       output: Runtime.CatalogMutationResult;
+    };
+    transcribeDictation: {
+      mode: 'query';
+      input: {
+        connection: Runtime.ConnectionVersionBasis;
+        audio: string;
+      };
+      output: string;
     };
     update: {
       mode: 'mutation';
@@ -2291,11 +5136,113 @@ export interface ServiceMethods {
       output: Runtime.SkillLibraryChangeResult;
     };
   };
+  workspaceComputer: {
+    evaluate: {
+      mode: 'mutation';
+      input: Runtime.ComputerEvaluate;
+      output: Runtime.ComputerResult;
+    };
+    presentTarget: {
+      mode: 'mutation';
+      input: Runtime.ComputerPresentTarget;
+      output: Runtime.ComputerPresentationResult;
+    };
+    readFrame: {
+      mode: 'query';
+      input: Runtime.ComputerReadFrame;
+      output: Runtime.ComputerFrameResult;
+    };
+    reset: {
+      mode: 'mutation';
+      input: {};
+      output: Runtime.ComputerResult;
+    };
+    state: {
+      mode: 'query';
+      input: {};
+      output: Runtime.ComputerReplState;
+    };
+    watchFrames: {
+      mode: 'subscription';
+      input: Runtime.ComputerWatchFrames;
+      output: Runtime.ComputerFrameNotice;
+    };
+    watchStage: {
+      mode: 'subscription';
+      input: Runtime.ComputerWatchStage;
+      output: Runtime.ComputerStageSnapshot;
+    };
+  };
+  workspaceWeb: {
+    capture: {
+      mode: 'query';
+      input: {};
+      output: Runtime.WebCapture;
+    };
+    checkKey: {
+      mode: 'mutation';
+      input: Runtime.WebKey;
+      output: Runtime.WebUpdate;
+    };
+    deleteKey: {
+      mode: 'mutation';
+      input: Runtime.WebKey;
+      output: Runtime.WebUpdate;
+    };
+    fetch: {
+      mode: 'mutation';
+      input: Runtime.WebCall_WebFetch;
+      output: Runtime.WebResult;
+    };
+    probe: {
+      mode: 'mutation';
+      input: Runtime.WebProbe;
+      output: Runtime.WebResult;
+    };
+    save: {
+      mode: 'mutation';
+      input: Runtime.WebSet;
+      output: Runtime.WebUpdate;
+    };
+    saveKey: {
+      mode: 'mutation';
+      input: Runtime.WebKey;
+      output: Runtime.WebUpdate;
+    };
+    search: {
+      mode: 'mutation';
+      input: Runtime.WebCall_WebQuery;
+      output: Runtime.WebResult;
+    };
+    snapshot: {
+      mode: 'query';
+      input: {};
+      output: Runtime.WebSnapshot;
+    };
+  };
+}
+/**
+ * Most recent discovery association added after a Bot message was published.
+ */
+export interface AgentBotOutboxOutput_AgentBotDiscoveryLink {
+  revision: number;
+  messageId: string;
+  turnId?: string | null;
+  discovery: AgentBotOutboxOutput_AgentDiscoveryPublication;
+}
+export interface AgentBotOutboxOutput_AgentDiscoveryPublication {
+  recordId: string;
+  workerSessionId: string;
+  workerTurnId: string;
 }
 /**
  * One message the Bot deliberately sent to its user.
  */
 export interface AgentBotOutboxOutput_AgentBotMessage {
+  /**
+   * Original investigation behind this publication, independent of later Bot Turns.
+   */
+  discovery?: AgentBotOutboxOutput_AgentDiscoveryPublication | null;
   /**
    * Monotonic position in the outbox, starting at 1.
    */
@@ -2318,6 +5265,37 @@ export interface AgentBotOutboxOutput_AgentBotMessage {
    * Turn's reply.
    */
   turnId?: string | null;
+}
+export interface AgentChangeMemoryInput_MemoryEvidenceReference {
+  sessionId: string;
+  sequence: number;
+  itemIndex: number;
+  factId: string;
+  fingerprint: string;
+  /**
+   * UTF-8 byte offsets into the immutable message text.
+   */
+  start: number;
+  end: number;
+  quote: string;
+}
+export interface AgentChangeMemoryInput_MemoryMetadata {
+  kind: AgentChangeMemoryInput_MemoryKind;
+  statement: AgentChangeMemoryInput_MemoryStatement;
+  temporal: AgentChangeMemoryInput_MemoryTemporal;
+}
+export interface AgentChangeMemoryInput_MemoryResolution {
+  sessionId: string;
+  model: AgentChangeMemoryInput_ModelSelection;
+}
+/**
+ * Selected model and optional service tier, resolved from the connection at admission.
+ */
+export interface AgentChangeMemoryInput_ModelSelection {
+  serviceTier?: string | null;
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
 }
 export interface AgentCheckpointReceiptInput_RecoveryRef {
   source: AgentCheckpointReceiptInput_DeploymentRef;
@@ -2407,19 +5385,397 @@ export interface AgentCheckpointReceiptOutput_AgentCheckpointWorkspaceNotice {
   consistency: AgentCheckpointReceiptOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentCheckpointReceiptOutput_AgentCheckpointWorkspaceWarning;
 }
+export interface AgentCodeDefinitionInput_WorkspacePath {
+  bytesBase64: string;
+}
 /**
- * Canonical physical execution receipt, independent of the current Session tip.
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeDefinitionInput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+export interface AgentCodeDefinitionOutput_AgentCodeRange {
+  start: AgentCodeDefinitionOutput_AgentCodePosition;
+  end: AgentCodeDefinitionOutput_AgentCodePosition;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeDefinitionOutput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+export interface AgentCodeDefinitionOutput_AgentCodeLocation {
+  path: AgentCodeDefinitionOutput_WorkspacePath;
+  range: AgentCodeDefinitionOutput_AgentCodeRange;
+  preview: string;
+}
+export interface AgentCodeDefinitionOutput_WorkspacePath {
+  bytesBase64: string;
+}
+export interface AgentCodeHoverInput_WorkspacePath {
+  bytesBase64: string;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeHoverInput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+export interface AgentCodeHoverOutput_AgentCodeHoverResult {
+  backend: AgentCodeHoverOutput_AgentCodeBackend;
+  symbol: string;
+  range: AgentCodeHoverOutput_AgentCodeRange | null;
+  markdown: string;
+}
+export interface AgentCodeHoverOutput_AgentCodeRange {
+  start: AgentCodeHoverOutput_AgentCodePosition;
+  end: AgentCodeHoverOutput_AgentCodePosition;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeHoverOutput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+export interface AgentCodeReferencesInput_WorkspacePath {
+  bytesBase64: string;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeReferencesInput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+export interface AgentCodeReferencesOutput_AgentCodeLocation {
+  path: AgentCodeReferencesOutput_WorkspacePath;
+  range: AgentCodeReferencesOutput_AgentCodeRange;
+  preview: string;
+}
+export interface AgentCodeReferencesOutput_WorkspacePath {
+  bytesBase64: string;
+}
+export interface AgentCodeReferencesOutput_AgentCodeRange {
+  start: AgentCodeReferencesOutput_AgentCodePosition;
+  end: AgentCodeReferencesOutput_AgentCodePosition;
+}
+/**
+ * Zero-based line and UTF-16 code-unit column, matching LSP and NSH Editor positions.
+ */
+export interface AgentCodeReferencesOutput_AgentCodePosition {
+  line: number;
+  column: number;
+}
+/**
+ * Stable logical Run receipt, independent of activations and the current Session tip.
  */
 export interface AgentCompactOutput_AgentExecution {
   sessionId: string;
   turnId: string;
-  runId: string;
-  invocationId: string;
+  runId: AgentCompactOutput_RunId;
   /**
    * Run-local event count, not the root-global transcript cursor.
    */
   highWater: number;
   state: AgentCompactOutput_AgentExecutionState;
+}
+export interface AgentCompactOutput_ToolKey {
+  attempt: AgentCompactOutput_ModelAttemptId;
+  call: string;
+}
+export interface AgentCompactOutput_ExternalPublicationKey {
+  publication: AgentCompactOutput_ExternalPublicationId;
+  index: number;
+}
+export interface AgentCompactOutput_RecoveryRef {
+  source: AgentCompactOutput_DeploymentRef;
+  namespace: AgentCompactOutput_InstanceId;
+  export: string;
+  method: string;
+  operation: string;
+  fingerprint: string;
+  contract: AgentCompactOutput_RecoveryContract;
+  recovery: AgentCompactOutput_RecoveryProtocol;
+}
+export interface AgentCompactOutput_DeploymentRef {
+  stateDomain: string;
+  deployment: string;
+  revision: number;
+}
+/**
+ * Contract identity for a journal lookup. The original request retains the
+ * complete contract; a receipt carries only its digest.
+ */
+export interface AgentCompactOutput_RecoveryContract {
+  name: string;
+  version: number;
+  transport: AgentCompactOutput_Transport;
+  digest: string;
+}
+export interface AgentCompactOutput_ContentRef {
+  digest: string;
+  bytes: number;
+}
+export interface AgentCreatePresetOutput_Preset {
+  id: string;
+  revision: AgentCreatePresetOutput_PresetRevision;
+  name: string;
+  description: string;
+  instruction: string;
+  model: AgentCreatePresetOutput_ModelSelection;
+  thinkingLevel?: AgentCreatePresetOutput_ThinkingLevel | null;
+  enabled: boolean;
+}
+/**
+ * Selected model and optional service tier, resolved from the connection at admission.
+ */
+export interface AgentCreatePresetOutput_ModelSelection {
+  serviceTier?: string | null;
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
+}
+export interface AgentDeleteGitHubTokenOutput_AgentGitHubAuthStatus {
+  host: string;
+  authenticated: boolean;
+  tokenSource: AgentDeleteGitHubTokenOutput_AgentGitHubTokenSource | null;
+}
+export interface AgentDeletePresetOutput_Preset {
+  id: string;
+  revision: AgentDeletePresetOutput_PresetRevision;
+  name: string;
+  description: string;
+  instruction: string;
+  model: AgentDeletePresetOutput_ModelSelection;
+  thinkingLevel?: AgentDeletePresetOutput_ThinkingLevel | null;
+  enabled: boolean;
+}
+/**
+ * Selected model and optional service tier, resolved from the connection at admission.
+ */
+export interface AgentDeletePresetOutput_ModelSelection {
+  serviceTier?: string | null;
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
+}
+export interface AgentExternalUsageLimitsOutput_UsageQuantity {
+  used: number;
+  limit: number;
+  unit?: string | null;
+}
+export interface AgentGitCompareOutput_AgentGitCompare {
+  baseOid: string | null;
+  headOid: string;
+  entries: AgentGitCompareOutput_AgentGitCompareEntry[];
+  patch: AgentGitCompareOutput_GitWorkspaceDiff | null;
+}
+export interface AgentGitCompareOutput_AgentGitCompareEntry {
+  path: AgentGitCompareOutput_WorkspacePath;
+  kind: AgentGitCompareOutput_GitChangeKind;
+  digest: string;
+}
+export interface AgentGitCompareOutput_WorkspacePath {
+  bytesBase64: string;
+}
+export interface AgentGitCompareOutput_GitWorkspaceDiff {
+  patch: string;
+  truncated: boolean;
+  skippedFiles: number;
+}
+export interface AgentGitCompareDiffInput_WorkspacePath {
+  bytesBase64: string;
+}
+export interface AgentGitRevisionsOutput_AgentGitRevisions {
+  headBranch: string | null;
+  headOid: string | null;
+  defaultBase: string | null;
+  branches: AgentGitRevisionsOutput_AgentGitBranchEntry[];
+  commits: AgentGitRevisionsOutput_AgentGitCommitSummary[];
+  remotes: AgentGitRevisionsOutput_AgentGitRemoteRepo[];
+  worktrees: AgentGitRevisionsOutput_AgentGitWorktreeEntry[];
+}
+export interface AgentGitRevisionsOutput_AgentGitBranchEntry {
+  name: string;
+  oid: string;
+  remote: boolean;
+}
+export interface AgentGitRevisionsOutput_AgentGitCommitSummary {
+  oid: string;
+  shortOid: string;
+  summary: string;
+  author: string;
+  timestamp: number;
+}
+export interface AgentGitRevisionsOutput_AgentGitRemoteRepo {
+  remote: string;
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGitRevisionsOutput_AgentGitWorktreeEntry {
+  path: string;
+  name: string;
+  branch: string | null;
+  headOid: string | null;
+  isCurrent: boolean;
+  isMain: boolean;
+}
+export interface AgentGitWorkspaceDiffOutput_GitWorkspaceDiff {
+  patch: string;
+  truncated: boolean;
+  skippedFiles: number;
+}
+export interface AgentGithubCommentPullRequestInput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubCommentPullRequestOutput_AgentGitHubReviewComment {
+  id: number;
+  author: string;
+  body: string;
+  createdAt: string;
+  htmlUrl: string;
+}
+export interface AgentGithubPullRequestDetailInput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubPullRequestDetailOutput_AgentGitHubPullDetail {
+  repo: AgentGithubPullRequestDetailOutput_AgentGitHubRepoRef;
+  auth: AgentGithubPullRequestDetailOutput_AgentGitHubAuthStatus;
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  draft: boolean;
+  merged: boolean;
+  author: string;
+  headRef: string;
+  headSha: string;
+  baseRef: string;
+  baseSha: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  htmlUrl: string;
+  files: AgentGithubPullRequestDetailOutput_AgentGitHubPullFile[];
+  threads: AgentGithubPullRequestDetailOutput_AgentGitHubReviewThread[];
+  reviews: AgentGithubPullRequestDetailOutput_AgentGitHubReviewSummary[];
+  issueComments: AgentGithubPullRequestDetailOutput_AgentGitHubReviewComment[];
+  patch: AgentGithubPullRequestDetailOutput_GitWorkspaceDiff | null;
+}
+export interface AgentGithubPullRequestDetailOutput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubPullRequestDetailOutput_AgentGitHubAuthStatus {
+  host: string;
+  authenticated: boolean;
+  tokenSource: AgentGithubPullRequestDetailOutput_AgentGitHubTokenSource | null;
+}
+export interface AgentGithubPullRequestDetailOutput_AgentGitHubPullFile {
+  path: string;
+  previousPath: string | null;
+  status: AgentGithubPullRequestDetailOutput_AgentGitHubPullFileStatus;
+  additions: number;
+  deletions: number;
+  digest: string;
+  hasPatch: boolean;
+}
+export interface AgentGithubPullRequestDetailOutput_AgentGitHubReviewThread {
+  id: number;
+  path: string;
+  side: AgentGithubPullRequestDetailOutput_AgentGitHubDiffSide;
+  line: number | null;
+  startLine: number | null;
+  outdated: boolean;
+  diffHunk: string;
+  comments: AgentGithubPullRequestDetailOutput_AgentGitHubReviewComment[];
+}
+export interface AgentGithubPullRequestDetailOutput_AgentGitHubReviewComment {
+  id: number;
+  author: string;
+  body: string;
+  createdAt: string;
+  htmlUrl: string;
+}
+export interface AgentGithubPullRequestDetailOutput_AgentGitHubReviewSummary {
+  id: number;
+  author: string;
+  state: string;
+  body: string;
+  submittedAt: string;
+}
+export interface AgentGithubPullRequestDetailOutput_GitWorkspaceDiff {
+  patch: string;
+  truncated: boolean;
+  skippedFiles: number;
+}
+export interface AgentGithubPullRequestFileDiffInput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubPullRequestsInput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubPullRequestsOutput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubPullRequestsOutput_AgentGitHubAuthStatus {
+  host: string;
+  authenticated: boolean;
+  tokenSource: AgentGithubPullRequestsOutput_AgentGitHubTokenSource | null;
+}
+export interface AgentGithubPullRequestsOutput_AgentGitHubPullSummary {
+  number: number;
+  title: string;
+  state: string;
+  draft: boolean;
+  author: string;
+  headRef: string;
+  headSha: string;
+  baseRef: string;
+  baseSha: string;
+  updatedAt: string;
+  htmlUrl: string;
+}
+export interface AgentGithubReplyCommentInput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubReplyCommentOutput_AgentGitHubReviewComment {
+  id: number;
+  author: string;
+  body: string;
+  createdAt: string;
+  htmlUrl: string;
+}
+export interface AgentGithubSubmitReviewInput_AgentGitHubRepoRef {
+  host: string;
+  owner: string;
+  repo: string;
+}
+export interface AgentGithubSubmitReviewInput_AgentGitHubDraftReviewComment {
+  path: string;
+  side: AgentGithubSubmitReviewInput_AgentGitHubDiffSide;
+  line: number;
+  startLine?: number | null;
+  startSide?: AgentGithubSubmitReviewInput_AgentGitHubDiffSide | null;
+  body: string;
 }
 export interface AgentHistoryCheckpointHeadOutput_AgentHistoryCheckpointHead {
   revision: string;
@@ -2509,10 +5865,47 @@ export interface AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointInspecti
   operationId: string;
 }
 export interface AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceSnapshot {
-  identity: string;
   consistency: AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentHistoryCheckpointLoadReceiptOutput_AgentHistoryCheckpointObject;
+}
+export interface AgentHistoryRequestsOutput_AgentHistoryRequest {
+  order: AgentHistoryRequestsOutput_HistoryOrder;
+  stepId: AgentHistoryRequestsOutput_StepId;
+  attemptId: AgentHistoryRequestsOutput_ModelAttemptId;
+  modelId: string;
+  purpose: AgentHistoryRequestsOutput_ModelPurpose;
+  startedAt?: number | null;
+  firstTokenAt?: number | null;
+  finished?: AgentHistoryRequestsOutput_AgentHistoryRequestFinished | null;
+  retry?: AgentHistoryRequestsOutput_AgentHistoryRequestRetry | null;
+  estimatedInputTokens: number;
+  contextWindow?: number | null;
+  inputLimit?: number | null;
+  [k: string]: unknown | undefined;
+}
+/**
+ * Lexicographic tree order: original marker sequences followed by the leaf
+ * sequence/ordinal. This is presentation order, never a fabricated Root sequence.
+ */
+export interface AgentHistoryRequestsOutput_HistoryOrder {
+  path: number[];
+  itemIndex: number;
+}
+export interface AgentHistoryRequestsOutput_AgentHistoryRequestFinished {
+  at: number;
+  outcome: AgentHistoryRequestsOutput_UsageOutcome;
+  usage: AgentHistoryRequestsOutput_ModelUsage;
+  diagnostic?: string | null;
+  [k: string]: unknown | undefined;
+}
+export interface AgentHistoryRequestsOutput_ModelUsage {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_read_tokens?: number | null;
+  cache_write_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  [k: string]: unknown | undefined;
 }
 export interface AgentLoadHistoryCheckpointOutput_AgentHistoryCheckpointHead {
   revision: string;
@@ -2527,7 +5920,6 @@ export interface AgentLoadHistoryCheckpointOutput_AgentCheckpointInspection {
   operationId: string;
 }
 export interface AgentLoadHistoryCheckpointOutput_AgentCheckpointWorkspaceSnapshot {
-  identity: string;
   consistency: AgentLoadHistoryCheckpointOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentLoadHistoryCheckpointOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentLoadHistoryCheckpointOutput_AgentHistoryCheckpointObject;
@@ -2560,30 +5952,52 @@ export interface AgentLoadedHistoryCheckpointArtifactsOutput_AgentCheckpointArti
   mimeType?: string | null;
   bytes: number;
 }
-export interface AgentLoadedHistoryCheckpointHistoryInput_AgentCheckpointInspection {
+export interface AgentLoadedHistoryCheckpointAttachmentImageInput_AgentCheckpointInspection {
   sourceSessionId: string;
   operationId: string;
 }
-/**
- * Disposable presentation locator, never authority or a canonical execution fact.
- * The source is the original emitting fact; the index precedes UI filtering.
- */
-export interface AgentLoadedHistoryCheckpointHistoryInput_HistoryRowPosition {
-  sourceSequence: number;
-  itemIndex: number;
+export interface AgentLoadedHistoryCheckpointHistoryInput_AgentCheckpointInspection {
+  sourceSessionId: string;
+  operationId: string;
 }
 /**
  * Byte offset in one message field's UTF-8 text, not a bearer capability.
  */
 export interface AgentLoadedHistoryCheckpointHistoryInput_Cursor {
   field?: AgentLoadedHistoryCheckpointHistoryInput_HistoryField & string;
-  position: AgentLoadedHistoryCheckpointHistoryInput_HistoryRowPosition;
+  position: AgentLoadedHistoryCheckpointHistoryInput_HistoryRowAddress;
   offset: number;
+}
+export interface AgentLoadedHistoryCheckpointSourceInput_AgentCheckpointInspection {
+  sourceSessionId: string;
+  operationId: string;
+}
+export interface AgentLoadedHistoryCheckpointToolImageInput_AgentCheckpointInspection {
+  sourceSessionId: string;
+  operationId: string;
+}
+/**
+ * Most recent discovery association added after a Bot message was published.
+ */
+export interface AgentMarkBotReadOutput_AgentBotDiscoveryLink {
+  revision: number;
+  messageId: string;
+  turnId?: string | null;
+  discovery: AgentMarkBotReadOutput_AgentDiscoveryPublication;
+}
+export interface AgentMarkBotReadOutput_AgentDiscoveryPublication {
+  recordId: string;
+  workerSessionId: string;
+  workerTurnId: string;
 }
 /**
  * One message the Bot deliberately sent to its user.
  */
 export interface AgentMarkBotReadOutput_AgentBotMessage {
+  /**
+   * Original investigation behind this publication, independent of later Bot Turns.
+   */
+  discovery?: AgentMarkBotReadOutput_AgentDiscoveryPublication | null;
   /**
    * Monotonic position in the outbox, starting at 1.
    */
@@ -2606,6 +6020,139 @@ export interface AgentMarkBotReadOutput_AgentBotMessage {
    * Turn's reply.
    */
   turnId?: string | null;
+}
+export interface AgentMemoriesOutput_MemoryRecord {
+  assertion: number;
+  id: string;
+  revision: number;
+  mode: AgentMemoriesOutput_MemoryMode;
+  state: AgentMemoriesOutput_MemoryState;
+  body: string;
+  metadata: AgentMemoriesOutput_MemoryMetadata;
+  createdAt: number;
+  modifiedAt: number;
+}
+export interface AgentMemoriesOutput_MemoryMetadata {
+  kind: AgentMemoriesOutput_MemoryKind;
+  statement: AgentMemoriesOutput_MemoryStatement;
+  temporal: AgentMemoriesOutput_MemoryTemporal;
+}
+export interface AgentMemoryOutput_MemoryRecord {
+  assertion: number;
+  id: string;
+  revision: number;
+  mode: AgentMemoryOutput_MemoryMode;
+  state: AgentMemoryOutput_MemoryState;
+  body: string;
+  metadata: AgentMemoryOutput_MemoryMetadata;
+  createdAt: number;
+  modifiedAt: number;
+}
+export interface AgentMemoryOutput_MemoryMetadata {
+  kind: AgentMemoryOutput_MemoryKind;
+  statement: AgentMemoryOutput_MemoryStatement;
+  temporal: AgentMemoryOutput_MemoryTemporal;
+}
+export interface AgentMemoryEvidenceOutput_MemoryEvidence {
+  id: number;
+  source: AgentMemoryEvidenceOutput_MemorySource;
+}
+export interface AgentMemoryEvidenceOutput_MemoryEvidenceReference {
+  sessionId: string;
+  sequence: number;
+  itemIndex: number;
+  factId: string;
+  fingerprint: string;
+  /**
+   * UTF-8 byte offsets into the immutable message text.
+   */
+  start: number;
+  end: number;
+  quote: string;
+}
+export interface AgentMemoryHistoryOutput_MemoryVersion {
+  revision: number;
+  body: string;
+  metadata: AgentMemoryHistoryOutput_MemoryMetadata;
+  source: AgentMemoryHistoryOutput_MemorySource;
+  generation: AgentMemoryHistoryOutput_MemoryGeneration;
+  corrects?: number | null;
+}
+export interface AgentMemoryHistoryOutput_MemoryMetadata {
+  kind: AgentMemoryHistoryOutput_MemoryKind;
+  statement: AgentMemoryHistoryOutput_MemoryStatement;
+  temporal: AgentMemoryHistoryOutput_MemoryTemporal;
+}
+export interface AgentMemoryHistoryOutput_MemoryEvidenceReference {
+  sessionId: string;
+  sequence: number;
+  itemIndex: number;
+  factId: string;
+  fingerprint: string;
+  /**
+   * UTF-8 byte offsets into the immutable message text.
+   */
+  start: number;
+  end: number;
+  quote: string;
+}
+export interface AgentPendingMemoriesOutput_MemoryRecord {
+  assertion: number;
+  id: string;
+  revision: number;
+  mode: AgentPendingMemoriesOutput_MemoryMode;
+  state: AgentPendingMemoriesOutput_MemoryState;
+  body: string;
+  metadata: AgentPendingMemoriesOutput_MemoryMetadata;
+  createdAt: number;
+  modifiedAt: number;
+}
+export interface AgentPendingMemoriesOutput_MemoryMetadata {
+  kind: AgentPendingMemoriesOutput_MemoryKind;
+  statement: AgentPendingMemoriesOutput_MemoryStatement;
+  temporal: AgentPendingMemoriesOutput_MemoryTemporal;
+}
+export interface AgentPresetOutput_PresetDetail {
+  preset: AgentPresetOutput_Preset;
+  availability: AgentPresetOutput_PresetAvailability;
+}
+export interface AgentPresetOutput_Preset {
+  id: string;
+  revision: AgentPresetOutput_PresetRevision;
+  name: string;
+  description: string;
+  instruction: string;
+  model: AgentPresetOutput_ModelSelection;
+  thinkingLevel?: AgentPresetOutput_ThinkingLevel | null;
+  enabled: boolean;
+}
+/**
+ * Selected model and optional service tier, resolved from the connection at admission.
+ */
+export interface AgentPresetOutput_ModelSelection {
+  serviceTier?: string | null;
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
+}
+export interface AgentPresetsOutput_PresetSummary {
+  id: string;
+  revision: AgentPresetsOutput_PresetRevision;
+  name: string;
+  description: string;
+  model: AgentPresetsOutput_ModelSelection;
+  thinkingLevel?: AgentPresetsOutput_ThinkingLevel | null;
+  enabled: boolean;
+  availability: AgentPresetsOutput_PresetAvailability;
+}
+/**
+ * Selected model and optional service tier, resolved from the connection at admission.
+ */
+export interface AgentPresetsOutput_ModelSelection {
+  serviceTier?: string | null;
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
 }
 export interface AgentPreviewHistoryCheckpointOutput_AgentHistoryCheckpointSession {
   id: string;
@@ -2635,11 +6182,8 @@ export interface AgentPublishCheckpointOutput_AgentCheckpointWorkspaceNotice {
   consistency: AgentPublishCheckpointOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentPublishCheckpointOutput_AgentCheckpointWorkspaceWarning;
 }
-export interface AgentRankQuickToolsInput_AgentQuickToolCandidate {
-  id: string;
-  name: string;
-  kind: string;
-  uses: number;
+export interface AgentReadFileInput_WorkspacePath {
+  bytesBase64: string;
 }
 export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointHead {
   revision: string;
@@ -2649,17 +6193,18 @@ export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointObject {
   digest: string;
   bytes: number;
 }
-export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointInventory {
-  rootSessionId: string;
-  subtreeDigest: string;
-  sessions: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointSession[];
-}
-export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointSession {
-  id: string;
-  revision: number;
+export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointSnapshot {
+  object: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointObject;
+  /**
+   * Exact Agent archive inventory descriptor bytes, not execution authority.
+   */
+  inventory: number[];
+  /**
+   * Exact Agent source-cut descriptor bytes. Never a Root/Session capability.
+   */
+  cut: number[];
 }
 export interface AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceSnapshot {
-  identity: string;
   consistency: AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointObject;
@@ -2670,6 +6215,44 @@ export interface AgentReadPatchOutput_AgentWorkspacePatch {
   turnId: string;
   baseCommit: string;
   bytes: number;
+}
+export interface AgentReconcileMemoriesInput_MemoryWrite {
+  edit: AgentReconcileMemoriesInput_MemoryEdit;
+  /**
+   * A verified conversation source grants automatic extraction authority only.
+   */
+  evidence?: AgentReconcileMemoriesInput_MemoryEvidenceReference | null;
+}
+export interface AgentReconcileMemoriesInput_MemoryEvidenceReference {
+  sessionId: string;
+  sequence: number;
+  itemIndex: number;
+  factId: string;
+  fingerprint: string;
+  /**
+   * UTF-8 byte offsets into the immutable message text.
+   */
+  start: number;
+  end: number;
+  quote: string;
+}
+export interface AgentReconcileMemoriesInput_MemoryMetadata {
+  kind: AgentReconcileMemoriesInput_MemoryKind;
+  statement: AgentReconcileMemoriesInput_MemoryStatement;
+  temporal: AgentReconcileMemoriesInput_MemoryTemporal;
+}
+export interface AgentReconcileMemoriesInput_MemoryResolution {
+  sessionId: string;
+  model: AgentReconcileMemoriesInput_ModelSelection;
+}
+/**
+ * Selected model and optional service tier, resolved from the connection at admission.
+ */
+export interface AgentReconcileMemoriesInput_ModelSelection {
+  serviceTier?: string | null;
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
 }
 export interface AgentRequestSystemPermissionOutput_AgentSystemPermissionState {
   grant: AgentRequestSystemPermissionOutput_SystemPermissionGrant;
@@ -2707,10 +6290,14 @@ export interface AgentRestoreSessionCheckpointOutput_AgentHistoryCheckpointObjec
   bytes: number;
 }
 export interface AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceSnapshot {
-  identity: string;
   consistency: AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentRestoreSessionCheckpointOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentRestoreSessionCheckpointOutput_AgentHistoryCheckpointObject;
+}
+export interface AgentSaveGitHubTokenOutput_AgentGitHubAuthStatus {
+  host: string;
+  authenticated: boolean;
+  tokenSource: AgentSaveGitHubTokenOutput_AgentGitHubTokenSource | null;
 }
 export interface AgentSessionCheckpointRestoreReceiptInput_RecoveryRef {
   source: AgentSessionCheckpointRestoreReceiptInput_DeploymentRef;
@@ -2821,10 +6408,349 @@ export interface AgentSessionCheckpointRestoreReceiptOutput_AgentHistoryCheckpoi
   bytes: number;
 }
 export interface AgentSessionCheckpointRestoreReceiptOutput_AgentCheckpointWorkspaceSnapshot {
-  identity: string;
   consistency: AgentSessionCheckpointRestoreReceiptOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentSessionCheckpointRestoreReceiptOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentSessionCheckpointRestoreReceiptOutput_AgentHistoryCheckpointObject;
+}
+export interface AgentSessionCreateInput_AgentExecutorSelection {
+  executor: string;
+  settings: AgentSessionCreateInput_ExecutorSettings;
+}
+/**
+ * Executor-owned model selection, independent of Host model connections.
+ */
+export interface AgentSessionCreateInput_ExecutorSettings {
+  model?: string | null;
+  thinkingLevel?: AgentSessionCreateInput_ExecutorEffort | null;
+  runtime?: string | null;
+}
+export interface AgentSessionCreateInput_AgentSessionForkFrom {
+  sessionId: string;
+  /**
+   * Optional turn boundary to fork through; defaults to the end of the source Session.
+   */
+  turnId?: string | null;
+  expectedRevision?: number | null;
+}
+export interface AgentSessionListOutput_AgentSessionSummary {
+  id: string;
+  kind: AgentSessionListOutput_AgentSessionKind;
+  title: string;
+  activity: AgentSessionListOutput_AgentSessionActivity;
+  workspacePath: string;
+  worktreeDirectory?: string | null;
+  parentSessionId?: string | null;
+  presetName?: string | null;
+  backend?: AgentSessionListOutput_AgentBackendPreference | null;
+  permissions: AgentSessionListOutput_AgentWorkspacePermissions;
+  labels?: string[];
+  pinned: boolean;
+  archived: boolean;
+  revision: number;
+  updatedAt: number;
+}
+export interface AgentSessionListOutput_AgentExecutorSelection {
+  executor: string;
+  settings: AgentSessionListOutput_ExecutorSettings;
+}
+/**
+ * Executor-owned model selection, independent of Host model connections.
+ */
+export interface AgentSessionListOutput_ExecutorSettings {
+  model?: string | null;
+  thinkingLevel?: AgentSessionListOutput_ExecutorEffort | null;
+  runtime?: string | null;
+}
+export interface AgentSessionListOutput_AgentWorkspacePermissions {
+  access: AgentSessionListOutput_AgentWorkspaceAccess;
+  requestPermissions: boolean;
+}
+/**
+ * Selected model and optional service tier, resolved from the connection at admission.
+ */
+export interface AgentSessionManageInput_ModelSelection {
+  serviceTier?: string | null;
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
+}
+export interface AgentSessionManageOutput_AgentSessionSummary {
+  id: string;
+  kind: AgentSessionManageOutput_AgentSessionKind;
+  title: string;
+  activity: AgentSessionManageOutput_AgentSessionActivity;
+  workspacePath: string;
+  worktreeDirectory?: string | null;
+  parentSessionId?: string | null;
+  presetName?: string | null;
+  backend?: AgentSessionManageOutput_AgentBackendPreference | null;
+  permissions: AgentSessionManageOutput_AgentWorkspacePermissions;
+  labels?: string[];
+  pinned: boolean;
+  archived: boolean;
+  revision: number;
+  updatedAt: number;
+}
+export interface AgentSessionManageOutput_AgentExecutorSelection {
+  executor: string;
+  settings: AgentSessionManageOutput_ExecutorSettings;
+}
+/**
+ * Executor-owned model selection, independent of Host model connections.
+ */
+export interface AgentSessionManageOutput_ExecutorSettings {
+  model?: string | null;
+  thinkingLevel?: AgentSessionManageOutput_ExecutorEffort | null;
+  runtime?: string | null;
+}
+export interface AgentSessionManageOutput_AgentWorkspacePermissions {
+  access: AgentSessionManageOutput_AgentWorkspaceAccess;
+  requestPermissions: boolean;
+}
+/**
+ * Stable logical Run receipt, independent of activations and the current Session tip.
+ */
+export interface AgentSessionManageOutput_AgentExecution {
+  sessionId: string;
+  turnId: string;
+  runId: AgentSessionManageOutput_RunId;
+  /**
+   * Run-local event count, not the root-global transcript cursor.
+   */
+  highWater: number;
+  state: AgentSessionManageOutput_AgentExecutionState;
+}
+export interface AgentSessionManageOutput_ToolKey {
+  attempt: AgentSessionManageOutput_ModelAttemptId;
+  call: string;
+}
+export interface AgentSessionManageOutput_ExternalPublicationKey {
+  publication: AgentSessionManageOutput_ExternalPublicationId;
+  index: number;
+}
+export interface AgentSessionManageOutput_RecoveryRef {
+  source: AgentSessionManageOutput_DeploymentRef;
+  namespace: AgentSessionManageOutput_InstanceId;
+  export: string;
+  method: string;
+  operation: string;
+  fingerprint: string;
+  contract: AgentSessionManageOutput_RecoveryContract;
+  recovery: AgentSessionManageOutput_RecoveryProtocol;
+}
+export interface AgentSessionManageOutput_DeploymentRef {
+  stateDomain: string;
+  deployment: string;
+  revision: number;
+}
+/**
+ * Contract identity for a journal lookup. The original request retains the
+ * complete contract; a receipt carries only its digest.
+ */
+export interface AgentSessionManageOutput_RecoveryContract {
+  name: string;
+  version: number;
+  transport: AgentSessionManageOutput_Transport;
+  digest: string;
+}
+export interface AgentSessionManageOutput_ContentRef {
+  digest: string;
+  bytes: number;
+}
+export interface AgentSessionReadInput_AgentSessionRowLookup {
+  through?: number | null;
+  position: AgentSessionReadInput_HistoryRowAddress;
+  field?: AgentSessionReadInput_HistoryField & string;
+}
+export interface AgentSessionReadOutput_AgentSessionSummary {
+  id: string;
+  kind: AgentSessionReadOutput_AgentSessionKind;
+  title: string;
+  activity: AgentSessionReadOutput_AgentSessionActivity;
+  workspacePath: string;
+  worktreeDirectory?: string | null;
+  parentSessionId?: string | null;
+  presetName?: string | null;
+  backend?: AgentSessionReadOutput_AgentBackendPreference | null;
+  permissions: AgentSessionReadOutput_AgentWorkspacePermissions;
+  labels?: string[];
+  pinned: boolean;
+  archived: boolean;
+  revision: number;
+  updatedAt: number;
+}
+export interface AgentSessionReadOutput_AgentExecutorSelection {
+  executor: string;
+  settings: AgentSessionReadOutput_ExecutorSettings;
+}
+/**
+ * Executor-owned model selection, independent of Host model connections.
+ */
+export interface AgentSessionReadOutput_ExecutorSettings {
+  model?: string | null;
+  thinkingLevel?: AgentSessionReadOutput_ExecutorEffort | null;
+  runtime?: string | null;
+}
+export interface AgentSessionReadOutput_AgentWorkspacePermissions {
+  access: AgentSessionReadOutput_AgentWorkspaceAccess;
+  requestPermissions: boolean;
+}
+export interface AgentSessionReadOutput_AgentSessionRunOverview {
+  runId: AgentSessionReadOutput_RunId;
+  state: string;
+  stopped: boolean;
+  error?: string | null;
+  blockers?: string[];
+}
+export interface AgentSessionReadOutput_InteractionRecord {
+  execution: AgentSessionReadOutput_ExecutionIdentity;
+  requestId: string;
+  createdAt: number;
+  request: AgentSessionReadOutput_InteractionRequest;
+  outcome: AgentSessionReadOutput_InteractionOutcome | null;
+}
+export interface AgentSessionReadOutput_ExecutionIdentity {
+  sessionId: string;
+  turnId: string;
+  runId: AgentSessionReadOutput_RunId;
+}
+/**
+ * Captured authority, never silently upgraded by resolving a current binding.
+ */
+export interface AgentSessionReadOutput_PermissionBasis {
+  boundaryRevision: number;
+  binding: AgentSessionReadOutput_BindingStamp;
+}
+export interface AgentSessionReadOutput_BindingStamp {
+  id: string;
+  permissionEpoch: number;
+}
+export interface AgentSessionReadOutput_Permissions {
+  filesystem: AgentSessionReadOutput_Rule[];
+  network: AgentSessionReadOutput_Network;
+}
+/**
+ * Paths have executor-native meaning. Validate and materialize them on the
+ * execution host, never on a remote Desktop. This document alone grants nothing.
+ */
+export interface AgentSessionReadOutput_Rule {
+  path: string;
+  scope: AgentSessionReadOutput_Scope;
+  access: AgentSessionReadOutput_Access;
+}
+/**
+ * Destination authority, independent of the upstream proxy used to reach it.
+ * A domain grant does not authorize its subdomains or other ports.
+ */
+export interface AgentSessionReadOutput_Destination {
+  host: string;
+  port: number;
+}
+export interface AgentSessionReadOutput_ToolKey {
+  attempt: AgentSessionReadOutput_ModelAttemptId;
+  call: string;
+}
+export interface AgentSessionReadOutput_PermissionRequest {
+  reason: string;
+  command?: AgentSessionReadOutput_PermissionCommand | null;
+  permissions: AgentSessionReadOutput_Permissions;
+  /**
+   * Network access granted for this request covers only later requests from
+   * the same source; filesystem access covers all of them. Requests stored
+   * before sources were recorded decode as Web, the only source that could
+   * be granted network access then.
+   */
+  source?: AgentSessionReadOutput_PermissionSource & string;
+}
+export interface AgentSessionReadOutput_PermissionCommand {
+  command: string;
+  cwd: string;
+}
+export interface AgentSessionReadOutput_InteractionQuestion {
+  question: string;
+  /**
+   * @minItems 2
+   * @maxItems 3
+   */
+  options:
+    | [AgentSessionReadOutput_QuestionOption, AgentSessionReadOutput_QuestionOption]
+    | [
+        AgentSessionReadOutput_QuestionOption,
+        AgentSessionReadOutput_QuestionOption,
+        AgentSessionReadOutput_QuestionOption,
+      ];
+}
+export interface AgentSessionReadOutput_QuestionOption {
+  label: string;
+  description?: string;
+}
+export interface AgentSessionReadOutput_FormRequester {
+  name: string;
+  source?: string | null;
+}
+export interface AgentSessionReadOutput_FormOption {
+  value: string;
+  label: string;
+}
+export interface AgentSessionReadOutput_GrantTarget {
+  providerId: string;
+  contractId: string;
+  serverId: string;
+  toolName: string;
+  capability: AgentSessionReadOutput_GrantCapability;
+  scope: AgentSessionReadOutput_GrantScope;
+  [k: string]: unknown | undefined;
+}
+export interface AgentSessionReadOutput_ComputerAppDisplay {
+  name: string;
+  appPath: string;
+  risk?: AgentSessionReadOutput_ComputerAppRisk | null;
+  warning?: string | null;
+}
+export interface AgentSessionReadOutput_SystemPermissionApplicationLocation {
+  fileUrl: string;
+  stateDomain: string;
+}
+export interface AgentSessionReadOutput_AgentQueuedMessageOverview {
+  messageId: string;
+  text: string;
+  editableByCaller: boolean;
+}
+export interface AgentSessionReadOutput_AgentTranscriptEntry {
+  role: string;
+  turnId?: string | null;
+  messageId?: string | null;
+  toolName?: string | null;
+  status?: string | null;
+  /**
+   * Pass to Read({ path }) to inspect the full output of this tool call.
+   */
+  resultPath?: string | null;
+  offset?: number | null;
+  totalBytes?: number | null;
+  text: string;
+}
+export interface AgentSessionReadOutput_AgentRoomPostEntry {
+  id: string;
+  sequence: number;
+  at: number;
+  author: AgentSessionReadOutput_RoomAuthor;
+  text: string;
+  replyTo?: string | null;
+  mentions?: string[];
+  deliveries?: AgentSessionReadOutput_RoomDelivery[];
+}
+export interface AgentSessionSendInput_AgentExecutorSelection {
+  executor: string;
+  settings: AgentSessionSendInput_ExecutorSettings;
+}
+/**
+ * Executor-owned model selection, independent of Host model connections.
+ */
+export interface AgentSessionSendInput_ExecutorSettings {
+  model?: string | null;
+  thinkingLevel?: AgentSessionSendInput_ExecutorEffort | null;
+  runtime?: string | null;
 }
 export interface AgentSkillCandidatesOutput_AgentSkillCandidate {
   reference: string;
@@ -2845,9 +6771,55 @@ export interface AgentSystemPermissionStatusOutput_AgentSystemPermissionState {
   effective: boolean;
 }
 /**
+ * Selected model and optional service tier, resolved from the connection at admission.
+ */
+export interface AgentUpdatePresetInput_ModelSelection {
+  serviceTier?: string | null;
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
+}
+export interface AgentUpdatePresetOutput_Preset {
+  id: string;
+  revision: AgentUpdatePresetOutput_PresetRevision;
+  name: string;
+  description: string;
+  instruction: string;
+  model: AgentUpdatePresetOutput_ModelSelection;
+  thinkingLevel?: AgentUpdatePresetOutput_ThinkingLevel | null;
+  enabled: boolean;
+}
+/**
+ * Selected model and optional service tier, resolved from the connection at admission.
+ */
+export interface AgentUpdatePresetOutput_ModelSelection {
+  serviceTier?: string | null;
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
+}
+/**
+ * Most recent discovery association added after a Bot message was published.
+ */
+export interface AgentWatchBotOutboxOutput_AgentBotDiscoveryLink {
+  revision: number;
+  messageId: string;
+  turnId?: string | null;
+  discovery: AgentWatchBotOutboxOutput_AgentDiscoveryPublication;
+}
+export interface AgentWatchBotOutboxOutput_AgentDiscoveryPublication {
+  recordId: string;
+  workerSessionId: string;
+  workerTurnId: string;
+}
+/**
  * One message the Bot deliberately sent to its user.
  */
 export interface AgentWatchBotOutboxOutput_AgentBotMessage {
+  /**
+   * Original investigation behind this publication, independent of later Bot Turns.
+   */
+  discovery?: AgentWatchBotOutboxOutput_AgentDiscoveryPublication | null;
   /**
    * Monotonic position in the outbox, starting at 1.
    */
@@ -2881,6 +6853,10 @@ export interface SettingsAssistantPreferencesOutput_MessagePredictionSettings {
    */
   prompt: string | null;
 }
+export interface SettingsAssistantPreferencesOutput_MemoryPolicy {
+  enabled: boolean;
+  agentReadEnabled: boolean;
+}
 export interface SettingsAssistantPreferencesOutput_ShellPolicy {
   preference: SettingsAssistantPreferencesOutput_ShellPreference;
   executable: string;
@@ -2894,6 +6870,20 @@ export interface SettingsCatalogModelsOutput_SettingsCatalogModel {
 export interface SettingsCatalogModelsOutput_CatalogModelReference {
   provider: string;
   modelId: string;
+}
+export interface SettingsConnectionUsageLimitsOutput_UsageQuantity {
+  used: number;
+  limit: number;
+  unit?: string | null;
+}
+export interface SettingsDictationConnectionsOutput_DictationConnection {
+  basis: SettingsDictationConnectionsOutput_ConnectionVersionBasis;
+  name: string;
+  [k: string]: unknown | undefined;
+}
+export interface SettingsDictationConnectionsOutput_ConnectionVersionBasis {
+  connectionId: string;
+  revision: number;
 }
 export interface SettingsUpdateInput_ConnectionVersionBasis {
   connectionId: string;
@@ -2921,7 +6911,7 @@ export interface SettingsUpdateInput_ModelOverride {
    */
   adapter?: string;
   /**
-   * Omitted means model-specific defaults; false is an explicit opt-out.
+   * Code Mode is enabled by default. Set false to select direct tool calls.
    */
   codeMode?: boolean;
   /**
@@ -3014,8 +7004,12 @@ export interface SettingsUpdateWorkspaceLocationsOutput_DirectoryRootSpec {
   path: string;
 }
 export interface SettingsUsageOutput_UsageFence {
+  schemaVersion: number;
   stateDomain: string;
   sequence: number;
+  auxiliarySequence: number;
+  cellSequence: number;
+  queryDigest: string;
 }
 export interface SettingsUsageOutput_UsageModelAttempt {
   requestId: string;
@@ -3030,12 +7024,15 @@ export interface SettingsUsageOutput_UsageModelAttempt {
   quote: SettingsUsageOutput_Quote | null;
   costUsd: number | null;
 }
-export interface SettingsUsageOutput_Invocation {
-  session_id: string;
-  turn_id: string;
-  run_id: string;
-  invocation_id: string;
-  [k: string]: unknown | undefined;
+export interface SettingsUsageOutput_ExecutionIdentity {
+  sessionId: string;
+  turnId: string;
+  runId: SettingsUsageOutput_RunId;
+}
+export interface SettingsUsageOutput_AgentStepLink {
+  run: SettingsUsageOutput_RunId;
+  step: SettingsUsageOutput_StepId;
+  attempt: SettingsUsageOutput_ModelAttemptId;
 }
 export interface SettingsUsageOutput_DeploymentRef {
   stateDomain: string;
@@ -3071,14 +7068,14 @@ export interface SettingsUsageOutput_Pricing {
   cacheReadUsdPer1M?: number;
   cacheWriteUsdPer1M?: number;
 }
-export interface SettingsUsageOutput_UsageToolAttempt {
+export interface SettingsUsageOutput_ToolUsage {
   requestId: string;
-  invocation: SettingsUsageOutput_Invocation;
-  call: SettingsUsageOutput_ToolCallIdentity;
+  source: SettingsUsageOutput_ToolUsageSource;
   name: string;
   binding: SettingsUsageOutput_ModelBinding | null;
   completedAt: number;
-  result: SettingsUsageOutput_UsageToolResult;
+  result: SettingsUsageOutput_ToolUsageResult;
+  cleanup: SettingsUsageOutput_OperationCleanup | null;
 }
 /**
  * A Tool Call is distinct from its durable host operation. Origin determines
@@ -3089,13 +7086,25 @@ export interface SettingsUsageOutput_ToolCallIdentity {
   origin: SettingsUsageOutput_ToolOrigin;
   [k: string]: unknown | undefined;
 }
+export interface SettingsUsageOutput_ExternalEffectKey {
+  task: SettingsUsageOutput_ExternalTaskId;
+  operation: string;
+}
+export interface SettingsUsageOutput_RunOwner {
+  deployment: string;
+  namespace: SettingsUsageOutput_InstanceId;
+}
 export interface SettingsUsageOutput_UsageActivityCursor {
   completedAt: number;
   requestId: string;
 }
 export interface SettingsUsageSummaryOutput_UsageFence {
+  schemaVersion: number;
   stateDomain: string;
   sequence: number;
+  auxiliarySequence: number;
+  cellSequence: number;
+  queryDigest: string;
 }
 export interface SettingsUsageSummaryOutput_SettingsUsageTotals {
   models: SettingsUsageSummaryOutput_UsageModelTotals;
@@ -3185,9 +7194,6 @@ export interface SettingsUsageSummaryOutput_UsageToolSummary {
 }
 export interface SettingsUsageSummaryOutput_UsageGroupCursor {
   group: SettingsUsageSummaryOutput_UsageGroup;
-  /**
-   * None identifies the unknown-provider group, not the start of pagination.
-   */
   key: string | null;
 }
 export interface SettingsWorkspaceLocationsOutput_SettingsWorkspaceLocations {
@@ -3228,6 +7234,7 @@ export interface SettingsAuthenticationProviderOutput_Descriptor {
    */
   anonymous: boolean;
   discovery: boolean;
+  usageAuthentication?: SettingsAuthenticationProviderOutput_UsageAuthentication | null;
 }
 export interface SettingsAuthenticationProviderOutput_Method {
   id: string;
@@ -3303,5 +7310,4 @@ export interface TerminalReadDisplayOutput_Style {
  */
 export interface SkillLibraryCandidatesInput_SkillLibraryCandidateDirectory {
   path: string;
-  directoryIdentity: string;
 }

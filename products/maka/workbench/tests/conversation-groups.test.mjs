@@ -19,7 +19,13 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { browserOrder, groupConversations, groupWorkspace } from '../app/conversationGroups.ts';
+import {
+  browserOrder,
+  foldableFamilies,
+  groupConversations,
+  groupWorkspace,
+  unfoldedSessions,
+} from '../app/conversationGroups.ts';
 
 const session = (id, path, options = {}) => ({
   id,
@@ -29,7 +35,7 @@ const session = (id, path, options = {}) => ({
 });
 const project = (id, archived = false) => ({ reference: { id }, archived });
 
-test('groups list pinned conversations, then workspaces, then empty projects', () => {
+test('groups list pinned conversations, then projects in catalog order, then other workspaces', () => {
   const groups = groupConversations(
     [
       session('pin', '/a', { pinned: true, project: 'p' }),
@@ -44,14 +50,45 @@ test('groups list pinned conversations, then workspaces, then empty projects', (
     groups.map((group) => [group.key, group.sessions]),
     [
       ['pinned', ['pin']],
-      ['path:/b', ['root', 'child']],
       ['project:p', ['inProject']],
       ['project:empty', []],
+      ['path:/b', ['root', 'child']],
     ],
   );
   assert.equal(groups[0].project, null);
-  assert.equal(groups[1].path, '/b');
-  assert.deepEqual([...groups[1].nested], ['child']);
+  assert.equal(groups[3].path, '/b');
+  assert.deepEqual([...groups[3].nested], ['child']);
+});
+
+test('project order is independent of conversation recency and stepping follows the preview', () => {
+  const recent = Array.from({ length: 8 }, (_, index) =>
+    session(`b${index}`, '/b', { project: 'b' }),
+  );
+  const groups = groupConversations(
+    [...recent, session('a', '/a', { project: 'a' })],
+    [project('a'), project('b')],
+    false,
+  );
+  assert.deepEqual(browserOrder(groups, new Set(), null, new Set()), [
+    'a',
+    'b0',
+    'b1',
+    'b2',
+    'b3',
+    'b4',
+    'b5',
+  ]);
+  assert.deepEqual(browserOrder(groups, new Set(), null, new Set(['project:b'])), [
+    'a',
+    'b0',
+    'b1',
+    'b2',
+    'b3',
+    'b4',
+    'b5',
+    'b6',
+    'b7',
+  ]);
 });
 
 test('stepping skips collapsed groups but keeps the open conversation', () => {
@@ -82,7 +119,7 @@ test('new conversations reuse the group workspace, not the currently selected co
   const [empty] = groupConversations([], [registered], true);
   assert.deepEqual(groupWorkspace(empty), {
     kind: 'project',
-    project: registered.reference,
+    projectId: registered.reference.id,
     path: registered.path,
   });
   for (const change of [{ archived: true }, { available: false }, { path: null }]) {
@@ -102,4 +139,59 @@ test('mixed pinned groups have no creation workspace; missing projects reuse an 
   );
   assert.equal(groupWorkspace(groups[0]), null);
   assert.deepEqual(groupWorkspace(groups[1]), { kind: 'session', sessionId: 'missing' });
+});
+
+test('a conversation that created three or more can fold them', () => {
+  const [group] = groupConversations(
+    [
+      session('big', '/a'),
+      session('b1', '/a', { parent: 'big' }),
+      session('b2', '/a', { parent: 'b1' }),
+      session('b3', '/a', { parent: 'big' }),
+      session('small', '/a'),
+      session('s1', '/a', { parent: 'small' }),
+      session('s2', '/a', { parent: 'small' }),
+    ],
+    [],
+    false,
+  );
+  assert.deepEqual([...foldableFamilies(group)], [['big', ['b1', 'b2', 'b3']]]);
+  assert.deepEqual(unfoldedSessions(group, new Set()), group.sessions);
+  assert.deepEqual(unfoldedSessions(group, new Set(['big', 'small'])), [
+    'big',
+    'small',
+    's1',
+    's2',
+  ]);
+  // Stepping skips a folded family but starts from a folded current row.
+  assert.deepEqual(browserOrder([group], new Set(), null, undefined, new Set(['big'])), [
+    'big',
+    'small',
+    's1',
+    's2',
+  ]);
+  assert.deepEqual(browserOrder([group], new Set(), 'b2', undefined, new Set(['big'])), [
+    'big',
+    'b2',
+    'small',
+    's1',
+    's2',
+  ]);
+  // Without fold state, as in the terminal, nothing folds.
+  assert.deepEqual(browserOrder([group], new Set(), null), group.sessions);
+});
+
+test('a project counts only unfolded conversations toward its limit', () => {
+  const groups = groupConversations(
+    [
+      session('p', '/a', { project: 'x' }),
+      ...['c1', 'c2', 'c3', 'c4', 'c5', 'c6'].map((id) =>
+        session(id, '/a', { project: 'x', parent: 'p' }),
+      ),
+      session('q', '/a', { project: 'x' }),
+    ],
+    [project('x')],
+    false,
+  );
+  assert.deepEqual(browserOrder(groups, new Set(), null, new Set(), new Set(['p'])), ['p', 'q']);
 });

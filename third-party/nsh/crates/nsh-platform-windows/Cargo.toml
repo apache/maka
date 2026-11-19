@@ -3,6 +3,7 @@ name = "nsh-platform-windows"
 description = "Windows backend (Win32, Direct2D, DirectWrite): view mounting, text engine, input, standalone app."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true
@@ -12,14 +13,21 @@ repository.workspace = true
 workspace = true
 
 [features]
-default = ["js", "shader", "editor", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto"]
+default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "websocket", "updater", "svg", "net", "webview", "media"]
 # JS apps (bundles, signed packages); without it, the library only runs a
 # Rust app and links no QuickJS.
 js = ["nsh-engine/js-core"]
-# Development support: dev server client, log forwarding, error overlay.
 # Hidden native RGBA surface and terminal transport contracts.
 terminal = ["dep:nsh-terminal"]
-dev = ["js", "shader", "editor", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "dep:nsh-dev", "dep:nsh-testing"]
+# Development support: dev server client, log forwarding, error overlay.
+dev = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "websocket", "updater", "dep:nsh-dev", "dep:nsh-testing", "svg", "net", "webview", "media"]
+# Web views with WebView2 (webview2-com). Without it a web view fails at
+# once, as on a platform that shows none.
+webview = ["dep:webview2-com"]
+# Video and sound with Media Foundation and XAudio2. Without them a video
+# shows nothing and a sound's load fails as not supported, naming the
+# feature; the runtime imports no mfplat, mfreadwrite or xaudio2 DLL.
+media = ["windows/Win32_Media_Audio", "windows/Win32_Media_Audio_XAudio2", "windows/Win32_Media_MediaFoundation"]
 # Shaders (`Shader`, `ShaderEffect`, `ShaderTransition`, the shader transitions
 # of pages and dialogs), on naga and wgpu. Without it they draw nothing.
 shader = ["nsh-engine/shader"]
@@ -38,10 +46,25 @@ highlight = ["nsh-base/highlight"]
 # `TextView`'s formulas typeset natively (RaTeX and the KaTeX fonts). Without
 # it a formula shows as its TeX, or as the app's `renderMath`.
 math = ["nsh-base/math"]
+# `EmojiPicker`, with Unicode's emoji and their English names (about 440 kB).
+emoji-picker = ["nsh-base/emoji-picker"]
 # The standard JS module `zlib`: deflate, gzip, brotli and zstd.
 zlib = ["js", "nsh-engine/zlib"]
 # The standard JS module `crypto` and the globals of Web Crypto.
 crypto = ["js", "nsh-engine/crypto"]
+
+# The native WebSocket client (tokio-tungstenite, rustls). Without it
+# `connect` of `websocket` rejects with ERR_FEATURE_UNAVAILABLE_ON_PLATFORM.
+websocket = ["nsh-core/websocket"]
+# App self-updates (`nsh/updater`). Without it a check finds no update.
+updater = ["nsh-core/updater"]
+
+# SVG images (resvg). Without it an SVG is recognized and shows nothing,
+# its load failing with a message naming the feature.
+svg = ["nsh-core/svg"]
+# HTTP: `fetch` and remote images (ureq, rustls). Without it `fetch`
+# rejects and an `<Image>` shows only files, assets and inline data.
+net = ["nsh-core/loader", "nsh-engine/net"]
 
 [dependencies]
 log.workspace = true
@@ -49,13 +72,13 @@ log.workspace = true
 # Empty off Windows (like the other platform crates off their targets).
 [target.'cfg(windows)'.dependencies]
 nsh-terminal = { workspace = true, optional = true }
-nsh-core = { workspace = true, features = ["svg", "loader"] }
-nsh-engine = { workspace = true, features = ["net"] }
+nsh-core.workspace = true
+nsh-engine.workspace = true
 nsh-base.workspace = true
 windows.workspace = true
 windows-core.workspace = true
 windows-numerics.workspace = true
-webview2-com.workspace = true
+webview2-com = { workspace = true, optional = true }
 # GIF and WebP animations (WIC decodes the first frame of everything else).
 image = { workspace = true, features = ["gif", "webp"] }
 rustc-hash.workspace = true

@@ -18,4 +18,3 @@
  */
 
 mod api;
-mod codex;

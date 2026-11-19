@@ -44,8 +44,8 @@ export function createBotTranscript(
     isBot: () => (version(), known(), core.isBot()),
     /** `unknown` until the Host answers; Chat must not treat unknown as ordinary. */
     identity: () => (version(), known(), core.identity()),
-    readState: () => (version(), core.readState()),
     forTurn: (turnId: string) => (version(), core.forTurn(turnId)),
+    latest: () => (version(), core.latest()),
     close: () => core.close(),
   };
 }

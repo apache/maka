@@ -436,7 +436,7 @@ mod tests {
         collapsed_workspace_pages("workspace-pages-busy");
     }
 
-    fn collapsed_workspace_pages(scenario: &'static str) {
+    fn component_fixture(scenario: &'static str) -> Session {
         use nsh_core::platform::Idiom;
         use nsh_core::prelude::{Instance, class};
 
@@ -459,6 +459,42 @@ mod tests {
                 self.scenario.clone()
             }
         }
+        let mut registry = maka_workbench::bindings::ui_registry();
+        registry.value("host", move || {
+            Instance::new(Presentation {
+                scenario: scenario.into(),
+            })
+        });
+        let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+            entry: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/components.tsx"),
+            minify: false,
+            split: false,
+            ui_sets: nsh_base::registry()
+                .sets()
+                .into_iter()
+                .map(Into::into)
+                .chain(std::iter::once((&registry).into()))
+                .collect(),
+            asset_root_from: Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
+            ),
+            ..Default::default()
+        })
+        .unwrap();
+        let mut options = config(&bundle.code);
+        options.viewport = super::super::cell_viewport(120, 36);
+        options.environment.window = options.viewport;
+        options.environment.idiom = Idiom::Desktop;
+        options.environment.native_focus_scopes = true;
+        options.ui_sets.push(registry);
+        let mut session = Session::new(options, false).unwrap();
+        session.initial_frame().unwrap();
+        session
+    }
+
+    fn collapsed_workspace_pages(scenario: &'static str) {
+        let mut session = component_fixture(scenario);
         let wait = |session: &mut Session, expected: &str| {
             let deadline = Instant::now() + std::time::Duration::from_secs(5);
             loop {
@@ -474,28 +510,6 @@ mod tests {
                 thread::yield_now();
             }
         };
-        let mut registry = maka_workbench::bindings::ui_registry();
-        registry.value("host", move || {
-            Instance::new(Presentation {
-                scenario: scenario.into(),
-            })
-        });
-        let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
-            entry: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/components.tsx"),
-            minify: false,
-            split: false,
-            ui_sets: vec![nsh_base::registry().into(), (&registry).into()],
-        })
-        .unwrap();
-        let mut options = config(&bundle.code);
-        options.viewport = super::super::cell_viewport(120, 36);
-        options.environment.window = options.viewport;
-        options.environment.idiom = Idiom::Desktop;
-        options.environment.native_focus_scopes = true;
-        options.ui_sets.push(registry);
-        let mut session = Session::new(options, false).unwrap();
-        session.initial_frame().unwrap();
         wait(&mut session, "DESKTOP_BRANCH");
         let events = click(&session.surface, "Collapse A");
         session.advance(command(events)).unwrap();
@@ -517,6 +531,39 @@ mod tests {
                 .any(|node| node.label == "Open conversation B conversation 0"),
             "{scenario}"
         );
+    }
+
+    #[test]
+    fn external_agent_hides_sandbox_and_native_selection_restores_it() {
+        let mut session = component_fixture("composer-backends");
+        let has = |session: &Session, label: &str| {
+            session
+                .surface
+                .accessibility_snapshot()
+                .iter()
+                .any(|node| node.label == label)
+        };
+        let wait = |session: &mut Session, label: &str| {
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                session.advance(command([])).unwrap();
+                if has(session, label) {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "missing {label}");
+                thread::yield_now();
+            }
+        };
+        wait(&mut session, "Use external Agent");
+        assert!(has(&session, "Sandbox and approvals"));
+        let events = click(&session.surface, "Use external Agent");
+        session.advance(command(events)).unwrap();
+        wait(&mut session, "Use native model");
+        assert!(!has(&session, "Sandbox and approvals"));
+        let events = click(&session.surface, "Use native model");
+        session.advance(command(events)).unwrap();
+        wait(&mut session, "Use external Agent");
+        assert!(has(&session, "Sandbox and approvals"));
     }
 
     #[test]
@@ -751,7 +798,8 @@ mod tests {
                 });
             }
             let mut frame = session.advance(command([])).unwrap();
-            while session.surface.needs_pump() {
+            // A blur waits one display frame for a following focus report.
+            while session.surface.needs_pump() || session.surface.frame_requested() {
                 assert!(Instant::now() < deadline, "native focus never settled");
                 frame = session.advance(command([])).unwrap();
             }

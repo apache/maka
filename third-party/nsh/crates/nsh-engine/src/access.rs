@@ -27,11 +27,14 @@ pub(crate) struct Refused {
 
 /// The refusal of `method` `url`.
 pub(crate) fn refused(method: &str, url: &str) -> Refused {
-    let host = nsh_core::access::parse_url(url).map_or_else(|| url.to_owned(), |u| u.host);
+    // No host to grant: naming the whole URL would mislead. Worded as
+    // `nsh_core::access`'s advice for the core's refusals.
+    let advice = nsh_core::access::parse_url(url).map_or_else(
+        || "it names no host a grant could add: write it as an http(s) URL with a host, a backslash as `%5C` and no control characters".to_owned(),
+        |u| format!("add `{}` to capabilities.network in nsh.json", u.host),
+    );
     Refused {
-        message: format!(
-            "fetch {method} {url} is not granted: add `{host}` to capabilities.network in nsh.json"
-        ),
+        message: format!("fetch {method} {url} is not granted: {advice}"),
         url: url.to_owned(),
     }
 }

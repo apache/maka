@@ -21,9 +21,11 @@
 use crate::Error;
 use maka_capabilities::call::Attachments;
 use maka_host_runtime::application::{
+    CallResources,
     host::{Client as Host, LocalCall},
     transport::wire::Reply,
 };
+use maka_plugin_core::operation::OperationResult;
 use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, Receipt};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -115,9 +117,23 @@ impl Client {
         input: Value,
         resources: Attachments,
     ) -> Result<T, Error> {
+        let descriptors = CallResources::from(resources.clone()).descriptors()?;
+        let reacquisition = if descriptors.is_empty() {
+            serde_json::json!({"kind": "none"})
+        } else {
+            serde_json::json!({"kind": "unavailable", "reason": "live_only_request_resources"})
+        };
+        let mut recovery = serde_json::json!({
+            "kind": "maka_acp_mutation",
+            "version": 1,
+            "request": {"endpoint": endpoint, "method": method, "input": input},
+            "resources": {"descriptors": descriptors, "reacquisition": reacquisition},
+        });
         let mut call = self.open(endpoint, method, input, resources).await?;
         match call.original().receive().await? {
-            Reply::Prepared { .. } => {}
+            Reply::Prepared { reference } => {
+                recovery["reference"] = serde_json::to_value(reference)?;
+            }
             Reply::Aborted { reason, cleanup } => {
                 cleanup?;
                 return Err(reason.into());
@@ -128,16 +144,30 @@ impl Client {
             }
         }
         // Keep the same original call even when confirmation has an uncertain result.
-        let mut result = call.original().confirm().await;
+        let mut result = call.original().confirm(recovery).await;
         loop {
             match result {
                 Ok(Reply::Mutation { reply, cleanup }) => {
                     cleanup?;
                     return match reply.receipt {
                         Receipt::Recorded {
-                            outcome: OperationOutcome::Returned { value },
+                            outcome:
+                                OperationOutcome::Returned {
+                                    result: OperationResult::Success { value },
+                                },
                             cleanup: OperationCleanup::Confirmed,
                         } => Ok(serde_json::from_value(value)?),
+                        Receipt::Recorded {
+                            outcome:
+                                OperationOutcome::Returned {
+                                    result: OperationResult::Failure { diagnostic },
+                                },
+                            cleanup: OperationCleanup::Confirmed,
+                        } => Err(diagnostic.into()),
+                        Receipt::Recorded {
+                            outcome: OperationOutcome::NotExecuted { .. },
+                            cleanup: OperationCleanup::Confirmed,
+                        } => Err("Application mutation was prevented before execution".into()),
                         receipt => {
                             self.0.stop.cancel();
                             Err(format!("Application mutation has no confirmed result: {receipt:?}; original reference: {}", serde_json::to_string(&reply.reference)?).into())

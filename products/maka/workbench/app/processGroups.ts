@@ -17,10 +17,17 @@
  * under the License.
  */
 
-import { senderSession, type Row } from './history.ts';
+import {
+  activityMessage,
+  historyTurnKey,
+  compareHistoryOrder,
+  stableRowId,
+  type Row,
+} from './history.ts';
+import type { HistoryOrder } from '../../../../packages/plugin-sdk/src/index.js';
 import type { ToolActivity } from './toolActivity';
 
-/** Source identity, ordering and failure text; streamed answer text does not regroup rows. */
+/** Source identity, ordering, failure text and whether text has appeared. */
 export type ProcessRow = Pick<
   Row,
   | 'messageId'
@@ -31,8 +38,16 @@ export type ProcessRow = Pick<
   | 'order'
   | 'tool'
   | 'turnId'
+  | 'importedTurn'
   | 'timing'
+  | 'foldedWork'
+  | 'work'
   | 'finalOutput'
+  | 'finalAnswer'
+  | 'sourceCitation'
+  | 'citation'
+  | 'citationAnchor'
+  | 'runId'
   | 'origin'
   | 'metadataThrough'
   | 'sequence'
@@ -42,7 +57,7 @@ export type ProcessRow = Pick<
 >;
 export type ProcessActivity = Pick<
   ToolActivity,
-  'toolUseId' | 'turnId' | 'stepId' | 'startSequence' | 'previewOrder'
+  'toolUseId' | 'turnId' | 'stepId' | 'attemptId' | 'startSequence' | 'previewOrder'
 >;
 
 export type MemberRef =
@@ -51,10 +66,11 @@ export type MemberRef =
 export type ProcessGroup = {
   kind: 'process';
   key: string;
-  turnId: string;
+  turnKey: string;
   members: MemberRef[];
   rowIds: string[];
   toolIds: string[];
+  workRowId?: string;
   /** A presentation boundary, never evidence that a tool effect settled. */
   closed: boolean;
 };
@@ -62,16 +78,20 @@ export type MessageEntry = {
   kind: 'message';
   key: string;
   rowId: string;
-  processTurnId?: string;
+  processTurnKey?: string;
   /** How many identical failures in a row this entry stands for, when more than one. */
   repeats?: number;
 };
 export type ProcessEntry = ProcessGroup | MessageEntry;
 export type TurnPresentation = {
-  turnId: string;
+  turnKey: string;
   timing: Row['timing'] | null;
+  foldedWork?: Row['foldedWork'];
   active: boolean;
   finalOutputIds: string[];
+  /** Trailing assistant text until more work arrives or history identifies the final output. */
+  answerOutputIds: string[];
+  finalAnswerStarted: boolean;
   interleavedInput: boolean;
   /** Whether the turn did anything besides its final answer: steps or text between them. */
   worked: boolean;
@@ -82,43 +102,75 @@ export type ProcessProjection = {
   rowsById: Map<string, ProcessRow>;
 };
 
-/** One identity across streaming fragments, canonical handoff and tool result pairing. */
-export function stableRowId(row: ProcessRow): string {
-  const call = row.tool?.call;
-  return call
-    ? `tool/${row.tool.toolUseId}/${call.position.sourceSequence}/${call.position.itemIndex}`
-    : `${row.messageId}/${row.field}`;
+export function turnOutcome(turn: TurnPresentation): string | null {
+  return turn.finalOutputIds.length > 0 ? 'completed' : (turn.timing?.finished?.outcome ?? null);
 }
 
-export function orderSequence(row: ProcessRow): number | undefined {
-  return row.order?.sourceSequence ?? row.startSequence ?? row.sequence;
+export function turnWorkFold(
+  turn: TurnPresentation,
+  terminal: boolean,
+): 'unavailable' | 'open' | 'closed' {
+  const outcome = turnOutcome(turn);
+  if (turn.foldedWork) return 'closed';
+  if (!turn.worked || turn.interleavedInput || (outcome !== null && outcome !== 'completed'))
+    return 'unavailable';
+  if (turn.finalAnswerStarted) return 'closed';
+  if (outcome === 'completed' && (!turn.active || turn.finalOutputIds.length > 0)) return 'closed';
+  return terminal ? 'unavailable' : 'open';
 }
 
-/** Canonical step seats take precedence over preview anchors; parts retain provider order. */
+export function displayOrder(row: ProcessRow): HistoryOrder | undefined {
+  if (row.order) return row.order;
+  const sequence = row.startSequence ?? row.sequence;
+  return sequence === undefined ? undefined : { path: [sequence], itemIndex: 0 };
+}
+function compareOptionalOrder(
+  left: HistoryOrder | undefined,
+  right: HistoryOrder | undefined,
+): number {
+  if (left === undefined) return right === undefined ? 0 : 1;
+  if (right === undefined) return -1;
+  return compareHistoryOrder(left, right);
+}
+
+function emptyThinking(row: ProcessRow): boolean {
+  return (row.field === 'thinking' || row.role === 'thinking') && !/\S/.test(row.text);
+}
+
+function stepKey(row: ProcessRow): string | undefined {
+  if (!row.modelPart) return undefined;
+  const p = row.position;
+  const source = p && p.kind !== 'live' ? [p.kind, p.path, p.snapshot] : 'live';
+  return JSON.stringify([source, row.modelPart.stepId, row.modelPart.attemptId]);
+}
+/** Canonical step seats take precedence over previews within the same source. */
 export function orderProcessRows<T extends ProcessRow>(rows: readonly T[]): T[] {
-  const seats = new Map<string, number>();
-  const anchors = new Map<string, number>();
+  const seats = new Map<string, HistoryOrder>();
+  const anchors = new Map<string, HistoryOrder>();
   for (const row of rows) {
-    const sequence = orderSequence(row);
-    if (row.modelPart && sequence !== undefined) {
+    const key = stepKey(row);
+    const order = displayOrder(row);
+    if (key && order) {
       const target = row.preview ? anchors : seats;
-      target.set(
-        row.modelPart.stepId,
-        Math.min(target.get(row.modelPart.stepId) ?? sequence, sequence),
-      );
+      const old = target.get(key);
+      if (old === undefined || compareHistoryOrder(order, old) < 0) target.set(key, order);
     }
   }
   for (const [step, anchor] of anchors) if (!seats.has(step)) seats.set(step, anchor);
   return rows.toSorted((left, right) => {
-    if (left.modelPart && right.modelPart && left.modelPart.stepId === right.modelPart.stepId)
+    const lkey = stepKey(left),
+      rkey = stepKey(right);
+    if (lkey !== undefined && lkey === rkey && left.modelPart && right.modelPart)
       return (
         left.modelPart.ordinal - right.modelPart.ordinal ||
+        Number(!left.work) - Number(!right.work) ||
         Number(left.field === 'body') - Number(right.field === 'body')
       );
-    const seat = (row: T) => (row.modelPart ? seats.get(row.modelPart.stepId) : orderSequence(row));
-    const leftSeat = seat(left);
-    const rightSeat = seat(right);
-    if (leftSeat !== rightSeat) return (leftSeat ?? Infinity) - (rightSeat ?? Infinity);
+    const order = compareOptionalOrder(
+      lkey === undefined ? displayOrder(left) : seats.get(lkey),
+      rkey === undefined ? displayOrder(right) : seats.get(rkey),
+    );
+    if (order) return order;
     if (left.preview && right.preview)
       return (
         left.preview.stepOrder - right.preview.stepOrder ||
@@ -145,10 +197,16 @@ export function sameProcessRows(
         row.role === next.role &&
         row.origin?.kind === next.origin?.kind &&
         (row.role !== 'failure' || row.text === next.text) &&
+        (row.role !== 'assistant' ||
+          row.field !== 'body' ||
+          Boolean(row.text) === Boolean(next.text)) &&
         row.field === next.field &&
+        emptyThinking(row) === emptyThinking(next) &&
         row.turnId === next.turnId &&
-        orderSequence(row) === orderSequence(next) &&
+        row.importedTurn === next.importedTurn &&
+        compareOptionalOrder(displayOrder(row), displayOrder(next)) === 0 &&
         row.modelPart?.stepId === next.modelPart?.stepId &&
+        row.modelPart?.attemptId === next.modelPart?.attemptId &&
         row.modelPart?.ordinal === next.modelPart?.ordinal &&
         row.preview?.stepOrder === next.preview?.stepOrder &&
         row.preview?.ordinal === next.preview?.ordinal &&
@@ -158,6 +216,11 @@ export function sameProcessRows(
         Boolean(row.tool?.call) === Boolean(next.tool?.call) &&
         Boolean(row.tool?.result) === Boolean(next.tool?.result) &&
         row.finalOutput === next.finalOutput &&
+        row.finalAnswer === next.finalAnswer &&
+        row.sourceCitation === next.sourceCitation &&
+        row.citation === next.citation &&
+        row.citationAnchor === next.citationAnchor &&
+        (!row.sourceCitation || row.citation || row.text === next.text) &&
         row.timing === next.timing &&
         row.metadataThrough === next.metadataThrough
       );
@@ -177,6 +240,7 @@ export function sameProcessActivity(
         activity.toolUseId === next.toolUseId &&
         activity.turnId === next.turnId &&
         activity.stepId === next.stepId &&
+        activity.attemptId === next.attemptId &&
         activity.startSequence === next.startSequence &&
         activity.previewOrder === next.previewOrder
       );
@@ -197,29 +261,34 @@ export function projectProcessGroups(input: {
   rows: readonly ProcessRow[];
   toolActivity: readonly ProcessActivity[];
   activeTurnId: string | null;
+  answerTurnId?: string | null;
   previous?: readonly ProcessEntry[];
+  /** The slice ends before another source turn. */
+  followed?: boolean;
   /** Only caller-known missing coverage, not gaps between raw event numbers. */
   gapsBefore?: ReadonlySet<string>;
 }): ProcessProjection {
   const entries: ProcessEntry[] = [];
   const turns = new Map<string, TurnPresentation>();
   const rowsById = new Map<string, ProcessRow>();
-  const positions: { rowId: string; sequence: number | undefined }[] = [];
+  const positions: { rowId: string; order: HistoryOrder | undefined }[] = [];
   const canonicalTools = new Set<string>();
-  const timingThrough = new Map<string, number>();
+  const timingThrough = new Map<string, number | null>();
   const progressed = new Set<string>();
-  const turn = (turnId: string) => {
-    let value = turns.get(turnId);
+  const turn = (turnKey: string) => {
+    let value = turns.get(turnKey);
     if (!value) {
       value = {
-        turnId,
+        turnKey,
         timing: null,
-        active: input.activeTurnId === turnId,
+        active: input.activeTurnId === turnKey,
         finalOutputIds: [],
+        answerOutputIds: [],
+        finalAnswerStarted: false,
         interleavedInput: false,
         worked: false,
       };
-      turns.set(turnId, value);
+      turns.set(turnKey, value);
     }
     return value;
   };
@@ -229,17 +298,24 @@ export function projectProcessGroups(input: {
     if (!rowsById.has(rowId))
       positions.push({
         rowId,
-        sequence: orderSequence(row),
+        order: displayOrder(row),
       });
     // A paired result refreshes the original call's seat, not a second row.
     if (!rowsById.has(rowId) || !row.tool?.call || row.tool.result) rowsById.set(rowId, row);
-    if (row.tool) canonicalTools.add(row.tool.toolUseId);
-    if (!row.turnId) continue;
-    const presentation = turn(row.turnId);
-    const through = row.metadataThrough ?? 0;
-    if (row.timing && through >= (timingThrough.get(row.turnId) ?? -1)) {
+    if (row.tool && (row.position === undefined || row.position.kind === 'live'))
+      canonicalTools.add(row.tool.toolUseId);
+    const rowTurn = historyTurnKey(row);
+    if (rowTurn === undefined) continue;
+    const presentation = turn(rowTurn);
+    if (row.foldedWork) {
+      presentation.foldedWork = row.foldedWork;
+      presentation.worked = true;
+    }
+    const through = row.metadataThrough ?? null;
+    const previousThrough = timingThrough.get(rowTurn);
+    if (row.timing && (through === null || previousThrough == null || through >= previousThrough)) {
       presentation.timing = row.timing;
-      timingThrough.set(row.turnId, through);
+      timingThrough.set(rowTurn, through);
     }
     if (
       row.finalOutput &&
@@ -256,11 +332,11 @@ export function projectProcessGroups(input: {
     if (entry.kind !== 'process') continue;
     for (const member of entry.members) previousMembership.set(memberId(member), entry);
   }
-  const groupKey = (turnId: string, members: MemberRef[]) => {
+  const groupKey = (turnKey: string, members: MemberRef[]) => {
     const ids = members.map(memberId);
     const offset = ids.findIndex((id) => previousMembership.has(id));
     const previous = offset < 0 ? undefined : previousMembership.get(ids[offset]);
-    if (previous?.turnId === turnId) {
+    if (previous?.turnKey === turnKey) {
       const oldIds = previous.members.map(memberId);
       if (
         oldIds.every((id, index) => ids[offset + index] === id) &&
@@ -271,14 +347,15 @@ export function projectProcessGroups(input: {
     // The first semantic source owns new groups, including a preview-only
     // group's canonical handoff after a temporary history catchup gap. A split
     // retains that owner's state only in the piece containing its first source.
-    return JSON.stringify(['process', turnId, ids[0]]);
+    return JSON.stringify(['process', turnKey, ids[0]]);
   };
-  let current: { turnId: string; members: MemberRef[] } | undefined;
+  let current:
+    | { turnKey: string; members: MemberRef[]; workRowId?: string; first?: string }
+    | undefined;
   const flush = (closed: boolean) => {
     if (!current) return;
-    const presentation = turn(current.turnId);
-    presentation.worked = true;
-    const { turnId, members } = current;
+    const presentation = turn(current.turnKey);
+    const { turnKey, members, workRowId, first } = current;
     // A script is shown as the tools it ran, and as itself only when it fails.
     const callers = new Set(
       members.flatMap((member) => {
@@ -294,9 +371,15 @@ export function projectProcessGroups(input: {
     );
     entries.push({
       kind: 'process',
-      key: groupKey(turnId, members),
-      turnId,
+      key: groupKey(
+        turnKey,
+        first && !members.some((member) => memberId(member) === first)
+          ? [{ kind: 'row', rowId: first }, ...members]
+          : members,
+      ),
+      turnKey,
       members,
+      workRowId,
       rowIds: shown.flatMap((member) => (member.kind === 'row' ? [member.rowId] : [])),
       toolIds: [
         ...new Set(shown.flatMap((member) => (member.toolUseId ? [member.toolUseId] : []))),
@@ -306,20 +389,26 @@ export function projectProcessGroups(input: {
     });
     current = undefined;
   };
-  const append = (turnId: string, member: MemberRef) => {
-    if (current?.turnId !== turnId) {
+  const moveAnswerToWork = (presentation: TurnPresentation) => {
+    if (presentation.answerOutputIds.length === 0) return;
+    presentation.worked = true;
+    presentation.answerOutputIds.length = 0;
+    presentation.finalAnswerStarted = false;
+  };
+  const append = (turnKey: string, member: MemberRef) => {
+    if (current?.turnKey !== turnKey) {
       flush(true);
-      current = { turnId, members: [] };
+      current = { turnKey, members: [] };
     }
     current!.members.push(member);
-    progressed.add(turnId);
-    turn(turnId);
+    progressed.add(turnKey);
+    const presentation = turn(turnKey);
+    presentation.worked = true;
+    moveAnswerToWork(presentation);
   };
   const activities = input.toolActivity
     .filter((activity) => !canonicalTools.has(activity.toolUseId))
-    .toSorted(
-      (left, right) => (left.startSequence ?? Infinity) - (right.startSequence ?? Infinity),
-    );
+    .toSorted((left, right) => left.startSequence - right.startSequence);
   let nextActivity = 0;
   for (const position of positions) {
     const row = rowsById.get(position.rowId)!;
@@ -329,27 +418,56 @@ export function projectProcessGroups(input: {
       const before =
         activity.previewOrder !== undefined &&
         activity.stepId !== undefined &&
-        row.modelPart?.stepId === activity.stepId
+        row.modelPart?.stepId === activity.stepId &&
+        row.modelPart?.attemptId === activity.attemptId
           ? false
           : activity.previewOrder !== undefined && row.preview !== undefined
             ? activity.previewOrder < row.preview.stepOrder
-            : (activity.startSequence ?? Infinity) <= (position.sequence ?? Infinity);
+            : compareOptionalOrder(
+                { path: [activity.startSequence], itemIndex: 0 },
+                position.order,
+              ) < Number(!row.work);
       if (!before) break;
       nextActivity += 1;
       append(activity.turnId, { kind: 'activity', toolUseId: activity.toolUseId });
     }
     if (input.gapsBefore?.has(position.rowId)) flush(true);
-    if (current && current.turnId !== row.turnId) flush(true);
-    const body = row.role === 'assistant' && row.field === 'body';
+    const rowTurn = historyTurnKey(row);
+    if (current && current.turnKey !== rowTurn) flush(true);
+    if (row.work && rowTurn) {
+      flush(true);
+      current = {
+        turnKey: rowTurn,
+        members: [],
+        workRowId: position.rowId,
+        first: row.work.firstToolUseId
+          ? memberId({ kind: 'activity', toolUseId: row.work.firstToolUseId })
+          : stableRowId({ ...row, work: undefined }),
+      };
+      progressed.add(rowTurn);
+      const presentation = turn(rowTurn);
+      presentation.worked = true;
+      moveAnswerToWork(presentation);
+      continue;
+    }
+    if (emptyThinking(row)) {
+      // An encrypted or not-yet-streamed thought can resume work without a visible row.
+      if (rowTurn) {
+        moveAnswerToWork(turn(rowTurn));
+        progressed.add(rowTurn);
+      }
+      continue;
+    }
+    const body = !row.tool && row.role === 'assistant' && row.field === 'body';
     const outside =
       body ||
-      (row.role === 'user' && senderSession(row.origin) === null) ||
+      (!row.tool && row.role === 'user' && !activityMessage(row.origin)) ||
       row.role === 'failure' ||
       row.role === 'compaction';
-    if (!row.turnId || outside) {
+    if (!rowTurn || outside) {
       flush(true);
       // A failure the turn recovered from folds away with its work.
-      if (row.role === 'failure' && row.turnId) turn(row.turnId).worked = true;
+      if (row.role === 'failure' && rowTurn) turn(rowTurn).worked = true;
       // A provider that keeps refusing (a rate limit, an overload) fails each retry
       // with the same text; show the run once with its count.
       const last = entries.at(-1);
@@ -358,27 +476,36 @@ export function projectProcessGroups(input: {
         row.role === 'failure' &&
         last?.kind === 'message' &&
         lastRow?.role === 'failure' &&
-        lastRow.turnId === row.turnId &&
+        historyTurnKey(lastRow) === rowTurn &&
         lastRow.text === row.text
       ) {
         last.repeats = (last.repeats ?? 1) + 1;
         continue;
       }
       const message: MessageEntry = { kind: 'message', key: position.rowId, rowId: position.rowId };
-      if (row.turnId) {
-        if (row.role === 'user' && progressed.has(row.turnId))
-          turn(row.turnId).interleavedInput = true;
-        if (body) {
-          if (!row.finalOutput) {
-            message.processTurnId = row.turnId;
-            turn(row.turnId).worked = true;
+      if (rowTurn) {
+        const presentation = turn(rowTurn);
+        if (row.role === 'user' && progressed.has(rowTurn)) presentation.interleavedInput = true;
+        if (body && !row.finalOutput) {
+          message.processTurnKey = rowTurn;
+          if (rowTurn === input.answerTurnId && !row.timing?.finished) {
+            if (row.text) {
+              if (row.finalAnswer && !presentation.finalAnswerStarted) {
+                moveAnswerToWork(presentation);
+                presentation.finalAnswerStarted = true;
+              }
+              presentation.answerOutputIds.push(position.rowId);
+            }
+          } else {
+            presentation.worked = true;
+            moveAnswerToWork(presentation);
           }
-          progressed.add(row.turnId);
-        }
+        } else moveAnswerToWork(presentation);
+        if (body) progressed.add(rowTurn);
       }
       entries.push(message);
     } else {
-      append(row.turnId, {
+      append(rowTurn, {
         kind: 'row',
         rowId: position.rowId,
         ...(row.tool ? { toolUseId: row.tool.toolUseId } : {}),
@@ -389,6 +516,6 @@ export function projectProcessGroups(input: {
     const activity = activities[nextActivity];
     append(activity.turnId, { kind: 'activity', toolUseId: activity.toolUseId });
   }
-  flush(false);
+  flush(input.followed ?? false);
   return { entries, turns, rowsById };
 }

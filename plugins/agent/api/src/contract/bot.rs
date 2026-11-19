@@ -93,6 +93,9 @@ fn default_limit() -> u32 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentBotMessage")]
 pub struct BotMessage {
+    /// Original investigation behind this publication, independent of later Bot Turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<DiscoveryPublication>,
     /// Monotonic position in the outbox, starting at 1.
     pub sequence: u64,
     /// The model-chosen idempotency key of the `SendUser` call.
@@ -108,6 +111,26 @@ pub struct BotMessage {
     pub turn_id: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentDiscoveryPublication")]
+pub struct DiscoveryPublication {
+    pub record_id: String,
+    pub worker_session_id: String,
+    pub worker_turn_id: String,
+}
+
+/// Most recent discovery association added after a Bot message was published.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentBotDiscoveryLink")]
+pub struct BotDiscoveryLink {
+    pub revision: u64,
+    pub message_id: String,
+    pub turn_id: Option<String>,
+    pub discovery: DiscoveryPublication,
+}
+
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentBotOutbox")]
@@ -119,11 +142,15 @@ pub struct BotOutbox {
     pub is_bot: bool,
     /// Highest sequence recorded so far; 0 when empty.
     pub through: u64,
+    /// Updates existing messages without advancing the unread cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_link: Option<BotDiscoveryLink>,
     #[schemars(length(max = 100))]
     pub messages: Vec<BotMessage>,
     /// Durable, monotonic acknowledgement of messages actually shown to the user.
     pub read_through: u64,
-    /// Latest SendUser text, bounded for list previews. Never internal model output.
+    /// Latest `SendUser` text, bounded for list previews. Never internal model output.
+    #[schemars(length(max = 160))]
     pub preview: String,
     /// Pass as `after` to read the next page; absent when caught up.
     pub next_after: Option<u64>,

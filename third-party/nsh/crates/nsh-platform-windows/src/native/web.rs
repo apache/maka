@@ -28,9 +28,9 @@
 //! made in the background, from the first props (`incognito` makes an
 //! InPrivate controller, whose website data stays in memory). Props and
 //! commands that come before the controller is ready wait for it
-//! ([`WebItem::ready`]). The WebView2 loader is linked statically
-//! (`WebView2LoaderStatic.lib`), so apps do not ship `WebView2Loader.dll`;
-//! the WebView2 runtime itself comes with Windows 11 (and Edge's installer
+//! ([`WebItem::ready`]). With MSVC the WebView2 loader is linked
+//! statically (`WebView2LoaderStatic.lib`), so apps do not ship
+//! `WebView2Loader.dll` (`create_environment`); the WebView2 runtime itself comes with Windows 11 (and Edge's installer
 //! on Windows 10). Without it, a web view draws a neutral placeholder, as
 //! on Linux.
 //!
@@ -53,10 +53,35 @@
 //!   still may, as a `UIScrollView` with scrolling disabled.
 //! - `desktop={{ allowsBackForwardNavigationGestures }}`: WebView2's swipe navigation
 //!   (`IsSwipeNavigationEnabled`, touch swipes).
+//!
+//! # Downloads
+//!
+//! A download is a transport. With `defer_downloads` set (or an app
+//! `onDownload` / `onDownloadPending` listener), `DownloadStarting` holds
+//! the download open with a deferral and reports its offer
+//! (`DownloadOffer`); nothing is written until the core sends
+//! `StartDownload` with a staging path (`ResultFilePath`) or cancels it.
+//! Each deferral is completed exactly once. The end is reported to the core
+//! once the writer stopped (`DownloadEnd`); staging, publishing, timeouts
+//! and cleanup are the core's. Without a listener WebView2's own UI is left
+//! alone. A runtime that cannot report downloads runs only `about:blank`
+//! for a page whose downloads the app asked to hold (no file can reach a
+//! destination nobody chose), and it says why. A running transfer's
+//! terminal state is awaited by a watch that owns its native operation, a
+//! clone of the engine control and, once its page goes, the controller whose
+//! events carry that state, so the stop is reported even after the page (and
+//! the surface) are gone; only that state, never the controller going or the
+//! page's end, is acknowledged to the core. An interrupted transfer is not a
+//! stop: WebView2 may resume one by itself (no range, a partial file too
+//! short or with the wrong hash), so such a transfer is cancelled and its
+//! never-resuming state awaited before the core may clean the staging file.
+//! A start the platform refuses keeps its offer held, so the core's
+//! cancellation of the failed start discards it instead of losing an id.
 
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
+    path::{Path, PathBuf},
     rc::{Rc, Weak},
     sync::{
         Arc,
@@ -65,15 +90,27 @@ use std::{
 };
 
 use nsh_core::{
-    Color, Command, EventKind, EventPayload, NodeId, PayloadValue, ROOT_ID, WebProps, WebSource,
+    Color, Command, EventKind, EventPayload, JsonValue, NodeId, PayloadValue, ROOT_ID, WebProps,
+    WebSource,
+    access::WebMedia,
+    webview::{
+        self, DownloadEnd, DownloadOffer, DownloadOutcome, WebDownloadSource, WebViewOperation,
+        WebViewRequest,
+    },
 };
 use webview2_com::{
     AddScriptToExecuteOnDocumentCreatedCompletedHandler,
     CreateCoreWebView2CompositionControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, CursorChangedEventHandler,
-    FocusChangedEventHandler,
+    DownloadStartingEventHandler, FocusChangedEventHandler,
     Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_COLOR, COREWEBVIEW2_MOUSE_EVENT_KIND,
+        COREWEBVIEW2_COLOR, COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON,
+        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_HASH_MISMATCH,
+        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_TOO_SHORT,
+        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_NO_RANGE,
+        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED, COREWEBVIEW2_DOWNLOAD_STATE,
+        COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED, COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS,
+        COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED, COREWEBVIEW2_MOUSE_EVENT_KIND,
         COREWEBVIEW2_MOUSE_EVENT_KIND_HORIZONTAL_WHEEL, COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE,
         COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOUBLE_CLICK,
         COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN,
@@ -87,15 +124,20 @@ use webview2_com::{
         COREWEBVIEW2_MOUSE_EVENT_KIND_X_BUTTON_DOUBLE_CLICK,
         COREWEBVIEW2_MOUSE_EVENT_KIND_X_BUTTON_DOWN, COREWEBVIEW2_MOUSE_EVENT_KIND_X_BUTTON_UP,
         COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
-        COREWEBVIEW2_POINTER_EVENT_KIND, COREWEBVIEW2_WEB_ERROR_STATUS,
-        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, ICoreWebView2, ICoreWebView2_2,
-        ICoreWebView2CompositionController, ICoreWebView2Controller, ICoreWebView2Controller2,
-        ICoreWebView2Controller3, ICoreWebView2Environment, ICoreWebView2Environment2,
-        ICoreWebView2Environment3, ICoreWebView2Environment10,
+        COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+        COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+        COREWEBVIEW2_PERMISSION_STATE_DENY, COREWEBVIEW2_POINTER_EVENT_KIND,
+        COREWEBVIEW2_WEB_ERROR_STATUS, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, ICoreWebView2,
+        ICoreWebView2_2, ICoreWebView2_4, ICoreWebView2CompositionController,
+        ICoreWebView2Controller, ICoreWebView2Controller2, ICoreWebView2Controller3,
+        ICoreWebView2Deferral, ICoreWebView2DownloadOperation,
+        ICoreWebView2DownloadStartingEventArgs, ICoreWebView2Environment,
+        ICoreWebView2Environment2, ICoreWebView2Environment3, ICoreWebView2Environment10,
         ICoreWebView2ExecuteScriptCompletedHandler, ICoreWebView2Settings2, ICoreWebView2Settings6,
     },
     MoveFocusRequestedEventHandler, NavigationCompletedEventHandler,
-    NavigationStartingEventHandler, WebMessageReceivedEventHandler,
+    NavigationStartingEventHandler, NewWindowRequestedEventHandler,
+    PermissionRequestedEventHandler, StateChangedEventHandler, WebMessageReceivedEventHandler,
     WebResourceRequestedEventHandler, take_pwstr,
 };
 use windows::{
@@ -111,6 +153,7 @@ use windows::{
             },
             Gdi::ScreenToClient,
         },
+        System::Com::CoCreateGuid,
         UI::{
             Input::{
                 KeyboardAndMouse::{GetFocus, SetFocus},
@@ -123,7 +166,7 @@ use windows::{
             WindowsAndMessaging::{HCURSOR, IsChild, SetCursor},
         },
     },
-    core::{BOOL, HRESULT, HSTRING, Interface, PCWSTR, PWSTR, w},
+    core::{BOOL, HRESULT, HSTRING, IUnknown, Interface, PCWSTR, PWSTR, w},
 };
 
 use super::{Emitter, error};
@@ -139,8 +182,15 @@ use crate::{
 /// Lets pages talk to the app: `window.nsh.postMessage(data)`.
 const BRIDGE: &str = "window.nsh = window.nsh || { postMessage: function (data) { window.chrome.webview.postMessage(String(data)); } };";
 
-// The loader, linked statically (webview2-com-sys imports it from
-// `WebView2Loader.dll`, which would have to ship next to every app).
+// `CreateCoreWebView2EnvironmentWithOptions`.
+//
+// With MSVC the loader is linked statically (`WebView2LoaderStatic.lib`,
+// which webview2-com-sys ships and puts on the link path), so apps do not
+// ship `WebView2Loader.dll`. Other toolchains (`windows-gnu`) cannot link
+// that MSVC library: there the loader DLL is loaded when the first web view
+// starts, so an app that never shows one needs neither, and a missing DLL
+// draws the placeholder as a missing runtime does.
+#[cfg(target_env = "msvc")]
 #[link(name = "WebView2LoaderStatic", kind = "static")]
 unsafe extern "system" {
     #[link_name = "CreateCoreWebView2EnvironmentWithOptions"]
@@ -152,10 +202,321 @@ unsafe extern "system" {
     ) -> HRESULT;
 }
 
+#[cfg(not(target_env = "msvc"))]
+unsafe fn create_environment(
+    browser_folder: PCWSTR,
+    user_data_folder: PCWSTR,
+    options: *mut std::ffi::c_void,
+    handler: *mut std::ffi::c_void,
+) -> HRESULT {
+    use windows::{
+        Win32::{
+            Foundation::E_NOINTERFACE,
+            System::LibraryLoader::{GetProcAddress, LoadLibraryW},
+        },
+        core::{s, w},
+    };
+    type Create = unsafe extern "system" fn(
+        PCWSTR,
+        PCWSTR,
+        *mut std::ffi::c_void,
+        *mut std::ffi::c_void,
+    ) -> HRESULT;
+    // SAFETY: loading a DLL by name and reading an export of the known
+    // signature; the module stays loaded for the process.
+    unsafe {
+        let Ok(module) = LoadLibraryW(w!("WebView2Loader.dll")) else {
+            return E_NOINTERFACE;
+        };
+        let Some(create) = GetProcAddress(module, s!("CreateCoreWebView2EnvironmentWithOptions"))
+        else {
+            return E_NOINTERFACE;
+        };
+        let create: Create = std::mem::transmute(create);
+        create(browser_folder, user_data_folder, options, handler)
+    }
+}
+
+/// A download WebView2 started and the core must decide on: its event stays
+/// open through a deferral until the core starts or cancels it,
+/// and nothing is written until then.
+struct PendingDownload {
+    args: ICoreWebView2DownloadStartingEventArgs,
+    deferral: ICoreWebView2Deferral,
+    /// The native transfer it holds (alive with the event).
+    operation: Option<ICoreWebView2DownloadOperation>,
+    /// The engine's control, so its teardown end reaches the core (or its
+    /// cleanup sink) even if the surface is going.
+    control: Option<nsh_engine::EngineControl>,
+    url: String,
+    filename: String,
+    mime_type: Option<String>,
+    bytes: Option<u64>,
+    /// Its deferral was completed (it may be completed only once).
+    completed: Cell<bool>,
+}
+
+impl PendingDownload {
+    /// Ends the held event exactly once: WebView2 fails a second
+    /// `Complete`, and a download must never be left open. A failed call
+    /// leaves the event open (the next cancellation retries it).
+    fn complete(&self) -> windows::core::Result<()> {
+        if self.completed.get() {
+            return Ok(());
+        }
+        // SAFETY: WebView2 calls on the live event's deferral.
+        unsafe { self.deferral.Complete()? };
+        self.completed.set(true);
+        Ok(())
+    }
+
+    /// Discards the held download (nothing is written) and ends its event.
+    /// A failed cancel is returned with the event still open, so no writer
+    /// starts (the caller keeps the offer for another cancellation).
+    fn cancel(&self) -> windows::core::Result<()> {
+        // SAFETY: WebView2 call on the live event: a canceled download writes
+        // nothing. Without it, `Complete` could start the download, so the
+        // event stays held when it fails.
+        unsafe { self.args.SetCancel(true)? };
+        // The dialog stays away either way; the cancellation above decides.
+        let _ = unsafe { self.args.SetHandled(true) };
+        self.complete()
+    }
+
+    /// The operation it downloads, while its event is still open.
+    fn operation(&self) -> Option<ICoreWebView2DownloadOperation> {
+        self.operation.clone()
+    }
+
+    /// What the core hears about it: WebView2 holds the transfer, and its
+    /// own download UI can take it over.
+    fn offer(&self, id: &str) -> DownloadOffer {
+        DownloadOffer {
+            id: id.to_owned(),
+            url: self.url.clone(),
+            filename: self.filename.clone(),
+            mime_type: self.mime_type.clone(),
+            bytes: self.bytes,
+            // WebView2 exposes no method for this transfer.
+            method: None,
+            source: WebDownloadSource::Transfer,
+        }
+    }
+}
+
+/// Keeps a closing page's controller open while a download it started can
+/// still write: `ICoreWebView2Controller::Close` stops the event handlers,
+/// and only a `StateChanged` event can prove a writer stopped. The last
+/// watch that needs it lets it go, which closes the controller; no visual,
+/// surface or page is held.
+struct ControllerHold {
+    controller: ICoreWebView2Controller,
+}
+
+impl Drop for ControllerHold {
+    fn drop(&mut self) {
+        // SAFETY: closes the controller once no handler depends on it; it is
+        // not used afterwards.
+        let _ = unsafe { self.controller.Close() };
+    }
+}
+
+/// One running download whose writer stop must be confirmed even after its
+/// page goes.
+///
+/// Its `StateChanged` handler points at it, and the thread's watch registry
+/// keeps it: neither the page nor the surface does. In turn it owns the
+/// native operation and a clone of the engine control, so a terminal state
+/// still reaches the core (and its cleanup sink after the core is gone), and
+/// while its page closes it keeps the controller whose events report that
+/// state. It holds no UI: a weak page only drops its map entry when the page
+/// still exists.
+struct DownloadWatch {
+    operation: ICoreWebView2DownloadOperation,
+    /// The engine's control, independent of the surface's lifetime: it
+    /// records a stop for the core's cleanup sink even after the core went.
+    control: Option<nsh_engine::EngineControl>,
+    node: NodeId,
+    id: String,
+    /// Where WebView2 writes the core's staging leaf (the file the core
+    /// publishes or removes).
+    staging: PathBuf,
+    /// The request id waiting for this transfer to stop before its
+    /// cancellation is answered.
+    cancel_request: Cell<Option<u64>>,
+    /// The page is going: its transfer is teardown (even a completion is
+    /// discarded, since the core cancels the session).
+    closing: Cell<bool>,
+    /// The one terminal report was handled.
+    terminal: Cell<bool>,
+    /// Its state handler's registration.
+    registration: Cell<i64>,
+    /// Its key in the thread's watch registry (which keeps it alive).
+    key: u64,
+    /// The closing page's controller, while this watch still needs its
+    /// events (set when the page goes, taken when this watch settles).
+    hold: RefCell<Option<Rc<ControllerHold>>>,
+    /// The page, while it still exists (never kept alive).
+    page: Weak<WebItem>,
+}
+
+impl DownloadWatch {
+    /// Its state, when WebView2 reports one.
+    fn state(&self) -> Option<COREWEBVIEW2_DOWNLOAD_STATE> {
+        let mut state = COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;
+        // SAFETY: a WebView2 getter on the live operation.
+        match unsafe { self.operation.State(&mut state) } {
+            Ok(()) => Some(state),
+            Err(error) => {
+                log::debug!("web view: cannot read a download's state: {error}");
+                None
+            }
+        }
+    }
+
+    /// The state when no writer is left, and `None` while it may still
+    /// write. WebView2 itself restarts some interruptions, so an interrupted
+    /// download is not a stop when a resume may be on its way.
+    fn stopped(&self) -> Option<COREWEBVIEW2_DOWNLOAD_STATE> {
+        let state = self.state()?;
+        if state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
+            return Some(state);
+        }
+        if state != COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED {
+            return None;
+        }
+        let mut reason = COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON(0);
+        // SAFETY: a WebView2 getter on the live operation.
+        if let Err(error) = unsafe { self.operation.InterruptReason(&mut reason) } {
+            log::debug!("web view: cannot read why a download stopped: {error}");
+            return None;
+        }
+        stopped_state(state, reason).then_some(state)
+    }
+
+    /// Asks WebView2 to stop writing. False when it refused and the
+    /// download may still run: a failed call is not a stop. If the
+    /// operation is already stopped, this settles it (a cancellation's
+    /// event may be the only other notice).
+    fn cancel(&self) -> bool {
+        // SAFETY: a WebView2 call on the live operation.
+        let accepted = match unsafe { self.operation.Cancel() } {
+            Ok(()) => true,
+            Err(error) => {
+                log::warn!("web view: cannot cancel a download: {}", error.message());
+                false
+            }
+        };
+        if let Some(state) = self.stopped() {
+            self.settle(state);
+            true
+        } else {
+            accepted
+        }
+    }
+
+    /// A state change: a state no writer can continue from is the only
+    /// proof the writer stopped.
+    fn state_changed(&self) {
+        if let Some(state) = self.stopped() {
+            self.settle(state);
+        }
+    }
+
+    /// Stops following it without answering the core (a start that never
+    /// ran): its handler and the registry's reference go, as they do in
+    /// [`Self::settle`].
+    fn discard(&self) {
+        if self.terminal.replace(true) {
+            return;
+        }
+        let registration = self.registration.get();
+        if registration != 0 {
+            // SAFETY: a WebView2 call on the live operation.
+            let _ = unsafe { self.operation.remove_StateChanged(registration) };
+        }
+        WATCHES.with(|watches| {
+            watches.borrow_mut().remove(&self.key);
+        });
+        if let Some(page) = self.page.upgrade() {
+            page.download_ended(&self.id);
+        }
+        self.hold.borrow_mut().take();
+    }
+
+    /// Answers the core once writing stopped: a waiting cancellation is
+    /// acknowledged, otherwise the end is reported. The handler and the
+    /// registry's reference go first; the caller keeps this watch alive for
+    /// the report.
+    fn settle(&self, state: COREWEBVIEW2_DOWNLOAD_STATE) {
+        if !take_terminal(&self.terminal) {
+            return;
+        }
+        let registration = self.registration.get();
+        if registration != 0 {
+            // SAFETY: a WebView2 call on the live operation.
+            let _ = unsafe { self.operation.remove_StateChanged(registration) };
+        }
+        // The caller holds this watch; the registry no longer needs to.
+        WATCHES.with(|watches| {
+            watches.borrow_mut().remove(&self.key);
+        });
+        if let Some(request) = self.cancel_request.take() {
+            self.report(
+                EventKind::WebViewReply,
+                webview::reply(request, Ok(JsonValue::Null)),
+            );
+        } else {
+            let outcome = if self.closing.get() {
+                // The page went first: its transfer is discarded, even if it
+                // just finished (the core's teardown cancels the session and
+                // must clean the staging file). Cleanup still waits for this
+                // stop.
+                teardown_outcome()
+            } else if state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
+                let bytes = std::fs::metadata(&self.staging).map_or(0, |meta| meta.len());
+                DownloadOutcome::Finished { bytes }
+            } else {
+                let mut reason = COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON(0);
+                // SAFETY: a WebView2 getter on the live operation.
+                let _ = unsafe { self.operation.InterruptReason(&mut reason) };
+                DownloadOutcome::Failed {
+                    code: None,
+                    message: interrupt_message(reason.0),
+                }
+            };
+            self.report(
+                EventKind::DownloadEnd,
+                webview::download_end(&DownloadEnd {
+                    id: self.id.clone(),
+                    outcome,
+                }),
+            );
+        }
+        if let Some(page) = self.page.upgrade() {
+            page.download_ended(&self.id);
+        }
+        // A closing page's controller is no longer needed by this watch: the
+        // last one lets it go (and close) here.
+        self.hold.borrow_mut().take();
+    }
+
+    /// Reports to the engine through its own control, which records a stop
+    /// for the cleanup sink before delivering it.
+    fn report(&self, kind: EventKind, payload: EventPayload) {
+        if let Some(control) = &self.control {
+            control.dispatch_event(self.node, kind, payload);
+        }
+    }
+}
+
 /// A web view: its visuals and, once made, its controller.
 pub(crate) struct WebItem {
     emitter: Emitter,
     surface: Weak<Surface>,
+    /// A weak self, for event handlers that outlive the call that made
+    /// them.
+    me: RefCell<Weak<WebItem>>,
     /// Its view.
     id: NodeId,
     /// The window it is in (`ROOT_ID`: the main one) and its native window,
@@ -175,6 +536,11 @@ pub(crate) struct WebItem {
     /// Closed (its view was deleted and is not drawn anymore, or the app
     /// stopped).
     closed: Cell<bool>,
+    /// Closing: no new download is offered while running writers stop.
+    closing: Cell<bool>,
+    /// The page was replaced with `about:blank` because downloads must be
+    /// held and this runtime cannot report them.
+    downloads_blank: Cell<bool>,
     /// Its view was deleted: it closes once the view is not drawn anymore
     /// (a removal animation keeps it on screen a little longer).
     retired: Cell<bool>,
@@ -210,6 +576,14 @@ pub(crate) struct WebItem {
     focused: Cell<bool>,
     /// Mouse buttons held on the page (bits by button).
     buttons: Cell<u8>,
+    /// Downloads waiting for the core's answer, by their id (their event
+    /// stays open through a deferral until it does).
+    downloads: RefCell<HashMap<String, PendingDownload>>,
+    /// Downloads under way (started by the core), by their id. The watch,
+    /// not this page, keeps each one's terminal report alive.
+    active_downloads: RefCell<HashMap<String, Rc<DownloadWatch>>>,
+    /// This runtime reports downloads (`DownloadStarting`).
+    downloads_supported: Cell<bool>,
 }
 
 impl WebItem {
@@ -218,9 +592,10 @@ impl WebItem {
     }
 
     pub(crate) fn new(surface: &Rc<Surface>, view: &NshView) -> Rc<Self> {
-        Rc::new(WebItem {
+        let item = Rc::new(WebItem {
             emitter: Emitter::new(surface, view.id()),
             surface: Rc::downgrade(surface),
+            me: RefCell::default(),
             id: view.id(),
             host: Cell::new(None),
             portal: RefCell::new(None),
@@ -231,6 +606,8 @@ impl WebItem {
             failed: Cell::new(false),
             started: Cell::new(false),
             closed: Cell::new(false),
+            closing: Cell::new(false),
+            downloads_blank: Cell::new(false),
             retired: Cell::new(false),
             props: RefCell::new(None),
             applied: RefCell::new(None),
@@ -248,7 +625,12 @@ impl WebItem {
             hovered: Cell::new(false),
             focused: Cell::new(false),
             buttons: Cell::new(0),
-        })
+            downloads: RefCell::default(),
+            active_downloads: RefCell::default(),
+            downloads_supported: Cell::new(false),
+        });
+        *item.me.borrow_mut() = Rc::downgrade(&item);
+        item
     }
 
     /// The native window its page is in, once bound.
@@ -300,7 +682,12 @@ impl WebItem {
     /// Asks for the environment, once the first props say how to make the
     /// controller (`incognito`) and its view is in a window.
     fn start(self: &Rc<Self>, surface: &Surface) {
-        if self.started.get() || self.failed.get() || self.closed.get() || !self.bind(surface) {
+        if self.started.get()
+            || self.failed.get()
+            || self.closed.get()
+            || self.closing.get()
+            || !self.bind(surface)
+        {
             return;
         }
         self.started.set(true);
@@ -313,7 +700,9 @@ impl WebItem {
         });
     }
 
-    /// No web view: the placeholder shows.
+    /// No web view: the placeholder shows, and the app hears why
+    /// (`onError`, `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`) to show what it
+    /// has instead.
     fn unavailable(&self, why: &str) {
         self.failed.set(true);
         self.portal.borrow_mut().take();
@@ -324,11 +713,23 @@ impl WebItem {
                 "WebView is not available ({why}; is the WebView2 runtime installed?): it shows a placeholder"
             );
         }
+        self.emitter.emit(EventKind::Error, || {
+            EventPayload::Map(vec![
+                (
+                    "message",
+                    PayloadValue::Str(format!("WebView is not available: {why}")),
+                ),
+                (
+                    "code",
+                    PayloadValue::Str(nsh_core::element::codes::UNAVAILABLE.into()),
+                ),
+            ])
+        });
         self.invalidate();
     }
 
     fn environment_ready(self: &Rc<Self>, env: Option<ICoreWebView2Environment>) {
-        if self.closed.get() {
+        if self.closed.get() || self.closing.get() {
             return;
         }
         let Some(env) = env else {
@@ -397,6 +798,13 @@ impl WebItem {
 
     /// The controller is made: sets it up, applies what waited for it.
     fn ready(self: &Rc<Self>, composition: ICoreWebView2CompositionController) {
+        if self.closed.get() || self.closing.get() {
+            if let Ok(controller) = composition.cast::<ICoreWebView2Controller>() {
+                // SAFETY: closes the controller just made; it is not used.
+                let _ = unsafe { controller.Close() };
+            }
+            return;
+        }
         let target = self.portal.borrow().as_ref().map(|p| p.target().clone());
         let (Some(target), Ok(controller)) =
             (target, composition.cast::<ICoreWebView2Controller>())
@@ -438,6 +846,7 @@ impl WebItem {
                 None::<&webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler>,
             );
         }
+        self.listen_downloads(&webview);
         self.listen(&webview);
         self.listen_input(&composition, &controller);
         *self.composition.borrow_mut() = Some(composition);
@@ -461,12 +870,28 @@ impl WebItem {
         let mut token = 0i64;
         let weak = Rc::downgrade(self);
         let starting = NavigationStartingEventHandler::create(Box::new(move |sender, args| {
-            let (Some(item), Some(sender), Some(args)) = (weak.upgrade(), sender, args) else {
-                return Ok(());
+            let Some(args) = args else { return Ok(()) };
+            let Some(item) = weak
+                .upgrade()
+                .filter(|item| !item.closed.get() && !item.closing.get() && !item.retired.get())
+            else {
+                // SAFETY: the retained controller has no active page owner.
+                return unsafe { args.SetCancel(true) };
             };
+            let Some(sender) = sender else { return Ok(()) };
             let mut uri = PWSTR::null();
             // SAFETY: WebView2 calls on the event's live objects.
             let url = unsafe { args.Uri(&mut uri).map(|()| take_pwstr(uri)) }.unwrap_or_default();
+            if item.downloads_unavailable() {
+                // The fail-closed blank document is the only one that may
+                // load while downloads must be held but cannot be reported.
+                if url != "about:blank" {
+                    // SAFETY: a WebView2 call on the live event.
+                    let _ = unsafe { args.SetCancel(true) };
+                    item.downloads_unavailable_error();
+                    return Ok(());
+                }
+            }
             if !item.allows(&url) {
                 // SAFETY: as above.
                 let _ = unsafe { args.SetCancel(true) };
@@ -538,12 +963,509 @@ impl WebItem {
             });
             Ok(())
         }));
+        let weak = Rc::downgrade(self);
+        let permission = PermissionRequestedEventHandler::create(Box::new(move |_, args| {
+            let Some(args) = args else { return Ok(()) };
+            let Some(item) = weak
+                .upgrade()
+                .filter(|item| !item.closed.get() && !item.closing.get() && !item.retired.get())
+            else {
+                // SAFETY: a retained controller may only finish existing downloads.
+                return unsafe { args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY) };
+            };
+            let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+            // SAFETY: WebView2 calls on the event's live object.
+            unsafe { args.PermissionKind(&mut kind)? };
+            let media = match kind {
+                COREWEBVIEW2_PERMISSION_KIND_MICROPHONE => WebMedia::Microphone,
+                COREWEBVIEW2_PERMISSION_KIND_CAMERA => WebMedia::Camera,
+                // Other permissions keep WebView2's own handling.
+                _ => return Ok(()),
+            };
+            let state = if item.allows_media(media) {
+                COREWEBVIEW2_PERMISSION_STATE_ALLOW
+            } else {
+                log::warn!(target: "js", "web view {} capture is not granted: add it to capabilities.webview.media", media.as_str());
+                COREWEBVIEW2_PERMISSION_STATE_DENY
+            };
+            // SAFETY: as above.
+            unsafe { args.SetState(state) }
+        }));
+        let weak = Rc::downgrade(self);
+        let popup = NewWindowRequestedEventHandler::create(Box::new(move |_, args| {
+            if weak
+                .upgrade()
+                .is_none_or(|item| item.closed.get() || item.closing.get() || item.retired.get())
+                && let Some(args) = args
+            {
+                // SAFETY: suppress the default popup after its owning page is gone.
+                unsafe { args.SetHandled(true)? };
+            }
+            Ok(())
+        }));
         // SAFETY: WebView2 calls on the live web view; the handlers hold the
         // item weakly, and go with the web view.
         unsafe {
+            let _ = webview.add_PermissionRequested(&permission, &mut token);
+            let _ = webview.add_NewWindowRequested(&popup, &mut token);
             let _ = webview.add_NavigationStarting(&starting, &mut token);
             let _ = webview.add_NavigationCompleted(&completed, &mut token);
             let _ = webview.add_WebMessageReceived(&message, &mut token);
+        }
+    }
+
+    /// Whether this view was told to hold downloads: the core's
+    /// `defer_downloads` prop, or an app listener. Otherwise WebView2's own
+    /// download UI stays exactly as it is.
+    fn wants_downloads(&self) -> bool {
+        self.props
+            .borrow()
+            .as_ref()
+            .is_some_and(|props| props.defer_downloads)
+            || self.emitter.listens(EventKind::DownloadPending)
+            || self.emitter.listens(EventKind::Download)
+    }
+
+    /// Whether the app asked to hold downloads but the made controller
+    /// cannot report them: WebView2's own UI would write a file to a
+    /// destination nobody chose, so the page must not run.
+    fn downloads_unavailable(&self) -> bool {
+        let supported = self.downloads_supported.get();
+        self.webview.borrow().is_some() && self.wants_downloads() && !supported
+    }
+
+    /// Tells the app that this runtime cannot hold its downloads (the
+    /// page is not allowed to run instead).
+    fn downloads_unavailable_error(&self) {
+        log::warn!(target: "js", "web view: this WebView2 runtime cannot report downloads; the page cannot run while downloads are held");
+        self.emitter.emit(EventKind::Error, || {
+            EventPayload::Map(vec![
+                (
+                    "message",
+                    PayloadValue::Str(
+                        "this WebView2 runtime cannot hold downloads for the app".to_owned(),
+                    ),
+                ),
+                (
+                    "code",
+                    PayloadValue::Str(nsh_core::element::codes::UNAVAILABLE.into()),
+                ),
+            ])
+        });
+    }
+
+    /// Reports a transport event to the core, whether or not the app
+    /// listens for it (the core decides what the app hears). The node may
+    /// be gone already (teardown); the surface still routes the event.
+    fn report(&self, kind: EventKind, payload: EventPayload) {
+        if let Some(surface) = self.surface.upgrade() {
+            surface.event(self.id, kind, payload);
+        }
+    }
+
+    /// Follows WebView2's `DownloadStarting` events (`ICoreWebView2_4`; a
+    /// runtime without them keeps its own download UI).
+    fn listen_downloads(self: &Rc<Self>, webview: &ICoreWebView2) {
+        let Ok(webview) = webview.cast::<ICoreWebView2_4>() else {
+            log::debug!("web view: this WebView2 runtime does not report downloads");
+            return;
+        };
+        let weak = Rc::downgrade(self);
+        let started = DownloadStartingEventHandler::create(Box::new(move |_, args| {
+            if let Some(args) = args {
+                if let Some(item) = weak.upgrade() {
+                    item.download_started(args);
+                } else {
+                    // A hidden controller may outlive its page for stop callbacks.
+                    // It must not start new downloads after core ownership ended.
+                    // SAFETY: WebView2 calls on the live DownloadStarting event.
+                    unsafe {
+                        args.SetCancel(true)?;
+                        args.SetHandled(true)?;
+                    }
+                }
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        // SAFETY: WebView2 calls on the live web view; the handler holds
+        // the item weakly and goes with the web view.
+        let added = unsafe { webview.add_DownloadStarting(&started, &mut token) };
+        self.downloads_supported.set(added.is_ok());
+        if let Err(error) = added {
+            log::debug!("web view: cannot report downloads: {error}");
+        }
+    }
+
+    /// `DownloadStarting`: holds the download for the core when this view
+    /// was told to, reporting its offer; otherwise leaves WebView2's own
+    /// download UI alone.
+    fn download_started(self: &Rc<Self>, args: ICoreWebView2DownloadStartingEventArgs) {
+        if self.closed.get() || self.retired.get() || self.closing.get() {
+            // The view is going: nothing may be written, and the core has
+            // no session for it anymore.
+            // SAFETY: WebView2 calls on the live event.
+            unsafe {
+                let _ = args.SetCancel(true);
+                let _ = args.SetHandled(true);
+            }
+            return;
+        }
+        if !self.wants_downloads() {
+            return;
+        }
+        let operation = {
+            // SAFETY: a WebView2 getter on the live event.
+            unsafe { args.DownloadOperation() }.ok()
+        };
+        let (mut url, mut suggested) = (String::new(), String::new());
+        let mut mime_type = None;
+        let mut bytes = None;
+        if let Some(operation) = &operation {
+            // SAFETY: WebView2 getters on the live operation; the strings
+            // are freed by `take_pwstr`.
+            unsafe {
+                let mut uri = PWSTR::null();
+                if operation.Uri(&mut uri).is_ok() {
+                    url = take_pwstr(uri);
+                }
+                let mut path = PWSTR::null();
+                if operation.ResultFilePath(&mut path).is_ok() {
+                    suggested = take_pwstr(path);
+                }
+                let mut mime = PWSTR::null();
+                if operation.MimeType(&mut mime).is_ok() {
+                    let text = take_pwstr(mime);
+                    if !text.is_empty() {
+                        mime_type = Some(text);
+                    }
+                }
+            }
+            let total = {
+                let mut total = 0i64;
+                // SAFETY: a WebView2 getter on the live operation.
+                unsafe { operation.TotalBytesToReceive(&mut total) }
+                    .ok()
+                    .map(|()| total)
+            };
+            // WebView2 reports -1 when it does not know the size.
+            if let Some(total) = total.filter(|total| *total > 0) {
+                bytes = Some(total as u64);
+            }
+        }
+        if suggested.is_empty() {
+            // SAFETY: a WebView2 getter on the live event.
+            unsafe {
+                let mut path = PWSTR::null();
+                if args.ResultFilePath(&mut path).is_ok() {
+                    suggested = take_pwstr(path);
+                }
+            }
+        }
+        let filename = download_name(&suggested, &url);
+        let id = next_download_id();
+        // The engine may go while this page does: its control still records
+        // the terminal report for the core's cleanup sink.
+        let control = self.engine_control();
+        // SAFETY: WebView2 calls on the live event: the default dialog stays
+        // away (the core decides) and its deferral keeps the event open.
+        let pending = unsafe {
+            match args.GetDeferral() {
+                Ok(deferral) => {
+                    let _ = args.SetHandled(true);
+                    Some(PendingDownload {
+                        args: args.clone(),
+                        deferral,
+                        operation,
+                        control,
+                        url,
+                        filename,
+                        mime_type,
+                        bytes,
+                        completed: Cell::new(false),
+                    })
+                }
+                Err(why) => {
+                    log::warn!("web view: cannot hold a download for the core: {why}");
+                    self.emitter.emit(EventKind::Error, || {
+                        error(format!("cannot hold a download for the app: {why}"))
+                    });
+                    let _ = args.SetCancel(true);
+                    let _ = args.SetHandled(true);
+                    None
+                }
+            }
+        };
+        let Some(pending) = pending else { return };
+        let offer = pending.offer(&id);
+        self.downloads.borrow_mut().insert(id.clone(), pending);
+        self.report(EventKind::DownloadOffer, webview::download_offer(&offer));
+    }
+
+    /// Follows a running download through a [`DownloadWatch`]: the core
+    /// hears one terminal report, or its cancellation's answer once writing
+    /// stopped, even if this page is gone. `None` when WebView2 cannot report
+    /// its state: the caller leaves its held offer for the core's
+    /// cancellation, so no writer runs unwatched.
+    fn track_download(
+        &self,
+        operation: ICoreWebView2DownloadOperation,
+        id: &str,
+        staging: &Path,
+    ) -> Option<Rc<DownloadWatch>> {
+        let watch = Rc::new(DownloadWatch {
+            operation: operation.clone(),
+            control: self.engine_control(),
+            node: self.id,
+            id: id.to_owned(),
+            staging: staging.to_path_buf(),
+            cancel_request: Cell::new(None),
+            closing: Cell::new(false),
+            terminal: Cell::new(false),
+            registration: Cell::new(0),
+            key: next_watch_key(),
+            hold: RefCell::default(),
+            page: self.me.borrow().clone(),
+        });
+        // The handler only points at the watch; the thread's registry owns
+        // it, so the terminal report outlives the page and the surface. The
+        // maps hold it before the handler can run.
+        WATCHES.with(|watches| {
+            watches.borrow_mut().insert(watch.key, watch.clone());
+        });
+        self.active_downloads
+            .borrow_mut()
+            .insert(id.to_owned(), watch.clone());
+        let weak = Rc::downgrade(&watch);
+        let handler = StateChangedEventHandler::create(Box::new(move |_, _| {
+            if let Some(watch) = weak.upgrade() {
+                watch.state_changed();
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        // SAFETY: WebView2 calls on the live operation; the handler holds
+        // the watch weakly and goes with the operation.
+        if let Err(error) = unsafe { operation.add_StateChanged(&handler, &mut token) } {
+            log::warn!("web view: cannot follow a download: {}", error.message());
+            self.active_downloads.borrow_mut().remove(id);
+            WATCHES.with(|watches| {
+                watches.borrow_mut().remove(&watch.key);
+            });
+            return None;
+        }
+        watch.registration.set(token);
+        Some(watch)
+    }
+
+    /// The running download `id` stopped (its watch reported): the page no
+    /// longer tracks it.
+    fn download_ended(&self, id: &str) {
+        self.active_downloads.borrow_mut().remove(id);
+    }
+
+    /// The engine's control, if an app runs.
+    fn engine_control(&self) -> Option<nsh_engine::EngineControl> {
+        let mut control = None;
+        if let Some(surface) = self.surface.upgrade() {
+            surface.control(|c| control = Some(c.clone()));
+        }
+        control
+    }
+
+    /// The end of a download that kept its own engine control: the control
+    /// records it for the core's cleanup sink even when the surface (and
+    /// the core) are gone.
+    fn report_end_via(
+        &self,
+        control: &Option<nsh_engine::EngineControl>,
+        id: &str,
+        outcome: DownloadOutcome,
+    ) {
+        let payload = webview::download_end(&DownloadEnd {
+            id: id.to_owned(),
+            outcome,
+        });
+        match control {
+            Some(control) => control.dispatch_event(self.id, EventKind::DownloadEnd, payload),
+            None => self.report(EventKind::DownloadEnd, payload),
+        }
+    }
+
+    /// Answers web view request `request` (an internal reply event, not a
+    /// listener's).
+    fn reply(&self, request: u64, result: Result<JsonValue, String>) {
+        let Some(surface) = self.surface.upgrade() else {
+            return;
+        };
+        reply(&surface, self.id, request, result);
+    }
+
+    /// Handles a [`WebViewOperation`] on this web view.
+    fn web_request(&self, request: &WebViewRequest) {
+        match &request.operation {
+            WebViewOperation::StartDownload { id, staging } => {
+                let result = self.start_download(id, staging);
+                self.reply(request.id, result);
+            }
+            WebViewOperation::CancelDownload { id } => {
+                self.cancel_download(request.id, id);
+            }
+            // A newer core's operation: answer it rather than leave it
+            // pending.
+            _ => self.reply(
+                request.id,
+                Err("this Windows backend does not know the web view operation".into()),
+            ),
+        }
+    }
+
+    /// Writes download `id` at the core's staging path: WebView2 creates the
+    /// leaf (it must not exist), inside the core's private directory. The
+    /// answer waits only for WebView2 to accept it, never for the transfer.
+    ///
+    /// A refused path keeps the offer held instead of dropping its id: the
+    /// core answers a failed start with a cancellation, which is what
+    /// discards the held download (nothing was written), so its staging
+    /// directory is never left without a writer to confirm.
+    fn start_download(&self, id: &str, staging: &Path) -> Result<JsonValue, String> {
+        let operation = {
+            let downloads = self.downloads.borrow();
+            let Some(pending) = downloads.get(id) else {
+                return Err(self.no_download(id));
+            };
+            pending.operation()
+        };
+        let Some(operation) = operation else {
+            return Err(format!("the download {id} has no operation"));
+        };
+        let Some(parent) = staging.parent() else {
+            return Err("the staging path has no folder".to_owned());
+        };
+        if !staging.is_absolute() {
+            return Err(format!(
+                "the staging path {} is not absolute",
+                staging.display()
+            ));
+        }
+        if !parent.is_dir() {
+            return Err(format!(
+                "the staging folder {} does not exist",
+                parent.display()
+            ));
+        }
+        if staging.exists() {
+            return Err(format!(
+                "the staging file already exists: {}",
+                staging.display()
+            ));
+        }
+        let Some(pending) = self.downloads.borrow_mut().remove(id) else {
+            return Err(self.no_download(id));
+        };
+        // SAFETY: WebView2 calls on the live event: the file goes where the
+        // core staged it, the default dialog stays away, and completing the
+        // deferral ends the event (once).
+        let applied = unsafe {
+            let mut applied = pending
+                .args
+                .SetResultFilePath(&HSTRING::from(&*staging.to_string_lossy()));
+            if applied.is_ok() {
+                applied = pending.args.SetCancel(false);
+            }
+            if applied.is_ok() {
+                applied = pending.args.SetHandled(true);
+            }
+            applied
+        };
+        if let Err(error) = applied {
+            // Still held (its deferral is open): the core's cancellation
+            // discards it, and nothing was written.
+            self.downloads.borrow_mut().insert(id.to_owned(), pending);
+            return Err(format!("cannot take the download: {}", error.message()));
+        }
+        // Follow it before the deferral ends: the transfer cannot start
+        // before then, so every state change finds its entry.
+        let Some(watch) = self.track_download(operation, id, staging) else {
+            self.downloads.borrow_mut().insert(id.to_owned(), pending);
+            return Err("cannot follow the download; it was not started".to_owned());
+        };
+        if let Err(error) = pending.complete() {
+            // The event could not be released, so no writer runs: undo the
+            // watch and keep the offer held for the core's cancellation.
+            watch.discard();
+            self.downloads.borrow_mut().insert(id.to_owned(), pending);
+            return Err(format!("cannot start the download: {}", error.message()));
+        }
+        Ok(JsonValue::Null)
+    }
+
+    /// Cancels the pending or running download `id`: a held one is
+    /// discarded at once; a running one is answered only after WebView2
+    /// reports its writer stopped.
+    fn cancel_download(&self, request: u64, id: &str) {
+        let pending = self.downloads.borrow_mut().remove(id);
+        if let Some(pending) = pending {
+            // Held: discarded without writing anything.
+            match pending.cancel() {
+                Ok(()) => self.reply(request, Ok(JsonValue::Null)),
+                Err(error) => {
+                    // Not discarded (the event is still held): the offer
+                    // stays for another cancellation, and the core keeps its
+                    // staging directory.
+                    self.downloads.borrow_mut().insert(id.to_owned(), pending);
+                    self.reply(
+                        request,
+                        Err(format!("cannot cancel the download: {}", error.message())),
+                    );
+                }
+            }
+            return;
+        }
+        // The watch may outlive this page: clone it out before any COM call
+        // that could deliver its terminal state.
+        let watch = self.active_downloads.borrow().get(id).cloned();
+        let Some(watch) = watch else {
+            self.reply(request, Err(self.no_download(id)));
+            return;
+        };
+        if watch.terminal.get() {
+            // Its end was already reported; the core drops a reply for a
+            // download it settled.
+            self.reply(request, Err(self.no_download(id)));
+            return;
+        }
+        if watch.cancel_request.get().is_some() {
+            self.reply(
+                request,
+                Err(format!("a cancellation is already in progress for {id}")),
+            );
+            return;
+        }
+        // Set first: the terminal handler answers it if the writer stops
+        // during the calls below.
+        watch.cancel_request.set(Some(request));
+        if let Some(state) = watch.stopped() {
+            // The writer already stopped: answer, never an end.
+            watch.settle(state);
+            return;
+        }
+        // A paused or auto-resuming interruption is not a stop: cancel it,
+        // and let a state it cannot resume from (now, or through its
+        // handler) answer. A refused call is no proof either, so the core
+        // keeps its staging directory until a stop is confirmed.
+        if !watch.cancel() && !watch.terminal.get() && watch.cancel_request.get() == Some(request) {
+            watch.cancel_request.set(None);
+            self.reply(request, Err(format!("cannot cancel the download {id}")));
+        }
+    }
+
+    /// Why download `id` is not waiting or running.
+    fn no_download(&self, id: &str) -> String {
+        if self.downloads_supported.get() {
+            format!("no download is waiting with id {id}")
+        } else {
+            "this WebView2 runtime does not report downloads".to_owned()
         }
     }
 
@@ -582,6 +1504,11 @@ impl WebItem {
                 if let Some(surface) = item.surface.upgrade() {
                     crate::text_input::blur_all(&surface);
                     surface.sync_focus();
+                    // A custom view of the page's window gives it its keys
+                    // too.
+                    if let Some((window, _)) = item.host.get() {
+                        crate::keyboard::blur_window(&surface, window);
+                    }
                 }
             }
             Ok(())
@@ -635,8 +1562,9 @@ impl WebItem {
 
     /// True when the app may show `url` at the top level.
     fn allows(&self, url: &str) -> bool {
-        // Pages the app gave as HTML.
+        // Pages the app gave as HTML, and the empty document.
         if url.starts_with("data:")
+            || url == "about:blank"
             || self
                 .html
                 .borrow()
@@ -650,6 +1578,16 @@ impl WebItem {
         };
         let access = surface.native.access.borrow().clone();
         access.is_none_or(|a: Arc<nsh_engine::Access>| a.allows_webview(url))
+    }
+
+    /// Whether the page may capture `media` (`webview.media`): never
+    /// without a declaration.
+    fn allows_media(&self, media: WebMedia) -> bool {
+        let Some(surface) = self.surface.upgrade() else {
+            return false;
+        };
+        let access = surface.native.access.borrow().clone();
+        access.is_some_and(|a| a.allows_web_media(media))
     }
 
     pub(crate) fn set(self: &Rc<Self>, surface: &Rc<Surface>, view: &NshView, p: &WebProps) {
@@ -666,9 +1604,36 @@ impl WebItem {
 
     /// Applies `p` to the web view (it is ready).
     fn apply(&self, p: &WebProps) {
+        if self.closed.get() || self.closing.get() {
+            return;
+        }
         let Some(webview) = self.webview.borrow().clone() else {
             return;
         };
+        if p.defer_downloads && !self.downloads_supported.get() {
+            // A page could download behind the app's back: nothing of it
+            // may run. `about:blank` is the only document allowed, and the
+            // app's document scripts are removed so the blank page cannot
+            // start anything either.
+            if !self.downloads_blank.replace(true) {
+                // SAFETY: WebView2 calls on the live web view.
+                unsafe {
+                    for id in self.scripts.borrow_mut().drain(..) {
+                        let _ = webview.RemoveScriptToExecuteOnDocumentCreated(&HSTRING::from(id));
+                    }
+                    if let Some(id) = self.scroll_script.borrow_mut().take() {
+                        let _ = webview.RemoveScriptToExecuteOnDocumentCreated(&HSTRING::from(id));
+                    }
+                    let _ = webview.Navigate(w!("about:blank"));
+                }
+                // Removing them is not what the props say: a later apply
+                // that can run must put them back.
+                *self.applied.borrow_mut() = None;
+            }
+            self.downloads_unavailable_error();
+            return;
+        }
+        self.downloads_blank.set(false);
         let old = self.applied.borrow_mut().replace(p.clone());
         let scripts_changed = old.as_ref().is_none_or(|o| {
             o.injected_js != p.injected_js || o.injected_js_before != p.injected_js_before
@@ -830,6 +1795,18 @@ impl WebItem {
     /// `reload()`, `goBack()`, `goForward()`, `stopLoading()`,
     /// `injectJavaScript()`, `postMessage()` and `load()`.
     pub(crate) fn command(&self, command: &Command) {
+        if let Command::WebViewRequest(request) = command {
+            self.web_request(request);
+            return;
+        }
+        if self.closed.get() || self.closing.get() {
+            // The page is going: nothing may run on it.
+            return;
+        }
+        if self.downloads_unavailable() && inert_refuses(command) {
+            self.downloads_unavailable_error();
+            return;
+        }
         let Some(webview) = self.webview.borrow().clone() else {
             if !self.failed.get() {
                 self.queued.borrow_mut().push(command.clone());
@@ -959,11 +1936,134 @@ impl WebItem {
         }
     }
 
-    /// The page closes (the app stopped, or its view is gone).
+    /// The page closes after its view went away. Held offers are discarded
+    /// (nothing was written) and reported to the core. A running transfer is
+    /// handed to its [`DownloadWatch`], which outlives this page: only a
+    /// state WebView2 will not resume by itself answers the core, never the
+    /// controller going or this page's end. The controller stays open
+    /// (hidden, with its visual gone) only while a watch still needs the
+    /// events that prove a stop.
     pub(crate) fn close(&self) {
+        if self.closed.get() || self.closing.replace(true) {
+            return;
+        }
+        let pending = std::mem::take(&mut *self.downloads.borrow_mut());
+        for held in pending.values() {
+            if let Err(error) = held.cancel() {
+                // The event stays held, so nothing starts; its writer is
+                // still none, and the end below says so.
+                log::warn!(
+                    "web view: cannot release a held download: {}",
+                    error.message()
+                );
+            }
+        }
+        for (id, held) in &pending {
+            self.report_end_via(&held.control, id, teardown_outcome());
+        }
+        // The watches keep themselves (and their operations) alive in the
+        // thread's registry; the page going does not end them.
+        let watches: Vec<Rc<DownloadWatch>> =
+            self.active_downloads.borrow().values().cloned().collect();
+        self.stop_downloads(watches);
+        self.finish_close();
+    }
+
+    /// Closes the page now (the app is stopping, or the last reference goes
+    /// away): same rule, only a state WebView2 will not resume by itself
+    /// answers a download, and a watch still running keeps its own terminal
+    /// report alive through the engine control after this page is gone.
+    pub(crate) fn shutdown(&self) {
+        if self.closed.get() {
+            return;
+        }
+        let pending = std::mem::take(&mut *self.downloads.borrow_mut());
+        for held in pending.values() {
+            if let Err(error) = held.cancel() {
+                // The event stays held, so nothing starts; its writer is
+                // still none, and the end below says so.
+                log::warn!(
+                    "web view: cannot release a held download: {}",
+                    error.message()
+                );
+            }
+        }
+        for (id, held) in &pending {
+            self.report_end_via(&held.control, id, teardown_outcome());
+        }
+        let active = std::mem::take(&mut *self.active_downloads.borrow_mut());
+        let watches: Vec<Rc<DownloadWatch>> = active.into_values().collect();
+        self.stop_downloads(watches);
+        self.finish_close();
+    }
+
+    /// Stops the transfers of a page that is going: an interrupted one
+    /// WebView2 may resume by itself is cancelled, and the controller whose
+    /// state changes prove the stops stays open until the last watch that
+    /// still needs it has settled. No visual or page is kept.
+    fn stop_downloads(&self, watches: Vec<Rc<DownloadWatch>>) {
+        for watch in &watches {
+            watch.closing.set(true);
+        }
+        self.hold_controller(&watches);
+        for watch in watches {
+            if watch.terminal.get() {
+                continue;
+            }
+            if let Some(state) = watch.stopped() {
+                watch.settle(state);
+            } else if !watch.cancel() {
+                // Its stop is unconfirmed: the core keeps the staging
+                // directory, and the watch (with the controller) stays until
+                // WebView2 reports one.
+                log::warn!("web view: a download may still write after its page goes");
+            }
+        }
+    }
+
+    /// Hands the controller to the watches that still need its events: the
+    /// last of them closes it. Only that native object is kept: the page is
+    /// hidden and detached from the window's visual tree, so no UI or
+    /// surface outlives the page.
+    fn hold_controller(&self, watches: &[Rc<DownloadWatch>]) {
+        if !watches.iter().any(|watch| !watch.terminal.get()) {
+            return;
+        }
+        let Some(controller) = self.controller.borrow_mut().take() else {
+            return;
+        };
+        // SAFETY: WebView2 calls on the live controller: hidden, so a page
+        // kept for its download events draws nothing.
+        let _ = unsafe { controller.SetIsVisible(false) };
+        let composition = self.composition.borrow_mut().take();
+        if let Some(composition) = composition {
+            // SAFETY: a WebView2 call on the live composition controller: the
+            // page leaves the visual tree the window no longer composes (a
+            // null target disconnects it).
+            if let Err(error) = unsafe { composition.SetRootVisualTarget(None::<&IUnknown>) } {
+                log::warn!("web view: cannot detach a closing page's visual: {error}");
+            }
+        }
+        let hold = Rc::new(ControllerHold { controller });
+        let mut kept = 0;
+        for watch in watches {
+            if !watch.terminal.get() {
+                *watch.hold.borrow_mut() = Some(hold.clone());
+                kept += 1;
+            }
+        }
+        log::debug!("web view: its controller stays open until {kept} download(s) stop");
+    }
+
+    /// Releases the page: its queues, web view, composition and controller
+    /// (unless a running download still needs the controller's events), and
+    /// its visuals.
+    fn finish_close(&self) {
         if self.closed.replace(true) {
             return;
         }
+        self.active_downloads.borrow_mut().clear();
+        self.downloads.borrow_mut().clear();
         if self.focused.get() {
             self.focus_window();
         }
@@ -971,7 +2071,8 @@ impl WebItem {
         self.queued.borrow_mut().clear();
         self.composition.borrow_mut().take();
         if let Some(controller) = self.controller.borrow_mut().take() {
-            // SAFETY: closes the live controller; it is not used afterwards.
+            // SAFETY: closes the live controller; it is not used afterwards
+            // (a watch that needs its events holds it already).
             let _ = unsafe { controller.Close() };
         }
         // Its visuals leave the composition (gone with the last web view).
@@ -1132,7 +2233,7 @@ impl WebItem {
 
 impl Drop for WebItem {
     fn drop(&mut self) {
-        self.close();
+        self.shutdown();
     }
 }
 
@@ -1234,7 +2335,12 @@ impl Hosted for WebItem {
         }
         self.place();
         if at.is_none() && self.retired.get() {
-            self.close();
+            // The view still holds this item during the call: its reference
+            // lets the page close once no download writer is unaccounted for.
+            match self.me.borrow().upgrade() {
+                Some(item) => item.close(),
+                None => self.shutdown(),
+            }
         }
     }
 
@@ -1643,6 +2749,277 @@ fn placeholder_format() -> Option<IDWriteTextFormat> {
     FORMAT.with(Clone::clone)
 }
 
+/// Answers request `request` of `node` (an internal reply event, not a
+/// listener's).
+fn reply(surface: &Surface, node: NodeId, request: u64, result: Result<JsonValue, String>) {
+    surface.event(
+        node,
+        EventKind::WebViewReply,
+        webview::reply(request, result),
+    );
+}
+
+/// A safe file name for a download: the server's suggestion, or the URL's
+/// last segment when it has none.
+fn download_name(suggested: &str, url: &str) -> String {
+    let name = Path::new(suggested)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = if name.is_empty() {
+        url_file_name(url).to_owned()
+    } else {
+        name
+    };
+    sanitize_file_name(&name)
+}
+
+/// A file name Windows accepts: its last path component without a
+/// separator, control character or reserved character, no leading or
+/// trailing dot/space, no reserved device name (with or without an
+/// extension, and however the stem ends), at most 200 bytes; `download`
+/// when nothing is left.
+fn sanitize_file_name(suggested: &str) -> String {
+    let last = suggested.rsplit(['/', '\\']).next().unwrap_or_default();
+    let mut name: String = last
+        .chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*')
+                && !matches!(
+                    c,
+                    '\u{061c}'
+                        | '\u{200e}'..='\u{200f}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{206f}'
+                )
+        })
+        .collect::<String>()
+        .trim()
+        .trim_end_matches(['.', ' '])
+        .to_owned();
+    name = name.trim_start_matches('.').to_owned();
+    if name.is_empty() {
+        return "download".to_owned();
+    }
+    if is_reserved_name(&name) {
+        name.insert(0, '_');
+    }
+    if name.len() > 200 {
+        // Preserve a normal extension while shortening the stem on UTF-8
+        // boundaries.
+        let extension = name
+            .rsplit_once('.')
+            .map(|(_, ext)| format!(".{ext}"))
+            .filter(|ext| ext.len() < 200);
+        if let Some(extension) = &extension {
+            name.truncate(name.len() - extension.len());
+        }
+        let limit = 200 - extension.as_ref().map_or(0, String::len);
+        while name.len() > limit {
+            name.pop();
+        }
+        name = name.trim_end_matches(['.', ' ']).to_owned();
+        if let Some(extension) = extension {
+            name.push_str(&extension);
+        }
+    }
+    if name.is_empty() {
+        "download".to_owned()
+    } else {
+        name
+    }
+}
+
+/// Whether `name` is a Windows device name, which no file (with or without
+/// an extension) may be called: `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`,
+/// `CONOUT$`, the `COM`/`LPT` families (0 through 9, and the superscript
+/// forms Windows also reserves). Win32 ignores trailing dots and spaces in
+/// a name component, so `CON .txt` is `CON` too.
+fn is_reserved_name(name: &str) -> bool {
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end_matches([' ', '.'])
+        .to_ascii_uppercase();
+    let family = |prefix: &str| {
+        let digits = stem.strip_prefix(prefix).unwrap_or_default();
+        matches!(
+            digits,
+            "0" | "1"
+                | "2"
+                | "3"
+                | "4"
+                | "5"
+                | "6"
+                | "7"
+                | "8"
+                | "9"
+                | "\u{b9}"
+                | "\u{b2}"
+                | "\u{b3}"
+        )
+    };
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || family("COM")
+        || family("LPT")
+}
+
+/// The last path segment of `url`, without its query or fragment.
+fn url_file_name(url: &str) -> &str {
+    let end = url.find(['?', '#']).unwrap_or(url.len());
+    url[..end].rsplit('/').next().unwrap_or_default()
+}
+
+thread_local! {
+    /// Running downloads whose terminal report must outlive their page: a
+    /// `StateChanged` handler points at them weakly, so this keeps them
+    /// (with their native operation and engine control) alive until the
+    /// writer's terminal state, whatever happens to the page or surface.
+    static WATCHES: RefCell<HashMap<u64, Rc<DownloadWatch>>> = RefCell::default();
+    /// Keys for [`WATCHES`].
+    static WATCH_KEYS: Cell<u64> = const { Cell::new(1) };
+}
+
+/// A key no other watch on this thread uses.
+fn next_watch_key() -> u64 {
+    WATCH_KEYS.with(|keys| {
+        let key = keys.get();
+        keys.set(key.wrapping_add(1).max(1));
+        key
+    })
+}
+
+/// An id for a download: a random GUID in lowercase hex, unique within the
+/// view and safe as one path component (it has no separators), so a
+/// replayed callback cannot name another transfer.
+fn next_download_id() -> String {
+    static FALLBACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    // SAFETY: `CoCreateGuid` writes into a local GUID.
+    match unsafe { CoCreateGuid() } {
+        Ok(guid) => format!(
+            "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            guid.data1,
+            guid.data2,
+            guid.data3,
+            guid.data4[0],
+            guid.data4[1],
+            guid.data4[2],
+            guid.data4[3],
+            guid.data4[4],
+            guid.data4[5],
+            guid.data4[6],
+            guid.data4[7]
+        ),
+        Err(_) => {
+            // OLE is unavailable (it is not on this thread): a time and a
+            // counter are still unique enough, and contain no separator.
+            let n = FALLBACK.fetch_add(1, Ordering::Relaxed);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            format!("{nanos:x}-{n:x}")
+        }
+    }
+}
+
+/// Takes a transfer's one terminal report: a cancellation racing a
+/// completion answers once, and a later callback reports nothing.
+fn take_terminal(terminal: &Cell<bool>) -> bool {
+    !terminal.replace(true)
+}
+
+/// Whether `command` would run or load the page when its downloads cannot be
+/// held: a navigation, or anything that executes app script.
+fn inert_refuses(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Reload
+            | Command::GoBack
+            | Command::GoForward
+            | Command::Load(_)
+            | Command::InjectJavaScript(_)
+            | Command::PostMessage(_)
+    )
+}
+
+/// What the core hears about a download whose view went away: its writer is
+/// not confirmed stopped, so the core removes only its staging directory
+/// after hearing this.
+fn teardown_outcome() -> DownloadOutcome {
+    DownloadOutcome::Failed {
+        code: Some("ERR_NSH_DOWNLOAD_TEARDOWN".to_owned()),
+        message: "the web view was disposed".to_owned(),
+    }
+}
+
+/// Whether WebView2 restarts an interrupted download by itself. Its API says
+/// these interruptions may resume without the host calling anything, and the
+/// progress may restart from 0: the file is written again, so such a state
+/// is not a stop.
+fn resumes_itself(reason: COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON) -> bool {
+    reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_NO_RANGE
+        || reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_HASH_MISMATCH
+        || reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_TOO_SHORT
+}
+
+/// Whether `state`, with its interrupt `reason`, proves no writer is left:
+/// completed, or interrupted for a reason WebView2 does not resume by
+/// itself (and not a pause). An interruption WebView2 retries is not a stop,
+/// however quiet its file is right now.
+fn stopped_state(
+    state: COREWEBVIEW2_DOWNLOAD_STATE,
+    reason: COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON,
+) -> bool {
+    if state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
+        return true;
+    }
+    if state != COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED {
+        return false;
+    }
+    reason != COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED && !resumes_itself(reason)
+}
+
+/// Why a download was interrupted, for `DownloadEnd`'s message.
+fn interrupt_message(reason: i32) -> String {
+    let message = match reason {
+        1 => "the file could not be written",
+        2 => "access to the file was denied",
+        3 => "the disk is full",
+        4 => "the file name is too long",
+        5 => "the file is too large",
+        6 => "the file was found to be malicious",
+        7 => "the file had a transient error",
+        8 => "the file was blocked by policy",
+        9 => "the file failed a security check",
+        10 => "the file was too short",
+        11 => "the file's hash did not match",
+        12 => "the network request failed",
+        13 => "the network request timed out",
+        14 => "the network connection was lost",
+        15 => "the server is down",
+        16 => "the network request was invalid",
+        17 => "the server failed",
+        18 => "the server does not support ranges",
+        19 => "the server returned bad content",
+        20 => "the server requires authentication",
+        21 => "the server's certificate has a problem",
+        22 => "the server forbade the download",
+        23 => "the server sent an unexpected response",
+        24 => "the content length did not match",
+        25 => "the server redirected across origins",
+        26 => "the download was cancelled",
+        27 => "the app is shutting down",
+        28 => "the download was paused",
+        29 => "WebView2 crashed",
+        _ => "the download was interrupted",
+    };
+    message.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1744,5 +3121,144 @@ mod tests {
         assert!(scroll_style(false).contains("var on = false"));
         assert!(scroll_style(true).contains("var on = true"));
         assert!(scroll_style(false).contains("overflow: hidden !important"));
+    }
+
+    #[test]
+    fn sanitizes_download_file_names() {
+        assert_eq!(sanitize_file_name(r"..\..\evil.txt"), "evil.txt");
+        assert_eq!(sanitize_file_name(r"C:\dir\a:b?.txt"), "ab.txt");
+        assert_eq!(sanitize_file_name("  ..  "), "download");
+        assert_eq!(sanitize_file_name(""), "download");
+        assert_eq!(sanitize_file_name("...hidden"), "hidden");
+        assert_eq!(sanitize_file_name("trailing. "), "trailing");
+        assert_eq!(sanitize_file_name("a. . . "), "a");
+        assert_eq!(sanitize_file_name("报告.pdf"), "报告.pdf");
+        assert_eq!(
+            sanitize_file_name("invoice\u{202e}fdp.exe"),
+            "invoicefdp.exe"
+        );
+        assert_eq!(sanitize_file_name("a\u{0}b\u{7}.txt"), "ab.txt");
+    }
+
+    #[test]
+    fn sanitizes_reserved_device_names_but_not_ordinary_stems() {
+        for reserved in [
+            "CON",
+            "con",
+            "CON.txt",
+            "PRN",
+            "AUX",
+            "NUL",
+            "NUL.tar.gz",
+            "COM0",
+            "COM1",
+            "COM9",
+            "LPT0",
+            "LPT9",
+            "COM\u{b9}",
+            "LPT\u{b3}",
+            "CONIN$",
+            "CONOUT$",
+        ] {
+            let name = sanitize_file_name(reserved);
+            assert!(
+                name.starts_with('_'),
+                "{reserved:?} must be made distinct, got {name:?}"
+            );
+            assert!(!is_reserved_name(&name), "{name:?}");
+        }
+        // Trailing dots and spaces are ignored by Win32 in a name component.
+        for disguised in ["CON .txt", "NUL. .txt", "PRN...", "AUX . ."] {
+            let name = sanitize_file_name(disguised);
+            assert!(name.starts_with('_'), "{disguised:?} -> {name:?}");
+        }
+        // Ordinary names that merely contain or resemble one stay as they are.
+        for ordinary in ["console.txt", "connection", "COM10", "LPT10", "my-CON.txt"] {
+            assert_eq!(sanitize_file_name(ordinary), ordinary);
+            assert!(!is_reserved_name(ordinary));
+        }
+        // A long name keeps a fitting extension on UTF-8 boundaries.
+        let long = format!("{}.txt", "é".repeat(300));
+        let name = sanitize_file_name(&long);
+        assert!(name.len() <= 200, "{}", name.len());
+        assert!(name.ends_with(".txt"), "{name}");
+    }
+
+    #[test]
+    fn names_downloads_from_the_url_when_the_server_suggests_nothing() {
+        assert_eq!(
+            download_name("", "https://example.test/files/report.pdf?token=1#page"),
+            "report.pdf"
+        );
+        assert_eq!(download_name("", "https://example.test/"), "download");
+        assert_eq!(
+            download_name(r"C:\Users\a\Downloads\photo.webp", "https://example.test/"),
+            "photo.webp"
+        );
+        assert_eq!(
+            download_name("CON.txt", "https://example.test/"),
+            "_CON.txt"
+        );
+    }
+
+    #[test]
+    fn describes_download_interruptions() {
+        assert_eq!(interrupt_message(26), "the download was cancelled");
+        assert_eq!(interrupt_message(29), "WebView2 crashed");
+        assert_eq!(interrupt_message(999), "the download was interrupted");
+    }
+
+    #[test]
+    fn keeps_resumable_interruptions_open() {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN,
+        };
+        let interrupted = COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED;
+        // WebView2 restarts these by itself (progress may restart from 0):
+        // the file is written again, so none is a stop.
+        for reason in [
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_NO_RANGE,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_HASH_MISMATCH,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_TOO_SHORT,
+        ] {
+            assert!(resumes_itself(reason), "{reason:?}");
+            assert!(!stopped_state(interrupted, reason), "{reason:?}");
+        }
+        // A pause is not a stop either: resuming is still possible.
+        assert!(!stopped_state(
+            interrupted,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED
+        ));
+        // An interruption WebView2 does not restart leaves no writer: the
+        // core may be told (and clean the staging file).
+        for reason in [
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN,
+        ] {
+            assert!(!resumes_itself(reason), "{reason:?}");
+            assert!(stopped_state(interrupted, reason), "{reason:?}");
+        }
+        // Completion is a stop; a running download is not.
+        assert!(stopped_state(
+            COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE
+        ));
+        assert!(!stopped_state(
+            COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS,
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE
+        ));
+    }
+
+    #[test]
+    fn cancellation_terminal_is_reported_once() {
+        let terminal = Cell::new(false);
+        assert!(take_terminal(&terminal));
+        assert!(!take_terminal(&terminal));
     }
 }

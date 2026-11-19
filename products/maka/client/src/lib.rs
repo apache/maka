@@ -23,11 +23,13 @@ pub use journal::{
     Draft, DraftAttachment, DraftEdit, DraftKey, DraftReference, Journal, Operation,
     RecentWorkspace, UploadReference,
 };
-use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding, Resources};
+use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
 use maka_host_runtime::application::{
+    CallResources,
     host::{Client as HostClient, LocalCall},
     transport::{Description, wire::Reply},
 };
+use maka_plugin_core::work::resources::Resources;
 use maka_plugin_core::{
     composition::InstanceId,
     contract::text_resource_type,
@@ -50,13 +52,13 @@ use uuid::Uuid;
 pub type Result<T> = std::result::Result<T, String>;
 
 const CONTROL_METHODS: &[&str] = &[
+    "saveFile",
     "create",
     "predictNextMessage",
-    "rankQuickTools",
     "trustProjectMcp",
     "selectBackend",
     "compact",
-    "resume",
+    "continueRun",
     "setCompactionPrompt",
     "markRead",
     "markBotRead",
@@ -70,18 +72,23 @@ const CONTROL_METHODS: &[&str] = &[
     "fork",
     "openBot",
     "changeGoal",
+    "schedule",
+    "githubSubmitReview",
+    "githubReplyComment",
+    "githubCommentPullRequest",
 ];
 const CONTROL_KIND: &str = "agent-control";
 const SETTINGS_KIND: &str = "settings";
 const TERMINAL_KIND: &str = "terminal";
 const TERMINAL_METHODS: [&str; 4] = ["start", "stop", "control", "release"];
-const SETTINGS_ENDPOINTS: [&str; 6] = [
+const SETTINGS_ENDPOINTS: [&str; 7] = [
     "settings",
     "agent",
     "skills",
     "setup",
     "management",
     "authentication",
+    "web",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,11 +107,12 @@ impl ServiceOwner {
         serde_json::json!({"kind":kind,"owner":self})
     }
 }
-const SETTINGS_METHODS: [&str; 10] = [
+const SETTINGS_METHODS: [&str; 11] = [
     "create",
     "update",
     "remove",
     "saveCredential",
+    "saveUsageCredential",
     "deleteCredential",
     "updateModelSettings",
     "setDefault",
@@ -117,13 +125,26 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
         || (endpoint == "agent"
             && matches!(
                 method,
-                "updateGlobalInstructions" | "selectWorkspace" | "manageMcpServer"
+                "updateGlobalInstructions"
+                    | "selectWorkspace"
+                    | "manageMcpServer"
+                    | "createPreset"
+                    | "updatePreset"
+                    | "deletePreset"
+                    | "changeMemory"
+                    | "reconcileMemories"
+                    | "saveGitHubToken"
+                    | "deleteGitHubToken"
             ))
         || (endpoint == "skills" && matches!(method, "install" | "update" | "delete"))
         || (endpoint == "setup" && method == "discoverModels")
         || (endpoint == "management"
-            && matches!(method, "setEnabled" | "configure" | "configureBatch"))
+            && matches!(
+                method,
+                "setEnabled" | "configure" | "configureBatch" | "installUrl" | "editComposition"
+            ))
         || (endpoint == "authentication" && method == "loginCredential")
+        || (endpoint == "web" && matches!(method, "save" | "saveKey" | "deleteKey" | "checkKey"))
 }
 fn settings_owner(operation: &Operation, owner: &ServiceOwner) -> bool {
     operation.draft.is_none()
@@ -134,7 +155,8 @@ fn settings_owner(operation: &Operation, owner: &ServiceOwner) -> bool {
 fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Result<Value> {
     let mut correlation = owner.correlation(CONTROL_KIND);
     let key = match method {
-        "stop" => Some("invocationId"),
+        "stop" => Some("runId"),
+        "continueRun" => Some("sourceRunId"),
         "respond" | "requestSystemPermission" => Some("requestId"),
         "stopComputerApp" => Some("operationId"),
         _ => None,
@@ -147,9 +169,34 @@ fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Res
             .ok_or(if key == "operationId" {
                 "agent control requires a valid operationId"
             } else {
-                "agent control requires a valid invocationId or requestId"
+                "agent control requires a valid runId or requestId"
             })?;
-        correlation[key] = Value::String(target.to_owned());
+        correlation[key] = if matches!(key, "runId" | "sourceRunId") {
+            let id =
+                Uuid::parse_str(target).map_err(|_| "agent control requires a durable Run UUID")?;
+            if id.is_nil() {
+                return Err("agent control requires a non-nil Run UUID".into());
+            }
+            Value::String(id.to_string())
+        } else {
+            Value::String(target.to_owned())
+        };
+    }
+    if method == "continueRun" {
+        correlation["sourceHighWater"] = input
+            .get("sourceHighWater")
+            .and_then(Value::as_u64)
+            .filter(|revision| (1..=9_007_199_254_740_991).contains(revision))
+            .ok_or("agent Run control requires an exact observation fence")?
+            .into();
+        correlation["model"] = input
+            .get("model")
+            .filter(|model| model.is_object())
+            .ok_or("Run continuation requires an explicit model")?
+            .clone();
+        if let Some(thinking) = input.get("thinkingLevel") {
+            correlation["thinkingLevel"] = thinking.clone();
+        }
     }
     if method == "requestSystemPermission" {
         let grant = input
@@ -189,6 +236,11 @@ fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Res
                             .get("turnId")
                             .and_then(Value::as_str)
                             .is_some_and(|turn| !turn.is_empty())
+                }
+                // The Host validates the qualified row address itself.
+                Some("before_source_turn" | "through_source_turn") => {
+                    position.as_object().is_some_and(|value| value.len() == 2)
+                        && position.get("position").is_some_and(Value::is_object)
                 }
                 _ => false,
             };
@@ -574,6 +626,24 @@ impl Client {
         resources: Attachments,
         preparation: std::fs::File,
     ) -> Result<Mutation> {
+        let descriptors = CallResources::from(resources.clone()).descriptors()?;
+        let reacquisition = if descriptors.is_empty() {
+            serde_json::json!({"kind": "none"})
+        } else {
+            serde_json::json!({"kind": "unavailable", "reason": "live_only_request_resources"})
+        };
+        let recovery = serde_json::json!({
+            "kind": "maka_client_mutation",
+            "version": 1,
+            "clientOperation": operation.id,
+            "host": operation.host,
+            "sessionId": operation.session_id,
+            "correlation": operation.correlation,
+            "draft": operation.draft,
+            "upload": operation.upload,
+            "request": {"endpoint": operation.endpoint, "method": operation.method, "input": input},
+            "resources": {"descriptors": descriptors, "reacquisition": reacquisition},
+        });
         let (request, description) = self
             .open(
                 &operation.endpoint,
@@ -602,6 +672,7 @@ impl Client {
             request,
             operation,
             description,
+            recovery,
         })
     }
     /// Reserve one Settings attempt across terminal launchers before opening it.
@@ -617,7 +688,10 @@ impl Client {
         if !settings_route(endpoint, method) {
             return Err("unsupported settings mutation method".into());
         }
-        if endpoint == "settings" && method == "saveCredential" {
+        if (endpoint == "settings" && matches!(method, "saveCredential" | "saveUsageCredential"))
+            || (endpoint == "web" && method == "saveKey")
+            || (endpoint == "agent" && method == "saveGitHubToken")
+        {
             if resources.len() != 1
                 || !resources.get("secret").is_some_and(|secret| {
                     secret.resource_type() == text_resource_type()
@@ -773,13 +847,23 @@ impl Client {
     }
     /// Reserve a shell control attempt separately from composer draft sends.
     pub async fn control(&self, id: Uuid, method: &str, input: Value) -> Result<Mutation> {
+        self.control_with_resources(id, method, input, Attachments::new())
+            .await
+    }
+    pub async fn control_with_resources(
+        &self,
+        id: Uuid,
+        method: &str,
+        input: Value,
+        resources: Attachments,
+    ) -> Result<Mutation> {
         if !CONTROL_METHODS.contains(&method) {
             return Err("unsupported agent control method".into());
         }
         let owner = self.service_owner("agent").await?;
         let correlation = control_correlation(method, &input, &owner)?;
-        // Creation targets no existing Session.
-        let session_id = if matches!(method, "create" | "openBot") {
+        // Some controls are scoped to the Host, rather than a Session.
+        let session_id = if matches!(method, "create" | "openBot" | "schedule") {
             None
         } else {
             Some(
@@ -795,7 +879,7 @@ impl Client {
             "agent",
             method,
             input,
-            Attachments::new(),
+            resources,
             session_id,
             correlation,
         )
@@ -837,15 +921,11 @@ impl Client {
             .await
     }
 
-    /// Move a directory to the front, or remove its recent entry unless `remember`.
-    pub async fn set_recent_workspace(
-        &self,
-        path: String,
-        remember: bool,
-    ) -> Result<Vec<RecentWorkspace>> {
+    /// Move a directory to the front of the recent folders.
+    pub async fn set_recent_workspace(&self, path: String) -> Result<Vec<RecentWorkspace>> {
         self.0
             .journal
-            .set_recent_workspace(self.workspace_owner().await?, path, remember)
+            .set_recent_workspace(self.workspace_owner().await?, path)
             .await
     }
 
@@ -910,7 +990,7 @@ impl Client {
         if draft.revision != revision {
             return Err("saved draft revision changed before sending".into());
         }
-        if draft.text.trim().is_empty() && draft.attachments.is_empty() {
+        if draft.text.trim().is_empty() && draft.attachments.is_empty() && draft.quotes.is_empty() {
             return Err("saved draft is empty or already consumed".into());
         }
         if !selection.is_object() {
@@ -1031,6 +1111,31 @@ impl Client {
         }
     }
 
+    /// Restore a confirmed unsent message and its verified attachments into the
+    /// persisted draft and dismiss the pending send in a single journal transaction.
+    pub async fn restore_send(
+        &self,
+        original: Uuid,
+        endpoint: &str,
+        session: &str,
+        editor: &str,
+        expected: Option<u64>,
+    ) -> Result<Draft> {
+        let key = self.draft_key(endpoint, session, editor).await?;
+        let previous = self.operation(original).await?;
+        if previous.draft.as_ref().map(|draft| &draft.key) != Some(&key)
+            || previous.method != "send"
+            || (!journal::retryable_send(&previous)
+                && self.send_delivery(original).await? != SendDelivery::Cancelled)
+        {
+            return Err("original send must be confirmed unsent before restoring".into());
+        }
+        self.0
+            .journal
+            .restore_send(&self.0.source, &key, original, expected)
+            .await
+    }
+
     /// Dismiss presentation without cancelling or changing the original outcome.
     pub async fn dismiss_send(&self, id: Uuid) -> Result<()> {
         let operation = self.operation(id).await?;
@@ -1070,7 +1175,10 @@ impl Client {
             .filter(|operation| {
                 !matches!(
                     operation.method.as_str(),
-                    "predictNextMessage" | "rankQuickTools"
+                    "predictNextMessage"
+                        | "githubSubmitReview"
+                        | "githubReplyComment"
+                        | "githubCommentPullRequest"
                 )
             })
             .collect())
@@ -1125,10 +1233,20 @@ impl Client {
                 .map(ServiceOwner::from_description)
                 .collect::<Vec<_>>()
         };
-        self.0
+        Ok(self
+            .0
             .journal
             .pending_settings(&self.0.source, &owners)
-            .await
+            .await?
+            .into_iter()
+            .filter(|operation| {
+                !(operation.endpoint == "agent"
+                    && matches!(
+                        operation.method.as_str(),
+                        "saveGitHubToken" | "deleteGitHubToken"
+                    ))
+            })
+            .collect())
     }
     /// Pending plugin operations belong to a stable UI instance, across package
     /// and binding updates. Endpoint aliases are never recovery identities.
@@ -1319,6 +1437,15 @@ impl Client {
     /// result does not prove physical cleanup; only this session's own close ack
     /// can release disconnected requests. Retain the scope if this returns an error.
     pub async fn close(&self) -> Result<()> {
+        self.close_session(false).await
+    }
+
+    /// Close this desktop's session and ask its ephemeral Host to quit if it is unshared.
+    pub async fn quit_ephemeral(&self) -> Result<()> {
+        self.close_session(true).await
+    }
+
+    async fn close_session(&self, quit_ephemeral: bool) -> Result<()> {
         self.0.opening_stop.cancel();
         self.0.shutdown.cancel();
         let mut host = self.0.host.lock().await;
@@ -1341,7 +1468,11 @@ impl Client {
             let _ = self.drain_request(&request, &mut state).await;
             self.release_if_clean(&request, &state).await;
         }
-        host.close().await?;
+        if quit_ephemeral {
+            host.quit_ephemeral().await?;
+        } else {
+            host.close().await?;
+        }
         self.0.requests.lock().await.clear();
         self.0.requests_changed.notify_waiters();
         for child in children {
@@ -1393,6 +1524,18 @@ impl DraftSend {
         );
         input.insert("message".into(), Value::String(snapshot.draft.text));
         input.insert(
+            "quotes".into(),
+            serde_json::to_value(snapshot.draft.quotes).map_err(error)?,
+        );
+        input.insert(
+            "mentions".into(),
+            serde_json::to_value(snapshot.draft.mentions).map_err(error)?,
+        );
+        input.insert(
+            "replyTo".into(),
+            serde_json::to_value(snapshot.draft.reply_to).map_err(error)?,
+        );
+        input.insert(
             "attachments".into(),
             serde_json::to_value(
                 snapshot
@@ -1421,6 +1564,7 @@ pub struct Mutation {
     request: Arc<Request>,
     operation: Operation,
     description: Description,
+    recovery: Value,
 }
 impl Drop for Mutation {
     fn drop(&mut self) {
@@ -1532,7 +1676,7 @@ impl Mutation {
             () = self.request.stop.cancelled() => None,
             result = async {
                 if confirm {
-                    state.call.confirm().await
+                    state.call.confirm(self.recovery.clone()).await
                 } else {
                     state.call.receive().await
                 }
@@ -1728,4 +1872,159 @@ fn error(error: impl std::fmt::Display) -> String {
 }
 
 #[cfg(test)]
-mod tests;
+mod fork_position_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn owner() -> ServiceOwner {
+        ServiceOwner {
+            namespace: InstanceId(vec![Uuid::new_v4()]),
+            export: "agent".into(),
+        }
+    }
+    fn fork(position: Value) -> Value {
+        json!({"sessionId": "s", "expectedRevision": 3, "position": position, "title": "t", "labels": []})
+    }
+    fn row() -> Value {
+        json!({"kind": "live", "path": [], "sequence": 7})
+    }
+
+    #[test]
+    fn fork_accepts_positions_qualified_by_a_source_row() {
+        let owner = owner();
+        for kind in ["before_source_turn", "through_source_turn"] {
+            let position = json!({"kind": kind, "position": row()});
+            let correlation = control_correlation("fork", &fork(position.clone()), &owner)
+                .unwrap_or_else(|error| panic!("{kind}: {error}"));
+            assert_eq!(correlation["position"], position);
+            for invalid in [
+                json!({"kind": kind}),
+                json!({"kind": kind, "position": "row"}),
+                json!({"kind": kind, "position": row(), "turnId": "t"}),
+            ] {
+                assert!(control_correlation("fork", &fork(invalid), &owner).is_err());
+            }
+        }
+        for position in [
+            json!({"kind": "start"}),
+            json!({"kind": "end"}),
+            json!({"kind": "before_turn", "turnId": "t"}),
+            json!({"kind": "through_turn", "turnId": "t"}),
+        ] {
+            assert!(control_correlation("fork", &fork(position), &owner).is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn unresolved_source_row_forks_are_recovered_from_the_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = Journal::open(&directory.path().join("client.sqlite"))
+            .await
+            .unwrap();
+        let host = DeploymentRef {
+            state_domain: "a".repeat(64),
+            deployment: Uuid::new_v4(),
+            revision: 1,
+        };
+        let owner = owner();
+        let mut reserved = Vec::new();
+        for kind in ["before_source_turn", "through_source_turn", "before_turn"] {
+            let position = if kind == "before_turn" {
+                json!({"kind": kind, "turnId": "t"})
+            } else {
+                json!({"kind": kind, "position": row()})
+            };
+            let operation = Operation {
+                id: Uuid::new_v4(),
+                host: host.clone(),
+                endpoint: "agent".into(),
+                method: "fork".into(),
+                session_id: Some("s".into()),
+                correlation: control_correlation("fork", &fork(position), &owner).unwrap(),
+                draft: None,
+                upload: None,
+                abandoned: false,
+                reference: None,
+                receipt: None,
+            };
+            journal.reserve(&operation).await.unwrap();
+            reserved.push(operation.id);
+        }
+        let mut pending: Vec<_> = journal
+            .pending_controls(&host, &owner)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|operation| operation.id)
+            .collect();
+        pending.sort();
+        reserved.sort();
+        assert_eq!(pending, reserved);
+    }
+}
+
+#[cfg(test)]
+mod preset_settings_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn pending_preset_settings_survive_reopen_and_fence_repeated_writes() {
+        for method in [
+            "createPreset",
+            "updatePreset",
+            "deletePreset",
+            "changeMemory",
+            "reconcileMemories",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("client.sqlite");
+            let host = DeploymentRef {
+                state_domain: "a".repeat(64),
+                deployment: Uuid::new_v4(),
+                revision: 1,
+            };
+            let owner = ServiceOwner {
+                namespace: InstanceId(vec![Uuid::new_v4()]),
+                export: "agent".into(),
+            };
+            let mut operation = Operation {
+                id: Uuid::new_v4(),
+                host: host.clone(),
+                endpoint: "agent".into(),
+                method: method.into(),
+                session_id: None,
+                correlation: owner.correlation(SETTINGS_KIND),
+                draft: None,
+                upload: None,
+                abandoned: false,
+                reference: None,
+                receipt: None,
+            };
+            assert!(settings_owner(&operation, &owner));
+            let journal = Journal::open(&path).await.unwrap();
+            journal.reserve_settings(&operation).await.unwrap();
+            drop(journal);
+            let journal = Journal::open(&path).await.unwrap();
+            let pending = journal
+                .pending_settings(&host, std::slice::from_ref(&owner))
+                .await
+                .unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].id, operation.id);
+            assert_eq!(pending[0].method, method);
+            operation.id = Uuid::new_v4();
+            assert!(journal.reserve_settings(&operation).await.is_err());
+            let foreign = ServiceOwner {
+                namespace: InstanceId(vec![Uuid::new_v4()]),
+                export: "agent".into(),
+            };
+            assert!(
+                journal
+                    .pending_settings(&host, &[foreign])
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+}

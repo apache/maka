@@ -41,9 +41,14 @@ tap text:Sheet
 expect Sheet: pending
 tap text:Empty
 expect Empty: rejected TypeError
+tap text:Prompt
+expect Prompt: pending
+tap text:Input in sheet
+expect Input in sheet: rejected TypeError
 wait 300
 expect Alert: pending
 expect Sheet: pending
+expect Prompt: pending
 covers [nsh/base] AlertDialog
 # base-avatar
 tap id:case-base-avatar
@@ -170,6 +175,34 @@ prop id:sides hitSlop {}
 tap text:Widen
 prop id:sides hitSlop top=4 left=2
 prop id:plain hitSlop {}
+# The mouse comes over, moves with Shift held, drags with the left button
+# down, and leaves from where it was: a view's `MouseEvent`, on the host
+# of a component.
+listens id:hover onMouseEnter
+listens id:hover onMouseMove
+listens id:hover onMouseLeave
+expect Mouse: none
+event id:hover onMouseEnter position.x=4 position.y=3
+expect Mouse: in 4,3
+event id:hover onMouseMove position.x=5 position.y=7 modifiers.shift=true
+expect Mouse: move 5,7 page 294 shift
+event id:hover onMouseMove position.x=6.5 position.y=1 pressedButton=left
+expect Mouse: move 6.5,1 page 288 left down
+event id:hover onMouseLeave position.x=-2 position.y=0
+expect Mouse: move 6.5,1 page 288 left down out -2,0
+# A context menu asked for over it, where the page puts a menu.
+listens id:hover onContextMenu
+event id:hover onContextMenu position.x=5 position.y=7 pointerType=mouse
+expect Mouse: menu at 5,294
+# `busy`: screen readers say its action is running, following a signal;
+# presses still count.
+prop id:save accessibilityState {}
+tap text:Save
+expect Saves: 1
+prop id:save accessibilityState busy=true
+tap text:Saving…
+expect Saves: 2
+prop id:save accessibilityState {}
 covers [nsh/base] Button
 covers [props] hitSlop
 covers [props] role
@@ -180,6 +213,7 @@ covers [events] onPressDown
 covers [events] onPressUp
 covers [events] onPress
 covers [props] Button.selected
+covers [props] Button.busy
 covers [props] selectedStyle
 # base-link
 tap id:case-base-link
@@ -239,6 +273,10 @@ prop id:plain closeOnEscape true
 prop id:plain closeOnBackdropPress true
 prop id:plain closeOnSwipe true
 noprop id:plain supportedOrientations
+# A dialog for screen readers, with no name of its own.
+prop id:plain role dialog
+noprop id:plain accessibilityLabel
+noprop id:plain accessibilityDescription
 # Closed while `open` is false.
 absent Synced dialog
 absent Guarded dialog
@@ -288,6 +326,10 @@ expect Guarded dialog
 prop id:guarded closeOnEscape false
 prop id:guarded closeOnBackdropPress false
 prop id:guarded closeOnSwipe false
+# An alert dialog named by its label and described by its message.
+prop id:guarded role alertdialog
+prop id:guarded accessibilityLabel Guarded
+prop id:guarded accessibilityDescription Only the app closes it.
 event text:"Guarded dialog" onCancel reason=cancel
 expect Log: guarded cancel
 event text:"Guarded dialog" onCancel reason=swipe
@@ -304,6 +346,16 @@ expect Swipes dialog
 event text:"Swipes dialog" onCancel reason=swipe
 expect Log: swipes change false swipe
 absent Swipes dialog
+# An iOS sheet at detents: the user's moves heard
+# (`onDetentChange({ detent })`).
+tap text:Clear log
+tap text:Open sheet
+expect Sheet dialog
+prop id:sheet presentation pageSheet
+event text:"Sheet dialog" onDetentChange detent=large
+expect Log: sheet detent large
+event text:"Sheet dialog" onCancel reason=swipe
+absent Sheet dialog
 covers [nsh/base] Dialog
 covers [props] presentation
 covers [props] animation
@@ -312,10 +364,14 @@ covers [props] closeOnSwipe
 covers [props] closeOnBackdropPress
 covers [props] ios.supportedOrientations
 covers [props] Dialog.open
+covers [props] role
+covers [props] accessibilityLabel
+covers [props] accessibilityDescription
 covers [events] Dialog.onOpen
 covers [events] Dialog.onClose
 covers [events] Dialog.onCancel
 covers [events] Dialog.onOpenChange
+covers [events] onDetentChange
 # base-dialog-backdrop
 tap id:case-base-dialog-backdrop
 expect Styled dialog
@@ -333,6 +389,21 @@ covers [nsh/base] Dialog
 covers [props] Dialog.backdropStyle
 covers [props] Dialog.backdropClass
 covers [props] Dialog.backdropTestID
+# base-menu-button
+tap id:case-base-menu-button
+# The app's content shows in the frame its style gives the button.
+expect Account trigger
+expect Chosen: none
+frame id:menu-button 0 20 390 44
+covers [nsh/base] MenuButton
+# A context menu given items: the system answers a held finger, so the
+# drawn menu (its children) never shows.
+expect NoteRow
+touch start text:NoteRow 5 5
+wait 600
+touch end
+absent DrawnPin
+covers [props] ContextMenu.items
 # base-nav-page
 tap id:case-base-nav-page
 # pop and header are events and props here: the headless runtime has no
@@ -343,6 +414,8 @@ prop id:first title First title
 prop id:first headerVisible true
 prop id:first headerLargeTitle false
 prop id:first headerTransparent false
+prop id:first headerShadowVisible true
+prop id:first headerBackgroundOnScroll false
 prop id:first headerBackVisible true
 noprop id:first headerBackTitle
 prop id:first popOnSwipe true
@@ -360,6 +433,8 @@ prop id:second title Second title
 prop id:second headerVisible false
 prop id:second headerLargeTitle true
 prop id:second headerTransparent true
+prop id:second headerShadowVisible false
+prop id:second headerBackgroundOnScroll true
 prop id:second headerBackTitle Back to second
 prop id:second headerBackVisible false
 prop id:second popOnSwipe false
@@ -410,6 +485,8 @@ covers [props] title
 covers [props] headerVisible
 covers [props] headerLargeTitle
 covers [props] headerTransparent
+covers [props] headerShadowVisible
+covers [props] headerBackgroundOnScroll
 covers [props] headerBackTitle
 covers [props] headerBackVisible
 covers [props] popOnSwipe
@@ -423,6 +500,28 @@ covers [props] NavPage.headerStyle
 covers [props] NavPage.headerClass
 covers [events] NavPage.onBackPress
 covers [events] NavPage.onDismiss
+# base-nav-header-items
+tap id:case-base-nav-header-items
+# Trailing iOS bar buttons (`ios.headerRightItems`) with a menu; other
+# platforms keep showing `headerRight`. The steps check the page's own texts
+# and the fallback `headerRight`. nsh-compat does not report a screen's header
+# buttons yet (as for `headerRightSymbol`), so `ios.headerRightItems` is not
+# claimed here; the core and engine tests cover the items and their handlers.
+expect Log: none
+expect Filter: all
+expect Fallback right
+prop id:home title Header items
+# base-nav-stack-change
+tap id:case-base-nav-stack-change
+# onChange: not for the first routes, then once per change with the routes after it.
+expect Changes: 0 none
+tap text:Push
+expect Changes: 1 home>p1
+tap text:Push
+expect Changes: 2 home>p1 | home>p1>p2
+tap text:Pop
+expect Changes: 3 home>p1 | home>p1>p2 | home>p1
+covers [events] onChange
 # base-nav-stack
 tap id:case-base-nav-stack
 # Only the top page is on screen; the controls sit outside the stack.
@@ -588,12 +687,21 @@ prop scroll:text:"let a = 1;" scrollbar false
 # The table's scroll view without its indicator.
 prop scroll:text:"Alpha" horizontal true
 prop scroll:text:"Alpha" scrollbar false
+# The table's grid, around its cells, styled by `tableGrid`.
+style parent:parent:text:"Alpha" backgroundColor #00ff00ff
 style text:"First item" color #0000ffff
 # A press on the link reports its URL and the modifier keys held;
 # nothing opens it.
 expect Link: none
 tap span:the guide
 expect Link: https://example.com/guide (Command: false)
+# A press on a task's box reports which task of the document it is and
+# the state asked for; the document stays as it was.
+expect Task: none
+tap label:Ship it
+expect Task: 1 true
+tap label:Draft it
+expect Task: 0 false
 # HTML.
 expect From HTML
 expect An hypertext paragraph.
@@ -630,6 +738,12 @@ expect CJK URL: https://example.com,text
 expect Math off: Math $x$
 expect From HTML: Hi there
 expect Unknown tag: <US tech> up
+# A code block's annotations show in place of its code; its actions get
+# the block, its id too.
+expect Annotated code
+style span:"Annotated code" fontWeight 600
+tap label:Export annotated
+expect Code action: export annotated: Annotated code
 covers [nsh/base] TextView
 covers [props] TextView.markdown
 covers [props] TextView.document
@@ -729,11 +843,11 @@ tap text:MenuTrigger
 expect NewItem
 expect Log: menu true triggerPress
 expect Life: menu open
-style parent:parent:text:NewItem backgroundColor #00ff00ff
-frame parent:text:NewItem 4 4 382 17
-style below:parent:parent:text:NewItem backgroundColor #000000ff
-style below:parent:parent:text:NewItem opacity 0.5
-frame id:separator 4 55 382 1
+style parent:parent:parent:text:NewItem backgroundColor #00ff00ff
+frame parent:text:NewItem 0 0 382 17
+style below:parent:parent:parent:text:NewItem backgroundColor #000000ff
+style below:parent:parent:parent:text:NewItem opacity 0.5
+frame id:separator 0 51 382 1
 prop parent:text:OffItem accessibilityState disabled=true
 prop parent:text:KeepItem accessibilityLabel Keep the menu
 tap text:KeepItem
@@ -753,6 +867,16 @@ expect Log: share false cancel
 tap text:LockedItem
 absent HiddenItem
 expect NewItem
+# A controlled one asks, and shows its items as the app opens it; its
+# back row asks to close it.
+tap text:ToolsItem
+expect Log: tools true triggerPress
+expect RulerItem
+absent NewItem
+tap text:ToolsBack
+expect Log: tools false cancel
+expect NewItem
+absent RulerItem
 # Choosing an item closes the menu.
 tap text:NewItem
 expect Log: menu false select
@@ -780,6 +904,7 @@ covers [events] Menu.onOpenChange
 covers [props] MenuItem.closeOnSelect
 covers [events] MenuItem.onSelect
 covers [props] Submenu.trigger
+covers [props] Submenu.open
 covers [props] Submenu.back
 covers [events] Submenu.onOpenChange
 # The context menu: a finger held on its trigger.
@@ -789,10 +914,10 @@ touch end
 expect CopyItem
 expect Log: context true longPress
 expect Life: context open
-style parent:parent:text:CopyItem backgroundColor #ff0000ff
-frame parent:text:CopyItem 2 2 386 17
-style below:parent:parent:text:CopyItem backgroundColor #0000ffff
-style below:parent:parent:text:CopyItem opacity 0.25
+style parent:parent:parent:text:CopyItem backgroundColor #ff0000ff
+frame parent:text:CopyItem 0 0 386 17
+style below:parent:parent:parent:text:CopyItem backgroundColor #0000ffff
+style below:parent:parent:parent:text:CopyItem opacity 0.25
 tap text:CopyItem
 expect Log: context false select
 absent CopyItem
@@ -861,6 +986,10 @@ tap text:OpenSheet
 expect SheetBody
 expect Life: sheet open
 frame parent:text:SheetBody 0 0 390 50
+# A dialog for screen readers, named by its `accessibilityLabel`.
+prop label:"Top sheet" role dialog
+# It covers the whole screen, under an Android status bar too.
+prop label:"Top sheet" statusBarTranslucent true
 style parent:text:SheetBody backgroundColor #abcdefff
 style below:parent:text:SheetBody backgroundColor #111111ff
 style below:parent:text:SheetBody opacity 0.75
@@ -880,6 +1009,48 @@ listens parent:text:SwipeSheetBody onPanEnd
 tap below:parent:text:SwipeSheetBody
 absent SwipeSheetBody
 covers [props] closeOnSwipe
+# A bottom sheet with detents: as tall as the largest (the screen), resting
+# at the smallest (half of it, 422 points below its top), with a grabber
+# the app styles that screen readers adjust and a footer at the bottom of
+# what shows (as far up from the panel's bottom; its content is in the
+# slot's own view).
+tap text:OpenDetentSheet
+expect DetentBody
+wait 400
+frame parent:text:DetentBody 0 0 390 844
+animated parent:text:DetentBody transform.1 422
+animated parent:parent:text:DetentFooter transform.0 -422
+frame parent:parent:text:DetentFooter 0 804 390 40
+style parent:parent:text:DetentFooter backgroundColor #234567ff
+listens parent:text:DetentBody onPanEnd
+prop label:Resize role adjustable
+frame label:Resize 175 0 40 6
+style label:Resize backgroundColor #123456ff
+event label:Resize onAccessibilityAction actionName=increment
+expect Detent: large
+wait 1000
+animated parent:text:DetentBody transform.1 0
+tap below:parent:text:DetentBody
+absent DetentBody
+covers [props] detents
+covers [props] detent
+covers [props] grabber
+covers [props] Sheet.grabberClass
+covers [props] Sheet.grabberStyle
+covers [props] Sheet.grabberAccessibilityLabel
+covers [props] Sheet.footer
+covers [props] Sheet.footerClass
+covers [props] Sheet.footerStyle
+# Detents of points and of a share of the screen: the largest (half the
+# screen) is the panel's height, and `defaultDetent` the first rest.
+tap text:OpenCustomSheet
+expect CustomBody
+wait 400
+frame parent:text:CustomBody 0 422 390 422
+animated parent:text:CustomBody transform.1 0
+tap below:parent:text:CustomBody
+absent CustomBody
+covers [props] defaultDetent
 # `closeOnBackdropPress={false}`: its backdrop keeps it.
 tap below:parent:text:StuckSheet
 expect StuckSheet
@@ -891,6 +1062,7 @@ covers [props] Sheet.popupClass
 covers [props] Sheet.popupStyle
 covers [props] Sheet.backdropClass
 covers [props] Sheet.backdropStyle
+covers [props] accessibilityLabel
 covers [events] Sheet.onOpenChange
 covers [events] Sheet.onCancel
 # base-menu-checked
@@ -928,6 +1100,9 @@ prop id:sort-name role menuitemradio
 prop id:sort-name accessibilityState checked=true
 prop id:sort-size role menuitemradio
 prop id:sort-size accessibilityState checked=false
+# A description, read after the item's name; an item without one has none.
+prop id:sort-name accessibilityDescription Sorts by file name
+noprop id:plain accessibilityDescription
 # A plain item stays a menuitem with no checked state.
 prop id:plain role menuitem
 prop id:plain accessibilityState {}
@@ -947,6 +1122,7 @@ covers [props] MenuItem.indicatorClass
 covers [props] MenuItem.indicatorStyle
 covers [props] MenuItem.closeOnSelect
 covers [props] checkedStyle
+covers [props] accessibilityDescription
 covers [props] role
 covers [events] MenuItem.onSelect
 # base-switch
@@ -971,6 +1147,12 @@ tap id:wifi
 expect Changes: 2
 prop id:wifi accessibilityState checked=false
 frame text:Wi-Fi 32 4 39 17
+# Held down, wherever on it: `active:` of the parts follows the switch
+# (the thumb 24 wide at once puts the label at 36), until it is released.
+state id:wifi pressed
+frame text:Wi-Fi 36 4 39 17
+state id:wifi none
+frame text:Wi-Fi 32 4 39 17
 # The app owns the value: a switch it keeps on asks for off and stays on.
 prop id:lights accessibilityLabel Lights
 prop id:lights accessibilityState checked=true
@@ -994,6 +1176,14 @@ prop id:mute hitSlop top=12 right=12 bottom=12 left=12
 tap label:Mute
 prop id:mute hitSlop top=4 left=2
 prop id:wifi hitSlop {}
+# The mouse over it, as over any component's host.
+listens id:mute onMouseEnter
+listens id:mute onMouseLeave
+expect Mute: out
+event id:mute onMouseEnter position.x=3 position.y=2
+expect Mute: over 3
+event id:mute onMouseLeave position.x=-1 position.y=2
+expect Mute: out
 covers [nsh/base] Switch
 covers [props] Switch.checked
 covers [props] disabled
@@ -1072,13 +1262,14 @@ covers [props] role
 covers [events] onChange
 # base-radio
 tap id:case-base-radio
-# The group is a radio group for screen readers; each radio is a radio
-# of its own, checked and selected while checked: `checkedStyle`, and
+# The group is a radio group for screen readers, named by the app; each
+# radio is a radio of its own, checked and selected while checked: `checkedStyle`, and
 # `group-checked:` of the app's dot (30 wide, a margin of 8) puts the
 # label at 38.
 expect Plan: basic
 expect Changes: 0
 prop id:plans role radiogroup
+prop id:plans accessibilityLabel Plan
 prop id:basic role radio
 prop id:basic accessibilityState selected=true checked=true
 style id:basic backgroundColor #00ff00ff
@@ -1142,6 +1333,8 @@ tap id:case-base-tabs
 expect Showing: overview
 expect Presses: 0
 prop id:sections role tablist
+# The list's name, said as screen readers enter it.
+prop id:sections accessibilityLabel Sections
 prop id:overview role tab
 prop id:overview accessibilityState selected=true
 style id:overview backgroundColor #00ff00ff
@@ -1151,6 +1344,9 @@ prop id:activity accessibilityState {}
 nostyle id:activity backgroundColor
 frame text:Activity 28 2 62 17
 listens id:activity onPress
+# A description, read after the tab's name; a tab without one has none.
+prop id:activity accessibilityDescription Updates every minute
+noprop id:overview accessibilityDescription
 # The list is one stop of the keyboard focus: the selected tab.
 prop id:overview focusable true
 prop id:activity focusable false
@@ -1197,6 +1393,7 @@ covers [props] Tabs.indicatorClass
 covers [props] Tabs.indicatorStyle
 covers [props] disabled
 covers [props] accessibilityLabel
+covers [props] accessibilityDescription
 covers [events] onPress
 
 # base-toggle
@@ -1602,13 +1799,20 @@ expect Details
 frame id:region 0 20 390 54
 frame id:details 0 0 390 30
 frame id:after 0 74 390 20
-# Closed: the frames at once, the details out once the region has closed.
+# Closed: the frames at once, the details out once the region has closed:
+# the app's spring (stiffness 64, damping 16, critically damped) settles
+# in about 1154 ms, so they are still there after 700 (the default's
+# would have gone at about 265) and gone after 1600. The margins stay
+# wide so a loaded machine's late timers cannot blur them.
 tap id:trigger
 frame id:region 0 20 390 24
 frame id:after 0 44 390 20
-wait 400
+wait 700
+frame id:details 0 0 390 30
+wait 900
 absent Details
 covers [props] Collapsible.reveal
+covers [props] Collapsible.revealSpring
 
 # base-accordion
 tap id:case-base-accordion
@@ -1663,13 +1867,17 @@ frame id:faq 0 20 390 90
 listens id:details-a onPress
 tap id:details-b
 expect Taps b: 1
-# The open item's trigger closes it; the revealed panel springs shut and
-# its content leaves once it has.
+# The open item's trigger closes it; the revealed panel springs shut on
+# the app's spring (stiffness 64, damping 16: settling in about 1154 ms,
+# the default in about 265) and its content leaves once it has, with
+# wide margins on both sides.
 tap text:Returns
 expect Open: none
 frame id:item-b 0 20 390 20
 frame id:faq 0 20 390 60
-wait 400
+wait 700
+frame id:details-b 0 0 390 30
+wait 900
 absent Returns details
 # With `multiple`, opening one leaves the others open.
 tap id:multiple
@@ -1701,6 +1909,7 @@ covers [props] Accordion.multiple
 covers [props] AccordionHeader.level
 covers [props] expandedStyle
 covers [props] AccordionPanel.reveal
+covers [props] AccordionPanel.revealSpring
 covers [props] AccordionPanel.keepMounted
 covers [props] accessibilityLabel
 
@@ -2011,7 +2220,7 @@ expect Confirmed: green
 absent TagFooter
 # Without `multiple`, typing in the input opens the list, and a choice
 # replaces the value and closes it.
-type label:One re
+type id:one-input re
 expect Red
 tap label:Red
 expect One: red
@@ -2027,6 +2236,7 @@ covers [props] Combobox.footer
 covers [props] Combobox.footerClass
 covers [props] Combobox.footerStyle
 covers [props] Combobox.triggerButton
+covers [props] Combobox.inputTestID
 covers [props] accessibilityLabel
 covers [events] onChange
 covers [events] Combobox.onConfirm
@@ -2114,6 +2324,85 @@ covers [props] accessibilityLabel
 covers [events] Command.onSelect
 covers [events] Command.onHighlightChange
 covers [events] Command.onQueryChange
+# base-emoji-picker
+tap id:case-base-emoji-picker
+# The app's header, search bar (its prefix beside the field) and footer;
+# the groups under the app's headers, the app's recent emoji first with
+# the app's skin tone: a list box of the emoji by name.
+expect PickerHeader
+expect PickerFooter
+expect Find:
+expect [Recent]
+expect [Smileys]
+prop scroll:label:"grinning face" role listbox
+prop scroll:label:"grinning face" accessibilityLabel Emoji
+style scroll:label:"grinning face" backgroundColor #0000ffff
+prop label:"grinning face" role option
+prop label:SearchEmoji placeholder FindEmoji
+expect 👍🏿
+# The app's name for an emoji.
+prop label:LaughCry role option
+# The group at the top; browsing highlights nothing.
+expect Group: recent
+expect Lit: none
+absent NoEmoji
+# A press chooses, with the skin tone.
+tap text:😀
+expect Chosen: 😀 😀 dark grinning face
+# The ref scrolls to a group, which is reported, and looks an emoji up.
+tap text:ToPeople
+expect Group: peopleBody
+expect [People]
+tap text:LookUp
+expect Looked: LaughCry/smileysEmotion/0.6
+# The app's query: typing is reported, the app's words match, headers
+# go, and the first match is highlighted (`focus:`).
+type label:SearchEmoji xiaoku
+expect Query: xiaoku
+absent [Smileys]
+expect Lit: 😂
+style label:LaughCry backgroundColor #00ff00ff
+tap label:LaughCry
+expect Chosen: 😂 😂 dark LaughCry
+# Nothing matches: the app's `empty`.
+type label:SearchEmoji zz
+expect Query: xiaokuzz
+expect NoEmoji
+expect Lit: none
+# Emoji newer than the app's `emojiVersion` (15) are left out: the
+# shaking face (15) shows, the head shaking sideways (15.1) does not.
+tap text:ToShaking
+expect Query: shaking
+expect 🫨
+absent 🙂‍↔️
+# Without a search field: the app's cells (`renderItem`).
+expect <chequered flag>
+absent text:FindEmoji
+covers [nsh/base] EmojiPicker
+covers [props] EmojiPicker.query
+covers [props] EmojiPicker.groups
+covers [props] EmojiPicker.recent
+covers [props] EmojiPicker.groupLabels
+covers [props] EmojiPicker.annotations
+covers [props] EmojiPicker.skinTone
+covers [props] EmojiPicker.emojiVersion
+covers [props] EmojiPicker.columns
+covers [props] EmojiPicker.searchable
+covers [props] EmojiPicker.searchAccessibilityLabel
+covers [props] EmojiPicker.listClass
+covers [props] EmojiPicker.itemClass
+covers [props] EmojiPicker.header
+covers [props] EmojiPicker.footer
+covers [props] EmojiPicker.empty
+covers [props] EmojiPicker.searchPrefix
+covers [props] EmojiPicker.renderItem
+covers [props] EmojiPicker.renderGroup
+covers [props] placeholder
+covers [props] accessibilityLabel
+covers [events] EmojiPicker.onSelect
+covers [events] EmojiPicker.onHighlightChange
+covers [events] EmojiPicker.onQueryChange
+covers [events] EmojiPicker.onGroupChange
 # base-scrollbar
 tap id:case-base-scrollbar
 # Always shown, where the app places its track; a press in its middle
@@ -2460,6 +2749,9 @@ covers [props] Select.clearButtonAccessibilityLabel
 # `disabled`: dimmed for screen readers.
 prop label:Locked accessibilityState disabled=true expanded=false hasPopup=true
 covers [props] disabled
+# The states the app gives its trigger element (`busy`; `invalid` alike)
+# stay, beside the ones the select sets.
+prop label:Checked accessibilityState busy=true expanded=false hasPopup=true
 # `searchable`: a field above the items (its placeholder, name for screen
 # readers and look the app's; on a phone the keyboard comes when it is
 # pressed) filters them by title, ignoring case, and a section without a
@@ -2469,6 +2761,7 @@ expect Find: true triggerPress
 expect Apple
 prop below:scroll:label:Apple placeholder Find food
 prop below:scroll:label:Apple accessibilityLabel FindField
+prop id:find-search placeholder Find food
 prop below:scroll:label:Apple autoFocus false
 style below:scroll:label:Apple backgroundColor #abcdefff
 style below:scroll:label:Apple borderRadius 4
@@ -2494,6 +2787,7 @@ absent Apple
 covers [props] Select.searchable
 covers [props] Select.searchPlaceholder
 covers [props] Select.searchAccessibilityLabel
+covers [props] Select.searchTestID
 covers [props] Select.searchClass
 covers [props] Select.searchStyle
 covers [props] Select.empty
@@ -3468,6 +3762,7 @@ expect token primary #171717ff
 expect token radius-card 14
 style id:up backgroundColor #138a5aff
 style id:primary backgroundColor #17171780
+style id:faded color #138a5a80
 covers [nsh] token
 
 # base-set-theme
@@ -3477,6 +3772,7 @@ tap id:case-base-set-theme
 expect theme up #138a5aff
 expect theme radius-card 14
 style id:themed backgroundColor #138a5aff
+prop id:page headerStyle backgroundColor=#138a5aff
 # `token()` reads it at once and classes follow. nsh.json's theme is not
 # under it (`radius-card` is gone), the default is (`primary`).
 tap id:set
@@ -3485,16 +3781,35 @@ expect theme up #2563ebff
 expect theme radius-card undefined
 expect theme primary #171717ff
 style id:themed backgroundColor #2563ebff
+prop id:page headerStyle backgroundColor=#2563ebff
 # Its dark value in the dark appearance.
 tap id:dark
 expect theme up #93c5fdff
 style id:themed backgroundColor #93c5fdff
+prop id:page headerStyle backgroundColor=#93c5fdff
 tap id:system
 expect theme up #2563ebff
 # A theme with a value NSH cannot read (no color in the dark appearance):
 # a TypeError, and the theme in force stays.
 tap id:bad
 expect theme result refused TypeError
+expect theme up #2563ebff
+style id:themed backgroundColor #2563ebff
+# Malformed JSON shapes and colors leave the current theme in force.
+tap id:bad-structure
+expect theme result bad-structure refused TypeError
+expect theme up #2563ebff
+style id:themed backgroundColor #2563ebff
+tap id:bad-function
+expect theme result bad-function refused TypeError
+expect theme up #2563ebff
+style id:themed backgroundColor #2563ebff
+tap id:bad-length
+expect theme result bad-length refused TypeError
+expect theme up #2563ebff
+style id:themed backgroundColor #2563ebff
+tap id:bad-suffix
+expect theme result bad-suffix refused TypeError
 expect theme up #2563ebff
 style id:themed backgroundColor #2563ebff
 tap id:built
@@ -3642,6 +3957,18 @@ covers [props] DockArea.defaultLayout
 covers [props] DockArea.drawerClass
 covers [props] DockArea.backdropClass
 covers [events] DockArea.onDockOpenChange
+# base-split-view
+tap id:case-base-split-view
+# iOS: the split is the system's; each column's stack is laid out at the
+# view's size until the split reports its columns, its page placed. The
+# app's change of visibility goes to the split; nothing is reported.
+expect Sidebar column
+expect Detail column
+frame id:split 0 20 390 300
+expect Visibility all reported none
+tap id:detail-only
+expect Visibility detailOnly reported none
+covers [nsh/base] SplitView
 
 # base-toast
 tap id:case-base-toast
@@ -3716,6 +4043,9 @@ covers [events] ToastStack.onExpandedChange
 
 # base-editor
 tap id:case-base-editor
+# The editor keeps its native multiline input with its own drawn caret.
+prop label:Code multiline true
+prop label:Code caret false
 # The text is the editor's own, drawn a row per line; nothing is
 # reported before an edit.
 expect let x = 1;
@@ -4008,15 +4338,27 @@ expect Visible: 0-5
 tap text:Cell 1:name fig
 expect Selected: row 1 column 0
 expect Pressed: 1:0 1
+# The column fixed at the end is drawn, and a press on it reports it by
+# its place in `columns`.
+expect Cell 2:act go
+tap text:Cell 2:act go
+expect Selected: row 2 column 2
+expect Pressed: 2:2 1
 # Screen readers get a grid named by the app.
 prop label:Fruits role grid
 # The ref sets the selection without reporting it, and reads it with the
 # rows in view.
 tap id:select
-expect Selected: row 1 column 0
+expect Selected: row 2 column 2
 tap id:read
 expect Read: 2:1 0-5
 tap id:scroll
+# A title press reports its column. The name cell of row 1 carries the
+# class from `cellClasses`. The rendered text sits in the render's holder,
+# in the placeholder, in that cell.
+style parent:parent:parent:text:"Cell 1:name fig" backgroundColor #00ff00ff
+tap text:Name
+expect Column: 0 1
 # A sortable column's sort button reports the next sort, which the app
 # sets (`sort`): from it, the next press goes on to descending, then
 # clears it.
@@ -4027,6 +4369,8 @@ expect Sorted: name descending
 tap id:sort:name
 expect Sorted: cleared
 covers [events] DataTable.onRowPress
+covers [events] DataTable.onColumnPress
+covers [props] DataTable.cellClasses
 covers [nsh/base] DataTable
 covers [props] DataTable.columns
 covers [props] DataTable.data
@@ -4064,6 +4408,7 @@ expect State: text string true false
 expect Attr: true
 expect Split: true 3
 expect Content: Plain line **b**
+expect Html: <h2>T</h2><p>a <em>b</em></p>
 expect Insert: xyb
 expect Dispatch: all xy
 expect Node: true node
@@ -4184,6 +4529,7 @@ expect Suggest: true jo @jo 4-7 false
 expect Mention: Hi @Joan false
 expect Replace: true Hi @Joan done
 expect Exit: true false true
+expect Open: true true false true false false
 covers [nsh/base] link
 covers [nsh/base] characterCount
 covers [nsh/base] suggestion
@@ -4194,6 +4540,7 @@ covers [nsh/base] unsetLink
 covers [nsh/base] setCharacterLimit
 covers [nsh/base] replaceSuggestion
 covers [nsh/base] exitSuggestion
+covers [nsh/base] setSuggestionOpen
 covers [nsh/base] insertMention
 
 # base-rich-editor-kit
@@ -4204,6 +4551,7 @@ expect Configure: false true unknown
 expect Extension: bold mark 100 true
 expect Extend: 200 underline true
 expect Define: HEY extension xHI
+expect Suggest: true true
 expect Named: text threw
 expect Editable: false
 expect Both: threw
@@ -4243,6 +4591,62 @@ covers [nsh/base] createRichEditor
 covers [nsh/base] defineExtension
 covers [nsh/base] richExtension
 
+# base-rich-editor-composition
+tap id:case-base-rich-editor-composition
+expect Observed: none
+# Drive the native input sink, so the generated RichEditor event observes
+# the session after the platform's composition transition has settled.
+listens label:CompositionSink onCompositionChange
+event label:CompositionSink onCompositionChange composing=true text=n
+expect Transitions: true
+expect Observed: true 0 Seed
+event label:CompositionSink onCompositionChange composing=true text=ni
+expect Transitions: true
+event label:CompositionSink onCompositionChange composing=false text=""
+expect Transitions: true,false
+expect Observed: true 0 Seed
+event label:CompositionSink onCompositionChange composing=false text=""
+expect Transitions: true,false
+# A later composition's held text commits before its end observer runs.
+event label:CompositionSink onCompositionChange composing=true text=ri
+expect Transitions: true,false,true
+event label:CompositionSink onChange text=日
+event label:CompositionSink onCompositionChange composing=false text=""
+expect Transitions: true,false,true,false
+expect Observed: true 1 日Seed
+# Host event names have one shared coverage key, including a component
+# that emits its own payload under that name.
+covers [events] onCompositionChange
+
+# base-rich-editor-node-view
+tap id:case-base-rich-editor-node-view
+# The app's component renders the atom with its props, once.
+expect Ticker IBM
+expect NodeViewFacts: true true ticker NYSE ticker true
+expect NodeViewMounts: 1 tickers 1 pos none content refused
+# An edit before it moves it: its position follows, its component is not called again.
+tap text:TypeBeforeTicker
+tap text:ReadTickerPos
+expect NodeViewMounts: 1 tickers 1 pos 8 content refused
+# updateAttributes and a node selection change its props in place.
+tap id:ticker
+expect Ticker IBMX
+tap text:SelectTicker
+expect Ticker IBMX selected
+expect NodeViewMounts: 1 tickers 1 pos 8 content refused
+# deleteNode is one undoable change.
+tap text:DeleteTicker
+expect NodeViewMounts: 1 tickers 0 pos 8 content refused
+absent Ticker IBMX selected
+tap text:UndoTicker
+expect Ticker IBMX selected
+covers [nsh/base] RichNodeViewProps
+
+# base-rich-editor-paste-hooks
+tap id:case-base-rich-editor-paste-hooks
+expect PasteHooks true paste true
+expect PasteHTML true true false <p>a <em>b c</em></p>
+
 # base-rich-editor-view
 tap id:case-base-rich-editor-view
 expect BubbleMenu
@@ -4251,8 +4655,31 @@ absent BubbleMenu
 tap text:ToggleMenu
 expect BubbleMenu
 covers [props] RichEditor.bubbleMenu
+# Files dragged over the editor, away and dropped reach the app; the
+# document stays as it was.
+expect RichDrop: none
+event id:rich-drop onFileDragEnter uris=file:///tmp/shot%201.png
+expect RichDrop: enter file:///tmp/shot%201.png [image/png]
+event id:rich-drop onFileDragLeave
+expect RichDrop: enter file:///tmp/shot%201.png [image/png] leave
+event id:rich-drop onFileDrop uris=file:///tmp/shot%201.png uris=file:///tmp/notes.pdf
+expect RichDrop: dropped file:///tmp/shot%201.png file:///tmp/notes.pdf [image/png application/pdf]
+expect Some text
+covers [events] onFileDragEnter
+covers [events] onFileDragLeave
+covers [events] onFileDrop
+# The app's layer over the document takes presses and `nodeRect` answers in its points.
+expect LayerMark
+tap text:LayerMark
+expect LayerBox true 0 0
+covers [props] RichEditor.contentLayer
 expect CellA
 expect CellD
+# An editor without a height is as tall as its two lines; one with a
+# `maxHeight` stops there.
+expect AutoTwo
+frame id:rich-auto 20 329 370 34
+frame id:rich-capped 20 367 370 40
 # base-transition-shader
 tap id:case-base-transition-shader
 # Pages and a dialog with a `transitionShader` come and go as without one:
@@ -4341,3 +4768,23 @@ covers [props] accessibilityLabel
 covers [events] Terminal.onData
 covers [events] Terminal.onResize
 covers [events] Terminal.onTitleChange
+
+# base-rich-editor-content-size
+# The extent excludes the viewport's minimum height and follows width.
+tap id:case-base-rich-editor-content-size
+expect Extent: true true
+expect Width: false
+tap id:content-size-narrow
+expect Width: true
+covers [events] onContentSizeChange
+covers [nsh/base] createRichEditor
+
+# base-dock-tab-scroll
+# The tabs do not fit the bar: they are in a scroll view as wide as the
+# bar, and the tab the ref displays stays the displayed one.
+tap id:case-base-dock-tab-scroll
+expect Strip a*
+expect Strip h
+frame scroll:id:strip-tab-a 0 0 390 24
+tap id:strip-show-h
+expect Strip h*

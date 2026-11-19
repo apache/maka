@@ -28,7 +28,7 @@
 //!   state) and styles (`itemClass`): `selected:` on the selected date or
 //!   every day of the range (as React Aria's range calendar), the shown
 //!   month and year and the open view's toggle; `disabled:` on what takes
-//!   no press; `focus:` on the day with the keyboard; and the `data-*`
+//!   no press; `focus-visible:` on the day with the keyboard; and the `data-*`
 //!   attributes Tailwind's `data-*:` variants read (as shadcn's calendar):
 //!   `data-range-start`, `data-range-end` and `data-range-middle` on a
 //!   complete range's days (a half range's start is `selected:` alone),
@@ -540,7 +540,7 @@ pub enum CalendarItemKind {
 /// classes: `selected:` (the date, every day of a range, the shown month
 /// or year, the open view's toggle), `disabled:` (a day, an arrow that
 /// takes no press; the weekdays and the months' titles are labels, never
-/// disabled), `focus:` (the day with the keyboard), and on the days the `data-*`
+/// disabled), `focus-visible:` (the day with the keyboard), and on the days the `data-*`
 /// attributes `data-range-start`, `data-range-end`, `data-range-middle`,
 /// `data-today` and `data-outside` (`group-selected:`,
 /// `group-data-range-start:`, ... inside, under `group` in `itemClass`).
@@ -628,7 +628,7 @@ pub struct CalendarProps {
     /// every day of a range, the shown month or year, the open view's
     /// toggle), `disabled:` while a day or an arrow takes no press (the
     /// weekdays and the months' titles are labels, never disabled),
-    /// `focus:` with the keyboard on it; on the days `data-range-start:`,
+    /// `focus-visible:` with the keyboard on it; on the days `data-range-start:`,
     /// `data-range-end:`, `data-range-middle:` (a range's days),
     /// `data-today:` and `data-outside:` (a day of the months around); with `group`, the
     /// content follows them (`group-selected:`, `group-data-today:`, ...).
@@ -1088,6 +1088,7 @@ impl Grid {
                     KeyOptions {
                         when: When::NotEditing,
                         repeat: false,
+                        for_focus: true,
                         ..Default::default()
                     },
                     move |_| {

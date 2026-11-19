@@ -125,7 +125,7 @@ function App() {
         {desktop ? "Scroll with the wheel or trackpad" : "Swipe up"}: more rows load near the end, up to {LIMIT}.
       </Text>
       <View style={{ flex: 1, flexDirection: "row", gap: 16 }}>
-        <View style={{ ...ui().card, flex: 1, minWidth: 0, borderRadius: 12, overflow: "hidden" }}>
+        <View style={{ ...sectionSurface(), flex: 1, minWidth: 0, overflow: "hidden" }}>
           <View
             style={{
               flexDirection: "row",
@@ -165,7 +165,7 @@ function App() {
                   flexDirection: "row",
                   alignItems: "center",
                   gap: 12,
-                  height: size.row - 4,
+                  height: size.rowSm + 4,
                   paddingHorizontal: 12,
                   borderBottomWidth: 1,
                   borderBottomColor: ui().line,

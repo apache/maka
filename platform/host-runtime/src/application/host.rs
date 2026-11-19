@@ -491,7 +491,10 @@ impl Host {
                 let result = self.retire(interrupt, allow_idle_connections).await;
                 wire::write(&mut output, &Response::Retired(result)).await
             }
-            Request::Quit { session: id } => {
+            Request::Quit {
+                session: id,
+                ephemeral_only,
+            } => {
                 authority.local()?;
                 let session = self.sessions.lock().unwrap().get(&id).cloned();
                 if let Some(session) = session {
@@ -505,7 +508,9 @@ impl Host {
                     let _gate = self.access_gate.lock().await;
                     let mut sessions = self.sessions.lock().unwrap();
                     sessions.remove(&id);
-                    let stop = sessions.is_empty();
+                    let stop = sessions.is_empty()
+                        && (!ephemeral_only
+                            || self.options.lifecycle_mode == LifecycleMode::Ephemeral);
                     if stop {
                         self.residency.lock().unwrap().paused = true;
                         self.stop.cancel();

@@ -6,10 +6,11 @@
 // a read-only input and one with a selection set by the app, and the colors
 // of placeholders and selections; where the caret is, in the input and in
 // the root view (`onCaretMove`); what was pasted (`onPaste`) into an input
-// that inserts nothing itself (`pasteBehavior`). Each handler shows what it gets as
+// that inserts nothing itself (`pasteBehavior`), and the paste the app then
+// inserts as the user's edit (`insertText`). Each handler shows what it gets as
 // text. Its
 // script checks each.
-import { Text, View, signal } from "nsh";
+import { type InputRef, Text, View, signal } from "nsh";
 import { Input } from "nsh/base";
 
 function App() {
@@ -19,6 +20,8 @@ function App() {
   const selection = signal("none");
   const caret = signal("none");
   const pasted = signal("none");
+  const inserted = signal("none");
+  let pasteField: InputRef | undefined;
   const size = signal("none");
   let first = -1;
   const upper = signal("");
@@ -50,11 +53,18 @@ function App() {
       <Text>Caret: {caret()}</Text>
       <Input
         testID="paste"
+        ref={(r) => (pasteField = r)}
         pasteBehavior="report"
         style={{ width: 300, height: 40 }}
-        onPaste={(e) => pasted.set(`${e.text} html ${e.html.length} files ${e.files.length} uris ${e.uris.length}`)}
+        onChange={({ value }) => inserted.set(value)}
+        onPaste={(e) => {
+          // Called first: a throw would leave "Pasted" as it was.
+          if (e.text.startsWith("insert:")) pasteField!.insertText(e.text.slice("insert:".length));
+          pasted.set(`${e.text} html ${e.html.length} files ${e.files.length} uris ${e.uris.length}`);
+        }}
       />
       <Text>Pasted: {pasted()}</Text>
+      <Text>Inserted: {inserted()}</Text>
       <Text>Submitted: {submitted()}</Text>
       <Input
         testID="notes"

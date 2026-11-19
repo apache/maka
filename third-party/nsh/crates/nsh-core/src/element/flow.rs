@@ -14,8 +14,9 @@ use std::{
 };
 
 use super::{
-    AnyElement, IntoElement, IntoReactive, Owner, Reactive, ReadSignal, Signal, SignalEquals,
-    builder::ElKind, cleanup, computed, create_root, signal, signal_with, untracked,
+    AnyElement, ElNode, IntoElement, IntoReactive, Owner, Reactive, ReadSignal, SharedString,
+    Signal, SignalEquals, builder::ElKind, cleanup, computed, create_root, signal, signal_with,
+    untracked,
 };
 use crate::Tag;
 
@@ -39,21 +40,34 @@ pub(crate) enum Region {
     },
 }
 
-/// An element of a region's new run: one made in this run (with the owner
-/// its bindings belong to: the run's, or its row's), or one kept from
-/// before ([`ElKind::Keep`]).
-pub(crate) struct RegionElement {
-    pub(crate) owner: Option<Owner>,
-    pub(crate) element: AnyElement,
+/// An element of a region's new run.
+pub(crate) enum RegionElement {
+    /// Made in this run, with the owner its bindings belong to: the run's,
+    /// or its row's. (Boxed: a run of an [`each`] is mostly rows kept, and
+    /// the list of them is made on every update.)
+    Made { owner: Owner, element: Box<ElNode> },
+    /// The element of this key stays as it is: of a row of an [`each`] that
+    /// was there before.
+    Kept(SharedString),
 }
 
 impl RegionElement {
+    fn made(owner: Owner, element: AnyElement) -> Self {
+        Self::Made {
+            owner,
+            element: Box::new(element.0),
+        }
+    }
+
     /// Whether it can still be applied: the run that made it was not
     /// replaced, nor its row disposed, before the core applied it (a
     /// listener that flips a branch there and back queues both runs; what
     /// the first made, its props too, went with it).
     pub(crate) fn applies(&self) -> bool {
-        self.owner.is_none_or(|owner| owner.is_live())
+        match self {
+            Self::Made { owner, .. } => owner.is_live(),
+            Self::Kept(_) => true,
+        }
     }
 }
 
@@ -82,10 +96,7 @@ impl Region {
                     let elements = owner
                         .scope(|| f())
                         .into_iter()
-                        .map(|element| RegionElement {
-                            owner: Some(owner),
-                            element,
-                        })
+                        .map(|element| RegionElement::made(owner, element))
                         .collect();
                     show(elements);
                 });
@@ -109,10 +120,7 @@ impl Region {
                     let elements =
                         untracked(|| owner.scope(|| branch.map(|f| f()).unwrap_or_default()))
                             .into_iter()
-                            .map(|element| RegionElement {
-                                owner: Some(owner),
-                                element,
-                            })
+                            .map(|element| RegionElement::made(owner, element))
                             .collect();
                     show(elements);
                 });
@@ -125,23 +133,23 @@ impl Region {
                     let error = failed.get();
                     // The view is under the boundary, the fallback is not
                     // (what fails in it goes to the boundary above).
-                    if error.is_none() {
-                        super::reactive::register_boundary(failed);
-                    }
-                    // The run's owner is under the binding, where the
-                    // boundary is: `boundary_of` finds it from there.
+                    let boundary = error
+                        .is_none()
+                        .then(|| super::reactive::register_boundary(failed));
                     let owner = run_owner();
                     let elements = untracked(|| {
-                        owner.scope(|| match error {
-                            Some(error) => fallback(error, Reset(failed)),
-                            None => view(),
+                        owner.scope(|| {
+                            if let Some(boundary) = boundary {
+                                super::reactive::provide_context(boundary);
+                            }
+                            match error {
+                                Some(error) => fallback(error, Reset(failed)),
+                                None => view(),
+                            }
                         })
                     })
                     .into_iter()
-                    .map(|element| RegionElement {
-                        owner: Some(owner),
-                        element,
-                    })
+                    .map(|element| RegionElement::made(owner, element))
                     .collect();
                     show(elements);
                 });
@@ -326,6 +334,7 @@ where
         key: Box::new(key),
         row: Box::new(move |item, index| row(item, index).into_elements()),
         state: RefCell::new(Vec::new()),
+        distinct: Cell::new(true),
         next: Cell::new(0),
     })))
 }
@@ -345,50 +354,66 @@ struct Rows<T: 'static, K> {
     row: RowFn<T>,
     /// The live rows, in order.
     state: RefCell<Vec<Row<T, K>>>,
+    /// Whether the rows' keys are known to differ from each other: a row
+    /// whose key comes in its place again is then the row of that key,
+    /// found without a map of them all ([`Rows::update`]).
+    distinct: Cell<bool>,
     /// The id of the next row made (its elements' keys).
     next: Cell<u64>,
 }
 
 struct Row<T: 'static, K> {
     key: K,
-    id: u64,
     item: Signal<T>,
     index: Signal<usize>,
     owner: Owner,
-    /// How many elements it made.
-    count: usize,
+    /// The keys of the elements it made.
+    elements: Box<[SharedString]>,
 }
 
+/// How many rows made in one update are looked for among the others, each
+/// key compared with every other, to know the keys still differ; past it
+/// the next update finds out with its map.
+const MADE_COMPARED: usize = 8;
+
 /// The key of a row's `i`th element: unique to the row, whatever its key.
-fn element_key(id: u64, i: usize) -> super::SharedString {
+fn element_key(id: u64, i: usize) -> SharedString {
     format!("\u{1}{id}.{i}").into()
 }
 
-/// Keeps the `count` elements of row `id` where they are, in `out`. Out of
-/// line, as [`show_row`]: [`Rows::update`] is made for every item and key
-/// type.
+/// Keeps a row's elements, of the keys `elements`, where they are, in
+/// `out`. Out of line, as [`show_row`]: [`Rows::update`] is made for every
+/// item and key type.
 #[cfg_attr(target_arch = "wasm32", inline(never))]
-fn keep_row(out: &mut Vec<RegionElement>, id: u64, count: usize) {
-    for i in 0..count {
-        let mut kept = super::ElNode::new(Tag::View);
-        kept.kind = ElKind::Keep;
-        kept.key = Some(element_key(id, i));
-        out.push(RegionElement {
-            owner: None,
-            element: AnyElement(kept),
-        });
-    }
+fn keep_row(out: &mut Vec<RegionElement>, elements: &[SharedString]) {
+    out.extend(elements.iter().cloned().map(RegionElement::Kept));
 }
 
-/// Adds the elements a new row `id`, of `owner`, made to `out`.
+/// Adds the elements a new row `id`, of `owner`, made to `out`; their keys.
 #[cfg_attr(target_arch = "wasm32", inline(never))]
-fn show_row(out: &mut Vec<RegionElement>, id: u64, owner: Owner, elements: Vec<AnyElement>) {
-    for (i, mut element) in elements.into_iter().enumerate() {
-        element.0.key = Some(element_key(id, i));
-        out.push(RegionElement {
-            owner: Some(owner),
-            element,
-        });
+fn show_row(
+    out: &mut Vec<RegionElement>,
+    id: u64,
+    owner: Owner,
+    elements: Vec<AnyElement>,
+) -> Box<[SharedString]> {
+    elements
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut element)| {
+            let key = element_key(id, i);
+            element.0.key = Some(key.clone());
+            out.push(RegionElement::made(owner, element));
+            key
+        })
+        .collect()
+}
+
+/// Writes `value` to `signal` unless it holds an equal one, which a write
+/// would only compare and drop: a row that stays is mostly as it was.
+fn follow<V: PartialEq + 'static>(signal: Signal<V>, value: V) {
+    if !signal.with_untracked(|held| *held == value) {
+        signal.set(value);
     }
 }
 
@@ -412,50 +437,97 @@ impl<T: Clone + PartialEq + 'static, K: Hash + Eq + Clone + 'static> EachRows fo
 impl<T: Clone + PartialEq + 'static, K: Hash + Eq + Clone + 'static> Rows<T, K> {
     /// The rows of `items`: the rows of keys that stay are kept (their item
     /// and index updated), new ones made, the others disposed.
+    ///
+    /// A list mostly changes at one place (a row's item, a row added at the
+    /// end), so the rows are first passed in order, each kept while the key
+    /// in its place is its own: no map, and nothing written for a row whose
+    /// item is equal. Only from the first place whose key is another are
+    /// the rows left looked up by key.
     fn update(&self, items: Vec<T>) -> Vec<RegionElement> {
-        let mut old: HashMap<K, Row<T, K>> = self
-            .state
-            .take()
-            .into_iter()
-            .map(|row| (row.key.clone(), row))
-            .collect();
+        let mut old = self.state.take().into_iter();
         let mut rows = Vec::with_capacity(items.len());
-        let mut out = Vec::new();
-        for (index, item) in items.into_iter().enumerate() {
-            let key = (self.key)(&item);
-            // A key twice: the second is a row of its own.
-            match old.remove(&key) {
-                Some(row) => {
-                    row.item.set(item);
-                    row.index.set(index);
-                    keep_row(&mut out, row.id, row.count);
-                    rows.push(row);
+        let mut out = Vec::with_capacity(items.len());
+        let mut items = items.into_iter().enumerate();
+        // The first item that is not the row in its place, with its key.
+        let mut first = None;
+        // With a key twice among the rows, a map of them all decides which
+        // row of that key stays, as it always did.
+        let mut by_key = !self.distinct.get();
+        if !by_key {
+            for (index, item) in items.by_ref() {
+                let key = (self.key)(&item);
+                if old.as_slice().first().is_none_or(|row| row.key != key) {
+                    first = Some((index, item, key));
+                    by_key = true;
+                    break;
                 }
-                None => {
-                    let id = self.next.get();
-                    self.next.set(id + 1);
-                    let (owner, (item, index, elements)) = create_root(|| {
-                        let item = signal(item);
-                        let index = signal(index);
-                        let elements = (self.row)(item.read_only(), index.read_only());
-                        (item, index, elements)
-                    });
-                    let count = elements.len();
-                    show_row(&mut out, id, owner, elements);
-                    rows.push(Row {
-                        key,
-                        id,
-                        item,
-                        index,
-                        owner,
-                        count,
-                    });
-                }
+                let Some(row) = old.next() else { break };
+                // (Its index is its place already.)
+                follow(row.item, item);
+                keep_row(&mut out, &row.elements);
+                rows.push(row);
             }
         }
-        for row in old.into_values() {
+        // Where the rows made are, as many as are compared with the others.
+        let mut made = Vec::new();
+        if by_key {
+            let mut left: HashMap<K, Row<T, K>> =
+                old.by_ref().map(|row| (row.key.clone(), row)).collect();
+            let rest = items.map(|(index, item)| {
+                let key = (self.key)(&item);
+                (index, item, key)
+            });
+            for (index, item, key) in first.into_iter().chain(rest) {
+                // A key twice: the second is a row of its own.
+                match left.remove(&key) {
+                    Some(row) => {
+                        follow(row.item, item);
+                        follow(row.index, index);
+                        keep_row(&mut out, &row.elements);
+                        rows.push(row);
+                    }
+                    None => {
+                        let id = self.next.get();
+                        self.next.set(id + 1);
+                        let (owner, (item, index, elements)) = create_root(|| {
+                            let item = signal(item);
+                            let index = signal(index);
+                            let elements = (self.row)(item.read_only(), index.read_only());
+                            (item, index, elements)
+                        });
+                        let elements = show_row(&mut out, id, owner, elements);
+                        if made.len() <= MADE_COMPARED {
+                            made.push(rows.len());
+                        }
+                        rows.push(Row {
+                            key,
+                            item,
+                            index,
+                            owner,
+                            elements,
+                        });
+                    }
+                }
+            }
+            for row in left.into_values() {
+                row.owner.dispose();
+            }
+        }
+        // The items ended before the rows did.
+        for row in old {
             row.owner.dispose();
         }
+        // The rows kept have keys that differ (they were in their places, or
+        // came out of the map); a row made may have the key of any other.
+        self.distinct.set(
+            made.len() <= MADE_COMPARED
+                && made.iter().all(|&at| {
+                    let key = &rows[at].key;
+                    rows.iter()
+                        .enumerate()
+                        .all(|(other, row)| other == at || row.key != *key)
+                }),
+        );
         self.state.replace(rows);
         out
     }

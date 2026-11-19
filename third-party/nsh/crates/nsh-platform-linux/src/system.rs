@@ -40,7 +40,14 @@
 //!   background while the surface's window is not shown (the root
 //!   unmapped, the window minimized, or suspended: on another workspace or
 //!   covered, where the compositor says so), active while one of the
-//!   app's windows has the focus, inactive otherwise;
+//!   app's windows has the focus, inactive otherwise; background too from
+//!   the moment the session may end (signing out, shutting down:
+//!   [`crate::session`]);
+//! - the wake count (`wakeCount()`): one more for every surface when
+//!   systemd's `logind` reports the end of a sleep
+//!   (`org.freedesktop.login1.Manager`'s `PrepareForSleep` with `false`,
+//!   on the system bus); without it (a container, a CI's virtual display)
+//!   nothing counts;
 //! - the time zone (`localeSettings()`'s): the process's own (the zone `TZ` names,
 //!   `GMT` or `Europe/Berlin`, as the C library reads it:
 //!   `TimeZone::posix`; its local times follow it), else the system's as
@@ -57,7 +64,7 @@
 //! theme's), as the root view has none of its own.
 //!
 //! The status bar has no desktop equivalent. (`AccessibilityFocus`, which
-//! moves keyboard focus when the view can take it, is the mounter's.)
+//! moves the screen reader's focus, is the mounter's: `access::focus`.)
 //!
 //! The clipboard is the display's (`GdkClipboard`, the "CLIPBOARD"
 //! selection): `Clipboard.writeText` sets its text, reads are answered as
@@ -92,8 +99,6 @@ const FADE_IN: f64 = 150.0;
 const FADE_OUT: f64 = 120.0;
 
 const CSS: &str = "
-.nsh-light { background-color: #ffffff; }
-.nsh-dark { background-color: #0a0a0a; }
 window.nsh-transparent, window.nsh-transparent .nsh-light, window.nsh-transparent .nsh-dark { background: none; }
 window.nsh-no-shadow, window.nsh-no-shadow.csd { box-shadow: none; }
 .nsh-dialog-backdrop { background-color: rgba(0, 0, 0, 0.4); }
@@ -135,6 +140,37 @@ button.nsh-dialog-button.destructive:hover { background-color: #dc2626; }
 .nsh-dialog-card.sheet button.nsh-dialog-button.destructive { color: #ef4444; }
 .nsh-dark .nsh-dialog-card.sheet button.nsh-dialog-button.destructive { color: #f87171; }
 .nsh-dialog-card.sheet button.nsh-dialog-button.cancel { font-weight: 600; }
+";
+
+/// Supplemental rules applied only while the display has no compositor (such as
+/// uncomposited X11 / Xvnc), dropping ARGB popup shadow/corner regions that X11
+/// paints solid black and replacing `.solid-csd` bezels with a 1 px border on
+/// NSH windows.
+const UNCOMPOSITED_CSS: &str = "
+.nsh-light popover, .nsh-dark popover {
+  margin: 0; padding: 0; border-radius: 0; box-shadow: none; background: none;
+}
+.nsh-light popover > arrow, .nsh-dark popover > arrow {
+  min-width: 0; min-height: 0; margin: 0; padding: 0;
+  border: none; background: none; box-shadow: none;
+}
+.nsh-light popover > contents, .nsh-dark popover > contents {
+  margin: 0; border-radius: 0; box-shadow: none;
+}
+tooltip, tooltip.background, tooltip.csd {
+  margin: 0; border-radius: 0; box-shadow: none;
+}
+window.nsh-window.csd, window.nsh-window.solid-csd {
+  margin: 0; padding: 0; border-radius: 0; box-shadow: none;
+  border: 1px solid alpha(currentColor, 0.16);
+}
+window.nsh-window.csd.maximized, window.nsh-window.solid-csd.maximized,
+window.nsh-window.csd.fullscreen, window.nsh-window.solid-csd.fullscreen,
+window.nsh-window.csd.tiled, window.nsh-window.solid-csd.tiled,
+window.nsh-window.nsh-no-shadow.csd, window.nsh-window.nsh-no-shadow.solid-csd,
+window.nsh-window.nsh-transparent.csd, window.nsh-window.nsh-transparent.solid-csd {
+  border: none;
+}
 ";
 
 /// What the system's settings say, for every surface.
@@ -187,10 +223,16 @@ struct System {
     overlays: Vec<Overlay>,
     /// The menus' style sheet, in the app's colors ([`crate::menu_style`]).
     menu_style: Option<gtk::CssProvider>,
+    /// Supplemental style sheet attached only while `!display.is_composited()`.
+    uncomposited_style: Option<gtk::CssProvider>,
+    uncomposited_active: bool,
 }
 
 thread_local! {
     static SYSTEM: RefCell<System> = RefCell::default();
+    /// The dialogs shown and not answered yet: what [`close_dialog`] takes
+    /// back.
+    static DIALOGS: RefCell<Vec<Rc<DialogAnswer>>> = const { RefCell::new(Vec::new()) };
     static OS_VERSION: (u16, u16) = std::fs::read_to_string("/proc/sys/kernel/osrelease")
         .map_or((0, 0), |s| parse_version(&s));
     static LOCALE: Locale = user_locale(|name| std::env::var(name).ok(), || {
@@ -275,7 +317,15 @@ fn install() {
         &menus,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
-    SYSTEM.with(|s| s.borrow_mut().menu_style = Some(menus));
+    let uncomposited = gtk::CssProvider::new();
+    uncomposited.load_from_string(UNCOMPOSITED_CSS);
+    SYSTEM.with(|s| {
+        let mut s = s.borrow_mut();
+        s.menu_style = Some(menus);
+        s.uncomposited_style = Some(uncomposited);
+    });
+    sync_composited(&display);
+    display.connect_composited_notify(sync_composited);
     let settings = gtk::Settings::for_display(&display);
     let initial_dark = interface_scheme(&settings)
         .map_or(settings.is_gtk_application_prefer_dark_theme(), |s| {
@@ -288,6 +338,7 @@ fn install() {
     watch_screen_reader();
     watch_time_zone();
     watch_clock_format();
+    watch_sleep();
 }
 
 /// Whether the system is in dark mode (the portal's answer, or GTK's
@@ -320,7 +371,7 @@ fn appearance() -> Appearance {
 }
 
 /// This thread's surfaces.
-fn surfaces() -> Vec<Rc<Surface>> {
+pub(crate) fn surfaces() -> Vec<Rc<Surface>> {
     SYSTEM.with(|s| {
         let mut s = s.borrow_mut();
         s.surfaces.retain(|w| w.strong_count() > 0);
@@ -336,10 +387,20 @@ fn system_changed() {
     }
 }
 
-/// A surface's window was focused, minimized, suspended, shown or hidden:
-/// tells every surface, as whether the app is the active one depends on
-/// all of its windows.
-fn lifecycle_changed() {
+/// The system woke from sleep: every surface counts it (`wakeCount()`).
+fn woke() {
+    for surface in surfaces() {
+        let mut env: Environment = surface.environment.get();
+        env.wake_count = env.wake_count.wrapping_add(1);
+        surface.set_environment(env);
+    }
+}
+
+/// A surface's window was focused, minimized, suspended, shown or hidden,
+/// or the session may end ([`crate::session`]): tells every surface, as
+/// whether the app is the active one depends on all of its windows.
+pub(crate) fn lifecycle_changed() {
+    crate::session::focus_changed(app_focused());
     for surface in surfaces() {
         let mut env: Environment = surface.environment.get();
         env.lifecycle = lifecycle(&surface);
@@ -356,14 +417,23 @@ fn lifecycle(surface: &Surface) -> Lifecycle {
             .native()
             .and_then(|n| toplevel_state(&n))
             .is_none_or(|s| !s.intersects(hidden));
-    let focused = || {
-        gtk::Window::list_toplevels().iter().any(|w| {
-            w.downcast_ref::<gtk::Native>()
-                .and_then(toplevel_state)
-                .is_some_and(|s| s.contains(gdk::ToplevelState::FOCUSED))
-        })
-    };
-    if !shown {
+    lifecycle_of(shown, crate::session::ending(), app_focused)
+}
+
+/// Whether one of the app's windows has the focus.
+pub(crate) fn app_focused() -> bool {
+    gtk::Window::list_toplevels().iter().any(|w| {
+        w.downcast_ref::<gtk::Native>()
+            .and_then(toplevel_state)
+            .is_some_and(|s| s.contains(gdk::ToplevelState::FOCUSED))
+    })
+}
+
+/// The app's state with the surface's window `shown` (mapped, not
+/// minimized or suspended), the session `ending` ([`crate::session`]) and
+/// whether one of the app's windows is `focused`.
+fn lifecycle_of(shown: bool, ending: bool, focused: impl FnOnce() -> bool) -> Lifecycle {
+    if !shown || ending {
         Lifecycle::Background
     } else if focused() {
         Lifecycle::Active
@@ -449,6 +519,32 @@ pub(crate) fn environment_applied(surface: &Surface) {
         && let Some(value) = class.to_value_by_nick(want)
     {
         settings.set_property_from_value(INTERFACE_SCHEME, &value);
+    }
+}
+
+/// Attaches [`UNCOMPOSITED_CSS`] only while `display` lacks a compositor, and
+/// removes it if compositing starts later.
+fn sync_composited(display: &gdk::Display) {
+    let want = !display.is_composited();
+    let toggle = SYSTEM.with(|s| {
+        let mut s = s.borrow_mut();
+        let provider = s.uncomposited_style.clone()?;
+        if want == s.uncomposited_active {
+            return None;
+        }
+        s.uncomposited_active = want;
+        Some(provider)
+    });
+    if let Some(provider) = toggle {
+        if want {
+            gtk::style_context_add_provider_for_display(
+                display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+            );
+        } else {
+            gtk::style_context_remove_provider_for_display(display, &provider);
+        }
     }
 }
 
@@ -657,6 +753,33 @@ fn watch_time_zone() {
     );
 }
 
+/// Follows the system's sleeps as `logind` reports them: `PrepareForSleep`
+/// comes with `true` before a sleep and with `false` once the system woke
+/// ([`woke`]).
+fn watch_sleep() {
+    gio::DBusProxy::for_bus(
+        gio::BusType::System,
+        gio::DBusProxyFlags::DO_NOT_LOAD_PROPERTIES,
+        None,
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+        gio::Cancellable::NONE,
+        |proxy| {
+            let proxy = match proxy {
+                Ok(proxy) => proxy,
+                Err(err) => return log::debug!("no logind: {err}"),
+            };
+            proxy.connect_g_signal(|_, _, signal, params| {
+                if signal == "PrepareForSleep" && params.get::<(bool,)>() == Some((false,)) {
+                    woke();
+                }
+            });
+            SYSTEM.with(|s| s.borrow_mut().proxies.push(proxy));
+        },
+    );
+}
+
 /// `timedated`'s `Timezone` as the proxy has it now: every surface follows a
 /// change.
 fn timedated_zone(proxy: &gio::DBusProxy) {
@@ -731,6 +854,7 @@ fn screen_reader(proxy: &gio::DBusProxy) {
 pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
     match command {
         Command::Dialog(dialog) => show_dialog(surface, dialog),
+        Command::CloseDialog(dialog) => close_dialog(surface, *dialog),
         // In the window the user is in: a screen reader reads that one.
         Command::Announce(text) => crate::access::announce(&crate::window::key_root(surface), text),
         Command::PerfMonitor(true) => surface.enable_fps(),
@@ -741,6 +865,14 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
                 display.clipboard().set_text(text);
             }
         }
+        Command::SetClipboardItem(item) => match &item.html {
+            Some(html) => set_clipboard_html(&item.text, html),
+            None => {
+                if let Some(display) = gdk::Display::default() {
+                    display.clipboard().set_text(&item.text);
+                }
+            }
+        },
         Command::ReadClipboard { id, has_only } => read_clipboard(surface, *id, *has_only),
         Command::SetClipboardImage(uri) => set_clipboard_image(uri),
         Command::ReadClipboardImage { id, has_only } => {
@@ -755,13 +887,29 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         Command::FileRequest { id, request } => {
             crate::file_requests::request(surface, *id, request)
         }
+        Command::RenderCanvas {
+            id,
+            drawing,
+            width,
+            height,
+            scale,
+            format,
+        } => crate::canvas::render_offscreen(
+            surface,
+            *id,
+            drawing.clone(),
+            (*width, *height),
+            *scale,
+            *format,
+        ),
         Command::Audio(command) => surface.control(|c| {
             let base = surface.asset_base.borrow().clone();
             crate::audio::command(&surface.audio, c, command, base.as_ref())
         }),
         Command::Notification(command) => surface.control(|c| {
             let root = surface.root.upcast_ref::<gtk::Widget>();
-            crate::notifications::command(c, root, command);
+            let base = surface.asset_base.borrow().clone();
+            crate::notifications::command(c, root, command, base.as_ref());
         }),
         Command::Back => crate::navigation::default_back(surface),
         Command::Tokens(tokens) => set_menu_tokens(tokens),
@@ -774,7 +922,13 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         }
         // The status bar is a phone's; layout animations arrive as mount
         // items.
-        Command::StatusBar(_) | Command::SetStatusBar(_) | Command::LayoutAnimation(_) => {}
+        Command::StatusBar(_)
+        | Command::SetStatusBar(_)
+        | Command::LayoutAnimation(_)
+        | Command::CancelPress
+        // The app's address: this platform keeps none.
+        | Command::SetAppUrl(_)
+        | Command::PushAppUrl(_) => {}
         other => log::debug!("linux: command {other:?} is not supported"),
     }
 }
@@ -943,6 +1097,27 @@ impl DialogAnswer {
         if self.answered.replace(true) {
             return;
         }
+        self.take_down();
+        let Some(surface) = self.surface.upgrade() else {
+            return;
+        };
+        surface.event(
+            ROOT_ID,
+            EventKind::Dialog,
+            EventPayload::Map(vec![
+                ("id", PayloadValue::Number(self.id as f64)),
+                ("index", PayloadValue::Number(index as f64)),
+            ]),
+        );
+    }
+
+    /// Takes the dialog off the window.
+    fn take_down(&self) {
+        DIALOGS.with(|dialogs| {
+            if let Ok(mut dialogs) = dialogs.try_borrow_mut() {
+                dialogs.retain(|d| !std::ptr::eq(&**d, self));
+            }
+        });
         // The focus goes back where it was (as desktop dialogs do), not to
         // whatever GTK picks once the focused button goes.
         match self.previous_focus.upgrade() {
@@ -960,17 +1135,23 @@ impl DialogAnswer {
             }
         }
         remove_overlay(&self.backdrop);
-        let Some(surface) = self.surface.upgrade() else {
-            return;
-        };
-        surface.event(
-            ROOT_ID,
-            EventKind::Dialog,
-            EventPayload::Map(vec![
-                ("id", PayloadValue::Number(self.id as f64)),
-                ("index", PayloadValue::Number(index as f64)),
-            ]),
-        );
+    }
+}
+
+/// Takes back the dialog [`show_dialog`] showed as `id`
+/// (`Command::CloseDialog`), reporting nothing: the core answered it.
+fn close_dialog(surface: &Rc<Surface>, id: u32) {
+    let shown = DIALOGS.with(|dialogs| {
+        let mut dialogs = dialogs.borrow_mut();
+        let at = dialogs
+            .iter()
+            .position(|d| d.id == id && std::ptr::eq(d.surface.as_ptr(), Rc::as_ptr(surface)))?;
+        Some(dialogs.remove(at))
+    });
+    if let Some(shown) = shown
+        && !shown.answered.replace(true)
+    {
+        shown.take_down();
     }
 }
 
@@ -1013,6 +1194,18 @@ fn dialog_label(text: &str, class: &str, sheet: bool) -> gtk::Label {
     label
 }
 
+/// Native dialog controls own input over this NSH subtree until dismissal.
+pub(crate) fn blocks_activation(view: &NshView) -> bool {
+    SYSTEM.with(|system| {
+        system.try_borrow().map_or(true, |system| {
+            system.overlays.iter().any(|overlay| {
+                matches!(overlay.kind, OverlayKind::Dialog { .. })
+                    && (view == &overlay.root || view.is_ancestor(&overlay.root))
+            })
+        })
+    })
+}
+
 /// Shows `dialog` over the surface: a card in the middle (an alert) or at
 /// the bottom (an action sheet) over a dimmed backdrop. Answers the
 /// button's index; -1 when dismissed (a click outside or Escape, when
@@ -1033,6 +1226,7 @@ fn show_dialog(surface: &Rc<Surface>, dialog: &Dialog) {
         answered: Cell::new(false),
         previous_focus,
     });
+    DIALOGS.with(|dialogs| dialogs.borrow_mut().push(answer.clone()));
     // `AlertDialog` always brings the app's actions (it rejects none): no
     // label of NSH's own.
     let buttons = &dialog.buttons[..];
@@ -1336,6 +1530,22 @@ fn read_clipboard(surface: &Rc<Surface>, id: u32, has_only: bool) {
     });
 }
 
+/// `Clipboard.write`: `text` and `html` offered together, the HTML as
+/// `text/html` and the text in GDK's text formats.
+fn set_clipboard_html(text: &str, html: &str) {
+    let Some(display) = gdk::Display::default() else {
+        return;
+    };
+    let providers = [
+        gdk::ContentProvider::for_bytes("text/html", &glib::Bytes::from(html.as_bytes())),
+        gdk::ContentProvider::for_value(&glib::Value::from(text)),
+    ];
+    let provider = gdk::ContentProvider::new_union(&providers);
+    if let Err(err) = display.clipboard().set_content(Some(&provider)) {
+        log::warn!("Clipboard.write: {err}");
+    }
+}
+
 /// `Clipboard.writeImage`: the image of a `data:` URI as a GDK texture,
 /// which GDK offers in the formats it encodes (PNG, TIFF, ...).
 fn set_clipboard_image(uri: &str) {
@@ -1584,6 +1794,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_ending_session_puts_the_app_in_the_background() {
+        assert_eq!(lifecycle_of(true, false, || true), Lifecycle::Active);
+        assert_eq!(lifecycle_of(true, false, || false), Lifecycle::Inactive);
+        assert_eq!(lifecycle_of(false, false, || true), Lifecycle::Background);
+        assert_eq!(lifecycle_of(true, true, || true), Lifecycle::Background);
+        assert_eq!(lifecycle_of(true, true, || false), Lifecycle::Background);
+    }
+
+    #[test]
+    fn activation_query_fails_closed_during_overlay_mutation() {
+        crate::gtk_test::run(|| {
+            let surface = crate::gtk_test::surface();
+            assert!(!blocks_activation(&surface.root));
+            SYSTEM.with(|system| {
+                let _borrow = system.borrow_mut();
+                assert!(blocks_activation(&surface.root));
+            });
+            assert!(!blocks_activation(&surface.root));
+        });
+    }
+
+    #[test]
     fn kernel_versions() {
         assert_eq!(parse_version("7.2.5-3-omarchy\n"), (7, 2));
         assert_eq!(parse_version("6.8.0-45-generic"), (6, 8));
@@ -1688,5 +1920,26 @@ mod tests {
         assert_eq!(font_scale(-1), 1.0);
         assert_eq!(font_scale(96 * 1024), 1.0);
         assert_eq!(font_scale(120 * 1024), 1.25);
+    }
+
+    #[test]
+    fn uncomposited_stylesheet_parses_and_scopes_to_nsh_surfaces() {
+        assert!(UNCOMPOSITED_CSS.contains("window.nsh-window.csd, window.nsh-window.solid-csd"));
+        assert!(
+            UNCOMPOSITED_CSS
+                .contains(".nsh-light popover > contents, .nsh-dark popover > contents")
+        );
+        assert!(UNCOMPOSITED_CSS.contains("tooltip, tooltip.background, tooltip.csd"));
+        crate::gtk_test::run(|| {
+            let provider = gtk::CssProvider::new();
+            let errors = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let seen = errors.clone();
+            provider.connect_parsing_error(move |_, section, error| {
+                seen.borrow_mut()
+                    .push(format!("{}: {error}", section.to_str()));
+            });
+            provider.load_from_string(UNCOMPOSITED_CSS);
+            assert!(errors.borrow().is_empty(), "{:?}", errors.borrow());
+        });
     }
 }

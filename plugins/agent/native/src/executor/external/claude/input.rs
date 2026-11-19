@@ -19,7 +19,11 @@
 
 //! Native screen-reader input. Terminal observations acknowledge input, never model completion.
 use super::*;
-use tokio::sync::watch;
+use std::time::Duration;
+use tokio::{
+    io::{AsyncWrite, AsyncWriteExt},
+    sync::watch,
+};
 
 #[derive(Clone, Default)]
 pub(super) struct Screen {
@@ -27,6 +31,15 @@ pub(super) struct Screen {
     bytes: Vec<u8>,
 }
 impl Screen {
+    fn push_byte(&mut self, byte: u8) {
+        self.bytes.push(byte);
+        self.end += 1;
+    }
+    fn end_line(&mut self) {
+        if !self.bytes.is_empty() && !self.bytes.ends_with(b"\n") {
+            self.push_byte(b'\n');
+        }
+    }
     fn after(&self, mark: u64) -> String {
         let start = self.end - self.bytes.len() as u64;
         let at = mark.saturating_sub(start).min(self.bytes.len() as u64) as usize;
@@ -38,13 +51,17 @@ enum Escape {
     #[default]
     Text,
     Start,
-    Csi,
+    Csi(Option<u16>),
     Osc,
     OscEnd,
 }
 #[derive(Default)]
 pub(super) struct Decoder {
     escape: Escape,
+    /// Rows between the cursor and the row the observation ends on. Claude moves
+    /// up either to erase and redraw its last rows, or to add to a row it drew
+    /// earlier and come back; the observation is linear and keeps only the redraw.
+    above: u16,
 }
 impl Decoder {
     pub fn push(&mut self, screen: &mut Screen, bytes: &[u8]) {
@@ -53,22 +70,42 @@ impl Decoder {
                 Escape::Text => match byte {
                     27 => self.escape = Escape::Start,
                     b'\r' => {}
-                    b'\n' | b'\t' | 32..=255 => {
-                        screen.bytes.push(byte);
-                        screen.end += 1;
-                    }
+                    b'\n' if self.above > 0 => self.above -= 1,
+                    b'\n' | b'\t' | 32..=255 if self.above == 0 => screen.push_byte(byte),
                     _ => {}
                 },
                 Escape::Start => {
                     self.escape = match byte {
-                        b'[' => Escape::Csi,
+                        b'[' => Escape::Csi(None),
                         b']' => Escape::Osc,
                         _ => Escape::Text,
                     }
                 }
-                Escape::Csi => {
-                    if (0x40..=0x7e).contains(&byte) {
+                Escape::Csi(count) => {
+                    if byte.is_ascii_digit() {
+                        let digit = u16::from(byte - b'0');
+                        self.escape = Escape::Csi(Some(
+                            count.unwrap_or(0).saturating_mul(10).saturating_add(digit),
+                        ));
+                    } else if (0x40..=0x7e).contains(&byte) {
+                        match (byte, count) {
+                            (b'A', _) => {
+                                self.above = self.above.saturating_add(count.unwrap_or(1).max(1));
+                            }
+                            (b'B', _) => {
+                                self.above = self.above.saturating_sub(count.unwrap_or(1).max(1));
+                            }
+                            // Full-line (2K) and forward/full-screen (J/0J/2J/3J) erases start a
+                            // redraw; partial in-place erases (K/0K/1K/1J) leave rows below intact.
+                            (b'K', Some(2)) | (b'J', None | Some(0 | 2 | 3)) => {
+                                self.above = 0;
+                                screen.end_line();
+                            }
+                            _ => {}
+                        }
                         self.escape = Escape::Text;
+                    } else {
+                        self.escape = Escape::Csi(None);
                     }
                 }
                 Escape::Osc => match byte {
@@ -113,20 +150,15 @@ pub(super) fn text(prompt: &str) -> String {
     }
     out
 }
-async fn write(io: &maka_process::pty::PtyIo, mut bytes: &[u8]) -> Result<(), Error> {
-    while !bytes.is_empty() {
-        let accepted = io
-            .write(bytes)
-            .await
-            .map_err(|e| Error::Provider(format!("Claude PTY input failed: {e}")))?;
-        if accepted == 0 {
-            return Err(Error::Provider("Claude PTY accepted no input".into()));
-        }
-        bytes = &bytes[accepted..];
-    }
-    Ok(())
+pub(super) async fn write(io: &mut (impl AsyncWrite + Unpin), bytes: &[u8]) -> Result<(), Error> {
+    io.write_all(bytes)
+        .await
+        .map_err(|error| Error::Provider(format!("Claude PTY input failed: {error}")))?;
+    io.flush()
+        .await
+        .map_err(|error| Error::Provider(format!("Claude PTY input flush failed: {error}")))
 }
-async fn paste(io: &maka_process::pty::PtyIo, text: &str) -> Result<(), Error> {
+async fn paste(io: &mut (impl AsyncWrite + Unpin), text: &str) -> Result<(), Error> {
     write(io, b"\x1b[200~").await?;
     write(io, text.as_bytes()).await?;
     write(io, b"\x1b[201~").await
@@ -184,23 +216,23 @@ fn startup<'a>(text: &str, cwd: &str) -> Result<Startup<'a>, Error> {
     Ok(Startup::Wait)
 }
 pub(super) async fn submit(
-    io: &maka_process::pty::PtyIo,
+    io: &mut (impl AsyncWrite + Unpin),
     screen: &mut watch::Receiver<Screen>,
     cwd: &str,
     prompt: &str,
     images: &[Value],
     bridge: &mcp::Bridge,
     start: &mut Start,
-) -> Result<String, Error> {
+) -> Result<Submitted, Error> {
+    let mut mark = 0;
     let ready = async {
-        let mut mark = 0;
         loop {
             let (text, end) = {
                 let s = screen.borrow();
                 (s.after(mark), s.end)
             };
             match startup(&text, cwd)? {
-                Startup::Ready => break,
+                Startup::Ready => return Ok::<_, Error>(()),
                 Startup::Answer(key) => {
                     mark = end;
                     write(io, key).await?;
@@ -208,24 +240,39 @@ pub(super) async fn submit(
                 Startup::Wait => changed(screen).await?,
             }
         }
-        // The prompt can draw before MCP discovery ends. Do not race the first tool-bearing turn.
-        bridge.listed.cancelled().await;
-        bridge.admit()?;
-        Ok::<_, Error>(())
     };
-    tokio::time::timeout(runtime::SETUP_TIMEOUT,ready).await
-        .map_err(|_| Error::Provider("Claude interactive startup or Host MCP discovery did not finish within five minutes".into()))??;
+    tokio::time::timeout(runtime::SETUP_TIMEOUT, ready)
+        .await
+        .map_err(|_| {
+            let screen = screen.borrow();
+            let tail = screen.after(screen.end.saturating_sub(4096));
+            Error::Provider(format!(
+                "Claude interactive startup timed out. Recent terminal output:\n{}",
+                tail.trim()
+            ))
+        })??;
+    // The prompt can draw before MCP discovery ends.
+    tokio::time::timeout(runtime::SETUP_TIMEOUT, bridge.listed.cancelled())
+        .await
+        .map_err(|_| Error::Provider("Claude Host MCP discovery timed out".into()))?;
+    bridge.admit()?;
     send(io, screen, prompt, images, start).await
 }
 
+/// What `send` put into the composer: the image markers, then the prompt.
+pub(super) struct Submitted {
+    pub markers: String,
+    pub prompt: String,
+    pub images: usize,
+}
 // Enter keeps Claude's native busy-input semantics; it is not the send-now shortcut.
 pub(super) async fn send(
-    io: &maka_process::pty::PtyIo,
+    io: &mut (impl AsyncWrite + Unpin),
     screen: &mut watch::Receiver<Screen>,
     prompt: &str,
     images: &[Value],
     start: &mut Start,
-) -> Result<String, Error> {
+) -> Result<Submitted, Error> {
     let mut markers = Vec::with_capacity(images.len());
     for (index, image) in images.iter().enumerate() {
         let path = runtime::string(image, "/path")?;
@@ -250,19 +297,10 @@ pub(super) async fn send(
     }
     let mark = screen.borrow().end;
     paste(io, prompt).await?;
-    let visible = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
     let echoed = async {
         loop {
             let observation = screen.borrow().after(mark);
-            let text = composer(&observation);
-            // Claude replaces large pastes by a numbered placeholder, preserving the actual text.
-            if text.contains("[Pasted text")
-                || text
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .contains(&visible)
-            {
+            if shows(composer(&observation), prompt) {
                 return Ok::<_, Error>(());
             }
             changed(screen).await?;
@@ -275,9 +313,21 @@ pub(super) async fn send(
     *start = Start::Submitted;
     // Enter is sent only after every attachment and the text have been acknowledged.
     write(io, b"\r").await?;
-    Ok(format!("{}{prompt}", markers.join(" ")))
+    Ok(Submitted {
+        markers: markers.join(" "),
+        prompt: prompt.into(),
+        images: images.len(),
+    })
 }
 
+/// Whether the composer shows the pasted prompt. The terminal wraps a long line
+/// wherever it reaches the last column, which in text without spaces is inside a
+/// word, so only the characters that are not whitespace are compared.
+fn shows(composer: &str, prompt: &str) -> bool {
+    let visible = |text: &str| -> String { text.chars().filter(|c| !c.is_whitespace()).collect() };
+    // Claude replaces large pastes by a numbered placeholder, preserving the actual text.
+    composer.contains("[Pasted text") || visible(composer).contains(&visible(prompt))
+}
 fn image_marker(text: &str) -> Option<String> {
     // A complete AX prompt redraw supersedes any historical labels before it.
     let (_, after) = composer(text).rsplit_once("[Image #")?;
@@ -294,6 +344,50 @@ fn composer(text: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn observed(bytes: &[u8]) -> String {
+        let mut screen = Screen::default();
+        Decoder::default().push(&mut screen, bytes);
+        screen.after(0)
+    }
+    // Byte sequences written by Claude Code 2.1.327 and 2.1.328 with --ax-screen-reader.
+    #[test]
+    fn text_added_to_an_earlier_row_does_not_join_the_prompt_row() {
+        let hint = b"bypass permissions on\r\neffort: medium \xc2\xb7 /effort\r\n$\x1b[2G\x1b[2A\x1b[22G (shift+tab to cycle)\x1b[2G\x1b[2B";
+        let text = observed(hint);
+        assert!(
+            matches!(startup(&text, "/workspace"), Ok(Startup::Ready)),
+            "{text:?}"
+        );
+        // Partial erase-to-EOL on an earlier row (CSI K) and ECMA-48 zero counts (0A/0B -> 1)
+        // must not leak earlier-row updates onto the prompt row.
+        let edited = b"bypass permissions on\r\neffort: medium\r\n$\x1b[2G\x1b[2A\x1b[22G\x1b[K (updated)\x1b[2B\x1b[0Aabove\x1b[0B";
+        assert!(
+            matches!(startup(&observed(edited), "/workspace"), Ok(Startup::Ready)),
+            "{:?}",
+            observed(edited)
+        );
+        // After the cursor is back on the prompt row, typed text is observed again.
+        assert!(observed(&[hint.as_slice(), b"hello"].concat()).ends_with("$hello"));
+        assert!(observed(&[edited.as_slice(), b"hello"].concat()).ends_with("$hello"));
+    }
+    #[test]
+    fn rows_that_claude_erases_and_redraws_are_observed() {
+        let text = observed(
+            b"$\xc2\xa0 one\r\ntwo\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[G$\xc2\xa0 one\r\ntwo three",
+        );
+        assert_eq!(composer(&text), "\u{a0} one\ntwo three");
+    }
+    #[test]
+    fn a_prompt_wrapped_inside_text_without_spaces_is_acknowledged() {
+        let prompt = "第一行没有空格的长文本。\n\n第二行 with spaces";
+        // The composer as a 120 column terminal draws it: wrapped after a character.
+        assert!(shows(
+            "\u{a0} 第一行没有空格\n的长文本。\n\n第二行 with\nspaces",
+            prompt
+        ));
+        assert!(shows("\u{a0} [Pasted text #1 +4 lines]", prompt));
+        assert!(!shows("\u{a0} 第一行没有空格", prompt));
+    }
     #[test]
     fn latest_composer_image_labels_do_not_assume_a_counter_reset() {
         assert_eq!(

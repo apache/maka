@@ -18,18 +18,19 @@
  */
 
 use super::Owner;
+use super::access::RunAccess;
 use crate::contract::{
     InteractionRead, RequestSystemPermission, SystemPermissionOutcome, SystemPermissionState,
     SystemPermissionStatus,
 };
-use maka_agent_api::session::StoredSessionConfiguration;
+use maka_agent_authority::permissions::Access;
 use maka_agent_facts::interaction::{
     InteractionOutcome, InteractionRecord, InteractionRequest, SystemPermissionGrant,
 };
 use maka_capabilities::call::Scope;
 use maka_computer_use::system_permission;
-use maka_event_log::turns::InvocationState;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 type Missing = fn(&[SystemPermissionGrant]) -> Result<Vec<SystemPermissionGrant>, String>;
 type Request = fn(&[SystemPermissionGrant], &(dyn Fn() -> bool + Sync)) -> Result<(), String>;
@@ -105,43 +106,55 @@ impl Owner {
         })
     }
 
+    async fn system_permission_access(
+        &self,
+        record: &InteractionRecord,
+    ) -> Result<Option<(Arc<RunAccess>, CancellationToken)>, String> {
+        if record.outcome.is_some() || self.stop.is_cancelled() {
+            return Ok(None);
+        }
+        let current = self
+            .durable
+            .interactions()
+            .read(&record.execution.session_id, &record.request_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if current.as_ref() != Some(record) {
+            return Ok(None);
+        }
+        let active = {
+            let runs = self.runs.state().await;
+            runs.controls
+                .get(&record.execution.session_id)
+                .filter(|control| control.execution == record.execution)
+                .and_then(|control| {
+                    control
+                        .access
+                        .upgrade()
+                        .map(|access| (access, control.cancellation.clone()))
+                })
+        };
+        let Some((access, cancellation)) = active else {
+            return Ok(None);
+        };
+        if cancellation.is_cancelled() {
+            return Ok(None);
+        }
+        let configuration = access
+            .live_configuration()
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(configuration
+            .permissions
+            .request_permissions
+            .then_some((access, cancellation)))
+    }
+
     async fn system_permission_requestable(
         &self,
         record: &InteractionRecord,
     ) -> Result<bool, String> {
-        if record.outcome.is_some() || self.stop.is_cancelled() {
-            return Ok(false);
-        }
-        let store = self
-            .store
-            .session(&record.session_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        let Some(projection) = store
-            .session_projection::<StoredSessionConfiguration>(&record.session_id)
-            .await
-            .map_err(|error| error.to_string())?
-        else {
-            return Ok(false);
-        };
-        if projection.session.archived
-            || !projection
-                .pending_interactions
-                .iter()
-                .any(|pending| pending == record)
-        {
-            return Ok(false);
-        }
-        let live = projection.root_turn.as_ref().is_some_and(|turn| {
-            turn.invocation.turn_id == record.turn_id
-                && turn.invocation.run_id == record.run_id
-                && !matches!(turn.state, InvocationState::Ended { .. })
-        });
-        if !live {
-            return Ok(false);
-        }
-        let session = super::resolve_session(projection.session)?;
-        Ok(session.configuration.permissions.request_permissions)
+        Ok(self.system_permission_access(record).await?.is_some())
     }
 
     pub async fn request_system_permission(
@@ -183,16 +196,28 @@ impl Owner {
                 if !grants.contains(&input.grant) {
                     return Err("agent_system_permission_grant_not_requested".into());
                 }
-                if !supported || !owner.system_permission_requestable(&record).await? {
+                if !supported {
                     return Err("agent_system_permission_not_requestable".into());
                 }
+                let Some((_access, run_cancellation)) =
+                    owner.system_permission_access(&record).await?
+                else {
+                    return Err("agent_system_permission_not_requestable".into());
+                };
                 if scope.cancellation.is_cancelled() {
                     return Err("agent_work_cancelled".into());
                 }
                 let cancellation = scope.cancellation.clone();
                 let stopped = owner.stop.clone();
                 tokio::task::spawn_blocking(move || {
-                    let cancelled = || cancellation.is_cancelled() || stopped.is_cancelled();
+                    let cancelled = || {
+                        cancellation.is_cancelled()
+                            || stopped.is_cancelled()
+                            || run_cancellation.is_cancelled()
+                    };
+                    if cancelled() {
+                        return Err("agent_work_cancelled".into());
+                    }
                     if !missing(&[input.grant])?.is_empty() {
                         request(&[input.grant], &cancelled)?;
                     }

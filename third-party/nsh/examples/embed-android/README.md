@@ -14,11 +14,21 @@ Native components: the app's own views, used from JS with `nativeComponent` (`ns
 `MainActivity` registers `embed.badge`, which `examples/embedded` shows:
 
 ```java
-nsh.registerComponent("embed.badge", context -> new Badge(this, context));  // Badge implements NshComponent
+nsh.registerComponent("embed.badge", Badge::new);  // Badge implements NshComponent; context.getContext() makes its views
 ```
 
 The component gets its props (`setProp`, JSON as maps and lists) and commands, emits events with
 `context.emit("tap", data)` and may report its size (dp) with `context.setSize(w, h)`.
+
+Scroll views: native UI that moves with the app's content in every frame watches a `<Scroll>` by its `nativeID`.
+`MainActivity` follows `embedded.scroll`, the app's page, and scrolls it back to the top:
+
+```java
+nsh.watchScroll("embedded.scroll", watcher);  // watcher.onAttached(NshScrollHandle) / onDetached()
+handle.addScrollListener(listener);           // onScroll(x, y, dx, dy), onContentSizeChange(w, h): UI thread, same frame
+handle.stopScrolling();
+handle.scrollBy(0, -handle.getScrollY(), true);
+```
 
 The app and its host also talk without a view, through the view's channel (`nsh/host` in the app):
 
@@ -63,8 +73,21 @@ Keyboard: `NshView` scrolls focused inputs clear of the keyboard itself.
 Leave `android:windowSoftInputMode` unset or use `adjustResize`; with
 `adjustPan` the system moves the whole window instead.
 
+Touch-mode embedding keeps the host's scroll position when a surface attaches or a
+host dialog closes. The first hardware key establishes an empty keyboard focus
+path; an already focused native input keeps ownership of its keys.
+
+The native embedding regression uses a partly visible surface in a scrolling
+activity, a host dialog and a native input. With an API 35 SDK and a connected
+device (select one with `ANDROID_SERIAL`), run from the checkout:
+
+```sh
+cargo xtask android --dev
+python3 crates/nsh-platform-android/tests/embedding-focus/run.py
+```
+
 The view reports the safe area and keyboard as the parts of the system bars
 and the keyboard that overlap it, so an app embedded below other views gets
 no top inset.
 
-`NshView` needs the `INTERNET` permission (declared by the AAR) and API 28+.
+`NshView` needs the `INTERNET` permission (declared by the AAR) and API 26+.

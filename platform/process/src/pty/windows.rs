@@ -19,7 +19,7 @@
 
 use super::PtyCommand;
 use crate::windows::{job::Job, pipe, wait_process};
-use maka_agent_facts::terminal::TerminalSize;
+use maka_plugin_core::terminal::TerminalSize;
 use std::{io, os::windows::io::OwnedHandle, process::ExitStatus, sync::Arc, time::Duration};
 use tokio::{net::windows::named_pipe::NamedPipeServer, task::JoinHandle};
 

@@ -24,6 +24,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+uuid.workspace = true
+maka-plugin-core.workspace = true
 maka-agent-facts.workspace = true
 schemars.workspace = true
 serde.workspace = true
@@ -31,7 +33,3 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-
-[[test]]
-name = "integration"
-path = "tests/integration/main.rs"

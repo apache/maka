@@ -24,6 +24,7 @@ use maka_event_log::StoreError;
 pub(super) fn cause(error: &StoreError) -> &'static str {
     match error.underlying() {
         StoreError::CommitUnknown(_) => "store_commit_unknown",
+        StoreError::OperationUnknown => "store_operation_unknown",
         StoreError::Sqlite(_) => "store_sqlite",
         StoreError::Io(_) => "store_io",
         _ => "store_error",

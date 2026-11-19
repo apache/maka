@@ -27,6 +27,20 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[derive(Serialize, JsonSchema)]
+pub struct DictationConnection {
+    pub basis: ConnectionVersionBasis,
+    pub name: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DictationInput {
+    pub connection: ConnectionVersionBasis,
+    #[schemars(length(max = 5400000))]
+    pub audio: String,
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "SettingsCatalogModelsRead")]
@@ -230,6 +244,21 @@ pub struct ConnectionSummary {
     pub provider: maka_agent_facts::provider::Identity,
     pub enabled: bool,
     pub enabled_model_count: usize,
+    pub usage_limits: bool,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "SettingsConnectionUsageLimits")]
+pub enum ConnectionUsageLimits {
+    Ready {
+        limits: Vec<maka_agent_ports::provider::UsageLimit>,
+    },
+    Unsupported,
+    Superseded,
+    AuthenticationRequired,
+    UsageCredentialRequired,
+    Unavailable,
 }
 #[derive(Serialize, JsonSchema)]
 #[serde(
@@ -270,6 +299,7 @@ pub struct ConnectionRead {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "SettingsConnectionEditingFacts")]
 pub struct ConnectionEditingFacts {
+    pub discovered_model_ids: Vec<String>,
     pub enabled_model_ids: Vec<String>,
     #[schemars(
         with = "maka_plugin_core::wire_schema::RequiredNullable<BTreeMap<String, maka_agent_facts::configuration::ModelOverride>>"
@@ -546,6 +576,18 @@ pub fn contract() -> Contract {
                     method::<ConnectionRead, ConnectionDetail>(MethodMode::Query),
                 ),
                 (
+                    "dictationConnections".into(),
+                    method::<crate::preferences::Read, Vec<DictationConnection>>(MethodMode::Query),
+                ),
+                (
+                    "transcribeDictation".into(),
+                    method::<DictationInput, String>(MethodMode::Query),
+                ),
+                (
+                    "connectionUsageLimits".into(),
+                    method::<ConnectionVersionBasis, ConnectionUsageLimits>(MethodMode::Query),
+                ),
+                (
                     "providers".into(),
                     method::<ProvidersRead, ProvidersPage>(MethodMode::Query),
                 ),
@@ -597,6 +639,23 @@ pub fn contract() -> Contract {
                             .required(),
                         )]),
                         ..method::<SaveCredential, CredentialSaveResult>(MethodMode::Mutation)
+                    },
+                ),
+                (
+                    "saveUsageCredential".into(),
+                    Method {
+                        resources: BTreeMap::from([(
+                            "secret".into(),
+                            maka_plugin_core::contract::ResourceType {
+                                name: "maka.text.utf8".into(),
+                                version: 1,
+                            }
+                            .required(),
+                        )]),
+                        ..method::<
+                            SaveCredential,
+                            maka_agent_facts::configuration::CredentialMutationResult,
+                        >(MethodMode::Mutation)
                     },
                 ),
                 (

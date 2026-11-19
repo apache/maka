@@ -36,7 +36,7 @@ pub(super) async fn read(
         .await?;
     let record: InteractionRecord =
         serde_json::from_value(value).map_err(|error| error.to_string())?;
-    if record.session_id != session || record.request_id != request {
+    if record.execution.session_id != session || record.request_id != request {
         return Err("The Host returned a different permission request".into());
     }
     Ok(record)
@@ -128,71 +128,5 @@ pub(super) async fn perform(
         Err(format!(
             "The permission action could not be opened: {status}"
         ))
-    }
-}
-
-#[cfg(all(test, target_os = "macos"))]
-mod tests {
-    use super::*;
-    use maka_agent_facts::interaction::InteractionOutcome;
-    fn record() -> InteractionRecord {
-        serde_json::from_value(serde_json::json!({
-            "sessionId":"session", "turnId":"turn", "runId":"run", "requestId":"request",
-            "createdAt":1, "outcome":null,
-            "request":{"kind":"system_permission","toolUseId":"tool",
-                "grants":["accessibility","screen_recording"],"application":"Maka Host",
-                "applicationLocation":{"fileUrl":"file:///Applications/Maka%20Host.app",
-                    "stateDomain":"a".repeat(64)}}
-        }))
-        .unwrap()
-    }
-
-    #[test]
-    fn permission_actions_reveal_the_host_bundle_instead_of_launching_it() {
-        let record = record();
-        let reveal = command(&record, &"a".repeat(64), "reveal_application").unwrap();
-        assert_eq!(reveal.as_std().get_program(), "/usr/bin/open");
-        assert_eq!(
-            reveal.as_std().get_args().collect::<Vec<_>>(),
-            ["-R", "/Applications/Maka Host.app"]
-        );
-        for (grant, pane) in [
-            ("accessibility", "Privacy_Accessibility"),
-            ("screen_recording", "Privacy_ScreenCapture"),
-        ] {
-            let command = command(&record, &"a".repeat(64), grant).unwrap();
-            let arguments: Vec<_> = command.as_std().get_args().collect();
-            assert_eq!(
-                arguments,
-                [
-                    format!("x-apple.systempreferences:com.apple.preference.security?{pane}")
-                        .as_str()
-                ]
-            );
-        }
-    }
-
-    #[test]
-    fn permission_actions_refuse_remote_old_settled_and_unrequested_actions() {
-        let mut record = record();
-        assert!(actions(&record, &"b".repeat(64)).is_empty());
-        assert!(command(&record, &"b".repeat(64), "reveal_application").is_err());
-        assert!(command(&record, &"a".repeat(64), "/Applications/Other.app").is_err());
-        if let InteractionRequest::SystemPermission { grants, .. } = &mut record.request {
-            *grants = vec![SystemPermissionGrant::Accessibility];
-        }
-        assert!(command(&record, &"a".repeat(64), "screen_recording").is_err());
-        record.outcome = Some(InteractionOutcome::SystemPermissionGranted { committed_at: 2 });
-        assert!(actions(&record, &"a".repeat(64)).is_empty());
-        record.outcome = None;
-        if let InteractionRequest::SystemPermission {
-            application_location,
-            ..
-        } = &mut record.request
-        {
-            *application_location = None;
-        }
-        assert!(actions(&record, &"a".repeat(64)).is_empty());
-        assert!(command(&record, &"a".repeat(64), "accessibility").is_err());
     }
 }

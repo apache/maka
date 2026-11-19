@@ -23,10 +23,14 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+base64 = "0.23.1"
+maka-provider-protocol.workspace = true
 hex.workspace = true
 maka-agent-facts.workspace = true
 maka-agent-ports.workspace = true
 maka-capabilities.workspace = true
+maka-plugin-core.workspace = true
+maka-sandbox.workspace = true
 futures-util.workspace = true
 jiff.workspace = true
 dunce = "1.0.5"
@@ -34,6 +38,7 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 sha2.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 unicode-normalization = "0.1.26"
 uuid.workspace = true
 

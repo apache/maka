@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { batch, cleanup, signal } from 'nsh';
+import { batch, cleanup, signal, Storage } from 'nsh';
 import type { ComposerChecklistSource } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { AgentChecklist, AgentTodoItem } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Subscription } from './history';
@@ -25,17 +25,61 @@ import { createText, errorText, isObservationCancelled, UiError, type UiText } f
 
 // Each entry is a session UUID and a 64-byte SHA-256 hex digest (~100 B),
 // cleared as soon as that session's checklist changes or clears, and bounded so
-// deleted conversations cannot accumulate unbounded process-wide state.
+// deleted conversations cannot accumulate unbounded storage.
+const STORAGE_KEY = 'maka.checklist.dismissed';
 const MAX_HIDDEN_SESSIONS = 512;
 const hidden = new Map<string, string>();
+const touchedBeforeHydration = new Set<string>();
+let hydrated = false;
+
+const hydration: Promise<void> = Storage.getItem(STORAGE_KEY).then(
+  (raw) => {
+    if (raw) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        parsed = null;
+      }
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        for (const [id, digest] of Object.entries(parsed)) {
+          if (typeof digest === 'string' && digest.length > 0 && !touchedBeforeHydration.has(id)) {
+            if (hidden.size >= MAX_HIDDEN_SESSIONS) {
+              const oldest = hidden.keys().next().value;
+              if (oldest !== undefined) hidden.delete(oldest);
+            }
+            hidden.set(id, digest);
+          }
+        }
+      }
+    }
+    hydrated = true;
+    touchedBeforeHydration.clear();
+  },
+  () => {
+    hydrated = true;
+    touchedBeforeHydration.clear();
+  },
+);
+
+function persistHidden() {
+  void Storage.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(hidden))).catch(() => {});
+}
 
 function rememberHidden(sessionId: string, digest: string) {
+  if (!hydrated) touchedBeforeHydration.add(sessionId);
   hidden.delete(sessionId);
   if (hidden.size >= MAX_HIDDEN_SESSIONS) {
     const oldest = hidden.keys().next().value;
     if (oldest !== undefined) hidden.delete(oldest);
   }
   hidden.set(sessionId, digest);
+  persistHidden();
+}
+
+function forgetHidden(sessionId: string) {
+  if (!hydrated) touchedBeforeHydration.add(sessionId);
+  if (hidden.delete(sessionId)) persistHidden();
 }
 
 function isStaleRevision(
@@ -78,7 +122,7 @@ export function createChecklistState(source: ComposerChecklistSource, sessionId:
     if (!alive || !shouldAcceptHead(head)) return false;
     const currentDismissed = dismissed();
     const clearDismissed = currentDismissed !== null && (head.digest ?? null) !== currentDismissed;
-    if (clearDismissed) hidden.delete(sessionId);
+    if (clearDismissed) forgetHidden(sessionId);
     generation += 1;
     batch(() => {
       if (clearDismissed) dismissed.set(null);
@@ -138,7 +182,8 @@ export function createChecklistState(source: ComposerChecklistSource, sessionId:
         nextOffset.set(next.nextOffset);
       });
     } catch (reason) {
-      if (alive && currentGeneration === generation) error.set(errorText(reason));
+      if (alive && currentGeneration === generation)
+        error.set(errorText(reason, 'Could not load the checklist.'));
     } finally {
       if (alive && currentGeneration === generation) loading.set(false);
     }
@@ -161,54 +206,74 @@ export function createChecklistState(source: ComposerChecklistSource, sessionId:
     if (previous) void previous.close().catch(() => {});
   });
 
-  void (async () => {
-    for (let reconnects = 0; alive; ) {
-      let opened: Subscription | null = null;
+  let watching = false;
+  const startWatch = () => {
+    if (!alive || watching) return;
+    watching = true;
+    void (async () => {
       try {
-        opened = await source.watch(0);
-        if (!alive) {
-          await opened.close();
-          return;
-        }
-        stream = opened;
-        for (;;) {
-          const page: AgentChecklist | null = await opened.next();
+        if (!hydrated) {
+          await hydration;
           if (!alive) return;
-          if (page === null) throw new UiError('Checklist updates ended. Reopen the conversation.');
-          reconnects = 0;
-          if (!shouldAcceptHead(page)) continue;
-          const windowSize = desiredOpenWindow(page);
-          if (windowSize > page.items.length) {
-            try {
-              const expanded = await source.read(0, windowSize);
-              if (!alive) return;
-              commitHead(expanded);
-            } catch (reason) {
-              if (!alive) return;
-              commitHead(page, errorText(reason));
+          if (dismissed() === null) {
+            const stored = hidden.get(sessionId) ?? null;
+            if (stored !== null) dismissed.set(stored);
+          }
+        }
+        for (let reconnects = 0; alive; ) {
+          let opened: Subscription | null = null;
+          try {
+            opened = await source.watch(0);
+            if (!alive) {
+              await opened.close();
+              return;
             }
-          } else {
-            commitHead(page);
+            stream = opened;
+            for (;;) {
+              const page: AgentChecklist | null = await opened.next();
+              if (!alive) return;
+              if (page === null)
+                throw new UiError('Checklist updates ended. Reopen the conversation.');
+              reconnects = 0;
+              if (!shouldAcceptHead(page)) continue;
+              const windowSize = desiredOpenWindow(page);
+              if (windowSize > page.items.length) {
+                try {
+                  const expanded = await source.read(0, windowSize);
+                  if (!alive) return;
+                  commitHead(expanded);
+                } catch (reason) {
+                  if (!alive) return;
+                  commitHead(page, errorText(reason, 'Could not load the checklist.'));
+                }
+              } else {
+                commitHead(page);
+              }
+            }
+          } catch (reason) {
+            if (!alive) return;
+            if (isObservationCancelled(reason) && reconnects < 3) {
+              reconnects += 1;
+              if (reconnects > 1)
+                await new Promise((resolve) => setTimeout(resolve, 250 * reconnects));
+              continue;
+            }
+            throw reason;
+          } finally {
+            if (opened && stream === opened) {
+              stream = null;
+              await opened.close().catch(() => {});
+            }
           }
         }
       } catch (reason) {
-        if (!alive) return;
-        if (isObservationCancelled(reason) && reconnects < 3) {
-          reconnects += 1;
-          if (reconnects > 1) await new Promise((resolve) => setTimeout(resolve, 250 * reconnects));
-          continue;
-        }
-        throw reason;
+        if (alive) error.set(errorText(reason, 'Could not load the checklist.'));
       } finally {
-        if (opened && stream === opened) {
-          stream = null;
-          await opened.close().catch(() => {});
-        }
+        watching = false;
       }
-    }
-  })().catch((reason) => {
-    if (alive) error.set(errorText(reason));
-  });
+    })();
+  };
+  startWatch();
 
   const isDismissed = () => {
     const digest = snapshot()?.digest ?? null;
@@ -239,8 +304,10 @@ export function createChecklistState(source: ComposerChecklistSource, sessionId:
       if (digest !== null) {
         rememberHidden(sessionId, digest);
         dismissed.set(digest);
-      } else if (error()) {
+      }
+      if (error()) {
         error.set('');
+        if (!watching) startWatch();
       }
     },
     /**

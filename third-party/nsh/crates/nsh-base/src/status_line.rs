@@ -1,6 +1,7 @@
 //! The terminal's status line: the bottom row of the viewport, where a
-//! toast's message and the hint of what the focus or the pointer is on
-//! (a `Tooltip`) show, one at a time, as a terminal app's message line.
+//! toast's message and the hint of what the pointer or the focus the
+//! keyboard moved is on (a `Tooltip`) show, one at a time, as a terminal
+//! app's message line.
 //!
 //! The components that show there claim the line ([`claim`]) and draw it
 //! with [`line`], so they share its place and its rules: a toast wins over

@@ -17,16 +17,20 @@
  * under the License.
  */
 
-use super::{ModelAttempt, ToolAttempt};
+use super::{ModelAttempt, ToolUsage};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-/// A physical model call or tool attempt, never copied conversation membership.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "kind", content = "attempt", rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    content = "attempt",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 #[schemars(rename = "UsageActivity")]
 pub enum Activity {
     Model(ModelAttempt),
-    Tool(ToolAttempt),
+    Tool(ToolUsage),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

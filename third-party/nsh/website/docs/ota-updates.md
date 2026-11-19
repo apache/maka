@@ -166,7 +166,7 @@ jobs:
       # The nsh the apps in the field were built with, such as v0.5.0 (a repository variable); empty: the latest.
       NSH_VERSION: ${{ vars.NSH_VERSION }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install nsh
         run: |
@@ -230,8 +230,8 @@ export async function checkForUpdates() {
       await downloadPackage();
       // iOS and Android: nothing to show, the package runs from the next cold start.
       packageReady.set(canRestart);
-      return;
     }
+    // `shell`: the code is current, only the installed app is behind; offer it quietly.
     appUpdate.set(await checkForUpdate());
   } catch (error) {
     console.warn("update check failed:", error); // the next check tries again
@@ -373,8 +373,10 @@ Nothing is left behind, and the app keeps running what it ran.
 
 ### A package does not run at the next start
 
-The launcher logs why, in the terminal or the platform's log (Console or the unified log on Apple platforms,
-`adb logcat` on Android):
+The launcher logs why, in the terminal or the platform's log: the unified log on macOS and iOS, under the app's id
+(Console, `log stream --predicate 'subsystem == "com.example.notes"'`;
+[A packaged app's logs](./dev-server-and-debugging.md#a-packaged-apps-logs)), `adb logcat` on Android. The first
+three lines below are warnings, logged on every platform; the last one is an info line, logged on Android:
 
 ```text
 updates: downloaded package refused: …

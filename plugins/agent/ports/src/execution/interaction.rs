@@ -20,7 +20,7 @@
 use crate::Error;
 use maka_agent_facts::capability::FormField;
 use maka_agent_facts::capability::FormRequester;
-use maka_agent_facts::event::Invocation;
+use maka_agent_facts::durable::ExecutionIdentity;
 use maka_agent_facts::interaction::InteractionQuestion;
 use maka_agent_facts::interaction::InteractionRequest;
 use serde::{Deserialize, Serialize};
@@ -42,7 +42,7 @@ pub enum Prompt {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OfferInteraction {
     pub operation_id: String,
-    pub invocation: Invocation,
+    pub execution: ExecutionIdentity,
     pub prompt: Prompt,
 }
 impl OfferInteraction {
@@ -69,4 +69,36 @@ impl OfferInteraction {
             .map_err(|error| Error::Invalid(error.into()))?;
         Ok(request)
     }
+}
+
+/// Native-issued access to one admitted Run. Identity is only an observation;
+/// implementations check current authority and the Stop frontier on publication.
+/// Outcome commits remain permitted after termination for original late facts.
+pub trait Interactions: Send + Sync {
+    fn execution(&self) -> &ExecutionIdentity;
+    fn changes(&self) -> Result<tokio::sync::watch::Receiver<()>, String>;
+    fn read<'a>(
+        &'a self,
+        request_id: &'a str,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        Result<Option<maka_agent_facts::interaction::InteractionRecord>, String>,
+    >;
+    /// Exact repetition returns the canonical record; conflicting requests fail.
+    fn establish<'a>(
+        &'a self,
+        record: &'a maka_agent_facts::interaction::InteractionRecord,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        Result<maka_agent_facts::interaction::InteractionRecord, String>,
+    >;
+    /// First-writer settlement returns the winner, never overwrites an answer.
+    fn commit_outcome<'a>(
+        &'a self,
+        request_id: &'a str,
+        outcome: maka_agent_facts::interaction::InteractionOutcome,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        Result<maka_agent_facts::interaction::InteractionRecord, String>,
+    >;
 }

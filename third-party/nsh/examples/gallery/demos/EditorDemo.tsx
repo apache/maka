@@ -4,7 +4,7 @@ import { isAvailable as hasMenus, Menu as NativeMenu, type MenuItem as NativeMen
 import { openUrl, platform, windowSize } from "nsh";
 import { keymap } from "nsh";
 import { Icon, type IconName } from "../icons";
-import { colors, handleThumb, Tip } from "../ui";
+import { colors, handleThumb, inputLook, menuIndicator, menuItemLabel, menuItemLook, menuItemNote, menuItemSize, MenuLabel, MenuMark, menuSeparator, popupSurface, Tip, toggleGlyph, toggleLabel, toggleLook, menuPopup } from "../ui"
 import { SAMPLE } from "./lsp/sample";
 import { type CodeAction, type DocumentColor, LanguageServer, type Problem } from "./lsp/server";
 
@@ -162,74 +162,63 @@ const HOVER_DOCS = {
   codeBlockCode: "p-0 text-xs",
 };
 
-/** A small text button of the find bar: `on` lights it while what it
- * toggles is on. */
+/** A small text button of the find bar, a toolbar's toggle
+ * (`toggleLook`): `on` lights it while what it toggles is on. */
 function Tool(props: { label: string; name: string; onPress: () => void; on?: boolean }) {
   return (
-    <Button
-      onPress={props.onPress}
-      selected={props.on}
-      accessibilityLabel={props.label}
-      tooltip={<Tip label={props.label} />}
-      class="h-7 min-w-7 items-center justify-center rounded-md px-1.5 hover:bg-foreground/10 active:opacity-70 selected:bg-primary"
-    >
-      <Text class={`font-mono text-[11px] font-semibold ${props.on ? "text-primary-foreground" : "text-foreground"}`}>{props.name}</Text>
+    <Button onPress={props.onPress} selected={props.on} accessibilityLabel={props.label} tooltip={<Tip label={props.label} />} {...toggleLook({ on: () => props.on, text: true, style: { paddingHorizontal: 6 } })}>
+      <Text style={{ ...toggleLabel(() => props.on), fontFamily: "monospace", fontSize: 11, fontWeight: "600" }}>{props.name}</Text>
     </Button>
   );
 }
 
-/** An icon button of the toolbar, its label for screen readers and as its
- * tooltip: `on` lights it while what it toggles is on. */
+/** An icon button of the toolbar, a toolbar's toggle (`toggleLook`), its
+ * label for screen readers and as its tooltip: `on` lights it while what
+ * it toggles is on; `small` fits the status line. */
 function IconTool(props: { label: string; icon: IconName; onPress: () => void; on?: boolean; size?: "small"; word?: string }) {
+  const small = props.size === "small";
   return (
     <Button
       onPress={props.onPress}
       selected={props.on}
       accessibilityLabel={props.label}
       tooltip={<Tip label={props.label} />}
-      class={`${props.size === "small" ? "size-5" : "size-7"} items-center justify-center rounded-md hover:bg-foreground/10 active:opacity-70 selected:bg-foreground/15`}
-      style={terminal && props.word ? { width: "auto" } : undefined}
+      {...toggleLook({ on: () => props.on, text: terminal && !!props.word, size: small ? "small" : undefined, style: small && !terminal ? { minWidth: 20, height: 20 } : undefined })}
     >
       {/* A terminal has no icons: the tool is its word there, which the painter bands while on. */}
-      {terminal && props.word ? <Text>{props.word}</Text> : <Icon name={props.icon} size={props.size === "small" ? 13 : 16} tint={props.on ? colors.text : colors.muted} />}
+      {terminal && props.word ? <Text>{props.word}</Text> : <Icon name={props.icon} {...toggleGlyph(() => props.on, { size: small ? "small" : undefined })} size={small ? 13 : 16} />}
     </Button>
   );
 }
 
-/** An item of the options menu: a check or a dot at its end when `mark`
- * says so. */
-function Item(props: { label: string; onSelect: () => void; mark?: "check" | "dot" | null; shortcut?: string; keepOpen?: boolean }) {
+/** An item of a menu (`menuItemLook`): a check (`check`, a setting) or a
+ * dot (`dot`, one choice of a group) before its label while it is on, a
+ * shortcut at its end. An item without a mark keeps the marks' lane
+ * empty, so every label of the menu starts at one edge. */
+function Item(props: { label: string; onSelect: () => void; mark?: "check" | "dot"; checked?: boolean; shortcut?: string; keepOpen?: boolean }) {
   return (
     <MenuItem
       onSelect={props.onSelect}
       closeOnSelect={!props.keepOpen}
-      class={`flex-row items-center gap-2 rounded-md px-2 hover:bg-foreground/10 active:bg-foreground/15 ${pointer ? "h-8" : "h-11"}`}
+      checked={props.mark ? !!props.checked : undefined}
+      role={props.mark === "dot" ? "menuitemradio" : undefined}
+      indicatorClass={menuIndicator}
+      indicator={props.mark ? <MenuMark kind={props.mark} size={menuItemSize.icon} tint={colors.accent} /> : <View style={{ width: menuItemSize.icon }} />}
+      {...menuItemLook()}
     >
-      <Text class="shrink grow text-sm text-popover-foreground">{props.label}</Text>
+      <Text style={menuItemLabel()}>{props.label}</Text>
       <If when={pointer && props.shortcut}>
-        <Text class="font-mono text-xs text-muted-foreground">{keymap.label(props.shortcut!)}</Text>
+        <Text style={menuItemNote()}>{keymap.label(props.shortcut!)}</Text>
       </If>
-      <View class="w-4 items-center">
-        <If when={props.mark === "check"}>
-          <Icon name="check" size={14} tint={colors.accent} />
-        </If>
-        <If when={props.mark === "dot"}>
-          <View class="size-[7px] rounded-full" style={{ backgroundColor: colors.accent }} />
-        </If>
-      </View>
     </MenuItem>
   );
 }
 
-/** A group's title in the options menu. */
-function Label(props: { text: string }) {
-  return <Text class="px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{props.text}</Text>;
-}
+/** How far a menu's labels start past a row's edge: the marks' lane and the row's gap (`menuItemLook`'s 8). */
+const markLane = () => (terminal ? 0 : menuItemSize.icon + 8);
 
-/** The menus' popup on desktops, their sheet on touch screens. */
-const popup = pointer ? "w-64 rounded-lg border border-border bg-popover p-1.5 shadow-lg" : "rounded-t-2xl bg-popover px-2.5 pb-8 pt-2.5";
-
-const field = "h-7 min-w-[100px] flex-1 rounded-md border border-border bg-card px-2 text-[12px] text-foreground placeholder:text-muted-foreground focus:border-ring";
+/** The find bar's inputs: the fields' shared well (`inputLook`), sharing its row. */
+const field = () => inputLook({ style: { flex: 1, minWidth: 100 } });
 
 /**
  * Editor: `nsh/base`'s `Editor` with a sample file per language in a
@@ -486,8 +475,7 @@ export function EditorDemo() {
     return (
       <Overlay anchor={toolbar} placement="bottom" align="end" offset={4} margin={8} onCancel={closeFind}>
         <View
-          class="gap-1 rounded-lg border border-border bg-popover p-1 shadow-lg"
-          style={{ width: Math.min(440, windowSize().width - 16) }}
+          style={{ ...popupSurface(), gap: 4, width: Math.min(440, windowSize().width - 16) }}
         >
           <View class="flex-row items-center gap-0.5">
             <Input
@@ -500,7 +488,7 @@ export function EditorDemo() {
               accessibilityLabel="Find"
               autoCapitalize="none"
               autoCorrect={false}
-              class={field}
+              {...field()}
             />
             <Text style={{ numberOfLines: 1 }} class="px-1 font-mono text-[11px] tabular-nums text-muted-foreground">
               {matches()}
@@ -522,7 +510,7 @@ export function EditorDemo() {
               accessibilityLabel="Replace"
               autoCapitalize="none"
               autoCorrect={false}
-              class={field}
+              {...field()}
             />
             <IconTool label="Replace" icon="replace" onPress={() => editor?.replace(replacement())} />
             <IconTool
@@ -635,7 +623,7 @@ export function EditorDemo() {
                 editor?.focus();
               }}
               accessibilityLabel={p().diagnostic.message}
-              class="flex-row gap-2 px-3 py-1 hover:bg-foreground/10 active:bg-foreground/15"
+              class="flex-row gap-2 px-3 py-1 hover:bg-accent active:opacity-70"
             >
               <Dot severity={p().diagnostic.severity} />
               <Text style={{ numberOfLines: 1 }} class="flex-1 text-xs text-foreground">
@@ -662,17 +650,12 @@ export function EditorDemo() {
         <Menu
           offset={4}
           margin={8}
-          popupClass={popup}
-          backdropClass="bg-scrim"
+          {...menuPopup({ minWidth: 220 })}
           onOpenChange={({ open }) => menuOpen.set(open ? "language" : null)}
           trigger={
-            <View
-              accessibilityLabel="Language"
-              tooltip={<Tip label="Language" />}
-              class={`h-7 flex-row items-center gap-1.5 rounded-md px-1.5 active:opacity-70 ${menuOpen() === "language" ? "bg-accent" : "hover:bg-foreground/10"}`}
-            >
-              <Icon name="code" size={16} tint={colors.muted} />
-              <Text class="text-xs font-medium text-foreground">{LANGUAGES.find((l) => l.value === language())!.label}</Text>
+            <View accessibilityLabel="Language" tooltip={<Tip label="Language" />} {...toggleLook({ on: () => menuOpen() === "language", text: true, style: { paddingHorizontal: 6 } })}>
+              <Icon name="code" {...toggleGlyph(false)} />
+              <Text style={{ ...toggleLabel(true), fontSize: 12 }}>{LANGUAGES.find((l) => l.value === language())!.label}</Text>
             </View>
           }
         >
@@ -680,7 +663,8 @@ export function EditorDemo() {
             {(l) => (
               <Item
                 label={l().label}
-                mark={language() === l().value ? "dot" : null}
+                mark="dot"
+                checked={language() === l().value}
                 onSelect={() => {
                   hover.set(null);
                   language.set(l().value);
@@ -695,26 +679,26 @@ export function EditorDemo() {
           align="end"
           offset={4}
           margin={8}
-          popupClass={popup}
-          backdropClass="bg-scrim"
+          {...menuPopup({ minWidth: 256 })}
           onOpenChange={({ open }) => menuOpen.set(open ? "options" : null)}
           trigger={
-            <View
-              accessibilityLabel="Editor options"
-              tooltip={<Tip label="Editor options" />}
-              class={`size-7 items-center justify-center rounded-md active:opacity-70 ${menuOpen() === "options" ? "bg-accent" : "hover:bg-foreground/10"}`}
-            >
-              <Icon name="sliders" size={16} tint={colors.muted} />
+            <View accessibilityLabel="Editor options" tooltip={<Tip label="Editor options" />} {...toggleLook({ on: () => menuOpen() === "options" })}>
+              <Icon name="sliders" {...toggleGlyph(() => menuOpen() === "options")} />
             </View>
           }
         >
-          <Item label="Soft wrap" mark={softWrap() ? "check" : null} keepOpen onSelect={() => softWrap.set(!softWrap())} />
-          <Item label="Line numbers" mark={lineNumbers() ? "check" : null} keepOpen onSelect={() => lineNumbers.set(!lineNumbers())} />
-          <Item label="Problems" mark={problemsShown() ? "check" : null} onSelect={() => area?.toggleDock("bottom")} />
+          <Item label="Soft wrap" mark="check" checked={softWrap()} keepOpen onSelect={() => softWrap.set(!softWrap())} />
+          <Item label="Line numbers" mark="check" checked={lineNumbers()} keepOpen onSelect={() => lineNumbers.set(!lineNumbers())} />
+          <Item label="Problems" mark="check" checked={problemsShown()} onSelect={() => area?.toggleDock("bottom")} />
           <Item label="Find and Replace" shortcut="mod+f" onSelect={openFind} />
-          <MenuSeparator class="mx-1 my-1 h-px bg-border" />
-          <Label text={typescript() ? "TypeScript language server" : "Keys"} />
-          <Each of={tips()}>{(tip) => <Text class="px-2 py-0.5 text-xs text-muted-foreground">{tip()}</Text>}</Each>
+          <MenuSeparator style={menuSeparator()} />
+          {/* Under the items' labels, past the marks' lane. */}
+          <View style={{ paddingLeft: markLane() }}>
+            <MenuLabel text={typescript() ? "TypeScript language server" : "Keys"} />
+          </View>
+          <Each of={tips()}>
+            {(tip) => <Text style={{ ...menuItemNote(), color: colors.muted, paddingLeft: (terminal ? 0 : 8) + markLane(), paddingRight: terminal ? 0 : 8, paddingVertical: 2 }}>{tip()}</Text>}
+          </Each>
         </Menu>
       </View>
 
@@ -728,7 +712,10 @@ export function EditorDemo() {
           class="flex-1"
           defaultLayout={{
             center: { type: "tabs", panels: ["editor"] },
-            bottom: { layout: { type: "tabs", panels: ["problems"] }, size: 120 },
+            // Whole rows: the tab bar (28 and its rule), the list's padding (8) and six problems of 24, every
+            // one of the TypeScript sample's (an error, four warnings, an info), so none hides under the fold
+            // above the status bar.
+            bottom: { layout: { type: "tabs", panels: ["problems"] }, size: 29 + 8 + 6 * 24 },
           }}
           panels={[
             { id: "editor", closable: false },
@@ -773,10 +760,10 @@ export function EditorDemo() {
               testID="hover-card"
               // A slim panel, as an editor's: one line per problem, its
               // fixes as links under it, the docs below a hairline.
-              class="overflow-hidden rounded-md border border-border bg-popover shadow-md"
+              // The popup surface, the card's sections padded each.
               // A width of its own: an overlay fits its content, which
               // would leave the message's growing text no room.
-              style={{ maxWidth: Math.min(440, windowSize().width - 16) }}
+              style={{ ...popupSurface(), padding: 0, overflow: "hidden", maxWidth: Math.min(440, windowSize().width - 16) }}
             >
               <Each of={card().diagnostics}>
                 {(d) => (
@@ -840,7 +827,7 @@ export function EditorDemo() {
       <If when={quickFixes()}>
         {(menu) => (
           <Overlay anchor={menu().anchor} placement="bottom" align="start" margin={8} onPressOutside={() => quickFixes.set(null)} onCancel={() => quickFixes.set(null)}>
-            <View role="menu" class="min-w-56 rounded-lg border border-border bg-popover p-1 shadow-lg">
+            <View role="menu" style={{ ...popupSurface(), minWidth: 224 }}>
               <Each of={menu().actions}>
                 {(action) => (
                   <Button
@@ -848,9 +835,9 @@ export function EditorDemo() {
                       quickFixes.set(null);
                       apply(action());
                     }}
-                    class="rounded-md px-3 py-2 hover:bg-foreground/10 active:bg-foreground/15"
+                    {...menuItemLook()}
                   >
-                    <Text class="text-[13px] text-popover-foreground">{action().title}</Text>
+                    <Text style={menuItemLabel()}>{action().title}</Text>
                   </Button>
                 )}
               </Each>
@@ -860,7 +847,7 @@ export function EditorDemo() {
       </If>
 
       {/* A terminal's status line reads as words two columns apart (12pt is one), its edges one column in, as a pager's. */}
-      <View class="h-6 flex-row items-center gap-3 overflow-hidden border-t border-border pl-2.5 pr-1" style={terminal ? { gap: 24, paddingHorizontal: 8 } : undefined}>
+      <View class="h-7 flex-row items-center gap-3 overflow-hidden border-t border-border pl-2.5 pr-1" style={terminal ? { gap: 24, paddingHorizontal: 8 } : undefined}>
         <Text style={{ numberOfLines: 1 }} class="font-mono text-[11px] tabular-nums text-foreground">
           {caret()}
         </Text>
@@ -873,7 +860,8 @@ export function EditorDemo() {
         <Text style={{ numberOfLines: 1 }} class="font-mono text-[11px] text-info">
           {plural(count("info"), "info")}
         </Text>
-        <If when={!terminal || last() !== "—"}>
+        {/* Nothing until there is something to say: a lone dash reads as debris. */}
+        <If when={last() !== "—"}>
           <Text style={{ numberOfLines: 1 }} class="min-w-0 shrink font-mono text-[11px] text-muted-foreground">
             {last()}
           </Text>

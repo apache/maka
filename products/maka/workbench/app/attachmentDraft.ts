@@ -82,13 +82,15 @@ export function createAttachmentDraft(options: {
   const watchFailed = signal(false);
   const owns = (target: { owner: string }) => alive && target.owner === options.sessionId;
   const returned = (original: any) =>
-    original.receipt?.kind === 'recorded' && original.receipt.outcome?.kind === 'returned'
-      ? original.receipt.outcome.value
+    original.receipt?.kind === 'recorded' &&
+    original.receipt.outcome?.kind === 'returned' &&
+    original.receipt.outcome.result?.kind === 'success'
+      ? original.receipt.outcome.result.value
       : null;
   const ended = (original: any) =>
     original.abandoned ||
     (original.receipt?.kind === 'recorded' &&
-      ['returned', 'unknown'].includes(original.receipt.outcome?.kind));
+      ['returned', 'not_executed', 'unknown'].includes(original.receipt.outcome?.kind));
   const uploaded = (original: any): DraftAttachment | null => {
     const value = returned(original),
       attachment = value?.attachment;
@@ -166,7 +168,14 @@ export function createAttachmentDraft(options: {
           error:
             result?.kind === 'rejected'
               ? uiMessage('Upload rejected: {reason}', { reason: result.reason })
-              : undefined,
+              : original.receipt?.kind === 'recorded' &&
+                  original.receipt.outcome?.kind === 'returned' &&
+                  original.receipt.outcome.result?.kind === 'failure'
+                ? errorText(
+                    new Error(original.receipt.outcome.result.diagnostic),
+                    'Could not attach the file.',
+                  )
+                : undefined,
           original,
         };
       }),
@@ -190,7 +199,7 @@ export function createAttachmentDraft(options: {
     } catch (reason) {
       if (alive) {
         watchFailed.set(true);
-        error.set(errorText(reason));
+        error.set(errorText(reason, 'Could not load attachments.'));
       }
     } finally {
       stream?.close();
@@ -225,7 +234,9 @@ export function createAttachmentDraft(options: {
       if (alive)
         selecting.set(
           selecting().map((item) =>
-            item.id === target.id ? { ...item, kind: 'unknown', error: errorText(reason) } : item,
+            item.id === target.id
+              ? { ...item, kind: 'unknown', error: errorText(reason, 'Could not attach the file.') }
+              : item,
           ),
         );
     } finally {
@@ -275,7 +286,7 @@ export function createAttachmentDraft(options: {
       if (alive) receiveOne(original);
     } catch (reason) {
       if (alive) {
-        const failure = errorText(reason);
+        const failure = errorText(reason, 'Could not attach the file.');
         if (!watchFailed() && rows().some((row) => row.id === target.id && row.kind === 'unknown'))
           error.set(failure);
       }
@@ -309,15 +320,15 @@ export function createAttachmentDraft(options: {
     recovering,
     status,
     reportError(reason: unknown) {
-      if (alive) error.set(errorText(reason));
+      if (alive) error.set(errorText(reason, 'Could not attach the file.'));
     },
     notify(reason: unknown) {
-      if (alive) notice.set(errorText(reason));
+      if (alive) notice.set(errorText(reason, 'Could not attach the file.'));
     },
     clearNotice() {
       if (alive) notice.set('');
     },
-    observeIntake(intake: UploadIntake, onText: (text: string) => void) {
+    observeIntake(intake: UploadIntake, onText?: (text: string) => void) {
       if (!alive) {
         intake.close();
         return;
@@ -338,7 +349,7 @@ export function createAttachmentDraft(options: {
               'text' in value &&
               typeof value.text === 'string'
             )
-              onText(value.text);
+              onText?.(value.text);
             else if (
               value &&
               typeof value === 'object' &&
@@ -347,11 +358,11 @@ export function createAttachmentDraft(options: {
               'error' in value &&
               typeof value.error === 'string'
             )
-              notice.set(errorText(value.error));
+              notice.set(errorText(value.error, 'Could not attach the file.'));
             else status(value, false);
           }
         } catch (reason) {
-          if (alive) notice.set(errorText(reason));
+          if (alive) notice.set(errorText(reason, 'Could not attach the file.'));
         } finally {
           const observing = new Set(intakes());
           if (observing.delete(intake)) intakes.set(observing);

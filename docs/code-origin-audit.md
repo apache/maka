@@ -46,7 +46,19 @@ OpenCode V2 at [`55276f2108c8853f94cf16dc530e7754a6ce8318`](https://github.com/a
 
 The upstream MIT license is preserved in the root `LICENSE`. No upstream tests are distributed.
 
+### ChatGPT model-switch compaction
+
+`plugins/agent/native/src/owner/driver_model/codex_switch.rs` and
+`plugins/agent/facts/src/context/codex.rs` follow the pre-sampling model-switch
+order and qualifying previous-model fallback policy in OpenAI Codex at
+[`ba0d0e1f74ee0f41c27ef24b37ed5fc030b487e7`](https://github.com/openai/codex/tree/ba0d0e1f74ee0f41c27ef24b37ed5fc030b487e7),
+Apache-2.0 (`codex-rs/core/src/session/turn.rs` and
+`codex-rs/core/src/compact_model_fallback.rs`). Maka uses its own durable Engine
+and original-request ownership model; no upstream implementation or tests are copied.
+
 ### Source archive non-text inventory
+
+- `third-party/deno-tls/testdata/*.der`: Unmodified self-signed TLS certificates and keys used by the vendored crate’s tests. Their hashes and MIT license are recorded alongside the crate.
 
 - `assets/logo.png`: Product artwork reproduced by `scripts/generate-logo.py` from its vector geometry; Apache-2.0.
 - `products/maka/desktop-shell/maka.ico`: Windows multi-resolution icon derived from `assets/logo.png` in [#6446](https://github.com/apache/maka/pull/6446); seven PNG images at 16–256 pixels, embedded by `windows.rc`; Apache-2.0.
@@ -55,6 +67,7 @@ The upstream MIT license is preserved in the root `LICENSE`. No upstream tests a
 - `website/src/assets/social.en.png`: English website preview rendered by `website/scripts/social-preview.mjs`; includes the product mark and self-hosted OFL-1.1 fonts.
 - `website/src/assets/social.zh-CN.png`: Chinese website preview rendered by the same source and toolchain.
 - `third-party/nsh/crates/nsh-base/fonts/katex.pack.zst`: Zstandard-compressed KaTeX math fonts (`KaTeX_*.ttf`); source and revision are recorded in `third-party/nsh/upstream.json`, and the SIL OFL-1.1 license is preserved alongside it in `katex.LICENSE.txt`.
+- `third-party/nsh/crates/nsh-platform-macos/tests/host/clip.mp4`: Unmodified NSH native video test fixture from the pinned upstream snapshot; Apache-2.0.
 - `third-party/nsh/crates/nsh-testing/tests/testing/fonts/Pacifico-Regular.woff2`: Unmodified Pacifico WOFF2 test font from the NSH source snapshot; its SIL OFL-1.1 notice is preserved in `examples/gallery/fonts/OFL.txt`.
 - `third-party/nsh/examples/gallery-rs/icon.png`: Unmodified NSH example application artwork; source and revision are recorded in `third-party/nsh/upstream.json`.
 - `third-party/nsh/examples/gallery-rs/native/assets/bounce.gif`: Unmodified NSH gallery animation fixture from the same source snapshot.

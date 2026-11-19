@@ -315,6 +315,7 @@ impl GeneratedMessages {
                     logical_identity: identity.into(),
                     role,
                     last_is_tool_result: matches!(m, Message::Assistant { content, .. } if matches!(content.last(), Some(AssistantPart::ToolResult { .. }))),
+                    is_native_checkpoint: matches!(m, Message::Assistant { content, .. } if !content.is_empty() && content.iter().all(|part| matches!(part, AssistantPart::CodexCompaction { .. }))),
                     local_tool_names: Arc::new(GeneratedRecipes::new(match m {
                         Message::Assistant { content, .. } => content.iter().filter_map(|part| match part {
                             AssistantPart::ToolCall { tool_name, provider_executed, .. } if *provider_executed != Some(true) => Some(IdentifiedText { text: text(tool_name.clone()), identity: Sha256::digest(tool_name.as_bytes()).into() }),
@@ -349,22 +350,6 @@ impl RecipeSource<MessageRecipe> for GeneratedMessages {
 impl MessageSource for GeneratedMessages {
     fn open_metadata(&self, start: usize) -> Box<dyn RecipeCursor<MessageMetadata>> {
         self.metadata.open(start)
-    }
-    fn prefix_identity(&self, messages: usize) -> RecipeIdentity<'_> {
-        Box::pin(async move {
-            if messages > self.messages.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "generated prefix exceeds input",
-                ));
-            }
-            let mut hash = Sha256::new();
-            hash.update(b"maka-generated-prefix\0");
-            for item in self.metadata.0.iter().take(messages) {
-                hash.update(item.logical_identity.as_bytes());
-            }
-            Ok(hex::encode(hash.finalize()))
-        })
     }
 }
 

@@ -50,8 +50,11 @@ test("cells select one by one; the row header, or a selected cell pressed again,
   await app.wait(600);
   await app.press("text:Lima >> nth=0");
   await app.waitFor("text:/sel=1:-/");
-  // A cell of a column that does not select selects nothing.
+  // A cell of a column that does not select selects nothing (scrolled into
+  // view first: a pointer reaches only what the table shows).
   await app.wait(600);
+  await app.press("to-note");
+  await app.wait(100);
   await app.press("text:note 2");
   await app.wait(100);
   expect(app.shows("text:/sel=1:-/")).toBe(true);
@@ -180,14 +183,26 @@ test("a secondary press asks for a context menu at a cell or a title", async () 
   await app.waitFor("text:/target=none/");
 });
 
+test("onContextMenu is the table's own, not its host's", async () => {
+  const app = await start();
+  // The host hearing it too would call the handler without a row or column
+  // (headless asks the host itself; a browser hits the cell in the middle).
+  await app.rightClick("id:t");
+  await app.wait(100);
+  expect(app.shows("text:/menu=-:-/")).toBe(false);
+});
+
 test("a sort button sorts ascending, descending, then not at all", async () => {
   const app = await start();
   // The title selects the column; only the button sorts.
   await app.press("text:Name");
-  await app.wait(100);
+  await app.waitFor("text:/col=1:1:0/");
   expect(app.shows("text:/sort=/")).toBe(false);
   await app.press("id:sort:id");
   await app.waitFor("text:/sort=id ascending/");
+  // The sort button is the button's press, not the title's: the title's
+  // report stays.
+  expect(app.shows("text:/col=1:1:0/")).toBe(true);
   await app.press("id:sort:id");
   await app.waitFor("text:/sort=id descending/");
   await app.waitFor("Person 59");
@@ -283,6 +298,32 @@ test("the ref selects, scrolls, sizes, fits, reads and copies", async () => {
   await app.waitFor(
     "text:/dump=ID\\|Name\\|City\\|Change\\|Note \\/ 1\\|Person 0\\|Oslo\\|0\\|note 0 \\/ 2\\|Person 1\\|Lima\\|10\\|note 1$/",
   );
+});
+
+test("Shift leaves the selection when the app handles modifier presses, and a title press is reported", async () => {
+  const app = await start();
+  await app.press("cells");
+  await app.press("text:Person 3");
+  await app.waitFor("text:/sel=3:1/");
+  await app.press("own-modifiers");
+  await app.keyboard.down("shift");
+  await app.press("text:Person 4");
+  await app.keyboard.up("shift");
+  await app.wait(100);
+  expect(app.shows("text:/sel=3:1/")).toBe(true);
+  await app.waitFor("text:/press=4:1:1/");
+  await app.keyboard.down("shift");
+  await app.press("text:City");
+  await app.keyboard.up("shift");
+  await app.wait(100);
+  expect(app.shows("text:/sel=3:1/")).toBe(true);
+  await app.waitFor("text:/col=2:1:1/");
+});
+
+test("cellClasses underlines one cell", async () => {
+  const app = await start();
+  expect(app.spanStyle("text:note 0").underline).toBe(true);
+  expect(app.spanStyle("text:note 1").underline).toBe(false);
 });
 
 test("a column's classes style its titles and cells, by the value's sign", async () => {

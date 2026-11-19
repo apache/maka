@@ -18,7 +18,7 @@
  */
 
 use maka_agent_facts::{execution::CodeLanguage, tools::ToolExecutor};
-use maka_code_runtime::{CellAbort, CellContext, CellLimits, CellResult};
+use maka_code_runtime::{CellAbort, CellContext, CellLimits, PreparedCell};
 use std::{path::PathBuf, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
@@ -59,22 +59,55 @@ impl CodeExecutor {
             CodeLanguage::Python => maka_python_runtime::tool_identifier(name),
         }
     }
-    pub async fn execute_module(
+    /// Observe both original runtime owners, independent of current language.
+    /// Subscribe before reconciling; changes only request a fresh VM observation.
+    pub fn physical_changes(
+        &self,
+    ) -> (
+        tokio::sync::watch::Receiver<()>,
+        tokio::sync::watch::Receiver<()>,
+    ) {
+        (
+            self.javascript.physical_changes(),
+            self.python.physical_changes(),
+        )
+    }
+
+    pub async fn observe_binding(
+        &self,
+        binding: &maka_code_runtime::VmBinding,
+    ) -> maka_code_runtime::RuntimeVmObservation {
+        match binding.runtime.as_str() {
+            maka_code_runtime::JAVASCRIPT_VM => self.javascript.observe_binding(binding).await,
+            maka_code_runtime::PYTHON_VM => self.python.observe_binding(binding).await,
+            _ => maka_code_runtime::RuntimeVmObservation::Unobservable {
+                diagnostic: "unsupported VM binding contract".into(),
+            },
+        }
+    }
+    pub fn release_binding(&self, binding: &maka_code_runtime::VmBinding) -> bool {
+        match binding.runtime.as_str() {
+            maka_code_runtime::JAVASCRIPT_VM => self.javascript.release_binding(binding),
+            maka_code_runtime::PYTHON_VM => self.python.release_binding(binding),
+            _ => false,
+        }
+    }
+    pub async fn prepare_module(
         &self,
         source: String,
         tools: Arc<dyn ToolExecutor>,
         cancellation: CancellationToken,
         context: CellContext,
-    ) -> Result<CellResult, CellAbort> {
+    ) -> Result<PreparedCell, CellAbort> {
         match self.language {
             CodeLanguage::JavaScript => {
                 self.javascript
-                    .execute_module(source, tools, cancellation, context)
+                    .prepare_module(source, tools, cancellation, context)
                     .await
             }
             CodeLanguage::Python => {
                 self.python
-                    .execute_module(source, tools, cancellation, context)
+                    .prepare_module(source, tools, cancellation, context)
                     .await
             }
         }

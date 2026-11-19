@@ -33,10 +33,11 @@ pub(super) async fn query(
         DiagnosticPosition::Latest => (None, None),
         DiagnosticPosition::Before { through, sequence } => (Some(through), Some(sequence)),
     };
-    let page = owner
-        .scoped_store(context.scope(), &input.session_id)
-        .await?
-        .diagnostics_page(&input.session_id, through, before, 32, PAGE_BYTES)
+    let diagnostics = history::scoped_state(owner, context.scope())?
+        .diagnostics(owner.run_owner(), input.session_id.clone())
+        .map_err(|_| "agent_diagnostics_unavailable")?;
+    let page = diagnostics
+        .page(through, before, 32, PAGE_BYTES)
         .await
         .map_err(|_| "agent_diagnostics_unavailable")?;
     let mut page = DiagnosticPage {
@@ -47,13 +48,8 @@ pub(super) async fn query(
             .into_iter()
             .map(|entry| Diagnostic {
                 sequence: entry.sequence,
-                event_id: entry.event_id,
-                recorded_at: entry
-                    .recorded_at
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs_f64()
-                    * 1000.0,
+                event_id: entry.event_id.to_string(),
+                recorded_at: entry.recorded_at.0 as f64,
                 detail: entry.detail,
             })
             .collect(),
@@ -64,7 +60,7 @@ pub(super) async fn query(
             break value;
         }
         if page.entries.len() <= 1 {
-            break value;
+            return Err("agent_diagnostics_unavailable".into());
         }
         page.entries.pop();
         page.next_before = page.entries.last().map(|entry| entry.sequence);
@@ -86,11 +82,10 @@ pub(super) async fn watch(
     owner
         .scoped_session(context.scope(), &input.session_id)
         .await?;
-    let mut commits = owner
-        .scoped_store(context.scope(), &input.session_id)
-        .await?
-        .subscribe_commits()
-        .map_err(|error| error.to_string())?;
+    let diagnostics = history::scoped_state(owner, context.scope())?
+        .diagnostics(owner.run_owner(), input.session_id.clone())
+        .map_err(|_| "agent_diagnostics_unavailable")?;
+    let mut commits = diagnostics.subscribe().map_err(|error| error.to_string())?;
     let mut previous = None;
     loop {
         if context.scope().cancellation.is_cancelled() {
@@ -100,26 +95,22 @@ pub(super) async fn watch(
             .scoped_session(context.scope(), &input.session_id)
             .await?;
         commits.borrow_and_update();
-        let through = owner
-            .scoped_store(context.scope(), &input.session_id)
-            .await?
-            .committed_sequence()
-            .await
-            .map_err(|error| error.to_string())?;
-        let revision = owner
-            .scoped_store(context.scope(), &input.session_id)
-            .await?
-            .latest_diagnostic_sequence(&input.session_id, through)
+        let revision = diagnostics
+            .head()
             .await
             .map_err(|_| "agent_diagnostics_unavailable")?
+            .latest
             .unwrap_or(0);
-        owner
-            .scoped_session(context.scope(), &input.session_id)
-            .await?;
         if context.scope().cancellation.is_cancelled() {
             return Err("agent_observation_cancelled".into());
         }
         if previous != Some(revision) {
+            owner
+                .scoped_session(context.scope(), &input.session_id)
+                .await?;
+            if context.scope().cancellation.is_cancelled() {
+                return Err("agent_observation_cancelled".into());
+            }
             let value = encode(DiagnosticChange { revision })?;
             maka_plugin_core::json::check_delivery(&value, PAGE_BYTES)
                 .map_err(|_| "agent_diagnostics_unavailable")?;

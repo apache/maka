@@ -35,7 +35,8 @@ import java.util.List;
  *
  * <p>{@code Picker.pickFiles}: the system's document picker ({@code
  * ACTION_OPEN_DOCUMENT}), which needs no permission either. The files are read
- * as they are.
+ * as they are; one larger than the request reads is not: it answers with its
+ * name and size only.
  */
 final class Picker {
     private static final String TAG = "nsh";
@@ -52,9 +53,12 @@ final class Picker {
         boolean current;
         /** A pick of files of any type ({@code nsh_core::picker::FilePickRequest}). */
         boolean files;
+        /** Path requests copy to cache instead of returning bytes. */
+        Mounter paths;
+        boolean folders;
         /** The extensions a pick of files offers; none: any file. */
         String[] extensions = new String[0];
-        /** The largest file a pick of files reads. */
+        /** The largest file a pick of files reads; a larger one answers with its name and size only. */
         int maxBytes;
         /** The view's engine, when the pick ends. */
         NshView view;
@@ -68,13 +72,16 @@ final class Picker {
         Activity activity = SystemUi.activity(context);
         if (activity == null || activity.isFinishing()) {
             Log.w(TAG, "the photo picker needs an activity");
-            answer(request, new ArrayList<>());
+            if (request.paths != null) answerPaths(request, new ArrayList<>(), "the document picker needs an activity");
+            else answer(request, new ArrayList<>());
             return;
         }
         Intent intent;
         if (request.files) {
             intent = documents(request);
-        } else if (photoPicker()) {
+        } else if (Build.VERSION.SDK_INT >= 33 || (Build.VERSION.SDK_INT >= 30
+                && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.R) >= 2)) {
+            // The system's Photo Picker: checked here, where lint sees the guard.
             intent = new Intent(MediaStore.ACTION_PICK_IMAGES);
             intent.setType("image/*");
             if (request.limit > 1) {
@@ -102,6 +109,7 @@ final class Picker {
      * rather than hide the ones asked for.
      */
     private static Intent documents(Request request) {
+        if (request.folders) return new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
@@ -114,12 +122,6 @@ final class Picker {
         }
         if (!types.isEmpty()) intent.putExtra(Intent.EXTRA_MIME_TYPES, types.toArray(new String[0]));
         return intent;
-    }
-
-    /** Whether the system's Photo Picker is there. */
-    private static boolean photoPicker() {
-        if (Build.VERSION.SDK_INT >= 33) return true;
-        return Build.VERSION.SDK_INT >= 30 && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.R) >= 2;
     }
 
     /**
@@ -146,7 +148,8 @@ final class Picker {
             } catch (RuntimeException e) {
                 Log.w(TAG, "cannot show the photo picker", e);
                 pending.remove(code);
-                answer(request, new ArrayList<>());
+                if (request.paths != null) answerPaths(request, new ArrayList<>(), "cannot show the document picker");
+                else answer(request, new ArrayList<>());
             }
         }
 
@@ -171,15 +174,97 @@ final class Picker {
             ContentResolver resolver = getActivity().getContentResolver();
             List<Uri> picked = uris;
             Log.i(TAG, "picked " + uris.size() + (request.files ? " file(s)" : " image(s)"));
-            new Thread(() -> answer(request, read(resolver, picked, request)), "nsh-picker").start();
+            java.io.File cache = getActivity().getCacheDir();
+            new Thread(() -> {
+                if (request.paths != null) copyPaths(resolver, picked, request, cache);
+                else answer(request, read(resolver, picked, request));
+            }, "nsh-picker").start();
         }
+    }
+
+    private static void answerPaths(Request request, List<String> paths, String error) {
+        String[] keys = new String[paths.size() + 2];
+        Object[] values = new Object[keys.length];
+        keys[0] = "id";
+        values[0] = (double) request.id;
+        keys[1] = "error";
+        values[1] = error;
+        for (int i = 0; i < paths.size(); i++) {
+            keys[i + 2] = "path";
+            values[i + 2] = paths.get(i);
+        }
+        request.view.post(() -> request.paths.eventMap(1, Native.FILE_REQUEST, keys, values));
+    }
+
+    /** Streams provider data into unique app-owned copies, with bounded memory and no size cap. */
+    private static void copyPaths(ContentResolver resolver, List<Uri> uris, Request request, java.io.File cache) {
+        List<String> paths = new ArrayList<>();
+        java.io.File directory = null;
+        try {
+            if (!uris.isEmpty()) {
+                directory = new java.io.File(cache, "nsh-picked-" + java.util.UUID.randomUUID());
+                if (!directory.mkdir()) throw new java.io.IOException("cannot create picker cache");
+                for (int i = 0; i < uris.size(); i++) {
+                    // Separate roots preserve identical names from different providers.
+                    java.io.File root = new java.io.File(directory, Integer.toString(i));
+                    if (!root.mkdir()) throw new java.io.IOException("cannot create picker cache");
+                    Uri uri = uris.get(i);
+                    if (request.folders) {
+                        uri = android.provider.DocumentsContract.buildDocumentUriUsingTree(uri,
+                                android.provider.DocumentsContract.getTreeDocumentId(uri));
+                    }
+                    paths.add(copyDocument(resolver, uri, root, request.folders).getAbsolutePath());
+                }
+            }
+            answerPaths(request, paths, null);
+        } catch (Exception e) {
+            if (directory != null) deleteCopy(directory);
+            Log.w(TAG, "cannot copy picked paths", e);
+            answerPaths(request, new ArrayList<>(), "cannot copy picked paths: " + e.getMessage());
+        }
+    }
+
+    private static java.io.File copyDocument(ContentResolver resolver, Uri uri, java.io.File parent,
+            boolean tree) throws Exception {
+        String name = displayName(resolver, uri);
+        // Provider names are untrusted path components.
+        if (name.isEmpty() || name.equals(".") || name.equals("..") || name.indexOf('/') >= 0
+                || name.indexOf('\\') >= 0) throw new java.io.IOException("invalid document name");
+        java.io.File file = new java.io.File(parent, name);
+        if (tree && android.provider.DocumentsContract.Document.MIME_TYPE_DIR.equals(resolver.getType(uri))) {
+            if (!file.mkdir()) throw new java.io.IOException("cannot create picked folder");
+            Uri children = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(uri,
+                    android.provider.DocumentsContract.getDocumentId(uri));
+            try (Cursor cursor = resolver.query(children,
+                    new String[] {android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID}, null, null, null)) {
+                if (cursor == null) throw new java.io.IOException("cannot read picked folder");
+                while (cursor.moveToNext()) {
+                    copyDocument(resolver, android.provider.DocumentsContract.buildDocumentUriUsingTree(uri,
+                            cursor.getString(0)), file, true);
+                }
+            }
+        } else {
+            try (InputStream in = resolver.openInputStream(uri)) {
+                PickedPaths.copy(in, file);
+            }
+        }
+        return file;
+    }
+
+    private static void deleteCopy(java.io.File file) {
+        java.io.File[] children = file.listFiles();
+        if (children != null) for (java.io.File child : children) deleteCopy(child);
+        if (!file.delete()) Log.w(TAG, "cannot remove failed picker copy: " + file);
     }
 
     /** One prepared file. */
     private static final class Picked {
         String name;
         String type;
+        /** {@code null}: not read, larger than the pick reads ({@link #length}). */
         byte[] bytes;
+        /** The size in bytes of a file not read. */
+        long length;
         int width;
         int height;
     }
@@ -198,24 +283,33 @@ final class Picker {
     }
 
     private static void answer(Request request, List<Picked> files) {
+        if (request.paths != null) {
+            answerPaths(request, new ArrayList<>(), null);
+            return;
+        }
         int n = files.size();
         String[] names = new String[n];
         String[] types = new String[n];
         byte[][] data = new byte[n][];
         int[] sizes = new int[n * 2];
+        long[] lengths = new long[n];
         for (int i = 0; i < n; i++) {
             Picked f = files.get(i);
             names[i] = f.name;
             types[i] = f.type;
             data[i] = f.bytes;
+            lengths[i] = f.length;
             sizes[i * 2] = f.width;
             sizes[i * 2 + 1] = f.height;
         }
         long handle = request.view.handle;
-        if (handle != 0) Native.picked(handle, request.id, names, types, data, sizes);
+        if (handle != 0) Native.picked(handle, request.id, names, types, data, sizes, lengths);
     }
 
-    /** A picked file as it is; {@code null} when it is larger than the request reads. */
+    /**
+     * A picked file as it is; one larger than the request reads comes without its bytes, with its
+     * size: told by the provider before reading, else counted while reading past the limit.
+     */
     private static Picked readFile(ContentResolver resolver, Uri uri, Request request) throws Exception {
         long length = -1;
         try (android.content.res.AssetFileDescriptor fd = resolver.openAssetFileDescriptor(uri, "r")) {
@@ -223,17 +317,47 @@ final class Picker {
         } catch (Exception e) {
             // Unknown length: told after reading.
         }
-        byte[] bytes = length > request.maxBytes ? null : readAll(resolver, uri);
-        if (bytes == null || bytes.length > request.maxBytes) {
-            Log.w(TAG, "a picked file is left out: larger than " + request.maxBytes + " bytes");
-            return null;
-        }
         Picked file = new Picked();
         file.name = displayName(resolver, uri);
         String type = resolver.getType(uri);
         file.type = type != null ? type.toLowerCase(java.util.Locale.ROOT) : "";
-        file.bytes = bytes;
+        if (length > request.maxBytes) {
+            file.length = length;
+        } else {
+            file.bytes = readAtMost(resolver, uri, request.maxBytes, length, file);
+        }
+        if (file.bytes == null) {
+            Log.w(TAG, "a picked file is not read: larger than " + request.maxBytes + " bytes");
+        }
         return file;
+    }
+
+    /**
+     * The bytes at {@code uri} when there are at most {@code max}; else {@code null}, the rest only
+     * counted into {@code file.length}, so no more than {@code max} bytes are ever held ({@code length}: what the
+     * provider told, -1 when it told nothing).
+     */
+    private static byte[] readAtMost(ContentResolver resolver, Uri uri, int max, long length, Picked file)
+            throws Exception {
+        try (InputStream in = resolver.openInputStream(uri)) {
+            if (in == null) throw new java.io.IOException("no stream for " + uri);
+            ByteArrayOutputStream out = new ByteArrayOutputStream(length > 0 ? (int) length : 64 * 1024);
+            byte[] buffer = new byte[64 * 1024];
+            long total = 0;
+            for (int n; (n = in.read(buffer)) > 0; ) {
+                total += n;
+                if (total <= max) {
+                    out.write(buffer, 0, n);
+                } else if (out.size() > 0) {
+                    out = new ByteArrayOutputStream();
+                }
+            }
+            if (total > max) {
+                file.length = total;
+                return null;
+            }
+            return out.toByteArray();
+        }
     }
 
     private static Picked prepare(ContentResolver resolver, Uri uri, Request request) throws Exception {

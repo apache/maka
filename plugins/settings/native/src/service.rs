@@ -18,9 +18,13 @@
  */
 
 use crate::contract::*;
+#[cfg(test)]
+mod tests;
 use futures_util::future::BoxFuture;
 use maka_agent_facts::configuration::*;
-use maka_host_runtime::application::{Context, Handler, NativeOwner};
+use maka_host_runtime::application::{
+    Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeOwner,
+};
 use serde_json::Value;
 use std::sync::Arc;
 pub(crate) struct Settings {
@@ -84,10 +88,7 @@ fn model_choice_from_metadata(
                 compaction_threshold: overrides.and_then(|value| value.compaction_threshold),
             },
             context_window: info.context_window,
-            input_limit: maka_agent_facts::context::effective_input_limit(
-                info.context_window,
-                info.input_limit,
-            ),
+            input_limit: info.input_limit,
             max_output_tokens: info.max_output_tokens,
         }),
         tools: Some(ModelToolPreferences {
@@ -96,6 +97,7 @@ fn model_choice_from_metadata(
             apply_patch: overrides.and_then(|value| value.apply_patch),
         }),
         selection: ModelSelection {
+            service_tier: None,
             connection_id: row.connection_id.clone(),
             model_id: model.into(),
         },
@@ -120,7 +122,7 @@ async fn model_defaults(
     row: &ConnectionCatalogEntry,
     model: &str,
     overrides: Option<&ModelOverride>,
-    supported: &[maka_agent_facts::execution::ThinkingLevel],
+    current: &maka_providers::api::ModelMetadata,
     snapshot: Arc<maka_providers::catalog::Snapshot>,
 ) -> Option<ModelDefaults> {
     let catalog_matched = snapshot
@@ -148,8 +150,9 @@ async fn model_defaults(
             return None;
         }
     };
-    let mut output = overrides.cloned().unwrap_or_default();
-    output.max_output_tokens = None;
+    let mut inherited_limits = overrides.cloned().unwrap_or_default();
+    inherited_limits.input_limit = None;
+    inherited_limits.max_output_tokens = None;
     let definition = match maka_providers::definition(&row.provider, snapshot) {
         Ok(definition) => definition,
         Err(error) => {
@@ -158,7 +161,7 @@ async fn model_defaults(
         }
     };
     let resolved = match definition
-        .prepare(model_request(row, model, Some(output)))
+        .prepare(model_request(row, model, Some(inherited_limits)))
         .await
     {
         Ok(resolved) => resolved,
@@ -184,20 +187,13 @@ async fn model_defaults(
         catalog_matched,
         label: metadata.info.display_name.unwrap_or_else(|| model.into()),
         context_window: metadata.info.context_window,
-        input_limit: maka_agent_facts::context::effective_input_limit(
-            resolved.info.context_window,
-            metadata.info.input_limit,
-        ),
+        input_limit: resolved.info.input_limit,
         max_output_tokens: Some(max_output_tokens),
         compaction_threshold: maka_agent_facts::context::default_compaction_threshold(
-            resolved.info.context_window,
-            resolved.info.input_limit,
+            current.info.input_limit,
         ),
-        code_mode: maka_agent_facts::execution::ToolMode::for_model(
-            model,
-            &resolved.base_url,
-            None,
-        ) == maka_agent_facts::execution::ToolMode::CodeMode,
+        code_mode: maka_agent_facts::execution::ToolMode::default()
+            == maka_agent_facts::execution::ToolMode::CodeMode,
         code_mode_language: Default::default(),
         apply_patch: maka_agent_facts::execution::EditingTools::for_model(
             model,
@@ -207,7 +203,7 @@ async fn model_defaults(
         thinking_levels: metadata.thinking_levels,
         default_thinking_level: metadata
             .default_thinking_level
-            .filter(|level| supported.contains(level)),
+            .filter(|level| current.thinking_levels.contains(level)),
     })
 }
 async fn resolved_model(
@@ -235,7 +231,7 @@ async fn resolved_model(
                 row,
                 &target.model_id,
                 overrides.as_ref(),
-                &metadata.thinking_levels,
+                &metadata,
                 snapshot,
             )
             .await;
@@ -289,7 +285,7 @@ impl Handler for Settings {
         method: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         let store = self.configuration.clone();
         let public_catalog = self.catalog.clone();
         let log = self.log.clone();
@@ -297,7 +293,7 @@ impl Handler for Settings {
         let native_language = self.native_language;
         let source = self.source.clone();
         let workspace_locations = self.workspace_locations.clone();
-        Box::pin(async move {
+        let result = async move {
             match method.as_str() {
                 "workspaceLocations" => {
                     super::workspace_locations::read(
@@ -346,6 +342,30 @@ impl Handler for Settings {
                     super::connections::page(&store, input, snapshot).await
                 }
                 "connection" => super::connections::detail(&store, input).await,
+                "dictationConnections" => super::connections::dictation_connections(&store).await,
+                "transcribeDictation" => {
+                    let request = serde_json::from_value(input).map_err(|_| "Invalid recording")?;
+                    tokio::select! {
+                        result = super::connections::transcribe(&store, request) => result,
+                        _ = context.scope().cancellation.cancelled() => Err("Dictation cancelled".into()),
+                    }
+                }
+                "connectionUsageLimits" => {
+                    let snapshot = public_catalog
+                        .snapshot
+                        .read()
+                        .await
+                        .as_ref()
+                        .map_err(|_| "settings_store_unavailable")?
+                        .clone();
+                    super::connections::usage_limits(
+                        &store,
+                        input,
+                        snapshot,
+                        context.scope().cancellation.clone(),
+                    )
+                    .await
+                }
                 "providers" => {
                     let snapshot = public_catalog
                         .snapshot
@@ -474,6 +494,16 @@ impl Handler for Settings {
                         .map_err(|_| "settings_store_unavailable")?
                         .clone();
                     super::credential::save(&store, snapshot, input, context).await
+                }
+                "saveUsageCredential" => {
+                    let snapshot = public_catalog
+                        .snapshot
+                        .read()
+                        .await
+                        .as_ref()
+                        .map_err(|_| "settings_store_unavailable")?
+                        .clone();
+                    super::credential::save_usage(&store, snapshot, input, context).await
                 }
                 "updateModelSettings" => {
                     context.operation().ok_or("settings_mutation_required")?;
@@ -685,6 +715,10 @@ impl Handler for Settings {
                 }
                 _ => Err("settings_method_unknown".into()),
             }
+        };
+        Box::pin(async move {
+            let result: std::result::Result<Value, String> = result.await;
+            result.map(HandlerValue::Json).map_err(HandlerError::from)
         })
     }
 }
@@ -704,6 +738,3 @@ impl NativeOwner for Settings {
         })
     }
 }
-
-#[cfg(test)]
-mod tests;

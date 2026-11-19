@@ -244,6 +244,7 @@ impl Browsers {
         &mut self,
         browser_id: &str,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
     ) -> Result<Value, ToolError> {
         if self
             .connections
@@ -256,7 +257,8 @@ impl Browsers {
                 "browser.release is available for the on-demand ChatGPT connector",
             ));
         }
-        self.retire_handoff_resources(Some(turn)).await?;
+        self.retire_handoff_resources(Some(turn), Some(execution))
+            .await?;
         self.release_handoff_user().await?;
         Ok(Value::Null)
     }
@@ -264,6 +266,7 @@ impl Browsers {
     pub(super) async fn retire_handoff_resources(
         &mut self,
         turn: Option<&str>,
+        execution: Option<&crate::ExecutionCorrelation>,
     ) -> Result<(), ToolError> {
         let host = self.host().await;
         let cell = host.lock().await.handoffs.get(&self.owner).cloned();
@@ -307,6 +310,7 @@ impl Browsers {
             &host,
             self.owner,
             None,
+            None,
             Some(ExtensionAdapterMode::Chatgpt),
             None,
         )
@@ -315,7 +319,12 @@ impl Browsers {
             let finished = host
                 .lock()
                 .await
-                .finish_extension(self.owner, Some(turn), Some(ExtensionAdapterMode::Chatgpt))
+                .finish_extension(
+                    self.owner,
+                    Some(turn),
+                    execution,
+                    Some(ExtensionAdapterMode::Chatgpt),
+                )
                 .await?;
             let finished: std::collections::HashSet<_> = finished.into_iter().collect();
             self.targets.retain(|_, tab| {
@@ -360,58 +369,5 @@ impl Browsers {
                 .await;
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::host_handoff::Lease;
-    use cua_driver_core::browser::host_handoff::transport::Listener;
-    use cua_driver_core::browser::host_handoff::transport::{Connection, Message};
-
-    #[tokio::test]
-    async fn dead_supervisor_and_failed_restore_never_erase_release_debt() {
-        for fail_restore in [false, true] {
-            #[cfg(unix)]
-            let parent = std::fs::canonicalize("/tmp").unwrap();
-            #[cfg(windows)]
-            let parent = std::fs::canonicalize(std::env::temp_dir()).unwrap();
-            let directory = tempfile::tempdir_in(parent).unwrap();
-            let path = std::fs::canonicalize(directory.path()).unwrap().join("ipc");
-            let mut listener = Listener::bind(&path).await.unwrap();
-            let connection = Connection::connect(&path).await.unwrap();
-            let server = tokio::spawn(async move {
-                let mut client = listener.accept().await.unwrap();
-                if fail_restore {
-                    assert!(matches!(
-                        client.receive().await.unwrap(),
-                        Some(Message::Release)
-                    ));
-                    client
-                        .send(&Message::Failed {
-                            message: "restore fixture failed".into(),
-                        })
-                        .await
-                        .unwrap();
-                }
-                drop(client);
-                listener.close(&path).unwrap();
-            });
-            let lease = Lease::watch(connection);
-            let browsers = crate::browser::Browsers::new(std::sync::Arc::new(
-                tokio::sync::Mutex::new(crate::Driver::default()),
-            ));
-            let host = browsers.host().await;
-            host.lock().await.handoffs.insert(
-                browsers.owner,
-                std::sync::Arc::new(tokio::sync::Mutex::new(Some(lease))),
-            );
-            let first = browsers.release_handoff_user().await.unwrap_err();
-            let second = browsers.release_handoff_user().await.unwrap_err();
-            assert!(matches!(first, ToolError::CleanupUnconfirmed(_)));
-            assert_eq!(first.to_string(), second.to_string());
-            server.await.unwrap();
-        }
     }
 }

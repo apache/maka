@@ -18,14 +18,16 @@
  */
 
 //! Explicit service-to-tool projection. Imports describe bindings, not grants.
-pub(crate) mod approval;
+
 mod computer;
 pub(crate) mod image;
 mod shell;
-mod title;
+pub(crate) mod title;
 mod web;
 use crate::contract::{ServiceTool, ToolConfirmation, ToolInput, ToolResult};
+use crate::owner::access::RunAccess;
 use futures_util::FutureExt;
+use maka_agent_authority::permissions::Access;
 use maka_agent_facts::execution::EditingTools;
 use maka_agent_facts::language::Language;
 use maka_agent_facts::tool_call::ToolRejection;
@@ -43,10 +45,9 @@ use maka_agent_facts::tools::ToolRegistration;
 use maka_agent_facts::tools::ToolSemantics;
 use maka_capabilities::call::Attachments;
 use maka_capabilities::call::Identity;
-use maka_event_log::{RootStore, SessionStore};
 use maka_host_runtime::application::{NativeServices, ServiceTarget};
-#[cfg(test)]
-use maka_plugin_core::operation::OperationCleanup;
+
+use maka_plugin_core::operation::OperationResult;
 use maka_plugin_core::{
     contract::{Interface, MethodMode},
     operation::{OperationOutcome, OperationReply, Receipt},
@@ -60,87 +61,273 @@ use std::{panic::AssertUnwindSafe, sync::Arc};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct SelectedTool {
     selection: ServiceTool,
     binding: String,
+    pub(crate) discovery_group: crate::contract::DiscoveryToolGroup,
+}
+
+/// The tool selected by the Agent's configuration, resolved through its current
+/// authorized service slot. An admitted operation captures its own binding.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ServiceSelection {
+    selection: ServiceTool,
+}
+
+/// Frozen declarations and binding evidence. These bytes are never live tool authority.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SelectionSnapshot {
+    pub definitions: Vec<ToolDefinition>,
+    pub direct_only: std::collections::BTreeSet<String>,
+    pub services: Vec<ServiceSelection>,
+    pub internal_bindings: std::collections::BTreeMap<String, Option<String>>,
 }
 
 impl SelectedTool {
+    pub(crate) fn name(&self) -> &str {
+        &self.selection.name
+    }
+    pub(crate) fn reads_session_content(&self) -> bool {
+        use crate::contract::DiscoveryToolGroup;
+        self.discovery_group == DiscoveryToolGroup::ReadFiles
+            || (self.discovery_group == DiscoveryToolGroup::History
+                && self.selection.method == "sessionRead")
+    }
     pub(crate) fn permits_approval(&self, name: &str, method: &str, binding: &str) -> bool {
         self.selection.name == name
             && self.selection.method == method
             && self.binding == binding
             && self.selection.confirmation == ToolConfirmation::Preapproved
     }
+    pub(crate) fn declaration(&self) -> ServiceSelection {
+        ServiceSelection {
+            selection: self.selection.clone(),
+        }
+    }
+    fn services(&self, services: &NativeServices) -> Result<NativeServices, String> {
+        if services.binding(&self.selection.target)?.execution_basis() != self.binding {
+            return Err("original native tool binding changed".into());
+        }
+        services.select_method(&self.selection.target, &self.selection.method)
+    }
+}
+
+impl ServiceSelection {
+    pub(crate) fn name(&self) -> &str {
+        &self.selection.name
+    }
+
+    fn matches(&self, live: &SelectedTool) -> bool {
+        let admitted = &self.selection;
+        let current = &live.selection;
+        admitted.name == current.name
+            && admitted.target == current.target
+            && admitted.method == current.method
+            && admitted.input == current.input
+            && admitted.result == current.result
+            && admitted.confirmation == current.confirmation
+            && admitted.nestable == current.nestable
+    }
+}
+
+impl SelectionSnapshot {
+    pub(crate) fn matches_service(&self, name: &str, actual: &[SelectedTool]) -> bool {
+        let original = self.services.iter().find(|tool| tool.name() == name);
+        let current = actual.iter().find(|tool| tool.name() == name);
+        match (original, current) {
+            (Some(original), Some(current)) => original.matches(current),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn selected_service(
+        &self,
+        services: &NativeServices,
+        actual: &[SelectedTool],
+        name: &str,
+    ) -> Result<Option<(SelectedTool, NativeServices)>, String> {
+        let Some(original) = self
+            .services
+            .iter()
+            .find(|selected| selected.name() == name)
+        else {
+            if actual.iter().any(|selected| selected.name() == name) {
+                return Err("native tool is absent from the original Run selection".into());
+            }
+            return Ok(None);
+        };
+        let current = actual
+            .iter()
+            .find(|tool| original.matches(tool))
+            .ok_or("original native tool declaration changed")?;
+        Ok(Some((current.clone(), current.services(services)?)))
+    }
+    pub(crate) fn validate_recovery_service(
+        &self,
+        services: &NativeServices,
+        actual: &[SelectedTool],
+        intent: &maka_event_log::applications::intents::CallerIntent,
+        execution: &maka_agent_facts::durable::ExecutionIdentity,
+        operation_id: &str,
+        selected: &(SelectedTool, NativeServices),
+    ) -> Result<(), String> {
+        let descriptor: NativeToolRecovery = serde_json::from_value(intent.recovery.clone())
+            .map_err(|error| format!("original native tool descriptor is unavailable: {error}"))?;
+        if descriptor.kind != "agent_native_tool"
+            || descriptor.version != 1
+            || descriptor.correlation.execution != *execution
+            || descriptor.correlation.operation_id != operation_id
+            || operation_uuid(execution, &descriptor.correlation.operation_id)
+                != intent.reference.operation
+            || descriptor.correlation.tool_use_id
+                != maka_agent_facts::tool_call::tool_use_id(
+                    execution.run_id,
+                    &descriptor.correlation.operation_id,
+                )
+            || descriptor.target != descriptor.selection.target
+            || descriptor.method != descriptor.selection.method
+        {
+            return Err("original native tool descriptor differs from its caller intent".into());
+        }
+        let current = &selected.0;
+        if !self
+            .services
+            .iter()
+            .any(|original| original.matches(current))
+            || !actual.contains(current)
+        {
+            return Err("original native tool selection or declaration changed".into());
+        }
+        if descriptor.selection != current.selection || descriptor.binding != current.binding {
+            return Err("original native tool scope differs from its caller intent".into());
+        }
+        let binding = services.binding(&descriptor.selection.target)?;
+        if binding.consumer().instance() != &intent.consumer
+            || binding.provider().instance() != &intent.reference.namespace
+            || binding.export() != intent.reference.export
+            || descriptor.method != intent.reference.method
+            || binding.execution_basis() != descriptor.binding
+        {
+            return Err("original native tool provider binding changed".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct NativeApprovalData {
-    selected: SelectedTool,
-    capture: NativeApprovalCapture,
+struct NativeToolRecovery {
+    kind: String,
+    version: u32,
+    correlation: NativeToolCorrelation,
+    selection: ServiceTool,
+    binding: String,
+    target: ServiceTarget,
+    method: String,
+    input: Value,
+    resources: Value,
 }
-
 #[derive(Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum NativeApprovalCapture {
-    Ordinary {},
-    Shell {
-        shell: maka_agent_facts::configuration::policy::ShellPolicy,
-    },
-    Web {
-        basis: maka_web_api::contract::Basis,
-    },
-    Skill {
-        tool_names: Vec<(String, Option<EditingTools>)>,
-    },
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NativeToolCorrelation {
+    execution: maka_agent_facts::durable::ExecutionIdentity,
+    operation_id: String,
+    tool_use_id: String,
 }
 
-impl NativeApprovalData {
-    fn decode(value: Value) -> Result<Self, ToolError> {
-        let data: Self = serde_json::from_value(value).map_err(|error| {
-            ToolError::Failed(format!("native approval descriptor invalid: {error}"))
-        })?;
-        if data.selected.selection.confirmation != ToolConfirmation::Required
-            || !matches!(
-                (data.selected.selection.input, &data.capture),
-                (ToolInput::Json, NativeApprovalCapture::Ordinary {})
-                    | (ToolInput::Shell, NativeApprovalCapture::Shell { .. })
-                    | (ToolInput::Web, NativeApprovalCapture::Web { .. })
-                    | (ToolInput::Skill, NativeApprovalCapture::Skill { .. })
-            )
-        {
-            return Err(ToolError::Failed(
-                "native approval capture differs from selection".into(),
-            ));
-        }
-        Ok(data)
+/// Validated tool metadata used by Session setup and Run admission.
+#[derive(Clone)]
+pub(crate) struct Declarations(ToolCatalog);
+
+impl Declarations {
+    pub fn names(&self) -> Vec<String> {
+        self.0.names()
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.0.contains(name)
+    }
+
+    pub fn definitions(&self) -> impl Iterator<Item = &ToolDefinition> {
+        self.0.definitions()
+    }
+
+    pub fn direct_only_names(&self) -> Vec<String> {
+        self.0.direct_only().names()
+    }
+
+    pub fn excluding(&self, names: &[&str]) -> Self {
+        Self(self.0.excluding(names))
+    }
+
+    pub fn with_additional(
+        self,
+        declarations: impl IntoIterator<Item = ToolRegistration>,
+    ) -> Result<Self, maka_tool_catalog::CatalogError> {
+        self.0.with_additional(declarations).map(Self)
     }
 }
 
-pub(crate) struct Catalog {
-    pub tools: ToolCatalog,
+pub(crate) struct Catalog<T> {
+    pub tools: T,
     pub basis: Vec<SelectedTool>,
     /// Derived from actual bound contracts and methods, never display names.
     pub editing: Vec<(String, EditingTools)>,
-    pub host_tools: Vec<String>,
-    pub resource_reads: Vec<String>,
-    pub executor: Arc<dyn maka_agent_engine::NativeApprovalExecutor>,
 }
 
 pub(crate) fn catalog(
     services: NativeServices,
-    store: Arc<RootStore>,
+    selected: &[ServiceTool],
+    additional: Vec<ToolRegistration>,
+) -> Result<Catalog<Declarations>, String> {
+    let Catalog {
+        tools,
+        basis,
+        editing,
+    } = catalog_inner(services, selected, additional, None)?;
+    Ok(Catalog {
+        tools: Declarations(tools),
+        basis,
+        editing,
+    })
+}
+
+pub(crate) fn catalog_for_run(
+    services: NativeServices,
     configuration: Arc<maka_config::ConfigurationStore>,
     selected: &[ServiceTool],
     additional: Vec<ToolRegistration>,
     workers: tokio_util::task::TaskTracker,
-) -> Result<Catalog, String> {
+    access: Arc<RunAccess>,
+) -> Result<Catalog<ToolCatalog>, String> {
+    catalog_inner(
+        services,
+        selected,
+        additional,
+        Some(RunBindings {
+            access,
+            configuration,
+            workers,
+        }),
+    )
+}
+
+struct RunBindings {
+    access: Arc<RunAccess>,
+    configuration: Arc<maka_config::ConfigurationStore>,
+    workers: tokio_util::task::TaskTracker,
+}
+
+fn catalog_inner(
+    services: NativeServices,
+    selected: &[ServiceTool],
+    additional: Vec<ToolRegistration>,
+    run: Option<RunBindings>,
+) -> Result<Catalog<ToolCatalog>, String> {
     let mut basis = Vec::new();
-    let mut host_tools = Vec::new();
-    let mut resource_reads = Vec::new();
     let file_contract = maka_workspace_api::files::contract();
     let editing: Vec<_> = selected
         .iter()
@@ -157,11 +344,17 @@ pub(crate) fn catalog(
             Some((selection.name.clone(), style))
         })
         .collect();
+    let computer_contract = maka_workspace_api::computer::contract();
     let web_contract = maka_web_api::contract();
     let mut web_bindings = std::collections::BTreeMap::<ServiceTarget, Vec<Service>>::new();
     let mut shell_bindings = Vec::new();
     let mut skill_bindings = Vec::new();
     let skill_contract = maka_skills_api::contract();
+    let agent_contract = maka_agent_api::contract::contract();
+    let questions_contract = maka_interactions_api::questions::contract();
+    let process_contract = maka_workspace_api::processes::contract();
+    let deployment_contract =
+        maka_plugin_core::deployment::management::deployment_manager_contract();
     let tool_names = ToolNames::Configured(
         selected
             .iter()
@@ -177,7 +370,6 @@ pub(crate) fn catalog(
             .collect::<Vec<_>>()
             .into(),
     );
-    let mut native_services = Vec::new();
     let registrations = selected
         .iter()
         .map(|selection| {
@@ -186,45 +378,47 @@ pub(crate) fn catalog(
                 return Err("agent_tool_contract_invalid".to_owned());
             };
             let contract = binding.contract();
-            let resource_read = contract == &file_contract && selection.method == "readText";
-            let supported = if contract == &maka_agent_api::contract::contract() {
-                matches!(selection.method.as_str(),
-                    "models" | "list" | "observe" | "history" | "create" | "fork" |
-                    "send" | "stop" | "resume" | "pendingInteractions" | "interaction" |
-                    "respond" | "queue" | "editQueue" | "work" | "execution")
-            } else {
-                resource_read || (contract == &maka_skills_api::contract() && matches!(selection.method.as_str(), "search" | "load"))
-                    || (contract == &maka_interactions_api::questions::contract() && selection.method == "ask")
-                    || contract == &maka_plugin_core::deployment::management::deployment_manager_contract()
-            };
-            if supported && selection.result == ToolResult::Json {
-                host_tools.push(selection.name.clone());
-                if resource_read {
-                    resource_reads.push(selection.name.clone());
-                }
-            }
             let method = methods
                 .get(&selection.method)
                 .ok_or("agent_tool_method_unavailable")?;
-            // The actual binding owns the title meaning, never a tool alias.
-            let title_kind = if binding.contract() == &file_contract {
+            if method.resources.values().any(|resource| !resource.optional) {
+                return Err("agent_tool_required_resources_unavailable".into());
+            }
+            // Tool aliases can change. The bound service and method supply both display meanings.
+            use crate::contract::DiscoveryToolGroup as Group;
+            use title::Kind;
+            let (title_kind, discovery_group) = if contract == &file_contract {
                 match selection.method.as_str() {
-                    "readText" | "readImage" => Some(title::Kind::Read),
-                    "write" => Some(title::Kind::Write),
-                    "edit" => Some(title::Kind::Edit),
-                    "applyPatch" => Some(title::Kind::Patch),
-                    "glob" => Some(title::Kind::Glob),
-                    "grep" => Some(title::Kind::Grep),
-                    _ => None,
+                    "read" => (Some(Kind::Read), Group::ReadFiles),
+                    "write" => (Some(Kind::Write), Group::ModifyFiles),
+                    "edit" => (Some(Kind::Edit), Group::ModifyFiles),
+                    "applyPatch" => (Some(Kind::Patch), Group::ModifyFiles),
+                    _ => (None, Group::Other),
                 }
-            } else if binding.contract() == &web_contract {
+            } else if contract == &web_contract {
                 match selection.method.as_str() {
-                    "fetch" => Some(title::Kind::Fetch),
-                    "search" => Some(title::Kind::Search),
-                    _ => None,
+                    "fetch" => (Some(Kind::Fetch), Group::Web),
+                    "search" => (Some(Kind::Search), Group::Web),
+                    _ => (None, Group::Other),
                 }
+            } else if contract == &agent_contract {
+                match selection.method.as_str() {
+                    "create" | "sessionCreate" => (Some(Kind::CreateSession), Group::Sessions),
+                    "fork" => (Some(Kind::ForkSession), Group::Sessions),
+                    "send" | "sessionSend" => (Some(Kind::SendSession), Group::Sessions),
+                    "sessionList" | "sessionRead" => (None, Group::History),
+                    "sessionManage" | "respond" | "sessionStop" | "presets" | "preset"
+                    | "createPreset" | "updatePreset" | "deletePreset" => (None, Group::Sessions),
+                    _ => (None, Group::Other),
+                }
+            } else if contract == &process_contract {
+                (None, Group::Commands)
+            } else if contract == &computer_contract {
+                (None, Group::Desktop)
+            } else if contract == &deployment_contract && method.mode == MethodMode::Mutation {
+                (None, Group::PluginManagement)
             } else {
-                None
+                (None, Group::Other)
             };
             if !method.resources.is_empty()
                 || match selection.result {
@@ -297,58 +491,88 @@ pub(crate) fn catalog(
             } else {
                 (Projection::Direct, input_schema)
             };
-            basis.push(SelectedTool {
+            let selected = SelectedTool {
+                discovery_group,
                 selection: selection.clone(),
                 binding: binding.execution_basis().into(),
-            });
-            let service = Service {
-                services: services.select_method(&selection.target, &selection.method)?,
-                store: store.clone(),
-                binding: binding.execution_basis().into(),
-                target: format!(
-                    "{} · {} v{} · {} / {} · {}",
-                    selection.target.name(),
-                    binding.contract().name,
-                    binding.contract().version,
-                    serde_json::to_string(binding.provider().instance())
-                        .expect("instance identity"),
-                    binding.export(),
-                    binding
-                        .provider()
-                        .remote_target()
-                        .map_or("local", |target| target.deployment.as_str())
-                ),
-                tool_names: tool_names.clone(),
-                selection: selection.clone(),
-                input_projection,
-                title_kind,
-                mode: method.mode,
-                web_basis: None,
-                shell: None,
             };
-            if selection.input == ToolInput::Skill {
-                skill_bindings.push((selection.name.clone(), Arc::new(SkillBinding(service.clone()))));
-            }
-            if selection.input == ToolInput::Shell {
-                shell_bindings.push((
-                    selection.name.clone(),
-                    Arc::new(shell::Binding {
-                        service: service.clone(),
-                        configuration: configuration.clone(),
-                        input: method.input.as_ref().clone(),
-                    }),
-                ));
-            }
-            if selection.input == ToolInput::Web {
-                web_bindings
-                    .entry(selection.target.clone())
-                    .or_default()
-                    .push(service.clone());
-            }
-            native_services.push(service.clone());
+            let handler = if let Some(run) = &run {
+                let presentation = selection.presentation.clone().or_else(|| {
+                    (contract == &agent_contract
+                        || contract == &deployment_contract
+                        || contract == &questions_contract
+                        || contract == &computer_contract
+                        || contract == &skill_contract
+                        || (contract == &process_contract && selection.method == "health"))
+                        .then(|| format!("{}@{}/{}", contract.name, contract.version, selection.method))
+                });
+                let service = Service {
+                    services: selected.services(&services)?,
+                    access: run.access.clone(),
+                    binding: selected.binding.clone(),
+                    target: format!(
+                        "{} · {} v{} · {} / {} · {}",
+                        selection.target.name(),
+                        binding.contract().name,
+                        binding.contract().version,
+                        serde_json::to_string(binding.provider().instance())
+                            .expect("instance identity"),
+                        binding.export(),
+                        binding
+                            .provider()
+                            .remote_target()
+                            .map_or("local", |target| target.deployment.as_str())
+                    ),
+                    tool_names: tool_names.clone(),
+                    selection: selection.clone(),
+                    computer: binding.contract().name == computer_contract.name && binding.contract().version == 1,
+                    network_ceiling: selection.input == ToolInput::Web
+                        || contract == &process_contract,
+                    file_ceiling: contract == &file_contract
+                        || (contract == &process_contract
+                            && matches!(selection.method.as_str(), "execute" | "writeStdin")),
+                    input_projection,
+                    title_kind,
+                    presentation,
+                    mode: method.mode,
+                    web_basis: None,
+                    shell: None,
+                };
+                match selection.input {
+                    ToolInput::Skill => skill_bindings.push((
+                        selection.name.clone(),
+                        Arc::new(SkillBinding(service.clone())),
+                    )),
+                    ToolInput::Shell => shell_bindings.push((
+                        selection.name.clone(),
+                        Arc::new(shell::Binding {
+                            service: service.clone(),
+                            configuration: run.configuration.clone(),
+                            input: method.input.as_ref().clone(),
+                        }),
+                    )),
+                    ToolInput::Web => web_bindings
+                        .entry(selection.target.clone())
+                        .or_default()
+                        .push(service.clone()),
+                    ToolInput::Json => {}
+                }
+                ToolHandler::Prepared(Arc::new(service))
+            } else {
+                ToolHandler::Declaration(selection.name.clone())
+            };
+            basis.push(selected);
             let mut description = selection.description.clone();
-            if binding.contract() == &file_contract && selection.method == "readText" {
-                description.push_str("\n\nReads Session attachment and archived tool-result resources. Pass page.next unchanged to this tool to continue.");
+            if binding.contract() == &file_contract && selection.method == "read" {
+                description.push_str("\n\nAlso reads Maka resources (maka://session/<id>, maka://session/<id>/tool-results/<event-id>, attachment:<id>, archive:<event-id>). Pass page.next unchanged to continue reading.");
+            }
+            if contract == &process_contract {
+                let guidance = match selection.method.as_str() {
+                    "execute" => "\n\nFor slow or long-running commands, set run_in_background: true to start a background process and return a snapshot with ref for ProcessRead, ProcessInput, BackgroundTaskHealth or ProcessStop, or set timeout_ms to enforce a deadline.",
+                    "stop" => "\n\nPass the ref from a background Shell process snapshot (run_in_background: true).",
+                    _ => "",
+                };
+                description.push_str(guidance);
             }
             Ok(ToolRegistration {
                 definition: ToolDefinition {
@@ -372,39 +596,41 @@ pub(crate) fn catalog(
                 } else {
                     ToolSemantics::Parallel
                 },
-                handler: ToolHandler::Prepared(Arc::new(service)),
+                handler,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
     let mut catalog = ToolCatalog::new(registrations.into_iter().chain(additional))
-        .and_then(|tools| {
-            tools.with_always_visible(
-                &editing
-                    .iter()
-                    .map(|(name, _)| name.as_str())
-                    .collect::<Vec<_>>(),
-            )
-        })
         .map_err(|_| "agent_tool_catalog_invalid")?;
     for (name, binding) in skill_bindings {
         catalog = catalog
             .with_request_binding([name].into(), binding)
             .map_err(|_| "agent_skill_binding_invalid")?;
     }
-    for services in web_bindings.into_values() {
-        let names = services
-            .iter()
-            .map(|service| service.selection.name.clone())
-            .collect();
+    if let Some(run) = run {
         catalog = catalog
-            .with_request_binding(
-                names,
-                Arc::new(web::Binding {
-                    services,
-                    workers: workers.clone(),
-                }),
+            .with_always_visible(
+                &editing
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>(),
             )
-            .map_err(|_| "agent_web_binding_invalid")?;
+            .map_err(|_| "agent_tool_catalog_invalid")?;
+        for services in web_bindings.into_values() {
+            let names = services
+                .iter()
+                .map(|service| service.selection.name.clone())
+                .collect();
+            catalog = catalog
+                .with_request_binding(
+                    names,
+                    Arc::new(web::Binding {
+                        services,
+                        workers: run.workers.clone(),
+                    }),
+                )
+                .map_err(|_| "agent_web_binding_invalid")?;
+        }
     }
     for (name, binding) in shell_bindings {
         catalog = catalog
@@ -415,147 +641,8 @@ pub(crate) fn catalog(
         tools: catalog,
         basis,
         editing,
-        host_tools,
-        resource_reads,
-        executor: Arc::new(ApprovalExecutor {
-            services: native_services,
-        }),
     })
 }
-struct ApprovalExecutor {
-    services: Vec<Service>,
-}
-
-impl maka_agent_engine::NativeApprovalExecutor for ApprovalExecutor {
-    fn prepare(
-        &self,
-        pending: maka_agent_facts::native_approval::NativeApprovalPending,
-        context: ToolCallContext,
-        cancellation: CancellationToken,
-    ) -> futures_util::future::BoxFuture<'_, Result<PreparedEffect, ToolError>> {
-        Box::pin(async move {
-            if cancellation.is_cancelled() {
-                return Err(ToolError::Failed(
-                    "native approval reconstruction cancelled".into(),
-                ));
-            }
-            let data = NativeApprovalData::decode(pending.native.clone())?;
-            if pending.invocation != context.invocation
-                || pending.operation_id != context.operation_id
-            {
-                return Err(ToolError::Persistence(
-                    "native approval identity differs".into(),
-                ));
-            }
-            let mut service = self
-                .services
-                .iter()
-                .find(|service| {
-                    service.selection == data.selected.selection
-                        && service.binding == data.selected.binding
-                })
-                .cloned()
-                .ok_or_else(|| {
-                    ToolError::Failed("native approval binding is stale or unavailable".into())
-                })?;
-            match data.capture {
-                NativeApprovalCapture::Web { basis } => service.web_basis = Some(basis),
-                NativeApprovalCapture::Shell { shell } => service.shell = Some(shell),
-                NativeApprovalCapture::Skill { tool_names } => {
-                    service.tool_names = ToolNames::Configured(tool_names.into())
-                }
-                NativeApprovalCapture::Ordinary {} => {}
-            }
-            let store = Arc::new(maka_agent_authority::permissions::execution(
-                &service.store,
-                &context.invocation,
-                context.execution.as_deref(),
-            )?);
-            let configuration =
-                maka_agent_authority::permissions::live(&store, &context.invocation).await?;
-            let original_configuration = store
-                .invocation_configuration(&context.invocation)
-                .await
-                .map_err(|error| ToolError::Persistence(error.to_string()))?
-                .ok_or_else(|| {
-                    ToolError::Persistence(
-                        "native approval invocation configuration unavailable".into(),
-                    )
-                })?;
-            if original_configuration.cwd != configuration.workspace.path
-                || original_configuration.workspace_identity.as_ref()
-                    != Some(&configuration.workspace.identity)
-                || original_configuration
-                    .workspace_binding
-                    .map(|binding| binding.id)
-                    != Some(configuration.binding.id)
-            {
-                return Err(ToolError::Failed(
-                    "native approval workspace binding changed".into(),
-                ));
-            }
-            if configuration
-                .tools
-                .as_ref()
-                .is_some_and(|names| !names.contains(&service.selection.name))
-            {
-                return Err(ToolError::Failed(
-                    "native approval tool permission withdrawn".into(),
-                ));
-            }
-            if let Some(basis) = &service.web_basis {
-                let capture = web::capture(&service, &context, &cancellation).await?;
-                if !capture.available
-                    || capture.basis != *basis
-                    || (service.selection.method == "search"
-                        && (capture.source != maka_web_api::settings::Source::Tavily
-                            || !capture.credential_configured))
-                {
-                    return Err(ToolError::Failed(
-                        "native approval Web capture is stale or unavailable".into(),
-                    ));
-                }
-            }
-            let original = store
-                .native_approval_dispatch(&pending)
-                .await
-                .map_err(|error| ToolError::Persistence(error.to_string()))?;
-            let maka_agent_facts::event::Fact::ToolDispatched {
-                operation_id,
-                name,
-                input,
-                call,
-                ..
-            } = original.event.fact
-            else {
-                return Err(ToolError::Persistence(
-                    "native approval dispatch invalid".into(),
-                ));
-            };
-            if original.sequence != pending.dispatch.sequence
-                || original.event.id != pending.dispatch.event_id
-                || original.event.invocation != context.invocation
-                || operation_id != context.operation_id
-                || name != service.selection.name
-                || !matches!(
-                    call.origin,
-                    maka_agent_facts::tool_call::ToolOrigin::Provider { .. }
-                )
-            {
-                return Err(ToolError::Persistence(
-                    "native approval original dispatch differs".into(),
-                ));
-            }
-            let input = service.input_projection.decode(input).map_err(|error| {
-                ToolError::Failed(format!("native approval original input invalid: {error:?}"))
-            })?;
-            Ok(PreparedEffect::new(move |cancellation| {
-                service.execute(input, context, store, cancellation)
-            }))
-        })
-    }
-}
-
 #[derive(Clone)]
 enum ToolNames {
     Configured(Arc<[(String, Option<EditingTools>)]>),
@@ -572,12 +659,6 @@ impl ToolNames {
             .map(|(name, style)| (name.as_str(), *style))
             .chain(ceiling.iter().map(|name| (name.as_str(), None)))
     }
-
-    fn capture(&self) -> Vec<(String, Option<EditingTools>)> {
-        self.iter()
-            .map(|(name, style)| (name.to_owned(), style))
-            .collect()
-    }
 }
 
 #[derive(Clone)]
@@ -586,12 +667,20 @@ struct Service {
     web_basis: Option<maka_web_api::contract::Basis>,
     tool_names: ToolNames,
     services: NativeServices,
-    store: Arc<RootStore>,
+    access: Arc<RunAccess>,
     binding: String,
     target: String,
     selection: ServiceTool,
+    computer: bool,
+    /// Host Web effects and the workspace process tools ask for network per
+    /// request, so their floor carries the Run's network approval ceiling.
+    network_ceiling: bool,
+    /// The workspace file and process tools ask for file writes per call, so
+    /// their floor carries the Run's file approval ceiling.
+    file_ceiling: bool,
     input_projection: Projection,
     title_kind: Option<title::Kind>,
+    presentation: Option<String>,
     mode: MethodMode,
 }
 impl ToolPreparer for Service {
@@ -605,49 +694,25 @@ impl ToolPreparer for Service {
         context: ToolCallContext,
         cancellation: CancellationToken,
     ) -> PreparationFuture {
-        let self_store = self.store.clone();
-        let shell = self.shell.clone();
-        let service_capture = self.web_basis.clone();
-        let captured_names = self.tool_names.clone();
-        let tool_names = self.tool_names.clone();
-        let web_basis = self.web_basis.clone();
-        let services = self.services.clone();
-        let store = self.store.clone();
-        let binding = self.binding.clone();
-        let target = self.target.clone();
-        let selection = self.selection.clone();
-        let input_projection = self.input_projection;
-        let default_title = self.title_kind;
-        let mode = self.mode;
+        let service = self.clone();
         Box::pin(async move {
-            #[cfg(test)]
-            eprintln!(
-                "native approval stage=prepare_enter operation={}",
-                context.operation_id
-            );
-            let store = Arc::new(
-                store
-                    .session_for_execution(
-                        context
-                            .execution
-                            .as_deref()
-                            .ok_or(ToolRejection::Unavailable)?,
-                        &context.invocation,
-                    )
-                    .map_err(|error| ToolRejection::PreparationFailed {
-                        message: error.to_string(),
-                    })?,
-            );
+            let access = service.access.clone();
+            access.check_tool(&context, &name).await.map_err(|error| {
+                ToolRejection::PreparationFailed {
+                    message: error.to_string(),
+                }
+            })?;
+            let selection = service.selection.clone();
+            let default_title = service.title_kind;
+            let input_projection = service.input_projection;
             if name != selection.name {
                 return Err(ToolRejection::Unavailable);
             }
             if cancellation.is_cancelled() {
                 return Err(ToolRejection::Cancelled);
             }
-            // T1 records the exact model arguments, before native projection.
             let confirmation_input = input.clone();
             let input = input_projection.decode(input)?;
-            // No request or effect is admitted until the existing ToolJournal T1.
             let title = selection
                 .title
                 .clone()
@@ -662,86 +727,59 @@ impl ToolPreparer for Service {
                     }
                 })
                 .or_else(|| default_title.and_then(|kind| kind.render(&input)));
-            let presentation = selection.presentation.clone();
-            let service = Service {
-                shell: shell.clone(),
-                web_basis,
-                tool_names,
-                services,
-                store: self_store,
-                binding: binding.clone(),
-                target: target.clone(),
-                selection: selection.clone(),
-                input_projection,
-                title_kind: default_title,
-                mode,
-            };
-            #[cfg(test)]
-            let diagnostic_operation = context.operation_id.clone();
-            let execute_context = context.clone();
-            let execute_store = store.clone();
-            let approved = move |cancellation| {
-                service.execute(input, execute_context, execute_store, cancellation)
-            };
-            let prepared = if selection.confirmation == ToolConfirmation::Required {
-                let native = NativeApprovalData {
-                    selected: SelectedTool {
-                        selection: selection.clone(),
-                        binding: binding.clone(),
-                    },
-                    capture: match selection.input {
-                        ToolInput::Web => NativeApprovalCapture::Web {
-                            basis: service_capture.ok_or_else(|| {
-                                ToolRejection::PreparationFailed {
-                                    message: "Web tool has no request capture".into(),
-                                }
-                            })?,
-                        },
-                        ToolInput::Skill => NativeApprovalCapture::Skill {
-                            tool_names: captured_names.capture(),
-                        },
-                        ToolInput::Shell => NativeApprovalCapture::Shell {
-                            shell: shell.ok_or_else(|| ToolRejection::PreparationFailed {
-                                message: "Shell tool has no request capture".into(),
-                            })?,
-                        },
-                        ToolInput::Json => NativeApprovalCapture::Ordinary {},
-                    },
-                };
-                PreparedEffect::native_approval(
-                    move |cancellation| {
-                        Box::pin(async move {
-                            approval::establish(
-                                store,
-                                context,
-                                approval::Selection {
-                                    name: &selection.name,
-                                    method: &selection.method,
-                                    binding: &binding,
-                                    service: &target,
-                                },
-                                &confirmation_input,
-                                serde_json::to_value(native)
-                                    .map_err(|error| ToolError::Persistence(error.to_string()))?,
-                                cancellation,
-                            )
-                            .await
-                        })
-                    },
-                    approved,
-                )
+            let presentation = service.presentation.clone();
+            let approval = if selection.confirmation == ToolConfirmation::Required {
+                let target = access.target_for_context(&context).await.map_err(|error| {
+                    ToolRejection::PreparationFailed {
+                        message: error.to_string(),
+                    }
+                })?;
+                let approval = if matches!(
+                    target,
+                    maka_agent_facts::durable::AuthorizationObligation::Tool { .. }
+                ) {
+                    access
+                        .establish_service(
+                            &context,
+                            &selection.name,
+                            &selection.method,
+                            &service.binding,
+                            &service.target,
+                            &confirmation_input,
+                            &cancellation,
+                        )
+                        .await
+                        .map(|(_, approval)| approval)
+                } else {
+                    access
+                        .confirm_service(
+                            &context,
+                            &selection.name,
+                            &selection.method,
+                            &service.binding,
+                            &service.target,
+                            &confirmation_input,
+                            &cancellation,
+                        )
+                        .await
+                }
+                .map_err(|error| ToolRejection::PreparationFailed {
+                    message: error.to_string(),
+                })?;
+                Some(approval)
             } else {
-                PreparedEffect::new(approved)
+                None
+            };
+            let prepared =
+                PreparedEffect::new(move |cancel| service.execute(input, context, access, cancel));
+            let prepared = match approval {
+                Some(id) => prepared.requiring_approval(id),
+                None => prepared,
             };
             let prepared = match presentation {
                 Some(key) => prepared.presented(key),
                 None => prepared,
             };
-            #[cfg(test)]
-            eprintln!(
-                "native approval stage=prepare_return operation={}",
-                diagnostic_operation
-            );
             Ok(match title {
                 Some(title) => prepared.titled(title),
                 None => prepared,
@@ -754,7 +792,7 @@ impl Service {
         self,
         input: Value,
         context: ToolCallContext,
-        store: Arc<SessionStore>,
+        access: Arc<RunAccess>,
         cancellation: CancellationToken,
     ) -> maka_agent_facts::tools::ToolFuture<ToolSuccess> {
         let Self {
@@ -762,8 +800,12 @@ impl Service {
             web_basis,
             tool_names,
             services,
+            binding,
             selection,
             mode,
+            computer,
+            network_ceiling,
+            file_ceiling,
             ..
         } = self;
         Box::pin(async move {
@@ -772,6 +814,7 @@ impl Service {
                     "service call cancelled before admission".into(),
                 ));
             }
+            access.check_tool(&context, &selection.name).await?;
             let input = match selection.input {
                 ToolInput::Json => input,
                 ToolInput::Shell => {
@@ -795,17 +838,21 @@ impl Service {
                     serde_json::json!({"input":input,"basis":basis})
                 }
                 ToolInput::Skill => {
-                    let configuration =
-                        maka_agent_authority::permissions::live(&store, &context.invocation)
-                            .await?;
-                    let editing = store
-                        .invocation_configuration(&context.invocation)
-                        .await
-                        .map_err(|error| ToolError::Failed(error.to_string()))?
-                        .ok_or_else(|| {
-                            ToolError::Failed("Skill call has no invocation configuration".into())
-                        })?
-                        .editing_tools;
+                    let configuration = access.live_configuration().await?;
+                    let editing = match &access.spec().backend {
+                        maka_agent_facts::durable::BackendSpec::Model { descriptor, .. } => {
+                            let owner_model: crate::model::AcceptedModel =
+                                serde_json::from_slice(&access.content(descriptor.clone()).await?)
+                                    .map_err(|error| ToolError::Persistence(error.to_string()))?;
+                            owner_model.editing_tools
+                        }
+                        maka_agent_facts::durable::BackendSpec::Executor { .. } => None,
+                        maka_agent_facts::durable::BackendSpec::Historical {} => {
+                            return Err(ToolError::Failed(
+                                "historical runs cannot execute native tools".into(),
+                            ));
+                        }
+                    };
                     let names: Vec<_> = tool_names
                         .iter()
                         .filter(|(name, style)| {
@@ -819,21 +866,51 @@ impl Service {
                     serde_json::json!({"input": input, "tools": names, "workspace":configuration.workspace})
                 }
             };
-            let invocation = context.invocation.clone();
-            let operation = operation_id(&context);
-            let execution = context
-                .execution
-                .clone()
-                .ok_or_else(|| ToolError::Persistence("Execution custody unavailable".into()))?;
+            let operation = operation_uuid(&context.execution, &context.operation_id);
+            let correlation = NativeToolCorrelation {
+                execution: context.execution.clone(),
+                operation_id: context.operation_id.clone(),
+                tool_use_id: context.tool_use_id(),
+            };
+            let (base, approval) = if computer {
+                (access.workspace_sandbox_floor().await?, None)
+            } else if file_ceiling {
+                access.file_approval_floors(&context.call.origin).await?
+            } else {
+                (access.sandbox_floor(&context.call.origin).await?, None)
+            };
+            let (mut floor, file_approval_base) = match approval {
+                Some(approval) => (approval, (selection.method == "writeStdin").then_some(base)),
+                None => (base, None),
+            };
+            let capsule = access
+                .native_call(
+                    context.clone(),
+                    selection.name.clone(),
+                    file_approval_base,
+                    cancellation.clone(),
+                    computer,
+                )
+                .await?;
+            if network_ceiling && let maka_sandbox::Sandbox::Managed { network, .. } = &mut floor {
+                // Network still requires a grant from the same tool family. The
+                // ceiling is independent of the preset's base network, which a
+                // process keeps until one applies. Process controls share it so
+                // a PTY launched with a grant stays usable.
+                *network = access.spec().network_approval_ceiling().clone();
+            }
             let request = services
-                .request_with_execution(
+                .request_with_work_and_context(
                     Identity::Agent {
-                        invocation: context.invocation,
-                        operation_id: Some(context.operation_id),
+                        execution: context.execution.clone(),
+                        operation_id: Some(context.operation_id.clone()),
                     },
                     cancellation.clone(),
-                    execution,
+                    access.custody().clone(),
+                    capsule,
                 )
+                .map_err(ToolError::Failed)?
+                .with_sandbox_floor(&floor)
                 .map_err(ToolError::Failed)?;
             // Keep original request custody even if a native descriptor panics.
             let mut observation = None;
@@ -855,32 +932,58 @@ impl Service {
                                 Ok(ToolSuccess::from(result))
                             }
                             MethodMode::Mutation => {
-                                let language = store
-                                    .invocation_configuration(&invocation)
-                                    .await
-                                    .map_err(|error| ToolError::Failed(error.to_string()))?
-                                    .ok_or_else(|| {
-                                        ToolError::Failed(
-                                            "Service call has no invocation configuration".into(),
-                                        )
-                                    })?
-                                    .language;
+                                let language = access.spec().language;
+                                let resources =
+                                    maka_host_runtime::application::CallResources::default();
+                                let descriptors =
+                                    resources.descriptors().map_err(ToolError::Failed)?;
+                                let recovery = serde_json::to_value(NativeToolRecovery {
+                                    kind: "agent_native_tool".into(),
+                                    version: 1,
+                                    correlation,
+                                    selection: selection.clone(),
+                                    binding,
+                                    target: selection.target.clone(),
+                                    method: selection.method.clone(),
+                                    input: input.clone(),
+                                    resources: serde_json::json!({
+                                        "descriptors": descriptors,
+                                        "reacquisition": {"kind": "none"},
+                                    }),
+                                })
+                                .map_err(|error| ToolError::Failed(error.to_string()))?;
                                 let observer = request
-                                    .mutate_target(
+                                    .begin_mutation_target(
                                         &selection.target,
                                         selection.method,
                                         input,
                                         operation,
-                                        Attachments::default(),
+                                        recovery,
+                                        resources,
                                     )
                                     .map_err(ToolError::Failed)?;
                                 // This outer error is admission refusal, not an accepted
                                 // effect result. Scope.finish still must confirm cleanup;
-                                // every accepted mutation returns its original typed receipt.
-                                let reply = observer.await.map_err(ToolError::Failed)?;
+                                // accepted mutations retain their original completion channel.
+                                let mutation = observer.await.map_err(ToolError::Failed)?;
+                                let reference = mutation.reference.clone();
+                                let completion = mutation.completion().await;
+                                let reply = completion.reply;
+                                if reply.reference != reference {
+                                    return Err(ToolError::OutcomeUnknown(
+                                        "Host mutation completion differs from its original reference"
+                                            .into(),
+                                    ));
+                                }
                                 observation = Some(Box::new(reply.clone()));
+                                if let Err(message) = completion.cleanup {
+                                    return Err(ToolError::OperationCleanupUnconfirmed {
+                                        message,
+                                        observation: Box::new(reply),
+                                    });
+                                }
                                 if selection.result == ToolResult::Computer {
-                                    computer::project(&store, &invocation, reply, language).await
+                                    computer::project(&access, reply, language).await
                                 } else {
                                     mutation_result(reply, language)
                                 }
@@ -929,12 +1032,9 @@ impl Service {
             }
             // finish() cancels the request itself; only the original
             // Tool token can distinguish a stopped run at publication.
-            if selection.result == ToolResult::Image
-                && result.is_ok()
-                && cancellation.is_cancelled()
-            {
+            if mode == MethodMode::Subscription && result.is_ok() && cancellation.is_cancelled() {
                 return Err(ToolError::Failed(
-                    "Image tool cancelled before publication".into(),
+                    "Tool subscription cancelled before publication".into(),
                 ));
             }
             match (result, observation) {
@@ -950,9 +1050,11 @@ impl Service {
     }
 }
 
-fn operation_id(context: &ToolCallContext) -> Uuid {
-    let bytes = serde_json::to_vec(&(&context.invocation, &context.operation_id))
-        .expect("Host tool identity");
+pub(crate) fn operation_uuid(
+    execution: &maka_agent_facts::durable::ExecutionIdentity,
+    operation_id: &str,
+) -> Uuid {
+    let bytes = serde_json::to_vec(&(execution, operation_id)).expect("Host tool identity");
     let digest = Sha256::digest(bytes);
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&digest[..16]);
@@ -971,7 +1073,14 @@ fn mutation_result(reply: OperationReply, language: Language) -> Result<ToolSucc
     };
     match &reply.receipt {
         Receipt::Recorded { outcome, .. } => match outcome {
-            OperationOutcome::Returned { .. } => Ok(ToolOutput::Operation(Box::new(reply)).into()),
+            OperationOutcome::Returned { result } => {
+                let failed = matches!(result, OperationResult::Failure { .. });
+                Ok(ToolSuccess::from(ToolOutput::Operation(Box::new(reply)))
+                    .reporting_error(failed))
+            }
+            OperationOutcome::NotExecuted { .. } => {
+                Ok(ToolSuccess::from(ToolOutput::Operation(Box::new(reply))).reporting_error(true))
+            }
             OperationOutcome::Unknown { .. } | OperationOutcome::Unresolved => {
                 Err(ToolError::OperationUnknown {
                     message: unknown.into(),
@@ -983,9 +1092,10 @@ fn mutation_result(reply: OperationReply, language: Language) -> Result<ToolSucc
             message: unknown.into(),
             observation: Box::new(reply),
         }),
-        Receipt::NotRecorded => Err(ToolError::Failed(
-            "native service operation was not recorded".into(),
-        )),
+        Receipt::NotRecorded => Err(ToolError::OperationUnknown {
+            message: unknown.into(),
+            observation: Box::new(reply),
+        }),
     }
 }
 
@@ -1011,127 +1121,38 @@ impl maka_tools::request::RequestBinding for SkillBinding {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use maka_plugin_core::composition::InstanceId;
-    use maka_plugin_core::contract::Transport;
-    use maka_plugin_core::deployment::DeploymentRef;
-    use maka_plugin_core::operation::{RecoveryContract, RecoveryProtocol, RecoveryRef};
+    use super::{SelectedTool, SelectionSnapshot};
+    use serde_json::json;
 
     #[test]
-    fn approval_descriptor_rejects_extra_authority_and_mismatched_capture() {
-        let descriptor = serde_json::json!({
-            "selected": { "selection": {
-                "input": "json", "result": "json", "confirmation": "required",
-                "name": "Read", "description": "Read file", "target": {"kind":"import", "name":"Files"}, "method": "readText"
-            }, "binding": "original" },
-            "capture": { "kind": "ordinary" }
+    fn existing_tool_declaration_uses_current_binding_for_the_same_method() {
+        let selection = json!({
+            "name": "ModelList",
+            "description": "List models.",
+            "target": {"kind": "export", "name": "agent"},
+            "method": "models",
+            "result": "json",
+            "confirmation": "preapproved"
         });
-        assert!(NativeApprovalData::decode(descriptor.clone()).is_ok());
-        let mut extra = descriptor.clone();
-        extra["execute"] = serde_json::json!({"method": "write"});
-        assert!(NativeApprovalData::decode(extra).is_err());
-        let mut extra = descriptor.clone();
-        extra["capture"]["input"] = serde_json::json!({"path": "replacement"});
-        assert!(NativeApprovalData::decode(extra).is_err());
-        let mut mismatched = descriptor.clone();
-        mismatched["selected"]["selection"]["input"] = "web".into();
-        assert!(NativeApprovalData::decode(mismatched).is_err());
-        let mut unapproved = descriptor;
-        unapproved["selected"]["selection"]["confirmation"] = "preapproved".into();
-        assert!(NativeApprovalData::decode(unapproved).is_err());
-    }
+        let stored = serde_json::from_value::<SelectionSnapshot>(json!({
+            "definitions": [],
+            "directOnly": [],
+            "services": [{
+                "selection": selection,
+                "binding": "sha256:ac28b16a6969b0d128053a6a8610f4ada2322ac005feec42869ed31343d4f17c"
+            }],
+            "internalBindings": {}
+        }))
+        .unwrap();
+        let mut live = SelectedTool {
+            selection: serde_json::from_value(selection).unwrap(),
+            discovery_group: crate::contract::DiscoveryToolGroup::Other,
+            binding: "sha256:20379da95853ba9498588b280113bf12e6e59301840666f025af97879bb548ee"
+                .into(),
+        };
+        assert!(stored.matches_service("ModelList", std::slice::from_ref(&live)));
 
-    #[test]
-    fn skill_approval_names_keep_the_original_order_styles_and_json_shape() {
-        let configured = ToolNames::Configured(
-            vec![
-                ("Write".into(), Some(EditingTools::Structured)),
-                ("Patch".into(), Some(EditingTools::ApplyPatch)),
-                ("Skill".into(), None),
-            ]
-            .into(),
-        );
-        let configured = NativeApprovalCapture::Skill {
-            tool_names: configured.capture(),
-        };
-        assert_eq!(
-            serde_json::to_value(configured).unwrap(),
-            serde_json::json!({
-                "kind":"skill", "tool_names":[["Write","structured"],["Patch","apply_patch"],["Skill",null]]
-            })
-        );
-        let ceiling = ToolNames::Ceiling(vec!["Patch".into(), "Skill".into()].into());
-        let capture = NativeApprovalCapture::Skill {
-            tool_names: ceiling.capture(),
-        };
-        let encoded = serde_json::to_value(capture).unwrap();
-        assert_eq!(
-            encoded,
-            serde_json::json!({"kind":"skill","tool_names":[["Patch",null],["Skill",null]]})
-        );
-        let NativeApprovalCapture::Skill { tool_names } = serde_json::from_value(encoded).unwrap()
-        else {
-            panic!("Skill approval capture must preserve its historical names");
-        };
-        let restored = ToolNames::Configured(tool_names.into());
-        assert_eq!(
-            restored.capture(),
-            vec![("Patch".into(), None), ("Skill".into(), None)]
-        );
-    }
-
-    #[test]
-    fn uncertain_service_projection_localizes_recovery_and_preserves_original_receipt() {
-        let reference = RecoveryRef {
-            source: DeploymentRef {
-                state_domain: "a".repeat(64),
-                deployment: Uuid::from_u128(1),
-                revision: 3,
-            },
-            namespace: InstanceId(vec![Uuid::from_u128(2)]),
-            export: "Service".into(),
-            method: "apply".into(),
-            operation: Uuid::from_u128(3),
-            fingerprint: format!("sha256-{}", "b".repeat(64)),
-            contract: RecoveryContract {
-                name: "example.Service".into(),
-                version: 1,
-                transport: Transport::Remote,
-                digest: format!("sha256-{}", "c".repeat(64)),
-            },
-            recovery: RecoveryProtocol::JournalV1,
-        };
-        reference.validate().unwrap();
-        for receipt in [
-            Receipt::Recorded {
-                outcome: OperationOutcome::Unknown {
-                    diagnostic: "原始诊断 / no reply".into(),
-                },
-                cleanup: OperationCleanup::Confirmed,
-            },
-            Receipt::Recorded {
-                outcome: OperationOutcome::Unresolved,
-                cleanup: OperationCleanup::Confirmed,
-            },
-            Receipt::Unavailable {
-                diagnostic: "原始查询失败 / lookup failed".into(),
-            },
-        ] {
-            let original = OperationReply {
-                reference: reference.clone(),
-                receipt,
-            };
-            for language in [Language::En, Language::ZhCn, Language::ZhTw] {
-                let Err(ToolError::OperationUnknown {
-                    message,
-                    observation,
-                }) = mutation_result(original.clone(), language)
-                else {
-                    panic!("uncertain receipt must remain an unknown operation");
-                };
-                assert!(!message.is_empty());
-                assert_eq!(*observation, original);
-            }
-        }
+        live.selection.method = "list".into();
+        assert!(!stored.matches_service("ModelList", &[live]));
     }
 }

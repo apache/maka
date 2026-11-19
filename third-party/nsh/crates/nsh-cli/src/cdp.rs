@@ -113,7 +113,8 @@ fn candidates() -> Vec<PathBuf> {
     paths
 }
 
-/// A headless browser this process started; it goes when this is dropped.
+/// A headless browser this process started; it goes when it is closed
+/// ([`Browser::close`]) or dropped.
 pub(crate) struct Browser {
     child: Mutex<Child>,
     socket: Mutex<WebSocket<MaybeTlsStream<TcpStream>>>,
@@ -121,6 +122,7 @@ pub(crate) struct Browser {
     /// Its profile, removed after it.
     profile: PathBuf,
     output: ui::Tail,
+    closed: AtomicBool,
 }
 
 impl Browser {
@@ -158,6 +160,10 @@ impl Browser {
                 // Playwright launches it).
                 "--blink-settings=primaryPointerType=4,availablePointerTypes=4,\
                  primaryHoverType=2,availableHoverTypes=2",
+                // No downloads of its own (components, Safe Browsing lists):
+                // they made a profile in the temp directory 150 MB.
+                "--disable-component-update",
+                "--disable-background-networking",
                 "about:blank",
             ])
             .stdin(Stdio::null());
@@ -209,6 +215,7 @@ impl Browser {
             next: AtomicU64::new(1),
             profile,
             output,
+            closed: AtomicBool::new(false),
         })
     }
 
@@ -238,10 +245,11 @@ impl Browser {
         let mut page = Page {
             browser: self.clone(),
             context,
+            target: String::new(),
             session: String::new(),
             closed: AtomicBool::new(false),
         };
-        let target = id(
+        page.target = id(
             self.call(
                 None,
                 "Target.createTarget",
@@ -253,7 +261,7 @@ impl Browser {
             self.call(
                 None,
                 "Target.attachToTarget",
-                json!({ "targetId": target, "flatten": true }),
+                json!({ "targetId": page.target, "flatten": true }),
             )?,
             "sessionId",
         )?;
@@ -311,10 +319,13 @@ impl Browser {
     fn lock_child(&self) -> std::sync::MutexGuard<'_, Child> {
         self.child.lock().unwrap_or_else(|e| e.into_inner())
     }
-}
 
-impl Drop for Browser {
-    fn drop(&mut self) {
+    /// Closes it and removes its profile, once; the pages left fail their
+    /// calls.
+    pub(crate) fn close(&self) {
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return;
+        }
         // Closed as a user closes it, so its helper processes go with it.
         let _ = self.call(None, "Browser.close", json!({}));
         let mut child = self.lock_child();
@@ -332,6 +343,12 @@ impl Drop for Browser {
     }
 }
 
+impl Drop for Browser {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
 /// The profiles started so far: each browser gets one of its own.
 static NEXT_PROFILE: AtomicU64 = AtomicU64::new(0);
 
@@ -340,6 +357,8 @@ static NEXT_PROFILE: AtomicU64 = AtomicU64::new(0);
 pub(crate) struct Page {
     browser: Arc<Browser>,
     context: String,
+    /// Its target, closed before the context goes.
+    target: String,
     session: String,
     closed: AtomicBool,
 }
@@ -355,9 +374,19 @@ impl Page {
         &self.browser
     }
 
-    /// Closes the page and its context.
+    /// Closes the page and its context. The page goes first, with
+    /// `Target.closeTarget`, which runs none of its `beforeunload` listeners:
+    /// an app listening to quit requests is not asked, and no leave dialog
+    /// holds the page.
     pub(crate) fn close(&self) {
         if !self.closed.swap(true, Ordering::Relaxed) {
+            if !self.target.is_empty() {
+                let _ = self.browser.call(
+                    None,
+                    "Target.closeTarget",
+                    json!({ "targetId": self.target }),
+                );
+            }
             let _ = self.browser.call(
                 None,
                 "Target.disposeBrowserContext",

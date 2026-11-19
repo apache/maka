@@ -20,7 +20,7 @@
 import { mount, signal, View } from 'nsh';
 import { Clipboard } from 'nsh';
 import { keymap } from 'nsh';
-import { TurnNavigation } from '../../../workbench/app/TurnNavigation';
+import { TurnNavigation, type TurnNavigationItem } from '../../../workbench/app/TurnNavigation';
 
 const colors = ['#161719', '#17181a', '#18191b', '#191a1c'];
 const stage = signal(0);
@@ -33,10 +33,19 @@ colors.forEach((_, index) => {
     { when: 'always' },
   );
 });
-const items = Array.from({ length: 6 }, (_, index) => ({
-  turnId: `turn-${index}`,
+const items: TurnNavigationItem[] = Array.from({ length: 6 }, (_, index) => ({
+  turnKey: `turn-${index}`,
+  order: { path: [index + 1], itemIndex: 0 },
   label: `Prompt ${index}`,
-  anchor: { kind: 'loaded' as const, position: { sourceSequence: index, itemIndex: 0 } },
+  anchor: {
+    kind: 'loaded',
+    position: {
+      kind: 'live',
+      sequence: index + 1,
+      itemIndex: 0,
+      fact: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+    },
+  },
 }));
 mount(() => (
   <View
@@ -51,7 +60,7 @@ mount(() => (
       items={() => items}
       active={() => null}
       busy={() => null}
-      navigate={(item) => Clipboard.writeText(item.turnId)}
+      navigate={(item) => Clipboard.writeText(item.turnKey)}
       cancel={() => {}}
     />
   </View>

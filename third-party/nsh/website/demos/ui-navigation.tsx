@@ -24,7 +24,7 @@ function Header(props: { title: string; right?: JSX.Element }) {
     <View style={{ backgroundColor: ui().page, borderBottomWidth: 1, borderBottomColor: ui().line }} class="h-12 flex-row items-center px-2">
       <View class="w-20 flex-row">
         <If when={nav.routes().length > 1}>
-          <View role="button" accessibilityLabel="Back" onPress={() => nav.pop()} hoverStyle={hoverFill()} focusStyle={focusRing()} class="rounded-md px-2 py-1 active:opacity-60">
+          <View role="button" accessibilityLabel="Back" onPress={() => nav.pop()} hoverStyle={hoverFill()} focusVisibleStyle={focusRing()} class="rounded-md px-2 py-1 active:opacity-60">
             <Text style={{ fontSize: 17, color: ui().accent }}>‹ Back</Text>
           </View>
         </If>
@@ -68,7 +68,7 @@ function Home() {
 function Detail(props: { id: number }) {
   const starred = signal(false);
   const star = () => (
-    <Text onPress={() => starred.set(!starred())} style={{ fontSize: 17, color: ui().accent }} hoverStyle={hoverFill()} focusStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
+    <Text onPress={() => starred.set(!starred())} style={{ fontSize: 17, color: ui().accent }} hoverStyle={hoverFill()} focusVisibleStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
       {starred() ? "★" : "☆"}
     </Text>
   );
@@ -94,7 +94,7 @@ function Inbox() {
       onPress={() => starred.set(starred().includes(id) ? starred().filter((s) => s !== id) : [...starred(), id])}
       style={{ fontSize: 17, color: ui().accent }}
       hoverStyle={hoverFill()}
-      focusStyle={focusRing()}
+      focusVisibleStyle={focusRing()}
       activeStyle={{ opacity: 0.7 }}
     >
       {starred().includes(id) ? "★" : "☆"}
@@ -119,7 +119,7 @@ function Inbox() {
                   gap: 2,
                   backgroundColor: selected() === id() ? tint(ui().accent, 0.14) : "transparent",
                 }}
-                focusStyle={focusRing()}
+                focusVisibleStyle={focusRing()}
                 activeStyle={{ opacity: 0.7 }}
               >
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>

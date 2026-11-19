@@ -141,27 +141,69 @@ impl Cron {
                     if date < first || !self.matches_date(date) {
                         continue;
                     }
-                    let mut next = None;
-                    for hour in self.hour.values() {
-                        for minute in self.minute.values() {
-                            let local = date.at(hour, minute, 0, 0);
-                            let ambiguous = zone.to_ambiguous_zoned(local);
-                            // Gaps have no matching wall time; folds have two
-                            // real occurrences, selected in timestamp order.
-                            for resolved in [ambiguous.clone().earlier()?, ambiguous.later()?] {
-                                let at = resolved.timestamp().as_millisecond();
-                                if resolved.datetime() == local && at >= lower {
-                                    next = Some(next.map_or(at, |previous: i64| previous.min(at)));
-                                }
-                            }
-                        }
-                    }
-                    if next.is_some() {
-                        return Ok(next);
+                    if let Some(next) = self.on_date(date, zone, |at| at >= lower, i64::min)? {
+                        return Ok(Some(next));
                     }
                 }
             }
         }
         Ok(None)
+    }
+
+    pub fn latest(&self, at: i64, not_before: i64, zone: &TimeZone) -> Result<Option<i64>, Error> {
+        if at < not_before {
+            return Ok(None);
+        }
+        let first = Timestamp::from_millisecond(not_before)?
+            .to_zoned(zone.clone())
+            .date();
+        let last = Timestamp::from_millisecond(at)?
+            .to_zoned(zone.clone())
+            .date();
+        for year in (first.year()..=last.year()).rev() {
+            for month in (1..=12).rev().filter(|month| self.month.contains(*month)) {
+                if (year == first.year() && month < first.month())
+                    || (year == last.year() && month > last.month())
+                {
+                    continue;
+                }
+                let month_start = Date::new(year, month, 1)?;
+                for day in (1..=month_start.days_in_month()).rev() {
+                    let date = Date::new(year, month, day)?;
+                    if date < first || date > last || !self.matches_date(date) {
+                        continue;
+                    }
+                    let in_range = |candidate| (not_before..=at).contains(&candidate);
+                    if let Some(latest) = self.on_date(date, zone, in_range, i64::max)? {
+                        return Ok(Some(latest));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn on_date(
+        &self,
+        date: Date,
+        zone: &TimeZone,
+        in_range: impl Fn(i64) -> bool,
+        select: impl Fn(i64, i64) -> i64,
+    ) -> Result<Option<i64>, Error> {
+        let mut selected = None;
+        for hour in self.hour.values() {
+            for minute in self.minute.values() {
+                let local = date.at(hour, minute, 0, 0);
+                let ambiguous = zone.to_ambiguous_zoned(local);
+                // Gaps have no matching wall time; folds have two real occurrences.
+                for resolved in [ambiguous.clone().earlier()?, ambiguous.later()?] {
+                    let at = resolved.timestamp().as_millisecond();
+                    if resolved.datetime() == local && in_range(at) {
+                        selected = Some(selected.map_or(at, |previous| select(previous, at)));
+                    }
+                }
+            }
+        }
+        Ok(selected)
     }
 }

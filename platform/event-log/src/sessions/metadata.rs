@@ -31,6 +31,195 @@ pub enum SessionMutation<T> {
     RevisionConflict { expected: u64, actual: u64 },
 }
 
+pub(crate) fn preview_archived<T: DeserializeOwned>(
+    connection: &rusqlite::Connection,
+    id: &str,
+    expected: Option<u64>,
+    archived: bool,
+    now: u64,
+) -> Result<(SessionMutation<T>, bool), StoreError> {
+    super::removal::require_mutable(connection, id)?;
+    let mut record: SessionRecord<T> = read(connection, id)?.ok_or(StoreError::SessionNotFound)?;
+    if let Some(expected) = expected
+        && expected != record.revision
+    {
+        return Ok((
+            SessionMutation::RevisionConflict {
+                expected,
+                actual: record.revision,
+            },
+            false,
+        ));
+    }
+    let changed = record.archived != archived;
+    if changed {
+        record.revision = record
+            .revision
+            .checked_add(1)
+            .filter(|revision| *revision <= MAX_SAFE_INTEGER)
+            .ok_or_else(|| invalid("session revision exhausted"))?;
+        record.archived = archived;
+        record.updated_at = now.max(record.updated_at);
+    }
+    Ok((SessionMutation::Committed(Box::new(record)), changed))
+}
+
+pub(crate) fn apply_archived<T: DeserializeOwned>(
+    connection: &rusqlite::Connection,
+    id: &str,
+    expected: Option<u64>,
+    archived: bool,
+    now: u64,
+) -> Result<(SessionMutation<T>, bool), StoreError> {
+    let (outcome, changed) = preview_archived(connection, id, expected, archived, now)?;
+    if changed {
+        let SessionMutation::Committed(record) = &outcome else {
+            unreachable!("only a committed choice changes metadata")
+        };
+        if !archived {
+            connection.execute("DELETE FROM session_retirements WHERE session_id=? AND remove_session=0 AND completed=1", params![id])?;
+        }
+        if connection.execute("UPDATE session_control SET archived=?, revision=revision+1, updated_at=? WHERE id=? AND revision<?", params![archived, record.updated_at as i64, id, MAX_SAFE_INTEGER as i64])? != 1 {
+            return Err(invalid("session revision exhausted"));
+        }
+        advance_catalog(connection)?;
+    }
+    Ok((outcome, changed))
+}
+
+pub(crate) struct MetadataChange<T> {
+    pub(crate) previous: SessionRecord<serde_json::Value>,
+    pub(crate) record: SessionRecord<T>,
+    configuration: Option<String>,
+}
+impl<T> MetadataChange<T> {
+    pub(crate) fn requires_work_fence(&self) -> Result<bool, StoreError> {
+        let next = self
+            .configuration
+            .as_ref()
+            .map(|value| serde_json::from_str(value))
+            .transpose()?;
+        let next = next.as_ref().unwrap_or(&self.previous.configuration);
+        let old_basis = self
+            .previous
+            .workspace_binding
+            .as_ref()
+            .map(|binding| {
+                crate::workspace_bindings::effective_boundary(&self.previous.configuration, binding)
+            })
+            .transpose()?;
+        let new_basis = self
+            .record
+            .workspace_binding
+            .as_ref()
+            .map(|binding| crate::workspace_bindings::effective_boundary(next, binding))
+            .transpose()?;
+        Ok(old_basis != new_basis)
+    }
+    pub(crate) fn binding_ids(&self) -> impl Iterator<Item = uuid::Uuid> + '_ {
+        self.previous
+            .workspace_binding
+            .iter()
+            .chain(self.record.workspace_binding.iter())
+            .map(|binding| binding.id)
+    }
+    pub(crate) fn validate(&self, connection: &rusqlite::Connection) -> Result<(), StoreError> {
+        super::removal::require_mutable(connection, &self.previous.id)?;
+        let current = read::<serde_json::Value>(connection, &self.previous.id)?
+            .ok_or(StoreError::SessionNotFound)?;
+        if current.revision != self.previous.revision {
+            return Err(StoreError::SessionRevisionConflict {
+                expected: self.previous.revision,
+                actual: current.revision,
+            });
+        }
+        if current != self.previous {
+            return Err(invalid("prepared Session metadata changed"));
+        }
+        if let Some(configuration) = &self.configuration {
+            crate::workspace_bindings::require_current_reference(
+                connection,
+                &serde_json::from_str(configuration)?,
+            )?;
+        }
+        Ok(())
+    }
+    // The caller either just produced this choice in its transaction or validated it there.
+    pub(crate) fn apply(
+        self,
+        connection: &rusqlite::Connection,
+    ) -> Result<(SessionRecord<T>, bool), StoreError> {
+        let changed = self.configuration.is_some();
+        if let Some(configuration) = self.configuration {
+            if connection.execute(
+                "UPDATE session_control SET configuration=?,revision=? WHERE id=?",
+                params![configuration, self.record.revision as i64, &self.record.id],
+            )? != 1
+            {
+                return Err(StoreError::SessionNotFound);
+            }
+            advance_catalog(connection)?;
+        }
+        Ok((self.record, changed))
+    }
+}
+
+pub(crate) fn preview_metadata<T, F>(
+    connection: &rusqlite::Connection,
+    id: &str,
+    expected: u64,
+    always_advance: bool,
+    update: F,
+) -> Result<MetadataChange<T>, StoreError>
+where
+    T: Serialize + DeserializeOwned + Clone + PartialEq,
+    F: FnOnce(&mut T) -> Result<(), StoreError>,
+{
+    super::removal::require_mutable(connection, id)?;
+    let previous = read::<serde_json::Value>(connection, id)?.ok_or(StoreError::SessionNotFound)?;
+    if previous.revision != expected {
+        return Err(StoreError::SessionRevisionConflict {
+            expected,
+            actual: previous.revision,
+        });
+    }
+    let mut normalized = previous.configuration.clone();
+    crate::workspace_bindings::normalize(&mut normalized, previous.workspace_binding.as_ref())?;
+    let mut configuration: T = serde_json::from_value(normalized)?;
+    let original = configuration.clone();
+    update(&mut configuration)?;
+    if !always_advance && configuration == original {
+        let original: T = serde_json::from_value(previous.configuration.clone())?;
+        let record = previous.clone().map_configuration(|_| original);
+        return Ok(MetadataChange {
+            previous,
+            record,
+            configuration: None,
+        });
+    }
+    let value = serde_json::to_value(&configuration)?;
+    crate::workspace_bindings::require_current_reference(connection, &value)?;
+    let encoded = serde_json::to_string(&value)?;
+    let revision = expected
+        .checked_add(1)
+        .filter(|revision| *revision <= MAX_SAFE_INTEGER)
+        .ok_or_else(|| invalid("session metadata revision exhausted"))?;
+    let binding = crate::workspace_bindings::resolve(connection, &value)?;
+    let revision =
+        crate::workspace_bindings::effective_revision(revision, &value, binding.as_ref())?;
+    use sha2::{Digest, Sha256};
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(encoded.as_bytes())));
+    let mut record = previous.clone().map_configuration(|_| configuration);
+    record.revision = revision;
+    record.workspace_binding = binding;
+    record.configuration_digest = digest;
+    Ok(MetadataChange {
+        previous,
+        record,
+        configuration: Some(encoded),
+    })
+}
+
 impl EventLog {
     pub async fn set_session_archived<T: DeserializeOwned + Send + 'static>(
         &self,
@@ -58,37 +247,23 @@ impl EventLog {
         validate_time(now)?;
         let id = id.to_owned();
         let commits = self.commits.session(&id);
-        self.connection.run(move |connection| {
-        let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
-        super::removal::require_mutable(&tx, &id)?;
-        let record: SessionRecord<T> = read(&tx, &id)?.ok_or(StoreError::SessionNotFound)?;
-        if let Some(expected) = expected && expected != record.revision {
-            return Ok(SessionMutation::RevisionConflict { expected, actual: record.revision });
-        }
-        if super::has_active_invocation(&tx, &id)? {
-            return Err(StoreError::SessionBusy);
-        }
-        if record.archived == archived {
-            return Ok(SessionMutation::Committed(Box::new(record)));
-        }
-        if record.revision >= MAX_SAFE_INTEGER {
-            return Err(invalid("session revision exhausted"));
-        }
-        if !archived {
-            tx.execute("DELETE FROM session_retirements WHERE session_id=? AND remove_session=0 AND completed=1", params![&id])?;
-        }
-        let changed = tx.execute("UPDATE session_control SET archived = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision < ?", params![archived, now.max(record.updated_at) as i64, &id, MAX_SAFE_INTEGER as i64])?;
-        if changed != 1 { return Err(invalid("session revision exhausted")); }
-        advance_catalog(&tx)?;
-        let record = read(&tx, &id)?.ok_or(StoreError::SessionNotFound)?;
-        tx.commit().map_err(StoreError::CommitUnknown)?;
-        commits.metadata();
-        Ok(SessionMutation::Committed(Box::new(record)))
-        }).await
+        self.connection
+            .run(move |connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                let (outcome, changed) = apply_archived(&tx, &id, expected, archived, now)?;
+                if changed {
+                    tx.commit().map_err(StoreError::CommitUnknown)?;
+                    commits.metadata();
+                }
+                Ok(outcome)
+            })
+            .await
     }
 
-    /// Mutates validated control metadata, including while execution is active.
-    /// The creation fingerprint and all event facts remain unchanged. Compare
+    /// Mutates control metadata without changing the creation fingerprint. Compare
     /// revision before invoking the policy closure, even for a semantic no-op.
     pub async fn update_session_metadata<T, F>(
         &self,
@@ -100,25 +275,7 @@ impl EventLog {
         T: Serialize + DeserializeOwned + Clone + PartialEq + Send + 'static,
         F: FnOnce(&mut T) -> Result<(), StoreError> + Send + 'static,
     {
-        self.mutate_session_metadata(id, expected, false, None, None, update)
-            .await
-    }
-
-    /// Permission changes atomically retire pending requests from the old boundary.
-    /// The domain closure owns the configuration and its boundary revision.
-    pub async fn update_session_permissions<T, F>(
-        &self,
-        id: &str,
-        expected: u64,
-        now: u64,
-        update: F,
-    ) -> Result<SessionMutation<T>, StoreError>
-    where
-        T: Serialize + DeserializeOwned + Clone + PartialEq + Send + 'static,
-        F: FnOnce(&mut T) -> Result<(), StoreError> + Send + 'static,
-    {
-        validate_time(now)?;
-        self.mutate_session_metadata(id, expected, false, Some(now), None, update)
+        self.mutate_session_metadata(id, expected, false, None, update)
             .await
     }
 
@@ -133,20 +290,18 @@ impl EventLog {
     where
         T: Serialize + DeserializeOwned + Clone + PartialEq + Send + 'static,
     {
-        self.mutate_session_metadata(id, expected, true, None, None, move |current| {
+        self.mutate_session_metadata(id, expected, true, None, move |current| {
             *current = configuration;
             Ok(())
         })
         .await
     }
 
-    #[allow(clippy::too_many_arguments)] // One SQL transaction owns metadata and optional checkpoint receipt.
     pub(crate) async fn mutate_session_metadata<T, F>(
         &self,
         id: &str,
         expected: u64,
         always_advance: bool,
-        permission_time: Option<u64>,
         checkpoint: Option<crate::root_store::checkpoints::restore::Commit>,
         update: F,
     ) -> Result<SessionMutation<T>, StoreError>
@@ -162,87 +317,30 @@ impl EventLog {
         let commits = self.commits.session(&id);
         self.connection
             .run(move |connection| {
-                {
-                    let tx = rusqlite::Transaction::new_unchecked(
-                        connection,
-                        rusqlite::TransactionBehavior::Immediate,
-                    )?;
-                    super::removal::require_mutable(&tx, &id)?;
-                    if let Some(commit) = &checkpoint {
-                        commit.validate(&tx)?;
-                    }
-                    let record: SessionRecord<T> =
-                        read(&tx, &id)?.ok_or(StoreError::SessionNotFound)?;
-                    if record.revision != expected {
-                        return Ok(SessionMutation::RevisionConflict {
-                            expected,
-                            actual: record.revision,
-                        });
-                    }
-                    let boundary = if permission_time.is_some() {
-                        Some(
-                            crate::workspace_bindings::permission_basis(&tx, &id)?
-                                .ok_or_else(|| invalid("session permission boundary is missing"))?,
-                        )
-                    } else {
-                        None
-                    };
-                    let mut normalized = serde_json::to_value(&record.configuration)?;
-                    crate::workspace_bindings::normalize(
-                        &mut normalized,
-                        record.workspace_binding.as_ref(),
-                    )?;
-                    let mut configuration: T = serde_json::from_value(normalized)?;
-                    let previous = configuration.clone();
-                    update(&mut configuration)?;
-                    if !always_advance && configuration == previous {
-                        return Ok(SessionMutation::Committed(Box::new(record)));
-                    }
-                    let configuration = serde_json::to_value(configuration)?;
-                    crate::workspace_bindings::require_current_reference(&tx, &configuration)?;
-                    let configuration = serde_json::to_string(&configuration)?;
-                    let next_revision = expected
-                        .checked_add(1)
-                        .filter(|revision| *revision <= MAX_SAFE_INTEGER)
-                        .ok_or_else(|| invalid("session metadata revision exhausted"))?;
-                    // Metadata is not activity: neither timestamps nor runtime_events move.
-                    if tx.execute(
-                        "UPDATE session_control SET configuration = ?, revision = ? WHERE id = ?",
-                        params![configuration, next_revision as i64, &id],
-                    )? != 1
-                    {
-                        return Err(invalid("session metadata revision exhausted"));
-                    }
-                    if let (Some(old), Some(now)) = (boundary, permission_time) {
-                        crate::interactions::permissions::close_previous_basis(&tx, &id, old, now)?;
-                    }
-                    let retired_basis = if let Some(old) = boundary {
-                        (crate::workspace_bindings::permission_basis(&tx, &id)? != Some(old))
-                            .then_some(old)
-                    } else {
-                        None
-                    };
-                    let approval_revoked = if retired_basis.is_some() {
-                        crate::native_approvals::revoke_for_session(
-                            &tx,
-                            &id,
-                            permission_time.expect("permission retirement has a timestamp"),
-                        )?
-                    } else {
-                        false
-                    };
-                    advance_catalog(&tx)?;
-                    let record = read(&tx, &id)?.ok_or(StoreError::SessionNotFound)?;
-                    if let Some(commit) = checkpoint {
-                        commit.record(&tx, next_revision)?;
-                    }
-                    tx.commit().map_err(StoreError::CommitUnknown)?;
-                    if approval_revoked {
-                        commits.activations();
-                    }
-                    commits.metadata();
-                    Ok(SessionMutation::Committed(Box::new(record)))
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                if let Some(commit) = &checkpoint {
+                    commit.validate(&tx)?;
                 }
+                let change = match preview_metadata(&tx, &id, expected, always_advance, update) {
+                    Ok(change) => change,
+                    Err(StoreError::SessionRevisionConflict { expected, actual }) => {
+                        return Ok(SessionMutation::RevisionConflict { expected, actual });
+                    }
+                    Err(error) => return Err(error),
+                };
+                let (record, changed) = change.apply(&tx)?;
+                if !changed {
+                    return Ok(SessionMutation::Committed(Box::new(record)));
+                }
+                if let Some(commit) = checkpoint {
+                    commit.record(&tx, record.revision)?;
+                }
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                commits.metadata();
+                Ok(SessionMutation::Committed(Box::new(record)))
             })
             .await
     }

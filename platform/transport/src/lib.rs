@@ -26,8 +26,9 @@ pub use maka_host_runtime::application::transport::{GATEWAY, with_gateway};
 /// owner's close. That original worker retains the Root and writer authority.
 pub async fn open_store(
     owner: std::sync::Arc<maka_event_log::root::RootOwner>,
+    catalog: &[maka_event_log::migration::Migration],
 ) -> std::result::Result<maka_event_log::root_store::RootStore, maka_event_log::StoreError> {
-    confirmed_store(maka_event_log::root_store::RootStore::open(owner).await).await
+    confirmed_store(maka_event_log::root_store::RootStore::open(owner, catalog).await).await
 }
 
 /// Inspect an existing Root's saved application without initializing storage.

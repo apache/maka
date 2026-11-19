@@ -34,11 +34,16 @@ pub type InterruptionFuture = Pin<Box<dyn Future<Output = Result<(), ToolError>>
 pub struct NativeBindingSource {
     session: String,
     turn: String,
+    execution: crate::ExecutionCorrelation,
     native_epoch: String,
     generation: String,
     operation_id: String,
 }
 impl NativeBindingSource {
+    pub fn execution_correlation(&self) -> &crate::ExecutionCorrelation {
+        &self.execution
+    }
+
     pub fn session(&self) -> &str {
         &self.session
     }
@@ -58,6 +63,7 @@ impl NativeBindingSource {
     pub(crate) fn from_bound_native(
         session: String,
         turn: String,
+        execution: crate::ExecutionCorrelation,
         native_epoch: String,
         generation: String,
         operation_id: String,
@@ -75,6 +81,7 @@ impl NativeBindingSource {
         Ok(Self {
             session,
             turn,
+            execution,
             native_epoch,
             generation,
             operation_id,
@@ -90,6 +97,10 @@ pub struct NativeInterruption {
     source: NativeBindingSource,
 }
 impl NativeInterruption {
+    pub fn execution_correlation(&self) -> &crate::ExecutionCorrelation {
+        self.source.execution_correlation()
+    }
+
     pub fn session(&self) -> &str {
         self.source.session()
     }
@@ -120,6 +131,10 @@ pub struct NativeInterruptionDrain {
     affected_operation_id: String,
 }
 impl NativeInterruptionDrain {
+    pub fn execution_correlation(&self) -> &crate::ExecutionCorrelation {
+        self.interruption.execution_correlation()
+    }
+
     pub fn session(&self) -> &str {
         self.interruption.session()
     }
@@ -173,6 +188,7 @@ pub trait NativeInterruptionObserver: Send + Sync {
 pub(crate) struct WireNativeSource {
     pub session: String,
     pub turn: String,
+    pub execution: crate::ExecutionCorrelation,
     pub native_epoch: String,
     pub generation: String,
     pub operation_id: String,
@@ -183,6 +199,7 @@ impl WireNativeSource {
         Self {
             session: source.session().into(),
             turn: source.turn().into(),
+            execution: source.execution_correlation().clone(),
             native_epoch: source.native_epoch().into(),
             generation: source.generation().into(),
             operation_id: source.operation_id().into(),
@@ -192,6 +209,7 @@ impl WireNativeSource {
         Self {
             session: source.session().into(),
             turn: source.turn().into(),
+            execution: source.execution_correlation().clone(),
             native_epoch: source.native_epoch().into(),
             generation: source.generation().into(),
             operation_id: source.operation_id().into(),
@@ -201,6 +219,7 @@ impl WireNativeSource {
         Self {
             session: source.session().into(),
             turn: source.turn().into(),
+            execution: source.execution_correlation().clone(),
             native_epoch: source.native_epoch().into(),
             generation: source.generation().into(),
             operation_id: source.operation_id().into(),

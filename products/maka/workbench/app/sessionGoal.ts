@@ -29,10 +29,10 @@ import type { Control } from '../../../../plugins/agent/conversations/ui/Convers
 import type { Subscription } from './history';
 import type { Host } from './host';
 import type { SessionPermissions } from './sessionPermissions';
-import type { MessageKey } from './locale';
 import { createText, errorText, isObservationCancelled, UiError } from './text';
+import type { MessageKey } from './locale';
 
-export function goalRejection(reason: string): MessageKey {
+export function goalRejection(reason: string): Error {
   const reasons: Record<string, MessageKey> = {
     goal_current_unfinished: 'Finish or cancel the current Goal before starting another.',
     goal_disabled: 'Goals are unavailable in this Agent.',
@@ -40,7 +40,8 @@ export function goalRejection(reason: string): MessageKey {
     goal_status_tool_unavailable: 'Enable Goal tools for this conversation to start a Goal.',
   };
 
-  return reasons[reason] ?? 'This action could not be completed.';
+  const key = reasons[reason];
+  return key === undefined ? new Error(`Goal request rejected: ${reason}`) : new UiError(key);
 }
 
 export function createSessionGoal(
@@ -104,7 +105,7 @@ export function createSessionGoal(
           void watch();
           return;
         }
-        connectionError.set(errorText(reason));
+        connectionError.set(errorText(reason, 'Could not load the goal.'));
         retry = setTimeout(() => {
           retry = null;
           void watch();
@@ -144,14 +145,14 @@ export function createSessionGoal(
       if (result.kind === 'conflict')
         throw new UiError('The Goal changed. Review it and try again.');
       if (result.kind === 'rejected') {
-        throw new UiError(goalRejection(result.reason));
+        throw goalRejection(result.reason);
       }
       const next: AgentGoalView = await host.query('agent', 'goal', { sessionId });
       if (!alive) return false;
       show(next);
       return true;
     } catch (reason) {
-      if (alive) error.set(errorText(reason));
+      if (alive) error.set(errorText(reason, 'Could not update the goal.'));
       return false;
     } finally {
       if (alive) pending.set(false);

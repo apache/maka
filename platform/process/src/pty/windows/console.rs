@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use maka_agent_facts::terminal::TerminalSize;
+use maka_plugin_core::terminal::TerminalSize;
 use std::{fs::File, io, os::windows::io::AsRawHandle};
 use windows_sys::Win32::System::Console::*;
 

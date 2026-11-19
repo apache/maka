@@ -15,7 +15,7 @@ NSH 应用在 iOS 上用 UIKit 视图和 CoreText 文本运行，支持真机和
 ## 环境要求
 
 - Mac 上的 **Xcode**，以及一个 iOS 模拟器运行时（`xcodebuild -downloadPlatform iOS` 可以安装）。见[安装](./installation.md#ios-与-mac-catalyst)。
-- 应用需要 **iOS 15.0** 及以上，支持 iPhone 和 iPad。
+- 应用需要 **iOS 15.0** 及以上，或应用指定的更高版本（见[最低系统版本](./packaging.md#最低系统版本)），支持 iPhone 和 iPad。
 
 ## 运行应用
 
@@ -42,6 +42,10 @@ nsh package --target ios --sign "Apple Distribution: Example Inc (ABCDE12345)" -
 在 Rust 应用的目录里，应用是用你的 crate 构建的 iOS runner；TSX 应用需写明入口（`nsh package App.tsx --target ios-simulator --run`）。
 
 `--target ios` 为真机、TestFlight 或 App Store 生成签名的 `.ipa`。签名身份、描述文件和图标见[打包](./packaging.md#ios-真机)。
+
+应用把它的警告、错误以及 `console.log` 和 `console.info` 日志写入统一日志，以它的 id 为子系统：连接的 iPhone 上的日志在“控制台”应用中查看，
+模拟器里的用 `xcrun simctl spawn booted log stream --predicate 'subsystem == "com.example.notes"'` 查看
+（[打包应用的日志](./dev-server-and-debugging.md#a-packaged-apps-logs)）。
 
 ## 嵌入 iOS 应用
 
@@ -84,6 +88,10 @@ fn show(container: &UIView) -> AppView {
 `NshAppView` 的成员对应；`AppView::set_locale`、`set_font_scale` 和 `set_error_handler` 对应 `locale`、`fontScale` 和 `onError`。
 `nsh package --target ios` 会为你构建这种应用，并挂载好根组件。
 
+不调用 `set_ui_sets` 时，`AppView` 提供 `nsh/base` 的核心部分（`Button`、`Checkbox`、`Switch`、`Tabs`、`Slider`、`AlertDialog`、
+导航、`Input` 等），这已足够 Rust 根组件使用，因为 Rust 按类型创建 `nsh/base` 的组件。视图加载的 TSX 若导入 `nsh/base`
+的更多组件（`Select`、`TextView`、`EmojiPicker` 等），就像上例那样传入完整的 `nsh_base::registry()`。
+
 ## 获取 framework
 
 发行包中包含两个版本：
@@ -109,6 +117,10 @@ cargo xtask ios-embed --dynamic
 
 默认情况下，每个 XCFramework 包含三个 arm64 切片：iOS 真机、iOS 模拟器（Apple 芯片）和 Mac Catalyst。最低部署目标为 iOS 15.0。Swift
 模块启用了 library evolution 编译，因此用其他版本 Swift 编译器构建的应用也能导入它；framework 已链接了它需要的一切，你无需再添加其他东西。
+
+`NshAppView` 为它运行的应用提供完整的 `nsh/base`（包括 `nsh/base/plot`），与 Android 的 `NshView` 一样：应用可以导入其中任何组件。
+宿主应用若用自己的 Rust 代码构建运行时，可以在创建第一个视图之前用 `nsh_platform_ios::set_ui_sets` 选择 UI 集合
+（[嵌入 Rust 应用](#嵌入-rust-应用)）。
 
 ## 加入 Xcode 项目
 
@@ -138,7 +150,7 @@ nsh build App.tsx --release --out MyApp/nsh
 | `bundle.js` | 同一个应用的 JS 源码。 |
 | `bundle.js.map` | 它的 source map（堆栈跟踪会指向你的 `.tsx` 文件）。 |
 | `capabilities.json` | 应用声明的[能力](./sandbox-and-capabilities.md)，仅当 `nsh.json` 中有声明时生成。 |
-| `assets/` | 应用导入的图片和字体，路径相对于入口文件。 |
+| `assets/` | 应用导入的图片和字体，路径为它们在应用目录中的路径。 |
 
 ## 显示应用
 
@@ -175,6 +187,11 @@ final class EmbedController: UIViewController {
     override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation {
         NshAppView.preferredStatusBarUpdateAnimation
     }
+
+    // 由显示中的页面决定方向（`supportedOrientations`）。
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        NshAppView.supportedInterfaceOrientations ?? super.supportedInterfaceOrientations
+    }
 }
 ```
 
@@ -191,6 +208,7 @@ final class EmbedController: UIViewController {
 | `init(frame: CGRect = .zero, trace: Bool = false)` | 创建视图。`trace` 会记录每次提交的耗时。`init?(coder:)` 支持 storyboard 和 nib。 |
 | `onError: ((String) -> Void)?` | 在主线程上接收应用的致命错误（bundle 加载失败、未捕获的 JS 异常、VM 因触及限制而停止）。错误总会写入日志；开发构建还会把错误显示在应用上方。 |
 | `limits: NshLimits` | 此后加载的应用的 VM 限制。 |
+| `handoff: Bool` | 把此后加载的应用用 [`UrlScheme.setUrl`](../modules/nsh.md#handoff) 设置的地址交给系统，Handoff 可以在用户的其他设备上接着打开它。应用自己 scheme 的地址需要在你的 Info.plist 的 `NSUserActivityTypes` 中声明 `<bundle id>.url`，它会带着 `userInfo["url"]` 中的 URL 回到另一台设备的 `scene(_:continue:)`：把它传给 `openURL(_:)`。默认关闭。 |
 | `grantCapabilities(_ json: String?) throws` | 此后加载的应用最多能做什么，JSON 格式与 `nsh.json` 的 `capabilities` 相同；`nil` 表示授予每个应用所声明的能力。JSON 无效时抛出 `NshError`。 |
 | `locale: Locale?` | 代替用户设置的语言和地区：`Intl`、`locale()` 和组件立即跟随，此后加载的应用也从它开始。`nil` 跟随系统。 |
 | `fontScale: CGFloat?` | 代替动态字体的文字大小（1 为默认）：文字和输入框按它重新排版，`fontScale()` 读到它，立即生效，此后加载的应用也一样；长度保持原样。`nil` 跟随系统。 |
@@ -203,17 +221,20 @@ final class EmbedController: UIViewController {
 | `loadPackage(at:trust:) async throws -> NshPackage.Info` | 在主线程之外验证指定 URL 的包，然后运行它。被拒绝时抛出原因；正在运行的应用保持不变。 |
 | `connectDevServer(_ url: URL) throws` | 开发用：从 `nsh dev` 服务器加载，每次修改后重新加载。使用不含开发支持的 `NativeShell.xcframework` 时会抛出错误。 |
 | `register(component:_:)` | 注册一个[原生组件](./native-components.md)。 |
+| `watchScroll(_ nativeID: String, _ watcher: NshScrollWatcher?)` | 在主线程、滚动的同一帧跟随并驱动应用中带该 `nativeID` 的 `<Scroll>`（[跟随滚动视图](#跟随滚动视图)）；传 `nil` 停止。 |
+| `contentCulling: Bool` | 滚动视图是只创建视口附近内容的视图（`true`，默认），还是创建全部内容。关闭后，尚未创建的内容在之后几帧里创建，宿主即可绘制整个滚动视图（如从句柄的 `contentView` 截整页长图）；重新开启后，远处的内容会被释放。立即生效，也作用于之后加载的应用。 |
 | `params: [String: Any]` | 之后加载的应用的启动参数：应用在启动时以 `host.params` 读取（[`host`](../modules/nsh.md#host)）。 |
 | `send(_ name: String, _ data: Any? = nil)` | 向应用发送一个事件（`host.on(name, …)`）；应用开始监听前会一直保留，没有应用运行时留给下一个应用。 |
 | `handle(_ name: String, _ handler:)` | 在主线程处理应用对 `name` 的调用（`host.call`）和投递（`host.post`）：`{ data, reply in … }`，或一个 `async throws` 函数 `{ data in … }`，其结果即调用的回答。 |
 | `removeHandler(_ name: String)` | 移除 `name` 的处理函数：应用对它的调用随即失败。 |
 | `static preferredStatusBarStyle`、`prefersStatusBarHidden`、`preferredStatusBarUpdateAnimation` | 正在运行的应用请求的状态栏设置（其页面和对话框的 `statusBar`、`nsh.json` 的默认值）：在宿主视图控制器的对应重写中返回它们。 |
+| `static supportedInterfaceOrientations` | 显示中的页面请求的方向（`NavPage` 的 `supportedOrientations`）：在宿主视图控制器的对应重写中返回它，为 `nil` 时返回控制器自己的。 |
 
 > [!IMPORTANT]
 > `bundle.nshc`（字节码）只能从应用包内部加载。QuickJS 不校验字节码，其他来源的字节码可能破坏内存：对于应用包之外的文件，请加载
 > `bundle.js`（JS 源码），更好的做法是使用[签名包](./signed-packages.md)。
 
-`limits`、`grantCapabilities`、`storageDirectory` 和 `cacheOptions` 从下一次加载开始生效：请在 `loadBundle` / `run` 之前设置。
+`limits`、`handoff`、`grantCapabilities`、`storageDirectory` 和 `cacheOptions` 从下一次加载开始生效：请在 `loadBundle` / `run` 之前设置。
 
 每个应用无需任何设置就按自己的 id 保存存储：签名包使用其发布密钥证书担保的 id，bundle 使用其 `nsh.json` 中的 `id`（`nsh build` 写在它旁边的 `app.json`）。如果宿主想把应用的数据放到自己选择的位置，设置 `storageDirectory`：
 
@@ -255,6 +276,44 @@ app.send("conversation.open", ["id": tapped.conversationID])
 ```
 
 处理函数在主线程运行；调用在应用中等待回答，不会阻塞任何一方。未回答就被释放的 reply 会让调用失败，没有处理函数的名称的调用会立即失败。应用尚未监听的名称的事件会保留到它开始监听，没有应用运行时（`loadBundle` 之前、重新加载期间）发送的事件交给下一个应用，因此应用启动期间点开的通知照样能送到。
+## 跟随滚动视图
+
+宿主的原生界面有时要逐帧跟着应用的内容移动：页面下方一个由内容末尾拉起的面板，或随内容收起的页头。把 `onScroll` 经 JS
+转给宿主会晚一帧，所以宿主按 `nativeID` 监听应用的 `<Scroll>`，拿到它的 `NshScrollHandle`。一切都在主线程、滚动的同一帧里进行，
+不经过 JS。Android 上的 API 与此相同，单位按各平台习惯。
+
+给 `<Scroll>` 设置 `nativeID`（供原生代码识别视图；`testID` 仍只用于测试）：
+
+```tsx
+<Scroll nativeID="page">…</Scroll>
+```
+
+```swift
+final class Sheet: NshScrollWatcher {
+    func onAttached(_ handle: NshScrollHandle) {      // 已存在时立即回调；重新加载后再次回调
+        handle.onScroll { [weak self] scrollX, scrollY, dx, dy in self?.follow(handle) }
+        handle.onContentSizeChange { [weak self] contentWidth, contentHeight in self?.follow(handle) }
+    }
+
+    func onDetached() { reset() }                      // 被删除、nativeID 改变或应用停止
+}
+
+app.watchScroll("page", sheet)
+```
+
+| `NshScrollHandle` | |
+|---|---|
+| `scrollX`、`scrollY` | 从内容起点算起的偏移（不计 inset），单位 pt。 |
+| `contentWidth`、`contentHeight` | 内容尺寸（至少为视口尺寸），单位 pt。 |
+| `viewportWidth`、`viewportHeight` | inset 以内的可见尺寸，单位 pt。 |
+| `contentView` | 应用内容所在的视图：应用中视图的位置都相对于它。 |
+| `scrollBy(dx:dy:animated:)` | 立即或以 UIKit 动画滚动，按内容范围夹取，与用户滚动一样：应用的 `onScroll` 会收到。 |
+| `stopScrolling()` | 让惯性滚动或动画滚动停在当前位置；静止时什么也不做。 |
+| `onScroll(_:)`、`onContentSizeChange(_:)` | 每次偏移变化回调 `(scrollX, scrollY, dx, dy)`；内容未经滚动变大或变小时回调 `(contentWidth, contentHeight)`。各自返回一个停止函数。 |
+| `isAlive` | 滚动视图是否仍在且仍是该 `nativeID`；不在之后，读取返回 0，其余操作不起作用。 |
+
+同一 `nativeID` 有多个滚动视图时，监听最新的那个。视图会一直持有 watcher，直到被替换或移除（传 `nil`）。桌面和 Web 应用不做嵌入，没有这套 API。
+
 ## 主题覆盖
 
 嵌入在多个品牌宿主应用中的同一个应用会采用各个宿主的品牌：宿主给出其品牌要改的 token，格式与 `nsh.json` 的 `"theme"` 相同的主题文件（shadcn/ui 的 `cssVars`，值按 CSS 的写法）。它们覆盖应用的同名 token，应用的其他 token 保持不变。在 `dark` 下给出 token 的深色模式值（只在 `light` 或 `theme` 下设置的 token 在两种模式下都是这个颜色）：
@@ -381,9 +440,13 @@ try app.loadBundle(at: bundledURL)
 - **线程。** `NshAppView` 隔离在 main actor 上。`NshTrust`、`NshPackage` 和 `NshComponentContext` 是线程安全的。JS
   引擎运行在自己的线程上；主线程从不等待它。
 - **状态栏。** 嵌入应用的页面和对话框（`statusBar`）会改变 `NshAppView.preferredStatusBarStyle` 等属性的返回值；宿主视图控制器必须像上面的示例那样转发它们。
+- **方向。** 页面的 `supportedOrientations` 会改变 `NshAppView.supportedInterfaceOrientations` 的返回值；宿主视图控制器像上面的示例那样转发它，屏幕按其控制器允许的方向转动。
 - **安全区域。** 应用照常在 Rust 中使用 `safe_area()`，在 TSX 中在内边距里使用
   `env(safe-area-inset-*)` 或 [`nsh`](../modules/nsh.md#safe-area-and-keyboard) 的 `safeAreaInsets()`。放在你自己标题栏下方的 `NshAppView` 拿到的是适用于它自身的 insets，而不是整个窗口的。
 - **Mac Catalyst。** 同一个 framework 也可用于 Catalyst 应用。
+- **日志。** 应用的警告、错误以及 `console.log` 和 `console.info` 日志写入统一日志，以你的应用的 bundle identifier 为子系统、这一行的 target
+  为类别（`console.*` 是 `js`）：由 Xcode 运行应用时 Xcode 控制台会显示它们，“控制台”应用和 `log stream` 也会
+  （[打包应用的日志](./dev-server-and-debugging.md#a-packaged-apps-logs)）。
 
 ## 另请参阅
 

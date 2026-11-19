@@ -17,24 +17,38 @@
  * under the License.
  */
 
-import { inputAction, platform, signal, View } from 'nsh';
-import { Button, Slider } from 'nsh/base';
+import { dictationPreferences as dictation } from './dictationPreferences';
+import { Image, inputAction, platform, signal, Text, View } from 'nsh';
+import { Button, Menu, MenuItem, Slider } from 'nsh/base';
 import type {
   LanguagePreference,
+  ProfileAvatar as Avatar,
   SettingsAssistantPreferences,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import { tr } from './locale';
+import { tr, type MessageKey } from './locale';
 import {
   assistantLanguages,
   type GeneralAction,
   type GeneralSettingsOwner,
 } from './generalSettingsState.ts';
+import { ComposerToolbarSettings } from './ComposerToolbarSettings';
+import { composerToolbar } from './composerToolbar';
 import { UiScaleSettings } from './UiScaleSettings';
 import { PredictionSettings } from './PredictionSettings';
 import { uiScale } from './uiScale';
-import { appearance, colorThemes, paletteIds, textSizes } from './appearance';
+import {
+  appearance,
+  colorThemes,
+  paletteIds,
+  textSizes,
+  trayIcons,
+  type TrayIcon,
+} from './appearance';
+import { trayIconArtwork } from './trayIcon';
 import { accentSwatches, paletteTokens, presetRecipes, type PaletteId } from './colorPalette';
 import { LoadingIndicator } from './Loading';
+import { ProfileAvatar } from './ProfileAvatar';
+import { Icon } from './Icon';
 import {
   SettingsBody,
   SettingsButton,
@@ -48,9 +62,27 @@ import {
   SettingsSwitch,
   SettingsTextArea,
 } from './SettingsPage';
-import { C, defaultColors, isDark } from './ui';
+import {
+  C,
+  bodyTextStyle,
+  controlFocusStyle,
+  controlHoverStyle,
+  defaultColors,
+  floatingStyle,
+  isDark,
+  menuRowHoverStyle,
+  menuRowStyle,
+} from './ui';
 
-export function GeneralSettings(props: { owner: GeneralSettingsOwner }) {
+const avatarChoices = [
+  { avatar: null, label: 'Default avatar' },
+  { avatar: 'blue', label: 'Blue avatar' },
+  { avatar: 'green', label: 'Green avatar' },
+  { avatar: 'rose', label: 'Rose avatar' },
+  { avatar: 'amber', label: 'Amber avatar' },
+] satisfies { avatar: Avatar | null; label: MessageKey }[];
+
+export function GeneralSettings(props: { owner: GeneralSettingsOwner; addConnection: () => void }) {
   const owner = props.owner;
   return (
     <If
@@ -63,6 +95,8 @@ export function GeneralSettings(props: { owner: GeneralSettingsOwner }) {
           if (request.kind === 'root') return <GeneralRoot owner={owner} request={request} />;
           if (request.kind === 'globalInstructions')
             return <GlobalInstructionsEditor owner={owner} request={request} />;
+          if (request.kind === 'dictation')
+            return <DictationSettings addConnection={props.addConnection} />;
           if (request.kind === 'predictions')
             return <PredictionSettings owner={owner} request={request} />;
           return <PreferenceEditor owner={owner} request={request} />;
@@ -76,12 +110,27 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
   const owner = props.owner;
   const request = props.request;
   const facts = owner.facts;
+  if (platform.os === 'macos' && platform.idiom !== 'terminal')
+    void dictation
+      .initialize()
+      .then(() => (dictation.enabled() ? dictation.refresh() : undefined))
+      .catch((e) => dictation.error.set(String(e)));
   const toggle = (kind: 'instructions' | 'titles' | 'predictions') =>
     inputAction(owner.toggle, { request, kind });
   const open = (kind: 'personalization' | 'compaction' | 'shell' | 'predictions') =>
     inputAction(owner.open, { request, kind });
   return (
     <SettingsBody>
+      <SettingsSection>
+        <SettingsRow
+          label={tr('Personalization')}
+          description={facts()?.displayName.trim() || undefined}
+          accessibilityLabel={tr('Edit personalization')}
+          opens
+          disabled={owner.disabled()}
+          onPress={open('personalization')}
+        />
+      </SettingsSection>
       <SettingsSection title={tr('Appearance & language')}>
         <If when={appearance.supported}>
           <AppearanceRows />
@@ -101,6 +150,9 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
           />
         </If>
       </SettingsSection>
+      <If when={composerToolbar.supported}>
+        <ComposerToolbarSettings />
+      </If>
       <If
         when={facts()}
         else={
@@ -110,6 +162,14 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
         }
       >
         <SettingsSection title={tr('Conversations')}>
+          <If when={platform.os === 'macos' && platform.idiom !== 'terminal'}>
+            <SettingsRow
+              label={tr('Dictation')}
+              description={dictation.description()}
+              opens
+              onPress={inputAction(owner.open, { request, kind: 'dictation' as const })}
+            />
+          </If>
           <SettingsSwitch
             label={tr('Message predictions')}
             description={tr('Suggest your next message from the conversation.')}
@@ -191,16 +251,65 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
             disabled={owner.disabled()}
             onPress={open('compaction')}
           />
-          <SettingsRow
-            label={tr('Personalization')}
-            description={facts()?.displayName || tr('Display name')}
-            accessibilityLabel={tr('Edit personalization')}
-            opens
-            disabled={owner.disabled()}
-            onPress={open('personalization')}
-          />
         </If>
       </SettingsSection>
+    </SettingsBody>
+  );
+}
+
+function DictationSettings(props: { addConnection(): void }) {
+  if (dictation.enabled()) void dictation.refresh().catch((e) => dictation.error.set(String(e)));
+  return (
+    <SettingsBody>
+      <SettingsSection>
+        <SettingsSwitch
+          label={tr('Enable dictation')}
+          description={tr('Show the microphone in the message composer.')}
+          checked={dictation.enabled()}
+          disabled={dictation.busy()}
+          onPress={() => void dictation.save('enabled', String(!dictation.enabled()))}
+        />
+      </SettingsSection>
+      <If when={dictation.enabled()}>
+        <SettingsSection note={tr('Dictation uses the API key from this connection.')}>
+          <SettingsRow
+            label={tr('Transcription service')}
+            trailing={<Text style={{ ...bodyTextStyle, color: C.secondary }}>DeepSeek</Text>}
+          />
+          <If
+            when={dictation.connections().length > 0}
+            else={
+              <SettingsRow
+                label={tr('Add a DeepSeek connection')}
+                description={dictation.useLegacy() ? tr('Saved dictation key') : undefined}
+                opens
+                onPress={props.addConnection}
+              />
+            }
+          >
+            <SettingsSelect
+              label={tr('Model connection')}
+              value={
+                dictation.current()?.basis.connectionId ?? (dictation.useLegacy() ? 'legacy' : '')
+              }
+              choices={[
+                ...dictation
+                  .connections()
+                  .map((c) => ({ value: c.basis.connectionId, title: c.name })),
+                ...(dictation.legacy()
+                  ? [{ value: 'legacy', title: tr('Saved dictation key') }]
+                  : []),
+              ]}
+              placeholder={tr('Choose a model connection')}
+              disabled={dictation.busy()}
+              change={(value) => void dictation.save('connection', value)}
+            />
+          </If>
+        </SettingsSection>
+      </If>
+      <If when={!!dictation.error()}>
+        <Text style={{ color: C.danger }}>{dictation.error()}</Text>
+      </If>
     </SettingsBody>
   );
 }
@@ -215,6 +324,10 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
   const name = () => {
     const editor = owner.editor();
     return editor?.kind === 'personalization' ? editor.displayName : '';
+  };
+  const avatar = () => {
+    const editor = owner.editor();
+    return editor?.kind === 'personalization' ? editor.avatar : null;
   };
   const prompt = () => {
     const editor = owner.editor();
@@ -265,13 +378,66 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
       </If>
       <If when={request.kind === 'personalization'}>
         <SettingsSection>
-          <SettingsInput
-            label={tr('Display name')}
-            value={name()}
-            change={(text) => owner.editName(request, text)}
-            disabled={owner.disabled()}
-            autoFocus
-          />
+          <View style={{ flexDirection: 'row', alignItems: 'center', paddingLeft: 12, gap: 4 }}>
+            <Menu
+              align="start"
+              offset={6}
+              margin={8}
+              popupStyle={floatingStyle()}
+              trigger={
+                <Button
+                  accessibilityLabel={tr('Change avatar')}
+                  disabled={owner.disabled()}
+                  style={{ padding: 4, borderRadius: 24 }}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
+                >
+                  <ProfileAvatar name={name()} avatar={avatar()} size={40} />
+                  <View
+                    style={{
+                      position: 'absolute',
+                      right: 0,
+                      bottom: 0,
+                      padding: 3,
+                      borderRadius: 9,
+                      backgroundColor: C.raised,
+                      pointerEvents: 'none',
+                    }}
+                  >
+                    <Icon name="edit" size={11} color={C.secondary} />
+                  </View>
+                </Button>
+              }
+            >
+              <Each of={avatarChoices} key={(item) => item.label}>
+                {(item) => (
+                  <MenuItem
+                    accessibilityLabel={tr(item().label)}
+                    onSelect={() => owner.editAvatar(request, item().avatar)}
+                    style={{ ...menuRowStyle(), minWidth: 160, gap: 8 }}
+                    hoverStyle={menuRowHoverStyle()}
+                  >
+                    <ProfileAvatar name={name()} avatar={item().avatar} size={24} />
+                    <Text style={{ ...bodyTextStyle, color: C.text, flex: 1 }}>
+                      {tr(item().label)}
+                    </Text>
+                    <If when={item().avatar === avatar()}>
+                      <Icon name="check" size={14} color={C.accent} />
+                    </If>
+                  </MenuItem>
+                )}
+              </Each>
+            </Menu>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <SettingsInput
+                label={tr('Display name')}
+                value={name()}
+                change={(text) => owner.editName(request, text)}
+                disabled={owner.disabled()}
+                autoFocus
+              />
+            </View>
+          </View>
         </SettingsSection>
       </If>
       <If when={request.kind === 'compaction'}>
@@ -427,8 +593,30 @@ function AppearanceRows() {
         choices={textSizes.map((scale) => ({ value: String(scale), title: textSizeLabel(scale) }))}
         change={(value) => appearance.chooseTextSize(Number(value))}
       />
+      <SettingsSelect
+        label={trayIconRowLabel()}
+        value={appearance.trayIcon()}
+        preview={
+          <Image
+            src={trayIconArtwork[appearance.trayIcon()]}
+            style={[{ width: 18, height: 18, tintColor: C.text }, { pointerEvents: 'none' }]}
+          />
+        }
+        choices={trayIcons.map((icon) => ({ value: icon, title: trayIconLabel(icon) }))}
+        change={(value) => appearance.chooseTrayIcon(value as TrayIcon)}
+      />
     </>
   );
+}
+
+function trayIconRowLabel() {
+  return platform.os === 'macos' ? tr('Menu bar icon') : tr('System tray icon');
+}
+
+function trayIconLabel(icon: TrayIcon) {
+  if (icon === 'line') return tr('Thin line');
+  if (icon === 'bold') return tr('Bold line');
+  return tr('Solid tile');
 }
 
 const sliderLook = () => ({

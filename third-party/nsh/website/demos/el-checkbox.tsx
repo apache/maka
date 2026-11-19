@@ -78,7 +78,7 @@ function App() {
         </View>
 
         <View style={sectionSurface({ padded: true })}>
-          <Checkbox checked disabled class="group" {...listRow({ first: true, disabled: true })} {...checkboxLook()} indicator={<CheckboxMark mark="check" />}>
+          <Checkbox checked disabled class="group" {...listRow({ first: true, disabled: true })} {...checkboxLook({ disabled: true })} indicator={<CheckboxMark mark="check" />}>
             <RowLabel label="System settings" detail="Always backed up" />
           </Checkbox>
         </View>

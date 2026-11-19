@@ -3,6 +3,7 @@ name = "nsh-i18n"
 description = "Native Shell's languages: the language data apps format numbers and dates with, and the app's translations read with rust-i18n."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true

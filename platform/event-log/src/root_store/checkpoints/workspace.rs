@@ -19,44 +19,21 @@
 
 //! Bounded directory capture. Caller attestations never become filesystem fencing.
 use super::*;
+pub(crate) use crate::checkpoints::workspace::read_inventory;
+use crate::checkpoints::workspace::{Inventory, relative};
 use crate::checkpoints::{WorkspaceCapture, WorkspaceEntry, WorkspaceSnapshot};
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
-use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{Read, Write},
     path::Path,
 };
 
-#[cfg(test)]
-thread_local! { pub(super) static AFTER_SCAN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) }; }
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Inventory {
-    entries: Vec<WorkspaceEntry>,
-}
-
-fn relative(path: &str) -> Result<(), StoreError> {
-    if path.is_empty()
-        || path.len() > 4096
-        || path.contains('\\')
-        || path.contains(':')
-        || path.chars().any(char::is_control)
-        || path
-            .split('/')
-            .any(|p| p.is_empty() || p == "." || p == ".." || p.ends_with(['.', ' ']))
-    {
-        return Err(invalid("nonportable checkpoint workspace path"));
-    }
-    Ok(())
-}
-
 fn excluded(name: &str) -> bool {
     matches!(
         name,
-        ".git" | "node_modules" | ".DS_Store" | "__pycache__" | ".cache" | ".maka-workspace.json"
+        ".git" | "node_modules" | ".DS_Store" | "__pycache__" | ".cache"
     )
 }
 
@@ -163,12 +140,45 @@ fn parent(dir: &Dir, path: &str) -> Result<(Dir, String), StoreError> {
     Ok((current, name))
 }
 
+pub(super) fn validate_alias(directory: &Dir, path: &Path) -> Result<(), StoreError> {
+    use cap_fs_ext::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(invalid(
+            "workspace locator no longer names its original directory",
+        ));
+    }
+    #[cfg(unix)]
+    let named = (metadata.dev(), metadata.ino());
+    #[cfg(windows)]
+    let named = {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        let metadata = cap_std::fs::File::from_std(file).metadata()?;
+        (metadata.dev(), metadata.ino())
+    };
+    let held = directory.dir_metadata()?;
+    if named != (held.dev(), held.ino()) {
+        return Err(invalid(
+            "workspace locator no longer names its original directory",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn capture(
     objects: &Objects,
     request: &Request,
     source: &WorkspaceCapture,
+    dir: &Dir,
 ) -> Result<WorkspaceSnapshot, StoreError> {
-    if !source.root.is_absolute() || source.identity.is_empty() {
+    if !source.root.is_absolute() {
         return Err(invalid("invalid checkpoint workspace binding"));
     }
     let source_path = std::fs::canonicalize(&source.root)?;
@@ -176,20 +186,18 @@ pub(super) fn capture(
     if source_path.starts_with(root_path) || root_path.starts_with(&source_path) {
         return Err(invalid("checkpoint workspace overlaps state root"));
     }
-    let dir = Dir::open_ambient_dir(&source_path, cap_std::ambient_authority())?;
+    if let Some(objects) = objects.storage().local_directory()
+        && (source_path.starts_with(objects) || objects.starts_with(&source_path))
+    {
+        return Err(invalid("checkpoint workspace overlaps its object store"));
+    }
+    validate_alias(dir, &source_path)?;
     let before_root = stamp(&dir.dir_metadata()?)?;
-    let before = scan(&dir, &source_path)?;
-    #[cfg(test)]
-    AFTER_SCAN.with(|hook| {
-        if let Some(action) = hook.borrow_mut().take() {
-            action();
-        }
-    });
+    let before = scan(dir, &source_path)?;
     let mut entries = Vec::new();
-    let mut linked = false;
     for (path, expected) in &before {
         objects.owner.validate_current()?;
-        let (parent, name) = parent(&dir, path)?;
+        let (parent, name) = parent(dir, path)?;
         let metadata = parent.symlink_metadata(&name)?;
         if stamp(&metadata)? != *expected {
             return Err(invalid("checkpoint workspace changed during capture"));
@@ -251,7 +259,6 @@ pub(super) fn capture(
                 let staging = objects.staging(request, "workspace-file")?;
                 objects.link_staged(&staging, &object)?;
                 std::fs::remove_file(staging)?;
-                linked = true;
             }
             object
         } else {
@@ -289,7 +296,6 @@ pub(super) fn capture(
                 drop(staged);
                 objects.link_staged(&staging, &object)?;
                 std::fs::remove_file(staging)?;
-                linked = true;
             }
             object
         };
@@ -306,16 +312,10 @@ pub(super) fn capture(
             executable,
         });
     }
-    let after = scan(&dir, &source_path)?;
-    let named = Dir::open_ambient_dir(&source.root, cap_std::ambient_authority())?;
-    if before != after
-        || before_root != stamp(&dir.dir_metadata()?)?
-        || before_root != stamp(&named.dir_metadata()?)?
-    {
+    let after = scan(dir, &source_path)?;
+    validate_alias(dir, &source_path)?;
+    if before != after || before_root != stamp(&dir.dir_metadata()?)? {
         return Err(invalid("checkpoint workspace changed during capture"));
-    }
-    if linked {
-        objects.sync_objects()?;
     }
     let encoded = serde_json::to_vec(&Inventory { entries })?;
     let mut file = objects.create(request, "workspace")?;
@@ -323,7 +323,6 @@ pub(super) fn capture(
     file.sync_all()?;
     drop(file);
     Ok(WorkspaceSnapshot {
-        identity: source.identity.clone(),
         consistency: source.consistency,
         inventory: objects.publish(&objects.staging(request, "workspace")?)?,
     })
@@ -333,36 +332,7 @@ pub(super) fn inventory(
     objects: &Objects,
     snapshot: &WorkspaceSnapshot,
 ) -> Result<Vec<WorkspaceEntry>, StoreError> {
-    let inventory: Inventory = serde_json::from_reader(objects.read(&snapshot.inventory)?)?;
-    let mut paths = BTreeSet::new();
-    let mut directories = BTreeSet::new();
-    let mut total = 0u64;
-    for entry in &inventory.entries {
-        let path = match entry {
-            WorkspaceEntry::Directory { path } | WorkspaceEntry::File { path, .. } => path,
-        };
-        relative(path)?;
-        // Reject case aliases even when the publishing filesystem happens to allow them.
-        if !paths.insert(path.to_lowercase()) {
-            return Err(invalid("checkpoint workspace path collision"));
-        }
-        if let Some((parent, _)) = path.rsplit_once('/')
-            && !directories.contains(parent)
-        {
-            return Err(invalid("checkpoint workspace parent missing"));
-        }
-        match entry {
-            WorkspaceEntry::Directory { path } => {
-                directories.insert(path.as_str());
-            }
-            WorkspaceEntry::File { object, .. } => {
-                total = total
-                    .checked_add(object.bytes)
-                    .ok_or_else(|| invalid("checkpoint workspace size overflow"))?;
-            }
-        }
-    }
-    Ok(inventory.entries)
+    read_inventory(objects.read(&snapshot.inventory)?)
 }
 
 pub(super) fn verify(objects: &Objects, snapshot: &WorkspaceSnapshot) -> Result<(), StoreError> {
@@ -380,14 +350,23 @@ pub(super) fn materialize_in(
     snapshot: &WorkspaceSnapshot,
     dir: &Dir,
 ) -> Result<(), StoreError> {
-    let entries = inventory(objects, snapshot)?;
+    materialize_entries(inventory(objects, snapshot)?, dir, |object| {
+        objects.read(object)
+    })
+}
+
+pub(super) fn materialize_entries(
+    entries: Vec<WorkspaceEntry>,
+    dir: &Dir,
+    open: impl Fn(&ObjectRef) -> Result<std::fs::File, StoreError>,
+) -> Result<(), StoreError> {
     if dir.entries()?.next().is_some() {
         return Err(invalid("checkpoint workspace destination is occupied"));
     }
-    for entry in entries {
+    for entry in &entries {
         match entry {
             WorkspaceEntry::Directory { path } => {
-                let (parent, name) = parent(dir, &path)?;
+                let (parent, name) = parent(dir, path)?;
                 parent.create_dir(&name)?;
             }
             WorkspaceEntry::File {
@@ -395,8 +374,8 @@ pub(super) fn materialize_in(
                 object,
                 executable,
             } => {
-                let (parent, name) = parent(dir, &path)?;
-                let mut source = objects.read(&object)?;
+                let (parent, name) = parent(dir, path)?;
+                let mut source = open(object)?;
                 let mut options = OpenOptions::new();
                 options
                     .write(true)
@@ -405,7 +384,7 @@ pub(super) fn materialize_in(
                 #[cfg(unix)]
                 {
                     use cap_std::fs::OpenOptionsExt;
-                    options.mode(if executable { 0o700 } else { 0o600 });
+                    options.mode(if *executable { 0o700 } else { 0o600 });
                 }
                 #[cfg(not(unix))]
                 let _ = executable;
@@ -415,18 +394,17 @@ pub(super) fn materialize_in(
             }
         }
     }
-    // Persist directory entries from leaves toward the root before publishing readiness.
-    fn sync(dir: &Dir) -> Result<(), StoreError> {
-        for entry in dir.entries()? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                sync(&dir.open_dir_nofollow(entry.file_name())?)?;
+    // Inventory validation requires parents before children. Sync in reverse
+    // order without holding one open descriptor per directory depth.
+    #[cfg(unix)]
+    {
+        for entry in entries.iter().rev() {
+            if let WorkspaceEntry::Directory { path } = entry {
+                let (parent, name) = parent(dir, path)?;
+                parent.open_dir_nofollow(name)?.open(".")?.sync_all()?;
             }
         }
-        // cap-std directory handles can be O_PATH on Linux; reopen the same
-        // directory for I/O rather than passing a path-only descriptor to fsync.
         dir.open(".")?.sync_all()?;
-        Ok(())
     }
-    sync(dir)
+    Ok(())
 }

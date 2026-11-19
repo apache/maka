@@ -52,7 +52,7 @@ const CHECK_PAGE = `<!doctype html>
   (async () => {
     const out = {};
     try {
-      await wait(() => text().includes("Opened 1 times"), 6000);
+      await wait(() => text().includes("Opened 1 time"), 6000);
       out.started = snapshot();
       const win = frame.contentWindow;
       const reset = [...frame.contentDocument.querySelectorAll("*")]
@@ -112,8 +112,8 @@ async function dumpDom(url: string, profile: string): Promise<string> {
   return out;
 }
 
-/** The demo's counter text in a dumped player page ("Opened N times"). */
-const counter = (dom: string) => dom.match(/Opened \d+ times/)?.[0] ?? `no counter in: ${dom.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 300)}`;
+/** The demo's counter text in a dumped player page ("Opened 1 time", "Opened N times"). */
+const counter = (dom: string) => dom.match(/Opened \d+ times?/)?.[0] ?? `no counter in: ${dom.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 300)}`;
 
 describe.skipIf(!!missing)('Storage in the browser', () => {
   let profiles: string;
@@ -129,7 +129,7 @@ describe.skipIf(!!missing)('Storage in the browser', () => {
   test('entries persist across page loads', async () => {
     using server = serve({});
     const url = `http://127.0.0.1:${server.port}/play/index.html#mod-storage`;
-    expect(counter(await dumpDom(url, profile('persist')))).toBe('Opened 1 times');
+    expect(counter(await dumpDom(url, profile('persist')))).toBe('Opened 1 time');
     expect(counter(await dumpDom(url, profile('persist')))).toBe('Opened 2 times');
   }, 60_000);
 
@@ -153,8 +153,8 @@ describe.skipIf(!!missing)('Storage in the browser', () => {
     // then come from origin "null", hence the CORS header.
     using server = serve({ 'content-security-policy': 'sandbox allow-scripts', 'access-control-allow-origin': '*' });
     const url = `http://127.0.0.1:${server.port}/play/index.html#mod-storage`;
-    expect(counter(await dumpDom(url, profile('blocked')))).toBe('Opened 1 times');
-    expect(counter(await dumpDom(url, profile('blocked')))).toBe('Opened 1 times');
+    expect(counter(await dumpDom(url, profile('blocked')))).toBe('Opened 1 time');
+    expect(counter(await dumpDom(url, profile('blocked')))).toBe('Opened 1 time');
   }, 60_000);
 });
 

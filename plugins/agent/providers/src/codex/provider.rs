@@ -38,9 +38,11 @@ use maka_agent_ports::provider::Verification;
 use maka_agent_ports::provider::authentication::Authenticate;
 use maka_agent_ports::provider::authentication::Credential;
 use maka_agent_ports::provider::authentication::Method;
+use maka_agent_ports::provider::{UsageLimit, UsageLimitsRequest};
 use maka_capabilities::http;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
 const ENDPOINT: &str = "https://chatgpt.com/backend-api/codex";
@@ -55,8 +57,8 @@ pub(super) struct Configuration {
 #[serde(deny_unknown_fields)]
 struct LoginInput {}
 
-pub(super) fn configuration(connection: &Connection) -> Result<Configuration, Error> {
-    let configuration: Configuration = serde_json::from_value(connection.configuration.clone())
+pub(super) fn configuration(value: &serde_json::Value) -> Result<Configuration, Error> {
+    let configuration: Configuration = serde_json::from_value(value.clone())
         .map_err(|_| Error::Invalid("invalid subscription configuration".into()))?;
     if configuration.base_url.trim_end_matches('/') != ENDPOINT {
         return Err(Error::Invalid(
@@ -92,27 +94,23 @@ impl Codex {
             }],
             anonymous: false,
             discovery: true,
+            usage_authentication: Some(maka_agent_ports::provider::UsageAuthentication::Provider),
         })
         .map(Arc::new)
         .map_err(|e| e.to_string())
     }
 }
 impl Provider for Codex {
+    fn validate_configuration(&self, value: &serde_json::Value) -> Result<(), Error> {
+        configuration(value).map(|_| ())
+    }
+
     fn resolve(&self, request: Resolve) -> BoxFuture<'_, Result<Model, Error>> {
         Box::pin(async move {
-            let configuration = configuration(&request.connection)?;
-            let reported = self.snapshot.resolve(
-                "chatgpt",
-                request.model,
-                request
-                    .overrides
-                    .as_ref()
-                    .and_then(|value| value.catalog_model.as_ref()),
-            );
-            let mut info = match &request.overrides {
-                Some(overrides) => overrides.apply(&reported),
-                None => reported,
-            };
+            let configuration = configuration(&request.connection.configuration)?;
+            let mut info =
+                self.snapshot
+                    .resolve("chatgpt", request.model, request.overrides.as_ref());
             if info
                 .api_protocol
                 .is_some_and(|wire| wire != ApiProtocol::OpenaiResponses)
@@ -143,6 +141,14 @@ impl Provider for Codex {
                 .and_then(|c| c.parallel_tool_calls)
                 .unwrap_or(true);
             let mut options = json!({"openai":{"store":false,"parallelToolCalls":parallel}});
+            if let Some(tier) = request.service_tier {
+                if !info.service_tiers.iter().any(|item| item.id == tier) {
+                    return Err(Error::Invalid(format!(
+                        "unsupported subscription service tier: {tier}"
+                    )));
+                }
+                options["openai"]["serviceTier"] = json!(tier);
+            }
             if let Some(level) = level {
                 options["openai"]["reasoningEffort"] = match level {
                     ThinkingLevel::Off => json!("none"),
@@ -160,8 +166,9 @@ impl Provider for Codex {
             if summary || level.is_some() {
                 options["openai"]["forceReasoning"] = json!(true);
             }
-            info.capabilities.get_or_insert_default().native_compaction =
-                Some(configuration.server_side_compaction);
+            let capabilities = info.capabilities.get_or_insert_default();
+            capabilities.web_search.get_or_insert(true);
+            capabilities.native_compaction = Some(configuration.server_side_compaction);
             let model = Model {
                 main_output_limit: request
                     .overrides
@@ -195,7 +202,7 @@ impl Provider for Codex {
         session_id: String,
     ) -> BoxFuture<'_, Result<Credentials, Error>> {
         Box::pin(async move {
-            configuration(&connection)?;
+            configuration(&connection.configuration)?;
             let tokens = login::Tokens::read(&credential.ok_or(Error::AuthenticationRequired)?)?;
             let headers = super::request_headers(&tokens.access_token, &session_id)?;
             Ok(Credentials::RequestHeaders(headers))
@@ -221,7 +228,7 @@ impl Provider for Codex {
         context: Context,
     ) -> BoxFuture<'_, Result<Credential, Error>> {
         Box::pin(async move {
-            configuration(&connection)?;
+            configuration(&connection.configuration)?;
             login::refresh(credential, context).await
         })
     }
@@ -237,21 +244,8 @@ impl Provider for Codex {
                 credential,
                 request_headers,
             } = request;
-            let base_url = configuration(&connection)?.base_url;
-            let tokens = login::Tokens::read(&credential.ok_or(Error::AuthenticationRequired)?)?;
-            let mut headers = super::request_headers(&tokens.access_token, &connection.id)?;
-            for (name, value) in request_headers {
-                if headers
-                    .iter()
-                    .any(|(key, existing)| key.eq_ignore_ascii_case(&name) && existing != &value)
-                {
-                    return Err(Error::Invalid(
-                        "request headers conflict with provider authentication".into(),
-                    ));
-                }
-                headers.retain(|key, _| !key.eq_ignore_ascii_case(&name));
-                headers.insert(name, value);
-            }
+            let base_url = configuration(&connection.configuration)?.base_url;
+            let headers = inspection_headers(&connection, credential, request_headers)?;
             let response = context
                 .transport
                 .request(
@@ -260,7 +254,7 @@ impl Provider for Codex {
                             "{}/models?client_version=1.0.0",
                             base_url.trim_end_matches('/')
                         ),
-                        method: http::Method::Get,
+                        method: maka_plugin_core::http::Method::Get,
                         headers: headers.into_iter().collect(),
                         body: Default::default(),
                     },
@@ -294,9 +288,18 @@ impl Provider for Codex {
         })
     }
 
+    fn usage_limits(
+        &self,
+        request: UsageLimitsRequest,
+        context: Context,
+    ) -> BoxFuture<'_, Result<Vec<UsageLimit>, Error>> {
+        Box::pin(super::usage::read(request, context))
+    }
+
     fn verify(&self, request: Verification, context: Context) -> BoxFuture<'_, Result<(), Error>> {
         Box::pin(async move {
             self.resolve(Resolve {
+                service_tier: None,
                 connection: request.connection.clone(),
                 model: request.model.clone(),
                 overrides: request.overrides,
@@ -322,4 +325,26 @@ impl Provider for Codex {
             }
         })
     }
+}
+
+pub(super) fn inspection_headers(
+    connection: &Connection,
+    credential: Option<Credential>,
+    request_headers: BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, Error> {
+    let tokens = login::Tokens::read(&credential.ok_or(Error::AuthenticationRequired)?)?;
+    let mut headers = super::request_headers(&tokens.access_token, &connection.id)?;
+    for (name, value) in request_headers {
+        if headers
+            .iter()
+            .any(|(key, existing)| key.eq_ignore_ascii_case(&name) && existing != &value)
+        {
+            return Err(Error::Invalid(
+                "request headers conflict with provider authentication".into(),
+            ));
+        }
+        headers.retain(|key, _| !key.eq_ignore_ascii_case(&name));
+        headers.insert(name, value);
+    }
+    Ok(headers)
 }

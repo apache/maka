@@ -17,13 +17,14 @@
  * under the License.
  */
 
-use maka_agent_facts::execution::DirectoryIdentity;
 mod mcp_management;
-use maka_agent_facts::execution::WorkspaceIdentity;
-use maka_agent_facts::history::RowPosition;
+use HistoryRowAddress as RowPosition;
 use maka_agent_ports::session::history::Cursor;
 use maka_agent_ports::session::history::Role;
-use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
+pub use maka_agent_ports::session::history::{HistoryOrder, HistoryRowAddress, HistoryView};
+use maka_plugin_core::contract::{
+    Contract, Interface, Method, MethodMode, ResourceType, Transport,
+};
 pub use mcp_management::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,10 @@ mod fork;
 pub use fork::*;
 mod git;
 pub use git::*;
+mod github;
+pub use github::*;
+mod symbols;
+pub use symbols::*;
 mod goal;
 mod imports;
 pub use goal::*;
@@ -64,6 +69,8 @@ mod execution;
 pub use execution::*;
 mod compaction;
 pub use compaction::*;
+mod session_tools;
+pub use session_tools::*;
 
 mod interaction;
 pub use interaction::*;
@@ -191,6 +198,7 @@ pub enum ToolInput {
 #[schemars(rename = "AgentToolResult")]
 pub enum ToolResult {
     Json,
+    /// A subscription that streams image data and can return JSON at completion.
     Image,
     /// Session-owned Computer REPL output, retained with its original receipt.
     Computer,
@@ -217,7 +225,10 @@ pub enum ImageFrame {
         #[schemars(length(min = 1, max = 43692))]
         data: String,
     },
-    Complete,
+    Complete {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<maka_agent_facts::tool_output::ImageDetail>,
+    },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -234,6 +245,8 @@ pub fn configuration_schema() -> Value {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentList")]
 pub struct List {
+    /// Omission includes both Agent conversations and Rooms.
+    pub kind: Option<SessionKind>,
     pub filter: SessionFilter,
     /// Include archived conversations alongside active ones.
     #[serde(default)]
@@ -301,10 +314,27 @@ pub enum SessionPosition {
         cursor: String,
     },
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentSessionKind")]
+pub enum SessionKind {
+    #[default]
+    Agent,
+    Room,
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentCreate")]
 pub struct Create {
+    /// Immutable memory privacy boundary; descendants inherit it.
+    #[serde(default)]
+    pub incognito: bool,
+    /// Rooms receive messages without running a model. Their mentions address Agent sessions.
+    #[serde(default)]
+    pub kind: SessionKind,
+    /// Apply a preset at creation; mutually exclusive with backend.
+    pub preset_id: Option<crate::preset::PresetId>,
     /// Initial next-turn preference; admission resolves it again.
     pub backend: Option<BackendPreference>,
     /// Treat title as a placeholder for one title derived from the first user message.
@@ -338,7 +368,7 @@ pub enum WorkspaceSelection {
     },
     /// A registered Project at one of its locations.
     Project {
-        project: ProjectRef,
+        project_id: uuid::Uuid,
         #[schemars(length(min = 1))]
         path: String,
     },
@@ -430,10 +460,6 @@ pub struct Workspace {
     pub project_id: Option<uuid::Uuid>,
     #[schemars(length(min = 1))]
     pub path: String,
-    #[schemars(with = "String", regex(pattern = "^sha256:[a-f0-9]{64}$"))]
-    pub directory_identity: DirectoryIdentity,
-    #[schemars(with = "String", regex(pattern = "^workspace:v1:[A-Fa-f0-9-]{36}$"))]
-    pub identity: WorkspaceIdentity,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -558,7 +584,12 @@ pub use maka_agent_facts::executor::BackendPreference;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentModelChoice")]
 pub struct ModelChoice {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_tiers: Vec<maka_agent_facts::configuration::ModelServiceTier>,
     pub selection: BackendPreference,
+    /// Previously published selections, including their implied thinking level.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<BackendPreference>,
     pub source_name: String,
     pub label: String,
     pub thinking_levels: Vec<String>,
@@ -592,10 +623,18 @@ pub enum ModelsPage {
     Ready {
         revision: String,
         choices: Vec<ModelChoice>,
+        refreshing: bool,
         complete: bool,
         next: Option<ModelsCursor>,
     },
     Changed,
+}
+#[derive(Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "AgentModelsWatch")]
+pub struct ModelsWatch {
+    #[serde(default)]
+    pub query: String,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -621,6 +660,12 @@ pub struct SelectBackend {
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentRejection")]
 pub enum Rejection {
+    PresetNotFound,
+    PresetDisabled,
+    PresetConflict,
+    PresetModelUnavailable,
+    PresetThinkingLevelUnavailable,
+    PresetBackendConflict,
     PermissionChangeRequiresUser,
     TitleInvalid,
     LabelsInvalid,
@@ -662,12 +707,29 @@ pub enum SendDelivery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSend")]
 pub struct Send {
+    /// Agent Session IDs explicitly addressed by this Room message.
+    #[serde(default)]
+    pub mentions: Vec<String>,
+    /// Original message ID in the destination Room.
+    pub reply_to: Option<String>,
+    /// Best-effort notification to the caller when this message finishes,
+    /// fails or is cancelled, and once per pending interaction or authority blocker
+    /// that needs attention. An attention notification keeps the completion watch.
+    /// When registration is confirmed, the caller can yield rather than poll.
+    /// The watch and task admission commit together;
+    /// check the completion field of the send receipt.
+    #[serde(default)]
+    pub on_complete: Option<OnComplete>,
+    /// Immutable user-selected excerpts; source metadata grants no read authority.
+    #[serde(default)]
+    #[schemars(length(max = 16))]
+    pub quotes: Vec<maka_agent_facts::input::QuoteRef>,
     /// Defaults to steer. Omit or use steer for updates to ongoing work;
     /// use queue only when this message should wait until the current turn ends.
     #[serde(default)]
     pub delivery: SendDelivery,
     /// An active send must not start new work after Stop fences its original Run.
-    pub expected_invocation_id: Option<String>,
+    pub expected_run_id: Option<maka_agent_facts::durable::RunId>,
     /// IDs of immutable user uploads in this Session; metadata is resolved by the owner.
     #[serde(default)]
     pub attachments: Vec<String>,
@@ -677,6 +739,12 @@ pub struct Send {
     pub session_id: String,
 
     pub message: String,
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentOnComplete")]
+pub enum OnComplete {
+    NotifyCaller,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -749,8 +817,7 @@ pub enum MarkReadResult {
 pub struct Stop {
     #[schemars(length(min = 1))]
     pub session_id: String,
-    #[schemars(length(min = 1))]
-    pub invocation_id: String,
+    pub run_id: maka_agent_facts::durable::RunId,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -774,6 +841,11 @@ pub struct DataSource {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSession")]
 pub struct Session {
+    #[serde(default)]
+    pub incognito: bool,
+    pub kind: SessionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_preset: Option<crate::preset::AppliedPreset>,
     /// Session that initiated creation, independent of fork ancestry and task ownership.
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
     pub parent_session_id: Option<String>,
@@ -786,7 +858,7 @@ pub struct Session {
     pub data_source: Box<DataSource>,
     pub permissions: WorkspacePermissions,
     pub boundary_revision: u64,
-    pub binding: maka_agent_facts::workspace::BindingStamp,
+    pub binding: maka_sandbox::workspace::BindingStamp,
     pub id: String,
     pub title: String,
     pub labels: Vec<String>,
@@ -831,6 +903,11 @@ pub struct SessionPage {
 )]
 #[schemars(rename = "AgentSendResult")]
 pub enum SendResult {
+    Posted {
+        session_id: String,
+        message_id: String,
+        deliveries: Vec<maka_agent_facts::room::RoomDelivery>,
+    },
     Rejected {
         session_id: String,
         reason: SendRejection,
@@ -838,17 +915,28 @@ pub enum SendResult {
     },
     Started {
         session_id: String,
-        invocation_id: String,
+        run_id: maka_agent_facts::durable::RunId,
         message_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        completion: Option<CompletionRegistration>,
     },
     Queued {
         session_id: String,
         message_id: String,
         revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        completion: Option<CompletionRegistration>,
     },
     /// The caller may not send to this conversation: the Bot sends only to the
     /// workers it created. Nothing was admitted.
     NotYourWorker { session_id: String },
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentCompletionRegistration")]
+pub enum CompletionRegistration {
+    /// The notification watch was persisted; delivery remains best effort.
+    Registered,
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -857,11 +945,15 @@ pub enum SendRejection {
     ModelUnavailable,
     SkillsUnavailable,
     TurnStopped,
+    OriginalOperationUnsettled,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentStopped")]
 pub struct Stopped {
+    /// The original operation accepted a Stop intent for the existing Run, not
+    /// proof of a new state write or physical cleanup. Missing/already-terminal
+    /// preparation may return false; a terminal race after acceptance stays true.
     pub requested: bool,
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
@@ -869,7 +961,7 @@ pub struct Stopped {
 #[schemars(rename = "AgentDelivery")]
 pub struct Delivery {
     pub sequence: u64,
-    pub invocation_id: String,
+    pub run_id: maka_agent_facts::durable::RunId,
     pub turn_id: String,
     pub fact: DeliveryFact,
 }
@@ -887,28 +979,38 @@ pub enum DeliveryFact {
     /// The original native assistant message starts here, not at executor admission.
     ExecutorMessageStarted {
         message_id: String,
+        step_id: maka_agent_facts::durable::StepId,
+        attempt_id: maka_agent_facts::durable::ModelAttemptId,
+    },
+    ExecutorTextChanged {
+        message_id: String,
+        thinking: bool,
     },
     /// Canonical transcript facts changed; clients query bounded history.
     TranscriptChanged,
     StepEnded {
-        step_id: String,
+        step_id: maka_agent_facts::durable::StepId,
+        attempt_id: maka_agent_facts::durable::ModelAttemptId,
         /// The model/executor completed; this says nothing about tool business success.
         completed: bool,
     },
     PartCommitted {
-        step_id: String,
+        step_id: maka_agent_facts::durable::StepId,
+        attempt_id: maka_agent_facts::durable::ModelAttemptId,
         message_id: String,
         ordinal: u64,
     },
     Delta {
-        step_id: String,
+        step_id: maka_agent_facts::durable::StepId,
+        attempt_id: maka_agent_facts::durable::ModelAttemptId,
         part_id: String,
         text: String,
     },
     /// Complete model input was observed, not authorization to execute it.
     ToolInputReady {
         tool_use_id: String,
-        step_id: String,
+        step_id: maka_agent_facts::durable::StepId,
+        attempt_id: maka_agent_facts::durable::ModelAttemptId,
         name: String,
         provider_executed: bool,
     },
@@ -933,6 +1035,8 @@ pub enum DeliveryFact {
     ExecutorToolStart {
         tool_use_id: String,
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<maka_agent_facts::display::Text>,
     },
     ExecutorToolProgress {
         tool_use_id: String,
@@ -1027,6 +1131,8 @@ pub struct Observation {
     pub remembered_backend: Option<BackendPreference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<SessionMetrics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_run_id: Option<maka_agent_facts::durable::RunId>,
     pub through: u64,
     pub run: Option<Run>,
     pub parts: Vec<Part>,
@@ -1069,7 +1175,7 @@ pub struct SessionMetrics {
 #[schemars(rename = "AgentRun")]
 pub struct Run {
     pub backend: RunBackend,
-    pub invocation_id: String,
+    pub run_id: maka_agent_facts::durable::RunId,
     pub turn_id: String,
     pub state: RunState,
 }
@@ -1095,7 +1201,8 @@ pub enum RunState {
 pub struct Part {
     pub start_sequence: u64,
     pub message_id: String,
-    pub step_id: String,
+    pub step_id: maka_agent_facts::durable::StepId,
+    pub attempt_id: maka_agent_facts::durable::ModelAttemptId,
     pub part_id: String,
     pub text_kind: ContentKind,
 }
@@ -1108,6 +1215,9 @@ pub struct Part {
 )]
 #[schemars(rename = "AgentDeliveryPage")]
 pub enum DeliveryPage {
+    Room {
+        through: u64,
+    },
     Events {
         through: u64,
         next_after: u64,
@@ -1142,9 +1252,10 @@ pub enum PreviewPage {
     },
     Cut {
         host_epoch: String,
-        invocation_id: String,
+        run_id: maka_agent_facts::durable::RunId,
         turn_id: String,
-        step_id: String,
+        step_id: maka_agent_facts::durable::StepId,
+        attempt_id: maka_agent_facts::durable::ModelAttemptId,
         revision: u64,
         depends_on: u64,
         first: bool,
@@ -1179,6 +1290,8 @@ pub struct PreviewPart {
 pub enum PreviewField {
     Text {
         text_kind: ContentKind,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        final_answer: bool,
     },
     ToolInput {
         tool_use_id: String,
@@ -1245,8 +1358,8 @@ pub enum QueueMessageResult {
     Ready {
         revision: u64,
         has_attachments: bool,
-
         message: String,
+        quotes: Vec<maka_agent_facts::input::QuoteRef>,
     },
     RevisionConflict {
         expected: u64,
@@ -1266,7 +1379,7 @@ pub struct QueueMutation {
     pub expected_revision: u64,
     pub edit: QueueAction,
 }
-#[derive(Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -1328,16 +1441,34 @@ pub struct HistoryAttachment {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentHistoryChunk")]
 pub struct HistoryChunk {
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
+    pub imported_turn: Option<maka_agent_facts::history_snapshot::ImportedTurnOrdinal>,
+    pub run_id: Option<maka_agent_facts::durable::RunId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_part: Option<maka_agent_ports::session::history::ModelPartIdentity>,
+    /// Provider citation evidence, not assistant prose.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub source_citation: bool,
+    /// Structured source on the first fragment, with bounded display labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citation: Option<maka_agent_ports::session::history::HistoryCitation>,
+    /// Target ordinal belongs to the same model attempt as this source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citation_anchor: Option<maka_agent_facts::model::CitationAnchor<u64>>,
     /// The original user input has quotes, directory references or inline references.
     /// Present only on the first fragment; display text cannot reconstruct these references.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_references: bool,
+    /// Bounded quote display, present only on the first message fragment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotes: Vec<maka_agent_ports::session::history::HistoryQuote>,
     /// Part of the successfully completed native Turn's final output at `through`.
-    /// Includes all body parts and source citations; never a Thinking field.
+    /// Includes body text and source citations; never a Thinking field.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub final_output: bool,
+    /// The provider identified this text as final before the Turn completed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub final_answer: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<maka_agent_ports::session::history::HistoryModel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1349,13 +1480,17 @@ pub struct HistoryChunk {
     pub attachments: Vec<HistoryAttachment>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timing: Option<maka_agent_ports::session::history::TurnTiming>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folded_work: Option<maka_agent_ports::session::history::FoldedWork>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<Box<maka_agent_ports::session::history::WorkGroup>>,
     pub field: maka_agent_ports::session::history::HistoryField,
-    pub message_id: String,
-    pub turn_id: String,
-    pub timestamp: u64,
+    pub message_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub timestamp: Option<u64>,
     pub role: Role,
     /// Stable display order; position remains the canonical source read address.
-    pub order: RowPosition,
+    pub order: HistoryOrder,
     pub position: RowPosition,
     pub offset: u64,
     pub total_bytes: u64,
@@ -1408,8 +1543,12 @@ pub struct HistoryLandmarks {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentHistoryLandmark")]
 pub struct HistoryLandmark {
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
+    pub imported_turn: Option<maka_agent_facts::history_snapshot::ImportedTurnOrdinal>,
+    pub order: HistoryOrder,
+    pub last_order: HistoryOrder,
     #[schemars(length(min = 1))]
-    pub turn_id: String,
+    pub turn_id: Option<String>,
     pub position: RowPosition,
     pub last_position: RowPosition,
     #[schemars(length(max = 96))]
@@ -1428,6 +1567,68 @@ pub struct HistoryPromptRead {
     #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
     pub through: u64,
     pub position: RowPosition,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentHistoryRequestsRead")]
+pub struct HistoryRequestsRead {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
+    pub through: u64,
+    /// Any original row in the Run being inspected.
+    pub position: RowPosition,
+    #[serde(default)]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub after: Option<u64>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentHistoryRequests")]
+pub struct HistoryRequests {
+    pub requests: Vec<HistoryRequest>,
+    pub next: Option<u64>,
+    pub run_terminated: bool,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentHistoryRequest")]
+pub struct HistoryRequest {
+    pub order: HistoryOrder,
+    pub step_id: maka_agent_facts::durable::StepId,
+    pub attempt_id: maka_agent_facts::durable::ModelAttemptId,
+    pub model_id: String,
+    pub purpose: maka_agent_facts::context::ModelPurpose,
+    pub started_at: Option<u64>,
+    pub first_token_at: Option<u64>,
+    pub finished: Option<HistoryRequestFinished>,
+    pub retry: Option<HistoryRequestRetry>,
+    pub estimated_input_tokens: u64,
+    pub context_window: Option<u64>,
+    pub input_limit: Option<u64>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentHistoryRequestFinished")]
+pub struct HistoryRequestFinished {
+    pub at: u64,
+    pub outcome: maka_agent_facts::accounting::Outcome,
+    pub usage: maka_agent_facts::model::ModelUsage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[schemars(rename = "AgentHistoryRequestRetry")]
+pub enum HistoryRequestRetry {
+    Scheduled { at: u64 },
+    Started,
+    Cancelled,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1456,6 +1657,7 @@ pub struct HistorySearch {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentHistoryMatch")]
 pub struct HistoryMatch {
+    pub order: HistoryOrder,
     /// Exact canonical field to read through the source query; history body may omit it.
     pub field: maka_agent_ports::session::history::SourceField,
     /// Exact transcript row. Open with HistoryPosition::Row at the same raw-event
@@ -1493,14 +1695,88 @@ pub enum HistorySearchPage {
 )]
 #[schemars(rename = "AgentHistoryPage")]
 pub enum HistoryPage {
+    Room {
+        page: RoomHistoryPage,
+    },
     Ready {
-        through: u64,
+        #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
+        through: Option<u64>,
         chunks: Vec<HistoryChunk>,
         #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<Cursor>")]
         before: Option<Cursor>,
         #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<Cursor>")]
         after: Option<Cursor>,
     },
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRoomHistoryPage")]
+pub struct RoomHistoryPage {
+    pub items: Vec<RoomMessage>,
+    pub through: u64,
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRoomMessage")]
+pub struct RoomMessage {
+    pub id: String,
+    pub sequence: u64,
+    pub at: u64,
+    pub author: maka_agent_facts::room::RoomAuthor,
+    pub content: RoomContent,
+    pub reply_to: Option<String>,
+    pub mentions: Vec<String>,
+    pub deliveries: Vec<maka_agent_facts::room::RoomDelivery>,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRoomContent")]
+pub struct RoomContent {
+    pub text: String,
+    pub attachments: Vec<HistoryAttachment>,
+}
+
+impl From<maka_agent_facts::room::RoomPage> for RoomHistoryPage {
+    fn from(page: maka_agent_facts::room::RoomPage) -> Self {
+        Self {
+            through: page.through,
+            before: page.before,
+            after: page.after,
+            items: page
+                .items
+                .into_iter()
+                .map(|message| RoomMessage {
+                    id: message.id,
+                    sequence: message.sequence,
+                    at: message.at,
+                    author: message.author,
+                    content: RoomContent {
+                        text: message.content.display_text.unwrap_or(message.content.text),
+                        attachments: message
+                            .content
+                            .attachments
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|attachment| HistoryAttachment {
+                                name: attachment.name,
+                                mime_type: attachment.mime_type,
+                                bytes: attachment.bytes,
+                                kind: attachment.kind,
+                            })
+                            .collect(),
+                    },
+                    reply_to: message.reply_to,
+                    mentions: message.mentions,
+                    deliveries: message.deliveries,
+                })
+                .collect(),
+        }
+    }
 }
 
 impl From<maka_agent_ports::session::history::Page> for HistoryPage {
@@ -1518,9 +1794,16 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
             chunks: chunks
                 .into_iter()
                 .map(|chunk| HistoryChunk {
+                    imported_turn: chunk.imported_turn,
+                    run_id: chunk.run_id,
                     model_part: chunk.model_part,
+                    source_citation: chunk.source_citation,
+                    citation: chunk.citation,
+                    citation_anchor: chunk.citation_anchor,
                     has_references: chunk.has_references,
+                    quotes: chunk.quotes,
                     final_output: chunk.final_output,
+                    final_answer: chunk.final_answer,
                     model: chunk.model,
                     origin: chunk.origin,
                     compaction: chunk.compaction,
@@ -1535,6 +1818,8 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
                         })
                         .collect(),
                     timing: chunk.timing,
+                    folded_work: chunk.folded_work,
+                    work: chunk.work,
                     field: chunk.field,
                     message_id: chunk.message_id,
                     turn_id: chunk.turn_id,
@@ -1595,6 +1880,34 @@ pub enum HistorySourcePage {
         /// This is display text, never a filesystem capability or open command.
         #[serde(rename = "filePath", skip_serializing_if = "Option::is_none")]
         file_path: Option<String>,
+    },
+}
+
+/// A bounded image read through an actual history source capability, without a live Root fence.
+#[derive(Serialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentHistoryImagePage")]
+pub enum HistoryImagePage {
+    Ready {
+        position: HistoryRowAddress,
+        #[schemars(range(max = 9_007_199_254_740_991u64))]
+        offset: u64,
+        #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
+        total_bytes: u64,
+        #[schemars(regex(pattern = "^image/(png|jpeg|gif|webp|avif)$"))]
+        mime_type: String,
+        #[schemars(regex(pattern = "^sha256:[a-f0-9]{64}$"))]
+        digest: String,
+        #[schemars(
+            length(max = 43692),
+            regex(pattern = "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$")
+        )]
+        data: String,
     },
 }
 
@@ -1660,6 +1973,15 @@ pub struct AttachmentImageRead {
 )]
 #[schemars(rename = "AgentAttachmentImageSource")]
 pub enum AttachmentImageSource {
+    Artifact {
+        #[schemars(length(min = 1))]
+        id: String,
+    },
+    Room {
+        #[schemars(length(min = 1))]
+        message_id: String,
+        attachment_index: u32,
+    },
     Uploaded {
         #[schemars(length(min = 1))]
         id: String,
@@ -1705,6 +2027,7 @@ pub struct ToolNames {
     pub names: Vec<String>,
 }
 pub fn contract() -> Contract {
+    use crate::preset::*;
     fn method<I: JsonSchema, O: JsonSchema>(mode: MethodMode) -> Method {
         Method {
             progress: None,
@@ -1724,6 +2047,19 @@ pub fn contract() -> Contract {
         transport: Transport::Remote,
         interface: Interface::Service {
             methods: BTreeMap::from([
+                ("presets".into(), method::<PresetsRead, Vec<PresetSummary>>(MethodMode::Query)),
+                ("preset".into(), method::<PresetRead, Option<PresetDetail>>(MethodMode::Query)),
+                ("memorySource".into(), method::<MemorySourceSelection, MemoryEvidenceReference>(MethodMode::Query)),
+                ("memoryEvidence".into(), method::<MemoryEvidenceRead, MemoryEvidencePage>(MethodMode::Query)),
+                ("memoryHistory".into(), method::<MemoryHistoryRead, MemoryHistoryPage>(MethodMode::Query)),
+                ("memories".into(), method::<MemoriesRead, MemoryPage>(MethodMode::Query)),
+                ("pendingMemories".into(), method::<MemoriesRead, MemoryPage>(MethodMode::Query)),
+                ("memory".into(), method::<MemoryRead, Option<MemoryRecord>>(MethodMode::Query)),
+                ("changeMemory".into(), method::<MemoryChange, MemoryResult>(MethodMode::Mutation)),
+                ("reconcileMemories".into(), method::<ReconcileMemories, MemoryBatchResult>(MethodMode::Mutation)),
+                ("createPreset".into(), method::<PresetCreate, PresetResult>(MethodMode::Mutation)),
+                ("updatePreset".into(), method::<PresetUpdate, PresetResult>(MethodMode::Mutation)),
+                ("deletePreset".into(), method::<PresetDelete, PresetResult>(MethodMode::Mutation)),
                 ("sessionMcp".into(), method::<SessionMcp, SessionMcpAttached>(MethodMode::Subscription)),
                 ("projectMcp".into(), method::<McpRead, McpView>(MethodMode::Query)),
                 ("trustProjectMcp".into(), method::<McpTrust, McpTrustResult>(MethodMode::Mutation)),
@@ -1760,10 +2096,6 @@ pub fn contract() -> Contract {
                     method::<GoalRead, GoalView>(MethodMode::Query),
                 ),
                 (
-                    "goalReceipt".into(),
-                    method::<GoalReceiptRead, Option<GoalResult>>(MethodMode::Query),
-                ),
-                (
                     "watchGoal".into(),
                     method::<GoalRead, GoalView>(MethodMode::Subscription),
                 ),
@@ -1778,10 +2110,6 @@ pub fn contract() -> Contract {
                 (
                     "askQuickQuestion".into(),
                     Method { progress: Some(schemars::schema_for!(String).into()), ..method::<QuickQuestion, ()>(MethodMode::Mutation) },
-                ),
-                (
-                    "rankQuickTools".into(),
-                    method::<QuickToolRank, QuickToolRanking>(MethodMode::Mutation),
                 ),
                 (
                     "predictNextMessage".into(),
@@ -1822,10 +2150,6 @@ pub fn contract() -> Contract {
                 (
                     "watchSchedules".into(),
                     method::<ScheduleRead, Schedules>(MethodMode::Subscription),
-                ),
-                (
-                    "scheduleAlerts".into(),
-                    method::<ScheduleAlertsRead, ScheduleAlerts>(MethodMode::Subscription),
                 ),
                 (
                     "schedule".into(),
@@ -1898,6 +2222,10 @@ pub fn contract() -> Contract {
                     method::<HistoryPromptRead, Option<HistoryPrompt>>(MethodMode::Query),
                 ),
                 (
+                    "historyRequests".into(),
+                    method::<HistoryRequestsRead, HistoryRequests>(MethodMode::Query),
+                ),
+                (
                     "search".into(),
                     method::<HistorySearch, HistorySearchPage>(MethodMode::Query),
                 ),
@@ -1942,6 +2270,9 @@ pub fn contract() -> Contract {
                 ("sessionCheckpointRestoreReceipt".into(), method::<SessionCheckpointRestoreReceiptRead, SessionCheckpointRestoreReceipt>(MethodMode::Query)),
                 ("historyCheckpointLoadReceipt".into(), method::<CheckpointLoadReceiptRead, CheckpointLoadReceipt>(MethodMode::Query)),
                 ("loadedHistoryCheckpointHistory".into(), method::<CheckpointHistoryRead, HistoryPage>(MethodMode::Query)),
+                ("loadedHistoryCheckpointSource".into(), method::<CheckpointSourceRead, maka_agent_ports::session::history::HistorySource>(MethodMode::Query)),
+                ("loadedHistoryCheckpointToolImage".into(), method::<CheckpointToolImageRead, HistoryImagePage>(MethodMode::Query)),
+                ("loadedHistoryCheckpointAttachmentImage".into(), method::<CheckpointAttachmentImageRead, HistoryImagePage>(MethodMode::Query)),
                 ("loadedHistoryCheckpointArtifacts".into(), method::<CheckpointArtifactsRead, CheckpointArtifacts>(MethodMode::Query)),
                 ("loadedHistoryCheckpointArtifact".into(), method::<CheckpointArtifactRead, Option<CheckpointArtifactChunk>>(MethodMode::Subscription)),
                 (
@@ -1961,6 +2292,19 @@ pub fn contract() -> Contract {
                     method::<FileWatch, FileChange>(MethodMode::Subscription),
                 ),
                 (
+                    "saveFile".into(),
+                    Method {
+                        resources: BTreeMap::from([(
+                            "content".into(), maka_plugin_core::contract::text_resource_type().required(),
+                        )]),
+                        ..method::<SaveFile, SaveFileResult>(MethodMode::Mutation)
+                    },
+                ),
+                (
+                    "resolveFileLink".into(),
+                    method::<FileLinkRead, FileReadPath>(MethodMode::Query),
+                ),
+                (
                     "readFile".into(),
                     method::<FileRead, Option<FileReadPart>>(MethodMode::Subscription),
                 ),
@@ -1970,11 +2314,87 @@ pub fn contract() -> Contract {
                 ),
                 (
                     "gitStatus".into(),
-                    method::<SessionRead, Option<GitStatus>>(MethodMode::Query),
+                    method::<GitSessionRead, Option<GitStatus>>(MethodMode::Query),
                 ),
                 (
                     "gitDiff".into(),
                     method::<GitDiffRead, Option<GitDiff>>(MethodMode::Query),
+                ),
+                (
+                    "gitWorkspaceDiff".into(),
+                    method::<GitWorkspaceDiffRead, Option<GitWorkspaceDiff>>(MethodMode::Query),
+                ),
+                (
+                    "gitRevisions".into(),
+                    method::<GitSessionRead, Option<GitRevisions>>(MethodMode::Query),
+                ),
+                (
+                    "gitCompare".into(),
+                    method::<GitCompareRead, Option<GitCompare>>(MethodMode::Query),
+                ),
+                (
+                    "gitCompareDiff".into(),
+                    method::<GitCompareDiffRead, Option<GitDiff>>(MethodMode::Query),
+                ),
+                (
+                    "githubPullRequests".into(),
+                    method::<GitHubPullRequestsRead, GitHubPullRequestsResult>(MethodMode::Query),
+                ),
+                (
+                    "githubPullRequestDetail".into(),
+                    method::<GitHubPullDetailRead, GitHubPullDetailResult>(MethodMode::Query),
+                ),
+                (
+                    "githubPullRequestFileDiff".into(),
+                    method::<GitHubPullFileDiffRead, GitHubPullFileDiff>(MethodMode::Query),
+                ),
+                (
+                    "githubSubmitReview".into(),
+                    method::<GitHubSubmitReviewInput, GitHubSubmitReviewResult>(
+                        MethodMode::Mutation,
+                    ),
+                ),
+                (
+                    "githubReplyComment".into(),
+                    method::<GitHubReplyCommentInput, GitHubReplyCommentResult>(
+                        MethodMode::Mutation,
+                    ),
+                ),
+                (
+                    "githubCommentPullRequest".into(),
+                    method::<GitHubIssueCommentInput, GitHubReplyCommentResult>(
+                        MethodMode::Mutation,
+                    ),
+                ),
+                (
+                    "saveGitHubToken".into(),
+                    Method {
+                        resources: BTreeMap::from([(
+                            "secret".into(),
+                            ResourceType {
+                                name: "maka.text.utf8".into(),
+                                version: 1,
+                            }
+                            .required(),
+                        )]),
+                        ..method::<GitHubTokenKey, GitHubTokenResult>(MethodMode::Mutation)
+                    },
+                ),
+                (
+                    "deleteGitHubToken".into(),
+                    method::<GitHubTokenKey, GitHubTokenResult>(MethodMode::Mutation),
+                ),
+                (
+                    "codeDefinition".into(),
+                    method::<CodeDefinitionRead, CodeDefinitionResult>(MethodMode::Query),
+                ),
+                (
+                    "codeReferences".into(),
+                    method::<CodeReferencesRead, CodeReferencesResult>(MethodMode::Query),
+                ),
+                (
+                    "codeHover".into(),
+                    method::<CodeHoverRead, Option<CodeHoverResult>>(MethodMode::Query),
                 ),
                 (
                     "snapshotPatch".into(),
@@ -2003,8 +2423,10 @@ pub fn contract() -> Contract {
                     method::<Send, SendResult>(MethodMode::Mutation),
                 ),
                 ("models".into(), method::<ModelsRead, ModelsPage>(MethodMode::Query)),
+                ("watchModels".into(), method::<ModelsWatch, ModelsPage>(MethodMode::Subscription)),
                 ("model".into(), method::<ModelRead, ModelResult>(MethodMode::Query)),
                 ("externalAgents".into(),method::<crate::external::ExternalAgentsRead, crate::external::ExternalAgents>(MethodMode::Query)),
+                ("externalUsageLimits".into(),method::<crate::external::ExternalUsageLimitsRead, crate::external::ExternalUsageLimits>(MethodMode::Query)),
                 (
                     "executorSetup".into(),
                     Method {
@@ -2037,7 +2459,7 @@ pub fn contract() -> Contract {
                     method::<ExecutionRead, ExecutionResult>(MethodMode::Query),
                 ),
                 ("work".into(), method::<WorkRead, Work>(MethodMode::Query)),
-                ("resumable".into(), method::<ResumableRead, Resumable>(MethodMode::Query)),
+                ("workReadiness".into(), method::<WorkRead, WorkReadiness>(MethodMode::Query)),
                 (
                     "compactionPrompt".into(),
                     method::<SessionRead, CompactionPrompt>(MethodMode::Query),
@@ -2051,8 +2473,12 @@ pub fn contract() -> Contract {
                     method::<Compact, CompactResult>(MethodMode::Mutation),
                 ),
                 (
-                    "resume".into(),
-                    method::<Resume, ResumeResult>(MethodMode::Mutation),
+                    "continuationAvailability".into(),
+                    method::<ExecutionRead, ContinuationAvailability>(MethodMode::Query),
+                ),
+                (
+                    "continueRun".into(),
+                    method::<ContinueRun, ContinuationResult>(MethodMode::Mutation),
                 ),
                 ("stop".into(), method::<Stop, Stopped>(MethodMode::Mutation)),
                 (
@@ -2102,6 +2528,30 @@ pub fn contract() -> Contract {
                     method::<InteractionRespond, InteractionResult>(MethodMode::Mutation),
                 ),
                 (
+                    "sessionList".into(),
+                    method::<SessionListInput, SessionListOutput>(MethodMode::Query),
+                ),
+                (
+                    "sessionRead".into(),
+                    method::<SessionReadInput, SessionReadOutput>(MethodMode::Query),
+                ),
+                (
+                    "sessionCreate".into(),
+                    method::<SessionCreateInput, SessionCreateOutput>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionSend".into(),
+                    method::<SessionSendInput, SendResult>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionStop".into(),
+                    method::<SessionStopInput, SessionStopOutput>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionManage".into(),
+                    method::<SessionManageInput, SessionManageOutput>(MethodMode::Mutation),
+                ),
+                (
                     "watch".into(),
                     method::<Watch, DeliveryPage>(MethodMode::Subscription),
                 ),
@@ -2110,108 +2560,5 @@ pub fn contract() -> Contract {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn create_and_send_preserve_backend_sources_without_legacy_inputs() {
-        let Interface::Service { methods } = contract().interface else {
-            panic!("service contract")
-        };
-        assert!(!methods.contains_key("execute"));
-        let send = jsonschema::validator_for(&methods["send"].input).unwrap();
-        for backend in [
-            json!({"kind":"model","connectionId":"connection","modelId":"model","thinkingLevel":"high"}),
-            json!({"kind":"executor","selection":{"executor":"external","settings":{"runtime":"codex","model":"native-model","thinkingLevel":"vendor-deep"}}}),
-        ] {
-            let value = json!({"sessionId":"session","message":"hello","backend":backend});
-            assert!(send.is_valid(&value));
-            let parsed: Send = serde_json::from_value(value).unwrap();
-            assert_eq!(serde_json::to_value(parsed.backend).unwrap(), backend);
-            let create: Create = serde_json::from_value(json!({
-                "title":"new","labels":[],"workspace":{"kind":"session","sessionId":"source"},"backend":backend
-            })).unwrap();
-            assert_eq!(serde_json::to_value(create.backend).unwrap(), backend);
-        }
-        for legacy in [
-            json!({"sessionId":"session","message":"hello","model":{"connectionId":"c","modelId":"m"}}),
-            json!({"sessionId":"session","message":"hello","thinkingLevel":"high"}),
-        ] {
-            assert!(!send.is_valid(&legacy));
-            assert!(serde_json::from_value::<Send>(legacy).is_err());
-        }
-    }
-
-    #[test]
-    fn history_window_contract_distinguishes_end_from_missing_boundaries() {
-        let Interface::Service { methods } = contract().interface else {
-            panic!("service contract");
-        };
-        let validator = jsonschema::validator_for(&methods["history"].output).unwrap();
-        let mut page = serde_json::to_value(HistoryPage::Ready {
-            through: 16,
-            chunks: Vec::new(),
-            before: None,
-            after: Some(Cursor {
-                field: Default::default(),
-                position: RowPosition {
-                    source_sequence: 16,
-                    item_index: 0,
-                },
-                offset: 0,
-            }),
-        })
-        .unwrap();
-        assert!(validator.is_valid(&page));
-        page["chunks"] = json!([{
-            "messageId":"result", "field":"body", "turnId":"turn", "timestamp":1, "role":"tool_result",
-            "order":{"sourceSequence":1,"itemIndex":0}, "position":{"sourceSequence":1,"itemIndex":0}, "offset":0, "totalBytes":0, "text":"",
-            "tool":{"toolUseId":"call", "call":null, "result":{"position":{"sourceSequence":1,"itemIndex":0},"isError":true, "image":false,"images":0,"settlement":null}}
-        }]);
-        assert!(validator.is_valid(&page));
-        let order = page["chunks"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("order")
-            .unwrap();
-        assert!(
-            !validator.is_valid(&page),
-            "display order is required, not inferred from source position"
-        );
-        page["chunks"][0]["order"] = order;
-        let tool = page["chunks"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("tool")
-            .unwrap();
-        assert!(
-            !validator.is_valid(&page),
-            "tool facts are explicit, including null"
-        );
-        page["chunks"][0]["tool"] = tool;
-        page["chunks"][0]["tool"]
-            .as_object_mut()
-            .unwrap()
-            .remove("call");
-        assert!(
-            !validator.is_valid(&page),
-            "missing call reference is not an observed absence"
-        );
-        page["chunks"][0]["tool"]["call"] = json!(null);
-        assert!(validator.is_valid(&page));
-        for field in ["before", "after"] {
-            let value = page.as_object_mut().unwrap().remove(field).unwrap();
-            assert!(!validator.is_valid(&page), "missing {field} is not EOF");
-            page.as_object_mut().unwrap().insert(field.into(), value);
-        }
-        page["after"] = json!(null);
-        assert!(validator.is_valid(&page));
-        page["next"] = json!(null);
-        assert!(
-            !validator.is_valid(&page),
-            "removed one-way API is rejected"
-        );
-    }
-}
+pub mod memory;
+pub use memory::*;

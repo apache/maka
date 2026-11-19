@@ -20,6 +20,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::executor::NativeRuntime;
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "AgentExternalAgentsRead")]
@@ -42,9 +44,10 @@ pub struct ExternalAgents {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentExternalRuntimeOption")]
 pub struct RuntimeOption {
-    pub id: String,
+    pub id: NativeRuntime,
     pub name: String,
     pub enabled: bool,
+    pub usage_limits: bool,
 }
 
 pub fn runtime_options(
@@ -53,12 +56,31 @@ pub fn runtime_options(
     crate::executor::NativeRuntime::ALL
         .into_iter()
         .map(|runtime| RuntimeOption {
-            id: runtime.as_str().into(),
+            id: runtime,
             name: runtime.name().into(),
             enabled: configuration
                 .is_some_and(|configuration| configuration.runtimes.enabled(runtime)),
+            usage_limits: runtime.reports_usage_limits(),
         })
         .collect()
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "AgentExternalUsageLimitsRead")]
+pub struct ExternalUsageLimitsRead {
+    pub runtime: NativeRuntime,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentExternalUsageLimits")]
+pub enum ExternalUsageLimits {
+    Ready {
+        limits: Vec<maka_agent_ports::provider::UsageLimit>,
+    },
+    Unsupported,
+    Unavailable,
 }
 
 #[derive(Serialize, JsonSchema)]

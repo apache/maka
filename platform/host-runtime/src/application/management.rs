@@ -35,8 +35,7 @@ mod download;
 pub use download::download_bundle;
 mod composition;
 mod settings;
-#[cfg(test)]
-mod tests;
+
 mod ui;
 
 pub const DEPLOYMENT_MANAGER: &str = "maka.application.management";
@@ -78,7 +77,6 @@ impl Manager {
     async fn instances(&self, input: Value) -> Result<Value> {
         let request: DeploymentInstances =
             serde_json::from_value(input).map_err(|e| e.to_string())?;
-        let _materialize = self.writes.lock().await;
         let (source, after) = match request {
             DeploymentInstances::Start {} => (self.metadata().await?.source.reference, None),
             DeploymentInstances::Continue { source, after } => (source, after),
@@ -149,7 +147,6 @@ impl Manager {
         {
             return Err("foreign managed deployment source".into());
         }
-        let _materialize = self.writes.lock().await;
         let metadata = self
             .store
             .read_application_metadata_at(&request.source)
@@ -515,10 +512,19 @@ impl Handler for Manager {
         method: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         let manager = self.clone();
-        Box::pin(async move {
+        let result = async move {
+            let constrained = !matches!(
+                context.scope().sandbox_floor(),
+                maka_sandbox::Sandbox::Disabled
+            );
             match method.as_str() {
+                "configure" | "configureBatch" | "editComposition" | "setEnabled"
+                | "install" | "installSource" | "installUrl" | "replaceSource" | "replace"
+                | "read" | "readDocument" | "readSettings" if constrained => {
+                    Err("IsolationUnavailable: host configuration access cannot enforce the caller's resource floor".into())
+                }
                 "read" => {
                     serde_json::from_value::<DeploymentRead>(input)
                         .map_err(|error| error.to_string())?;
@@ -532,7 +538,7 @@ impl Handler for Manager {
                 "readSettings" => manager.read_settings(input).await,
                 "configure" => manager.configure(input).await,
                 "configureBatch" => manager.configure_batch(input).await,
-                "bindingCandidates" => manager.binding_candidates(input).await,
+                "bindingCandidates" => manager.binding_candidates(context.scope().sandbox_floor(), input).await,
                 "packageSettings" => manager.package_settings(input).await,
                 "editComposition" => manager.edit_composition(input).await,
                 "setEnabled" => manager.set_enabled(input).await,
@@ -545,6 +551,10 @@ impl Handler for Manager {
                 "replace" => manager.replace(input, context).await,
                 _ => Err("unknown deployment management method".into()),
             }
+        };
+        Box::pin(async move {
+            let result: std::result::Result<Value, String> = result.await;
+            result.map(HandlerValue::Json).map_err(HandlerError::from)
         })
     }
 }

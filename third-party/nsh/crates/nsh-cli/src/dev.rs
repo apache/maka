@@ -20,7 +20,8 @@ use nsh_dev::{
 
 use crate::{build, logger, ui};
 
-/// File events arriving within this window are coalesced into one rebuild.
+/// File events arriving within this window are coalesced into one rebuild,
+/// or into a restart when one of them changes the app's Rust code.
 const DEBOUNCE: Duration = Duration::from_millis(30);
 
 /// A running dev server plus the source watcher feeding it.
@@ -202,11 +203,14 @@ impl DevSession {
             if !is_source(&event) {
                 continue;
             }
+            // A Rust change saved with this one (a checkout, a formatter)
+            // starts the session again, which builds the TSX too: built
+            // now, it would check its imports against the old UI sets.
             let deadline = Instant::now() + DEBOUNCE;
-            while rx
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .is_ok()
-            {}
+            let is_rust = |p: &Path| rust.as_ref().is_some_and(|app| app.is_rust(p));
+            if rust_changed_until(&rx, deadline, is_rust) {
+                return Err(crate::rust_app::Restart.into());
+            }
             self.rebuild();
             self.watch_imports(&mut watcher, &mut imported_dirs)?;
         }
@@ -234,8 +238,14 @@ impl DevSession {
     }
 
     /// Serves the assets `built` imports by name, whatever their type: the
-    /// app's directory itself serves only its media files.
+    /// app's directory itself serves only its media files. It is the one
+    /// the build named them from (an entry below its app names them from
+    /// the app's directory), so a literal `asset:/` URL finds what a
+    /// package of the app holds.
     fn serve_assets(&self, built: &build::Built) {
+        if let Some(root) = &built.asset_root {
+            self.server.set_assets_root(Some(root.clone()));
+        }
         self.server.serve_files(
             built
                 .assets
@@ -505,6 +515,25 @@ fn start_server(
     })
 }
 
+/// Waits out the debounce of a source change: whether one of the events
+/// arriving until `deadline` changes the app's Rust code (`is_rust`; the
+/// first that does ends the wait). Reads change nothing, as in the watch
+/// loop.
+fn rust_changed_until(
+    rx: &mpsc::Receiver<notify::Event>,
+    deadline: Instant,
+    is_rust: impl Fn(&Path) -> bool,
+) -> bool {
+    while let Ok(event) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        if !matches!(event.kind, notify::EventKind::Access(_))
+            && event.paths.iter().any(|p| is_rust(p))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn is_source(event: &notify::Event) -> bool {
     event.paths.iter().any(|p| {
         !p.components()
@@ -696,5 +725,35 @@ mod tests {
             "iOS Simulator (iPad Air)".to_owned(),
         ];
         assert_eq!(super::short_name(&two, &two[1]), "iOS Simulator (iPad Air)");
+    }
+
+    #[test]
+    fn a_rust_change_right_after_a_tsx_change_is_not_lost() {
+        use std::{path::Path, time::Instant};
+
+        use notify::{
+            Event, EventKind,
+            event::{AccessKind, DataChange, ModifyKind},
+        };
+
+        let saved = |path: &str| {
+            Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+                .add_path(path.into())
+        };
+        let is_rust = |path: &Path| path.extension().is_some_and(|e| e == "rs");
+        let (tx, rx) = std::sync::mpsc::channel();
+        // `App.tsx`, then `src/lib.rs` within the debounce (a checkout, a
+        // formatter): the session starts again.
+        tx.send(saved("/app/App.tsx")).unwrap();
+        tx.send(saved("/app/src/lib.rs")).unwrap();
+        let deadline = Instant::now() + super::DEBOUNCE;
+        assert!(super::rust_changed_until(&rx, deadline, is_rust));
+        // A read of the Rust code (inotify reports a build's own) is no
+        // change: only the TSX is built again.
+        tx.send(saved("/app/App.tsx")).unwrap();
+        tx.send(Event::new(EventKind::Access(AccessKind::Read)).add_path("/app/src/lib.rs".into()))
+            .unwrap();
+        let deadline = Instant::now() + super::DEBOUNCE;
+        assert!(!super::rust_changed_until(&rx, deadline, is_rust));
     }
 }

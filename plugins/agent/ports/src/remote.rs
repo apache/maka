@@ -42,14 +42,14 @@ pub struct Caller {
     pub views: Arc<dyn Views>,
     /// Canonical writes use captured caller authority, separately from observations.
     pub controls: Arc<dyn Controls>,
-    pub resources: Arc<maka_capabilities::call::Resources>,
+    pub resources: Arc<maka_plugin_core::work::resources::Resources>,
     pub cancellation: CancellationToken,
 }
 
 /// Read-only user-request scope, including a borrowed workspace capability.
 /// The projection is observation; only `files` permits bounded filesystem reads.
 pub struct SessionView {
-    pub workspace: maka_agent_facts::execution::WorkspaceProjection,
+    pub workspace: maka_sandbox::workspace::WorkspaceProjection,
     pub tools: std::collections::HashSet<String>,
     pub files: maka_capabilities::filesystem::ReadDirectory,
 }
@@ -59,7 +59,7 @@ pub struct SessionView {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkspaceViewInput {
-    pub workspace: maka_agent_facts::execution::WorkspaceTarget,
+    pub workspace: maka_sandbox::workspace::WorkspaceTarget,
     pub sandbox_mode: maka_agent_facts::execution::SandboxMode,
     pub collaboration_mode: maka_agent_facts::execution::CollaborationMode,
 }

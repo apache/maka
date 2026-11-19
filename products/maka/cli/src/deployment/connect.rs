@@ -41,9 +41,6 @@ pub(crate) struct Connect {
     root_id: RootId,
     #[arg(long = "framed", required = true)]
     _framed: bool,
-    /// Confirm the same Linux filesystem was remounted, preserving root identity.
-    #[arg(long)]
-    repair_root_after_remount: bool,
 }
 
 impl Connect {
@@ -86,8 +83,7 @@ impl Connect {
         if opening.version != VERSION {
             return Err("unsupported public application Host protocol".into());
         }
-        let (deployment, lease) =
-            activation::prepare(&self.root_id, self.repair_root_after_remount).await?;
+        let (deployment, lease) = activation::prepare(&self.root_id).await?;
         let (probe, live) = activation::connect_or_launch(&deployment, lease.clone()).await?;
         let epoch = uuid::Uuid::parse_str(&live.epoch)?;
         if opening.epoch.is_some_and(|expected| expected != epoch) {

@@ -29,6 +29,22 @@ use std::io::{self, Write};
 
 mod binary;
 
+pub(crate) fn pair_digest(
+    before: Option<&Image>,
+    after: Option<&Image>,
+    hash: gix::hash::Kind,
+) -> io::Result<String> {
+    let part = |image: Option<&Image>| -> io::Result<String> {
+        let Some(image) = image else {
+            return Ok("000000:0".to_owned());
+        };
+        let oid = gix::objs::compute_hash(hash, gix::objs::Kind::Blob, &image.bytes)
+            .map_err(io::Error::other)?;
+        Ok(format!("{:06o}:{oid}", image.mode))
+    };
+    Ok(format!("{}..{}", part(before)?, part(after)?))
+}
+
 pub(crate) fn append(
     out: &mut Vec<u8>,
     name: &[u8],
@@ -36,19 +52,39 @@ pub(crate) fn append(
     after: Option<&Image>,
     hash: gix::hash::Kind,
 ) -> io::Result<()> {
-    if before.map(|i| (i.mode, &i.bytes)) == after.map(|i| (i.mode, &i.bytes)) {
+    append_pair(out, name, name, before, after, hash)
+}
+
+pub(crate) fn append_pair(
+    out: &mut Vec<u8>,
+    old_name: &[u8],
+    new_name: &[u8],
+    before: Option<&Image>,
+    after: Option<&Image>,
+    hash: gix::hash::Kind,
+) -> io::Result<()> {
+    let renamed = old_name != new_name && before.is_some() && after.is_some();
+    if !renamed && before.map(|i| (i.mode, &i.bytes)) == after.map(|i| (i.mode, &i.bytes)) {
         return Ok(());
     }
     // A file-kind replacement is represented as delete + add, not an invalid mode transition.
     if let (Some(old), Some(new)) = (before, after)
         && (old.mode & 0o170000) != (new.mode & 0o170000)
     {
-        append(out, name, before, None, hash)?;
-        return append(out, name, None, after, hash);
+        append_pair(out, old_name, old_name, before, None, hash)?;
+        return append_pair(out, new_name, new_name, None, after, hash);
     }
-    let a = quote(b"a/", name);
-    let b = quote(b"b/", name);
+    let a = quote(b"a/", old_name);
+    let b = quote(b"b/", new_name);
     writeln!(out, "diff --git {a} {b}")?;
+    if renamed {
+        writeln!(
+            out,
+            "rename from {}\nrename to {}",
+            quote(b"", old_name),
+            quote(b"", new_name)
+        )?;
+    }
     match (before, after) {
         (None, Some(new)) => writeln!(out, "new file mode {:06o}", new.mode)?,
         (Some(old), None) => writeln!(out, "deleted file mode {:06o}", old.mode)?,

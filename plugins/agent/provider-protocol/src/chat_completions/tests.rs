@@ -22,6 +22,39 @@ use crate::output::{Event, Stop};
 use serde_json::json;
 
 #[test]
+fn usage_preserves_reported_cache_reads_and_writes() {
+    for (raw, read, write, uncached) in [
+        (
+            json!({"prompt_tokens":100, "completion_tokens":10}),
+            None,
+            None,
+            None,
+        ),
+        (
+            json!({"prompt_tokens":100, "prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":80}}),
+            Some(0),
+            Some(80),
+            Some(20),
+        ),
+        (
+            json!({"prompt_tokens":100, "prompt_cache_hit_tokens":70}),
+            Some(70),
+            None,
+            Some(30),
+        ),
+    ] {
+        let usage = response::usage(&serde_json::to_vec(&raw).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(usage.input, Some(100));
+        assert_eq!(
+            (usage.cache_read, usage.cache_write, usage.uncached_input),
+            (read, write, uncached)
+        );
+    }
+}
+
+#[test]
 fn done_stops_current_batch_and_finish_is_idempotent() {
     let wire = concat!(
         "data: {\"choices\":[{\"delta\":{\"content\":\"before\"},\"finish_reason\":\"stop\"}]}\n\n",
@@ -108,5 +141,75 @@ fn invalid_frames_do_not_fabricate_successful_completion() {
     let mut stream = Stream::new("vendor".into());
     assert!(
         matches!(&stream.finish(&mut id).unwrap()[..],[Event::Error(_),Event::Finish(v)] if v.reason==Stop::Error)
+    );
+}
+
+#[test]
+fn complete_chat_annotations_anchor_visible_content_after_reasoning() {
+    use crate::output::{CitationAnchor, Part, Source};
+    let raw = json!({"choices":[{"finish_reason":"stop","message":{
+        "role":"assistant","reasoning_content":"hidden","content":"🙂答案",
+        "annotations":[{"type":"vendor_extension"},{"type":"url_citation","url_citation":{
+            "url":"https://example.org/","title":"Example","start_index":1,"end_index":3}}]
+    }}]});
+    let result = generate(&serde_json::to_vec(&raw).unwrap(), "vendor", &mut || {
+        "citation".into()
+    })
+    .unwrap();
+    assert!(
+        matches!(&result.parts[..], [Part::Text {..}, Part::Text {..},
+        Part::Source {source:Source::Url{url,title:Some(title),..}, anchor:Some(CitationAnchor::Range{part:1,start:1,end:3})}
+    ] if url=="https://example.org/" && title=="Example")
+    );
+}
+
+#[test]
+fn reported_chat_receipts_keep_the_original_id_and_leave_function_requests_local() {
+    let reported = json!({"type":"function","id":"remote","execution":"server","function":{"name":"same","arguments":"{}"},"status":"in_progress"});
+    let receipt = json!({"type":"function","id":"remote","function":{"name":"same","arguments":"{}"},"output":"ok"});
+    let local = json!({"type":"function","id":"local","index":0,"function":{"name":"same","arguments":"{}"}});
+    let chunks = [
+        json!({"choices":[{"delta":{"tool_calls":[reported]}}]}),
+        json!({"choices":[{"delta":{"executed_tools":[receipt,receipt,{"index":1,"type":"search","output":"no call ID"}],"tool_calls":[local]},"finish_reason":"tool_calls"}]}),
+    ];
+    let mut stream = Stream::new("test".into());
+    let mut events = vec![];
+    for chunk in chunks {
+        events.extend(
+            stream
+                .push(format!("data: {chunk}\n\n").as_bytes(), &mut || {
+                    "unused".into()
+                })
+                .unwrap(),
+        );
+    }
+    events.extend(stream.finish(&mut || "unused".into()).unwrap());
+    let calls: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::ToolCall(c) => Some((c.id.as_str(), c.name.as_str(), c.provider_executed)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls, [("remote", "same", true), ("local", "same", false)]);
+    let results: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::ToolResult(r) => Some((&r.id, &r.value["output"])),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, "remote");
+    assert_eq!(results[0].1, "ok");
+    assert!(matches!(events.last(), Some(Event::Finish(f)) if f.reason==Stop::ToolCalls));
+
+    let full = json!({"choices":[{"message":{"role":"assistant","tool_calls":[local],"executed_tools":[receipt,receipt]},"finish_reason":"tool_calls"}]});
+    let result = generate(&serde_json::to_vec(&full).unwrap(), "test", &mut || {
+        "unused".into()
+    })
+    .unwrap();
+    assert!(
+        matches!(&result.parts[..], [crate::output::Part::ToolCall(l), crate::output::Part::ToolCall(r), crate::output::Part::ToolResult(o)] if !l.provider_executed && r.provider_executed && r.id==o.id && o.id=="remote")
     );
 }

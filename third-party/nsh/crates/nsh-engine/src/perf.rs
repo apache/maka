@@ -43,6 +43,57 @@ pub fn enabled_by_env() -> bool {
         .is_some_and(|value| !matches!(value.to_str(), Some("" | "0" | "false")))
 }
 
+/// How the monitor shows at launch, as [`ENV_VAR`] names it: `collapsed`
+/// (the frame rate alone) or `hidden` (nothing on screen, still
+/// measuring); `None` for any other value, which shows it whole.
+pub fn mode_by_env() -> Option<nsh_core::FpsMode> {
+    match std::env::var(ENV_VAR).ok()?.as_str() {
+        "collapsed" => Some(nsh_core::FpsMode::Collapsed),
+        "hidden" => Some(nsh_core::FpsMode::Hidden),
+        _ => None,
+    }
+}
+
+/// The log target of the readings the platforms log once a second while
+/// the monitor runs (`--fps`). It is not `nsh::perf`, the timings of
+/// `--trace`, so a command line tells the two apart: `nsh run --fps` shows
+/// the panel and logs these lines only with `-v`.
+pub const LOG_TARGET: &str = "nsh::fps";
+
+/// The log target of startup milestones (`RUST_LOG=nsh::startup=info`).
+pub const STARTUP_LOG_TARGET: &str = "nsh::startup";
+
+/// Logs `first_frame <ms>` once per process, `<ms>` counted from the
+/// process's start: the platforms call it after their first presented
+/// frame (benchmarks read the line). Nothing where the start time is not
+/// known (only Linux reads it, from `/proc`, at 10 ms resolution).
+pub fn first_frame() {
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    if let Some(ms) = since_process_start() {
+        log::info!(target: STARTUP_LOG_TARGET, "first_frame {ms:.0}");
+    }
+}
+
+/// Milliseconds since the process started: the system's uptime less the
+/// process's start (`/proc/self/stat`'s 22nd field, in 1/100 s ticks).
+fn since_process_start() -> Option<f64> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+        // The command name may hold spaces: fields count from its `)`.
+        let rest = &stat[stat.rfind(')')? + 2..];
+        let start: f64 = rest.split(' ').nth(19)?.parse().ok()?;
+        let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
+        let uptime: f64 = uptime.split(' ').next()?.parse().ok()?;
+        Some(((uptime - start / 100.0) * 1000.0).max(0.0))
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
 use nsh_core::time::Instant;
 
 /// Samples kept for the distributions (frames, commits).
@@ -107,9 +158,9 @@ impl Stat {
 /// The process' resource use ([`ProcessSampler`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ProcessSample {
-    /// CPU time over wall time since the previous sample, in percent of one
-    /// core (as `top` and Activity Monitor show it: 150 is one and a half
-    /// cores busy).
+    /// CPU time over wall time across the last [`CPU_WINDOW`] or so, in
+    /// percent of one core (as `top` and Activity Monitor show it: 150 is
+    /// one and a half cores busy).
     pub cpu: Option<f32>,
     /// Memory the process owns, in bytes: the physical footprint on Apple
     /// platforms (Activity Monitor's Memory column), the resident set
@@ -118,6 +169,21 @@ pub struct ProcessSample {
     /// GPU time over wall time, in percent, where the platform tells it
     /// per process (macOS).
     pub gpu: Option<f32>,
+}
+
+/// What the app holds, as the engine read it after its last idle
+/// collection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MemorySample {
+    /// Bytes the JS heap holds (0 without a JS runtime).
+    pub js_heap: u64,
+    /// Live JS objects.
+    pub js_objects: u64,
+    /// Nodes alive in the core, the root included.
+    pub nodes: u64,
+    /// The node ids the core's id table has room for: far above `nodes`
+    /// when the ids of nodes that are gone still take room.
+    pub node_ids: u64,
 }
 
 /// What a [`PerfMonitor`] read, as of one moment.
@@ -161,6 +227,19 @@ pub struct PerfSnapshot {
     pub frames: Vec<Duration>,
     /// The process' resource use, as last given to [`PerfMonitor::set_process`].
     pub process: ProcessSample,
+    /// What the app holds, as last given to [`PerfMonitor::set_memory`]:
+    /// none before the engine's first idle collection.
+    pub memory: Option<MemorySample>,
+}
+
+impl PerfSnapshot {
+    /// What apps read of it (`perfStats()`, [`nsh_core::element::perf_stats`]).
+    pub fn stats(&self) -> nsh_core::platform::PerfStats {
+        let mut stats = nsh_core::platform::PerfStats::new(self.fps);
+        stats.refresh_rate = self.refresh_rate;
+        stats.dropped = nsh_core::geometry::Percentage(self.dropped);
+        stats
+    }
 }
 
 /// Collects a surface's frame and commit timings. Shared by its engine
@@ -190,6 +269,7 @@ struct Inner {
     /// Engine wake-ups: when they ended, and how long they were busy.
     busy: VecDeque<(Instant, Duration)>,
     process: ProcessSample,
+    memory: Option<MemorySample>,
 }
 
 impl Default for PerfMonitor {
@@ -208,6 +288,7 @@ impl Default for PerfMonitor {
                 latencies: VecDeque::with_capacity(CAPACITY),
                 busy: VecDeque::new(),
                 process: ProcessSample::default(),
+                memory: None,
             }),
         }
     }
@@ -311,6 +392,11 @@ impl PerfMonitor {
         self.lock().process = sample;
     }
 
+    /// Engine thread: what the app holds, shown with the next snapshots.
+    pub fn set_memory(&self, sample: MemorySample) {
+        self.lock().memory = Some(sample);
+    }
+
     /// The readings as of now.
     pub fn snapshot(&self) -> PerfSnapshot {
         let now = Instant::now();
@@ -392,16 +478,31 @@ impl PerfMonitor {
             engine_busy: busy.as_secs_f32() / RATE_WINDOW.as_secs_f32() * 100.0,
             frames: inner.frames.iter().map(|&(_, cost)| cost).collect(),
             process: inner.process,
+            memory: inner.memory,
         }
     }
 }
 
-/// Reads the process' CPU and memory use. CPU use is a rate: each
-/// [`ProcessSampler::sample`] reports the CPU time since the previous one
-/// over the wall time between them (the first reports none).
+/// How much time a CPU reading spans at least: a rate over a shorter span
+/// is mostly the work that happened to run in it. Monitors sample from
+/// more than one place (a timer redrawing the panel, the frame that
+/// redraw makes), so two samples can be a frame apart, and a rate over
+/// that frame alone reads a core busy while the app idles.
+pub const CPU_WINDOW: Duration = Duration::from_secs(1);
+
+/// The shortest span a CPU reading is given over at all (before
+/// [`CPU_WINDOW`] has passed since the first sample).
+const CPU_MIN_SPAN: Duration = Duration::from_millis(250);
+
+/// Reads the process' CPU and memory use. CPU use is a rate: the CPU time
+/// over the wall time since the newest earlier sample at least
+/// [`CPU_WINDOW`] old (the oldest one until then), whenever and however
+/// often it is sampled; none until a quarter of a second has passed.
 #[derive(Debug)]
 pub struct ProcessSampler {
-    last: Option<(Duration, Instant)>,
+    /// Earlier readings of the CPU time and when they were taken, oldest
+    /// first: the first is the newest at least [`CPU_WINDOW`] old.
+    readings: VecDeque<(Duration, Instant)>,
 }
 
 impl Default for ProcessSampler {
@@ -413,23 +514,37 @@ impl Default for ProcessSampler {
 impl ProcessSampler {
     /// A sampler with no reading yet.
     pub fn new() -> ProcessSampler {
-        ProcessSampler { last: None }
+        ProcessSampler {
+            readings: VecDeque::new(),
+        }
     }
 
     /// The process' CPU and memory use now (GPU use is the platform's to
     /// add).
     pub fn sample(&mut self) -> ProcessSample {
         let now = Instant::now();
-        let cpu = cpu_time().and_then(|used| {
-            let (previous, at) = self.last.replace((used, now))?;
-            let wall = now.duration_since(at).as_secs_f32();
-            (wall > 0.0).then(|| used.saturating_sub(previous).as_secs_f32() / wall * 100.0)
-        });
         ProcessSample {
-            cpu,
+            cpu: cpu_time().and_then(|used| self.rate(used, now)),
             memory: memory(),
             gpu: None,
         }
+    }
+
+    /// Records `used` CPU time at `now` and returns the rate over the
+    /// window, in percent of one core.
+    fn rate(&mut self, used: Duration, now: Instant) -> Option<f32> {
+        self.readings.push_back((used, now));
+        while self
+            .readings
+            .get(1)
+            .is_some_and(|(_, at)| now.duration_since(*at) >= CPU_WINDOW)
+        {
+            self.readings.pop_front();
+        }
+        let (base, at) = *self.readings.front()?;
+        let span = now.duration_since(at);
+        (span >= CPU_MIN_SPAN)
+            .then(|| used.saturating_sub(base).as_secs_f32() / span.as_secs_f32() * 100.0)
     }
 }
 
@@ -635,9 +750,36 @@ mod tests {
         assert_eq!(first.cpu, None);
         #[cfg(any(target_vendor = "apple", target_os = "linux"))]
         assert!(first.memory.is_some_and(|m| m > 0));
-        std::thread::sleep(ms(5));
+        std::thread::sleep(CPU_MIN_SPAN);
         #[cfg(unix)]
         assert!(sampler.sample().cpu.is_some());
+    }
+
+    /// A sample a frame after another reads the rate over the window, not
+    /// over that frame: an idle app sampled by its panel's timer and again
+    /// by the frame that redraw makes is idle.
+    #[test]
+    fn cpu_is_a_rate_over_the_window() {
+        let mut sampler = ProcessSampler::new();
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let near = |rate: Option<f32>, expected: f64| {
+            rate.is_some_and(|r| (r as f64 - expected).abs() < 0.01)
+        };
+        assert_eq!(sampler.rate(ms(0), at(0)), None);
+        // Too short a span to say.
+        assert_eq!(sampler.rate(ms(5), at(10)), None);
+        assert!(near(sampler.rate(ms(50), at(500)), 10.0));
+        // Idle, then sampled twice 4ms apart, the second after a 4ms frame:
+        // about 10%, not the 100% of that frame alone.
+        assert!(near(sampler.rate(ms(100), at(1000)), 10.0));
+        assert!(near(
+            sampler.rate(ms(104), at(1004)),
+            104.0 / 1004.0 * 100.0
+        ));
+        // Past the window, older readings go: a busy second reads busy.
+        sampler.rate(ms(1100), at(2000));
+        assert!(near(sampler.rate(ms(2100), at(3000)), 100.0));
     }
 
     /// `task_info`'s footprint is the one `proc_pid_rusage` reported (the

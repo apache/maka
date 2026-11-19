@@ -22,6 +22,10 @@ pub struct MarkdownExtension {
     /// match is an inline node: its `text` the match, its numbered groups
     /// the attributes `"1"`, `"2"`, ..., its named groups by name.
     pub pattern: Option<SharedString>,
+    /// Insert a custom node after this many UTF-8 bytes of the original
+    /// Markdown. Inside an atomic node (a link, code or image), it follows
+    /// that node. The marker itself has no source bytes.
+    pub after_byte: Option<u32>,
     /// Fenced code blocks of this language (```` ```chart ````) are block
     /// nodes: their `text` the code, the rest of the info string the
     /// attribute `meta`.
@@ -296,13 +300,19 @@ impl Parser {
 
     /// Markdown `source` read.
     pub fn markdown(&self, source: &str) -> Document {
-        super::markdown::parse(self, source, false).document
+        super::markdown::parse(self, source)
+    }
+
+    /// The Markdown syntax tree with byte positions in the original source.
+    /// For editors that draw formatting over the editable source.
+    pub fn markdown_syntax(&self, source: &str) -> mdast::Node {
+        super::markdown::syntax(self, source)
     }
 
     /// Markdown with canonical UTF-8 provenance for a rendered document.
     /// This uses the same parser and converter as `markdown`.
     pub(super) fn markdown_projection(&self, source: &str) -> super::markdown::Projection {
-        super::markdown::parse(self, source, true)
+        super::markdown::project(self, source, true)
     }
 
     /// HTML `source` read (a fragment or a whole page: its body).

@@ -41,8 +41,8 @@
       "borderColor": "rgba(40,60,0,0.55)"
     },
     "track": {
-      "boxShadow": "inset 0 1px 1px rgba(0,0,0,0.35)",
-      "borderColor": "#292c32"
+      "boxShadow": "inset 0 1px 1px rgba(0,0,0,0.25)",
+      "borderColor": "#3d4046"
     },
     "fill": {
       "backgroundImage": "linear-gradient(180deg, #c3ea6c 0%, #b4dc58 100%)",
@@ -50,10 +50,10 @@
       "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.3)"
     },
     "knob": {
-      "backgroundColor": "#8f9298",
-      "backgroundImage": "linear-gradient(180deg, #9a9da3 0%, #83868c 100%)",
-      "boxShadow": "0 1px 0 rgba(0,0,0,0.45)",
-      "borderColor": "#8a8d93"
+      "backgroundColor": "#e4e5e8",
+      "backgroundImage": "linear-gradient(180deg, #eceef0 0%, #d6d8dc 100%)",
+      "boxShadow": "0 1px 1px rgba(0,0,0,0.45)",
+      "borderColor": "#c6c8cc"
     },
     "knobOn": {
       "backgroundColor": "#ffffff",
@@ -143,9 +143,9 @@
       "borderColor": "#cacbcd"
     },
     "fill": {
-      "backgroundImage": "linear-gradient(180deg, #cdf47c 0%, #c4ed68 100%)",
-      "borderColor": "#9cc43a",
-      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.45)"
+      "backgroundImage": "linear-gradient(180deg, #a2d33c 0%, #8fc21f 100%)",
+      "borderColor": "#7fae17",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.3)"
     },
     "knob": {
       "backgroundColor": "#ffffff",

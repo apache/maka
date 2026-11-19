@@ -18,11 +18,10 @@
  */
 
 //! Bounded single-directory snapshots and native invalidation within a Session workspace.
-use crate::{path::WorkspacePath, worktree::Binding};
+use crate::{directory::Observation, path::WorkspacePath, worktree::Binding};
 use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
 use gix::bstr::ByteSlice;
-use maka_agent_facts::execution::DirectoryIdentity;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -37,8 +36,6 @@ pub use watch::Watch;
 mod candidates;
 mod preview;
 pub use preview::{FileCapture, FileContent, FileSnapshot};
-#[cfg(test)]
-mod tests;
 
 const PAGE_SIZE: usize = 128;
 const MAX_PAGE_BYTES: usize = 512 * 1024;
@@ -48,7 +45,7 @@ const MAX_PAGE_BYTES: usize = 512 * 1024;
 #[schemars(rename = "AgentFileCursor")]
 pub struct FileCursor {
     #[schemars(with = "String")]
-    pub directory_identity: DirectoryIdentity,
+    pub directory_identity: Observation,
     pub after: WorkspacePath,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -56,7 +53,7 @@ pub struct FileCursor {
 #[schemars(rename = "AgentFilePage")]
 pub struct FilePage {
     #[schemars(with = "String")]
-    pub directory_identity: DirectoryIdentity,
+    pub directory_identity: Observation,
     pub entries: Vec<FileEntry>,
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<FileCursor>")]
     pub next: Option<FileCursor>,
@@ -88,7 +85,7 @@ pub enum FileKind {
 pub enum FileChange {
     Ready {
         #[schemars(with = "String")]
-        directory_identity: DirectoryIdentity,
+        directory_identity: Observation,
     },
     Changed,
     Unavailable {
@@ -124,7 +121,7 @@ struct EntryMetadata {
 struct Anchor {
     path: PathBuf,
     directory: Dir,
-    identity: DirectoryIdentity,
+    identity: Observation,
 }
 pub struct Directory {
     anchors: Vec<Anchor>,
@@ -134,10 +131,117 @@ pub struct Directory {
     managed: bool,
 }
 impl Directory {
+    /// Interpret Markdown paths on the Host that owns the workspace.
+    pub fn resolve_link(
+        &self,
+        bytes: Vec<u8>,
+        policy: Option<&maka_sandbox::filesystem::Compiled>,
+    ) -> io::Result<crate::path::FileReadPath> {
+        use crate::path::FileReadPath;
+        #[cfg(windows)]
+        let bytes = if bytes.starts_with(b"/") && bytes.get(2) == Some(&b':') {
+            bytes[1..].into()
+        } else {
+            bytes
+        };
+        let input = gix::path::from_bstring(bytes).map_err(|_| error("files_invalid_path"))?;
+        let path = gix::path::normalize(self.root_path().join(input).into(), self.root_path())
+            .ok_or_else(|| error("files_invalid_path"))?;
+        let path = path.as_ref();
+        if !path.is_absolute()
+            || path.components().any(|p| {
+                p.as_os_str()
+                    .as_encoded_bytes()
+                    .eq_ignore_ascii_case(b".git")
+            })
+        {
+            return Err(error("files_invalid_path"));
+        }
+        let workspace = |path: &Path| -> io::Result<Option<FileReadPath>> {
+            if self.excluded(path) || policy.is_some_and(|p| !p.access(path).can_read()) {
+                return Err(error("files_private"));
+            }
+            path.strip_prefix(self.root_path())
+                .ok()
+                .map(|p| WorkspacePath::from_path(p).map(FileReadPath::Workspace))
+                .transpose()
+        };
+        if let Some(relative) = workspace(path)? {
+            return Ok(relative);
+        }
+        // Resolve parent aliases (e.g. /tmp on macOS), keeping the final entry no-follow.
+        let parent =
+            dunce::canonicalize(path.parent().ok_or_else(|| error("files_invalid_path"))?)?;
+        let path = parent.join(
+            path.file_name()
+                .ok_or_else(|| error("files_invalid_path"))?,
+        );
+        if let Some(relative) = workspace(&path)? {
+            return Ok(relative);
+        }
+        Ok(FileReadPath::External {
+            absolute: path
+                .to_str()
+                .ok_or_else(|| error("files_invalid_path"))?
+                .to_owned(),
+        })
+    }
+
+    pub fn read_external_image(
+        &self,
+        path: &Path,
+        policy: Option<&maka_sandbox::filesystem::Compiled>,
+        version: Option<&str>,
+        cancel: &AtomicBool,
+    ) -> io::Result<FileCapture> {
+        if !path.is_absolute()
+            || self.excluded(path)
+            || path.components().any(|p| {
+                p.as_os_str()
+                    .as_encoded_bytes()
+                    .eq_ignore_ascii_case(b".git")
+            })
+            || policy.is_some_and(|p| !p.access(path).can_read())
+        {
+            return Err(error("files_private"));
+        }
+        let parent = path.parent().ok_or_else(|| error("files_invalid_path"))?;
+        let (canonical, identity) = crate::directory::capture(parent)?;
+        if canonical != parent {
+            return Err(error("files_changed"));
+        }
+        let directory = Self::open(
+            parent,
+            &identity,
+            &self.private_root,
+            &self.control,
+            None,
+            None,
+            cancel,
+        )?;
+        let name = WorkspacePath::from_path(Path::new(
+            path.file_name()
+                .ok_or_else(|| error("files_invalid_path"))?,
+        ))?;
+        match directory.read_file(&name, version, cancel)? {
+            FileCapture::Ready(file) if !matches!(file.content, FileContent::Image { .. }) => {
+                Ok(FileCapture::Binary {
+                    bytes: file.data.len() as u64,
+                })
+            }
+            capture => Ok(capture),
+        }
+    }
+
+    /// Canonical path of the bound workspace root.
+    pub fn root_path(&self) -> &Path {
+        &self.anchors[0].path
+    }
+
     /// All paths and the Binding are trusted Owner authority; path alone is caller data.
     pub fn open(
         workspace: &Path,
-        identity: &DirectoryIdentity,
+        identity: &Observation,
         private_root: &Path,
         control: &Path,
         binding: Option<&Binding>,
@@ -198,7 +302,7 @@ impl Directory {
         }
         Ok(())
     }
-    pub fn directory_identity(&self) -> &DirectoryIdentity {
+    pub fn directory_identity(&self) -> &Observation {
         &self.anchors.last().expect("target anchor").identity
     }
     pub fn validate(&self) -> io::Result<()> {
@@ -219,7 +323,7 @@ impl Directory {
                 || dunce::canonicalize(&anchor.path).map_err(|_| error("files_changed"))?
                     != anchor.path
                 || crate::directory::open(&anchor.path, &anchor.identity).is_err()
-                || crate::directory::identity(&anchor.directory)? != anchor.identity
+                || !anchor.identity.matches(&anchor.directory)?
                 || self.excluded(&anchor.path)
             {
                 return Err(error("files_changed"));
@@ -234,7 +338,6 @@ impl Directory {
     }
     fn excluded_child(&self, directory: &Path, name: &std::ffi::OsStr) -> bool {
         name.as_encoded_bytes().eq_ignore_ascii_case(b".git")
-            || name == std::ffi::OsStr::new(crate::workspace::MARKER_FILE)
             || self.excluded(&directory.join(name))
     }
     /// Reconcile only direct, admitted entries through the held target descriptor.
@@ -409,3 +512,6 @@ fn interrupted(cancel: &AtomicBool) -> io::Result<()> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

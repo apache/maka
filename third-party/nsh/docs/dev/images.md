@@ -10,8 +10,11 @@
   Native). Animated images: iOS decodes up to 600 frames into an animated `UIImage` (frames repeated by their delays' common
   divisor) played by a discrete `CAKeyframeAnimation` on `contents` (a tinted animated image shows its first frame); Android
   (API 28+) uses `ImageDecoder` → `AnimatedImageDrawable`, not cached (each view plays its own copy; no blur); a GIF below
-  API 30 plays from a `Movie` of its own (see the pitfall in `pitfalls.md`). `onLoad` reports the
-  source's size in pixels on both platforms, whatever size the view decodes at. Downloads are shared per URI (also between
+  API 30 (from API 26) plays from a `Movie` of its own (see the pitfall in `pitfalls.md`). `onLoad` reports the
+  source's size in pixels on both platforms, whatever size the view decodes at. On iOS and macOS only the formats that
+  animate (GIF, APNG, WebP, HEIF and AVIF sequences, JPEG XL) play their images as frames; a still file of several
+  images shows one, the icon size that fits for ICO, ICNS and CUR and the primary image otherwise (a TIFF's first
+  page), and `onLoad` reports that image's size (`nsh_platform_apple::image_source`). Downloads are shared per URI (also between
   views decoding at different sizes) and report `onProgress` at most every 100ms; `Image.getSize` / `Image.prefetch` (Rust,
   `nsh_core::runtime`) ask with `Command::ImageInfo`, are answered by the root's `ImageInfo` event (which the core
   resolves, never JS) and keep the downloaded bytes in a data cache (32 MB) until a view
@@ -30,7 +33,7 @@
   dropped by its last waiter cancels the read in its queue or between two chunks of its download. Limits:
   `MAX_BYTES` (64 MiB) a response or file, `TIMEOUT` (60 s) a request, `MAX_REDIRECTS` (20) redirects, each checked
   by `Access::media_redirect` and never from `https` to `http`. A failed read is answered from memory for
-  `FAILURE_TTL` (30 s). L3: the encoded bytes of the last reads, so a decode at another size, an SVG parsed again or `getSize` reads nothing again.
+  `FAILURE_TTL` (30 s). L3: the encoded bytes of the last reads (`ENCODED_BYTES`, 32 MiB on the desktops and 16 MiB on the phones, or the app's own with `loader().set_encoded_limit`), so a decode at another size, an SVG parsed again or `getSize` reads nothing again.
   Decoded images (L4, `Images<V>`: the backend gives it its decoder, bytes to its picture at a `Target`) are decoded
   at the size their view shows them: `Want` (the box in points, the device scale, the resize mode; an empty box: the
   natural size; one side alone scales by that side) gives the longest side the fitted image needs in pixels, rounded
@@ -89,8 +92,7 @@
   position; Windows, Linux and GPUI draw at the fitted rectangle; the web sets CSS's `object-position` on the `<img>`
   (and the tint mask's position).
 - **Known follow-ups** (phase 1 of `image-loading-design.md`): Windows scales with WIC after the BGRA conversion, so
-  a JPEG decodes at full size before it shrinks; the Windows and macOS surfaces carry no access policy
-  (`Access::default()`), so every redirect is allowed except `https` to `http`.
+  a JPEG decodes at full size before it shrinks.
 - **Disk cache** (`nsh_core::image::DiskCache`, `image/cache.rs`): the encoded bytes of every `http(s)://` image (views,
   canvases, `getSize` / `prefetch`) are kept on disk on every native backend, so an app reopened shows what it showed
   without a download, and offline. One implementation in the core; each loader keeps its own networking and routes a
@@ -105,10 +107,27 @@
   tenth of the time since `Last-Modified` (at most 7 days), less the response's age; stale at once with `no-cache`
   or no freshness. Stale copies are revalidated (`304` refreshes them by its headers over the stored ones, `4xx`
   drops them) and served when the request fails or the server answers `5xx`, unless `must-revalidate` / `no-cache`.
+  A download that ends at a redirect it did not follow drops the entry and serves nothing; one the app may not load
+  arrives as `Fetched::refused` from the core loader's ureq and macOS's `NSURLSession`, and as the unfollowed `3xx`
+  from iOS and Android.
+  An entry keeps the redirects its download followed (`Fetched::redirects`, reported by every loader: the core
+  loader's ureq, macOS's and iOS's `NSURLSession` delegates, Android's `Images.java` through `imageCacheComplete`).
+  `lookup`, `complete` and `load` take the app's `Access` and check those redirects with `Access::media_redirect`
+  before a copy is served, fresh or stale: what an app may load can narrow after a copy was stored (its capabilities,
+  the embedding app's grant), and a fresh copy is served without a request that would check it. An entry one of them is
+  refused for is dropped and is a miss, so the request that follows fails as a first one would. A `304` serves the
+  copy on disk only after the same check, and its request's redirects replace the stored ones. A copy whose redirects
+  cannot be kept whole (a control character in one, a header over `MAX_HEADER`) is not stored. The check is the disk
+  cache's: it runs when a load reaches the disk (`lookup` / `complete`), and covers a copy kept from an earlier run.
+  What the process already holds in memory is keyed by URL and served before the disk is asked: the loader's encoded
+  bytes and remembered failures (`loader.rs`), the decoded images, Android's `Images.java` caches.
   Keyed by URL alone (sources carry no request headers, so `Vary` other than `*` cannot differ). `asset:/` URIs are
-  never kept (the dev server's change with the app). Each entry is one file named by a digest of its URL (URL, policy
-  headers, body, CRC32 of them), written under a temporary name and renamed: readers on any thread, surface or
-  process see a whole entry or none, without locks; one that does not read back whole is deleted and is a miss. LRU
+  never kept (the dev server's change with the app). Each entry is one file named by a digest of its URL (URL,
+  redirects, policy headers, body, CRC32 of them; format `NSHIMG2`: entries of `NSHIMG1`, which kept no redirects, are
+  an unknown format, never served, deleted when their URL is asked for again and otherwise trimmed with the least
+  recently used; a runtime of either format deletes the other's entries on a directory they share), written under a
+  temporary name and renamed: readers on any thread, surface or process see a whole entry or none, without locks; one
+  that does not read back whole is deleted and is a miss. LRU
   by modification time (a hit refreshes it at most every 10 minutes); past its limit a scan deletes the oldest down
   to three quarters, and drops temporary files over an hour old. Every engine opens its handle in
   `<root>/<app id>/images` from `EngineConfig::cache` (`CacheOptions::images`, 256 MiB by default:
@@ -131,8 +150,10 @@
   key another surface's image uses (the caches are per process). The access check lets `data:` and `blob:` through
   (bytes the app has); only `Image`'s `src` and `placeholder` and Rust components' image props (an `ImageSrc`,
   whose decoding asks `JsHost::image_blob`, which `nsh-js` answers with the same `blob::resolve_image_url`, so an
-  `Avatar`'s `src` and an `<Image>`'s of one URL share their key and bytes) resolve a `blob:` URL, and a video, a canvas image or
-  `getSize` / `prefetch` given one report the platform's error. A `data:` URI that does not decode becomes `data:,`
+  `Avatar`'s `src` and an `<Image>`'s of one URL share their key and bytes) resolve a `blob:` URL, and a video or a
+  canvas image given one report the platform's error. `Image.getSize` of a `blob:` URL reads the size from its bytes'
+  header in the core (`runtime/image.rs`, `picker::image_size`), with no platform request, so it answers in headless
+  runs too; `prefetch` of one resolves at once. A `data:` URI that does not decode becomes `data:,`
   (shows nothing, `onError`): an app writing a key itself never reaches another surface's cache entry. A `blob:`
   URL keeps the key and bytes it resolved to (`BlobUrls`), so setting it again hashes nothing and sends nothing new.
   iOS, macOS, Windows, Linux and GPUI decode `ImageSource::data` as they do a download's
@@ -142,6 +163,23 @@
   through `Native.imageBytes`, the web runtime gets them once per key (`image_bytes`) as a browser blob URL that
   `asset()` maps the key to, revoked (`release_image`) when no source holds them. `Image.getSize` / `prefetch` of a
   `data:` URI decode it on the platform (`nsh_core::image::decode_data_uri`, the one decoder every backend uses).
+- **Pixel buffers** (`ImageSrc::rgba`, Rust only): an `ImageData` made by `ImageData::from_rgba` keeps the app's
+  straight RGBA buffer (no copy) and reports it through `ImageData::rgba()`. The source goes by a fresh
+  `data:image/png;nsh-key=<random>` key per buffer (no digest of megabytes of pixels per frame; the key's form is one
+  `ImageSource::inline` turns into `data:,` when an app writes it, as for digests), and its natural size is the
+  buffer's (`Images::decode` reads it from `rgba()`, not a header). `ImageSrc::size(Size<Points>)` declares the
+  natural layout size of `image()` independently: a 200×100 buffer drawn at 2× can lay out at 100×50 points.
+  Without it, `rgba` lays out at its pixel width and height in points. The builder sets the source's existing
+  size metadata, as `ImageAsset::size` does; the key, pixel data and reported pixel dimensions stay the same.
+  Windows, macOS, Linux and GPUI take the pixels in their decoder closures (`from_rgba`: no decode or
+  downsampling). macOS scans the alpha bytes: fully opaque buffers become sRGB `NoneSkipLast` CGImages over a
+  data provider holding the original `ImageData`, with no pixel copy or premultiplication; the provider releases
+  its source when its last image reference goes away. Buffers with transparency still copy and premultiply into
+  bitmap storage. The existing budget reservation remains conservative (backing storage plus a display copy).
+  The other backends copy into their own format; every other path
+  reading `ImageData::bytes()` (iOS's `NSData`, Android's `Native.imageBytes`, the web's `image_bytes`, `getSize`)
+  gets an uncompressed PNG (stored deflate blocks) built once on first use. Old frames leave the caches as any
+  unshown source does (L3 never keeps in-memory bytes; L4 entries without a lease are evicted).
 - **Picked images** (`nsh`'s `Picker`, `nsh_core::picker`): `Picker.pickImages` sends the root `Command::PickImages` with a
   `PickRequest` checked in Rust (`limit`: 1 for a single pick, at most `MAX_PICKED` = 100; `max_dimension`, `quality`
   as a `Percentage`, `PickFormat::Compatible` / `Current`); the `picker` capability gates it (denied: `[]` and a log
@@ -154,8 +192,9 @@
   `preferredAssetRepresentationMode` compatible (the system turns HEIC into JPEG) or current, ordered selection when
   several; each item's file is read inside `loadFileRepresentationForTypeIdentifier`'s completion (the file goes when it
   returns) and prepared with ImageIO (`picker.rs`: `CGImageSourceCreateThumbnailAtIndex` with the transform and the
-  longer side, `CGImageDestination` with `kCGImageDestinationLossyCompressionQuality`). macOS: an `NSOpenPanel` sheet
-  and the same ImageIO preparation (`nsh-platform-macos` `picker.rs`, tested with `sips`' HEIC). Android
+  longer side, `CGImageDestination` with `kCGImageDestinationLossyCompressionQuality`). macOS: an `NSOpenPanel`, a
+  sheet of the window while the user sees it, else a window of its own (`window::panel_window`, `macos.md`), and the
+  same ImageIO preparation (`nsh-platform-macos` `picker.rs`, tested with `sips`' HEIC). Android
   (`Picker.java`): `MediaStore.ACTION_PICK_IMAGES` (API 33+, or 30+ with SDK extension 2), else `ACTION_GET_CONTENT`
   for `image/*`, started by a headless retained `android.app.Fragment` added to the view's activity (the embedding app
   forwards no result); the bytes are read from the content resolver, sized with `BitmapFactory` bounds and the EXIF
@@ -219,8 +258,10 @@
   size in whole points (`svg::size`: `width` / `height`, one of them plus the `viewBox`'s ratio, or the `viewBox`;
   `svg::reported_size` rounds it), measured off the main thread; layout and fitting use it unrounded, and a file
   name's `@2x` does not apply. The bundler sizes `.svg` imports with the same `svg::size` and warns (`nsh::build`)
-  about `<text>`, animation (SMIL elements, CSS `animation` and `@keyframes`), `<image>` and `<foreignObject>`, which
-  only browsers draw. Canvases draw bitmaps: their image loads refuse an SVG with a warning naming it. An SVG a Rust
+  about animation (SMIL elements, CSS `animation` and `@keyframes`), an `<image>` that references a file, URL or
+  nested SVG, and `<foreignObject>`, which the native rasterizer leaves out. A canvas draws an SVG as the raster its
+  image load produced (its pixels are the loader's size, not necessarily the SVG's intrinsic points); draw it into an
+  explicit destination rectangle rather than relying on the raster's pixel size. An SVG a Rust
   component shows as an icon is better drawn by `element::svg`, as vectors at the device's pixels and with
   `currentColor` the text color (`docs/dev/canvas.md` "SVGs"): it takes the same `ImageSrc` (`asset!("x.svg")`, which
   carries the SVG's size in points, read by `nsh-macros` from its root's `width` / `height` / `viewBox`; a URL; a
@@ -229,17 +270,49 @@
   the image loads again.
 - **SVG is untrusted input** (a remote SVG is a document from the network), so `nsh_core::svg` bounds what reading and
   drawing one takes. It reads nothing outside the document: usvg gets no resources directory and an `<image>` resolver
-  that resolves nothing (its default one reads files), and an empty font database, so `<text>` is not drawn; the main
-  workspace also builds resvg without `text`, `system-fonts` and `raster-images` (GPUI's workspace turns them on for
-  GPUI, where the resolver and the empty font database still leave text and embedded images out, as the GPUI backend's
-  `svg_` tests check). A document is at most `svg::MAX_BYTES` (16 MiB; a `.svgz` inflates that far and no further). A
-  raster is at most `svg::MAX_SIDE` (8192) pixels a side and `svg::MAX_PIXELS` (16 Mi, 64 MiB of RGBA: a full-screen
-  image on a 5K display fits) in all; a larger one is drawn smaller. resvg draws each isolated group (opacity, a mask,
-  a clip path, filters, a blend mode) into a layer of its own, up to 5 × the canvas each way, and nested layers live
-  at once, so a few hundred bytes of nested groups would take gigabytes: before drawing, `svg/layers.rs` walks the
-  tree as resvg 0.46 draws it and adds up, along every nesting path, the layers, clip and mask pixmaps, filter regions
-  (a pixmap per primitive, not clamped) and pattern tiles (not clamped) alive at once, and an SVG over
-  `svg::MAX_LAYER_PIXELS` (64 Mi, four rasters' worth) or whose drawing visits more than a million nodes (shared
-  patterns count each time they are drawn) is refused with an `svg::Error`. A panic in usvg or resvg is an
+  that reads inline raster `data:` images only (files, URLs and nested `data:image/svg+xml` documents resolve to
+  nothing; the default resolver reads files and parses nested SVGs). `<text>` uses the system font database the
+  platform's text engine uses, and raster `data:` images are decoded by resvg's `raster-images` feature. A nested SVG
+  is refused rather than drawn because its tree and images would sit outside `MAX_BYTES` and the layer budget below.
+  A document is at most `svg::MAX_BYTES` (16 MiB; a `.svgz` inflates that far and no further), its `<text>` is at
+  most `svg::MAX_TEXT_CHARS` (64 Ki) characters as usvg expands `<use>`, `<tref>` and resource references (each
+  reference counts what it copies; a clip path, mask, pattern, marker or filter lays out its text where it is used,
+  and a marker once per vertex), and it is nested at most 1024 elements deep: usvg lays out and outlines every glyph
+  while parsing, before the layer estimate runs. The system font database is scanned only when a document actually
+  lays out text; an icon without `<text>` parses without it. A raster is at most
+  `svg::MAX_SIDE` (8192) pixels a side and `svg::MAX_PIXELS` (16 Mi, 64 MiB of RGBA: a full-screen image on a 5K
+  display fits) in all; a larger one is drawn smaller. resvg draws each isolated group (opacity, a mask, a clip path,
+  filters, a blend mode) into a layer of its own, up to 5 × the canvas each way, and nested layers live at once, so a
+  few hundred bytes of nested groups would take gigabytes: before drawing, `svg/layers.rs` walks the tree as resvg
+  0.46 draws it and adds up, along every nesting path, the layers, clip and mask pixmaps, filter regions (a pixmap per
+  primitive, not clamped), pattern tiles (not clamped) and each inline raster image's decoded area alive at once (a
+  GIF's first frame, which may be larger than its logical screen, with its decoder buffers), and
+  an SVG over `svg::MAX_LAYER_PIXELS` (64 Mi, four rasters' worth) or whose drawing visits more than a million nodes
+  (shared patterns count each time they are drawn) is refused with an `svg::Error`. A panic in usvg or resvg is an
   `svg::Error` too (`catch_unwind`): the decoders run in GCD blocks and JNI functions, where an unwinding panic aborts.
   Android's decode threads also catch `OutOfMemoryError`, so a load that runs out of memory fails instead of hanging.
+
+## Live image frames
+
+Rust `ImageSrc::live_frame(mime, bytes)` reuses the native image renderer for
+continuous encoded image previews. It carries bytes directly, without a blob URL
+registry or file path. Its digest key has `;nsh-live=1;`, distinct from ordinary
+images of the same bytes. The shared desktop decoded cache and macOS filtered
+variants retain these entries only while display leases exist; their final lease
+releases the pixels, GPU copies and natural-size metadata. iOS and Android skip
+the decoded history cache for these sources. In-memory bytes bypass disk and
+encoded download caches. Normal image caching is unchanged.
+
+Changing the source or clearing/unmounting the image cancels its old waiter;
+native source-generation/key checks prevent an obsolete decode from displaying.
+An already executing platform decode can finish and release its temporary pixels.
+Callers must bound encoded size and pixel dimensions at their ingress and coalesce
+their transport to the latest frame, rather than enqueue a frame history. This is
+an image preview path, not a video codec or a browser WebCodecs pipeline.
+
+Desktop live previews may opt into Image.retainPrevious (Rust: retain_previous):
+keep the decoded picture and its budget lease while a nonempty replacement loads,
+then swap in the decoded replacement on the same node. Empty source, load failure
+and unmount clear the picture. Callers must clear or remount when changing the
+pixel owner; the renderer does not infer session or target identity. The default
+is false. LiveImage enables it inside its immutable authority lifetime.

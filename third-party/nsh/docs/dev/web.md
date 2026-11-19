@@ -11,11 +11,13 @@ Every web runtime runs the app's TSX on the browser's own JavaScript engine: the
 its own (no `nsh-js`, no QuickJS). The browser loads the app's ES modules; Wasm contains the Rust engine, reactive
 graph, core, base components, layout and DOM backend. Native targets keep QuickJS.
 
-`Player.runModule(entry, { appId, capabilities, chunks, imports })` returns a promise after the entry module
+`Player.runModule(entry, { appId, capabilities, chunks, imports, params })` returns a promise after the entry module
 loads; `Player.runSource(code, { appId, capabilities, sourceMap, name })` does the same for a module given as
 source text (a blob URL: development bundles, the playground). Either replaces the previous app. Each run has a
 fresh same-origin iframe realm, preserving native module identity, cycles, top-level await and browser globals.
-`stop()` disposes Rust owners, outstanding bridge calls, callbacks, blob module URLs and the iframe. The iframe is
+`params` (a JSON object) is the app's `host.params` (`nsh_set_host_params`, kept for the next start and given to its
+engine's `HostChannel`); the packaged page passes the JSON of a `<script type="application/json" id="nsh-params">`
+when the page has one, so a server that already has the first screen's data can hand it to the app with the page. `stop()` disposes Rust owners, outstanding bridge calls, callbacks, blob module URLs and the iframe. The iframe is
 **not a security sandbox**: standalone code has the page origin's authority. Do not use it for untrusted plugins;
 signed packages, hardening and VM limits are the native hosts' (`sandbox.md`).
 
@@ -34,20 +36,21 @@ JS values cross through generation-checked arena handles. Weak tracing connects 
 payloads to their JS peers; externally held Rust values remain strong. DOM child edges are traced separately,
 so detached trees with callback cycles can be collected. Explicit owner disposal remains deterministic.
 The tracing runs off the calls: an outermost entry promotes weakened values back only when some were demoted, and
-the trace and the demotion run at most every 100ms once the outermost call returned (`Values.schedule`), so a call
-costs the same however many values the app holds. A string crosses in one call, encoded straight into Rust's
-buffer; a row of a table crosses in one (`JsHost::primitives` / `primitive_entries`, op 49, packed by `values.js`
-and read by `values.rs` `unpack`), and an object's keys in one (op 48).
+the trace and the demotion run once the outermost call returned, at least 100ms apart and twenty times as long
+after a run as it took (`Values.schedule`, `Values.collectDelay`), so a call costs the same however many values the
+app holds and the accounting keeps to about a twentieth of the page's time. A string crosses in one call, encoded
+straight into Rust's buffer; a row of a table crosses in one (`JsHost::primitives` / `primitive_entries`, op 49,
+packed by `values.js` and read by `values.rs` `unpack`), and an object's keys in one (op 48).
 Callbacks escaping a stopped run become inert; pending module and host calls reject on disposal.
 
 Browser fetch, streams, WebCrypto, URL, timers and promises use browser implementations, including their
 CORS, secure-context and permission rules; the browser knows no `asset:` scheme, so `fetch` of the app's files
 (`asset:/`) goes through the engine's network in every session, which reads them as on the other platforms
-(`web/browser/testing.js`, `src/browser/fetch.rs`). Synchronous hash/compression APIs retain Rust implementations;
+(`web/browser/fetch.js`, `src/browser/fetch.rs`). Synchronous hash/compression APIs retain Rust implementations;
 Buffer and POSIX path use pinned vendored implementations with licenses in `third_party/`. Mobile-only APIs
 retain their off-platform behavior. In a test session on a manual clock (`nsh test --target web`), timers,
 `Date`, `performance.now()`, animation frames and `fetch` go through the engine instead, so the test's clock and
-routes control them (`web/browser/testing.js`).
+routes control them (`web/browser/testing.js`, `web/browser/fetch.js`).
 
 ### Hot module replacement
 
@@ -96,6 +99,8 @@ of garbage-collection timing or whether a detached realm resumes its JavaScript 
 Chromium's `--suite interaction` checks every state style (`hoverStyle` / `activeStyle` under real mouse input,
 `focusStyle` / `focusWithinStyle` under Tab), a list's `contentClass`, a scroll view's `contentStyle` /
 `contentClass` (children inserted before and after its content container is made), platform props and tooltips.
+It also sends mouse, pen and touch input through Wasm and the realm bootstrap to check the pointer fields
+on `onTouchMove`, `touches` and `changedTouches`.
 `--suite all` combines the two suites. Firefox and WebKit select `lifecycle` explicitly. The website CI builds
 Wasm once and runs Chromium `all`, Firefox `lifecycle` and WebKit `lifecycle` serially, reporting all engines
 before failing the step.
@@ -184,14 +189,24 @@ build to the same file) and takes `nsh.js` from the crate.
   `host:*`), as the browser follows redirects before NSH could check them. Relative URLs resolve against the page
   (`document.baseURI`, `nsh_set_base_url`) as it starts: the page's script resolves its `app` URLs (and the head's
   requests are keyed the same way), the `Player` its `assets`, `data` and `assetBase` and the app's relative
-  `asset()` URLs against `player.baseURL`, and `browser/runtime.js` the entry, the chunks and the app realm's
-  `<base>`, so nothing loads from the directory a `history.pushState` moved the address to. `nsh.json` `web.base`
+  `asset()` URLs against `player.baseURL` (`createPlayer`'s `baseURL`, the site's base, else `document.baseURI`),
+  links, web views' URLs and addresses against `player.addressBase()`, and `browser/runtime.js` the entry, the chunks and the realm's
+  `import.meta.url`, so nothing
+  loads from the directory a `history.pushState` moved the address to. `nsh.json` `web.base`
   (`web::page_base`: a path from the root
   in the form browsers send it, unreserved characters and percent-escapes without dot or empty segments, a `/`
-  added at its end, which `start_at` matches requests against as it is) puts a `<base href>` first in the head, so the page loads its files at any of the app's paths
-  (`/sports/football`), which `SiteServer::start_at` (`--run`) serves under it; the dev page has `<base href="/">`
-  (the dev server serves its files at the root). The app ships as minified ES modules
-  (`app.<digest>.js` and `<chunk>.<digest>.js`). An import map resolves original chunk URLs to hashed files;
+  added at its end, which `start_at` matches requests against as it is) prefixes every file's URL (`Site::url`) and
+  is the app's `base` (the player's `baseURL`); the page has no `<base href>`, which a strict `base-uri` refuses, and
+  loads its files at any of the app's paths (`/sports/football`), which `SiteServer::start_at` (`--run`) serves
+  under it; the dev page has `<base href="/">`
+  (the dev server serves its files at the root). `nsh.json` `web.history` reaches `createPlayer`'s `history` on
+  both pages (the packaged page's `app.history`, the dev page's `HISTORY`, which `with_page_host` fills in); without
+  it the player's default (`window.top === window`) holds. The app ships as minified ES modules
+  (`app.<digest>.js` and `<chunk>.<digest>.js`), linked to one another and to the native modules' facade files
+  (`web::publish_modules`), so the realm needs no import map (an inline script) unless the app imports a native
+  module whole; the page's styles are a file and the runtime's are constructed sheets, for a strict `style-src`;
+  the runtime's own images (`image_bytes`, `svgInColor`, `Clipboard.readImage`) are `blob:` / `data:` URLs, so the
+  policy `nsh package` prints adds `img-src 'self' blob: data:`;
   transitive entry fonts load before startup and dynamic imports prepare the requested chunk's font dependencies.
   The browser loads static dependencies, module cycles and dynamic chunks itself. No bytecode or hardening
   bytecode ships in a browser package. An app with a Rust crate of
@@ -230,6 +245,13 @@ Rust toolchain or a linker; how is in the module docs of `crates/nsh-cli/src/web
 `linking` and `reloc.*` sections of the one it read, which no longer describe it. A runtime with every
 component (the website's, the development host's) serves every app.
 
+What an app uses is `Bundle::native_use` (`natives.rs`, `native-pipeline.md`). A namespace import read only by
+names the code spells (`import * as base from "nsh/base"; base.EmojiPicker`, the way an app reads an export
+older shells lack without failing to link) counts those names: the runtime links their parts, and the page's
+`nativeExports` declares them, so the host's facade for the module exports them and the namespace has them.
+A namespace used any other way, including as a method call's receiver (`base.method()`), keeps every gate
+and the full catalog (`web::whole_because` says why).
+
 Each part of `nsh/base` (`nsh_base::parts::ALL`) reaches the runtime through its gate, `nsh_part_<name>`, which
 `base_parts!` in `crates/nsh-platform-web/src/lib.rs` exports and `nsh.js` calls at instantiation; a part without
 one is never registered, so an app importing its exports fails to link in the browser ("does not provide an export
@@ -242,7 +264,9 @@ The web ran QuickJS in WebAssembly until 2026-10; those measurements do not appl
 
 The syntaxes code is highlighted with are a file of their own, `nsh-syntaxes.<digest>.bin`, fetched the first time a
 `TextView` code block, an `Editor` or a `DiffView` highlights a language (`nsh_core::runtime_data`, the page's
-`data`). `nsh.js` is minified at package time (`nsh_bundler::minify_module`: local names mangled, property names
+`data`). `EmojiPicker`'s emoji are another, `nsh-emoji.<digest>.bin` (`emoji_picker/emoji.tsv`, 104 KB, 35 KB
+gzipped), published only for an app whose runtime links the picker (the gate `nsh_part_emoji_picker`) and fetched by
+its first picker; the dev host serves both. `nsh.js` is minified at package time (`nsh_bundler::minify_module`: local names mangled, property names
 kept, since the mounter looks its `op_<name>` methods up by name); the dev host serves it as it is. Published sites
 carry no source maps.
 
@@ -334,7 +358,12 @@ A Rust app (`nsh.json` `"root"`: `rust_app::RootConfig`, its entry the `nsh.json
 at all: its member `rust-web` is `nsh-platform-web` **without the feature `browser-core`** (no browser host, the
 engine without `js`) and `nsh_platform_web::rust_app!(sets, app_root())`, whose `nsh_app_init` also registers the
 root (`set_root`); `app_root()` is generated from `"root"`, `"theme"` (compiled in with `include_str!`) and
-`"appearance"` (`Root::appearance`). The page calls `player.runRust()` (`nsh_start_rust`) instead of `runModule`:
+`"appearance"` (`Root::appearance`). Its `sets` take `nsh/base`'s core part only
+(`nsh_base::registry_of([parts::core])`, `RustApp::rust_web_sets`), not `nsh_base::registry()`: with no JS, nothing
+makes a component by its registered name, the root makes each component by type (`nsh_base::select()`), which links
+that component where it is used, and the set gives the theme's tokens and the built-in scroll bars. Registering every
+part would link every component of `nsh/base` into the module. The page calls `player.runRust()` (`nsh_start_rust`)
+instead of `runModule`:
 the packaged page when `app.rust` is set (no `app.js`), the dev page (`{{rust}}`) once the dev server greets it; the
 dev session publishes no bundles (`DevSession::rust_root`). The browser host's exports (`nsh_browser_*`) are
 `cfg(feature = "browser-core")`. The runtime builds to
@@ -342,8 +371,9 @@ dev session publishes no bundles (`DevSession::rust_root`). The browser host's e
 
 Rust code meant for the web too uses the engine's services rather than threads and the standard clock: `fetch`
 (`nsh_core::element::fetch`, below), the executor's timers, `nsh_core::time`. `examples/gallery-rs` does. As a
-Rust app (2026-10) its `nsh.wasm` is 3.31 MB (1.06 MB gzipped, 0.75 MB with brotli): no browser host, so smaller than
-the prebuilt runtime, which a TSX entry needs.
+Rust app (2026-11) its `nsh.wasm` is 9.15 MB (3.11 MB with `gzip -9`, 2.18 MB with brotli; 12.78 / 4.40 / 3.00 MB
+while it registered every part of `nsh/base`; `examples/tasks-rs` 5.23 MB, 11.04 MB before): no browser host, which
+a TSX entry needs.
 
 ### Crates that call JS through wasm-bindgen
 
@@ -432,6 +462,21 @@ cryptographic entropy comes from the browser's `crypto.getRandomValues`. The `pa
 
 A granted `process.exit(code?)` follows the engine's `ExitApp` command to the player. The player queues `Player.reset()` in a microtask after the current mount batch returns, stopping the app and clearing its surface while retaining the host page. Deferring disposal avoids reentering and freeing the VM during its batch callback; the queued action checks the app identity so it cannot reset a replacement app.
 
+While the app listens to quit requests (`on_quit_request`, `Application.on("quitRequest")`), the core's
+`SetQuitOnRequest(false)` reaches the player as `quitOnRequest`, and the player holds a `beforeunload` listener
+(`Player.askBeforeLeaving`). As the page leaves, it delivers the quit request to the app within the event
+(`deliverQuitRequest` → `nsh_quit_request`, the desktops' `WindowEvent::QuitRequest` on the root): the app's listeners,
+Rust's and TS's, run in that engine call, and a `quit()` among what they do reaches the player as `quit` before the call
+returns. That only decides whether the browser asks (the player prevents the default when the app did not quit):
+`beforeunload` comes before the browser commits to leaving, and the page may still stay. Outside a delivery `quit`
+leaves the page as it is. A `beforeunload` listener can keep a page out of the back / forward cache in some browsers, so
+the player holds it only while the app listens, and drops it on `reset()` and when the engine traps.
+
+The app ends with the page. While an app runs, the player holds a `pagehide` listener (`Player.watchPageEnd`, which does
+not affect the back / forward cache): a `pagehide` that discards the page (not `persisted`) starts the app's quit
+listeners (`nsh_quit` → `LocalEngine::start_quit`, once per app), however the user left; a page kept in the cache keeps
+its app running, in the background until it is shown again (`Player.watchPageCache`). `nsh test --target web` closes its pages with `Target.closeTarget`, which runs no `beforeunload`.
+
 ## The playground's compiler
 
 Feature `compiler` adds `nsh_compile` (and `nsh_compiled_ptr` / `_len`): `nsh_bundler::compile_module`, the one-module
@@ -451,7 +496,8 @@ browserslist queries). `nsh.js` gives every import it does not know a stub that 
 when the JSON differs): `idiom`, `locale` (`navigator.languages[0]`), `languages` (`navigator.languages`, the locale
 first), `regional` (the locale's hour cycle and first day of the week from `Intl`, the rest the region's), `timeZone`
 (`Intl.DateTimeFormat().resolvedOptions().timeZone`), `lifecycle` (`background` while `document.visibilityState` is
-`hidden`, else `active` with the focus and `inactive` without), `rtl` (`<html dir>`, else the locale's script),
+`hidden` or the page is in the back / forward cache, from a `persisted` `pagehide` to a `persisted` `pageshow`, else
+`active` with the focus and `inactive` without), `rtl` (`<html dir>`, else the locale's script),
 `reduceMotion`, `fontScale` (the root font size / 16), `pixelRatio`, `safeArea` (`env(safe-area-inset-*)` read through a
 hidden probe element, clipped to the container) and `keyboard` (the container's part below `visualViewport`). The Rust
 side keeps it (`PAGE`) for the next start; the appearance and the window keep their own calls (`nsh_set_dark`,
@@ -507,8 +553,15 @@ measured against it frame by frame (`requestAnimationFrame` samplers of computed
 
 - **Animated values** (`src/animation.rs`): the graph's clock is in seconds (`Graph::tick`), so `nsh_frame` divides the
   `requestAnimationFrame` time (ms) by 1000; passing milliseconds ended every `timing` / `spring` / `decay` on its
-  first frame. Bound values are inline styles: a property bound no more (its view taken over by an element without
+  first frame. That time is the frame's, when it began, unless its callbacks run more than `FRAME_HELD_MS` (16 ms)
+  after it: a task held the frame (a press handled before the callbacks, whose code mounted a sheet and started its
+  entrance), and the frame steps at the time its callbacks run (`Player.frameTime`), never earlier than the frame
+  before. Stepped at the frame's time, an animation the task started began before it was asked for, and its first
+  drawn step was as far along as the task took. Bound values are inline styles: a property bound no more (its view taken over by an element without
   the binding) is cleared from them with the next output (`["a", view, prop, ""]`), so the view shows its own style.
+  After a batch every bound value goes out, so what it inserted (again) gets its values; on a frame, a gesture or a
+  scroll only the values that changed since they last went (`UiAnimation::outputs`), so values that hold still cost a
+  frame nothing however many views hold them.
 - **Without frames** (a hidden tab, and often an iframe out of view: browsers run no `requestAnimationFrame` there),
   what an animation ends still happens on time, as on macOS (`Surface::keep_deadline`). After each call into the
   engine that asked for a frame, `Player.keepDeadline` asks `nsh_deadline` when the graph next has an animation that
@@ -568,7 +621,9 @@ through imports, cached), and runs are drawn at the positions computed here so t
 it. Text with numeric variants (`tabular-nums`, ...) and color emoji are measured against what the DOM draws, since
 canvas measures them differently. The CSS of runs (`src/text/css.rs`) and line breaking (`src/text/wrap.rs`, with
 CJK punctuation's line start and end rules) depend on nothing of the browser and are tested on the host
-(`tests/text`); `web/text-browser.test.mjs` checks measurements against what Chrome draws.
+(`tests/text`); `web/text-browser.test.mjs` checks measurements against what Chrome draws. The last line a line
+clamp shows holds the rest of its paragraph and is cut at the box for the ellipsis, inside a word if need be, as the
+native backends cut it (`tests/text_engine`).
 
 Each run is a span placed at its position. The characters a line broke at (the space a soft break ate, a hard
 break's newline: a run's `after`) stand between the spans as text nodes (`Player.lineBreaks`), so a text's
@@ -636,7 +691,9 @@ follows itself to check each one against restricted capabilities (`access.rs`).
 
 Relative request URLs (`fetch("/api")`, `new Request("x")`) resolve against the page's `document.baseURI` as the
 player started (`player.baseURL`), which `nsh.js` hands over once with `nsh_set_base_url`. The app's `fetch`, the
-browser's own run in the app realm, resolves them against that realm's `<base>`, which is `player.baseURL` too; a
+browser's own run in the app realm, resolves them against `player.baseURL` too: the realm's `<base>`, or where the
+page names the site's base (`baseURL`, a published app's page, which has no `<base>` for a strict `base-uri` to
+refuse) the realm's `fetch` itself (`installFetch`'s `base`); a
 `fetch` in the page's own realm (the host module's) resolves against the page's address when it runs.
 Native hosts have no base and keep rejecting relative URLs. `new URL("/x")` without a base throws,
 as in browsers. Relative `<Image>` URLs resolve against `player.baseURL` too (`asset()`), so they load after the
@@ -646,6 +703,12 @@ address moved to another directory.
 the root; `<Image>` elements are `<img>` elements, loaded by the browser.
 
 ## Input
+
+An input's name (`label`, falling back to its text label) and description (`hint`, the encoded description and
+hint) belong to its focusable `<input>` or `<textarea>`. `fieldAria` clears those attributes from the wrapper,
+including when props arrived before the field was created. Prop and text updates refresh the field's attributes;
+empty names and descriptions remove their attributes. `web/nsh.test.mjs` checks both field kinds and mount orders
+with `node --test crates/nsh-platform-web/web/nsh.test.mjs`.
 
 `autoComplete` reaches both `<input>` and `<textarea>` as HTML's `autocomplete` attribute.
 `src/encode/input.rs` maps every `AutoFill` variant to its HTML token (`Password` to
@@ -660,7 +723,14 @@ browsers' touches into what phones report:
   pans or pinches `none` (a `panActivation` gate along one axis leaves the other axis to the scroll views around), so
   the page neither scrolls, zooms nor refreshes under the app and presses and pans get no `pointercancel`. Touch
   scrolling is the browser's: a `pointercancel` in a scroll view starts its drag, `touchend` ends it, a scroll within
-  150 ms after it begins the glide, `scrollend` ends it (`touchScroll`, `scrolled`, `scrollEnded`).
+  150 ms after it begins the glide, `scrollend` ends it (`touchScroll`, `scrolled`, `scrollEnded`). A scroll view
+  along one axis contains only that axis's overscroll, so a swipe across it chains to the scroll view around it.
+  One whose content fits along its axis (`nsh-fits`, kept by `scrollFits` as its content and frame change) contains
+  none, so a swipe along it chains too, as Android's scroll view hands its parent what it cannot take; a zoomable
+  one keeps its own.
+  A touch responder that blocks native scrolling (`setResponder`: a `TouchClaim` with `block_native`, JS's
+  `onResponderGrant` returning true) keeps its touches: a non-passive `touchmove` on the root prevents the browser's
+  scroll while it holds them (`responderBlocks`), unless the browser already scrolls (`cancelable` false).
 - **Wheels and touchpads** (`wheel`) go to the innermost scroll view along their axis that can move that way (a
   vertical wheel scrolls a horizontal view when no vertical one can) and stay on it while events come within 200 ms;
   notches glide, touchpads follow the fingers; snapping views move one snap point per scroll. Nothing to scroll: the
@@ -681,12 +751,30 @@ browsers' touches into what phones report:
   horizontal ones always, have one. A mouse press within 12 px of the edge on the thumb, faded or not, drags it
   (`grabBar`: `onScrollDragStart` / `EndDrag`, snapping off while it is held, a snapping view then settles on the
   nearest snap point). Phones and tablets keep the browser's own overlay scroll bars.
-- **Keys** (`keyDown`), in this order: the app's shortcuts (`nsh`'s `keymap`: the mounted `MountItem::Keymap` stays in
+- **Keys** (`keyDown` / `keyUp`), in this order: the app's shortcuts (`nsh`'s `keymap`: the mounted `MountItem::Keymap` stays in
   Rust, `nsh_key` matches a key on the spot with `Keymap::find` and `nsh_key_command` reports the binding.
   Its `f64` result preserves the full `u32` ID range, including Rust shortcuts and overlay Escape, apart from
-  the `-1` (unmatched) and `-2` (held repeat) sentinels. Keys are passed as the character they type without
-  modifiers, else the US layout's character of their `code`; `mod` was resolved by the browser's platform,
-  `appleKeyboard` in the environment JSON); an open dialog (Escape presses its
+  the `-1` (unmatched) and `-2` (held repeat) sentinels. Those matches use the canonical shortcut key: the character
+  typed without modifiers, else the US layout's character of their `code`; `mod` was resolved by the browser's
+  platform, `appleKeyboard` in the environment JSON); then the focused view's raw key transition and its mounted
+  `captureKeys` policy (`nsh_key_event`, Rust's `KeyEvent` and `KeyCapture`): the event carries the browser's own
+  `KeyboardEvent.key` as its logical key (its actual case and layout, never forced onto a US layout), the DOM's own
+  `KeyboardEvent.code` (`"KeyA"`, `"ArrowLeft"`, `"NumpadEnter"`; empty when the page names none, and never
+  inferred from `key`) and the modifiers, repeat and `defaultPrevented` flags. `defaultPrevented` is the mounted
+  policy's decision for this transition, computed anew for every press and release; it is DOM-shaped observable
+  state, not a synchronous veto (the UI thread never waits for JS or a Rust callback). Capture matches the
+  page's existing canonical shortcut key — the same `keyCode(e)` `nsh_key` uses: the character the layout reports
+  without modifiers, else the US character of its `code` — never the raw logical string or a character guessed
+  from the DOM code, so named End and an unmodified AZERTY `z` match what the page reported. The core first
+  answers whether the focused view's logical ancestry (an overlay's content included, whatever its DOM ancestry)
+  hears raw keys or captures any (`nsh_key_interest`); only then does the page build the event. The core reads the
+  mounted rules of the focused view and its enabled ancestors up to its window root, before any browser default,
+  and routes ONE event through its common bubbling to that view and its ancestors — for both the press and its
+  release, with `defaultPrevented` set anew for each. A transition the policy takes produces no browser default
+  (Tab moves no focus, Space scrolls nothing, Escape goes nowhere) and a taken release cancels what an untaken
+  press armed (no `onPress`; pressed states clear); an untaken one only notifies. A view with no raw
+  listener and no capture in its ancestry takes the fast path, and native fields, contenteditable elements, hosted
+  pages, videos and a key an input method is composing keep their own keys. Then: an open dialog (Escape presses its
   cancel button); a focused field (Escape leaves it); a custom context menu (Shift+F10 or the Menu key);
   selectable text with a selection (select all, in a selectable view the whole area; Escape); a focused
   pressable (Return presses it, Space when released); going back (Escape, Alt+Left, Cmd+[, BrowserBack); scrolling the
@@ -695,16 +783,27 @@ browsers' touches into what phones report:
   Context-menu keys are handled explicitly because Chromium on macOS does not emit `contextmenu` for them.
   A handled key prevents the browser default to avoid duplicate openings; native fields and selectable text
   retain their own menus, and keyboard requests carry no pointer and use the trigger's bottom-start corner.
+  `examples/keyboard-capture` is a scenario app for this (`nsh run --target web examples/keyboard-capture`):
+  Tab to its button, hold Space, press Shift and release Space — the release is taken, so no press runs and the
+  count stays; a plain Space counts once, and the log shows each transition's raw key, DOM code, modifiers and
+  `defaultPrevented`.
 - **Focus**: the stops `ViewProps::focus_stop` decides are focusable (`tabindex=0`; `updateFocusable`): pressables
   (role `button` unless they have one) unless `focusable={false}`, and `focusable={true}` views whether or not they take
   presses (Return and Space press only pressables), never disabled or hidden ones (a focused one that stops being a
-  stop is blurred), so Tab and Shift+Tab reach them in DOM order, but for a scroll view's content and a list's cells in its parent's viewport (`ViewProps::screen_order`,
+  stop is blurred), nor ones with no area (`seenByKeys`): the core lays out each view of a `display: none` subtree at no
+  size, which hides nothing in a browser, so such a view is no stop (`tabindex=-1` where the browser would stop at it
+  without one: a link's `<a href>`, a `web={{ element }}` button), nor is an input's field there (`fieldStop`:
+  `tabindex=-1` while its view or its content box has no area), as on macOS (`NshView::seen_by_keys`). A view that is
+  shown but has no area (a pressable holding only an absolutely positioned child) is no stop either. So Tab and Shift+Tab reach them in DOM order, but for a scroll view's content and a list's cells in its parent's viewport (`ViewProps::screen_order`,
   `screenOrder`): where the browser takes
   `reading-flow` (Chromium), it is read in the order it is on screen (`orderReading`: `reading-order` on its children,
-  the DOM, which is also their paint order, left alone), as a list's recycled cells are not in their rows' order in it; `focus:` states follow the keyboard focus (`:focus-visible`), and
+  the DOM, which is also their paint order, left alone), as a list's recycled cells are not in their rows' order in it; `focus:` states follow the keyboard focus (`focus-visible:` while it shows, as the browser's `:focus-visible`), and
   they are all that shows it: as the desktop backends, the runtime draws no ring of its own; a popped page gives the focus back to what had it when the page was pushed
   (`screenGone`). A click never moves the focus (`mousedown` is prevented outside fields, selectable
-  text, selectable views and hosted pages), as in native apps; it focuses the app's window in an iframe. The views under the newest
+  text, selectable views and hosted pages), as in native apps; it focuses the app's window in an iframe. A touch moves
+  the focus as the browser does (a tap outside a field closes the keyboard), unless its press made the app focus a field
+  (an editor's text): the mouse events the browser makes of the touch then leave the focus in the field (`mouseDown`,
+  `pressFocus`), so the keyboard stays open. The views under the newest
   `Dialog` or alert are `inert`; the focus one took comes back when it closes.
 - **Accessibility**: `op_vp` sets ARIA from the accessibility props (roles mapped by `ARIA_ROLES`, `aria-disabled`,
   `-selected`, `-checked`, `-busy`, `-expanded`, `-value*`, `-live`, `-hidden`, the hint as `aria-description`);
@@ -719,7 +818,9 @@ browsers' touches into what phones report:
   it lays the dialog out at the size `nsh_root_size` reports): only the app's popup and backdrop show, which the
   runtime renders in it. `slide` moves the dialog up from below the root's bottom edge (a fade with reduced motion),
   `fade` fades it; `onOpen` follows the transition. A dialog the app removes leaves the same way, then reports
-  `onClose`.
+  `onClose`. Out of the DOM subtree of the view it was inserted in, a dialog goes with that view, or a view around
+  it, when it is removed, without `onClose`, and comes back when it is inserted again (`hideHosted` /
+  `showHosted`): the browser's graph deletes a removed component's views only once they are collected.
 - **Dialogs over the window** (`createPlayer`'s `dialogs: "viewport"`, `viewportDialogs`): dialogs, sheets and alerts cover
   the whole window, as iOS and Android present them from an app that embeds NSH in part of its screen. Each stays
   where it is in the root, so its events, focus, `inert` and history are as above, and is a manual popover in the
@@ -749,6 +850,30 @@ browsers' touches into what phones report:
   itself crosses another origin needs that outer embedder's cooperation; it cannot bypass that boundary.
   `Sheet` uses a web modal root around its existing overlays, with its own animation and close lifecycle.
   The documentation player enables viewport dialogs, so the website's iframe demos use this path.
+- **Overlays over the window** (`createPlayer`'s `overlays: "viewport"`, `viewportOverlays`): the root view's anchored
+  overlays (`Popover`, menus, hints, a select's list: `elements.md` "Overlays") show over the whole window rather than
+  inside the container, which clips them (an app given a small part of a page: a 250 point composer whose topic list is
+  360 high). The core puts a root view's overlays above its own children, in the order they stack; `syncFloats`, after
+  each batch, lifts the root's children from the first overlay with an anchor on (`ViewProps::overlay_anchor`, the
+  `vp` op's `anchored`) into the top layer as manual popovers (`liftFloat`, class `.nsh-float`), the overlays shown after
+  it with it so they stay above it; overlays without an anchor before it (a `fixed` view, a popover's backdrop on touch
+  screens) stay in the container. Each stays where it is in the root, so its events, pointer coordinates (the root's:
+  `point`), focus and `inert` are as before. A lifted view the batch moved in the DOM left the top layer and is raised
+  again with those after it (the focus kept), and dialogs over the window are raised again above them. Their frames
+  are the root's coordinates; `.nsh-float` is `position: fixed` with the root's place in the window as its margins
+  (`--nsh-float-x` / `-y` on the root, `placeFloats`), so the views' own `left` / `top` and layout animations are
+  untouched. `placeFloats` also reports the window less its safe area in the root's coordinates (`nsh_overlay_area`,
+  `Core::set_overlay_area`), where the core places and flips the root's anchored overlays instead of the root's safe
+  area (`overlay_area`; it lays them out again only while one is shown), on start, on every scroll of the page
+  (a capturing `scroll` listener: any scroll view around the container moves it; the app's own scroll views, inside
+  the root, are left alone), on `resize` and the visual viewport's (the area ends above the on-screen keyboard, as
+  `keyboardHeight`), and when the root or the document's box changes size. A press on the page outside the root while overlays are lifted
+  (`pressAround`, a capturing `pointerdown` on the document) reaches the core as `nsh_press_outside` /
+  `Core::presses_beyond_root`: the overlays watching presses hear `onPressOutside` as for a press in the root outside
+  them, and the press goes on to the page. A lifted view has a blocking `wheel` listener of its own, as a dialog's
+  layer. Dialogs in the container (`dialogs` left out) are not raised above them: a page that lifts overlays lifts
+  dialogs too. Without popovers they stay in the container, with a warning. In an iframe the window is the iframe's (the
+  iframe is not lifted as for dialogs); a container the page scales with a CSS transform is not accounted for.
 - **History**: when the app is the page (`window.top === window`, or `createPlayer`'s `history` option) every page
   above a stack's first and every dialog is a history entry (`pushState`, state `{ nsh: depth }`), so the browser's
   back button and the mouse's go back in the app; entries the app takes away itself are gone back over with
@@ -761,6 +886,56 @@ browsers' touches into what phones report:
   `checkVisibility` does not see: the rule of `nsh_core::navigation::shown_in_layout`, which every backend asks); a
   stack's frame becoming empty or not (`op_f`) syncs the entries again (a view around a stack of its own size
   becoming empty does not: the entries follow at the next push, pop or back).
+- **Addresses**: the core keeps the app's one address in an `AppUrlCell` (`url_scheme.rs`), which the engine shares
+  with every VM's `System` (`Core::app_url_cell`, `SystemConfig::app_url`): `UrlScheme.url()` reads it as it is, and
+  `setUrl` writes it at once, and again when the core takes the call (`SetAppUrl`), in order with the page's address the
+  core took since; the core then sends the web's history entry. Rust's `app_url()` / `set_app_url()` are the same
+  address; where the app is the page `set_app_url` resolves a URL against the page's base (the root `onUrlScheme`
+  event's `base`, kept in the cell) and refuses another origin (`resolve_on_page`, and the core again), as `browser/address.js` does for TS (which checks
+  the raw string as `check_address` does before resolving, in the app's realm). `setUrl` / `set_app_url` reach the
+  root as `Command::SetAppUrl` (the core sends it to every platform: iOS and macOS hand it off, `embedding.md`), and `setPageUrl` keeps the URL in `pageUrl` when the app is the page.
+  `syncHistory` applies it last, with `history.replaceState(history.state, "", url)`, after pushing the entries of
+  the turn's pages, so the address lands on the new top entry; while a `history.go` of its own is in flight
+  (`ignoredPops`) it waits, and when the last ignored `popstate` lands the waiting address goes to the entry, or the
+  core takes the entry's (`tellAddress`). A `replaceState` that throws shows the error. A new `run` clears `pageUrl`.
+  The player keeps the address of the app's first entry (`firstUrl`), where every run starts, and hands it to the
+  runtime before the app starts (`nsh_set_page_url`), which gives it to the core as the root's `onUrlScheme` event
+  `{ url, page: true, quiet: true, base }` from `LocalEngine::start_with`'s `setup`, before the app's code runs; the engine applies root `UrlScheme` events
+  queued before its thread starts (`Engine::start_with`) before the bundle evaluates, which is how the native
+  backends hand the link that launched the app. `open` is a link the app is handed from outside: a back the app
+  followed sends the entry's address quietly (the stack went back already; an `open` would push a page opened at a
+  deep link again), unless the app's `onChange` set the address during the pops (a pop with no motion, a modal). A
+  forward to a screen the stack no longer has, and an entry of an earlier load (another `nshSession`, which becomes
+  the app's first, in a new session, so this load's later entries count as earlier ones), come as `open` with the
+  entry's address; an app that shows nothing for a forward goes back where it
+  was (`syncHistory`). A back the app refused (`popOnBack={false}`, `onBackPress`) sends nothing: the entries come
+  again, and when no page went the top one gets the address it showed (`shownUrl`). `page` events are checked as
+  `http(s)` URLs (`check_page_url`) instead of against the app's schemes, and every address the app sets by
+  `check_address` (length, no whitespace), where it calls.
+- **Address moves the app did not make** (`UrlScheme.on("change")`): each entry's state also has its place among this
+  load's entries (`nshIndex`), and the player mirrors each entry's depth (`historyIndex`, `historyDepths`), so a back
+  of the app's own goes to the newest earlier entry at most as deep (`entryAtDepth`) and a `popstate` knows which way
+  the user went. The root's `onUrlScheme` event with `change: "back" | "forward" | "address"` (`url_scheme::CHANGE`,
+  `AppUrlChangeReason`; another reason is the address alone, quietly) sets the address and queues an `AppUrlChange` for
+  `next_app_url_change()`, at most 16, and only once something listened (`hears_changes`: before it the address has
+  them); the TS module posts each to the listeners there are and keeps none. The player sends it for a traversal
+  between entries of one depth (`tellAddress(reason)`), for a `#fragment` the user typed (a state-less entry of the
+  page whose address is not the one shown: it gets this session's state at the depth shown and the next index, and the
+  app's pages stay; before, it sent the app back to its start. Where the browser has the Navigation API, a state-less
+  entry before the app's first (`historyBase`, `beforeFirstEntry`) is the page's own, from before the player, and a
+  back onto it is a back past the first entry), and for a back that popped pages when the entry's
+  address is not the one the app showed and the app set none as it answered: the player waits until the pages it
+  popped are dismissed (`dismissing`, `goBack`) and the app had a turn after their `onDismiss`, at most
+  `POP_ANSWER_MS` (1.5 s; a page's `onDismiss` follows its slide, `settlePop`). A forward to a depth the stack lost
+  stays `open`.
+- **Pushed addresses** (`setUrl(url, { history: "push" })`, `set_app_url_with(url, HistoryBehavior::Push)`): the core
+  sends the web root `Command::PushAppUrl` (`pushAppUrl`) instead of `SetAppUrl`, and `setPageUrl` marks the waiting
+  address a push (`pageUrlPush`; in one turn the last address wins and a push wins over a replace). `syncHistory`
+  pushes it as an entry of its own (`pushEntry(depth, url)`, which drops the mirror's forward entries as the browser
+  drops its own) when the turn pushed no page's entry (else the address goes on the new top entry, as a replace) and
+  it is not the landed entry's address; a turn that popped pages pushes it once its `history.go` lands. A new run
+  drops a push waiting (`resetHistory`). `browser/address.js` hands the options to the core as they are; the core
+  reads them (`SetUrlOptions`), and a `history` of another value is a `TypeError`. The other platforms keep the URL; iOS and macOS also hand it off when the app opts in.
 - **Text selection**: text is selectable when `selectable` is true (`userSelect: "text"`; `nsh-selectable`), and with the desktop idiom also
   when it is unset (`null` in the `t` item: `nsh-autoselect`, selectable under `.nsh-desktop`) unless a view around it,
   or the text itself, takes presses, touches, pans or pinches (`nsh-press`, set in `updateTouchAction`), as on a web
@@ -808,7 +983,10 @@ backends); zoom changes go to `nsh_zoom` (`EngineControl::zoom`) before the offs
   drags never scroll), through non-passive touch events on the view, since the browser scrolls touches itself: a move past the top is prevented while it can be, and a gesture the browser
   already scrolls stays the browser's.
 - **Zooming**: a zoomable view is `touch-action: none` and pans touches (both axes, with a glide; the mouse does not
-  drag it) and pinches itself, keeping
+  drag it) and pinches itself; what a pan cannot take (an image not zoomed in, or at its edge) moves the nearest scroll
+  view around that can go that way, and turning back moves that view back first (`chainDrag`, as UIKit's nesting and
+  Android's `ZScroll` do), its snapping off under the finger and a snap point (the core's `snap_target` rule) or a
+  glide after (`releaseHandoff`). Pinches keep
   the content point between the fingers between them (rubber band past the limits with `bouncesZoom`, a spring back
   after). Ctrl+wheel over it zooms around the pointer instead of pinching (Chromium and Firefox send touchpad pinches
   as that; a mouse notch is 1.25×), Safari's touchpad pinches come as `gesture*` events. `zoomTo` and `zoomScale` animate or jump with the
@@ -829,6 +1007,10 @@ between them); the core bounds their travel by the list's end. A cell's animated
 (`op_a`): it is kept on the cell (`_stickyOffset`) and added to the track's inset. Views clip with `overflow: clip`, which, unlike
 `hidden`, makes no scroll container, so `position: sticky` reaches the scroll view through the list.
 
+Pixel-mode wheel events follow the device's deltas directly, including its inertia. Line- and page-mode wheels
+and keyboard commands glide on animation frames. Changing from a glide to direct input continues from the sampled
+position, so an unfinished target cannot cause a catch-up jump.
+
 A smooth scroll of the core's (`scrollTo` with `animated`) in flight moves with a `ScrollBy` (`op_sb` retargets it),
 as the native backends move theirs: setting `scrollTop` would stop the browser's smooth scroll. The user's wheel,
 pointer, touch or key takes it over. The glides of the wheel and the keys are nsh's (`scrollSmoothly`, on animation
@@ -846,16 +1028,28 @@ scroll events postpone it, and the browser's `scrollend` cancels it.
   carry), so an app keeps its data wherever its page is and apps of one origin keep theirs apart. An app without an id
   (the demo player's, the playground's) keeps its entries under `nsh:<page directory>:<key>` (the directory of
   `document.baseURI`): apps run one after another on one such page share theirs. `nsh.js` wraps every call in try / catch (blocked
-  storage, private mode, quota) and hands failures back as messages.
+  storage, private mode, quota) and hands failures back as messages: a value the browser refuses is not kept and
+  `setItem` fails, as past NSH's own quota. What other tabs of the origin change under the app's prefix arrives as
+  `storage` events, which `nsh.js` hands to the engine (`nsh_storage_changed`), so the app reads their changes.
 - **Alerts** (`AlertDialog`, both presentations) are drawn in the root (over the whole window with `dialogs:
   "viewport"`, as dialogs are: under Input): with the `desktop` idiom as the Linux and
   macOS backends' alerts (up to three buttons in a row, the last regular one the default), otherwise as iOS's alert
-  and action sheet; their keys and focus are under Input. Only clicks pressed inside the dialog count: a tap's
+  and action sheet, an alert's `input` an `<input>` above its buttons; their keys and focus are under Input. Only clicks pressed inside the dialog count: a tap's
   compatibility click, which lands after the press that opened it, must not dismiss it.
+- **Offscreen canvases** (`renderCanvas`, `docs/dev/canvas.md`): a size over the browser's canvas limit (iOS WebKit's
+  is 16777216 pixels in all; the probe of `offscreenCanvas` finds any browser's) answers `CANVAS_IMAGE.TOO_LARGE`,
+  which the app gets as `ERR_NSH_QUOTA_EXCEEDED`; the sizes that failed are remembered, so a size at least as large
+  fails without a canvas. Images are read back, so another origin's are loaded with CORS (`offscreenImage`); one its
+  server serves without CORS headers is loaded once more without CORS to tell why, and is skipped with a warning
+  naming it and its origin.
 - **The clipboard**: `navigator.clipboard`, with a copy command as the fallback for writes. Reading (also for
   `hasText`, since browsers cannot tell without reading) needs a secure context and may ask the user. An image read
   is the first image item as a `data:` URI the player encodes itself; the core measures it against
-  `MAX_IMAGE_BYTES` (`readImage` rejects with `ERR_NSH_QUOTA_EXCEEDED` past it).
+  `MAX_IMAGE_BYTES` (`readImage` rejects with `ERR_NSH_QUOTA_EXCEEDED` past it). An image written goes on the
+  clipboard as a PNG, the image format browsers write: another format is decoded and encoded again (pitfalls.md
+  "Web, browsers"), and also goes on as it is, as browsers' own Copy Image does: an `<img>` of it as `text/html`
+  (what a paste's `html` carries, `onPaste`) and, in Chromium, the web custom format `web <type>`, which an image read
+  takes before the PNG, so a GIF read back keeps its frames. A write that fails is a console warning; `writeImage` has resolved already.
 - **Images**: `<img>` with `object-fit` (`center` is `scale-down`; SVG files too: the browser draws them, so the
   runtime links no SVG renderer and `tintColor`'s mask works on them as on bitmaps), `placeholder` as a second
   image until the load (faded over `fadeDuration`), `blurRadius` as a CSS blur, a failed image hidden
@@ -881,14 +1075,18 @@ scroll events postpone it, and the browser's `scrollend` cancels it.
   its promise rejects, or the result is not JSON, since the app's call waits until it is answered; the app's call
   rejects with that message and `code` `ERR_NSH_HOST_ERROR` (`nsh_core::host_channel::host_error`). A page without a
   host sets the environment's `host` to `false`, so the core rejects the calls first, with
-  `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. The page sends
+  `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. A `host.post` without the native SDK channel (`browser/host.js`) goes to the
+  platform module's `post` (`nsh-core` `runtime/host.rs`), which checks the name and grant in Rust and throws
+  synchronously, then the core sends `Command::HostPost` (command `hostPost`) where the environment has a host;
+  `nsh.js` `hostPost` hands it to the host's `post`, or its `call` without one, and drops the result and any failure.
+  The page sends
   events with `player.hostEvent(event, payload)` (`onHost` `{ type: "event", event, payload }`; one `EventKind` for
   both keeps the kinds within `EventMask`'s 64 bits): the payload is serialized at once (a payload that is
   not JSON throws to the page, not inside a deferred engine call where it would drop the calls queued after it), and
   events sent before the app runs are queued and delivered in order right after `begin` starts it, so its top-level
   `host.on` listeners get them (no replay to listeners registered later); every `begin` queues again until the new app
   has started, and a start that throws (a trap) drops the queue and the events sent after it. `web/nsh.test.mjs`
-  tests `hostCall` and this queue on a fake engine (`node --test crates/nsh-platform-web/web/nsh.test.mjs`).
+  tests `hostCall`, `hostPost` and this queue on a fake engine (`node --test crates/nsh-platform-web/web/nsh.test.mjs`).
   `Environment::host` is set when the player has a `host` (`nsh_environment`'s `host`, read at start only).
   `nsh package --target web` copies `nsh.json` `web.host` (a JS module relative to `nsh.json`, `package::WebConfig`; `package::web_host_module` requires it inside the app's
   directory once symbolic links are resolved, as `nsh test` does) as `host.<digest>.js`; the page imports it alongside the
@@ -901,6 +1099,40 @@ scroll events postpone it, and the browser's `scrollend` cancels it.
   is: its own imports are absolute URLs.
   Headless `nsh test` runs the same module for each app a test opens (`nsh_testing` `page_host.rs`,
   `docs/dev/tooling.md` "Headless runs").
+
+## Search engines
+
+A site published with `nsh package --target web` can be read by search engines and link previews as server-rendered
+HTML is: its views carry the document's structure, its pages are URLs, and its head says what each page is.
+Prerendering (writing each URL's first screen as static HTML ahead of time, or on demand as incremental static
+regeneration does) is a tool of the site's own beside NSH; `examples/seo-site` is one (`server.mjs`, `render.mjs`).
+
+**Document elements.** `nsh.js` `elementTag` picks the HTML element a view or text is drawn as from its props
+(`encode.rs` `props_json`): `role="header"` is `h1` to `h6` by `accessibilityLevel` (`h2` without one, ARIA's
+default), `role="link"` with an `href` (`ViewProps::href`, which `nsh-base`'s `Link` sets) is `a`, and
+`web={{ element }}` (`Prop::WebElement`, `ViewProps::web_element`, the `WebElement` enum) names what `role` cannot
+say (`p`, `nav`, `article`, `time`, ...) and wins over the role. `retag` replaces the view's element by one of that
+tag, carrying its attributes, children and fields and taking its place in `views`; views whose element is a control
+of its own (images, scroll views, canvases, inputs) keep theirs. A fixed rule of the runtime's stylesheet takes the
+browser's margins, fonts, colors, underlines and list markers off those tags, so the view looks as a `div` does. A
+link gets `href` and is not draggable; a plain click on it stays the app's (`Link`'s press; the root's `click`
+listener prevents the browser's navigation), a click with a modifier key or the middle button opens `href` as the
+browser does, and a context menu on it is the browser's (open in a new tab, copy the link) unless the link or a view
+in it listens for `onContextMenu` (`contextMenu`, where the runtime otherwise prevents the browser's menu). The other
+backends store `web_element` and draw nothing differently.
+
+**The page's head.** `nsh/web` is a native module like the platform modules (`nsh_core::js::NATIVE_MODULES`): the
+QuickJS hosts serve `nsh-js`'s `web_page.rs` (`Head` renders nothing), the browser runtime its
+own (`web/browser/page.js`, made per app by `runtime.js` and set as the `nsh/web` namespace). `page.js` runs in the
+page's realm (the app runs in its iframe's) and writes the page's real `<head>`: each mounted `Head` is an entry in
+mount order, an effect keeps its props current, and one microtask after any change the entries are merged (the later
+one wins key by key, `meta` by `name` / `property`), the elements the heads made (`data-nsh-head`) are written again,
+and `<html lang>` falls back to what the page had before. The merged title goes to the player (`setHeadTitle`), which
+owns `document.title`: the heads' title, else the main window's (a root `SetAttributes` with a `title` is encoded as
+the `setTitle` command, and the browser runtime's main window, `scope.js`, hands the `title` of its `set` to
+`setWindowTitle`; kept where the app is the page), else the page's own, written once the turn's history entries
+exist (after `syncHistory`, or after a traversal of its own lands) so each entry keeps its page's title. A `canonical` path starts at the site's
+base (the directory `document.baseURI` names), as a linked stack's paths do. `page.test.mjs` tests the merging.
 
 ## Not implemented
 

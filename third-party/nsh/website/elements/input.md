@@ -78,7 +78,7 @@ view styles apply):
 | `placeholder` | `.placeholder(..)` | `string` | | Shown while the input is empty. |
 | `multiline` | `.multiline(..)` | `boolean` | `false` | Several lines; return inserts a line break unless `submitBehavior` says otherwise. |
 | `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | A multiline input's scroll bar: the platform's indicator, or the app's built-in bar once it set one ([Scrollbar](./scrollbar.md#built-in-bars)); an object is a theme of its own, `false` none. |
-| `maxLength` | `.max_length(..)` | `number` | | The most characters the user can enter. |
+| `maxLength` | `.max_length(..)` | `number` | | The most characters the user can enter, counted as Unicode code points on every platform: an emoji such as 😀 or a rare CJK character counts once. A longer paste goes in cut to what fits, as in a browser, never inside a character such as an emoji with its skin tone. |
 | `readonly` | `.readonly(..)` | `boolean` | `false` | The user can select and copy the text but not change it. |
 | `masked` | `.masked(..)` | `boolean` | `false` | The text is hidden (passwords). |
 | `allowFontScaling` | | `boolean` | `true` | Follow the system text size. |
@@ -91,7 +91,7 @@ view styles apply):
 | `keyboardType` | `.keyboard_type(KeyboardType::Email)` | `"default" \| "number-pad" \| "decimal-pad" \| "numeric" \| "numbers-and-punctuation" \| "email-address" \| "phone-pad" \| "url"` | `"default"` | The keyboard layout ([the values](../docs/forms-and-keyboard.md#keyboards-and-autofill); `numbers-and-punctuation` has a minus sign on iOS). |
 | `returnKeyType` | `.return_key_type(ReturnKeyType::Next)` | `"default" \| "done" \| "go" \| "next" \| "search" \| "send"` | `"default"` | The label of the return key. |
 | `autoCapitalize` | `.auto_capitalize(AutoCapitalize::None)` | `"none" \| "sentences" \| "words" \| "characters"` | `"sentences"` | Automatic capitalization. |
-| `autoCorrect` | `.auto_correct(..)` | `boolean` | `true` | The system's corrections. |
+| `autoCorrect` | `.auto_correct(..)` | `boolean` | `true` | The system's corrections: spelling and, on iOS and macOS, smart quotes, dashes and text replacement. Turn it off for code and identifiers. |
 | `autoComplete` | `.auto_fill(AutoFill::OneTimeCode)` | `AutoComplete \| TextContentType` | | What the input holds, for autofill on iOS, Android and the web: `"username"`, `"current-password"`, `"new-password"`, `"one-time-code"`, `"email"`, `"tel"`, `"postal-code"`, `"cc-number"`, `"off"`, … |
 | `pasteBehavior` | `.paste_behavior(PasteBehavior::Report)` | `"insert" \| "report"` | `"insert"` | What a paste does: `"insert"` inserts the pasted text, `"report"` inserts nothing, for the app to handle what `onPaste` reports. Images and files are never inserted. |
 | `submitBehavior` | `.submit_behavior(SubmitBehavior::Submit)` | `"submit" \| "blurAndSubmit" \| "newline"` | `"blurAndSubmit"` (single line), `"newline"` (multiline) | What return does: `"submit"` reports `onSubmit` and keeps the focus, `"blurAndSubmit"` also unfocuses, `"newline"` inserts a line break (multiline; a single line submits). A multiline input that submits still takes line breaks from Shift+Return or Option / Alt+Return on hardware keyboards. `"submit"` keeps the keyboard up (e.g. to send several messages). |
@@ -195,6 +195,7 @@ const height = signal(40);
 | `focus()` | `focus()` | Focuses the input and shows the keyboard. |
 | `blur()` | `blur()` | Unfocuses it. |
 | `setSelection(start, end?)` | `set_selection(start, end)` | Selects `start..end` (UTF-16 units); a caret when they are equal. |
+| `insertText(text)` | `insert_text(text)` | Inserts `text` in place of the selection as the user's edit: `maxLength` and the line rules apply, `onChange` reports it, and it is one step of the input's undo history. Linux, the web and headless tests only; other platforms do nothing yet and log a warning. |
 
 Moving focus to the next field on return:
 

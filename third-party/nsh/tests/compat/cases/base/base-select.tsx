@@ -11,7 +11,9 @@
 // lifecycle (`onOpen`, `onClose`) and Escape, back or the backdrop heard
 // (`onCancel`), the clear button of a select's own value
 // (`cleanable`, `onChange(null)`), and the search field's name for screen
-// readers (`searchAccessibilityLabel`). Its script checks each.
+// readers (`searchAccessibilityLabel`) and its test id (`searchTestID`), and
+// the states the app gives its trigger element kept beside the select's.
+// Its script checks each.
 import { Text, View, signal } from "nsh";
 import { Select } from "nsh/base";
 
@@ -113,12 +115,22 @@ function App() {
         searchable
         searchPlaceholder="Find food"
         searchAccessibilityLabel="FindField"
+        searchTestID="find-search"
         searchClass="bg-[#abcdef]"
         searchStyle={{ borderRadius: 4 }}
         empty={<Text>Nothing found</Text>}
         onOpenChange={({ open: next, reason }) => found.set(`Find: ${next} ${reason}`)}
         accessibilityLabel="Find"
         trigger={<View testID="find" style={{ height: 30 }}><Text>FindTrigger</Text></View>}
+      />
+      <Select
+        items={FOOD}
+        accessibilityLabel="Checked"
+        trigger={
+          <View accessibilityState={{ busy: true, invalid: true }} style={{ height: 30 }}>
+            <Text>CheckedTrigger</Text>
+          </View>
+        }
       />
     </View>
   );

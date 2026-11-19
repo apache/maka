@@ -1,6 +1,8 @@
-import { cleanup, resource, signal, Text, View } from "nsh";
+import { cleanup, resource, Share, type ShareResult, signal, Text, View, type ViewRef } from "nsh";
+import fs from "fs/promises";
+import process from "process";
 import { createAnimatedValue, Easing } from "nsh";
-import { colorScheme, fontScale, windowSize } from "nsh";
+import { colorScheme, fontScale, horizontalSizeClass, verticalSizeClass, windowSize } from "nsh";
 import { AlertDialog, type AlertDialogAction, Dialog, type StatusBarForeground } from "nsh/base";
 import { keyboardFrame, safeArea } from "nsh";
 import { Menu } from "nsh/desktop";
@@ -28,7 +30,6 @@ function SafeAreaDiagram() {
         borderColor: colors.border,
         backgroundColor: colors.surface,
         backgroundImage: finish.card.backgroundImage,
-        boxShadow: isDark() ? "inset 0 1px 0 rgba(255,255,255,0.06)" : "inset 0 1px 0 #ffffff",
         overflow: "hidden",
       }}
     >
@@ -48,7 +49,7 @@ function Environment() {
     { label: "Left", value: safeArea().left },
   ];
   return (
-    <Card icon="system" title="Environment" subtitle="Updates when the window, insets or keyboard change" right={<Badge label="Live" tone="up" />}>
+    <Card icon="system" title="Environment" subtitle="Follows the window, insets and keyboard" right={<Badge label="Live" tone="up" />}>
       <View style={{ flexDirection: "row", gap: 16, alignItems: "center" }}>
         <View style={{ flex: 1, gap: 12 }}>
           <View style={{ gap: 2 }}>
@@ -68,6 +69,11 @@ function Environment() {
       <View style={{ height: 1, backgroundColor: colors.line }} />
       <View style={{ gap: 4 }}>
         {/* The terminal's figures carry their unit, as the keyboard's does. */}
+        <Caption label="Size classes" note="Resize or rotate the window" />
+        <View class="flex-row">
+          <Stat label="Horizontal" value={horizontalSizeClass() === "compact" ? "Compact" : "Regular"} width="50%" />
+          <Stat label="Vertical" value={verticalSizeClass() === "compact" ? "Compact" : "Regular"} width="50%" />
+        </View>
         <Caption label="Safe area insets" note={terminal ? undefined : "pt"} />
         <View style={{ flexDirection: "row" }}>
           <Each of={insets()}>
@@ -233,6 +239,106 @@ function Dialogs() {
       </Inset>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 11, paddingTop: 12, paddingBottom: 11, minHeight: 44 }}>
         <Text style={{ flex: 1, fontSize: 13, color: colors.muted }}>Answer</Text>
+        <If when={answer()} else={<Text style={{ fontSize: 13, color: colors.faint }}>None yet</Text>}>
+          <View style={{ scale: pop }}>
+            <Badge label={answer()!.text} tone={answer()!.tone} />
+          </View>
+        </If>
+      </View>
+    </Card>
+  );
+}
+
+/** A share's target as people know it: Apple's activity types end in its name. */
+function targetName(target: string): string {
+  const apple = "com.apple.UIKit.activity.";
+  return target.startsWith(apple) ? target.slice(apple.length) : target;
+}
+
+const TRIP = {
+  title: "Weekend in Kyoto",
+  text: "Our plan for the weekend: temples in the morning, the market at noon.",
+  url: "https://example.com/trips/kyoto",
+};
+
+function ShareSheet() {
+  const available = signal<boolean | null>(null);
+  void Share.available().then((yes) => available.set(yes));
+  const answer = signal<{ text: string; tone: Tone } | null>(null);
+  const pop = createAnimatedValue(1);
+  const show = (text: string, tone: Tone) => {
+    answer.set({ text, tone });
+    pop.set(0.85);
+    pop.spring(1, { stiffness: 380, damping: 18 });
+  };
+  // How the share ended, or why there was none: never "shared" for a share
+  // the platform could not show.
+  const report = async (share: () => Promise<ShareResult>, unavailable = "No share sheet here") => {
+    try {
+      const { action, target } = await share();
+      if (action === "shared") show(target ? `Shared to ${targetName(target)}` : "Shared", "up");
+      else show("Dismissed", "neutral");
+    } catch (e) {
+      const error = e as Error & { code?: string };
+      if (error.code === "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM") show(unavailable, "warn");
+      else show(error.message, "danger");
+    }
+  };
+  // The rows the sheet points at on an iPad and on macOS.
+  let link: ViewRef | undefined;
+  let note: ViewRef | undefined;
+  let quote: ViewRef | undefined;
+  return (
+    <Card
+      icon="share"
+      title="Share sheet"
+      subtitle="Share.show · the system's own sheet"
+      right={
+        <If when={available() !== null}>
+          <Badge label={available() ? "Available" : "Not on this platform"} tone={available() ? "up" : "neutral"} />
+        </If>
+      }
+      flush
+    >
+      <Inset gap={0} padding={12}>
+        <View ref={link}>
+          <ActionRow
+            first
+            icon="link"
+            tint={colors.info}
+            title="A link"
+            detail={`${TRIP.title} · title, text and URL`}
+            onPress={() => void report(() => Share.show({ ...TRIP, anchor: link }))}
+          />
+        </View>
+        <View ref={note}>
+          <ActionRow
+            icon="file"
+            tint={colors.accent}
+            title="A file"
+            detail="An itinerary written to the app's data directory"
+            onPress={() =>
+              void report(async () => {
+                if (!process.dataDir) throw new Error("This host gives the app no data directory");
+                const path = `${process.dataDir}/kyoto-itinerary.txt`;
+                await fs.writeFile(path, `${TRIP.title}\n\nSaturday: Fushimi Inari, Nishiki Market\nSunday: Arashiyama\n`);
+                return Share.show({ title: TRIP.title, files: [path], anchor: note });
+              }, "Files are not shared here")
+            }
+          />
+        </View>
+        <View ref={quote}>
+          <ActionRow
+            icon="text"
+            tint={colors.warn}
+            title="Only text"
+            detail="A line of text, no link"
+            onPress={() => void report(() => Share.show({ text: TRIP.text, anchor: quote }))}
+          />
+        </View>
+      </Inset>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 11, paddingTop: 12, paddingBottom: 11, minHeight: 44 }}>
+        <Text style={{ flex: 1, fontSize: 13, color: colors.muted }}>Result</Text>
         <If when={answer()} else={<Text style={{ fontSize: 13, color: colors.faint }}>None yet</Text>}>
           <View style={{ scale: pop }}>
             <Badge label={answer()!.text} tone={answer()!.tone} />
@@ -461,6 +567,6 @@ function Network() {
 }
 
 export function System() {
-  const sections = [Environment, StatusBarCard, Dialogs, FramesAndTimers, Shortcuts, ContextMenu, Network];
+  const sections = [Environment, StatusBarCard, Dialogs, ShareSheet, FramesAndTimers, Shortcuts, ContextMenu, Network];
   return <DemoPage cards={sections} />;
 }

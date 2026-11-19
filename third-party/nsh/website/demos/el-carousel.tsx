@@ -41,7 +41,7 @@ function App() {
             log(`index: ${index} (${shots[index].name})`);
           }}
           style={{ gap: 12, borderRadius: 14 }}
-          focusStyle={focusRing(4)}
+          focusVisibleStyle={focusRing(4)}
         >
           {/* Each card is 85% of the view: the next one peeks in. */}
           <CarouselContent style={{ height: desktop ? 150 : 170, gap: 10 }}>

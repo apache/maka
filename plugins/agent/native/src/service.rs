@@ -19,64 +19,315 @@
 
 use crate::owner::resolve_session;
 use crate::{contract::*, owner::Owner};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::future::BoxFuture;
-use maka_agent_api::session::{ResolvedConfiguration, StoredSessionConfiguration};
-use maka_event_log::{
-    observation::{StoreStreamEvent, StreamFact},
-    sessions::{CatalogScope, CatalogSelection, SessionRecord},
-};
-use maka_host_runtime::application::{Context, Handler};
+use maka_agent_api::session::StoredSessionConfiguration;
+use maka_event_log::sessions::{CatalogScope, CatalogSelection, SessionRecord};
+use maka_host_runtime::application::{Context, Handler, HandlerError, HandlerResult, HandlerValue};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::sync::Arc;
 
+mod catalog;
+use catalog::{
+    CATALOG_REFRESH_MIN_INTERVAL, catalog_page, catalog_revision, wait_for_catalog_refresh,
+};
+pub(crate) use catalog::{summary, summary_for};
+
+mod delivery;
 mod diagnostics;
+pub(crate) mod history;
 mod preview;
 
 pub(crate) struct Agent(pub Arc<Owner>);
+fn complete_control(
+    context: &Context,
+    value: Value,
+    change: Option<maka_event_log::root_store::DataChange>,
+) -> Result<HandlerValue, String> {
+    match change {
+        Some(change) => context.complete_change(value, change),
+        None => Ok(HandlerValue::Json(value)),
+    }
+}
 impl Handler for Agent {
     fn call(
         &self,
         method: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
+    ) -> BoxFuture<'static, HandlerResult> {
         let owner = self.0.clone();
-        Box::pin(async move {
+        // Poll nested history readers outside the combined RPC dispatch frame.
+        if method == "history" {
+            return json_reply(async move {
+                encode(history::read(&owner, context.scope(), decode(input)?).await?)
+            });
+        }
+        if method == "send" {
+            return Box::pin(async move {
+                let input: Send = decode(input).map_err(HandlerError::from)?;
+                let operation = context
+                    .operation()
+                    .ok_or("agent_mutation_required")
+                    .map_err(HandlerError::from)?;
+                owner
+                    .send(input, operation, context.scope())
+                    .await
+                    .map_err(HandlerError::from)?
+                    .complete(&context)
+                    .map_err(HandlerError::from)
+            });
+        }
+        if method == "executorSetup" {
+            let owner = self.0.clone();
+            return Box::pin(async move {
+                owner
+                    .executor_setup(decode(input).map_err(HandlerError::from)?, context)
+                    .await
+                    .map_err(handler_error)
+            });
+        }
+        if matches!(
+            method.as_str(),
+            "changeMemory"
+                | "reconcileMemories"
+                | "createPreset"
+                | "updatePreset"
+                | "deletePreset"
+                | "markRead"
+                | "stop"
+                | "stopComputerApp"
+                | "editQueue"
+                | "uploadAttachment"
+                | "saveFile"
+                | "snapshotPatch"
+                | "fork"
+                | "compact"
+                | "continueRun"
+                | "changeSession"
+                | "import"
+                | "restoreSessionCheckpoint"
+                | "metadata"
+                | "selectBackend"
+                | "setCompactionPrompt"
+                | "respond"
+                | "create"
+                | "openBot"
+                | "changeGoal"
+                | "schedule"
+                | "project"
+                | "sessionCreate"
+                | "sessionSend"
+                | "sessionStop"
+                | "sessionManage"
+        ) {
+            return Box::pin(async move {
+                let result: Result<HandlerValue, String> = async {
+                    let operation = context.operation().ok_or("agent_mutation_required")?;
+                    match method.as_str() {
+                        "changeMemory" => owner
+                            .change_memory(
+                                decode(input)?,
+                                operation,
+                                context.scope(),
+                                context
+                                    .operation_scope()
+                                    .ok_or("agent_mutation_required")?
+                                    .clone(),
+                            )
+                            .await?
+                            .complete(&context),
+                        "reconcileMemories" => owner
+                            .reconcile_memories(
+                                decode(input)?,
+                                operation,
+                                context.scope(),
+                                context
+                                    .operation_scope()
+                                    .ok_or("agent_mutation_required")?
+                                    .clone(),
+                            )
+                            .await?
+                            .complete(&context),
+                        "createPreset" => owner
+                            .create_preset(decode(input)?, context.scope())
+                            .await?
+                            .complete(&context),
+                        "updatePreset" => owner
+                            .update_preset(decode(input)?, context.scope())
+                            .await?
+                            .complete(&context),
+                        "deletePreset" => owner
+                            .delete_preset(decode(input)?, context.scope())?
+                            .complete(&context),
+                        "project" => owner
+                            .project(decode(input)?, context.scope())
+                            .await?
+                            .complete(&context),
+                        "changeGoal" => owner
+                            .goal_change(decode(input)?, operation.clone(), context.scope())
+                            .await?
+                            .complete(&context),
+                        "schedule" => owner
+                            .schedule_change(decode(input)?, operation.clone(), context.scope())
+                            .await?
+                            .complete(&context),
+                        "create" => owner
+                            .create(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "openBot" => owner
+                            .open_bot(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "respond" => owner
+                            .respond(decode(input)?, operation, &context)
+                            .await?
+                            .complete(&context),
+                        "metadata" => owner
+                            .metadata(decode(input)?, context.scope(), operation)
+                            .await?
+                            .complete(&context),
+                        "selectBackend" => owner
+                            .select_backend(decode(input)?, operation)
+                            .await?
+                            .complete(&context),
+                        "setCompactionPrompt" => owner
+                            .set_compaction_prompt(decode(input)?, operation)
+                            .await?
+                            .complete(&context),
+                        "import" => owner
+                            .import(decode(input)?, operation.clone(), context.scope())
+                            .await?
+                            .complete(&context),
+                        "restoreSessionCheckpoint" => owner
+                            .restore_session_checkpoint(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "fork" => owner
+                            .fork(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "compact" => owner
+                            .compact(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "continueRun" => owner
+                            .continue_run(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "changeSession" => owner
+                            .change_session(decode(input)?, operation)
+                            .await?
+                            .complete(&context),
+                        "saveFile" => Ok(HandlerValue::Json(encode(
+                            owner.save_file(decode(input)?, &context).await?,
+                        )?)),
+                        "snapshotPatch" => owner
+                            .snapshot_patch(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "uploadAttachment" => owner
+                            .upload_attachment(decode(input)?, &context)
+                            .await?
+                            .complete(&context),
+                        "markRead" => owner
+                            .mark_read_canonical(decode(input)?, operation)
+                            .await?
+                            .complete(&context),
+                        "editQueue" => owner
+                            .edit_queue(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "sessionCreate" => owner
+                            .session_create_tool(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "sessionSend" => owner
+                            .session_send_tool(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "sessionStop" => owner
+                            .session_stop_tool(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "sessionManage" => owner
+                            .session_manage_tool(decode(input)?, operation, context.scope())
+                            .await?
+                            .complete(&context),
+                        "stop" => {
+                            let input: Stop = decode(input)?;
+                            if !owner
+                                .may_control(context.scope(), &input.session_id)
+                                .await?
+                            {
+                                return Ok(HandlerValue::Json(encode(Stopped {
+                                    requested: false,
+                                })?));
+                            }
+                            owner
+                                .prepare_stop_run(&input.session_id, input.run_id, operation)
+                                .await?
+                                .complete(&context)
+                        }
+                        "stopComputerApp" => {
+                            let (value, change) = owner
+                                .prepare_stop_computer_app(
+                                    decode(input)?,
+                                    context.scope(),
+                                    operation,
+                                )
+                                .await?;
+                            complete_control(&context, encode(value)?, change)
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                .await;
+                result.map_err(handler_error)
+            });
+        }
+        let result = async move {
             match method.as_str() {
-                "changeSession" => {
-                    context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.change_session(decode(input)?).await?)
+                "presets" => {
+                    let _: maka_agent_api::preset::PresetsRead = decode(input)?;
+                    encode(owner.presets().await?)
                 }
-                "selectBackend" => {
-                    context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.select_backend(decode(input)?).await?)
-                }
+                "preset" => encode(owner.preset(decode(input)?).await?),
                 "work" => encode(owner.work(decode(input)?).await?),
+                "workReadiness" => encode(owner.work_readiness(decode(input)?).await?),
+                "sessionList" => encode(
+                    owner
+                        .session_list_tool(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "sessionRead" => encode(
+                    owner
+                        .session_read_tool(decode(input)?, context.scope())
+                        .await?,
+                ),
                 "list" => encode(catalog_page(&owner, &decode(input)?).await?),
                 "catalog" => {
                     let mut input: List = decode(input)?;
-                    let mut changes = owner.store.subscribe_catalog_changes();
+                    let mut changes = owner
+                        .durable
+                        .subscribe()
+                        .map_err(|error| error.to_string())?;
+                    let mut physical = owner.physical_changes();
                     let mut revision = None;
+                    let mut physical_changed = false;
                     loop {
                         // Observe notifications before reading so a racing commit
                         // remains available to wake the next attempt.
                         changes.borrow_and_update();
+                        physical_changed |= physical.borrow_and_update().has_changed();
                         let unchanged = if let Some(revision) = &revision {
-                            owner
-                                .store
-                                .catalog_revision(
-                                    catalog_scope(&owner, &input).await?,
-                                    catalog_filter(&input),
-                                )
-                                .await
-                                .map_err(|_| "agent_catalog_unavailable")?
-                                == *revision
+                            catalog_revision(&owner, &input).await? == *revision
                         } else {
                             false
                         };
-                        if !unchanged {
+                        let mut retry_immediately = false;
+                        if !unchanged || physical_changed {
                             match catalog_page(&owner, &input).await {
                                 Ok(page) => {
                                     revision = Some(page.revision.clone());
@@ -89,6 +340,7 @@ impl Handler for Agent {
                                         );
                                     }
                                     context.emit(encode(page)?).await?;
+                                    physical_changed = false;
                                 }
                                 // Start/At can race an internal snapshot read.
                                 // After/Before require the caller's exact revision
@@ -98,15 +350,23 @@ impl Handler for Agent {
                                         && matches!(
                                             input.position,
                                             SessionPosition::Start | SessionPosition::At { .. }
-                                        ) => {}
+                                        ) =>
+                                {
+                                    retry_immediately = true;
+                                }
                                 Err(error) => return Err(error),
                             }
                         }
-                        tokio::select! {
-                            biased;
-                            _ = context.scope().cancellation.cancelled() => return Err("agent_observation_cancelled".into()),
-                            result = changes.changed() => result.map_err(|_| "agent_observation_closed")?,
-                        }
+                        let throttle_until = (!retry_immediately)
+                            .then(|| tokio::time::Instant::now() + CATALOG_REFRESH_MIN_INTERVAL);
+                        wait_for_catalog_refresh(
+                            &mut changes,
+                            &mut physical,
+                            &mut physical_changed,
+                            &context.scope().cancellation,
+                            throttle_until,
+                        )
+                        .await?;
                     }
                 }
                 "sessionMcp" => owner.session_mcp(decode(input)?, context).await,
@@ -119,6 +379,21 @@ impl Handler for Agent {
                             .await?,
                     )
                 }
+                "memorySource" => {
+                    encode(owner.memory_source(decode(input)?, context.scope()).await?)
+                }
+                "memoryEvidence" => encode(
+                    owner
+                        .memory_evidence(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "memoryHistory" => encode(
+                    owner
+                        .memory_history(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "memories" => encode(owner.memories(decode(input)?, context.scope()).await?),
+                "memory" => encode(owner.memory(decode(input)?, context.scope()).await?),
                 "globalInstructions" => {
                     let _: GlobalInstructionsRead = decode(input)?;
                     encode(owner.global_instructions(context.scope()).await?)
@@ -138,19 +413,7 @@ impl Handler for Agent {
                 ),
                 "fileCandidates" => owner.file_candidates(decode(input)?, context).await,
                 "tools" => encode(owner.tool_names(context.scope()).await?),
-                "goalReceipt" => encode(owner.goal_receipt(decode(input)?).await?),
                 "goal" => encode(owner.goal(decode(input)?).await?),
-                "changeGoal" => {
-                    let operation = context
-                        .operation()
-                        .ok_or("agent_mutation_required")?
-                        .clone();
-                    encode(
-                        owner
-                            .goal_change(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
-                }
                 "watchGoal" => {
                     let input: GoalRead = decode(input)?;
                     let mut changes = owner.goal_changes();
@@ -179,6 +442,11 @@ impl Handler for Agent {
                     }
                 }
                 "checklist" => encode(owner.checklist(&decode(input)?).await?),
+                "continuationAvailability" => encode(
+                    owner
+                        .continuation_availability(decode(input)?, context.scope())
+                        .await?,
+                ),
                 "recap" => encode(owner.recap(decode(input)?, context.scope()).await?),
                 "askQuickQuestion" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
@@ -209,22 +477,6 @@ impl Handler for Agent {
                         }
                     }
                 }
-                "rankQuickTools" => {
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(
-                        owner
-                            .rank_quick_tools(
-                                decode(input)?,
-                                context.scope(),
-                                operation,
-                                context
-                                    .operation_scope()
-                                    .ok_or("agent_mutation_required")?
-                                    .clone(),
-                            )
-                            .await?,
-                    )
-                }
                 "predictNextMessage" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     encode(
@@ -241,6 +493,11 @@ impl Handler for Agent {
                             .await?,
                     )
                 }
+                "pendingMemories" => encode(
+                    owner
+                        .pending_memories(decode(input)?, context.scope())
+                        .await?,
+                ),
                 "generateRecap" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     encode(
@@ -275,15 +532,10 @@ impl Handler for Agent {
                         }
                     }
                 }
-                "openBot" => {
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(
-                        owner
-                            .open_bot(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
+                "markBotRead" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    encode(owner.mark_bot_read(decode(input)?).await?)
                 }
-                "markBotRead" => encode(owner.mark_bot_read(decode(input)?).await?),
                 "botOutbox" => encode(owner.bot_outbox(&decode(input)?).await?),
                 "watchBotOutbox" => {
                     let input: BotOutboxRead = decode(input)?;
@@ -305,23 +557,12 @@ impl Handler for Agent {
                     }
                 }
                 "schedules" => encode(owner.schedules(decode(input)?).await?),
-                "watchSchedules" | "scheduleAlerts" => {
+                "watchSchedules" => {
                     let mut changes = owner.schedule_changes();
-                    let query: Option<ScheduleRead> = if method == "watchSchedules" {
-                        Some(decode(input)?)
-                    } else {
-                        None
-                    };
-                    if matches!(query, Some(ScheduleRead::Receipt { .. })) {
-                        return Err("scheduler_subscription_invalid".into());
-                    }
+                    let query: ScheduleRead = decode(input)?;
                     loop {
                         changes.borrow_and_update();
-                        let value = if let Some(query) = &query {
-                            encode(owner.schedules(query.clone()).await?)?
-                        } else {
-                            encode(owner.schedule_alerts().await?)?
-                        };
+                        let value = encode(owner.schedules(query.clone()).await?)?;
                         context.emit(value).await?;
                         tokio::select! {
                             biased;
@@ -330,40 +571,14 @@ impl Handler for Agent {
                         }
                     }
                 }
-                "schedule" => {
-                    let operation = context
-                        .operation()
-                        .ok_or("agent_mutation_required")?
-                        .clone();
-                    encode(
-                        owner
-                            .schedule_change(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
-                }
                 "recall" => encode(owner.recall.query(decode(input)?, context.scope()).await?),
                 "imports" => encode(owner.imports(decode(input)?, context.scope()).await?),
-                "import" => {
-                    let operation = context
-                        .operation()
-                        .ok_or("agent_mutation_required")?
-                        .clone();
-                    encode(
-                        owner
-                            .import(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
-                }
                 "importDirectories" => encode(
                     owner
                         .import_directories(decode(input)?, context.scope())
                         .await?,
                 ),
                 "projects" => encode(owner.projects(decode(input)?).await?),
-                "project" => {
-                    context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.project(decode(input)?).await?)
-                }
                 "mcpConfigurations" | "manageMcpServer" => {
                     if context.scope().identity.agent().is_some() {
                         return Err("agent_mcp_user_action_required".into());
@@ -402,15 +617,6 @@ impl Handler for Agent {
                     )
                     .await?,
                 ),
-                "create" => {
-                    let input: Create = decode(input)?;
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    let created = owner.create(input, operation, context.scope()).await?;
-                    if let Created::Created { session } = &created {
-                        owner.bot_watch(context.scope(), &session.id).await;
-                    }
-                    encode(created)
-                }
                 "previewHistoryCheckpoint" => encode(
                     owner
                         .preview_history_checkpoint(decode(input)?, context.scope())
@@ -429,14 +635,6 @@ impl Handler for Agent {
                     encode(
                         owner
                             .load_history_checkpoint(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
-                }
-                "restoreSessionCheckpoint" => {
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(
-                        owner
-                            .restore_session_checkpoint(decode(input)?, operation, context.scope())
                             .await?,
                     )
                 }
@@ -461,6 +659,21 @@ impl Handler for Agent {
                         .history_checkpoint_load_receipt(decode(input)?, context)
                         .await?,
                 ),
+                "loadedHistoryCheckpointToolImage" => checkpoint_output(
+                    owner
+                        .loaded_checkpoint_tool_image(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "loadedHistoryCheckpointAttachmentImage" => checkpoint_output(
+                    owner
+                        .loaded_checkpoint_attachment_image(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "loadedHistoryCheckpointSource" => checkpoint_output(
+                    owner
+                        .loaded_checkpoint_source(decode(input)?, context.scope())
+                        .await?,
+                ),
                 "loadedHistoryCheckpointHistory" => checkpoint_output(
                     owner
                         .loaded_checkpoint_history(decode(input)?, context.scope())
@@ -476,14 +689,6 @@ impl Handler for Agent {
                         .loaded_checkpoint_artifact(decode(input)?, context)
                         .await
                 }
-                "fork" => {
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(
-                        owner
-                            .fork(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
-                }
                 "forkReceipt" => encode(owner.fork_receipt(decode(input)?, context.scope()).await?),
                 "context" => encode(owner.context(decode(input)?, context.scope()).await?),
                 "gitStatus" => encode(owner.git_status(decode(input)?, context.scope()).await?),
@@ -494,533 +699,152 @@ impl Handler for Agent {
                     Ok(result)
                 }
                 "watchFiles" => owner.watch_files(decode(input)?, context).await,
+                "resolveFileLink" => encode(
+                    owner
+                        .resolve_file_link(decode(input)?, context.scope())
+                        .await?,
+                ),
                 "readFile" => owner.read_file(decode(input)?, context).await,
                 "gitDiff" => encode(owner.git_diff(decode(input)?, context.scope()).await?),
-                "snapshotPatch" => {
-                    context.operation().ok_or("agent_mutation_required")?;
+                "gitWorkspaceDiff" => encode(
+                    owner
+                        .git_workspace_diff(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "gitRevisions" => {
+                    encode(owner.git_revisions(decode(input)?, context.scope()).await?)
+                }
+                "gitCompare" => encode(owner.git_compare(decode(input)?, context.scope()).await?),
+                "gitCompareDiff" => encode(
+                    owner
+                        .git_compare_diff(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "githubPullRequests" => {
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
                     encode(
                         owner
-                            .snapshot_patch(decode(input)?, context.scope())
+                            .github_pull_requests(decode(input)?, context.scope())
                             .await?,
                     )
                 }
-                "readPatch" => encode(owner.read_patch(decode(input)?).await?),
-                "markRead" => {
-                    context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.mark_read(decode(input)?).await?)
+                "githubPullRequestDetail" => {
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .github_pull_request_detail(decode(input)?, context.scope())
+                            .await?,
+                    )
                 }
-                "metadata" => {
-                    context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.metadata(decode(input)?, context.scope()).await?)
+                "githubPullRequestFileDiff" => {
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .github_pull_request_file_diff(decode(input)?, context.scope())
+                            .await?,
+                    )
                 }
-                "setCompactionPrompt" => {
+                "githubSubmitReview" => {
                     context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.set_compaction_prompt(decode(input)?).await?)
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .github_submit_review(decode(input)?, context.scope())
+                            .await?,
+                    )
                 }
+                "githubReplyComment" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .github_reply_comment(decode(input)?, context.scope())
+                            .await?,
+                    )
+                }
+                "githubCommentPullRequest" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .github_comment_pull_request(decode(input)?, context.scope())
+                            .await?,
+                    )
+                }
+                "saveGitHubToken" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    let key: maka_agent_api::contract::GitHubTokenKey = decode(input)?;
+                    let resource = context
+                        .attachments()
+                        .get("secret")
+                        .ok_or("agent_github_token_required")?;
+                    if resource.bytes() == 0 {
+                        return encode(maka_agent_api::contract::GitHubTokenResult::InvalidToken);
+                    }
+                    let bytes = resource
+                        .read(0..resource.bytes())
+                        .map_err(|_| "agent_github_token_unavailable".to_owned())?;
+                    let Ok(secret) = String::from_utf8(bytes) else {
+                        return encode(maka_agent_api::contract::GitHubTokenResult::InvalidToken);
+                    };
+                    encode(owner.save_github_token(key, secret).await?)
+                }
+                "deleteGitHubToken" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_github_user_action_required".into());
+                    }
+                    encode(owner.delete_github_token(decode(input)?).await?)
+                }
+                "codeDefinition" => encode(
+                    owner
+                        .code_definition(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "codeReferences" => encode(
+                    owner
+                        .code_references(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "codeHover" => encode(owner.code_hover(decode(input)?, context.scope()).await?),
+                "readPatch" => encode(owner.read_patch(decode(input)?, context.scope()).await?),
                 "diagnostics" => diagnostics::query(&owner, decode(input)?, &context).await,
                 "watchDiagnostics" => diagnostics::watch(&owner, decode(input)?, &context).await,
                 "observe" => {
-                    use maka_event_log::turns::InvocationState;
-                    let input: SessionRead = decode(input)?;
-                    owner.require_session(&input.session_id).await?;
-                    let observed = owner
-                        .scoped_store(context.scope(), &input.session_id)
-                        .await?
-                        .observe_session::<StoredSessionConfiguration>(&input.session_id)
-                        .await
-                        .map_err(|_| "agent_observation_unavailable")?
-                        .ok_or("agent_session_unavailable")?;
-                    let compacting = observed.compacting.map(|progress| CompactionProgress {
-                        id: progress.id,
-                        started_at: progress.started_at,
-                    });
-                    let last_completed_turn_id = observed.root_turn.as_ref().and_then(|turn| {
-                        matches!(
-                            turn.state.terminal_outcome(),
-                            Some(maka_agent_facts::event::InvocationOutcome::Completed)
-                        )
-                        .then(|| turn.root_invocation().turn_id.clone())
-                    });
-                    let run = observed
-                        .root_turn
-                        .map(|turn| -> Result<Option<Run>, String> {
-                            let state = match turn.state {
-                                InvocationState::Admitted => RunState::Admitted,
-                                InvocationState::Running => RunState::Running,
-                                InvocationState::WaitingForUser => RunState::WaitingForUser,
-                                InvocationState::Ended { .. } => return Ok(None),
-                            };
-                            let configuration = turn
-                                .configuration
-                                .ok_or("agent_run_configuration_unavailable")?;
-                            Ok(Some(Run {
-                                backend: if configuration.model.is_some() {
-                                    RunBackend::Model
-                                } else {
-                                    RunBackend::Executor
-                                },
-                                invocation_id: turn.invocation.invocation_id,
-                                turn_id: turn.invocation.turn_id,
-                                state,
-                            }))
-                        })
-                        .transpose()?
-                        .flatten();
-                    let session = summary(&owner, resolve_session(observed.session)?);
-                    let remembered_backend = if session.backend.is_none() {
-                        owner.remembered_backend(&input.session_id).await?
-                    } else {
-                        None
-                    };
-                    let metrics = match owner
-                        .scoped_store(context.scope(), &input.session_id)
-                        .await?
-                        .context_usage(&input.session_id)
-                        .await
-                    {
-                        Ok((
-                            maka_event_log::context::LatestMainContext::Selected(basis),
-                            usage,
-                        )) => {
-                            let backend_matches = matches!(
-                                session.backend.as_ref().or(remembered_backend.as_ref()),
-                                Some(BackendPreference::Model { model_id, connection_id, .. })
-                                    if model_id == &basis.model_id
-                                        && basis.connection_id.as_ref() == Some(connection_id)
-                            );
-                            let usage = usage.filter(|usage| {
-                                !usage.last_known || (run.is_some() && backend_matches)
-                            });
-                            let seconds = basis
-                                .requested_at
-                                .zip(basis.finished_at)
-                                .and_then(|(at, finished)| finished.duration_since(at).ok())
-                                .map(|elapsed| elapsed.as_secs_f64())
-                                .filter(|seconds| *seconds > 0.0);
-                            Some(SessionMetrics {
-                                model_id: basis.model_id,
-                                connection_id: basis.connection_id,
-                                context_tokens: usage.as_ref().map(|usage| usage.tokens),
-                                context_window: basis
-                                    .context
-                                    .as_ref()
-                                    .and_then(|context| context.model_context_window),
-                                approximate: usage.as_ref().is_some_and(|usage| usage.approximate),
-                                context_last_known: usage
-                                    .as_ref()
-                                    .is_some_and(|usage| usage.last_known),
-                                output_tokens_per_second: basis
-                                    .usage
-                                    .output_tokens
-                                    .zip(seconds)
-                                    .map(|(tokens, seconds)| tokens as f64 / seconds)
-                                    .filter(|rate| rate.is_finite()),
-                            })
-                        }
-                        _ => None,
-                    };
-                    let result = encode(Observation {
-                        compacting,
-                        session,
-                        last_completed_turn_id,
-                        metrics,
-                        remembered_backend,
-                        through: observed.through_sequence,
-                        run,
-                        parts: observed
-                            .active_streams
-                            .into_iter()
-                            .map(|part| Part {
-                                start_sequence: part.start_sequence,
-                                message_id: part.message_id,
-                                step_id: part.step_id,
-                                part_id: part.part_id,
-                                text_kind: part.text_kind.into(),
-                            })
-                            .collect(),
-                        tool_seeds: observed
-                            .active_tools
-                            .into_iter()
-                            .map(|tool| ToolSeed {
-                                tool_use_id: tool.tool_use_id,
-                                start_sequence: tool.start_sequence,
-                            })
-                            .collect(),
-                    })?;
-                    maka_plugin_core::json::exact_numbers(&result)
-                        .map_err(|_| "agent_observation_unavailable")?;
-                    owner.require_session(&input.session_id).await?;
-                    if context.scope().cancellation.is_cancelled() {
-                        return Err("agent_observation_cancelled".into());
-                    }
-                    Ok(result)
-                }
-                "history" => {
-                    use maka_agent_ports::session::history::Read;
-                    let input: History = decode(input)?;
-                    owner.require_session(&input.session_id).await?;
-                    let high_water = owner
-                        .scoped_store(context.scope(), &input.session_id)
-                        .await?
-                        .committed_sequence()
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    let through = input.through.unwrap_or(high_water);
-                    if through > high_water {
-                        return Err("agent_cursor_invalid".into());
-                    }
-                    Read {
-                        include_thinking: input.include_thinking,
-                        session_id: input.session_id.clone(),
-                        through: input.through,
-                        position: input.position,
-                    }
-                    .validate()
-                    .map_err(|_| "agent_cursor_invalid")?;
-                    let result = HistoryPage::from(
-                        owner
-                            .scoped_store(context.scope(), &input.session_id)
-                            .await?
-                            .history_view(
-                                &input.session_id,
-                                through,
-                                input.position,
-                                input.include_thinking,
-                                input.view,
-                                maka_event_log::transcript::HistoryLimits {
-                                    max_bytes: 32 * 1024,
-                                    max_chunks: (input.view
-                                        == maka_agent_ports::session::history::HistoryView::Text)
-                                        .then_some(8),
-                                    max_json_bytes: 64 * 1024,
-                                },
-                            )
-                            .await
-                            .map_err(|_| "agent_history_unavailable")?,
-                    );
-
-                    owner.require_session(&input.session_id).await?;
-                    if context.scope().cancellation.is_cancelled() {
-                        return Err("agent_observation_cancelled".into());
-                    }
-                    let result = encode(result)?;
-                    maka_plugin_core::json::exact_numbers(&result)
-                        .map_err(|_| "agent_history_unavailable")?;
-                    Ok(result)
+                    encode(history::observation(&owner, context.scope(), decode(input)?).await?)
                 }
                 "historyLandmarks" => {
-                    let input: HistoryLandmarksRead = decode(input)?;
-                    owner.require_session(&input.session_id).await?;
-                    if input.through
-                        > owner
-                            .scoped_store(context.scope(), &input.session_id)
-                            .await?
-                            .committed_sequence()
-                            .await
-                            .map_err(|error| error.to_string())?
-                    {
-                        return Err("agent_cursor_invalid".into());
-                    }
-                    let landmarks = owner
-                        .scoped_store(context.scope(), &input.session_id)
-                        .await?
-                        .navigation_landmarks(&input.session_id, input.through, 64, None)
-                        .await
-                        .map_err(|_| "agent_history_unavailable")?;
-                    let result = HistoryLandmarks {
-                        through: input.through,
-                        landmarks: landmarks
-                            .into_iter()
-                            .map(|landmark| HistoryLandmark {
-                                turn_id: landmark.turn_id,
-                                position: landmark.position,
-                                last_position: landmark.last_position,
-                                label: landmark.label,
-                                origin: landmark.origin,
-                            })
-                            .collect(),
-                    };
-                    owner.require_session(&input.session_id).await?;
-                    if context.scope().cancellation.is_cancelled() {
-                        return Err("agent_observation_cancelled".into());
-                    }
-                    let result = encode(result)?;
-                    maka_plugin_core::json::exact_numbers(&result)
-                        .map_err(|_| "agent_history_unavailable")?;
-                    Ok(result)
+                    encode(history::landmarks(&owner, context.scope(), decode(input)?).await?)
                 }
                 "historyPrompt" => {
-                    let input: HistoryPromptRead = decode(input)?;
-                    owner.require_session(&input.session_id).await?;
-                    if input.through
-                        > owner
-                            .scoped_store(context.scope(), &input.session_id)
-                            .await?
-                            .committed_sequence()
-                            .await
-                            .map_err(|error| error.to_string())?
-                    {
-                        return Err("agent_cursor_invalid".into());
-                    }
-                    let result = owner
-                        .scoped_store(context.scope(), &input.session_id)
-                        .await?
-                        .history_prompt(&input.session_id, input.through, input.position)
-                        .await
-                        .map_err(|_| "agent_history_unavailable")?;
-                    owner.require_session(&input.session_id).await?;
-                    if context.scope().cancellation.is_cancelled() {
-                        return Err("agent_observation_cancelled".into());
-                    }
-                    encode(result)
+                    encode(history::prompt(&owner, context.scope(), decode(input)?).await?)
                 }
-                "search" => {
-                    let input: HistorySearch = decode(input)?;
-                    owner.require_session(&input.session_id).await?;
-
-                    if input.through
-                        > owner
-                            .scoped_store(context.scope(), &input.session_id)
-                            .await?
-                            .committed_sequence()
-                            .await
-                            .map_err(|error| error.to_string())?
-                        || input.after.is_some_and(|after| {
-                            after.validate().is_err() || after.source_sequence > input.through
-                        })
-                        || input.query.is_empty()
-                    {
-                        return Err("agent_search_invalid".into());
-                    }
-                    let page = {
-                        let batch = owner
-                            .scoped_store(context.scope(), &input.session_id)
-                            .await?
-                            .search_transcript(
-                                &input.session_id,
-                                maka_event_log::transcript::search::TranscriptSearch {
-                                    through: input.through,
-                                    after: input.after,
-                                    query: input.query,
-                                    case_sensitive: input.case_sensitive,
-                                    whole_word: input.whole_word,
-                                    include_internal: input.include_internal,
-                                    max_matches: 16,
-                                },
-                            )
-                            .await
-                            .map_err(|_| "agent_history_unavailable")?;
-                        HistorySearchPage::Ready {
-                            through: input.through,
-                            matches: batch
-                                .matches
-                                .into_iter()
-                                .map(|found| HistoryMatch {
-                                    field: found.field,
-                                    position: found.position,
-                                    preview: found.preview,
-                                })
-                                .collect(),
-                            next_after: batch.next_after,
-                        }
-                    };
-                    owner.require_session(&input.session_id).await?;
-                    if context.scope().cancellation.is_cancelled() {
-                        return Err("agent_observation_cancelled".into());
-                    }
-                    let result = encode(page)?;
-                    maka_plugin_core::json::exact_numbers(&result)
-                        .map_err(|_| "agent_history_unavailable")?;
-                    Ok(result)
+                "historyRequests" => {
+                    encode(history::requests(&owner, context.scope(), decode(input)?).await?)
                 }
-                "source" => {
-                    let input: HistorySourceRead = decode(input)?;
-                    let session = owner
-                        .scoped_session(context.scope(), &input.session_id)
-                        .await?;
-                    if input.through
-                        > owner
-                            .scoped_store(context.scope(), &input.session_id)
-                            .await?
-                            .committed_sequence()
-                            .await
-                            .map_err(|error| error.to_string())?
-                    {
-                        return Err("agent_cursor_invalid".into());
-                    }
-                    let page = {
-                        let position = match input.source {
-                            HistorySourceReference::Row { position } => position,
-                            HistorySourceReference::ToolUse { tool_use_id } => owner
-                                .scoped_store(context.scope(), &input.session_id)
-                                .await?
-                                .tool_source_position(
-                                    &input.session_id,
-                                    input.through,
-                                    &tool_use_id,
-                                )
-                                .await
-                                .map_err(|_| "agent_history_unavailable")?,
-                        };
-                        let source = owner
-                            .scoped_store(context.scope(), &input.session_id)
-                            .await?
-                            .history_source(
-                                &input.session_id,
-                                input.through,
-                                maka_event_log::transcript::SourceSelection {
-                                    locator: position,
-                                    field: input.field,
-                                    path: input.path,
-                                },
-                                input.position,
-                                8192,
-                            )
-                            .await
-                            .map_err(|_| "agent_history_unavailable")?;
-                        let file_path = crate::source_path::file_path(
-                            &source,
-                            &session.configuration.workspace.path,
-                        );
-                        HistorySourcePage::Ready {
-                            through: input.through,
-                            source: Box::new(source),
-                            file_path,
-                        }
-                    };
-                    owner.require_session(&input.session_id).await?;
-                    if context.scope().cancellation.is_cancelled() {
-                        return Err("agent_observation_cancelled".into());
-                    }
-                    let result = encode(page)?;
-                    maka_plugin_core::json::exact_numbers(&result)
-                        .map_err(|_| "agent_history_unavailable")?;
-                    Ok(result)
-                }
+                "search" => encode(history::search(&owner, context.scope(), decode(input)?).await?),
+                "source" => encode(history::source(&owner, context.scope(), decode(input)?).await?),
                 "toolImage" => {
-                    let input: ToolImageRead = decode(input)?;
-                    owner.require_session(&input.session_id).await?;
-                    if input.through
-                        > owner
-                            .scoped_store(context.scope(), &input.session_id)
-                            .await?
-                            .committed_sequence()
-                            .await
-                            .map_err(|error| error.to_string())?
-                    {
-                        return Err("agent_cursor_invalid".into());
-                    }
-                    let page = {
-                        let image = owner
-                            .scoped_store(context.scope(), &input.session_id)
-                            .await?
-                            .tool_image(
-                                &input.session_id,
-                                input.through,
-                                input.position,
-                                input.image,
-                                input.offset,
-                                32 * 1024,
-                            )
-                            .await
-                            .map_err(|_| "agent_image_unavailable")?;
-                        ToolImagePage::Ready {
-                            through: input.through,
-                            position: input.position,
-                            offset: input.offset,
-                            total_bytes: image.total_bytes,
-                            mime_type: image.mime_type,
-                            digest: image.digest,
-                            data: STANDARD.encode(image.bytes),
-                        }
-                    };
-                    owner.require_session(&input.session_id).await?;
-                    if context.scope().cancellation.is_cancelled() {
-                        return Err("agent_observation_cancelled".into());
-                    }
-                    let result = encode(page)?;
-                    maka_plugin_core::json::exact_numbers(&result)
-                        .map_err(|_| "agent_image_unavailable")?;
-                    Ok(result)
+                    encode(history::tool_image(&owner, context.scope(), decode(input)?).await?)
                 }
-                "uploadAttachment" => {
-                    encode(owner.upload_attachment(decode(input)?, context).await?)
-                }
-                "attachmentImage" => {
-                    let input: AttachmentImageRead = decode(input)?;
-                    owner.require_session(&input.session_id).await?;
-                    let image = match &input.source {
-                        AttachmentImageSource::Uploaded { id } => {
-                            owner
-                                .scoped_store(context.scope(), &input.session_id)
-                                .await?
-                                .uploaded_image(&input.session_id, id, input.offset, 32 * 1024)
-                                .await
-                        }
-                        AttachmentImageSource::History {
-                            through,
-                            position,
-                            attachment_index,
-                        } => {
-                            if *through
-                                > owner
-                                    .scoped_store(context.scope(), &input.session_id)
-                                    .await?
-                                    .committed_sequence()
-                                    .await
-                                    .map_err(|error| error.to_string())?
-                            {
-                                return Err("agent_cursor_invalid".into());
-                            }
-                            owner
-                                .scoped_store(context.scope(), &input.session_id)
-                                .await?
-                                .attachment_image(
-                                    &input.session_id,
-                                    *through,
-                                    *position,
-                                    *attachment_index,
-                                    input.offset,
-                                    32 * 1024,
-                                )
-                                .await
-                        }
-                    }
-                    .map_err(|_| "agent_image_unavailable")?;
-                    owner.require_session(&input.session_id).await?;
-                    if context.scope().cancellation.is_cancelled() {
-                        return Err("agent_observation_cancelled".into());
-                    }
-                    let result = encode(AttachmentImagePage::Ready {
-                        source: input.source,
-                        offset: input.offset,
-                        total_bytes: image.total_bytes,
-                        mime_type: image.mime_type,
-                        digest: image.digest,
-                        data: STANDARD.encode(image.bytes),
-                    })?;
-                    maka_plugin_core::json::exact_numbers(&result)
-                        .map_err(|_| "agent_image_unavailable")?;
-                    Ok(result)
-                }
-                "send" => {
-                    let input: Send = decode(input)?;
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    if !owner
-                        .may_control(context.scope(), &input.session_id)
-                        .await?
-                    {
-                        return encode(crate::contract::SendResult::NotYourWorker {
-                            session_id: input.session_id,
-                        });
-                    }
-                    let worker = input.session_id.clone();
-                    let sent = owner.send(input, operation, context.scope()).await?;
-                    if matches!(sent, SendResult::Started { .. } | SendResult::Queued { .. }) {
-                        owner.bot_watch(context.scope(), &worker).await;
-                    }
-                    encode(sent)
-                }
+                "attachmentImage" => encode(
+                    history::attachment_image(&owner, context.scope(), decode(input)?).await?,
+                ),
                 "externalAgents" => {
                     let input: maka_agent_api::external::ExternalAgentsRead = decode(input)?;
                     encode(
@@ -1029,7 +853,12 @@ impl Handler for Agent {
                             .await?,
                     )
                 }
-                "executorSetup" => owner.executor_setup(decode(input)?, context).await,
+                "externalUsageLimits" => {
+                    let input: maka_agent_api::external::ExternalUsageLimitsRead = decode(input)?;
+                    owner
+                        .external_usage_limits(input.runtime, context.scope())
+                        .await
+                }
                 "executors" => {
                     let _: ExecutorsRead = decode(input)?;
                     encode(Executors {
@@ -1043,6 +872,43 @@ impl Handler for Agent {
                         executors: owner.executors.names(),
                     })
                 }
+                "watchModels" => {
+                    let input: maka_agent_api::contract::ModelsWatch = decode(input)?;
+                    let mut changes = owner.executors.external_catalog_changes();
+                    let root = owner
+                        .store
+                        .owned_root()
+                        .map_err(|error| error.to_string())?;
+                    let mut configuration = root.capability_changes();
+                    loop {
+                        configuration.borrow_and_update();
+                        if let Some(changes) = changes.as_mut() {
+                            changes.borrow_and_update();
+                        }
+                        context
+                            .emit(encode(
+                                owner
+                                    .models(
+                                        maka_agent_api::contract::ModelsRead::Start {
+                                            query: input.query.clone(),
+                                        },
+                                        &context.scope().cancellation,
+                                    )
+                                    .await?,
+                            )?)
+                            .await?;
+                        tokio::select! { biased;
+                            () = context.scope().cancellation.cancelled() => return Err("agent_model_observation_cancelled".into()),
+                            result = configuration.changed() => result.map_err(|_| "agent_model_observation_closed")?,
+                            result = async {
+                                match changes.as_mut() {
+                                    Some(changes) => changes.changed().await.map_err(|_| "agent_model_observation_closed"),
+                                    None => std::future::pending().await,
+                                }
+                            } => result?,
+                        }
+                    }
+                }
                 "models" => encode(
                     owner
                         .models(decode(input)?, &context.scope().cancellation)
@@ -1054,60 +920,16 @@ impl Handler for Agent {
                         .await?,
                 ),
                 "execution" => encode(owner.execution(decode(input)?).await?),
-                "resumable" => encode(
-                    owner
-                        .resumable(decode(input)?, &context.scope().cancellation)
-                        .await?,
-                ),
                 "compactionPrompt" => encode(owner.compaction_prompt(decode(input)?).await?),
-                "compact" => {
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.compact(decode(input)?, operation).await?)
-                }
-                "resume" => {
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.resume(decode(input)?, operation).await?)
-                }
-                "stop" => {
-                    let input: Stop = decode(input)?;
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    if !owner
-                        .may_control(context.scope(), &input.session_id)
-                        .await?
-                    {
-                        return encode(Stopped { requested: false });
-                    }
-                    encode(Stopped {
-                        requested: owner
-                            .stop_run(&input.session_id, &input.invocation_id, operation)
-                            .await?,
-                    })
-                }
                 "computerApps" => {
                     let input: SessionRead = decode(input)?;
                     encode(owner.computer_apps(&input.session_id).await?)
-                }
-                "stopComputerApp" => {
-                    context.operation().ok_or("agent_mutation_required")?;
-                    encode(
-                        owner
-                            .stop_computer_app(decode(input)?, context.scope())
-                            .await?,
-                    )
                 }
                 "queue" => {
                     let input: SessionRead = decode(input)?;
                     encode(owner.queue(&input.session_id).await?)
                 }
                 "queueMessage" => encode(owner.queue_message(decode(input)?).await?),
-                "editQueue" => {
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(
-                        owner
-                            .edit_queue(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
-                }
                 "pendingInteractions" => {
                     let input: SessionRead = decode(input)?;
                     owner
@@ -1141,285 +963,35 @@ impl Handler for Agent {
                             .await?,
                     )
                 }
-                "respond" => {
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(
-                        owner
-                            .respond(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
-                }
-                "watch" => {
-                    let input: Watch = decode(input)?;
-                    owner.require_session(&input.session_id).await?;
-                    let mut commits = owner
-                        .scoped_store(context.scope(), &input.session_id)
-                        .await?
-                        .subscribe_commits()
-                        .map_err(|error| error.to_string())?;
-                    let mut preview = preview::Delivery::new(owner.preview_epoch());
-                    let mut after = input.after;
-                    let mut queue_revision = None;
-                    let mut interactions_delivered = None;
-                    let mut computer_apps_delivered = None;
-                    // Previews live in memory: the store is read only for a commit
-                    // notice or for committed events not delivered yet.
-                    let mut stale = true;
-                    loop {
-                        if context.scope().cancellation.is_cancelled() {
-                            return Err("agent_observation_cancelled".into());
-                        }
-                        if stale {
-                            // Queue edits need not advance the transcript cursor. Deliver
-                            // them fairly even while catching up a growing transcript.
-                            let revision = owner
-                                .scoped_store(context.scope(), &input.session_id)
-                                .await?
-                                .message_queue_revision(&input.session_id)
-                                .await
-                                .map_err(|_| "agent_queue_unavailable")?;
-                            if queue_revision != Some(revision) {
-                                let queue = owner.queue(&input.session_id).await?;
-                                queue_revision = Some(queue.revision);
-                                let update = encode(DeliveryPage::Queue { queue })?;
-                                maka_plugin_core::json::exact_numbers(&update)
-                                    .map_err(|_| "agent_queue_unavailable")?;
-                                context.emit(update).await?;
-                            }
-                            let pending = owner.pending_interactions(&input.session_id).await?;
-                            if interactions_delivered.as_ref() != Some(&pending) {
-                                context
-                                    .emit(encode(DeliveryPage::Interactions {
-                                        pending: pending.clone(),
-                                    })?)
-                                    .await?;
-                                interactions_delivered = Some(pending);
-                            }
-                            let apps = owner.computer_apps(&input.session_id).await?;
-                            if computer_apps_delivered.as_ref() != Some(&apps) {
-                                context
-                                    .emit(encode(DeliveryPage::ComputerApps {
-                                        apps: apps.clone(),
-                                    })?)
-                                    .await?;
-                                computer_apps_delivered = Some(apps);
-                            }
-                            owner.require_session(&input.session_id).await?;
-                        }
-                        let mut reader = owner.preview_reader(&input.session_id).await;
-                        let current = reader
-                            .as_mut()
-                            .and_then(|reader| reader.borrow_and_update().clone());
-                        preview.current(current);
-                        if reader
-                            .as_ref()
-                            .is_some_and(|reader| reader.has_changed().is_err())
-                        {
-                            reader = None;
-                        }
-                        if stale {
-                            let committed = owner
-                                .scoped_store(context.scope(), &input.session_id)
-                                .await?
-                                .committed_sequence()
-                                .await
-                                .map_err(|error| error.to_string())?;
-                            if after > committed {
-                                return Err("agent_cursor_invalid".into());
-                            }
-                            let through = preview
-                                .initial_fence()
-                                .map_or(committed, |fence| committed.min(fence.max(after)));
-                            let page = owner
-                                .scoped_store(context.scope(), &input.session_id)
-                                .await?
-                                .session_stream_events(
-                                    &input.session_id,
-                                    after,
-                                    through,
-                                    32,
-                                    48 * 1024,
-                                )
-                                .await
-                                .map_err(|_| "agent_observation_unavailable")?;
-                            preview.committed(&page.events);
-                            after = page.next_after.unwrap_or(page.through_sequence);
-                            stale = page.next_after.is_some() || through < committed;
-                            context
-                                .emit(encode(DeliveryPage::Events {
-                                    through: page.through_sequence,
-                                    next_after: after,
-                                    events: page.events.into_iter().map(delivery).collect(),
-                                })?)
-                                .await?;
-                        }
-                        let mut ready = stale;
-                        if let Some(update) = preview.next(after)? {
-                            context
-                                .emit(encode(DeliveryPage::Preview { page: update })?)
-                                .await?;
-                            ready = true;
-                        }
-                        tokio::select! {
-                            biased;
-                            _ = context.scope().cancellation.cancelled() => return Err("agent_observation_cancelled".into()),
-                            result = commits.changed() => {
-                                result.map_err(|_| "agent_observation_closed")?;
-                                stale = true;
-                            },
-                            () = std::future::ready(()), if ready => {},
-                            _ = async {
-                                match reader.as_mut() {
-                                    Some(reader) => { let _ = reader.changed().await; },
-                                    None => std::future::pending::<()>().await,
-                                }
-                            } => {},
-                        }
-                    }
-                }
+                "watch" => delivery::watch(&owner, decode(input)?, &context).await,
                 _ => Err("agent_method_unavailable".into()),
             }
-        })
+        };
+        json_reply(result)
     }
 }
-async fn catalog_scope(owner: &Owner, input: &List) -> Result<CatalogScope, String> {
-    let selection = match &input.scope {
-        SessionListScope::All => CatalogSelection::All,
-        SessionListScope::Children { session_id } => {
-            owner.require_session(session_id).await?;
-            CatalogSelection::Children(session_id.clone())
-        }
-        SessionListScope::Project { project_id } => CatalogSelection::Project(*project_id),
-        SessionListScope::Workspace { session_id } => CatalogSelection::Workspace {
-            session_id: session_id.clone(),
-            identity: owner
-                .session(session_id)
-                .await?
-                .configuration
-                .workspace
-                .identity,
-        },
-    };
-    Ok(CatalogScope::Owned {
-        id_prefix: owner.prefix.clone(),
-        selection,
-        title_query: input.title_query.clone(),
-    })
-}
-
-fn catalog_filter(input: &List) -> maka_event_log::sessions::CatalogFilter {
-    maka_event_log::sessions::CatalogFilter {
-        roots_only: input.roots_only,
-        archived_only: matches!(input.filter, SessionFilter::Archived),
-        include_archived: input.include_archived || matches!(input.filter, SessionFilter::Archived),
-        pending_only: matches!(input.filter, SessionFilter::NeedsYou),
-    }
-}
-async fn catalog_page(owner: &Owner, input: &List) -> Result<SessionPage, String> {
-    use maka_event_log::sessions::SessionPosition;
-    let (revision, position) = match &input.position {
-        crate::contract::SessionPosition::Start => (None, SessionPosition::Start),
-        crate::contract::SessionPosition::At { cursor } => (None, SessionPosition::At(cursor)),
-        crate::contract::SessionPosition::After { revision, cursor } => {
-            (Some(revision.as_str()), SessionPosition::After(cursor))
-        }
-        crate::contract::SessionPosition::Before { revision, cursor } => {
-            (Some(revision.as_str()), SessionPosition::Before(cursor))
-        }
-    };
-    if matches!(position, SessionPosition::At(cursor) | SessionPosition::After(cursor) | SessionPosition::Before(cursor) if !owner.owns(cursor))
-    {
-        return Err("agent_cursor_invalid".into());
-    }
-    let scope = catalog_scope(owner, input).await?;
-    let filter = catalog_filter(input);
-    let reverse = matches!(position, SessionPosition::Before(_));
-    let mut step_revision = revision.map(str::to_owned);
-    let mut step_cursor: Option<String> = None;
-    let mut first_step = true;
-    let mut sessions = Vec::new();
-    let mut needs_you_count;
-    let mut before = None;
-    let mut after = None;
-    let page_revision = loop {
-        let current_position = if first_step {
-            position
-        } else if reverse {
-            SessionPosition::Before(step_cursor.as_deref().expect("continuation cursor"))
-        } else {
-            SessionPosition::After(step_cursor.as_deref().expect("continuation cursor"))
-        };
-        let page = owner
-            .store
-            .scoped_session_outcomes::<StoredSessionConfiguration>(
-                scope.clone(),
-                step_revision.as_deref(),
-                current_position,
-                filter,
-            )
-            .await
-            .map_err(|error| match error {
-                maka_event_log::StoreError::RevisionConflict { .. } => "agent_catalog_changed",
-                _ => "agent_catalog_unavailable",
-            })?;
-        needs_you_count = page.pending_session_count;
-        if first_step {
-            before = page.previous_cursor.clone();
-            after = page.next_cursor.clone();
-        } else if reverse {
-            before = page.previous_cursor.clone();
-        } else {
-            after = page.next_cursor.clone();
-        }
-        for outcome in page.sessions {
-            match outcome
-                .map_err(|unreadable| unreadable.error.to_string())
-                .and_then(resolve_session)
-            {
-                Ok(session) => sessions.push(summary(owner, session)),
-                Err(error) => {
-                    tracing::warn!("skipping unreadable catalog session: {error}");
-                }
-            }
-        }
-        if !sessions.is_empty() {
-            break page.revision;
-        }
-        let next = if reverse {
-            page.previous_cursor
-        } else {
-            page.next_cursor
-        };
-        let Some(cursor) = next else {
-            break page.revision;
-        };
-        first_step = false;
-        step_revision = Some(page.revision);
-        step_cursor = Some(cursor);
-    };
-    let mut result = SessionPage {
-        revision: page_revision,
-        sessions,
-        needs_you_count,
-        before,
-        after,
-    };
-    while !maka_workspace_support::fits(&result) {
-        if result.sessions.len() <= 1 {
-            break;
-        }
-        if reverse {
-            result.sessions.remove(0);
-            result.before = result.sessions.first().map(|session| session.id.clone());
-        } else {
-            result.sessions.pop();
-            result.after = result.sessions.last().map(|session| session.id.clone());
-        }
-    }
-    Ok(result)
+fn json_reply(
+    reply: impl Future<Output = Result<Value, String>> + std::marker::Send + 'static,
+) -> BoxFuture<'static, HandlerResult> {
+    Box::pin(async move { reply.await.map(HandlerValue::Json).map_err(handler_error) })
 }
 fn decode<T: DeserializeOwned>(input: Value) -> Result<T, String> {
     serde_json::from_value(input).map_err(|_| "agent_input_invalid".into())
+}
+fn handler_error(diagnostic: String) -> HandlerError {
+    match diagnostic.as_str() {
+        "agent_fork_outcome_unknown"
+        | "agent_import_unknown"
+        | "agent_history_checkpoint_outcome_unknown"
+        | "agent_work_unknown"
+        | "agent_worktree_unknown"
+        | "agent_worktree_materialization_unknown"
+        | "agent_worktree_initialization_unknown"
+        | "agent_project_commit_unknown"
+        | "agent_project_registration_unknown"
+        | "agent_project_selection_unknown" => HandlerError::Unknown { diagnostic },
+        _ => HandlerError::Returned { diagnostic },
+    }
 }
 fn checkpoint_output<T: Serialize>(value: T) -> Result<Value, String> {
     let value = encode(value)?;
@@ -1429,192 +1001,6 @@ fn checkpoint_output<T: Serialize>(value: T) -> Result<Value, String> {
 }
 fn encode<T: Serialize>(value: T) -> Result<Value, String> {
     serde_json::to_value(value).map_err(|_| "agent_output_unavailable".into())
-}
-pub(crate) fn summary(owner: &Owner, session: SessionRecord<ResolvedConfiguration>) -> Session {
-    summary_for(&owner.data_source, session)
-}
-pub(crate) fn summary_for(
-    data_source: &DataSource,
-    session: SessionRecord<ResolvedConfiguration>,
-) -> Session {
-    use maka_agent_facts::event::TerminalStatus;
-    use maka_event_log::sessions::SessionExecutionState;
-    let activity = if session.pending_interaction_since.is_some() {
-        SessionActivity::Waiting
-    } else if matches!(
-        session.execution.map(|execution| execution.state),
-        Some(
-            SessionExecutionState::Live { .. }
-                | SessionExecutionState::Ended {
-                    status: TerminalStatus::Paused,
-                    ..
-                }
-        )
-    ) {
-        SessionActivity::Working
-    } else {
-        SessionActivity::Idle
-    };
-    let branch = session
-        .lineage
-        .as_deref()
-        .and_then(|lineage| lineage.branch())
-        .map(|origin| SessionBranch {
-            session_id: origin.parent_session_id.clone(),
-            position: origin.position.clone(),
-        });
-    Session {
-        parent_session_id: session.configuration.parent_session_id,
-        branch,
-        backend: session.configuration.backend,
-        tools: session.configuration.tools,
-        data_source: Box::new(data_source.clone()),
-        permissions: session.configuration.permissions,
-        boundary_revision: session.configuration.boundary_revision,
-        binding: session.configuration.binding,
-        activity,
-        id: session.id,
-        revision: session.revision,
-        title: session.configuration.title,
-        labels: session.configuration.labels,
-        workspace: session.configuration.workspace,
-        updated_at: session.updated_at,
-        archived: session.archived,
-        pinned: session.configuration.pinned,
-        has_unread: session.read_state.has_unread,
-        tail_message_id: session.last_message.map(|message| message.tail_message_id),
-    }
-}
-fn delivery(event: StoreStreamEvent) -> Delivery {
-    let tool_id = |operation: &str| {
-        maka_agent_facts::tool_call::tool_use_id(&event.invocation.invocation_id, operation)
-    };
-    let model_tool_id = |step: &str, call: &str| tool_id(&format!("{step}:{call}"));
-    let fact = match event.fact {
-        StreamFact::InvocationOpened => DeliveryFact::Opened,
-        StreamFact::ExecutorStarted => DeliveryFact::ExecutorStarted,
-        StreamFact::ExecutorMessageStarted { message_id } => DeliveryFact::ExecutorMessageStarted {
-            message_id: maka_presentation::executor_message_id(
-                &event.invocation.invocation_id,
-                &message_id,
-            ),
-        },
-        StreamFact::ExecutorMessageEnded { message_id } => {
-            let id = maka_presentation::executor_message_id(
-                &event.invocation.invocation_id,
-                &message_id,
-            );
-            DeliveryFact::PartCommitted {
-                step_id: id.clone(),
-                message_id: id,
-                ordinal: 0,
-            }
-        }
-        StreamFact::ExecutorDelta {
-            message_id,
-            text_kind,
-            text,
-        } => DeliveryFact::Delta {
-            step_id: maka_presentation::executor_message_id(
-                &event.invocation.invocation_id,
-                &message_id,
-            ),
-            part_id: match text_kind {
-                maka_agent_facts::model::TextKind::Text => "text",
-                maka_agent_facts::model::TextKind::Thinking => "thinking",
-            }
-            .into(),
-            text,
-        },
-        StreamFact::ExecutorCompleted => DeliveryFact::StepEnded {
-            step_id: event.invocation.invocation_id.clone(),
-            completed: true,
-        },
-        StreamFact::ModelPartCommitted {
-            step_id,
-            message_id,
-            ordinal,
-        } => DeliveryFact::PartCommitted {
-            step_id,
-            message_id,
-            ordinal,
-        },
-        StreamFact::ToolInputReady {
-            step_id,
-            tool_call_id,
-            name,
-            provider_executed,
-        } => DeliveryFact::ToolInputReady {
-            tool_use_id: model_tool_id(&step_id, &tool_call_id),
-            step_id,
-            name,
-            provider_executed,
-        },
-        StreamFact::ProviderToolResult {
-            step_id,
-            tool_call_id,
-            is_error,
-        } => DeliveryFact::ProviderToolResult {
-            tool_use_id: model_tool_id(&step_id, &tool_call_id),
-            is_error,
-        },
-        StreamFact::ToolDispatched {
-            operation_id,
-            name,
-            title,
-        } => DeliveryFact::ToolDispatched {
-            tool_use_id: tool_id(&operation_id),
-            name,
-            title,
-        },
-        StreamFact::ToolRejected { operation_id, .. } => DeliveryFact::ToolRejected {
-            tool_use_id: tool_id(&operation_id),
-        },
-        StreamFact::ToolSettled {
-            operation_id,
-            outcome,
-        } => {
-            use maka_agent_facts::tool_call::ToolSettlement;
-            DeliveryFact::ToolSettled {
-                tool_use_id: tool_id(&operation_id),
-                settlement: match outcome {
-                    maka_event_log::observation::ToolSettlement::Succeeded => {
-                        ToolSettlement::Returned
-                    }
-                    maka_event_log::observation::ToolSettlement::Failed => ToolSettlement::Failed,
-                    maka_event_log::observation::ToolSettlement::Unknown => ToolSettlement::Unknown,
-                },
-            }
-        }
-        StreamFact::ExecutorToolStart { tool_call_id, name } => DeliveryFact::ExecutorToolStart {
-            tool_use_id: tool_id(&tool_call_id),
-            name,
-        },
-        StreamFact::ExecutorToolProgress { tool_call_id, text } => {
-            DeliveryFact::ExecutorToolProgress {
-                tool_use_id: tool_id(&tool_call_id),
-                text,
-            }
-        }
-        StreamFact::ExecutorToolResult {
-            tool_call_id,
-            is_error,
-        } => DeliveryFact::ExecutorToolResult {
-            tool_use_id: tool_id(&tool_call_id),
-            is_error,
-        },
-        StreamFact::InvocationEnded { failed, .. } => DeliveryFact::Ended { failed },
-        StreamFact::StepEnded {
-            step_id, completed, ..
-        } => DeliveryFact::StepEnded { step_id, completed },
-        StreamFact::ContextChanged | StreamFact::MessageSteered => DeliveryFact::TranscriptChanged,
-    };
-    Delivery {
-        sequence: event.sequence,
-        invocation_id: event.invocation.invocation_id,
-        turn_id: event.invocation.turn_id,
-        fact,
-    }
 }
 
 impl maka_host_runtime::application::NativeOwner for Agent {
@@ -1632,4 +1018,25 @@ impl maka_host_runtime::application::NativeOwner for Agent {
     fn close(&self) -> BoxFuture<'static, Result<(), String>> {
         self.0.close()
     }
+}
+
+pub(crate) async fn catalog_page_for_tool(
+    owner: &Owner,
+    input: &List,
+) -> Result<SessionPage, String> {
+    catalog_page(owner, input).await
+}
+pub(crate) async fn history_observation_for_tool(
+    owner: &Owner,
+    scope: &maka_capabilities::call::Scope,
+    input: SessionRead,
+) -> Result<Observation, String> {
+    history::observation(owner, scope, input).await
+}
+pub(crate) async fn history_read_for_tool(
+    owner: &Owner,
+    scope: &maka_capabilities::call::Scope,
+    input: History,
+) -> Result<HistoryPage, String> {
+    history::read(owner, scope, input).await
 }

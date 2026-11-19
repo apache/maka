@@ -340,7 +340,7 @@ third-party/nsh contains NSH initially imported from
 https://github.com/M4n5ter/nsh at revision
 de176695240d550f2b303643b8019146c7989e7f and synchronized with
 https://github.com/longbridge/nsh through revision
-323a8663f6fdb63340c634a50da9bbb820037b69.
+80b17ee2ca33fa187a0a8575d5644e62b817517b.
 Copyright 2026 Longbridge <https://longbridge.com>.
 Original license texts, the complete source inventory and local integration
 changes are recorded in third-party/nsh/{LICENSE-APACHE,upstream.json,SOURCE.md}.
@@ -357,6 +357,22 @@ https://github.com/smol-rs/async-io at revision
 576b470ca3cadefdec8b169279df23c9a0a63495. Original license texts,
 finite file provenance and the timer wake modification are recorded in
 third-party/async-io/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
+
+Deno TLS dependency alignment (adapted, MIT)
+
+third-party/deno-tls contains deno_tls 0.247.0 from
+https://github.com/denoland/deno at revision
+fe7ed012d92c642fd8e5607ac5a45d517538b5c5. The original MIT license
+and finite file provenance are recorded in third-party/deno-tls/{LICENSE.md,upstream.json}.
+The manifest uses the rustls security update from https://github.com/denoland/deno/pull/37059.
+
+Deno Node SQLite dependency alignment (adapted, MIT)
+
+third-party/deno-node-sqlite contains deno_node_sqlite 0.30.0 from
+https://github.com/denoland/deno at revision
+fe7ed012d92c642fd8e5607ac5a45d517538b5c5. Its manifest uses the workspace
+rusqlite version. The original MIT license and finite file provenance are
+recorded in third-party/deno-node-sqlite/{LICENSE.md,upstream.json}.
 
 SQLx SQLite dependency alignment (adapted, Apache License 2.0 OR MIT)
 
@@ -479,3 +495,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Pierre Trees file icons and filename rules (@pierre/trees, Apache-2.0).
+The icon artwork from @pierre/vscode-icons is used under the MIT License.
+See scripts/rust/licenses/pierre-vscode-icons.txt.

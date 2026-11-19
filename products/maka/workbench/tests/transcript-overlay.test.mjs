@@ -19,592 +19,137 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {
+  orderProcessRows,
+  projectProcessGroups,
+  sameProcessRows,
+  turnOutcome,
+  turnWorkFold,
+} from '../app/processGroups.ts';
+import {
+  HistoryRows,
+  historyFollowTail,
+  historyRowThrough,
+  historyTurnKey,
+  mergeHistoryPage,
+  stableRowId,
+} from '../app/history.ts';
 import { TranscriptOverlay } from '../app/transcriptOverlay.ts';
-import { historyFollowPosition } from '../app/history.ts';
-import { thinkingSummary } from '../app/thinkingSummary.ts';
-import { orderProcessRows, projectProcessGroups, sameProcessRows } from '../app/processGroups.ts';
 
-const event = (sequence, fact, invocationId = 'run') => ({
-  sequence,
-  invocationId,
-  turnId: invocationId,
-  fact,
-});
-const textPart = (messageId, text, ordinal = 0, textKind = 'text') => ({
-  ordinal,
-  messageId,
-  providerPartId: messageId,
-  startedAt: 0,
-  field: { kind: 'text', textKind },
-  offset: 0,
-  totalBytes: Buffer.byteLength(text),
-  text,
-});
-const cut = (parts, changes = {}) => ({
-  kind: 'cut',
-  hostEpoch: 'epoch',
-  invocationId: 'run',
-  turnId: 'run',
-  stepId: 'step',
-  revision: 1,
-  dependsOn: 2,
-  first: true,
-  last: true,
-  parts,
-  ...changes,
-});
 const row = (messageId, text, sequence, changes = {}) => ({
-  key: `${sequence}/0/${changes.field ?? 'body'}`,
+  key: messageId,
   messageId,
   text,
-  totalBytes: Buffer.byteLength(text),
-  fragments: [{ offset: 0, text }],
   field: 'body',
   role: 'assistant',
   turnId: 'run',
-  position: { sourceSequence: sequence, itemIndex: 0 },
-  order: { sourceSequence: sequence, itemIndex: 0 },
+  position: { kind: 'live', sequence, fact: '00000000-0000-4000-8000-000000000003', itemIndex: 0 },
+  order: { path: [sequence], itemIndex: 0 },
   ...changes,
 });
-const index = (rows) => new Map(rows.map((row) => [`${row.messageId}/${row.field}`, row]));
-const texts = (overlay, history = []) =>
-  orderProcessRows([...history, ...overlay.snapshot().rows]).map((row) => row.text);
-const ended = (overlay) => {
-  overlay.event(
-    event(3, { kind: 'part_committed', stepId: 'step', messageId: 'reply', ordinal: 0 }),
-  );
-  overlay.event(event(4, { kind: 'step_ended', stepId: 'step', completed: true }));
-  overlay.event(event(5, { kind: 'ended', failed: false }));
-};
 
-test('the complete end/empty chain keeps committed text visible until history takes over', () => {
+test('streaming thoughts and tool inputs wait for the history they follow', () => {
   const overlay = new TranscriptOverlay();
-  overlay.event(event(1, { kind: 'opened' }));
-  overlay.page(cut([textPart('reply', 'response')]));
-  assert.deepEqual(texts(overlay), ['response']);
-  ended(overlay);
-  overlay.page({ kind: 'empty', hostEpoch: 'epoch' });
-  assert.deepEqual(texts(overlay), ['response']);
-  // An older read completing after the terminal facts cannot retire the handoff.
-  overlay.history(new Map(), 2);
-  assert.deepEqual(texts(overlay), ['response']);
-  const history = [row('reply', 'response', 3, { finalOutput: true })];
-  overlay.history(index(history), 5);
-  assert.deepEqual(texts(overlay, history), ['response']);
-});
-
-test('reconnect reconciles missed terminal facts before accepting the current invocation or step', () => {
-  for (const invocation of ['next', 'run']) {
-    const overlay = new TranscriptOverlay();
-    overlay.event(event(1, { kind: 'opened' }));
-    const input = (messageId, toolUseId) => ({
-      ...textPart(messageId, '{"query":'),
-      ordinal: null,
-      field: { kind: 'tool_input', toolUseId, name: 'search', providerExecuted: false },
-    });
-    const old = cut([textPart('reply', 'old response'), input('old-input', 'old-tool')]);
-    overlay.page(old);
-    overlay.disconnect();
-    // While offline the old step ends, then either the next run opens or this
-    // run starts another step. Subscription resumes after snapshot.through.
-    overlay.observe({
-      through: 8,
-      run: { invocationId: invocation, turnId: invocation, state: 'running' },
-      parts: [],
-    });
-    const history = [row('user', 'next request', 6, { role: 'user', turnId: invocation })];
-    overlay.history(index(history), 8);
-    // This page was queued before the snapshot query returned.
-    overlay.page(old);
-    overlay.page(
-      cut([textPart('next-reply', 'new reply'), input('new-input', 'new-tool')], {
-        invocationId: invocation,
-        turnId: invocation,
-        stepId: 'next-step',
-        dependsOn: 8,
-      }),
-    );
-    overlay.observe({
-      through: 2,
-      run: { invocationId: 'run', turnId: 'run', state: 'running' },
-      parts: [],
-    });
-    overlay.event(event(1, { kind: 'opened' }));
-    assert.deepEqual(texts(overlay, history), ['next request', 'new reply']);
-    assert.deepEqual(
-      overlay.snapshot().tools.map((tool) => [tool.toolUseId, tool.phase]),
-      [['new-tool', 'preparing']],
-    );
-  }
-});
-
-test('history window replacement releases retired rows, including work completed while reading older history', () => {
-  const overlay = new TranscriptOverlay();
-  overlay.page(cut([textPart('reply', 'previous turn')]));
-  ended(overlay);
-  const tail = [row('user', 'next request', 6, { role: 'user', turnId: 'next' })];
-  overlay.history(index(tail), 6);
-  assert.deepEqual(texts(overlay, tail), ['next request']);
-  // Off-tail overlays are not displayed. Terminal rows need not accumulate there.
-  overlay.history(new Map(), null);
-  overlay.event(event(10, { kind: 'opened' }, 'background'));
-  overlay.page(
-    cut([textPart('background-reply', 'background response')], {
-      invocationId: 'background',
-      turnId: 'background',
-      dependsOn: 11,
-    }),
-  );
-  assert.deepEqual(texts(overlay), ['background response']);
-  overlay.event(
-    event(
-      12,
-      { kind: 'part_committed', stepId: 'step', messageId: 'background-reply', ordinal: 0 },
-      'background',
-    ),
-  );
-  overlay.event(event(13, { kind: 'step_ended', stepId: 'step', completed: true }, 'background'));
-  overlay.event(event(14, { kind: 'ended', failed: false }, 'background'));
-  assert.deepEqual(texts(overlay), []);
-  overlay.event(event(15, { kind: 'opened' }, 'current'));
-  overlay.page(
-    cut([textPart('current-reply', 'current response')], {
-      invocationId: 'current',
-      turnId: 'current',
-      dependsOn: 16,
-    }),
-  );
-  overlay.history(index(tail), 16);
-  assert.deepEqual(texts(overlay, tail), ['next request', 'current response']);
-});
-
-test('UTF-8 fragments reconnect from byte zero and canonical replacement rejects a late suffix', () => {
-  const overlay = new TranscriptOverlay();
-  const page = (revision, offset, text) => {
-    const totalBytes = revision === 1 ? 8 : 9;
-    return cut([{ ...textPart('reply', text), offset, totalBytes }], {
-      revision,
-      first: offset === 0 || revision === 2,
-      last: offset + Buffer.byteLength(text) === totalBytes,
-    });
-  };
-  overlay.page(page(1, 0, '🦀'));
-  overlay.page(page(1, 4, '中!'));
-  overlay.page(page(2, 8, '?'));
-  assert.deepEqual(texts(overlay), ['🦀中!?']);
-  overlay.page(page(2, 0, '🦀中!?'));
-  assert.deepEqual(texts(overlay), ['🦀中!?']);
-  const history = [row('reply', '🦀中!?', 3)];
-  overlay.history(index(history), null);
-  overlay.page(
-    cut([{ ...textPart('reply', 'obsolete'), offset: 9, totalBytes: 17 }], { revision: 3 }),
-  );
-  assert.deepEqual(texts(overlay, history), ['🦀中!?']);
-});
-
-test('text and pending tool input keep their step seat through canonical handoff and a later user message', () => {
-  const overlay = new TranscriptOverlay();
-  overlay.page(
-    cut([
-      textPart('thought', 'thinking', 0, 'thinking'),
-      textPart('reply', 'intermediate reply', 1),
-      {
-        ...textPart('input', '{"query":'),
-        ordinal: null,
-        field: { kind: 'tool_input', toolUseId: 'tool', name: 'search', providerExecuted: false },
-      },
-    ]),
-  );
-  const history = [
-    row('thought', 'thinking', 3, {
-      field: 'thinking',
-      role: 'thinking',
-      modelPart: { stepId: 'step', ordinal: 0 },
-    }),
-    row('reply', 'intermediate reply', 4, { modelPart: { stepId: 'step', ordinal: 1 } }),
-    row('user', 'next request', 10, { role: 'user', turnId: 'next' }),
-  ];
-  const project = () =>
-    projectProcessGroups({
-      rows: orderProcessRows([...history, ...overlay.snapshot().rows]),
-      toolActivity: overlay.snapshot().tools,
-      activeTurnId: 'run',
-    }).entries.map((entry) =>
-      entry.kind === 'process' ? { rows: entry.rowIds, tools: entry.toolIds } : entry.rowId,
-    );
-  overlay.history(index(history), null);
-  assert.deepEqual(project(), [
-    { rows: ['thought/thinking'], tools: [] },
-    'reply/body',
-    { rows: [], tools: ['tool'] },
-    'user/body',
-  ]);
-  overlay.event(
-    event(5, {
-      kind: 'tool_input_ready',
-      stepId: 'step',
-      toolUseId: 'tool',
-      name: 'search',
-      providerExecuted: false,
-    }),
-  );
-  overlay.event(event(6, { kind: 'tool_dispatched', toolUseId: 'tool', name: 'search' }));
-  assert.equal(overlay.snapshot().tools[0].phase, 'running');
-  assert.deepEqual(project(), [
-    { rows: ['thought/thinking'], tools: [] },
-    'reply/body',
-    { rows: [], tools: ['tool'] },
-    'user/body',
-  ]);
-});
-
-test('executor messages keep text/tool chronology through live, history handoff and cancellation', () => {
-  const overlay = new TranscriptOverlay();
-  let history = [];
-  const project = () =>
-    projectProcessGroups({
-      rows: orderProcessRows([...history, ...overlay.snapshot().rows]),
-      toolActivity: overlay.snapshot().tools,
-      activeTurnId: 'run',
-    }).entries.map((entry) => (entry.kind === 'process' ? entry.toolIds : entry.rowId));
-  const start = (sequence, messageId) =>
-    overlay.event(event(sequence, { kind: 'executor_message_started', messageId }));
-  const delta = (sequence, stepId, text) =>
-    overlay.event(event(sequence, { kind: 'delta', stepId, partId: 'text', text }));
-  const commit = (sequence, messageId) =>
-    overlay.event(
-      event(sequence, { kind: 'part_committed', stepId: messageId, messageId, ordinal: 0 }),
-    );
-  const tool = (sequence, toolUseId) =>
-    overlay.event(event(sequence, { kind: 'executor_tool_start', toolUseId, name: 'Shell' }));
-  const cover = (through, next, coveredFrom) => {
-    history = next;
-    overlay.history(index(history), through, coveredFrom);
-  };
-  const toolRow = (messageId, sequence) =>
-    row(messageId, 'result', sequence, { role: 'tool', tool: { toolUseId: messageId } });
-
-  overlay.event(event(1, { kind: 'opened' }));
-  overlay.event(event(2, { kind: 'executor_started' }));
-  tool(3, 'first-tool');
-  assert.deepEqual(project(), [['first-tool']]);
-  assert.deepEqual(overlay.snapshot().parts, []);
-  start(4, 'A');
-  delta(4, 'A', '');
-  assert.deepEqual(overlay.snapshot().rows, []);
-  delta(5, 'A', 'same');
-  delta(6, 'A', ' same');
-  tool(7, 'second-tool');
-  commit(8, 'A');
-  start(9, 'B');
-  delta(10, 'B', 'same');
-  tool(11, 'third-tool');
-  commit(12, 'B');
-  start(13, 'C');
-  delta(14, 'C', 'final');
-  assert.deepEqual(texts(overlay), ['same same', 'same', 'final']);
-  const expected = [['first-tool'], 'A/body', ['second-tool'], 'B/body', ['third-tool'], 'C/body'];
-  assert.deepEqual(project(), expected);
-  assert.deepEqual(
-    overlay.snapshot().parts.map((part) => [part.messageId, part.stepId, part.startSequence]),
-    [
-      ['C', 'C', 13],
-      ['C', 'C', 13],
-    ],
-  );
-
-  // A completed tool's canonical row replaces its live header at the original seat.
-  cover(8, [
-    toolRow('first-tool', 3),
-    row('A', 'same same', 8, { order: { sourceSequence: 4, itemIndex: 0 } }),
-    toolRow('second-tool', 7),
-  ]);
-  assert.deepEqual(project(), expected);
-  cover(12, [
-    ...history,
-    row('B', 'same', 12, { order: { sourceSequence: 9, itemIndex: 0 } }),
-    toolRow('third-tool', 11),
-  ]);
-  assert.deepEqual(project(), expected);
-  commit(15, 'C');
-  overlay.event(event(16, { kind: 'step_ended', stepId: 'run', completed: true }));
-  // Closed rows must not retain parts just because the final step is invocation-scoped.
-  assert.deepEqual(overlay.snapshot().parts, []);
-  assert.deepEqual(project(), expected);
-  cover(15, [...history, row('C', 'final', 15, { order: { sourceSequence: 13, itemIndex: 0 } })]);
-  overlay.event(event(17, { kind: 'ended', failed: false }));
-  overlay.page({ kind: 'empty', hostEpoch: 'epoch' });
-  assert.deepEqual(project(), expected);
-  assert.deepEqual(texts(overlay, history), [
-    'result',
-    'same same',
-    'result',
-    'same',
-    'result',
-    'final',
-  ]);
-});
-
-test('closed executor seats rewind missed deltas once and retire tool-only or paged-out seats', () => {
-  const overlay = new TranscriptOverlay();
-  overlay.event(event(1, { kind: 'opened' }));
-  overlay.event(event(2, { kind: 'executor_message_started', messageId: 'paged-out' }));
-  overlay.event(event(3, { kind: 'delta', stepId: 'paged-out', partId: 'text', text: 'older' }));
-  overlay.event(event(4, { kind: 'executor_message_started', messageId: 'tool-only' }));
-  overlay.event(event(5, { kind: 'executor_tool_start', toolUseId: 'tool', name: 'Shell' }));
-  overlay.event(
-    event(6, { kind: 'part_committed', stepId: 'paged-out', messageId: 'paged-out', ordinal: 0 }),
-  );
-  overlay.event(
-    event(7, { kind: 'part_committed', stepId: 'tool-only', messageId: 'tool-only', ordinal: 0 }),
-  );
-  const history = [
-    row('tool', 'result', 5, {
-      role: 'tool',
-      tool: { toolUseId: 'tool' },
-      order: { sourceSequence: 4, itemIndex: 0 },
-    }),
-  ];
-  const snap = overlay.snapshot();
-  assert.deepEqual(snap.closedStarts, [2, 4]);
-  // With windowStart = 4 (a paged tail window starting at event 4), seat 2 is behind `before`
-  // while seat 4 rewinds once from event 4 and then retires even without a canonical body row.
-  assert.deepEqual(historyFollowPosition(history.at(-1), snap.rows, snap.closedStarts, 4), {
-    kind: 'event',
-    sequence: 4,
-  });
-  overlay.history(index(history), 7, 4, 4);
-  assert.deepEqual(overlay.snapshot().rows, []);
-  assert.deepEqual(overlay.snapshot().closedStarts, []);
-  assert.deepEqual(
-    historyFollowPosition(
-      history.at(-1),
-      overlay.snapshot().rows,
-      overlay.snapshot().closedStarts,
-      4,
-    ),
-    {
-      kind: 'after',
-      cursor: { position: { sourceSequence: 5, itemIndex: 0 }, field: 'body', offset: 0 },
-    },
-  );
-});
-
-test('native thinking-only and interrupted body rows keep their summary and seats after missed commits', () => {
-  const overlay = new TranscriptOverlay();
-  let history = [];
-  const project = () =>
-    projectProcessGroups({
-      rows: orderProcessRows([...history, ...overlay.snapshot().rows]),
-      toolActivity: overlay.snapshot().tools,
-      activeTurnId: 'run',
-    }).entries.map((entry) =>
-      entry.kind === 'process'
-        ? { thinking: entry.rowIds.filter((id) => id.endsWith('/thinking')), tools: entry.toolIds }
-        : entry.rowId,
-    );
-  overlay.event(event(1, { kind: 'opened' }));
-  overlay.event(event(2, { kind: 'executor_message_started', messageId: 'thought' }));
-  overlay.event(
-    event(3, { kind: 'delta', stepId: 'thought', partId: 'thinking', text: 'old\n\n**检查中**\n' }),
-  );
-  overlay.event(event(4, { kind: 'executor_tool_start', toolUseId: 'tool', name: 'Shell' }));
-  assert.equal(thinkingSummary(overlay.snapshot().rows[0].text), '检查中');
-  assert.deepEqual(project(), [{ thinking: ['thought/thinking'], tools: ['tool'] }]);
-  history = [row('tool', 'result', 4, { role: 'tool', tool: { toolUseId: 'tool' } })];
-  overlay.history(index(history), 4);
-  overlay.disconnect();
-  // MessageEnd was missed offline, while the invocation itself remains active.
-  overlay.observe({
-    through: 5,
-    run: { invocationId: 'run', turnId: 'run', state: 'running' },
-    parts: [],
-  });
-  overlay.history(index(history), 5);
-  assert.deepEqual(texts(overlay, history), ['old\n\n**检查中**\n', 'result']);
-  assert.deepEqual(historyFollowPosition(history.at(-1), overlay.snapshot().rows), {
-    kind: 'event',
-    sequence: 2,
-  });
-  history.unshift(
-    row('thought', 'old\n\n**检查中**\n', 5, {
-      field: 'thinking',
-      role: 'thinking',
-      order: { sourceSequence: 2, itemIndex: 0 },
-    }),
-  );
-  overlay.history(index(history), 5);
-  assert.deepEqual(project(), [{ thinking: ['thought/thinking'], tools: ['tool'] }]);
-  assert.equal(thinkingSummary(history[0].text), '检查中');
-
-  overlay.event(event(6, { kind: 'executor_message_started', messageId: 'body' }));
-  overlay.event(event(7, { kind: 'delta', stepId: 'body', partId: 'text', text: 'before cancel' }));
-  overlay.event(event(8, { kind: 'executor_tool_start', toolUseId: 'pending', name: 'Shell' }));
-  const expected = [
-    { thinking: ['thought/thinking'], tools: ['tool'] },
-    'body/body',
-    { thinking: [], tools: ['pending'] },
-  ];
-  assert.deepEqual(project(), expected);
-  overlay.event(event(9, { kind: 'ended', failed: false }));
-  overlay.history(index(history), 9);
-  assert.deepEqual(texts(overlay, history), ['old\n\n**检查中**\n', 'result', 'before cancel']);
-  assert.deepEqual(historyFollowPosition(history.at(-1), overlay.snapshot().rows), {
-    kind: 'event',
-    sequence: 6,
-  });
-  const interrupted = row('body', 'before cancel', 9, {
-    position: { sourceSequence: 9, itemIndex: 1 },
-    order: { sourceSequence: 6, itemIndex: 0 },
-  });
-  history.push(
-    interrupted,
-    row('pending', 'cancelled', 8, { role: 'tool', tool: { toolUseId: 'pending' } }),
-  );
-  overlay.history(index(history), 9);
-  assert.deepEqual(project(), expected);
-  assert.deepEqual(texts(overlay, history), [
-    'old\n\n**检查中**\n',
-    'result',
-    'before cancel',
-    'cancelled',
-  ]);
-  assert.deepEqual(historyFollowPosition(interrupted, []), {
-    kind: 'after',
-    cursor: { position: { sourceSequence: 9, itemIndex: 1 }, field: 'body', offset: 0 },
-  });
-});
-
-test('refresh of an open executor message replays its own start without losing its seat or duplicating chunks', () => {
-  const overlay = new TranscriptOverlay();
-  overlay.observe({
-    through: 10,
-    run: { invocationId: 'run', turnId: 'run', state: 'running' },
+  overlay.history(new Map(), 6);
+  overlay.page({
+    kind: 'cut',
+    hostEpoch: 'host',
+    runId: 'run',
+    turnId: 'turn',
+    stepId: 'step',
+    attemptId: 'attempt',
+    revision: 1,
+    dependsOn: 8,
+    first: true,
+    last: true,
     parts: [
-      { stepId: 'B', partId: 'text', messageId: 'B', textKind: 'text', startSequence: 9 },
-      { stepId: 'B', partId: 'thinking', messageId: 'B', textKind: 'thinking', startSequence: 9 },
+      {
+        ordinal: 0,
+        messageId: 'thought',
+        field: { kind: 'text', textKind: 'thinking' },
+        offset: 0,
+        totalBytes: 8,
+        text: 'Checking',
+      },
+      {
+        messageId: 'input',
+        field: { kind: 'tool_input', toolUseId: 'tool', name: 'read', providerExecuted: false },
+        offset: 0,
+        totalBytes: 2,
+        text: '{}',
+      },
     ],
   });
-  const history = [row('A', 'before', 4)];
-  overlay.history(index(history), 10);
-  overlay.event(event(9, { kind: 'executor_message_started', messageId: 'B' }));
-  overlay.event(event(10, { kind: 'delta', stepId: 'B', partId: 'text', text: 'same' }));
-  overlay.event(event(10, { kind: 'delta', stepId: 'B', partId: 'text', text: 'same' }));
-  overlay.event(event(11, { kind: 'executor_tool_start', toolUseId: 'tool', name: 'Shell' }));
-  overlay.event(event(12, { kind: 'delta', stepId: 'B', partId: 'text', text: ' same' }));
-  assert.deepEqual(texts(overlay, history), ['before', 'same same']);
-  assert.deepEqual(
-    projectProcessGroups({
-      rows: orderProcessRows([...history, ...overlay.snapshot().rows]),
-      toolActivity: overlay.snapshot().tools,
-      activeTurnId: 'run',
-    }).entries.map((entry) => (entry.kind === 'process' ? entry.toolIds : entry.rowId)),
-    ['A/body', 'B/body', ['tool']],
-  );
-  const canonical = [...history, row('B', 'same same', 9)];
-  overlay.event(event(13, { kind: 'part_committed', stepId: 'B', messageId: 'B', ordinal: 0 }));
-  overlay.history(index(canonical), 13);
-  overlay.event(event(14, { kind: 'delta', stepId: 'B', partId: 'text', text: 'obsolete' }));
-  assert.deepEqual(texts(overlay, canonical), ['before', 'same same']);
+  const preview = () => {
+    const { rows, tools } = overlay.snapshot();
+    return [...rows.map((row) => row.text), ...tools.map((tool) => tool.name)];
+  };
+  assert.deepEqual(preview(), []);
+  overlay.history(new Map(), 8);
+  assert.deepEqual(preview(), ['Checking', 'read']);
 });
 
-test('tool input preview keeps a multi-page Unicode patch through admission', () => {
+test('committed model text replaces its streaming row before the next tool or model step', () => {
   const overlay = new TranscriptOverlay();
-  const input = JSON.stringify({
-    patch: '+const entry = "文件内容🦀";\n'.repeat(2000),
+  const step = { stepId: 'step', attemptId: 'attempt' };
+  const turn = { runId: 'run', turnId: 'run' };
+  const texts = [
+    { field: 'thinking', textKind: 'thinking', text: 'Checking the log' },
+    { field: 'body', textKind: 'text', text: 'I found the cause.' },
+  ];
+  const entries = (history = []) => {
+    const { rows, tools } = overlay.snapshot();
+    const { entries, rowsById } = projectProcessGroups({
+      rows: orderProcessRows([...history, ...rows]),
+      toolActivity: tools,
+      activeTurnId: turn.turnId,
+    });
+    return entries
+      .flatMap((entry) => (entry.kind === 'process' ? entry.rowIds : [entry.rowId]))
+      .map((id) => [id, rowsById.get(id).text]);
+  };
+
+  overlay.history(new Map(), 1);
+  overlay.page({
+    kind: 'cut',
+    hostEpoch: 'host',
+    ...turn,
+    ...step,
+    revision: 1,
+    dependsOn: 1,
+    first: true,
+    last: true,
+    parts: texts.map(({ text, textKind }, ordinal) => ({
+      ordinal,
+      messageId: `preview-${ordinal}`,
+      field: { kind: 'text', textKind },
+      offset: 0,
+      totalBytes: text.length,
+      text,
+    })),
   });
-  const chunks = input.match(/.{1,4096}/gu);
-  let offset = 0;
-  for (const text of chunks) {
-    overlay.page(
-      cut(
-        [
-          {
-            ...textPart('patch-input', text),
-            ordinal: null,
-            field: {
-              kind: 'tool_input',
-              toolUseId: 'patch',
-              name: 'ApplyPatch',
-              providerExecuted: false,
-            },
-            offset,
-            totalBytes: Buffer.byteLength(input),
-          },
-        ],
-        {
-          first: offset === 0,
-          last: offset + Buffer.byteLength(text) === Buffer.byteLength(input),
-        },
-      ),
-    );
-    offset += Buffer.byteLength(text);
-  }
-  assert.equal(overlay.snapshot().tools[0].detail, input);
-  overlay.event(
-    event(3, {
-      kind: 'tool_input_ready',
-      stepId: 'step',
-      toolUseId: 'patch',
-      name: 'ApplyPatch',
-      providerExecuted: false,
+  const streaming = entries();
+  assert.deepEqual(
+    streaming.map(([, text]) => text),
+    ['Checking the log', 'I found the cause.'],
+  );
+
+  const committed = texts.map(({ field, text }, ordinal) =>
+    row(`fact-${ordinal}`, text, ordinal + 2, {
+      field,
+      modelPart: { ...step, ordinal },
     }),
   );
-  overlay.event(event(4, { kind: 'tool_dispatched', toolUseId: 'patch', name: 'ApplyPatch' }));
-  assert.equal(overlay.snapshot().tools[0].phase, 'running');
-  assert.equal(overlay.snapshot().tools[0].detail, input);
-});
-
-test('agent inputs share tool activity while human messages and answers stay outside', () => {
-  const origins = [
-    { kind: 'session', invocation: { session_id: 'reviewer' } },
-    { kind: 'bot_worker', sessionId: 'worker' },
-  ];
-  const rows = [
-    row('request', 'Review the change', 1, { role: 'user' }),
-    row('thought', 'Checking', 2, { role: 'thinking', field: 'thinking' }),
-    ...origins.map((origin, i) =>
-      row(`agent-${i}`, 'Internal report', 3 + i, { role: 'user', origin }),
-    ),
-    row('tool', 'Result', 6, { role: 'tool_result', tool: { toolUseId: 'lookup' } }),
-    row('human', 'Focus on correctness', 7, { role: 'user' }),
-    row('answer', 'Reviewed', 8, { finalOutput: true }),
-  ];
-  const projection = projectProcessGroups({ rows, toolActivity: [], activeTurnId: null });
-  assert.deepEqual(
-    projection.entries.map((entry) => (entry.kind === 'process' ? entry.rowIds : entry.rowId)),
-    [
-      'request/body',
-      ['thought/thinking', 'agent-0/body', 'agent-1/body', 'tool/body'],
-      'human/body',
-      'answer/body',
-    ],
-  );
-  assert.equal(projection.turns.get('run').interleavedInput, true, 'human steering stays visible');
-});
-
-test('an agent-started turn folds with its work without being treated as human steering', () => {
-  const origin = { kind: 'session', invocation: { session_id: 'parent' } };
-  const rows = [
-    row('delegation', 'Verify the patch', 1, { role: 'user', origin }),
-    row('thought', 'Checking', 2, { role: 'thinking', field: 'thinking' }),
-    row('report', 'Done', 3, { role: 'user', origin: { kind: 'bot_worker', sessionId: 'worker' } }),
-    row('answer', 'Verified', 4, { finalOutput: true }),
-  ];
-  const projection = projectProcessGroups({ rows, toolActivity: [], activeTurnId: null });
-  assert.deepEqual(
-    projection.entries.map((entry) => (entry.kind === 'process' ? entry.rowIds : entry.rowId)),
-    [['delegation/body', 'thought/thinking', 'report/body'], 'answer/body'],
-  );
-  assert.equal(projection.turns.get('run').interleavedInput, false);
-  const previous = projection.entries[0];
-  const reloaded = projectProcessGroups({
-    rows: rows.map((row) => ({ ...row })),
-    toolActivity: [],
-    activeTurnId: null,
-    previous: projection.entries,
+  overlay.event({
+    ...turn,
+    sequence: 2,
+    fact: { kind: 'part_committed', ...step, messageId: 'fact-0', ordinal: 0 },
   });
-  assert.equal(reloaded.entries[0].key, previous.key, 'history refresh retains disclosure state');
+  assert.deepEqual(entries(), streaming, 'the watch event alone keeps both text rows visible');
+
+  overlay.history(new Map(committed.map((row) => [stableRowId(row), row])), 3);
+  assert.deepEqual(entries(committed), streaming);
+  assert.deepEqual(overlay.snapshot().rows, [], 'history takes over even ahead of the watch event');
 });
 
 test('a turn has work to fold only beside its final answer', () => {
@@ -626,12 +171,226 @@ test('a turn has work to fold only beside its final answer', () => {
   );
 });
 
-test('agent attribution arriving with canonical metadata invalidates the live grouping', () => {
-  const pending = row('input', 'Task', 1, { role: 'user' });
-  const canonical = {
-    ...pending,
-    origin: { kind: 'session', invocation: { session_id: 'parent' } },
+test('a recorded work group keeps one key and holds the steps read for it', () => {
+  const part = (ordinal) => ({ stepId: 'step', attemptId: 'attempt', ordinal });
+  const tool = (toolUseId, sequence, call) => ({
+    toolUseId,
+    call: { position: row('', '', sequence).position, ancestorToolUseIds: [], ...call },
+    result: null,
+  });
+  const message = row('message', 'Looking first.', 1, { modelPart: part(0) });
+  const work = row(undefined, '', 2, {
+    key: 'work',
+    role: 'tool_call',
+    modelPart: part(1),
+    work: { kinds: [{ kind: 'tool', presentation: null }], tools: 1 },
+  });
+  const script = row(undefined, '', 2, {
+    key: 'script',
+    role: 'tool_call',
+    modelPart: part(1),
+    tool: tool('script', 2, { origin: 'provider', name: 'exec' }),
+  });
+  const child = row(undefined, '', 3, {
+    key: 'child',
+    role: 'tool_result',
+    tool: tool('child', 3, { origin: 'code_mode', name: 'read', ancestorToolUseIds: ['script'] }),
+  });
+  const answer = row('answer', 'Done.', 4);
+  const groups = (rows) =>
+    projectProcessGroups({ rows: orderProcessRows(rows), toolActivity: [], activeTurnId: null })
+      .entries.filter((entry) => entry.kind === 'process')
+      .map((entry) => [entry.key, entry.rowIds]);
+
+  const preview = row(undefined, 'Checking', undefined, {
+    key: 'preview',
+    role: 'thinking',
+    field: 'thinking',
+    position: undefined,
+    order: undefined,
+    modelPart: part(1),
+  });
+  const [[live]] = groups([message, preview]);
+  assert.deepEqual(groups([message, work, answer]), [[live, []]]);
+  assert.deepEqual(groups([answer, child, script, work, message]), [[live, [stableRowId(child)]]]);
+  const tooled = { ...work, work: { ...work.work, firstToolUseId: 'running' } };
+  const started = projectProcessGroups({
+    rows: [message],
+    toolActivity: [{ toolUseId: 'running', turnId: 'run', startSequence: 2 }],
+    activeTurnId: 'run',
+  }).entries.filter((entry) => entry.kind === 'process');
+  assert.deepEqual(
+    groups([message, tooled]).map(([key]) => key),
+    started.map((entry) => entry.key),
+  );
+  const running = projectProcessGroups({
+    rows: orderProcessRows([message, work, answer]),
+    toolActivity: [{ toolUseId: 'running', turnId: 'run', startSequence: 2 }],
+    activeTurnId: 'run',
+  }).entries.filter((entry) => entry.kind === 'process');
+  assert.deepEqual(
+    running.map((entry) => [entry.key, entry.toolIds]),
+    [[live, ['running']]],
+  );
+
+  const rows = new HistoryRows();
+  const chunk = ({ key, messageId, ...rest }) => ({
+    ...rest,
+    offset: 0,
+    totalBytes: 0,
+  });
+  const put = (value) =>
+    rows.put(mergeHistoryPage([chunk(value)], (key) => rows.byKey.get(key), false, 5));
+  put(work);
+  put(script);
+  put({ ...work, work: { ...work.work, tools: 2 } });
+  assert.deepEqual(
+    rows.ordered.map((value) => value.work?.tools ?? value.tool.toolUseId),
+    [2, 'script'],
+  );
+});
+
+test('thinking appears in turn work when there is a readable summary', () => {
+  const opaque = row('opaque', '', 1, { role: 'thinking', field: 'thinking' });
+  const preview = row('preview', '\n ', 2, { role: 'thinking', field: 'thinking' });
+  const project = (rows) => projectProcessGroups({ rows, toolActivity: [], activeTurnId: 'run' });
+
+  const hidden = project([opaque, preview]);
+  assert.deepEqual(hidden.entries, []);
+  assert.equal(hidden.turns.get('run').worked, false);
+
+  const withText = { ...preview, text: '\n Checking the log' };
+  assert.equal(sameProcessRows([preview], [withText]), false);
+  assert.deepEqual(project([opaque, withText]).entries[0].rowIds, [stableRowId(withText)]);
+});
+
+test('work stays open during streamed text and folds when the answer is confirmed', () => {
+  const request = row('request', 'Summarize', 1, { role: 'user' });
+  const thought = row('thought', 'Checking', 2, { role: 'thinking', field: 'thinking' });
+  const answer = row('answer', 'Here', 3);
+  const preview = { ...answer, position: undefined, startSequence: 3, order: undefined };
+  const project = (rows, options = {}) =>
+    projectProcessGroups({
+      rows: [request, ...rows],
+      toolActivity: [],
+      activeTurnId: 'run',
+      answerTurnId: 'run',
+      ...options,
+    }).turns.get('run');
+  const chat = (turn) => turnWorkFold(turn, false);
+
+  assert.equal(chat(project([thought, { ...preview, text: '' }])), 'open');
+  assert.equal(chat(project([preview])), 'unavailable', 'a direct reply has no work to fold');
+  for (const body of [preview, answer]) {
+    const turn = project([thought, body]);
+    assert.equal(chat(turn), 'open');
+    assert.deepEqual(turn.answerOutputIds, [stableRowId(body)], 'keep the streamed answer visible');
+    assert.equal(turnWorkFold(turn, true), 'unavailable', 'terminal Chat keeps showing the work');
+  }
+
+  const resumed = project([thought, answer], {
+    toolActivity: [{ toolUseId: 'read', turnId: 'run', startSequence: 4 }],
+  });
+  assert.equal(chat(resumed), 'open');
+  const nextThought = row('next-thought', '', 4, { role: 'thinking', field: 'thinking' });
+  assert.equal(chat(project([thought, answer, nextThought])), 'open');
+  assert.equal(chat(project([thought, answer], { answerTurnId: null })), 'open');
+  const finalPreview = { ...preview, messageId: 'final-preview', finalAnswer: true };
+  assert.equal(chat(project([thought, answer, { ...finalPreview, text: '' }])), 'open');
+  const streamingFinal = project([thought, answer, finalPreview]);
+  assert.equal(chat(streamingFinal), 'closed');
+  assert.equal(turnOutcome(streamingFinal), null, 'the turn is still running');
+  assert.deepEqual(streamingFinal.answerOutputIds, [stableRowId(finalPreview)]);
+  assert.equal(chat(project([thought, answer, finalPreview, nextThought])), 'open');
+  const timing = { startedAt: 1, finished: { outcome: 'completed', at: 5 } };
+  const catchingUp = project([{ ...thought, timing }, answer], { activeTurnId: null });
+  assert.equal(chat(catchingUp), 'closed');
+  assert.deepEqual(catchingUp.answerOutputIds, [stableRowId(answer)]);
+  const final = row('final', 'Done', 5, { finalOutput: true });
+  const completed = project([thought, answer, final]);
+  assert.equal(chat(completed), 'closed');
+  assert.equal(turnWorkFold(completed, true), 'closed');
+  assert.deepEqual(completed.answerOutputIds, [], 'the earlier text now belongs to the work');
+});
+
+test('recovered snapshot failures mark only their source-aware turn as having work', () => {
+  const failure = row('failed', 'Rate limited', 2, {
+    role: 'failure',
+    position: {
+      kind: 'snapshot',
+      path: ['fork'],
+      snapshot: 'snapshot',
+      sequence: 2,
+      fact: '00000000-0000-4000-8000-000000000003',
+      itemIndex: 0,
+    },
+  });
+  const projection = projectProcessGroups({
+    rows: [failure],
+    toolActivity: [],
+    activeTurnId: null,
+  });
+  assert.equal(projection.turns.size, 1);
+  assert.equal(projection.turns.get(historyTurnKey(failure)).worked, true);
+  assert.equal(projection.turns.has('run'), false);
+});
+
+test('expanded group steps keep the chat follow tail and newer streamed text intact', () => {
+  const rows = new HistoryRows();
+  const chunk = ({ key, ...rest }) => ({ ...rest, offset: 0, totalBytes: rest.text.length });
+  const put = (items, through) =>
+    rows.put(mergeHistoryPage(items, (key) => rows.byKey.get(key), false, through));
+
+  const work = row(undefined, '', 2, {
+    role: 'thinking',
+    field: 'thinking',
+    work: {
+      end: { position: row('', '', 3).position, field: 'thinking', offset: 0 },
+      last: { kind: 'thought' },
+      firstToolUseId: null,
+      lastCall: null,
+      kinds: [{ kind: 'thought' }],
+      thoughts: 1,
+      tools: 0,
+      messages: 0,
+      imageCount: 0,
+      images: [],
+    },
+  });
+  const thought = row('ext-thought', 'First.', 3, { role: 'thinking', field: 'thinking' });
+  put([chunk(work), chunk(thought)], 3);
+  assert.equal(historyFollowTail(rows.ordered, 'chat')?.work?.thoughts, 1);
+
+  put([chunk({ ...thought, text: 'First. Second.' })], 5);
+  put([chunk({ ...thought, text: 'First.' })], 4);
+  assert.equal(rows.byMessage.get('ext-thought/thinking').text, 'First. Second.');
+});
+
+test('a row opened during refresh is read at a fence that contains it', () => {
+  const oldFence = 11;
+  const position = {
+    kind: 'live',
+    sequence: 12,
+    fact: '00000000-0000-4000-8000-000000000012',
+    itemIndex: 0,
   };
-  assert.equal(sameProcessRows([pending], [canonical]), false);
-  assert.equal(sameProcessRows([canonical], [{ ...canonical, text: 'Task details' }]), true);
+  const [admission] = mergeHistoryPage(
+    [
+      {
+        position,
+        order: { path: [position.sequence], itemIndex: 0 },
+        field: 'body',
+        role: 'user',
+        messageId: 'completion',
+        offset: 0,
+        totalBytes: 0,
+        text: '',
+      },
+    ],
+    () => undefined,
+    false,
+    12,
+  );
+  assert.equal(historyRowThrough(admission, oldFence), 12);
+  assert.equal(historyRowThrough(admission, 34), 34);
 });

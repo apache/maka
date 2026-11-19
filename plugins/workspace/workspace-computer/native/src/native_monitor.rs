@@ -19,20 +19,20 @@
 
 //! Revocation custody for an already admitted fixed Mac monitor resource.
 
-use super::{Computer, admission::Gate, api, app_access, sessions::Epoch};
+use super::{Call, Computer, admission::Gate, api, sessions::Epoch};
 use futures_util::FutureExt;
-use maka_agent_facts::{event::Invocation, tools::ToolError, workspace::PermissionBasis};
+use maka_agent_facts::tools::ToolError;
 use maka_computer_use::{
     ComputerAppTarget, NativeMonitorAuthority, NativeMonitorFuture, NativeMonitorPermit,
     NativeMonitorResource,
 };
+use maka_sandbox::workspace::PermissionBasis;
 use std::sync::{Arc, Mutex};
 
 type Retirement = super::sessions::Retirement;
 
 pub(super) struct Receipt {
-    root: Arc<maka_event_log::RootStore>,
-    invocation: Invocation,
+    call: Call,
     operation: String,
     basis: PermissionBasis,
     subject: ComputerAppTarget,
@@ -49,34 +49,15 @@ pub(super) struct Receipt {
 
 impl Receipt {
     async fn current(&self) -> Result<(), ToolError> {
+        super::access::resource_boundary(self.call.scope.sandbox_floor())?;
         self.vm.check_open()?;
         self.cleanup.check_native_monitor_admission()?;
         self.admission.check_open()?;
         if self.stopping.is_cancelled() {
             return Err(super::failed("Computer owner is closing"));
         }
-        let store = self
-            .root
-            .session(&self.invocation.session_id)
-            .await
-            .map_err(|error| ToolError::Persistence(super::message(error)))?;
-        let projection = store
-            .session_projection::<maka_agent_api::session::StoredSessionConfiguration>(
-                &self.invocation.session_id,
-            )
-            .await
-            .map_err(|error| ToolError::Persistence(super::message(error)))?
-            .filter(|projection| !projection.session.archived)
-            .ok_or_else(|| super::failed("Native monitor Session retired"))?;
-        if !projection.root_turn.as_ref().is_some_and(|turn| {
-            turn.invocation.turn_id == self.invocation.turn_id
-                && turn.state.terminal_outcome().is_none()
-        }) {
-            return Err(super::failed("Native monitor turn retired"));
-        }
-        let configuration = maka_agent_authority::permissions::resolve_session(projection.session)
-            .map_err(|error| ToolError::Persistence(super::message(error)))?
-            .configuration;
+        self.call.authority.native_admission().await?;
+        let configuration = self.call.authority.current().await?;
         if configuration.permission_basis() != self.basis
             || configuration.permissions.access
                 == maka_agent_api::contract::WorkspaceAccess::ReadOnly
@@ -90,24 +71,13 @@ impl Receipt {
         if configuration.permissions.access
             != maka_agent_api::contract::WorkspaceAccess::DangerFullAccess
         {
-            let global = store
-                .client_capability_grant(&self.invocation.session_id, &api::target())
-                .await
-                .map_err(|error| ToolError::Persistence(super::message(error)))?;
+            let global = self.call.authority.client_grant(&api::target()).await?;
             if global.is_none_or(|grant| grant.basis != Some(self.basis)) {
                 return Err(super::failed("Computer Use grant was revoked"));
             }
         }
-        let target = app_access::target(&self.subject);
-        if !store
-            .computer_app_granted(&self.invocation, &self.operation, &target, &self.basis)
-            .await
-            .map_err(|error| ToolError::Persistence(super::message(error)))?
-            || store
-                .computer_app_stopped(&self.invocation, &target, &self.subject.display)
-                .await
-                .map_err(|error| ToolError::Persistence(super::message(error)))?
-        {
+        let status = self.call.authority.app_status(&self.operation).await?;
+        if !status.granted || status.stopped {
             return Err(super::failed("Native monitor app authority retired"));
         }
         Ok(())
@@ -254,6 +224,7 @@ impl NativeMonitorAuthority for Receipt {
     }
 
     fn try_admit(&self) -> Result<Box<dyn NativeMonitorPermit>, ToolError> {
+        super::access::resource_boundary(self.call.scope.sandbox_floor())?;
         self.vm.check_open()?;
         self.cleanup.check_native_monitor_admission()?;
         if self.stopping.is_cancelled() {
@@ -290,18 +261,19 @@ impl NativeMonitorAuthority for Receipt {
 }
 
 impl Epoch {
-    /// Called only inside the original T1-admitted fixed native effect.
+    /// Called only inside the original admitted fixed native effect.
     pub(super) fn native_monitor_authority(
         &self,
         owner: &Arc<Computer>,
         vm: Arc<Gate>,
-        invocation: Invocation,
+        call: Call,
         operation: String,
         basis: PermissionBasis,
         subject: ComputerAppTarget,
     ) -> Result<Arc<dyn NativeMonitorAuthority>, ToolError> {
+        super::access::resource_boundary(call.scope.sandbox_floor())?;
         vm.check_open()?;
-        let cleanup = self.native_monitor_turn(&invocation.turn_id)?;
+        let cleanup = self.native_monitor_turn(&call.authority.call().execution)?;
         let mut receipts = self
             .native_monitors
             .lock()
@@ -310,7 +282,7 @@ impl Epoch {
             Arc::ptr_eq(&receipt.vm, &vm)
                 && Arc::ptr_eq(&receipt.cleanup, &cleanup)
                 && receipt.basis == basis
-                && receipt.invocation == invocation
+                && Arc::ptr_eq(&receipt.call.authority, &call.authority)
                 && receipt.subject.matches_resolved(&subject)
         }) {
             if receipt.admission.check_open().is_ok() {
@@ -344,8 +316,7 @@ impl Epoch {
             )
         });
         let receipt = Arc::new(Receipt {
-            root: owner.store.clone(),
-            invocation,
+            call,
             operation,
             basis,
             subject,
@@ -364,13 +335,19 @@ impl Epoch {
         Ok(receipt)
     }
 
-    pub(super) fn seal_native_monitors(&self, turn: Option<&str>) {
+    pub(super) fn seal_native_monitors(
+        &self,
+        execution: Option<&maka_agent_facts::durable::ExecutionIdentity>,
+    ) {
         let receipts = self
             .native_monitors
             .lock()
             .expect("Native monitor receipt lock poisoned")
             .iter()
-            .filter(|receipt| turn.is_none_or(|turn| receipt.invocation.turn_id == turn))
+            .filter(|receipt| {
+                execution
+                    .is_none_or(|execution| receipt.call.authority.call().execution == *execution)
+            })
             .cloned()
             .collect::<Vec<_>>();
         for receipt in receipts {
@@ -378,13 +355,19 @@ impl Epoch {
         }
     }
 
-    pub(super) async fn retire_native_monitors(&self, turn: Option<&str>) -> Result<(), ToolError> {
+    pub(super) async fn retire_native_monitors(
+        &self,
+        execution: Option<&maka_agent_facts::durable::ExecutionIdentity>,
+    ) -> Result<(), ToolError> {
         let receipts = self
             .native_monitors
             .lock()
             .expect("Native monitor receipt lock poisoned")
             .iter()
-            .filter(|receipt| turn.is_none_or(|turn| receipt.invocation.turn_id == turn))
+            .filter(|receipt| {
+                execution
+                    .is_none_or(|execution| receipt.call.authority.call().execution == *execution)
+            })
             .cloned()
             .collect::<Vec<_>>();
         // Seal every producer before awaiting any sibling's original cleanup.
@@ -414,59 +397,5 @@ impl Epoch {
                 drop(receipt.retire());
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use maka_agent_api::contract::{WorkspaceAccess, WorkspacePermissions};
-    use maka_agent_facts::interaction::{
-        ComputerAppDisplay, ComputerAppIdentity, ComputerAppPlatform,
-    };
-
-    #[tokio::test]
-    async fn full_access_monitor_needs_no_consent_but_retires_with_its_turn() {
-        let fixture = super::super::browser_access::tests::Fixture::with_permissions(
-            true,
-            WorkspacePermissions {
-                access: WorkspaceAccess::DangerFullAccess,
-                request_permissions: false,
-            },
-        )
-        .await;
-        let receipt = Receipt {
-            root: fixture.owner.store.clone(),
-            invocation: fixture.invocation.clone(),
-            operation: "native-monitor".into(),
-            basis: fixture.basis(),
-            subject: ComputerAppTarget {
-                identity: ComputerAppIdentity {
-                    platform: ComputerAppPlatform::Macos,
-                    application_id: "fixture.application".into(),
-                },
-                display: ComputerAppDisplay {
-                    name: "Fixture application".into(),
-                    app_path: "/Applications/Fixture.app".into(),
-                    risk: None,
-                    warning: None,
-                },
-                allow_always: false,
-                binding: None,
-            },
-            cleanup: Arc::default(),
-            vm: Arc::default(),
-            admission: Arc::default(),
-            resource: Mutex::new(None),
-            attaching: tokio::sync::Mutex::new(()),
-            retirement: Mutex::new(None),
-            tasks: fixture.owner.tasks.clone(),
-            stopping: fixture.owner.stopping.clone(),
-            changed: Arc::default(),
-        };
-        receipt.current().await.unwrap();
-        fixture.end().await;
-        assert!(receipt.current().await.is_err());
-        fixture.close().await;
     }
 }

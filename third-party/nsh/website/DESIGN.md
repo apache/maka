@@ -13,7 +13,11 @@ the look of the UI nsh draws.
    follows that order: the numbers beside Rust, TSX with 0 dependencies, the
    8 platforms and what each is built from, one chat app in three forms, Rust as
    an equal way in, retained views, delivery, the ways to ship, the
-   foundations. Other frameworks are named only on the comparison page.
+   foundations. Other frameworks are named only on the comparison page. The
+   one exception is GPUI Kit (gpui-kit.com), Longbridge's desktop framework:
+   a single linked note under the foundations points desktop-only apps to it.
+   It stays a note there, never a band, card or hero link, while GPUI Kit's
+   home page recommends NSH in a band under its hero.
 2. **Show the real thing.** The picture says what NSH is, and the proof runs:
    the chat band shows `demos/home-chat.tsx` live on the web player at the
    desktop and the phone idioms, beside a terminal capture of the same

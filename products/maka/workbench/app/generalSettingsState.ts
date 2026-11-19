@@ -25,6 +25,7 @@ import type {
   AgentGlobalInstructionsView,
   LanguagePreference,
   MessagePredictionSettings,
+  ProfileAvatar,
   SettingsAssistantPreferences,
   SettingsPreferencesMutation,
   SettingsPreferencesUpdated,
@@ -35,11 +36,13 @@ import { invalidatePredictionPreferences, observePredictionPreferences } from '.
 import { createSettingsDiscard } from './settingsDiscard';
 
 type PreferencesEditor =
+  | { kind: 'dictation'; id: number; basis: SettingsAssistantPreferences }
   | {
       kind: 'personalization';
       id: number;
       basis: SettingsAssistantPreferences;
       displayName: string;
+      avatar: ProfileAvatar | null;
     }
   | {
       kind: 'shell';
@@ -323,7 +326,7 @@ export function createGeneralSettings(
       editor.set({ ...form, document: { ...document, conflict: true } });
       throw new UiError(
         'The original action completed, but the source could not be read. Your draft is preserved. Reload before saving again. ({reason})',
-        { reason: errorText(reason) },
+        { reason: errorText(reason, 'Source unavailable. Reload to try again.') },
       );
     } finally {
       if (owns()) loading.set(false);
@@ -381,25 +384,33 @@ export function createGeneralSettings(
     if (!basis || request.kind !== 'root' || !current(request) || disabled()) return;
     cancelRead();
     editor.set(
-      kind === 'shell'
-        ? {
-            kind,
-            id: view(),
-            basis,
-            preference: basis.shell.preference,
-            executable: basis.shell.executable,
-          }
-        : kind === 'personalization'
-          ? { kind, id: view(), basis, displayName: basis.displayName }
-          : kind === 'compaction'
-            ? { kind, id: view(), basis, prompt: basis.compactionPrompt, useDefault: false }
-            : { kind, id: view(), basis, ...predictionDraft(basis) },
+      kind === 'dictation'
+        ? { kind, id: view(), basis }
+        : kind === 'shell'
+          ? {
+              kind,
+              id: view(),
+              basis,
+              preference: basis.shell.preference,
+              executable: basis.shell.executable,
+            }
+          : kind === 'personalization'
+            ? {
+                kind,
+                id: view(),
+                basis,
+                displayName: basis.displayName,
+                avatar: basis.avatar ?? null,
+              }
+            : kind === 'compaction'
+              ? { kind, id: view(), basis, prompt: basis.compactionPrompt, useDefault: false }
+              : { kind, id: view(), basis, ...predictionDraft(basis) },
     );
   };
   const dirty = () => {
     const form = editor();
     return form?.kind === 'personalization'
-      ? form.displayName !== form.basis.displayName
+      ? form.displayName !== form.basis.displayName || form.avatar !== (form.basis.avatar ?? null)
       : form?.kind === 'compaction'
         ? form.useDefault || form.prompt !== form.basis.compactionPrompt
         : form?.kind === 'shell'
@@ -420,7 +431,8 @@ export function createGeneralSettings(
                   catchUpSamplePercent: String(form.basis.predictions.catchUpSamplePercent),
                 },
               )
-            : !!form?.document &&
+            : form?.kind === 'globalInstructions' &&
+              !!form.document &&
               (!form.document.basis.exists ||
                 form.document.content !== form.document.basis.content);
   };
@@ -502,17 +514,19 @@ export function createGeneralSettings(
     },
     back,
     title: () =>
-      editor()?.kind === 'personalization'
-        ? tr('Personalization')
-        : editor()?.kind === 'shell'
-          ? tr('Bash tool shell')
-          : editor()?.kind === 'globalInstructions'
-            ? tr('Global instructions')
-            : editor()?.kind === 'compaction'
-              ? tr('Compaction prompt')
-              : editor()?.kind === 'predictions'
-                ? tr('Message predictions')
-                : tr('General'),
+      editor()?.kind === 'dictation'
+        ? tr('Dictation')
+        : editor()?.kind === 'personalization'
+          ? tr('Personalization')
+          : editor()?.kind === 'shell'
+            ? tr('Bash tool shell')
+            : editor()?.kind === 'globalInstructions'
+              ? tr('Global instructions')
+              : editor()?.kind === 'compaction'
+                ? tr('Compaction prompt')
+                : editor()?.kind === 'predictions'
+                  ? tr('Message predictions')
+                  : tr('General'),
     open: ({ request, kind }: { request: GeneralAction; kind: PreferencesEditor['kind'] }) =>
       open(request, kind),
     openGlobal(request: GeneralAction) {
@@ -608,6 +622,11 @@ export function createGeneralSettings(
       if (!current(request) || disabled() || form?.kind !== 'personalization') return;
       editor.set({ ...form, displayName });
     },
+    editAvatar(request: GeneralAction, avatar: ProfileAvatar | null) {
+      const form = editor();
+      if (!current(request) || disabled() || form?.kind !== 'personalization') return;
+      editor.set({ ...form, avatar });
+    },
     editPrompt(request: GeneralAction, prompt: string) {
       const form = editor();
       if (!current(request) || disabled() || form?.kind !== 'compaction') return;
@@ -661,7 +680,7 @@ export function createGeneralSettings(
           await settleGlobal(result, form.id);
         });
       }
-      if (form.kind === 'globalInstructions') return;
+      if (form.kind === 'globalInstructions' || form.kind === 'dictation') return;
       if (form.kind === 'shell') {
         if (form.preference === 'git_bash' && !form.executable.trim()) {
           operations.report(new UiError('Select a Git Bash executable.'));
@@ -686,6 +705,7 @@ export function createGeneralSettings(
           {
             kind: 'personalization',
             displayName: form.displayName,
+            avatar: form.avatar,
           },
           form,
         );

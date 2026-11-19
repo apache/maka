@@ -6,29 +6,37 @@
 //!   a new one has loaded, and the item keeps its place when the app changes
 //!   it.
 //! - Without an `onClick`, the item owns its menu and AppKit opens it at any
-//!   click. With one, a primary click is reported, and a secondary click (or
-//!   Control and a primary one, as everywhere on macOS) opens the menu.
+//!   click. With one, a primary click is reported with the item's frame on
+//!   the screen (its button's window), and a secondary click (or Control and
+//!   a primary one, as everywhere on macOS) opens the menu.
+//! - A title (`Tray::title`) shows right of the icon (left with
+//!   `TrayTitlePlacement::Left`), its runs each in its color, in the menu
+//!   bar's font; the item grows to fit it.
 //! - The menu's items are reported as the application menu's are
 //!   ([`crate::chrome::menu`]). The item goes with the app that set it.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, sync::Arc};
 
 use nsh_core::{
     EventKind, EventPayload, ImageSource, PayloadValue, ROOT_ID, ResizeMode,
-    desktop::Tray,
-    geometry::{Points, size},
+    color::Rgba,
+    desktop::{MenuItem, Tray, TrayTitlePlacement, TrayTitleRun},
+    geometry::{Bounds, Points, size},
     image::Want,
 };
 use objc2::{
     MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained, runtime::NSObject, sel,
 };
 use objc2_app_kit::{
-    NSAccessibility, NSApplication, NSEventMask, NSEventModifierFlags, NSEventType, NSImage,
-    NSMenu, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    NSAccessibility, NSApplication, NSCellImagePosition, NSColor, NSEventMask,
+    NSEventModifierFlags, NSEventType, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
+    NSImage, NSMenu, NSStatusBar, NSStatusBarButton, NSStatusItem, NSVariableStatusItemLength,
 };
-use objc2_foundation::{NSCopying, NSObjectProtocol, NSSize, NSString};
+use objc2_foundation::{
+    NSCopying, NSMutableAttributedString, NSObjectProtocol, NSRange, NSSize, NSString,
+};
 
-use crate::{chrome, image::Load, surface::Surface};
+use crate::{chrome, image::Load, surface::Surface, window_state};
 
 /// The side of the square the icon is fitted in, in points: the menu bar's
 /// icon size (`NSStatusBar`'s thickness leaves 3 points around it).
@@ -38,6 +46,8 @@ const SIDE: Points = Points(18.0);
 struct Item {
     /// The surface whose app set it, which its reports go to.
     owner: u64,
+    /// The menu items, retained to relabel when the language changes.
+    menu_items: Arc<[MenuItem]>,
     status: Retained<NSStatusItem>,
     /// The button's target (it does not retain it).
     target: Retained<TrayTarget>,
@@ -82,7 +92,7 @@ define_class!(
             if secondary {
                 open_menu(mtm);
             } else {
-                report_click();
+                report_click(mtm);
             }
         }
     }
@@ -103,6 +113,7 @@ pub(crate) fn set(surface: &Surface, tray: Option<&Tray>) {
             NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
         Item {
             owner: surface.key(),
+            menu_items: tray.menu.clone(),
             status,
             // SAFETY: NSObject's initializer.
             target: unsafe { msg_send![super(TrayTarget::alloc(mtm).set_ivars(())), init] },
@@ -114,6 +125,7 @@ pub(crate) fn set(surface: &Surface, tray: Option<&Tray>) {
         }
     });
     item.owner = surface.key();
+    item.menu_items = tray.menu.clone();
     item.menu = menu;
     item.menu_icons = loads;
     item.click = tray.click;
@@ -135,6 +147,7 @@ pub(crate) fn set(surface: &Surface, tray: Option<&Tray>) {
             button.setAction(clicks.then_some(sel!(trayClicked:)));
         }
         button.sendActionOn(NSEventMask::LeftMouseUp | NSEventMask::RightMouseUp);
+        set_title(&button, &tray.title, tray.title_placement);
     }
     item.status.setMenu(if tray.click == 0 {
         item.menu.as_deref()
@@ -146,6 +159,79 @@ pub(crate) fn set(surface: &Surface, tray: Option<&Tray>) {
         item.icon_load = set_icon(surface, &item.status, tray.icon.as_ref());
     }
     ITEM.with(|i| *i.borrow_mut() = Some(item));
+}
+
+/// `surface`'s labels changed: the menu of its tray, if it set the tray,
+/// is made again with them.
+pub(crate) fn relabel(surface: &Surface) {
+    let Some(mut item) = ITEM.take() else { return };
+    if item.owner == surface.key() {
+        let mut loads = Vec::new();
+        item.menu = (!item.menu_items.is_empty())
+            .then(|| chrome::menu(surface, "", &item.menu_items, &mut loads));
+        item.menu_icons = loads;
+        item.status.setMenu(if item.click == 0 {
+            item.menu.as_deref()
+        } else {
+            None
+        });
+    }
+    ITEM.set(Some(item));
+}
+
+/// Shows `title` on the `position` side of the icon, in the menu bar's font, each run in its
+/// color (the menu bar's text color without one); an empty title leaves the
+/// icon alone.
+fn set_title(button: &NSStatusBarButton, title: &[TrayTitleRun], position: TrayTitlePlacement) {
+    if title.is_empty() {
+        button.setTitle(&NSString::new());
+        button.setImagePosition(NSCellImagePosition::ImageOnly);
+        return;
+    }
+    let whole: String = title.iter().map(|run| run.text.as_str()).collect();
+    let text = NSMutableAttributedString::from_nsstring(&NSString::from_str(&whole));
+    let units = |s: &str| s.encode_utf16().count();
+    // SAFETY: the font is the menu bar's own; the attribute's value is an
+    // `NSFont`, the ranges are within the string.
+    unsafe {
+        text.addAttribute_value_range(
+            NSFontAttributeName,
+            &NSFont::menuBarFontOfSize(0.0),
+            NSRange::new(0, units(&whole)),
+        );
+    }
+    let mut at = 0;
+    for run in title {
+        let len = units(&run.text);
+        // An attributed title draws in black where it names no color, not
+        // in the menu bar's text color: `labelColor` is that color, resolved
+        // for the bar's light or dark appearance as it draws.
+        let color = run.color.map_or_else(NSColor::labelColor, |color| {
+            let Rgba { r, g, b, a } = Rgba::from(color);
+            NSColor::colorWithSRGBRed_green_blue_alpha(
+                f64::from(r),
+                f64::from(g),
+                f64::from(b),
+                f64::from(a),
+            )
+        });
+        // SAFETY: the attribute's value is an `NSColor`, the range within the
+        // string.
+        unsafe {
+            text.addAttribute_value_range(
+                NSForegroundColorAttributeName,
+                &color,
+                NSRange::new(at, len),
+            );
+        }
+        at += len;
+    }
+    button.setAttributedTitle(&text);
+    // The image's side is the other one: `ImageRight` puts the title left.
+    button.setImagePosition(match position {
+        TrayTitlePlacement::Right => NSCellImagePosition::ImageLeft,
+        TrayTitlePlacement::Left => NSCellImagePosition::ImageRight,
+    });
 }
 
 /// Gives the item `icon` once it has loaded (now when it is in memory), or
@@ -184,21 +270,34 @@ fn app_icon(mtm: MainThreadMarker) -> Option<Retained<NSImage>> {
     Some(icon)
 }
 
-/// A primary click, with an `onClick`.
-fn report_click() {
-    let Some((owner, click)) = ITEM.with(|i| i.borrow().as_ref().map(|i| (i.owner, i.click)))
-    else {
+/// A primary click, with an `onClick`: reported with the item's frame.
+fn report_click(mtm: MainThreadMarker) {
+    let Some((owner, click, status)) = ITEM.with(|i| {
+        i.borrow()
+            .as_ref()
+            .map(|i| (i.owner, i.click, i.status.clone()))
+    }) else {
         return;
     };
     if click != 0
         && let Some(surface) = Surface::with_key(owner)
     {
-        surface.event(
-            ROOT_ID,
-            EventKind::Menu,
-            EventPayload::Map(vec![("id", PayloadValue::Number(f64::from(click)))]),
-        );
+        let mut payload = vec![("id", PayloadValue::Number(f64::from(click)))];
+        if let Some(bounds) = bounds(&status, mtm) {
+            payload.push(("bounds", PayloadValue::Bounds(bounds)));
+        }
+        surface.event(ROOT_ID, EventKind::Menu, EventPayload::Map(payload));
     }
+}
+
+/// The item's frame in screen points: its button's window, which the menu
+/// bar sizes to the item.
+fn bounds(status: &NSStatusItem, mtm: MainThreadMarker) -> Option<Bounds<Points>> {
+    let window = status.button(mtm)?.window()?;
+    Some(window_state::to_bounds(
+        window.frame(),
+        window_state::primary_height(mtm),
+    ))
 }
 
 /// A secondary click, with an `onClick`: the item shows its menu for as long

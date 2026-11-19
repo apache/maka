@@ -83,7 +83,7 @@ import { TextView } from "nsh/base";
 
 ## 读取选中的文字
 
-在可选择视图上设置 `onSelectionChange`（Rust 中为 `.on_text_selection_change(..)`），每次选区变化时都会收到选中的文字：`{ text, start }`，即复制会得到的内容及其在整个视图文字中的起始位置；不再有选中内容时（点击别处、按 Escape、另一个视图开始选择）收到 `""`。只在内容变化时报告。可选择视图嵌套时由外层视图报告，因为选区只有一个。设置了 `selectable` 的 [`TextView`](./text-view.md) 也以同样方式报告自己的选区（`onSelectionChange`，Rust 中为 `.on_selection_change(..)`）。聊天应用可以用它引用读者在回答中选中的部分：
+在可选择视图上设置 `onSelectionChange`（Rust 中为 `.on_text_selection_change(..)`），每次选区变化时都会收到选中的文字：`{ text, start, bounds, pageBounds }`，即复制会得到的内容、它在整个视图文字中的起始位置，以及它在视图中和所在根视图中的外框（macOS 和 Windows；锚定在 `pageBounds` 的 `Overlay` 就是选区上方的操作栏）；不再有选中内容时（点击别处、按 Escape、另一个视图开始选择）收到 `""`。只在文字或外框变化时报告。可选择视图嵌套时由外层视图报告，因为选区只有一个。设置了 `selectable` 的 [`TextView`](./text-view.md) 也以同样方式报告自己的选区（`onSelectionChange`，Rust 中为 `.on_selection_change(..)`）。聊天应用可以用它引用读者在回答中选中的部分：
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -147,6 +147,8 @@ const quote = signal("");
 
 它读取的是该视图持有的选区：可选择视图嵌套时选区由外层视图持有，内层 `TextView` 的 ref 返回 `""`。
 
+在 Windows 上，可选择视图的文字被右键单击时，如果该视图（或其中包住这段文字的视图）监听了 `onContextMenu`，就由它收到事件，选区保持不变：应用用 `Menu.popup` 显示自己的菜单，其中 `copy` 和 `selectAll` 角色作用于选区，旁边是应用针对选中内容的菜单项。没有监听时，Windows 显示“复制”和“全选”。
+
 [`Input`](./input.md) 的 `onSelectionChange` 是它自己的：输入框文字中的光标和选区（`{ start, end }`）。
 
 ## 如何选择
@@ -156,6 +158,9 @@ const quote = signal("");
 | macOS、Windows、Linux、GPUI | 在文字上拖动；双击选择一个词，三击选择一个段落，之后的拖动按词或段落继续。Shift+点击扩展选区。Ctrl / Cmd+A 选择视图中的全部内容，Ctrl / Cmd+C 复制，Escape 或在外部按下会清除选区。 |
 | iOS、Android | 长按选择一个词；平台的选择手柄可以扩展它，编辑菜单中有拷贝和全选。 |
 | Web | 浏览器自己的选择，以及它的手势、菜单和快捷键。 |
+
+Web 之外，一个词是一串字母、数字和 `_`，双击只选择这个词。在 iOS 和 Android 上，长按会完整选中主机名、URL、路径或 ID
+（`demo-app.pages.dev`、`https://x.y/a-b?c=1`、`~/a/b-c.md`、`v0.5.1`），就像手机自己的文本视图完整保留链接一样：词之间的标点把它们连在一起，而它后面的标点（句末的 `foo.`）和运算符（`a=b`、`x+y`）不在其中。
 
 ## 选择的范围
 

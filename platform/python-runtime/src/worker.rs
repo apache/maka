@@ -51,13 +51,21 @@ pub fn run_stdio() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let heap: usize = args.next().ok_or("missing heap budget")?.parse()?;
     let timeout: u64 = args.next().ok_or("missing execution budget")?.parse()?;
+    let job_nonce: uuid::Uuid = args.next().ok_or("missing job nonce")?.parse()?;
+    if job_nonce.is_nil() {
+        return Err("invalid job nonce".into());
+    }
     monty_alloc::set_hard_limit(monty_types::memory_limit_with_headroom(Some(heap), false))?;
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut input = stdin.lock();
     let mut output = stdout.lock();
+    write(&mut output, &Request::Prepared { job_nonce })?;
     let start: Start = read(&mut input)?;
-    write(&mut output, &Request::Ready)?;
+    if start.job_nonce != job_nonce {
+        return Err("job nonce mismatch".into());
+    }
+    write(&mut output, &Request::Ready { job_nonce })?;
     let result = execute(
         start,
         ResourceLimits {

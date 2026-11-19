@@ -41,8 +41,13 @@ to existing incoming slot names. They are not arbitrary bytes or reusable handle
 Retaining `context` after the handler ends does not keep the request alive.
 
 Subscriptions publish with `await context.invoke({ operation: 'emit', value })`;
-await each emission to honor backpressure. Mutations supply the original
-`operationId` and inspect the returned `OperationReply`, including cleanup.
+await each emission to honor backpressure. Mutations use `operation: 'mutate'`,
+supply the original `operationId` and caller-owned opaque `recovery` object, and
+inspect the returned `OperationReply`, including its independent outcome and cleanup.
+The recovery object describes the final input and safe resource sources; it is not
+an authorization token. Use `lookupIntent` with the same operation ID after an
+uncertain caller-intent acknowledgment, then `recover` the returned original reference.
+Never replace a failed lookup with a new mutation.
 [State and authority](state-and-authority.md) covers unknown results and recovery.
 
 To expose a service method to Maka's Agent, explicitly configure `agent.tools` with

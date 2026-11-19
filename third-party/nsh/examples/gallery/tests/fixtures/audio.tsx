@@ -3,9 +3,8 @@
 // state and position show.
 import { AudioPlayer, mount, signal, Sound, Text, View } from "nsh";
 
-/// A WAV file of `ms` milliseconds of silence (8 kHz, 16-bit mono), as a
-/// percent-encoded `data:` URI.
-function silence(ms: number): string {
+/// A WAV file of `ms` milliseconds of silence (8 kHz, 16-bit mono).
+function silenceBytes(ms: number): Uint8Array {
   const data = ms * 16;
   const bytes = new Uint8Array(44 + data);
   const view = new DataView(bytes.buffer);
@@ -22,6 +21,12 @@ function silence(ms: number): string {
   view.setUint16(34, 16, true);
   text(36, "data");
   view.setUint32(40, data, true);
+  return bytes;
+}
+
+/// The same, as a percent-encoded `data:` URI.
+function silence(ms: number): string {
+  const bytes = silenceBytes(ms);
   return `data:audio/wav,${Array.from(bytes, b => `%${b.toString(16).padStart(2, "0")}`).join("")}`;
 }
 
@@ -38,6 +43,7 @@ function App() {
   const refused = signal("none");
   const player = signal("idle");
   let click: Sound | undefined;
+  let ticks: Sound[] = [];
   const voice = new AudioPlayer("https://example.com/voice.m4a", { volume: 0.8 });
   voice.on("load", ({ duration }) => player.set(`loaded ${duration}`));
   voice.on("end", () => player.set(`ended at ${voice.currentTime}`));
@@ -61,6 +67,19 @@ function App() {
       <Button label="Load long" onPress={() => {
         Sound.load(silence(6000)).catch((e: Error & { code?: string }) => sound.set(`failed ${e.code}`));
       }} />
+      <Button
+        label="Play bytes"
+        onPress={() => {
+          // Equal bytes share one sound: loaded once, each play a voice.
+          Promise.all([Sound.load(silenceBytes(100)), Sound.load(silenceBytes(100))]).then(([a, b]) => {
+            ticks = [a, b];
+            a.play();
+            b.play({ volume: 0.3 });
+            sound.set(`bytes ${a.duration}s`);
+          });
+        }}
+      />
+      <Button label="Stop bytes" onPress={() => ticks.forEach(tick => tick.stop())} />
       <Button
         label="Play"
         onPress={() => {

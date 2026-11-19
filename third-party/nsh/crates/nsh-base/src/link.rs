@@ -2,7 +2,10 @@
 
 use nsh_core::{AccessibilityCurrent, AccessibilityState, open_url::check_url, prelude::*};
 
-use crate::roving::bar_item;
+use crate::{
+    link_hint::{HintAt, link_hint},
+    roving::bar_item,
+};
 
 /// How a [`Link`] opens its `href` (`openWith`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PropEnum)]
@@ -22,9 +25,16 @@ pub enum LinkOpenWith {
 #[derive(Debug, Clone, PartialEq, Props)]
 pub struct LinkProps {
     /// Where the link goes: a URL or a path of the app's. Data for the
-    /// opening (`openWith`, `onOpen`), never shown: the children are what
-    /// shows.
+    /// opening (`openWith`, `onOpen`) and the hover hint. The children
+    /// provide the link's visible content.
     pub href: Prop<Option<SharedString>>,
+    /// What the link's page is called, shown above the destination in
+    /// the hint that shows while the pointer rests on the link (as a
+    /// Markdown link's title is). Optional: without it the hint shows the
+    /// destination alone. It is not the link's content nor its accessible
+    /// name (the children and `accessibilityLabel` are), and not a
+    /// `tooltip`, which stays the app's own.
+    pub title: Prop<Option<SharedString>>,
     /// How `href` opens when the link is pressed: `"system"` (the default)
     /// opens a URL of another app or site outside the app, `"app"` leaves
     /// it to the app's `onOpen`. `onOpen` reports it either way.
@@ -69,21 +79,28 @@ pub enum LinkEvent {
 /// A link: content that goes somewhere when pressed (a page, a site, a
 /// route of the app). It owns its behavior (presses, keyboard activation
 /// with Return or Space, a stop of the keyboard focus, the disabled state,
-/// the link role for screen readers) and leaves its look to the app: no
-/// color, underline, cursor or label of its own. `href` is where it goes,
-/// data rather than text; `openWith` says who opens it (the system, or the
+/// the link role for screen readers, the pointing hand over it while it is
+/// enabled, as a web `<a href>` has) and leaves its look to the app: no
+/// color, underline or label of its own; a `cursor-*` class of the app's
+/// replaces the hand. `href` is where it goes,
+/// data rather than text; while the pointer rests on the link a hint shows
+/// it (its `title`, when given, above it); `openWith` says who opens it (the system, or the
 /// app's `onOpen`). The app's `class` and `style` style it, its states with
-/// `hover:`, `active:`, `focus:` and `disabled:` classes or `hoverStyle`,
-/// `activeStyle`, `focusStyle` and `disabledStyle`, and its children are
+/// `hover:`, `active:`, `focus-visible:` (the keyboard's ring) and
+/// `disabled:` classes or `hoverStyle`, `activeStyle`, `focusVisibleStyle`
+/// and `disabledStyle`, and its children are
 /// its content. `hitSlop` widens where presses count past its bounds, as a
 /// view's does. Inside a `<Text>` it is an inline box of the paragraph, as
 /// every view there is: it stays on one line (`align-text-bottom` sits its
 /// text on the paragraph's baseline). In a `Toolbar`, it is one of the
-/// toolbar's items, as a `Button` there is.
+/// toolbar's items, as a `Button` there is. A terminal draws the text
+/// inside an enabled link as a hyperlink to `href`, which the terminal
+/// opens on its own (a Cmd- or Ctrl-click), outside `openWith`.
 #[component]
 pub fn Link(props: LinkProps, cx: Scope<LinkEvent>) -> impl IntoElement {
     let (view, disabled) = bar_item(view(), None, props.disabled);
     view.disabled(disabled)
+        .style_when(move || !disabled.get(), |s| s.cursor(Cursor::Pointer))
         .role(AccessibilityRole::Link)
         .optional_label(props.accessibility_label)
         .accessibility_state(move || AccessibilityState {
@@ -91,6 +108,15 @@ pub fn Link(props: LinkProps, cx: Scope<LinkEvent>) -> impl IntoElement {
             ..AccessibilityState::default()
         })
         .hit_slop(props.hit_slop)
+        // Where it goes, for a platform that links its text (a terminal's
+        // hyperlink, the web's `<a href>`); a disabled link goes nowhere.
+        .__link_href(Prop::bind(move || {
+            if disabled.get() {
+                None
+            } else {
+                props.href.get()
+            }
+        }))
         .on_press(move |_: &()| {
             if let Some(href) = props.href.get_untracked() {
                 cx.emit(LinkEvent::Open(href.clone()));
@@ -103,6 +129,23 @@ pub fn Link(props: LinkProps, cx: Scope<LinkEvent>) -> impl IntoElement {
                 }
             }
             cx.emit(LinkEvent::Press);
+        })
+        // Where it goes, shown while the pointer rests on it, below the
+        // link, with its `title` above the destination in the same bubble
+        // (a terminal links its text to it instead). An app's `tooltip` is
+        // a separate overlay, placed on its own side.
+        .when(!crate::terminal::is_terminal(), |view| {
+            view.child(link_hint(
+                move || {
+                    if disabled.get() {
+                        None
+                    } else {
+                        props.href.get()
+                    }
+                },
+                move || props.title.get(),
+                HintAt::Link,
+            ))
         })
         .child(props.children)
 }

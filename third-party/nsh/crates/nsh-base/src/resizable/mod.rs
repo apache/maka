@@ -51,7 +51,9 @@
 //!   is never written into what a panel wants, and a panel shown again
 //!   comes back at the size it wanted. Nothing of this reports `onResize`.
 //! - **Handles are the group's.** One per boundary between two visible
-//!   panels, each an absolutely placed band over the boundary (9 points
+//!   panels (none in a group a dock area makes for `SplitView`'s columns,
+//!   which the user does not resize: `ShowHandles`), each an absolutely
+//!   placed band over the boundary (9 points
 //!   thick, the boundary's line in its middle; on touch screens its hit
 //!   slop adds 10 points on either side), with the resize cursor and the
 //!   role `adjustable`, a `group` whose child, the indicator, is the app's
@@ -107,6 +109,9 @@ mod state;
 use std::ops::Range;
 
 use nsh_core::geometry::{Axis, Points};
+/// Whether a group places handles: off for a dock area's splits that the
+/// user does not resize (`SplitView`'s columns).
+pub(crate) use panel::ShowHandles;
 pub use panel::{
     ResizablePanel, ResizablePanelElement, ResizablePanelEvent, ResizablePanelGroup,
     ResizablePanelGroupElement, ResizablePanelGroupEvent, ResizablePanelGroupProps,

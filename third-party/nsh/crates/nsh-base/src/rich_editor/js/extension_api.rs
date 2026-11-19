@@ -23,6 +23,7 @@ use regex::Regex;
 
 use super::{
     commands::{RichCommand, attrs_of, resolve_with},
+    node_views::NodeViewFn,
     plugins::{
         KeyBindings, PluginEntry, RichInputRule, RichInputRuleKind, input_rule_list, plugins_of,
     },
@@ -73,6 +74,7 @@ pub(crate) struct JsHooks {
     add_prose_mirror_plugins: Option<Callback<JsonValue, Vec<PluginEntry>>>,
     add_global_attributes: Option<Callback<JsonValue, JsonValue>>,
     add_storage: Option<Callback<JsonValue, JsonValue>>,
+    add_node_view: Option<Callback<JsonValue, NodeViewFn>>,
 }
 
 impl JsHooks {
@@ -102,6 +104,7 @@ impl JsHooks {
                 .clone()
                 .or(self.add_global_attributes.clone()),
             add_storage: other.add_storage.clone().or(self.add_storage.clone()),
+            add_node_view: other.add_node_view.clone().or(self.add_node_view.clone()),
         }
     }
 }
@@ -129,11 +132,13 @@ export interface RichExtensionConfig {
   /** Paste rules: `textRule` and `markRule` applied to pasted text. */
   addPasteRules?: (options: any) => {rule}[];
   /** Plugins: kernel plugins as data or `RichEditorPlugin`s. */
-  addProseMirrorPlugins?: (options: any) => {plugin}[];
+  addProseMirrorPlugins?: (options: any) => ({plugin})[];
   /** Attributes on other types: `[{ types: [\"paragraph\"], attributes: { name: { default: null } } }]`. */
   addGlobalAttributes?: (options: any) => { types: string[]; attributes: Record<string, unknown> }[];
   /** Its storage's first value. */
   addStorage?: (options: any) => unknown;
+  /** The component that renders every node of its node type, which must be an atom (`atom: true`, or a leaf): called once per node with props that follow it. */
+  addNodeView?: (options: any) => {node_view};
 }";
 
 impl Arg for RichExtensionConfig {
@@ -143,6 +148,7 @@ impl Arg for RichExtensionConfig {
                 .replace("{command}", &<RichCommand as JsValue>::ts_type(types))
                 .replace("{rule}", &<RichInputRule as JsValue>::ts_type(types))
                 .replace("{plugin}", &<PluginEntry as JsValue>::ts_type(types))
+                .replace("{node_view}", &<NodeViewFn as JsValue>::ts_type(types))
         })
     }
 
@@ -170,12 +176,14 @@ impl Arg for RichExtensionConfig {
                 add_prose_mirror_plugins: field(&value, "addProseMirrorPlugins")?,
                 add_global_attributes: field(&value, "addGlobalAttributes")?,
                 add_storage: field(&value, "addStorage")?,
+                add_node_view: field(&value, "addNodeView")?,
             },
         })
     }
 
     fn classes(out: &mut Vec<&'static nsh_core::element::ClassDef>) {
         <PluginEntry as Arg>::classes(out);
+        out.push(<super::node_views::RichNodeViewProps as nsh_core::element::Class>::DEF);
     }
 }
 
@@ -203,6 +211,7 @@ pub(crate) struct RichExtension {
     add_prose_mirror_plugins: Option<Callback<JsonValue, Vec<PluginEntry>>>,
     add_global_attributes: Option<Callback<JsonValue, JsonValue>>,
     add_storage: Option<Callback<JsonValue, JsonValue>>,
+    add_node_view: Option<Callback<JsonValue, NodeViewFn>>,
 }
 
 impl RichExtension {
@@ -225,6 +234,7 @@ impl RichExtension {
             add_prose_mirror_plugins: hooks.add_prose_mirror_plugins,
             add_global_attributes: hooks.add_global_attributes,
             add_storage: hooks.add_storage,
+            add_node_view: hooks.add_node_view,
         }
     }
 
@@ -240,6 +250,7 @@ impl RichExtension {
                 add_prose_mirror_plugins: self.add_prose_mirror_plugins.clone(),
                 add_global_attributes: self.add_global_attributes.clone(),
                 add_storage: self.add_storage.clone(),
+                add_node_view: self.add_node_view.clone(),
             },
             ..self.def.clone()
         }
@@ -639,6 +650,46 @@ pub(crate) fn extensions_of(
             }
         })
         .collect()
+}
+
+/// The node views of the app's extensions among `entries`: each one's
+/// node type, `addNodeView`'s component (called now, with its options) and
+/// `{ name, options }`. Throws for a view of a type the schema lacks or
+/// that has content.
+pub(crate) fn node_views_of(
+    entries: &[ExtensionEntry],
+    schema: &crate::rich_editor::model::Schema,
+) -> Result<Vec<(String, NodeViewFn, JsonValue)>, String> {
+    let mut views = Vec::new();
+    for entry in entries {
+        let ExtensionEntry::Extension(extension) = entry else {
+            continue;
+        };
+        let view = extension.with(|e| -> Result<_, String> {
+            let Some(hook) = &e.add_node_view else {
+                return Ok(None);
+            };
+            let name = e.name_of();
+            let Some(ty) = schema.node_type(&name) else {
+                return Err(format!(
+                    "{name}: addNodeView needs the extension to add a node type"
+                ));
+            };
+            if !ty.is_atom() {
+                return Err(format!(
+                    "{name}: addNodeView renders atoms only (`atom: true` or a leaf); a node with content is not supported yet"
+                ));
+            }
+            let options = e.resolved_options()?;
+            let func = hook
+                .call(options.clone())
+                .map_err(|err| format!("{name}: addNodeView threw: {err}"))?;
+            let extension = serde_json::json!({ "name": name, "options": options });
+            Ok(Some((name, func, extension)))
+        })?;
+        views.extend(view);
+    }
+    Ok(views)
 }
 
 /// The diagnostics' errors, as one message (none: `Ok`).

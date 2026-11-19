@@ -6,7 +6,7 @@ order: 12.5
 
 # nsh/desktop
 
-`nsh/desktop` 包含只有桌面才有的东西：应用的窗口和它们的标题栏、显示器、应用菜单和右键菜单、托盘和全局快捷键。它在 macOS、Windows 和 Linux 上可用。Rust 代码在 `nsh_core::element::desktop` 中有同样的功能：应用自己的窗口（`window()`）、组件所在的窗口（`current_window()`，一个 `WindowRef`）、显示器（`displays`）、`quit`、`restart`、应用菜单和右键菜单（`set_application_menu`、`popup_menu`，由 `MenuItem` 组成），并用 `.window_drag(true)` 标记可拖动的视图；TSX 导入 `nsh/desktop`。这个模块在所有平台上都可以导入，因此同一个 bundle 可以在所有平台运行：在 iOS 和 Android 上它的函数什么也不做，`isAvailable` 告诉你当前是否有它的窗口和菜单。
+`nsh/desktop` 包含只有桌面才有的东西：应用的窗口和它们的标题栏、显示器、应用菜单和右键菜单、托盘和全局快捷键。它在 macOS、Windows 和 Linux 上可用。Rust 代码在 `nsh_core::element::desktop` 中有同样的功能：应用自己的窗口（`window()`）、组件所在的窗口（`current_window()`，一个 `WindowRef`）、显示器（`displays`）、`quit`、`restart`、登录时打开（`launch_at_login`、`set_launch_at_login`）、应用菜单和右键菜单（`set_application_menu`、`popup_menu`，由 `MenuItem` 组成）、托盘（`set_tray`）和全局快捷键（`register_global_shortcut`），并用 `.window_drag(true)` 标记可拖动的视图；TSX 导入 `nsh/desktop`。这个模块在所有平台上都可以导入，因此同一个 bundle 可以在所有平台运行：在 iOS 和 Android 上它的函数什么也不做，`isAvailable` 告诉你当前是否有它的窗口和菜单。声明了能力的应用需要 `"application": true` 才能使用主窗口、应用菜单、托盘、全局快捷键、`quit` 和退出请求、`restart` 和登录时打开（[能力](../docs/sandbox-and-capabilities.md#application)），否则它们什么也不做。右键菜单和应用打开的窗口（由 `windows` 授权）不需要 `application`。
 
 ```rust tabs
 use nsh_core::{
@@ -33,6 +33,8 @@ import {
   windowState,
 } from "nsh/desktop";
 ```
+
+在 AppKit 和 Win32 后端中，NSH 创建的菜单及未指定标签的角色菜单项会跟随 `nsh/i18n` 选择的语言，运行时切换语言也会更新。内置菜单翻译支持英语、日语、简体中文和繁体中文，其他语言回退为英语；菜单项显式指定的 `label` 始终优先。
 
 ## isAvailable
 
@@ -193,7 +195,7 @@ let Some(doc) = open_window(
 
 | 分组 | 属性 | 说明 |
 |---|---|---|
-| 窗口外框 | `title` | 显示在标题栏、任务栏、窗口切换器中，也提供给辅助技术。 |
+| 窗口外框 | `title` | 显示在标题栏、任务栏、窗口切换器中，也提供给辅助技术。在浏览器中，主窗口的标题就是页面的标题，显示在标签页上（[`Head`](./nsh-web.md#head) 的标题优先）。 |
 | | `titleBar` | `{ style: "default" \| "hidden"; height?; controlsOffset? }`：系统标题栏，或应用自己的标题栏（[见下](#自定义标题栏)）。`controlsOffset`（`{ x, y }`）设置隐藏标题栏中 macOS 红绿灯的位置。 |
 | | `frame` | `"default"`，或 `"none"`：没有标题栏和边框，由应用绘制全部内容。 |
 | 尺寸 | `minSize`、`maxSize` | 用户能调整到的最小和最大内容尺寸，`{ width, height }`，单位为点；`null` 清除。 |
@@ -272,13 +274,13 @@ Rust 列给出 `WindowRef` 的方法。
 | `state()` | `state()` | 平台报告的它的状态（响应式；[见下](#窗口状态与显示器)）。在非桌面平台上、显示之前和关闭之后为 `null`。 |
 | `titleBar()` | `title_bar()` | 它隐藏的标题栏的区域（[见下](#titlebar)）。 |
 | `set(attributes)` | `set(WindowAttributes)` | 修改给出的[属性](#属性)；其他保持原值。应用的权限不允许的属性保持不变，并给出警告。 |
-| `show()`、`hide()` | `show()`、`hide()` | 显示它（最小化时还原），或隐藏它。 |
+| `show()`、`hide()` | `show()`、`hide()` | 显示它（最小化时还原），或隐藏它。macOS 上全屏窗口会先退出全屏再隐藏（与 macOS 应用的窗口一致），再次显示时是普通窗口。 |
 | `focus()` | `focus()` | 显示它，提到所在层级的最前并给它键盘焦点；应用随之激活。窗口保持原有层级。 |
 | `close()` | `close()` | 关闭它，不论 `closeOnPress` 如何。应用自己的窗口卸载其内容（`<Window>`：`reason` 为 `"close"` 的 `onOpenChange`）；主窗口像用户关闭它那样关闭，最后一个窗口关闭时应用结束。 |
 | `minimize()`、`restore()` | `minimize()`、`restore()` | 最小化它，或按原来的模式还原：最大化的窗口最小化后还原时仍是最大化。 |
-| `setMode(mode)` | `set_mode(mode)` | 让它进入 `"normal"`、`"maximized"` 或 `"fullScreen"`；请求它当前的模式不会有变化。 |
+| `setMode(mode)` | `set_mode(mode)` | 让它进入 `"normal"`、`"maximized"` 或 `"fullScreen"`；请求它当前的模式不会有变化。隐藏的窗口保持隐藏：它的 `state()` 读出这个模式，显示时进入该模式。 |
 | `setBounds({ origin?, size?, animated? })` | `set_bounds(WindowFrame { .. })` | 移动它并调整大小，单位为点；省略的字段保持原值。`origin`（`x`、`y`）是它的左上角，从主显示器的左上角量起，`y` 向下增长；只给 `height` 而不给 `y` 时顶边保持不动。macOS 和 Windows 上的 `size` 包含窗口装饰；Linux 上设置 GTK 的默认窗口尺寸。`animated: true` 启用 macOS 的窗口调整动画。宽度和高度接受正有限数值，`x` 和 `y` 接受有限数值；其他值保留字段原值。 |
-| `setPlacement(placement)` | `set_placement(placement)` | 恢复从 `state().placement` 保存的位置：先还原到它的外框，模式要求时再最大化或进入全屏。外框会先放到当前的显示器上：窗口的标题栏仍能在某个显示器上抓到时保持不变，否则居中放到主显示器上，尺寸不超过它。 |
+| `setPlacement(placement)` | `set_placement(placement)` | 恢复从 `state().placement` 保存的位置：先还原到它的外框，模式要求时再最大化或进入全屏（隐藏的窗口保持隐藏，显示时进入该模式）。外框会先放到当前的显示器上：窗口的标题栏仍能在某个显示器上抓到时保持不变，否则居中放到主显示器上，尺寸不超过它。 |
 | `center({ display? })` | `center(display)` | 让它居中于 `display`，省略时居中于它所在的显示器。 |
 | `requestAttention({ critical? })` | `request_attention(critical)` | 请求用户注意：Dock 图标跳动，任务栏按钮闪烁；`critical` 时持续到用户激活应用。 |
 | `on(event, listener)` | `on_<event>(f)` | 监听一个[事件](#事件)；返回一个停止监听的函数。 |
@@ -336,7 +338,34 @@ function Editor() {
 }
 ```
 
-它接受[选项](#选项)中的 `defaultSize`、`defaultPosition`、`display` 和 `defaultMode`，以及所有[属性](#属性)。应用运行时，任何 `<Window>` 之外的 `currentWindow()`（或 `Window.get("main")`）就是主窗口，它的 `set()` 修改同样的属性。
+它接受[选项](#选项)中的 `defaultSize`、`defaultPosition`、`display` 和 `defaultMode`，以及所有[属性](#属性)。应用运行时，任何 `<Window>` 之外的 `currentWindow()`（或 `Window.get("main")`）就是主窗口，它的 `set()` 修改同样的属性。同一份 nsh.json 适用于所有构建：桌面应用这些设置，网页以 `title` 作为页面标题，在 iOS 和 Android 上应用填满它在屏幕中的视图。
+
+`"defaultVisible": false` 让应用启动时主窗口处于隐藏状态：窗口照常创建，应用在其中运行，只是看不见，也不占用键盘，直到应用用 `show()` 或 `focus()` 显示它，比如[托盘](#tray)应用在图标被点击时这样做。在此之前 `state()` 报告它是隐藏的；第一次显示时，它按 `defaultMode` 打开。应用运行期间打开它的 [URL scheme](./nsh.md#urlscheme) 链接也会显示它；在 macOS 上，再次打开应用（点 Dock 图标、在访达中打开）也一样。`nsh run` 和 `nsh test --target` 同样以隐藏状态启动它。开发宿主打开窗口的方式和运行其他应用时一样：`--target windows`（`nsh run` 在 Windows 上的默认值）按应用的 `defaultSize` 和 `defaultMode` 打开，`--target macos`、`linux` 或 `gpui` 按宿主的大小、以普通模式打开；GPUI 在 Linux 上一打开窗口就会显示，所以在 Linux 上用 `--target gpui` 时窗口会显示。在 `nsh run` 下出错时会显示它，好让错误被看到。
+
+```json
+{
+  "window": {
+    "title": "Focus",
+    "closeOnPress": false,
+    "defaultVisible": false
+  }
+}
+```
+
+```tsx
+import { currentWindow, Tray } from "nsh/desktop";
+import icon from "./tray.svg";
+
+function App() {
+  const win = currentWindow();
+  // 关闭按钮只隐藏窗口：应用继续在托盘中运行。
+  win.on("closePress", () => win.hide());
+  Tray.set({ icon, onClick: () => win.focus(), menu: [{ role: "quit" }] });
+  return <Timer />;
+}
+```
+
+[`examples/tray`](https://github.com/longbridge/nsh/tree/main/examples/tray) 就是这样做的托盘应用。
 
 ### 权限
 
@@ -348,6 +377,12 @@ nsh.json 中没有 `"capabilities"` 的应用可以打开除浮层（overlay）�
 const Application: {
   quit(): void;
   restart(): void;
+  launchAtLogin(): Promise<boolean>;
+  setLaunchAtLogin(enabled: boolean): Promise<void>;
+  on(event: "secondInstance", listener: (launch: { args: string[]; cwd: string }) => void): () => void;
+  on(event: "openFiles", listener: (files: { paths: string[] }) => void): () => void;
+  on(event: "quit", listener: () => void): () => void;
+  on(event: "quitRequest", listener: () => void): () => void;
 };
 ```
 
@@ -355,6 +390,12 @@ const Application: {
 |---|---|---|
 | `quit()` | `quit()` | 退出应用，与应用菜单的「退出」项（`{ role: "quit" }`）和平台的退出快捷键相同。 |
 | `restart()` | `restart()` | 像 `quit()` 一样退出应用，然后用相同的参数重新启动它。 |
+| `launchAtLogin()` | `launch_at_login()` | 系统是否在用户登录时打开应用（见[登录时打开](#登录时打开)）。 |
+| `setLaunchAtLogin(enabled)` | `set_launch_at_login(enabled)` | 打开或关闭登录时打开应用。 |
+| `on("secondInstance", listener)` | `next_second_instance()` | 应用运行时再次被启动（[单实例](#单实例)）。 |
+| `on("openFiles", listener)` | `next_open_files()` | 系统用应用声明的类型的文件打开了它（[打开文件](#打开文件)）。 |
+| `on("quit", listener)` | `on_app_quit(f)` | 应用正在退出：运行它的清理（[退出](#退出)）。 |
+| `on("quitRequest", listener)` | `on_quit_request(f)` | 用户要求退出；监听期间由应用决定何时退出（[退出](#退出)）。 |
 
 `Application.quit()` 用于应用自己的「退出」（自定义文字的菜单项、按钮），以及更新后重新启动。应用像最后一个窗口关闭时那样停止，然后结束运行；只关窗口会让应用继续运行时（为 Dock 保留的隐藏窗口、托盘图标）也一样。关闭的过程与「退出」菜单项相同：macOS 上的独立应用像按下 Cmd+Q 一样从 `run_app` 返回；在拥有窗口的 GPUI 应用中，请求以 `CloseRequest::Quit` 交给它的 `AppView::on_close_request` 回调，由应用在准备好后退出；其他平台上退出照常进行，与「退出」菜单项相同。嵌入在其他应用中的视图把应用的生命周期交给那个应用。在终端中应用结束，与退出角色相同。
 
@@ -372,6 +413,213 @@ async function changeLanguage(language: string) {
   if (await confirmRestart()) Application.restart();
 }
 ```
+
+### 退出
+
+「退出」由应用自己负责，就像 GPUI 应用自己处理 `Quit` 动作。没有监听 `quitRequest` 时，应用菜单的 `{ role: "quit" }`
+项和平台的退出快捷键（Cmd+Q、Ctrl+Q）会立即退出。需要先询问用户的应用（有未保存的修改、正在上传）用
+`Application.on("quitRequest", listener)`（Rust：`on_quit_request`）监听它，与 AppKit 的 `applicationShouldTerminate:`
+相同：此后「退出」项、退出快捷键和 Dock 的「退出」都交给 listener，应用不会退出；应用询问之后调用 `quit()`，`quit()`
+总会退出。最后一个 listener 停止后，「退出」项和快捷键恢复立即退出。默认情况下，系统结束应用（用户注销、关机）时会先执行清理，再退出。
+它适用于 macOS、Windows 和 Linux 的独立应用；拥有窗口的 GPUI 应用以 `CloseRequest::Quit` 收到这个请求。
+
+macOS 独立应用可以让系统退出请求和主窗口关闭使用同一个确认流程：
+
+```tsx
+Application.setQuitRequestOptions({ system: true, mainWindowClose: true });
+Application.on("quitRequest", async () => {
+  if (await confirmSaveAndQuit()) Application.quit();
+  else Application.cancelQuitRequest();
+});
+```
+
+两个选项都默认为 `false`，每次调用 `setQuitRequestOptions` 都会替换它们。Rust 使用
+`nsh_core::element::desktop` 的 `set_quit_request_options(QuitRequestOptions)` 和 `cancel_quit_request()`，
+`QuitRequestOptions` 位于 `nsh_core::desktop`。这些选项在注册了退出请求 listener 时生效。
+Rust 调用方可以用 `QuitRequestOptions::default().system(true).main_window_close(true)` 构造选项。
+替换应用时会取消其待处理的确认，并将选项恢复为默认值。
+
+`system: true` 让注销、重新启动和关机等待应用的答复。`quit()` 会先运行应用的清理，再由 AppKit 结束进程。
+Rust 宿主把这类清理放在 `on_app_quit` 中，而不是 `run_app` 返回之后。`cancelQuitRequest()` 会取消系统请求，
+让应用继续运行。未答复的系统请求会在 110 秒后取消，早于 AppKit 的注销超时。移除最后一个 listener 或更改选项也会取消待处理的请求。
+
+`mainWindowClose: true` 让用户关闭主窗口时，在该关闭会结束应用的情况下询问退出 listener。
+配置为关闭后继续运行的窗口仍会隐藏。设置了 `closeOnPress: false` 的窗口仍使用 `closePress`，因此一次关闭只使用一个确认 handler。
+此处遵循独立运行器原有的退出规则，以主窗口关闭为准，而不是统计全部窗口。显式调用 `WindowRef.close()` 保持原有行为。
+确认尚未答复时，重复的退出请求或符合上述条件的主窗口关闭请求共用该确认。如果此时收到系统退出请求，同一个答复也会批准或取消系统请求。
+
+在 Web 上，用户离开页面（关闭标签页、刷新、前往其他网站）就是退出请求：它在用户离开时交给 listener，所以下面的示例在
+Web 上原样可用。listener 立即调用 `quit()` 时，页面直接离开，不会询问。先询问的 listener（这里是 `askToSave()`）让浏览器
+询问用户是否离开；用户留下时，应用自己的询问就在页面上，工作保存之后，下一次离开会立即进行。桌面浏览器在用户与页面交互过
+之后显示它的询问。不论用户怎样离开，应用的 `quit` listener 都在页面离开时开始运行一次：它们同步做的事会完成，它们等待的
+工作在页面还在时继续运行。浏览器保留在前进 / 后退缓存中的页面，它的应用继续运行，用户回来时应用接着运行。不论 `isAvailable`
+怎么说都是这样；声明了能力的应用为此列出 `"application": true`。
+
+```rust tabs
+use nsh_core::{
+    element::desktop::{on_app_quit, on_quit_request, quit},
+    prelude::*,
+};
+
+#[component]
+fn Editor() -> impl IntoElement {
+    let dirty = signal(false);
+    on_quit_request(move || {
+        if dirty.get_untracked() {
+            ask_to_save(); // 它的「退出」按钮调用 `quit()`
+        } else {
+            quit();
+        }
+    });
+    // 不论应用怎样退出都会运行；它不能让应用继续运行。
+    on_app_quit(move || async move { save_session().await });
+    editor()
+}
+```
+
+```tsx tabs
+import { Application } from "nsh/desktop";
+
+function Editor() {
+  Application.on("quitRequest", () => (dirty() ? askToSave() : Application.quit()));
+  // 不论应用怎样退出都会运行；它不能让应用继续运行。
+  Application.on("quit", async () => {
+    await saveSession();
+  });
+  return <EditorView />;
+}
+```
+
+`Application.on("quit", listener)`（Rust：`on_app_quit`）是应用的清理，与 GPUI 的 `on_app_quit` 相同：不论应用怎样停止
+（它的「退出」项、`quit()`、最后一个窗口关闭、Dock 的「退出」、用户注销时系统结束它、宿主应用移除它的视图、Web 页面离开）都会运行，
+并且不能让应用继续运行。listener 返回的 promise 会被等待，所有 listener 合计最多 200 毫秒，这期间平台也在等应用；
+超过这个时间应用就停止。组件渲染时添加的 listener 随组件一起移除；`on` 返回的函数也能停止它。
+
+### 打开文件
+
+打开文档的应用（播放器、编辑器）在 nsh.json 的 `fileTypes` 中列出文件类型。`nsh package` 把它们声明给系统，应用就会出现在
+「打开方式」中，并打开用户双击或拖到图标上的文件。文件以绝对路径送到 `Application.on("openFiles")`，包括启动应用的文件。
+应用 [scheme](nsh.md#urlscheme) 的链接与之分开，仍由 `UrlScheme.on("open")` 送达。`Application` 从 `nsh/desktop` 导入，
+`openFiles` 在 iOS 上同样送达。
+
+```json
+{
+  "fileTypes": [
+    { "name": "Video", "extensions": ["mp4", "mov"], "mimeTypes": ["video/mp4", "video/quicktime"], "contentTypes": ["public.movie"] }
+  ]
+}
+```
+
+```tsx
+import { Application } from "nsh/desktop";
+
+Application.on("openFiles", ({ paths }) => {
+  for (const path of paths) play(path);
+});
+```
+
+| 键 | 说明 |
+| --- | --- |
+| `name` | 系统对这种文件的称呼（`"Video"`），必填。 |
+| `extensions` | 扩展名，不带点（`["mp4", "mov"]`）。 |
+| `mimeTypes` | MIME 类型（`["video/mp4"]`）：Linux 按它们列出应用。 |
+| `contentTypes` | 统一类型标识符（`["public.movie"]`）：iOS 按它们列出应用。 |
+| `role` | `"viewer"`（默认）或 `"editor"`。 |
+
+每种类型要给出 `extensions` 或 `contentTypes`。Rust 代码 await `nsh_core::prelude` 的 `next_open_files()`，得到
+`Vec<PathBuf>`。没有监听时到达的文件会一次交给下一个监听者（最多 64 个，丢弃最早的）。只有声明了文件类型的应用，NSH
+才接收打开的文件。
+
+| 平台 | 应用如何打开文件 |
+| --- | --- |
+| macOS | `Info.plist` 中的 `CFBundleDocumentTypes`；Launch Services 打开应用，或把文件交给正在运行的应用 |
+| iOS、Mac Catalyst | `Info.plist` 中的 `CFBundleDocumentTypes`（按 `contentTypes`）；系统把文件的副本交给应用 |
+| Windows | 应用每次启动时写在 `HKEY_CURRENT_USER\\Software\\Classes` 下：每种类型一个 ProgID，列在各扩展名的 `OpenWithProgids` 中。带文件的第二次启动把文件交给正在运行的应用 |
+| Linux | 桌面条目的 `MimeType`，`Exec … %U`；应用只运行一份，第二次启动把文件交给正在运行的应用 |
+| Android、Web | 不声明；它们的包不包含 `fileTypes` |
+
+开启 [`singleInstance`](#单实例) 时，第二次启动还会以原样的参数报告 `secondInstance`。
+
+### 单实例
+
+桌面应用通常只运行一份：再次打开时把正在运行的应用带到前台。应用在 nsh.json 中写 `"singleInstance": true` 开启。
+之后第二次启动会把它的命令行交给正在运行的应用，并在打开窗口、启动引擎之前退出；正在运行的应用把主窗口带到前台
+（隐藏时显示出来，比如托盘应用），并以 `secondInstance` 报告这次启动，带上参数（不含程序路径）和启动时的目录：
+
+```json
+{ "singleInstance": true }
+```
+
+```tsx
+import { Application } from "nsh/desktop";
+
+Application.on("secondInstance", ({ args, cwd }) => {
+  const file = args.find((arg) => !arg.startsWith("-"));
+  if (file) openDocument(resolve(cwd, file));
+});
+```
+
+Rust 代码 await `nsh_core::prelude` 的 `next_second_instance()`，得到带 `args` 和 `cwd` 的 `SecondInstance`。没有监听者时到达的启动会
+留给下一个监听者（最多 16 个，丢弃最早的）。任何人都能用任意参数启动应用，所以要像检查其他输入一样检查它们。参数中属于
+应用 [scheme](nsh.md#urlscheme) 的链接也会通过 `UrlScheme.on("open")` 送达。
+
+| 平台 | 如何只运行一份 |
+| --- | --- |
+| Windows | 以应用 id 命名的互斥量；第二次启动把参数和工作目录发给正在运行的应用的窗口（`WM_COPYDATA`） |
+| Linux | GApplication 在会话总线上按应用 id 保证唯一；第二次启动的命令行交给正在运行的应用 |
+| macOS | Launch Services 对一个应用包只运行一份，再次打开时激活它，因此不报告 `secondInstance`；文件通过 `openFiles`、链接通过 `UrlScheme` 送达 |
+| iOS、Android、Web | 系统只运行一份应用；不报告 `secondInstance` |
+
+`nsh package` 构建的发布运行器读取这个设置；`nsh run` 仍按原样启动开发宿主。
+
+### 登录时打开
+
+`Application.launchAtLogin()` 返回系统此刻是否会在用户登录时打开应用，`Application.setLaunchAtLogin(enabled)` 打开或关闭它。Rust
+代码在任务中等待 `launch_at_login()` 和 `set_launch_at_login(enabled)`。和 `quit`、`restart` 一样，声明了能力的应用需要 `"application": true`：没有它时 `launchAtLogin()` 返回 `false`，`setLaunchAtLogin` 以 `ERR_ACCESS_DENIED` 拒绝。
+
+```tsx
+import { signal } from "nsh";
+import { Application } from "nsh/desktop";
+
+const openAtLogin = signal(false);
+// 应用显示自己的设置时读取：用户可能在系统设置中改过。
+Application.launchAtLogin().then(openAtLogin.set);
+
+async function setOpenAtLogin(enabled: boolean) {
+  await Application.setLaunchAtLogin(enabled);
+  openAtLogin.set(await Application.launchAtLogin());
+}
+```
+
+```rust
+use nsh_core::element::desktop::{launch_at_login, set_launch_at_login};
+use nsh_core::prelude::*;
+
+let open_at_login = signal(false);
+spawn(async move { open_at_login.set(launch_at_login().await) });
+// 用户打开或关闭应用自己的设置时：
+let turn = move |enabled: bool| {
+    spawn(async move {
+        if let Err(error) = set_launch_at_login(enabled).await {
+            log::warn!("{error}");
+        }
+        open_at_login.set(launch_at_login().await);
+    });
+};
+```
+
+在用户打开或关闭应用自己的设置时调用 `setLaunchAtLogin`，不要由应用自行调用（比如每次启动时）：以用户在系统设置中的选择为准。打开已打开的、关闭已关闭的都会成功，修改按应用发出的顺序执行。
+应用无法登录时打开的地方（嵌入在其他应用中的视图、`nsh run`、iOS、Android 和 Web），以及 macOS 上系统还在“登录项”中等待用户批准时，`launchAtLogin()` 为 `false`。
+应用无法登录时打开的地方，`setLaunchAtLogin` 以 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` reject；系统出错时以它的错误码 reject，其中系统不允许修改时为 `EACCES`，应用加引号后的路径超出
+Windows 登录项能容纳的长度（260 个字符）时为 `ENAMETOOLONG`，应用 id 或路径无法命名登录项时为 `EINVAL`，错误没有自己的错误码时为 `EIO`。
+
+| 平台 | 设置的内容 | 显示在 |
+|---|---|---|
+| macOS | 应用包的登录项（`SMAppService.mainApp`），按 bundle id 保存：应用的每个副本共用一个。 | 系统设置的“登录项” |
+| Windows | 当前用户 `Run` 键下以应用 id 命名、内容为本可执行文件路径的值。指向其他副本的值读作 `false`；`nsh package` 构建的安装程序卸载时，会删除指向所卸载副本的值。 | 设置中的启动应用、任务管理器的“启动应用” |
+| Linux | XDG 自启动条目 `~/.config/autostart/<app id>.desktop`，启动本可执行文件。在桌面设置中关闭的条目读作 `false`，再次打开会重新写入。Flatpak 或 Snap 沙箱中不可用。 | 桌面的自启动设置 |
+
+它在独立应用中生效，包括 `nsh package` 构建的应用；`nsh run` 下读到 `false`，请在打包后的应用中检查。[`examples/tray`](https://github.com/longbridge/nsh/tree/main/examples/tray) 在托盘菜单中提供了这个选项。
 
 ## 自定义标题栏
 
@@ -492,6 +740,8 @@ interface WindowState {
   focused: boolean;            // 拥有键盘焦点
   bounds: Bounds;              // 当前的外框，包含窗口装饰
   contentBounds: Bounds;       // 当前的内容区域
+  nativeContentBounds: { x: number; y: number; width: number; height: number } | null;
+                              // macOS 点、Windows/X11 原生像素；无法全局定位时为 null
   placement: WindowPlacement;  // 模式，以及还原时的外框
   display: Display | null;     // 窗口大部分所在的显示器
   scaleFactor: number;         // 每点的设备像素数
@@ -508,10 +758,17 @@ interface Display {
   primary: boolean;
   scaleFactor: number;
   refreshRate: number | null;  // 单位为赫兹
+  cutouts: Bounds[];           // 摄像头外壳挡住的区域：MacBook 的刘海
 }
 ```
 
-`win.state()` 是平台报告的一个窗口的状态，`windowState()` 是当前窗口的，`displays()` 是各个显示器，主显示器排在最前；它们都是响应式的。所有矩形的单位都是点，使用屏幕坐标：从主显示器的左上角量起，`y` 向下增长，与 `setBounds` 相同。模式、所在显示器、焦点、最小化或可见状态的变化立即报告；移动和调整大小在窗口停下片刻后报告，读取它们的代码每次移动只运行一次，而不是每一步都运行。Rust：`WindowRef::state() -> Option<WindowState>` 和 `displays() -> Vec<Display>`（类型在 `nsh_core::desktop` 中）；读取即订阅变化。
+`win.state()` 是平台报告的一个窗口的状态，`windowState()` 是当前窗口的，`displays()` 是各个显示器，主显示器排在最前；它们都是响应式的。除 `nativeContentBounds` 外，矩形的单位都是点，使用屏幕坐标：从主显示器的左上角量起，`y` 向下增长，与 `setBounds` 相同。模式、所在显示器、焦点、最小化或可见状态的变化立即报告；移动和调整大小在窗口停下片刻后报告，读取它们的代码每次移动只运行一次，而不是每一步都运行。Press handler 执行前会先发布最新的待报告位置，保证 handler 读取当前位置。Rust：`WindowRef::state() -> Option<WindowState>` 和 `displays() -> Vec<Display>`（类型在 `nsh_core::desktop` 中）；读取即订阅变化。
+
+显示器的 `cutouts` 是摄像头外壳挡住的区域，使用同样的屏幕坐标：在有刘海的 MacBook 上，是屏幕顶部正中的一个矩形，高度与菜单栏相同。窗口可以据此贴在刘海旁边，或者让内容从刘海里展开；其他显示器上这个列表为空。
+
+```tsx
+const notch = () => displays().flatMap((d) => d.cutouts)[0] ?? null;
+```
 
 窗口在屏上而 [`lifecycle()`](./nsh.md#device) 报告 `"background"` 时，说明它被别的窗口挡住了。
 
@@ -585,7 +842,11 @@ type MenuItem =
       disabled?: boolean;
       checked?: boolean;
       onSelect?: () => void;
+      icon?: ImageAsset | string;
+      symbol?: string;
+      destructive?: boolean;
       submenu?: MenuItem[];
+      inline?: boolean;
     };
 ```
 
@@ -597,12 +858,16 @@ type MenuItem =
 | `when` | 在 GPUI 后端上，输入框获得键盘焦点时快捷键何时选中该菜单项：`"always"`（默认）、`"auto"`（除非输入框自己使用这个按键：输入字符、移动光标或删除的键，以及编辑快捷键，和 [`keymap`](./nsh.md#keymap) 的绑定相同）或 `"notEditing"`。菜单项让出的键交给输入框。 |
 | `disabled` | `true` 时菜单项变灰（默认 `false`）。 |
 | `checked` | 设置（为 `true` 或 `false`）后菜单项带勾选标记。 |
-| `submenu` | 让菜单项成为子菜单（需要 `label`）。 |
+| `icon` | 标签旁的图片，写法与 `<Image>` 的 `src` 相同（导入的文件或 URL）。会适配到菜单的图标尺寸；各平台细节见 TypeScript 声明。iOS 标题栏菜单的 SF Symbol 名称请用 `symbol`。 |
+| `symbol` | iOS 标题栏菜单中标签旁的 SF Symbol 名称；其他平台（包括 macOS）忽略。与 `icon` 同时设置时以它为准。 |
+| `destructive` | `true` 表示破坏性操作：iOS 显示为红色（`UIMenuElementAttributesDestructive`）。桌面端忽略。 |
+| `submenu` | 让菜单项成为子菜单（需要 `label`）。配合 `inline: true` 成为内联分组：在 iOS 上是带 `label` 为分组标题的 `UIMenuOptions.displayInline`；在桌面上是夹在分隔线之间的条目，不显示 `label`。 |
+| `inline` | 在设置了 `submenu` 时表示内联分组（见 `submenu`）。 |
 | `role` | 由平台执行的标准菜单项（见下）。 |
 
 `null`、`undefined` 和 `false` 项会被忽略，因此可以在列表中写 `cond && { … }`。
 
-在 Rust 中，菜单项是 `MenuItem::new(label)`、`MenuItem::role(role)`、`MenuItem::separator()` 或 `MenuItem::submenu(label, items)`，字段对应同名方法：`.shortcut("mod+n")`（快捷键无效时 panic，并给出正确写法）、`.shortcut_when(When::Auto)`、`.disabled(true)`、`.checked(on)`、`.on_select(f)`，以及给 role 菜单项设置文字的 `.label(..)`。
+在 Rust 中，菜单项是 `MenuItem::new(label)`、`MenuItem::role(role)`、`MenuItem::separator()` 或 `MenuItem::submenu(label, items)`，字段对应同名方法：`.shortcut("mod+n")`（快捷键无效时 panic，并给出正确写法）、`.shortcut_when(When::Auto)`、`.disabled(true)`、`.checked(on)`、`.on_select(f)`、`.icon(..)`、`.symbol(..)`、`.destructive(true)`、子菜单上的 `.inline(true)`，以及给 role 菜单项设置文字的 `.label(..)`。
 
 修饰键：
 
@@ -624,6 +889,8 @@ Role：
 | `quit` | 退出应用 | 全部 |
 | `undo`、`redo`、`cut`、`copy`、`paste`、`selectAll` | 编辑获得焦点的文本框（快捷键仍归文本框自己） | 全部 |
 | `minimize`、`zoom`、`toggleFullScreen`、`close` | 窗口操作 | 全部 |
+
+在 macOS 上，第一个含窗口 role 的顶层菜单就是应用的 Window 菜单：macOS 会在它末尾加上“Bring All to Front”和已打开的窗口（按标题），并自动保持同步。默认菜单栏的 Window 菜单同样如此。其他平台没有这个列表。
 
 带 role 的菜单项默认使用平台的文字和快捷键，除非自己设置（macOS 会在 `about`、`hide` 和 `quit` 中加上应用名）。
 
@@ -767,8 +1034,10 @@ interface TrayModule {
 | --- | --- |
 | `icon` | 图标，写法与 `<Image>` 的 `src` 相同。面板按 16 到 24 像素绘制，图标应简单、方形。在 macOS 和 Windows 上 SVG 是模板图标，用菜单栏或任务栏的文字颜色绘制。不设时 Windows 显示应用图标。 |
 | `tooltip` | 指针停在图标上时显示；不设时显示应用名。 |
+| `title` | 图标旁边的文字，由若干段文字 `{ text, color? }` 组成，每段可以有自己的颜色（CSS 颜色；不设时用菜单栏的文字颜色）：应用想让用户一直看得到的东西，比如价格。macOS 的菜单栏用菜单栏字体显示。Linux 上支持 AppIndicator 标签的面板（GNOME 的 AppIndicator 扩展、Unity、MATE、Budgie）在图标右边显示它的文字，颜色跟随面板；Plasma、Waybar 和 Windows 的通知区只显示图标。 |
+| `titlePlacement` | 文字显示在图标的哪一边：`"right"`（默认）或 `"left"`。仅 macOS 支持；Linux 的面板总是把文字放在图标右边。 |
 | `menu` | 图标的菜单，菜单项与 `Menu` 的相同。右键打开；没有 `onClick` 时左键也打开。 |
-| `onClick` | 左键点击图标时调用（在 Windows 上，图标获得焦点时按 Enter 或空格也会调用）。 |
+| `onClick` | 左键点击图标时调用（在 Windows 上，图标获得焦点时按 Enter 或空格也会调用），参数是 `{ bounds }`：图标在哪里（见[下文](#在图标旁打开窗口)）。 |
 
 再次调用 `set` 即可修改；放在 `effect` 里时会跟随它读取的 signal 更新。
 
@@ -788,7 +1057,87 @@ Tray.set({
 });
 ```
 
-目前只有 TSX 可用，Rust 组件还没有托盘 API。
+应用在 `onClick` 或菜单项的 `onSelect` 中显示或聚焦的窗口会来到最前面；在 Linux 的 Wayland 桌面上，面板会把这次点击的激活令牌交给应用。
+
+标题让 macOS 菜单栏里图标旁边一直显示一段文字，比如价格，涨跌幅用应用主题里的颜色。文字段的颜色在调用 `set` 时就固定下来；要让主题颜色跟随浅色和深色外观，就在读取配色方案的 `effect` 中设置托盘：
+
+```rust tabs
+use nsh_core::desktop::TrayTitleRun;
+
+set_tray(tray().icon(icon).title([
+    TrayTitleRun::new("AAPL 228.00 "),
+    TrayTitleRun::new("+1.33%").color(color(tokens().color("up").unwrap())),
+]));
+```
+
+```tsx tabs
+import { token } from "nsh";
+
+Tray.set({
+  icon,
+  title: [{ text: "AAPL 228.00 " }, { text: "+1.33%", color: token("up") }],
+});
+```
+
+### 在图标旁打开窗口
+
+`onClick` 的 `bounds` 是点击时图标在屏幕上的框，单位是点，坐标系与 `displays()`、`setBounds` 相同：从主显示器左上角算起，`y` 向下。在 macOS 上它是状态项在菜单栏里的位置，在 Windows 上是图标在通知区域或其溢出区里的位置。在 Linux 上它是 `null`，因为那里由窗口管理器摆放应用的窗口；系统报告的点击不带框时，它也是 `null`。据此打开的弹出窗口出现在图标旁边：屏幕顶部是菜单栏时在图标下方，底部是任务栏时在图标上方。
+
+```tsx
+import type { Bounds, Point, Size } from "nsh";
+import { Tray, Window, displays } from "nsh/desktop";
+import { TrayPanel } from "./TrayPanel";
+
+const size = { width: 320, height: 240 };
+
+Tray.set({
+  icon,
+  onClick: ({ bounds }) => {
+    if (!bounds) return Window.get("main")?.focus();
+    Window.open(TrayPanel, {
+      id: "tray-panel",
+      kind: "popup",
+      defaultSize: size,
+      defaultPosition: atIcon(bounds, size),
+    }).focus();
+  },
+});
+
+/** 以图标为中心，放在它所在显示器上空间更大的一侧，并限制在显示器的可见区域内。 */
+function atIcon(icon: Bounds, size: Size): Point {
+  const inside = (b: Bounds, p: Point) =>
+    p.x >= b.origin.x && p.x < b.origin.x + b.size.width && p.y >= b.origin.y && p.y < b.origin.y + b.size.height;
+  const display = displays().find(d => inside(d.bounds, icon.origin)) ?? displays()[0];
+  if (!display) return { x: icon.origin.x, y: icon.origin.y + icon.size.height };
+  const area = display.visibleBounds;
+  const below = icon.origin.y < area.origin.y + area.size.height / 2;
+  const x = icon.origin.x + (icon.size.width - size.width) / 2;
+  const y = below ? icon.origin.y + icon.size.height + 4 : icon.origin.y - size.height - 4;
+  const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max);
+  return {
+    x: clamp(x, area.origin.x, area.origin.x + area.size.width - size.width),
+    y: clamp(y, area.origin.y, area.origin.y + area.size.height - size.height),
+  };
+}
+```
+
+在 Rust 中，`set_tray(tray()...)` 与之相同（传 `None` 移除）：`tray()` 是一个 builder，有 `.icon(..)`、`.tooltip(..)`、`.title(runs)`（`TrayTitleRun::new(text)`，可加 `.color(..)`）、`.title_placement(..)`（`TrayTitlePlacement`）、`.menu(items)`（与 `set_application_menu` 相同的 `MenuItem`）和 `.on_click(|e| ..)`，它的 `TrayClickEvent` 带有 `bounds: Option<Bounds<Points>>`。处理函数在设置它的 owner 下运行，只在该 owner 存活期间有效；放在 `effect` 中会跟随读取的 signal 更新。每个应用只有一个托盘，与 TSX 共用：后设置的生效。
+
+```rust
+use nsh_core::element::desktop::{MenuItem, main_window, quit, set_tray, tray};
+
+set_tray(
+    tray()
+        .icon("tray.svg")
+        .tooltip("Mail")
+        .on_click(|_| main_window().focus())
+        .menu([
+            MenuItem::new("New Message").on_select(compose),
+            MenuItem::separator(),
+            MenuItem::new("Quit").on_select(quit),
+        ]),
+);
+```
 
 ## GlobalShortcut
 
@@ -812,4 +1161,17 @@ interface GlobalShortcutModule {
 import { GlobalShortcut, Window } from "nsh/desktop";
 
 const ok = await GlobalShortcut.register("mod+shift+space", () => Window.get("main")?.focus());
+```
+
+在 Rust 中，`register_global_shortcut(keystroke, on_press)` 返回 `Answer<bool>`，可以在 task 中 await，也可以不管它；按键写法无效时会 panic，与 `MenuItem::shortcut` 相同。`unregister_global_shortcut(keystroke)` 和 `unregister_all_global_shortcuts()` 用来注销；注册它的 owner 销毁时，快捷键也会被注销。
+
+```rust
+use nsh_core::element::desktop::{main_window, register_global_shortcut};
+
+let taken = register_global_shortcut("mod+shift+space", || main_window().focus());
+spawn(async move {
+    if !taken.await {
+        log::warn!("mod+shift+space is taken");
+    }
+});
 ```

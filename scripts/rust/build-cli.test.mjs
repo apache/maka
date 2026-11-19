@@ -168,6 +168,10 @@ test('CLI builds use the requested target and artifact path', async (t) => {
       const plist = await readFile(join(contents, 'Info.plist'), 'utf8');
       for (const [key, value] of [
         ['CFBundleDisplayName', 'Maka'],
+        [
+          'NSMicrophoneUsageDescription',
+          'Maka uses the microphone to transcribe speech into your message draft.',
+        ],
         ['CFBundleExecutable', 'maka-desktop-shell'],
         ['CFBundleIconFile', 'Maka'],
         ['CFBundleIdentifier', 'org.apache.maka.desktop'],
@@ -309,6 +313,36 @@ test('a failed bundle staging keeps the previous Maka.app', async (t) => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('bundles are signed with the configured identity', async (t) => {
+  const signed = [];
+  const execute = childProcess.execFileSync;
+  t.mock.method(childProcess, 'execFileSync', (command, args, options) => {
+    if (command !== '/usr/bin/codesign') return execute(command, args, options);
+    if (args[0] === '--force') signed.push(args[args.indexOf('--sign') + 1]);
+    return Buffer.alloc(0);
+  });
+  syncBuiltinESMExports();
+  const previous = process.env.MAKA_CODESIGN_IDENTITY;
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    if (previous === undefined) delete process.env.MAKA_CODESIGN_IDENTITY;
+    else process.env.MAKA_CODESIGN_IDENTITY = previous;
+  });
+  const root = await mkdtemp(join(tmpdir(), 'maka-sign-identity-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await repository(root);
+  const shell = join(root, 'maka-desktop-shell');
+  await writeFile(shell, 'shell');
+  await writeFile(join(root, 'maka-host-shell'), 'host');
+
+  delete process.env.MAKA_CODESIGN_IDENTITY;
+  await stageDesktopBundle(root, shell, join(root, 'Maka.app'));
+  process.env.MAKA_CODESIGN_IDENTITY = 'Maka Dev';
+  await stageDesktopBundle(root, shell, join(root, 'Maka.app'));
+  assert.deepEqual(signed, ['-', '-', 'Maka Dev', 'Maka Dev']);
 });
 
 test('the Host app has a valid stable bundle signature', {

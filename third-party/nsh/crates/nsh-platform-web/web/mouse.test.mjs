@@ -95,3 +95,27 @@ test('entering and leaving carry the mouse where it is, and a modifier key moves
   delete globalThis.document;
   delete globalThis.getComputedStyle;
 });
+
+test('mouse up names the released button, and a number no button has reports nothing', () => {
+  const root = { parentNode: null, contains: (el) => el === child };
+  const outer = { _id: 2, parentNode: root, _events: new Set(['onMouseUp']), getBoundingClientRect: () => ({ left: 10, top: 20 }) };
+  const child = { _id: 3, parentNode: outer, _events: new Set(['onMouseUp']), getBoundingClientRect: () => ({ left: 30, top: 50 }) };
+  globalThis.document = { elementFromPoint: () => child };
+  globalThis.getComputedStyle = () => ({ transform: 'none', width: '100px', height: '100px' });
+  const player = Object.create(Player.prototype);
+  player.root = root;
+  const sent = [];
+  player.event = (...args) => sent.push(args);
+  player.point = (e) => [e.clientX, e.clientY];
+  const modifiers = { control: false, alt: false, shift: false, platform: false };
+  const mouse = (x, y, button) => ({ position: { x, y }, pagePosition: { x: 45, y: 75 }, modifiers, pressedButton: null, button });
+  const event = { pointerType: 'mouse', clientX: 45, clientY: 75, buttons: 0, button: 2 };
+  // Both listeners around the hit, inside out, hear the right button's release.
+  player.mouseUp(event);
+  assert.deepEqual(sent, [[3, 'onMouseUp', mouse(15, 25, 'right')], [2, 'onMouseUp', mouse(35, 55, 'right')]]);
+  sent.length = 0;
+  player.mouseUp({ ...event, button: 5 });
+  assert.equal(sent.length, 0, 'a button number the map does not know reports nothing');
+  delete globalThis.document;
+  delete globalThis.getComputedStyle;
+});

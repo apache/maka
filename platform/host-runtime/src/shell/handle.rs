@@ -20,10 +20,10 @@
 use super::control::{Control, ControlError, Input, WriteReceipt};
 use super::output::{Output, PtyStream};
 use super::{ShellError, Update};
-use maka_agent_facts::shell_run::ShellObservation;
-use maka_agent_facts::terminal::TerminalSize;
-use maka_agent_facts::terminal::input::InputAction;
-use maka_agent_facts::terminal::input::encode_actions;
+use maka_plugin_core::shell_run::ShellObservation;
+use maka_plugin_core::terminal::TerminalSize;
+use maka_plugin_core::terminal::input::InputAction;
+use maka_plugin_core::terminal::input::encode_actions;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;

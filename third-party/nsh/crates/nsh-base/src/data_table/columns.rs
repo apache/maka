@@ -4,10 +4,15 @@
 //!
 //! Columns are named two ways: by *definition* index, their position in the
 //! app's `columns` (stable while columns move), and by *display* index, their
-//! place now (what the sums are over). A fixed column stays at the start,
-//! where the scrolling columns pass under it.
+//! place now (what the sums are over). The display order is in three zones:
+//! the columns fixed at the start, the scrolling ones, the columns fixed at
+//! the end. Fixed columns stay where the scrolling columns pass under them;
+//! those at the end stand right after the scrolling columns while these fit,
+//! at the end of the view once they overflow it (as CSS's `sticky`).
 
 use std::ops::Range;
+
+use super::ColumnFixed;
 
 /// What the layout needs of a column.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -16,8 +21,17 @@ pub(crate) struct Spec {
     pub(crate) width: f32,
     pub(crate) min: f32,
     pub(crate) max: f32,
-    /// Stays at the start while the others scroll.
-    pub(crate) fixed: bool,
+    /// Where it stays while the others scroll.
+    pub(crate) fixed: ColumnFixed,
+}
+
+/// The zone of a column with `fixed`, in display order.
+fn zone(fixed: ColumnFixed) -> u8 {
+    match fixed {
+        ColumnFixed::Left => 0,
+        ColumnFixed::None => 1,
+        ColumnFixed::Right => 2,
+    }
 }
 
 /// The layout of a table's columns.
@@ -33,18 +47,21 @@ pub(crate) struct Columns {
     /// Where each display index starts (and the total at the end), in the
     /// whole table's coordinates: `starts.len() == len + 1`.
     starts: Vec<f64>,
-    /// How many fixed columns lead the order.
+    /// How many columns fixed at the start lead the order.
     fixed: usize,
+    /// How many columns fixed at the end close it.
+    end: usize,
 }
 
 impl Columns {
-    /// The layout of `specs` in their order, the fixed ones moved to the
-    /// start (keeping their order among themselves).
+    /// The layout of `specs` in their order, the fixed ones moved to their
+    /// ends (keeping their order among themselves).
     pub(crate) fn new(specs: Vec<Spec>) -> Columns {
         let widths = specs.iter().map(|s| clamp(s, s.width)).collect();
         let mut order: Vec<usize> = (0..specs.len()).collect();
-        crate::sort::sort_by_key(&mut order, |&i| !specs[i].fixed);
-        let fixed = specs.iter().filter(|s| s.fixed).count();
+        crate::sort::sort_by_key(&mut order, |&i| zone(specs[i].fixed));
+        let count = |f| specs.iter().filter(|s| s.fixed == f).count();
+        let (fixed, end) = (count(ColumnFixed::Left), count(ColumnFixed::Right));
         let mut columns = Columns {
             specs,
             widths,
@@ -52,6 +69,7 @@ impl Columns {
             shown: Vec::new(),
             starts: Vec::new(),
             fixed,
+            end,
         };
         columns.reindex();
         columns.rebuild(0);
@@ -84,7 +102,9 @@ impl Columns {
                 *at = self.shown[old];
             }
         }
-        crate::sort::sort_by_key(&mut next.order, |&n| (!next.specs[n].fixed, position[n], n));
+        crate::sort::sort_by_key(&mut next.order, |&n| {
+            (zone(next.specs[n].fixed), position[n], n)
+        });
         next.reindex();
         next.rebuild(0);
         next
@@ -112,9 +132,20 @@ impl Columns {
         self.order.len()
     }
 
-    /// How many columns are fixed.
+    /// How many columns are fixed at the start.
     pub(crate) fn fixed_len(&self) -> usize {
         self.fixed
+    }
+
+    /// How many columns are fixed at the end.
+    pub(crate) fn end_len(&self) -> usize {
+        self.end
+    }
+
+    /// The display index of the first column fixed at the end (the number
+    /// of columns when none is).
+    pub(crate) fn end_start(&self) -> usize {
+        self.order.len() - self.end
     }
 
     /// The definition index of the column shown at `display`.
@@ -162,21 +193,51 @@ impl Columns {
         self.starts[self.fixed]
     }
 
-    /// The width the scrolling columns take.
-    pub(crate) fn scroll_width(&self) -> f64 {
-        self.total() - self.fixed_width()
+    /// The width of the columns fixed at the end.
+    pub(crate) fn end_width(&self) -> f64 {
+        self.total() - self.starts[self.end_start()]
     }
 
-    /// The column at `x` of the table's coordinates when scrolled by
-    /// `scroll_x` (content points); `None` past the columns.
-    pub(crate) fn display_at(&self, x: f64, scroll_x: f64) -> Option<usize> {
-        let fixed_width = self.fixed_width();
-        let table_x = if x < fixed_width { x } else { x + scroll_x };
-        if table_x < 0.0 || table_x >= self.total() {
+    /// The width the scrolling columns take.
+    pub(crate) fn scroll_width(&self) -> f64 {
+        self.total() - self.fixed_width() - self.end_width()
+    }
+
+    /// Where the columns fixed at the end stand in a view `view` wide,
+    /// scrolled by `scroll_x`, from the start of the columns: right after
+    /// the scrolling columns while they fit, at the view's end once they
+    /// overflow it.
+    pub(crate) fn end_left(&self, view: f64, scroll_x: f64) -> f64 {
+        let fixed = self.fixed_width();
+        fixed + (self.scroll_width() - scroll_x).min(view - fixed - self.end_width())
+    }
+
+    /// The column at `x` of the table's coordinates (from the columns'
+    /// start) in a view `view` wide when scrolled by `scroll_x` (content
+    /// points); `None` past the columns.
+    pub(crate) fn display_at(&self, x: f64, scroll_x: f64, view: f64) -> Option<usize> {
+        if x < 0.0 {
+            return None;
+        }
+        let n = self.order.len();
+        let end_left = self.end_left(view, scroll_x);
+        let table_x = if x < self.fixed_width() {
+            x
+        } else if self.end > 0 && x >= end_left {
+            self.starts[self.end_start()] + (x - end_left)
+        } else {
+            let table_x = x + scroll_x;
+            // Past the scrolling columns, where those at the end are not.
+            if table_x >= self.starts[self.end_start()] {
+                return None;
+            }
+            table_x
+        };
+        if table_x >= self.total() {
             return None;
         }
         // The last start at or before `table_x`.
-        let at = self.starts[..self.order.len()].partition_point(|&s| s <= table_x);
+        let at = self.starts[..n].partition_point(|&s| s <= table_x);
         at.checked_sub(1)
     }
 
@@ -190,12 +251,13 @@ impl Columns {
         at.checked_sub(1)
     }
 
-    /// The scrolling columns (display indexes, past the fixed ones) that
-    /// intersect the content span `from..to`, which is in the whole table's
-    /// coordinates (the viewport's start is `scroll_x + fixed_width`).
+    /// The scrolling columns (display indexes, between the fixed ones)
+    /// that intersect the content span `from..to`, which is in the whole
+    /// table's coordinates (the viewport's start is `scroll_x +
+    /// fixed_width`).
     pub(crate) fn visible(&self, from: f64, to: f64) -> Range<usize> {
-        let n = self.order.len();
-        if self.fixed >= n || to <= from || from >= self.total() {
+        let n = self.end_start();
+        if self.fixed >= n || to <= from || from >= self.starts[n] {
             return n..n;
         }
         let first = self.starts[..n]
@@ -220,16 +282,34 @@ impl Columns {
         true
     }
 
+    /// Whether the column at `display` is fixed (at either side): it never
+    /// scrolls out of view.
+    pub(crate) fn is_fixed(&self, display: usize) -> bool {
+        display < self.fixed || display >= self.end_start()
+    }
+
+    /// The display indexes of the zone the column at `display` is in: the
+    /// columns fixed at its side, or the scrolling ones.
+    pub(crate) fn zone_of(&self, display: usize) -> Range<usize> {
+        let end = self.end_start();
+        if display < self.fixed {
+            0..self.fixed
+        } else if display >= end {
+            end..self.order.len()
+        } else {
+            self.fixed..end
+        }
+    }
+
     /// Moves the column at display index `from` to `to`, within its zone
-    /// (fixed columns among themselves, the others among theirs); whether it
-    /// moved.
+    /// (fixed columns among those fixed at their side, the others among
+    /// theirs); whether it moved.
     pub(crate) fn move_to(&mut self, from: usize, to: usize) -> bool {
         let n = self.order.len();
         if from >= n || to >= n || from == to {
             return false;
         }
-        let zone = |i: usize| i < self.fixed;
-        if zone(from) != zone(to) {
+        if !self.zone_of(from).contains(&to) {
             return false;
         }
         let def = self.order.remove(from);
@@ -249,13 +329,67 @@ fn clamp(spec: &Spec, width: f32) -> f32 {
 mod tests {
     use super::*;
 
-    fn spec(width: f32, fixed: bool) -> Spec {
+    fn spec(width: f32, fixed: impl Into<ColumnFixed>) -> Spec {
         Spec {
             width,
             min: 20.0,
             max: 400.0,
-            fixed,
+            fixed: fixed.into(),
         }
+    }
+
+    /// a(100) B(60, start) c(80) D(50, end) e(120): B leads, D closes.
+    fn ended() -> Columns {
+        Columns::new(vec![
+            spec(100.0, false),
+            spec(60.0, true),
+            spec(80.0, false),
+            spec(50.0, ColumnFixed::Right),
+            spec(120.0, false),
+        ])
+    }
+
+    #[test]
+    fn columns_fixed_at_the_end_close_the_order() {
+        let c = ended();
+        assert_eq!(c.order(), [1, 0, 2, 4, 3]);
+        assert_eq!((c.fixed_len(), c.end_len(), c.end_start()), (1, 1, 4));
+        assert_eq!(c.end_width(), 50.0);
+        assert_eq!(c.scroll_width(), 300.0);
+        assert_eq!(c.zone_of(4), 4..5);
+        assert_eq!(c.zone_of(2), 1..4);
+        // Scrolling columns only.
+        assert_eq!(c.visible(0.0, 10_000.0), 1..4);
+    }
+
+    #[test]
+    fn columns_fixed_at_the_end_stick_to_the_view_once_the_others_overflow() {
+        let c = ended();
+        // A view of 260: the scrolling columns (300) overflow it, so D
+        // stands at 210, at the view's end, wherever they scroll.
+        assert_eq!(c.end_left(260.0, 0.0), 210.0);
+        assert_eq!(c.end_left(260.0, 150.0), 210.0);
+        assert_eq!(c.display_at(220.0, 0.0, 260.0), Some(4));
+        assert_eq!(c.display_at(220.0, 150.0, 260.0), Some(4));
+        // Before D, the scrolling columns: c at 200.
+        assert_eq!(c.display_at(200.0, 0.0, 260.0), Some(2));
+        // A view of 600: they fit, and D follows them at 360.
+        assert_eq!(c.end_left(600.0, 0.0), 360.0);
+        assert_eq!(c.display_at(370.0, 0.0, 600.0), Some(4));
+        assert_eq!(c.display_at(500.0, 0.0, 600.0), None);
+    }
+
+    #[test]
+    fn columns_fixed_at_the_end_move_among_themselves() {
+        let mut c = Columns::new(vec![
+            spec(10.0, false),
+            spec(20.0, ColumnFixed::Right),
+            spec(30.0, ColumnFixed::Right),
+        ]);
+        assert_eq!(c.order(), [0, 1, 2]);
+        assert!(!c.move_to(0, 2), "a scrolling column stays among them");
+        assert!(c.move_to(2, 1));
+        assert_eq!(c.order(), [0, 2, 1]);
     }
 
     fn table() -> Columns {
@@ -282,13 +416,13 @@ mod tests {
     #[test]
     fn finds_the_column_under_a_point() {
         let c = table();
-        assert_eq!(c.display_at(30.0, 0.0), Some(0));
+        assert_eq!(c.display_at(30.0, 0.0, 1000.0), Some(0));
         // Fixed columns do not scroll.
-        assert_eq!(c.display_at(30.0, 90.0), Some(0));
-        assert_eq!(c.display_at(70.0, 0.0), Some(1));
+        assert_eq!(c.display_at(30.0, 90.0, 1000.0), Some(0));
+        assert_eq!(c.display_at(70.0, 0.0, 1000.0), Some(1));
         // Scrolling by 90 shows the second scrolling column at 70.
-        assert_eq!(c.display_at(100.0, 90.0), Some(2));
-        assert_eq!(c.display_at(400.0, 0.0), None);
+        assert_eq!(c.display_at(100.0, 90.0, 1000.0), Some(2));
+        assert_eq!(c.display_at(400.0, 0.0, 1000.0), None);
     }
 
     #[test]
@@ -365,6 +499,6 @@ mod tests {
         let c = Columns::new((0..1_000_000).map(|_| spec(100.0, false)).collect());
         assert_eq!(c.total(), 100_000_000.0);
         assert_eq!(c.visible(55_000_050.0, 55_000_350.0), 550_000..550_004);
-        assert_eq!(c.display_at(10.0, 55_000_000.0), Some(550_000));
+        assert_eq!(c.display_at(10.0, 55_000_000.0, 1000.0), Some(550_000));
     }
 }

@@ -1212,7 +1212,17 @@ impl<'a> Compiler<'a, '_> {
                         None => "true".to_owned(),
                         Some(JSXAttributeValue::StringLiteral(s)) => quote(&s.value),
                         Some(JSXAttributeValue::ExpressionContainer(c)) => {
-                            match self.expression(c.unbox().expression) {
+                            let c = c.unbox();
+                            // `<If>`'s `else` is a branch, kept as a child
+                            // expression is: `else={label()}` follows `label`
+                            // (an element is made once, as before).
+                            let kept = name == "else"
+                                && !matches!(
+                                    c.expression,
+                                    JSXExpression::JSXElement(_) | JSXExpression::JSXFragment(_)
+                                );
+                            match self.expression(c.expression) {
+                                Some(e) if kept => self.value(e, g, Mode::Value),
                                 Some(e) => g.hole(e),
                                 None => continue,
                             }
@@ -1772,6 +1782,29 @@ mod tests {
         // Called with the accessor; `else` as it was; `when` read through it.
         assert!(code.contains("})())(__nsh_hw), () => (() => {"), "{code}");
         assert!(code.contains("))(() => user());"), "{code}");
+    }
+
+    #[test]
+    fn an_if_else_expression_is_kept_as_a_child_is() {
+        let code = flat(
+            &compile(
+                r#"import { Text } from "nsh";
+            declare const on: () => boolean, label: () => string;
+            export const a = <If when={on()} else={label()}>on</If>;
+            export const b = <If when={on()} else={<Text>off</Text>}>on</If>;"#,
+            )
+            .unwrap(),
+        );
+        // A function the branch returns, which the insert follows.
+        assert!(
+            code.contains("_$cond(() => on(), () => \"on\", () => () => label())"),
+            "{code}"
+        );
+        // An element is made once, as before.
+        assert!(
+            code.contains("_$cond(() => on(), () => \"on\", () => (() => {"),
+            "{code}"
+        );
     }
 
     #[test]

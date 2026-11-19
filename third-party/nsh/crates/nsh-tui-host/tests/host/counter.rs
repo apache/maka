@@ -98,6 +98,7 @@ fn counter_bundle() -> (BundleDirectory, Bundle) {
         minify: false,
         split: false,
         ui_sets: Vec::new(),
+        ..Default::default()
     })
     .unwrap();
     let nonce = SystemTime::now()

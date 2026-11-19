@@ -18,16 +18,20 @@
  */
 
 use crate::contract::{Workspace, WorkspacePermissions};
-use maka_agent_facts::workspace::{BindingRef, BindingStamp};
+use maka_sandbox::workspace::{BindingRef, BindingStamp};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StoredSessionConfiguration {
+    #[serde(default)]
+    pub incognito: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<crate::contract::BackendPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_preset: Option<crate::preset::AppliedPreset>,
     #[serde(default)]
     pub collaboration_mode: maka_agent_facts::execution::CollaborationMode,
     #[serde(default)]
@@ -51,10 +55,14 @@ pub struct StoredSessionConfiguration {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolvedConfiguration {
+    #[serde(default)]
+    pub incognito: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<crate::contract::BackendPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_preset: Option<crate::preset::AppliedPreset>,
     #[serde(default)]
     pub collaboration_mode: maka_agent_facts::execution::CollaborationMode,
     #[serde(default)]
@@ -83,8 +91,10 @@ impl StoredSessionConfiguration {
             .workspace
             .boundary_revision(self.boundary_revision, stamp)?;
         Ok(ResolvedConfiguration {
+            incognito: self.incognito,
             parent_session_id: self.parent_session_id,
             backend: self.backend,
+            applied_preset: self.applied_preset,
             collaboration_mode: self.collaboration_mode,
             tools: self.tools,
             compaction_prompt: self.compaction_prompt,
@@ -101,8 +111,8 @@ impl StoredSessionConfiguration {
 }
 
 impl ResolvedConfiguration {
-    pub fn permission_basis(&self) -> maka_agent_facts::workspace::PermissionBasis {
-        maka_agent_facts::workspace::PermissionBasis {
+    pub fn permission_basis(&self) -> maka_sandbox::workspace::PermissionBasis {
+        maka_sandbox::workspace::PermissionBasis {
             boundary_revision: self.boundary_revision,
             binding: self.binding,
         }

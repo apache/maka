@@ -138,6 +138,21 @@ impl AppView {
             .register(name, factory);
     }
 
+    /// Watches the app's `<Scroll>` whose `nativeID` is `native_id`, for native
+    /// UI of the host that follows or drives the app's scrolling in the frame
+    /// of the scroll, without JS (a sheet under the content, say): `watcher`
+    /// gets a [`crate::ScrollHandle`] when the scroll view is there. With
+    /// several of the same `nativeID`, the newest one is watched. One watcher
+    /// per `nativeID`; `None` stops watching. On the main thread.
+    pub fn watch_scroll(
+        &self,
+        native_id: &str,
+        watcher: Option<std::rc::Rc<dyn crate::ScrollWatcher>>,
+    ) {
+        let watchers = self.inner.state.borrow().options.scroll_watchers.clone();
+        watchers.watch(native_id, watcher);
+    }
+
     /// Hands `url`, one of the embedding app's URLs, to the running app as
     /// the system opening it would (`UrlScheme.on("open")`, `nsh`); before an
     /// app runs, the next one loaded gets it. On the main thread.
@@ -161,6 +176,29 @@ impl AppView {
         self.inner.set_limits(limits);
     }
 
+    /// Whether scroll views make the views of their content only near
+    /// their viewport (true, the default), or all of it (false). Turned
+    /// off, what is not made yet is made in the next frames, e.g. to draw a
+    /// whole scroll view into an image; turned on again, what is far away
+    /// is given up. Applies to the running app and the apps loaded next.
+    pub fn set_content_culling(&self, enabled: bool) {
+        let mut state = self.inner.state.borrow_mut();
+        state.options.content_culling = enabled;
+        if let Some(surface) = &state.surface {
+            surface.set_content_culling(enabled);
+        }
+    }
+
+    /// Gives the address of the apps this view loads (`UrlScheme.setUrl`)
+    /// to the system as the current `NSUserActivity` (Handoff;
+    /// [`SurfaceOptions::handoff`]). Applies from the next [`AppView::load`]:
+    /// a change removes the running app, as [`AppView::set_limits`] does.
+    pub fn set_handoff(&self, handoff: bool) {
+        if self.inner.state.borrow().options.handoff != handoff {
+            self.reconfigure(|options| options.handoff = handoff);
+        }
+    }
+
     /// Where the apps this view loads keep their caches (the images they
     /// downloaded) and how much each keeps ([`SurfaceOptions::cache`]). A
     /// change applies from the next [`AppView::load`].
@@ -172,7 +210,7 @@ impl AppView {
 
     /// The directory the storage (`nsh/storage`) of the apps this view loads
     /// is kept in (`storage.json` in it), overriding each app's own in
-    /// [`SurfaceOptions::data_dir`] (`None`: theirs). A change applies from
+    /// [`SurfaceOptions::support_dir`] (`None`: theirs). A change applies from
     /// the next [`AppView::load`].
     pub fn set_storage_directory(&self, dir: Option<std::path::PathBuf>) {
         if self.inner.state.borrow().options.storage != dir {

@@ -20,11 +20,13 @@
 //! Explicitly bound question producer. Canonical records belong to the Run;
 //! the original admitted Host call owns waiting and durable withdrawal.
 use futures_util::future::BoxFuture;
+use maka_agent_authority::computer::NativeCallContext;
 use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_event_log::RootStore;
 use maka_host_runtime::application::{
-    Context, Handler, NativeActivation, NativeOwner, NativeRegistry,
+    Context, Handler, HandlerError, HandlerResult, HandlerValue, NativeActivation, NativeOwner,
+    NativeRegistry,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -66,38 +68,30 @@ impl Handler for Questions {
         method: String,
         input: Value,
         context: Context,
-    ) -> BoxFuture<'static, Result<Value, String>> {
-        let store = self.0.clone();
-        Box::pin(async move {
+    ) -> BoxFuture<'static, HandlerResult> {
+        let result = async move {
             if method != "ask" {
                 return Err("question_method_unavailable".into());
             }
-            let invocation = context
+            let execution = context
                 .scope()
                 .identity
                 .agent()
-                .ok_or("question_requires_agent")?
-                .clone();
-            let store = store
-                .session_for_execution(
-                    context
-                        .execution_custody()
-                        .ok_or("interaction_requires_execution")?
-                        .as_ref(),
-                    &invocation,
-                )
-                .map_err(|error| error.to_string())?;
+                .ok_or("question_requires_agent")?;
             let operation_id = context
                 .scope()
                 .identity
                 .operation_id()
                 .ok_or("question_requires_tool")?;
             let operation = context.operation().ok_or("question_requires_mutation")?;
-            let tool = maka_agent_facts::tools::ToolCallContext {
-                invocation: invocation.clone(),
-                operation_id: operation_id.into(),
-                execution: context.execution_custody().cloned(),
-            };
+            let native = context
+                .native_context::<NativeCallContext>()
+                .ok_or("agent_native_call_context_missing")?;
+            let access = native.access();
+            let tool = access.call();
+            if &tool.execution != execution || tool.operation_id != operation_id {
+                return Err("interaction_native_call_mismatch".into());
+            }
             let request = match projection::project_question_request(
                 &tool.tool_use_id(),
                 &input["questions"],
@@ -115,10 +109,12 @@ impl Handler for Questions {
                     reason: Rejection::Unavailable,
                 });
             }
+            access
+                .bind_original(&context)
+                .await
+                .map_err(|error| error.to_string())?;
             let record = InteractionRecord {
-                session_id: invocation.session_id.clone(),
-                turn_id: invocation.turn_id.clone(),
-                run_id: invocation.run_id.clone(),
+                execution: tool.execution.clone(),
                 request_id: format!(
                     "question_{}",
                     hex::encode(Sha256::digest(
@@ -129,13 +125,8 @@ impl Handler for Questions {
                 request,
                 outcome: None,
             };
-            let Some(result) = maka_agent_authority::interaction_wait::publish(
-                &store,
-                &context,
-                &invocation,
-                &record,
-            )
-            .await?
+            let Some(result) =
+                maka_agent_authority::interaction_wait::publish(access, &context, &record).await?
             else {
                 return encode(Answer::Rejected {
                     reason: Rejection::Unavailable,
@@ -157,6 +148,10 @@ impl Handler for Questions {
                 _ => return Err("question_outcome_invalid".into()),
             };
             encode(answer)
+        };
+        Box::pin(async move {
+            let result: std::result::Result<Value, String> = result.await;
+            result.map(HandlerValue::Json).map_err(HandlerError::from)
         })
     }
 }

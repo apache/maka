@@ -202,11 +202,6 @@ impl UiReload {
         self.0.restored.lock().unwrap().clone()
     }
 
-    /// Remembers presentation state while the native window is closed.
-    pub fn remember(&self, state: JsonValue) {
-        *self.0.restored.lock().unwrap() = state;
-    }
-
     pub(crate) fn prepare(&self, state: JsonValue) -> Result<PendingReload, String> {
         let mut admission = self.0.pause.lock().unwrap();
         if !matches!(*admission, PauseAdmission::Held) {

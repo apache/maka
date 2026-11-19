@@ -26,6 +26,11 @@ use serde::{Deserialize, Serialize};
 #[schemars(rename = "AgentContextRead")]
 pub struct ContextRead {
     pub session_id: String,
+    /// Null selects the latest actual readable source, not a caller-provided execution grant.
+    #[schemars(
+        with = "maka_plugin_core::wire_schema::RequiredNullable<maka_agent_facts::durable::RunId>"
+    )]
+    pub run_id: Option<maka_agent_facts::durable::RunId>,
     /// Null captures the committed head; a supplied fence must not exceed it.
     #[schemars(
         with = "maka_plugin_core::wire_schema::RequiredNullable<u64>",
@@ -49,8 +54,10 @@ pub struct ContextReport {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentContextRequest")]
 pub struct ContextRequest {
-    pub invocation_id: String,
-    pub step_id: String,
+    /// Original canonical Run metadata; observation only.
+    pub execution: maka_agent_facts::durable::ExecutionIdentity,
+    pub step_id: maka_agent_facts::durable::StepId,
+    pub attempt_id: maka_agent_facts::durable::ModelAttemptId,
     #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
     pub sequence: u64,
     #[schemars(range(min = 0, max = 9_007_199_254_740_991u64))]

@@ -15,6 +15,10 @@ Escape) work, and are decided natively. Rust makes one with `nsh_base::dialog()`
 The dialog owns its behavior and leaves its look to the app: its styles style the popup (the view holding the
 children), and in TSX `backdropClass` / `backdropStyle` add a backdrop behind it.
 
+On macOS, closing a dialog returns keyboard focus to the input or control that had it before opening,
+including `Editor` and `RichEditor`, while that control remains visible in the current scope. If another
+control has already taken focus, it keeps it.
+
 ```rust tabs
 use nsh_base::{button, dialog};
 use nsh_core::prelude::*;
@@ -111,10 +115,19 @@ and the explicit import takes its place. For the system's alert or action sheet,
 | `closeOnEscape` | `.close_on_escape(..)` | `boolean` | `true` | Escape and the Android back button close it natively. |
 | `closeOnBackdropPress` | `.close_on_backdrop_press(..)` | `boolean` | `true` | A press on the backdrop closes it. |
 | `closeOnSwipe` | `.close_on_swipe(..)` | `boolean` | `true` | Swiping a sheet down (iOS, phone browsers) closes it natively. |
+| `detents` | `.detents(vec![SheetDetent::Medium, SheetDetent::Large])` | `SheetDetent[]` | `[]` | iOS sheets (`pageSheet`, `formSheet`): the heights it rests at, `"medium"` (about half the screen), `"large"`, `{ height }` in points or `{ fraction }` of the large one (the `SheetDetent` values [`Sheet`](./sheet.md) takes). None: the system's full height. See [A sheet at half height](#a-sheet-at-half-height). |
+| `detent` | `.detent(..)` | `SheetDetent` | | The detent it rests at: it moves there when the value changes. The user's moves stand even when the app does not follow them. |
+| `defaultDetent` | `.default_detent(..)` | `SheetDetent` | the smallest | The detent it opens at without `detent`. |
+| `grabber` | `.grabber(..)` | `boolean` | `false` | The system's grabber at the top of the sheet. |
+| `largestUndimmedDetent` | `.largest_undimmed_detent(..)` | `SheetDetent` | none | Up to this detent, what is behind the sheet stays undimmed and takes touches. |
 | `statusBar` | `.status_bar(..)` | `{ foreground?, hidden?, animated? }` | none | iOS and Android: the status bar while the dialog is open, over the pages' ([Status bar](../modules/nsh-base.md#status-bar)). |
+| `accessibilityLabel` | `.label(..)` | `string` | none | What screen readers call the dialog as the focus enters it: its title. |
+| `accessibilityDescription` | `.accessibility_description(..)` | `string` | none | What screen readers read after its name: its message. |
+| `role` | `.role(AccessibilityRole::AlertDialog)` | `"dialog" \| "alertdialog"` | `"dialog"` | What it is for screen readers: `"alertdialog"` for one that asks the user to confirm something or tells them something urgent. |
 | `onOpen` | `.on_open(..)` | `() => void` | | It finished appearing. |
 | `onClose` | `.on_close(..)` | `() => void` | | It went away: the user closed it, or the app removed it. |
 | `onCancel` | `.on_cancel(..)` | `() => void` | | The user tried to close it (Escape, back, a backdrop press, a swipe down), whether or not a `closeOn*` flag let it close. |
+| `onDetentChange` | `.on_detent_change(..)` | `(e: { detent: SheetDetent }) => void` | | The user moved the sheet to another detent (a drag, the grabber, a scroll at its edge, a screen reader). |
 | `onOpenChange` | `.on_cancel(..)` | `(e: { open: boolean; reason: "cancel" \| "backdropPress" \| "swipe" }) => void` | | The user closed it: keep `open` in sync here. In Rust, `on_cancel` removes the dialog from the view. |
 | `class`, `style` | `Styled` methods | `string`, `StyleProp<ViewStyle>` | | The popup: the view holding the children. |
 | `backdropClass`, `backdropStyle` | a child view filling the dialog | `string`, `StyleProp<ViewStyle>` | | A backdrop filling the dialog behind the popup, present when either is set. |
@@ -122,11 +135,43 @@ and the explicit import takes its place. For the system's alert or action sheet,
 
 | `ios` key | Rust | Type | Default | Description |
 |---|---|---|---|---|
-| `supportedOrientations` | `.supported_orientations(..)` | `("portrait" \| "portrait-upside-down" \| "landscape" \| "landscape-left" \| "landscape-right")[]` | the presenter's | The orientations the dialog allows. |
+| `supportedOrientations` | `.supported_orientations(..)` | `("portrait" \| "portrait-upside-down" \| "landscape" \| "landscape-left" \| "landscape-right")[]` | the presenter's | The orientations the dialog allows. `landscape-left` is the device turned clockwise, its home side on the left (UIKit's `landscapeLeft`). |
 
 | `android` key | Rust | Type | Default | Description |
 |---|---|---|---|---|
 | `statusBarTranslucent` | `.status_bar_translucent(..)` | `boolean` | `false` | The content reaches under the status bar; otherwise it starts below it. |
+
+## Accessibility
+
+Screen readers hear a dialog as one: as the focus enters it they say that it is a dialog and its name, then read
+what is inside. Give it its title as its name, `accessibilityLabel` in TSX and `.label(..)` in Rust, and its message
+as its description, `accessibilityDescription` and `.accessibility_description(..)`, which screen readers read right
+after the name, so the user hears what the dialog is about before reaching its buttons. A dialog that asks
+the user to confirm something, such as a deletion, is an alert dialog: `role="alertdialog"`,
+`.role(AccessibilityRole::AlertDialog)`. Each platform presents the role as its own dialogs: VoiceOver's dialog on
+macOS, a semantic group named by the title on iOS, UI Automation's dialog pane on Windows, AT-SPI's dialog on Linux,
+a dialog with `aria-modal` on the web.
+
+```rust tabs
+dialog()
+    .role(AccessibilityRole::AlertDialog)
+    .label("Delete this item?")
+    .accessibility_description("This can't be undone.")
+    .on_cancel(move || confirm.set(false))
+    .child(card())
+```
+
+```tsx tabs
+<Dialog
+  open={confirm()}
+  role="alertdialog"
+  accessibilityLabel="Delete this item?"
+  accessibilityDescription="This can't be undone."
+  onOpenChange={(e) => confirm.set(e.open)}
+>
+  …
+</Dialog>
+```
 
 ## Opening and closing
 
@@ -166,6 +211,47 @@ dialog()
 ```
 
 `onCancel` is called on every attempt, whether the flags let the dialog close or not.
+
+## A sheet at half height
+
+On iOS, a `pageSheet` or `formSheet` dialog with `detents` rests at those heights: the user drags it between them,
+the system way, and past the smallest it closes when `closeOnSwipe` allows. A [`NavStack`](./nav-stack.md) inside
+it pushes pages with the system's header, back button and swipe back, inside the sheet:
+
+```rust tabs
+dialog()
+    .presentation(ModalPresentation::PageSheet)
+    .detents(vec![SheetDetent::Medium, SheetDetent::Large])
+    .detent(move || Some(detent.get()))
+    .on_detent_change(move |d: &SheetDetent| detent.set(*d))
+    .grabber(true)
+    .on_cancel(move || open.set(false))
+    .flex_1()
+    .child(nav_stack().flex_1().child(nav_page().key("settings").child(settings())))
+```
+
+```tsx tabs
+<Dialog
+  open={open()}
+  presentation="pageSheet"
+  detents={["medium", "large"]}
+  detent={detent()}
+  onDetentChange={(e) => detent.set(e.detent)}
+  grabber
+  onOpenChange={(e) => open.set(e.open)}
+  class="flex-1"
+>
+  <NavStack state={pages} class="flex-1">
+    {(route) => <NavPage title={route}>…</NavPage>}
+  </NavStack>
+</Dialog>
+```
+
+`detent` moves the sheet when its value changes, and follows the user with `onDetentChange` as above; a drag the app
+does not follow stays where the user left it.
+
+The content is laid out at the height the sheet rests at. Elsewhere the detents are ignored and the dialog keeps its
+form there; for a bottom sheet that rests at detents on every platform, use [`Sheet`](./sheet.md).
 
 ## A dialog with a backdrop
 
@@ -235,10 +321,13 @@ None.
 
 - iOS and Mac Catalyst: `presentation` picks the form. `fullScreen` presents over the full screen with a clear
   background; `pageSheet` and `formSheet` are system sheets with the system background, which follow the finger when
-  swiped down (`closeOnSwipe`).
+  swiped down (`closeOnSwipe`). A sheet rests at its `detents`, with the system's grabber when `grabber` is set;
+  custom heights need iOS 16, and iOS 15 takes the nearer of medium and large.
 - Android: the dialog fills the window and shows the app's popup and backdrop. The back button goes to the topmost
   dialog first, before stacks and `BackHandler` listeners.
 - Desktops (macOS, Windows, Linux, GPUI) and the web: the dialog is a transparent layer over the whole window that
   shows the app's popup and backdrop. Escape is a close attempt.
+- `detents`, `detent`, `defaultDetent`, `grabber`, `largestUndimmedDetent` and `onDetentChange` are iOS's: Android,
+  the desktops and the web have no system sheet, so they are ignored there (use [`Sheet`](./sheet.md)).
 - `supportedOrientations` is iOS's; `statusBarTranslucent` is Android's. An Android dialog's content starts below the
   status bar unless `statusBarTranslucent` is set.

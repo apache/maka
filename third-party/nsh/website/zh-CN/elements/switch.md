@@ -99,11 +99,26 @@ mount(App);
 | 部件 | 位置 | 样式 | 状态 |
 |---|---|---|---|
 | 开关 | | `class`、`style` | `checked:`、`disabled:`、`active:`、`hover:`、`focus:`（或 `checkedStyle`、`disabledStyle` 等） |
-| 轨道 | 开关里的第一个 | `trackClass`、`trackStyle` | `checked:`、`disabled:` 跟随开关 |
-| 滑块 | 轨道里 | `thumbClass`、`thumbStyle` | `checked:`、`disabled:` 跟随开关 |
+| 轨道 | 开关里的第一个 | `trackClass`、`trackStyle` | `checked:`、`disabled:`、`active:` 跟随开关 |
+| 滑块 | 轨道里 | `thumbClass`、`thumbStyle` | `checked:`、`disabled:`、`active:` 跟随开关 |
 | 标签 | 开关里，轨道之后 | 它自己的元素（`children`） | 在开关的 `class` 上加 `group` 后，使用 `group-checked:` 等 `group-*:` 变体 |
 
 滑块靠它自己的 `checked:` 样式移动：位移（`checked:translate-x-5`），或者外边距、轨道的对齐方式（轨道上的 `checked:justify-end`）。`transition-*` 类会在原生层为变化加上动画。要把标签放在轨道前面，反转这一行即可：`class="flex-row-reverse justify-between"`。
+
+<a id="held-down"></a>
+
+## 按住
+
+指针或手指按住开关时（无论按在开关的哪里，包括标签），轨道和滑块的 `active:` 类与开关自身的一样生效，直到松开或取消按压。它们和其他状态一样变化：变换、颜色和不透明度随 `transition-*` 动画，宽度等布局（`active:w-5`）立即变化。要让滑块像 macOS 的开关那样平滑地变宽，用缩放：关闭时从左边缘、开启时从右边缘放大，使它朝中间伸展，`transition-transform` 在原生层为它加上动画：
+
+```tsx
+<Switch
+  checked={on()}
+  onChange={({ checked }) => on.set(checked)}
+  trackClass="w-[38px] rounded-full bg-muted p-0.5 checked:bg-primary"
+  thumbClass="size-4 rounded-full bg-background transition-transform origin-left active:scale-x-125 checked:translate-x-[18px] checked:origin-right"
+/>
+```
 
 <a id="disabled"></a>
 
@@ -147,7 +162,7 @@ mount(App);
 
 - 开关对屏幕阅读器而言是一个元素，角色是 `"switch"`，带有它的值（开或关）；轨道和滑块是它的部件。它的标签是子元素的文字；没有文字时设置 `accessibilityLabel`。
 - `disabled` 按平台的方式报告（VoiceOver、TalkBack、UI Automation、浏览器的无障碍树）。
-- 在 macOS 和 Web 上，开关是键盘焦点的一站：Tab 可以到达它，Space 和 Return 切换它，`focus:` 样式显示焦点所在。
+- 在 macOS 和 Web 上，开关是键盘焦点的一站：Tab 可以到达它，Space 和 Return 切换它，`focus-visible:` 样式显示焦点所在。
 
 标签、角色和播报的一般用法见[无障碍](../docs/accessibility.md)。
 

@@ -203,6 +203,9 @@ pub(crate) fn slug(text: &str) -> String {
 #[derive(Default)]
 pub(crate) struct Slugger {
     seen: HashMap<String, u32>,
+    /// From [`Self::mark`] on: each name changed and the count it had (none
+    /// for a new name), in order, for [`Self::rewind`].
+    changed: Option<Vec<(String, Option<u32>)>>,
 }
 
 impl Slugger {
@@ -213,11 +216,34 @@ impl Slugger {
         // As github-slugger: the base's count goes up until a free name.
         while self.seen.contains_key(&candidate) {
             let count = self.seen.entry(base.clone()).or_insert(0);
+            if let Some(changed) = &mut self.changed {
+                changed.push((base.clone(), Some(*count)));
+            }
             *count += 1;
             candidate = format!("{base}-{count}");
         }
+        if let Some(changed) = &mut self.changed {
+            changed.push((candidate.clone(), None));
+        }
         self.seen.insert(candidate.clone(), 0);
         candidate
+    }
+
+    /// Remembers the headings so far: [`Self::rewind`] forgets the ones
+    /// after them.
+    pub(crate) fn mark(&mut self) {
+        self.changed = Some(Vec::new());
+    }
+
+    /// Forgets the headings since [`Self::mark`], whose anchors are free
+    /// again.
+    pub(crate) fn rewind(&mut self) {
+        for (name, count) in self.changed.take().into_iter().flatten().rev() {
+            match count {
+                Some(count) => self.seen.insert(name, count),
+                None => self.seen.remove(&name),
+            };
+        }
     }
 }
 

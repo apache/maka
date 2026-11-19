@@ -20,12 +20,11 @@
 use super::*;
 use maka_agent_facts::{tool_call::ToolRejection, tool_output::ToolOutput, tools::*};
 use maka_goal::goal::{Report, ReportKind};
-use maka_tools::request::{BindingFuture, BindingRequest, BoundTool, RequestBinding};
 
 pub(in crate::owner) const NAMES: &[&str] = &["CreateGoal", "GetGoal", "GoalStatus"];
 const CREATE: &str = "Create a persistent Goal for this conversation ONLY when the user explicitly asks to create or set a Goal. Do not infer a Goal from ordinary tasks. Provide token_budget only if explicitly requested by the user. The current execution becomes its first iteration; unfinished active Goals automatically continue after a turn ends. Cannot replace an unfinished Goal.";
 const READ: &str = "Read this conversation's Goal, current status, token consumption, remaining budget and elapsed time. Missing usage means consumption is a lower bound and remaining budget is unknown.";
-const UPDATE: &str = "Record Goal progress or change status. achieved: objective actually accomplished, no work remains; include evidence. paused: ONLY on the user's explicit request; stop Goal work. blocked: the same blocking condition has recurred across at least three consecutive Goal turns and no meaningful progress is possible without user input or an external change. Do not block for an isolated failure, uncertainty, difficult work or a nearly exhausted budget. progress records a checkpoint and keeps pursuing. A resumed blocked Goal starts a fresh blockage audit. Cannot change budgets or resume a paused Goal.";
+const UPDATE: &str = "Record Goal progress or change status. Use GetGoal to read the current status and budget. achieved: objective actually accomplished, no work remains; include evidence. paused: ONLY on the user's explicit request; stop Goal work. blocked: the same blocking condition has recurred across at least three consecutive Goal turns and no meaningful progress is possible without user input or an external change. Do not block for an isolated failure, uncertainty, difficult work or a nearly exhausted budget. progress records a checkpoint and keeps pursuing. A resumed blocked Goal starts a fresh blockage audit. Cannot change budgets or resume a paused Goal.";
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Create {
@@ -76,44 +75,6 @@ impl Goals {
             .collect()
     }
 }
-impl RequestBinding for Goals {
-    fn bind(&self, request: BindingRequest) -> BindingFuture {
-        let owner = self.owner.get().and_then(Weak::upgrade);
-        Box::pin(async move {
-            let owner = owner.ok_or_else(|| failed("Goal unavailable"))?;
-            let state = match owner
-                .goal(GoalRead {
-                    session_id: request.invocation.session_id.clone(),
-                })
-                .await
-            {
-                Ok(current) => serde_json::to_string(&current).map_err(failed)?,
-                Err(error) => {
-                    tracing::warn!(cause = %error, "Goal state unavailable for model request");
-                    "Goal state is temporarily unavailable. GetGoal can retry the read; other work can continue.".into()
-                }
-            };
-            request
-                .tools
-                .into_iter()
-                .map(|name| {
-                    let description = if name == "GoalStatus" {
-                        format!("{UPDATE}\nCurrent Goal for this model step:\n{state}")
-                    } else {
-                        description(&name).into()
-                    };
-                    Ok((
-                        name,
-                        BoundTool::Described {
-                            handler: owner.goals.clone(),
-                            description,
-                        },
-                    ))
-                })
-                .collect()
-        })
-    }
-}
 impl ToolPreparer for Goals {
     fn names(&self) -> Vec<String> {
         NAMES.iter().map(|name| (*name).into()).collect()
@@ -150,11 +111,25 @@ impl ToolPreparer for Goals {
             let observed = owner
                 .goals
                 .repository
-                .read(&context.invocation.session_id)
+                .read(&context.execution.session_id)
                 .await
                 .map_err(invalid)?;
             let identity = observed.as_ref().map(|saved| saved.goal.id);
-            Ok(PreparedEffect::new(move |cancellation| {
+            let title = match &input {
+                Input::Create(input) => maka_agent_facts::display::Text::single_line(
+                    &input.objective,
+                )
+                .map(|objective| {
+                    let objective = objective.fallback;
+                    maka_agent_facts::display::Text::localized(
+                        &format!("Create goal · {objective}"),
+                        &format!("创建目标 · {objective}"),
+                        &format!("建立目標 · {objective}"),
+                    )
+                }),
+                _ => None,
+            };
+            let effect = PreparedEffect::new(move |cancellation| {
                 Box::pin(async move {
                     if cancellation.is_cancelled() {
                         return Err(failed("Goal call cancelled"));
@@ -166,7 +141,7 @@ impl ToolPreparer for Goals {
                             .check_goal_context(&context)
                             .await
                             .map_err(failed)?;
-                        let session = &context.invocation.session_id;
+                        let session = &context.execution.session_id;
                         let saved = captured
                             .goals
                             .repository
@@ -186,7 +161,7 @@ impl ToolPreparer for Goals {
                                 let id = Uuid::from_bytes(
                                     Sha256::digest(
                                         serde_json::to_vec(&(
-                                            &context.invocation,
+                                            &context.execution,
                                             &context.operation_id,
                                             "CreateGoal",
                                         ))
@@ -195,51 +170,82 @@ impl ToolPreparer for Goals {
                                         .try_into()
                                         .expect("SHA-256 prefix"),
                                 );
-                                let configuration = captured
-                                    .tool_store(&context)
-                                    .map_err(failed)?
-                                    .invocation_configuration(&context.invocation)
+                                let view = captured
+                                    .durable
+                                    .frontier(root.run_id)
                                     .await
-                                    .map_err(failed)?
-                                    .ok_or_else(|| failed("Goal invocation unavailable"))?;
+                                    .map_err(failed)?;
                                 let session_config = captured
                                     .session(session)
                                     .await
                                     .map_err(failed)?
                                     .configuration;
-                                if configuration.boundary_revision
-                                    != session_config.boundary_revision
-                                {
+                                if view.spec.permission_basis != session_config.permission_basis() {
                                     return Err(failed(
                                         "Conversation settings changed; create the Goal again",
                                     ));
                                 }
-                                let mut basis = captured
-                                    .runs
-                                    .lock()
-                                    .await
-                                    .controls
-                                    .get(session)
-                                    .filter(|control| control.invocation.turn_id == root.turn_id)
-                                    .ok_or_else(|| failed("Goal execution is no longer active"))?
-                                    .basis
-                                    .as_ref()
-                                    .clone();
-                                captured.check_goal_tools(&basis).map_err(failed)?;
-                                basis.background = Some(ScheduledTarget {
+                                if view.spec.allowed_tools.as_ref().is_some_and(|names| {
+                                    !names.iter().any(|name| name == "GoalStatus")
+                                }) {
+                                    return Err(failed("goal_status_tool_unavailable"));
+                                }
+                                use super::super::scheduler::{BackgroundGrant, ExecutorApproval};
+                                use maka_agent_facts::durable::BackendSpec;
+
+                                let target = ScheduledTarget {
                                     session_id: session.clone(),
-                                    workspace: basis.workspace.clone(),
+                                    workspace: session_config.workspace,
                                     permissions: session_config.permissions,
-                                    boundary_revision: configuration.boundary_revision,
-                                    binding: basis.binding,
-                                });
-                                basis.background_kind = BackgroundKind::Goal(id);
-                                basis.collaboration_mode = CollaborationMode::Agent;
+                                    boundary_revision: session_config.boundary_revision,
+                                    binding: session_config.binding,
+                                };
+                                let language = view.spec.language;
+                                let grant = match &view.spec.backend {
+                                    BackendSpec::Model { descriptor, .. } => {
+                                        let accepted = crate::model::AcceptedModel::from_backend(
+                                            &view.spec.backend,
+                                            &captured
+                                                .durable
+                                                .content(root.run_id, descriptor.clone())
+                                                .await
+                                                .map_err(failed)?,
+                                        )
+                                        .map_err(failed)?;
+                                        BackgroundGrant::Model(
+                                            super::super::notifications::BackgroundApproval {
+                                                target,
+                                                model: accepted.selection(),
+                                                thinking_level: accepted.thinking_level,
+                                                accepted_model: accepted,
+                                                language,
+                                                sandbox_ceiling: None,
+                                            },
+                                        )
+                                    }
+                                    BackendSpec::Executor { selection, .. }
+                                        if selection.executor == "external" =>
+                                    {
+                                        BackgroundGrant::Executor(ExecutorApproval {
+                                            target,
+                                            selection: selection.clone(),
+                                            sandbox_ceiling: Some(
+                                                view.spec.permission_ceiling.sandbox,
+                                            ),
+                                            language,
+                                        })
+                                    }
+                                    _ => {
+                                        return Err(failed(
+                                            "Goal requires an active model or external agent",
+                                        ));
+                                    }
+                                };
                                 let arm = Arm {
-                                    language: basis.language,
+                                    language,
                                     operation_id: id,
                                     objective: input.objective,
-                                    grant: basis,
+                                    grant,
                                     token_budget: input.token_budget,
                                     start: true,
                                 };
@@ -250,7 +256,10 @@ impl ToolPreparer for Goals {
                                         session,
                                         arm,
                                         captured.goal_meter(session).await.map_err(failed)?,
-                                        Some(Pending::Existing { invocation: root }),
+                                        Some(Pending::Existing {
+                                            run: root.run_id,
+                                            managed: false,
+                                        }),
                                         vec![],
                                     )
                                     .await
@@ -296,42 +305,37 @@ impl ToolPreparer for Goals {
                     job.await
                         .map_err(|error| ToolError::OutcomeUnknown(error.to_string()))?
                 })
-            }))
+            })
+            .presented(format!("maka.agent.Builtin@1/{name}"));
+            Ok(if let Some(title) = title {
+                effect.titled(title)
+            } else {
+                effect
+            })
         })
     }
 }
 impl Owner {
-    async fn check_goal_context(&self, context: &ToolCallContext) -> Result<Invocation, String> {
-        if !self.settings.goals
-            || self
-                .tool_store(context)?
-                .get::<StoredSessionConfiguration>()
-                .await
-                .map_err(reason)?
-                .ok_or("agent_session_unavailable")?
-                .archived
-        {
+    async fn check_goal_context(
+        &self,
+        context: &ToolCallContext,
+    ) -> Result<maka_agent_facts::durable::ExecutionIdentity, String> {
+        if !self.settings.goals || self.session(&context.execution.session_id).await?.archived {
             return Err("goal_unavailable".into());
         }
-        let boundary = self
-            .tool_store(context)?
-            .invocation_boundary(
-                &context.invocation.session_id,
-                &context.invocation.invocation_id,
-            )
+        let view = self
+            .durable
+            .frontier(context.execution.run_id)
             .await
-            .map_err(reason)?
-            .ok_or("goal_invocation_unavailable")?
-            .0;
-        if boundary.invocation != context.invocation
-            || matches!(
-                boundary.state,
-                maka_event_log::turns::InvocationState::Ended { .. }
-            )
+            .map_err(reason)?;
+        if view.spec.session_id != context.execution.session_id
+            || view.spec.turn_id != context.execution.turn_id
+            || view.stopped
+            || view.terminal.is_some()
         {
             return Err("goal_invocation_inactive".into());
         }
-        Ok(boundary.root_invocation().clone())
+        Ok(context.execution.clone())
     }
 }
 fn invalid(error: impl std::fmt::Display) -> ToolRejection {
@@ -345,9 +349,9 @@ fn failed(error: impl std::fmt::Display) -> ToolError {
 
 fn storage_failure(error: maka_goal::goal::Error) -> ToolError {
     match error {
-        maka_goal::goal::Error::Storage(
-            maka_capabilities::storage::StoreError::OutcomeUnknown(message),
-        ) => ToolError::OutcomeUnknown(message),
+        maka_goal::goal::Error::Storage(maka_plugin_core::storage::StoreError::OutcomeUnknown(
+            message,
+        )) => ToolError::OutcomeUnknown(message),
         error => failed(error),
     }
 }

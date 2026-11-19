@@ -1,16 +1,15 @@
 use crate::{
+    Result, SIXEL_HEIGHT_LIMIT, SIXEL_PALETTE_MAX, SIXEL_WIDTH_LIMIT, SixelError,
     sixel_image::{BackgroundMode, PixelAspectRatio, SixelImage},
-    Result, SixelError, SIXEL_HEIGHT_LIMIT, SIXEL_PALETTE_MAX, SIXEL_WIDTH_LIMIT,
 };
 
 const SIXEL_CELL_HEIGHT: usize = 6;
 const MAX_REPEAT: usize = 0xffff;
 
-#[cfg(target_arch = "x86_64")]
-use core::arch::x86_64::{__m128i, _mm_loadu_si128, _mm_storeu_si128};
-
 #[cfg(target_arch = "x86")]
 use core::arch::x86::{__m128i, _mm_loadu_si128, _mm_storeu_si128};
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::{__m128i, _mm_loadu_si128, _mm_storeu_si128};
 
 /// Internal decode function used by SixelImage::decode
 pub(crate) fn decode_sixel(data: &[u8]) -> Result<SixelImage> {
@@ -27,10 +26,16 @@ pub(crate) fn decode_sixel_from_dcs(payload: &[u8], settings: DcsSettings) -> Re
     let (pixels, width, height) = decoder.finalize()?;
 
     // Calculate aspect ratio from P1 parameter
-    let aspect_ratio = settings.aspect_ratio.map(PixelAspectRatio::from_p1).unwrap_or_default();
+    let aspect_ratio = settings
+        .aspect_ratio
+        .map(PixelAspectRatio::from_p1)
+        .unwrap_or_default();
 
     // Calculate background mode from P2 parameter
-    let background_mode = settings.zero_color.map(BackgroundMode::from_p2).unwrap_or_default();
+    let background_mode = settings
+        .zero_color
+        .map(BackgroundMode::from_p2)
+        .unwrap_or_default();
 
     Ok(SixelImage {
         pixels,
@@ -89,7 +94,8 @@ pub(crate) fn decode_sixel_from_dcs(payload: &[u8], settings: DcsSettings) -> Re
 /// let image = sixel_decode(sixel_data)?;
 ///
 /// // Extract RGB (dropping alpha channel)
-/// let rgb_pixels: Vec<u8> = image.pixels
+/// let rgb_pixels: Vec<u8> = image
+///     .pixels
 ///     .chunks(4)
 ///     .flat_map(|rgba| [rgba[0], rgba[1], rgba[2]])
 ///     .collect();
@@ -120,10 +126,12 @@ pub(crate) fn decode_sixel_from_dcs(payload: &[u8], settings: DcsSettings) -> Re
 ///         println!("Decoded {}x{} SIXEL image", image.width, image.height);
 ///         println!("Pixel data: {} bytes (RGBA format)", image.pixels.len());
 ///         assert_eq!(image.pixels.len(), image.width * image.height * 4);
-///         
+///
 ///         // First pixel color
-///         println!("First pixel: R={}, G={}, B={}, A={}",
-///                  image.pixels[0], image.pixels[1], image.pixels[2], image.pixels[3]);
+///         println!(
+///             "First pixel: R={}, G={}, B={}, A={}",
+///             image.pixels[0], image.pixels[1], image.pixels[2], image.pixels[3]
+///         );
 ///     }
 ///     Err(e) => eprintln!("Failed to decode: {}", e),
 /// }
@@ -177,7 +185,11 @@ pub(crate) fn decode_sixel_from_dcs(payload: &[u8], settings: DcsSettings) -> Re
 /// let image = sixel_decode(sixel_data)?;
 ///
 /// println!("Image: {}x{}", image.width, image.height);
-/// println!("Aspect ratio: {}:{}", image.aspect_ratio.pan(), image.aspect_ratio.pad());
+/// println!(
+///     "Aspect ratio: {}:{}",
+///     image.aspect_ratio.pan(),
+///     image.aspect_ratio.pad()
+/// );
 ///
 /// // Access pixels (RGBA format, 4 bytes per pixel)
 /// let first_pixel = &image.pixels[0..4];
@@ -290,9 +302,21 @@ impl<'a> AnsiPayload<'a> {
             }
         }
 
-        let aspect_ratio = if param_count > 0 { Some(params[0]) } else { None };
-        let zero_color = if param_count > 1 { Some(params[1]) } else { None };
-        let grid_size = if param_count > 2 { Some(params[2]) } else { None };
+        let aspect_ratio = if param_count > 0 {
+            Some(params[0])
+        } else {
+            None
+        };
+        let zero_color = if param_count > 1 {
+            Some(params[1])
+        } else {
+            None
+        };
+        let grid_size = if param_count > 2 {
+            Some(params[2])
+        } else {
+            None
+        };
 
         Ok(AnsiPayload {
             aspect_ratio,
@@ -437,7 +461,10 @@ impl SixelDecoder {
                 }
                 b'-' => {
                     self.pos_x = 0;
-                    self.pos_y = self.pos_y.checked_add(SIXEL_CELL_HEIGHT).ok_or(SixelError::IntegerOverflow)?;
+                    self.pos_y = self
+                        .pos_y
+                        .checked_add(SIXEL_CELL_HEIGHT)
+                        .ok_or(SixelError::IntegerOverflow)?;
                     idx += 1;
                 }
                 b'!' => {
@@ -483,7 +510,8 @@ impl SixelDecoder {
         }
 
         let background = self.background_rgb();
-        self.canvas.ensure_visible(width_needed, height_needed, background)?;
+        self.canvas
+            .ensure_visible(width_needed, height_needed, background)?;
 
         // Use cached color for performance
         let color = self.current_color;
@@ -495,23 +523,28 @@ impl SixelDecoder {
             touched = true;
         }
         if (bits & 0b000010) != 0 {
-            self.canvas.paint_span(self.pos_y + 1, self.pos_x, span, color);
+            self.canvas
+                .paint_span(self.pos_y + 1, self.pos_x, span, color);
             touched = true;
         }
         if (bits & 0b000100) != 0 {
-            self.canvas.paint_span(self.pos_y + 2, self.pos_x, span, color);
+            self.canvas
+                .paint_span(self.pos_y + 2, self.pos_x, span, color);
             touched = true;
         }
         if (bits & 0b001000) != 0 {
-            self.canvas.paint_span(self.pos_y + 3, self.pos_x, span, color);
+            self.canvas
+                .paint_span(self.pos_y + 3, self.pos_x, span, color);
             touched = true;
         }
         if (bits & 0b010000) != 0 {
-            self.canvas.paint_span(self.pos_y + 4, self.pos_x, span, color);
+            self.canvas
+                .paint_span(self.pos_y + 4, self.pos_x, span, color);
             touched = true;
         }
         if (bits & 0b100000) != 0 {
-            self.canvas.paint_span(self.pos_y + 5, self.pos_x, span, color);
+            self.canvas
+                .paint_span(self.pos_y + 5, self.pos_x, span, color);
             touched = true;
         }
 
@@ -551,11 +584,13 @@ impl SixelDecoder {
             let colorspace = params[1];
             match colorspace {
                 1 => {
-                    self.palette.set_hls(self.color_index, params[2], params[3], params[4]);
+                    self.palette
+                        .set_hls(self.color_index, params[2], params[3], params[4]);
                     self.current_color = self.palette.rgb_bytes(self.color_index);
                 }
                 2 => {
-                    self.palette.set_rgb_percent(self.color_index, params[2], params[3], params[4]);
+                    self.palette
+                        .set_rgb_percent(self.color_index, params[2], params[3], params[4]);
                     self.current_color = self.palette.rgb_bytes(self.color_index);
                 }
                 _ => {}
@@ -608,7 +643,9 @@ impl SixelDecoder {
         // Max 256 MB of pixel data (64 million pixels * 4 bytes)
         const MAX_PIXELS: usize = 64 * 1024 * 1024;
         if width.saturating_mul(height) > MAX_PIXELS {
-            return Err(SixelError::InvalidData("image dimensions too large".to_string()));
+            return Err(SixelError::InvalidData(
+                "image dimensions too large".to_string(),
+            ));
         }
         Ok(())
     }
@@ -617,7 +654,8 @@ impl SixelDecoder {
         if self.transparent_mode {
             [0, 0, 0, 0] // Transparent background
         } else {
-            self.palette.rgb_bytes(self.background_index.min(SIXEL_PALETTE_MAX - 1))
+            self.palette
+                .rgb_bytes(self.background_index.min(SIXEL_PALETTE_MAX - 1))
         }
     }
 
@@ -628,7 +666,8 @@ impl SixelDecoder {
         let desired_height = height.max(self.target_height.max(1));
         self.guard_dimensions(desired_width, desired_height)?;
         let background = self.background_rgb();
-        self.canvas.ensure_visible(desired_width, desired_height, background)?;
+        self.canvas
+            .ensure_visible(desired_width, desired_height, background)?;
         Ok((self.canvas.data, self.canvas.width, self.canvas.height))
     }
 }
@@ -733,7 +772,11 @@ impl Canvas {
     fn new(background: [u8; 4]) -> Self {
         let mut data = vec![0u8; 4];
         data[..4].copy_from_slice(&background);
-        Self { data, width: 1, height: 1 }
+        Self {
+            data,
+            width: 1,
+            height: 1,
+        }
     }
 
     fn ensure_visible(&mut self, width: usize, height: usize, background: [u8; 4]) -> Result<()> {
@@ -747,7 +790,9 @@ impl Canvas {
         // Guard against memory exhaustion - max 256 MB of pixel data
         const MAX_PIXELS: usize = 64 * 1024 * 1024;
         if new_width.saturating_mul(new_height) > MAX_PIXELS {
-            return Err(SixelError::InvalidData("image dimensions too large".to_string()));
+            return Err(SixelError::InvalidData(
+                "image dimensions too large".to_string(),
+            ));
         }
 
         self.resize(new_width.max(1), new_height.max(1), background);
@@ -761,7 +806,8 @@ impl Canvas {
             let src_start = row * self.width * 4;
             let src_end = src_start + self.width * 4;
             let dst_start = row * new_width * 4;
-            new_data[dst_start..dst_start + self.width * 4].copy_from_slice(&self.data[src_start..src_end]);
+            new_data[dst_start..dst_start + self.width * 4]
+                .copy_from_slice(&self.data[src_start..src_end]);
             if new_width > self.width {
                 let span = &mut new_data[dst_start + self.width * 4..dst_start + new_width * 4];
                 fill_rgba_span(span, background);
@@ -825,7 +871,9 @@ fn read_number(data: &[u8], start: usize) -> (usize, usize) {
     while idx < data.len() {
         match data[idx] {
             b'0'..=b'9' => {
-                value = value.saturating_mul(10).saturating_add((data[idx] - b'0') as usize);
+                value = value
+                    .saturating_mul(10)
+                    .saturating_add((data[idx] - b'0') as usize);
                 idx += 1;
                 consumed += 1;
             }
@@ -846,7 +894,9 @@ fn collect_params(data: &[u8], start: usize, storage: &mut [i32]) -> (usize, usi
     while idx < data.len() {
         match data[idx] {
             b'0'..=b'9' => {
-                current = current.saturating_mul(10).saturating_add((data[idx] - b'0') as i32);
+                current = current
+                    .saturating_mul(10)
+                    .saturating_add((data[idx] - b'0') as i32);
                 has_digit = true;
                 last_was_separator = false;
                 idx += 1;
@@ -898,7 +948,11 @@ fn hls_to_rgb(h: i32, l: i32, s: i32) -> [u8; 3] {
     let lum = (l.clamp(0, 100) as f64) / 100.0;
     let sat = (s.clamp(0, 100) as f64) / 100.0;
 
-    let q = if lum < 0.5 { lum * (1.0 + sat) } else { lum + sat - lum * sat };
+    let q = if lum < 0.5 {
+        lum * (1.0 + sat)
+    } else {
+        lum + sat - lum * sat
+    };
     let p = 2.0 * lum - q;
 
     let r = hue_to_rgb(p, q, hue + 1.0 / 3.0);

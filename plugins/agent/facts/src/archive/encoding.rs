@@ -24,7 +24,14 @@ use crate::{
     tool_output::{DURABLE_TOOL_PROJECTION_FAILURE_MESSAGE, DurableToolProjection, ProjectionPart},
 };
 use serde_json::Value;
-use std::borrow::Cow;
+use std::{borrow::Cow, cmp::Ordering};
+
+mod source;
+pub use source::{projection_identity_source, projection_source};
+
+const MEDIA_PREFIX: &str = "[Artifact ";
+const MEDIA_MIME_PREFIX: &str = " (";
+const MEDIA_SUFFIX: &str = ") is stored in this Session.]";
 
 /// Failed execution is text evidence, not a successful effect's projection sentinel.
 /// Callers retain the original outcome category when replacing provider content.
@@ -67,11 +74,13 @@ pub fn encode_projection(projection: &DurableToolProjection) -> Result<Vec<u8>, 
                         let StorageRef::SessionFile { relative_path, .. } = reference else {
                             return Err("archive media must be Session-owned");
                         };
-                        let quoted = serde_json::to_string(relative_path)
-                            .map_err(|_| "invalid artifact reference")?;
+                        let mut quoted = String::new();
+                        string(&mut quoted, relative_path)?;
                         string(
                             &mut result,
-                            &format!("[Artifact {quoted} ({}) is stored in this Session.]", mime),
+                            &format!(
+                                "{MEDIA_PREFIX}{quoted}{MEDIA_MIME_PREFIX}{mime}{MEDIA_SUFFIX}"
+                            ),
                         )?;
                     }
                 }
@@ -119,10 +128,50 @@ pub fn projection_digest(projection: &DurableToolProjection) -> Result<String, &
 }
 
 fn string(output: &mut String, value: &str) -> Result<(), &'static str> {
-    output.push_str(&serde_json::to_string(value).map_err(|_| "invalid string")?);
+    use maka_provider_protocol::json_stream::pull::{JsonEscape, Transform};
+    let mut encoded = Vec::new();
+    encoded.push(b'"');
+    let mut escape = JsonEscape::new();
+    let mut input = value.as_bytes();
+    let mut buffer = [0; 1024];
+    loop {
+        let progress = escape
+            .transform(input, true, &mut buffer)
+            .map_err(|_| "invalid string")?;
+        encoded.extend_from_slice(&buffer[..progress.written]);
+        input = &input[progress.consumed..];
+        if progress.finished {
+            break;
+        }
+    }
+    encoded.push(b'"');
+    output.push_str(std::str::from_utf8(&encoded).map_err(|_| "invalid string")?);
     Ok(())
 }
+fn number(value: &serde_json::Number) -> Result<String, &'static str> {
+    Ok(ryu_js::Buffer::new()
+        .format(value.as_f64().ok_or("invalid number")?)
+        .to_owned())
+}
+fn key_order(a: &str, b: &str, stable: bool) -> Ordering {
+    key_prefix_order(a, b, stable).unwrap_or_else(|| key_units(a).cmp(key_units(b)))
+}
+fn key_prefix_order(a: &str, b: &str, stable: bool) -> Option<Ordering> {
+    match (index(a), index(b)) {
+        (Some(a), Some(b)) => Some(a.cmp(&b)),
+        (Some(_), None) => Some(Ordering::Less),
+        (None, Some(_)) => Some(Ordering::Greater),
+        (None, None) if stable => None,
+        (None, None) => Some(Ordering::Equal),
+    }
+}
+fn key_units(key: &str) -> std::str::EncodeUtf16<'_> {
+    key.encode_utf16()
+}
 fn index(key: &str) -> Option<u32> {
+    if key.len() > 10 {
+        return None;
+    }
     let index = key.parse::<u32>().ok()?;
     (index != u32::MAX && index.to_string() == key).then_some(index)
 }
@@ -148,8 +197,7 @@ fn value_json(output: &mut String, value: &Value, stable: bool) -> Result<(), &'
         match value {
             Value::Null => output.push_str("null"),
             Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
-            Value::Number(value) => output
-                .push_str(ryu_js::Buffer::new().format(value.as_f64().ok_or("invalid number")?)),
+            Value::Number(value) => output.push_str(&number(value)?),
             Value::String(value) => string(output, value)?,
             Value::Array(values) => {
                 output.push('[');
@@ -163,13 +211,7 @@ fn value_json(output: &mut String, value: &Value, stable: bool) -> Result<(), &'
             }
             Value::Object(values) => {
                 let mut keys: Vec<_> = values.keys().collect();
-                keys.sort_by(|a, b| match (index(a), index(b)) {
-                    (Some(a), Some(b)) => a.cmp(&b),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) if stable => a.encode_utf16().cmp(b.encode_utf16()),
-                    (None, None) => std::cmp::Ordering::Equal,
-                });
+                keys.sort_by(|a, b| key_order(a, b, stable));
                 output.push('{');
                 pending.push(Step::Literal("}"));
                 for (index, key) in keys.into_iter().enumerate().rev() {

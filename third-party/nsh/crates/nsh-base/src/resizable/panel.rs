@@ -85,7 +85,8 @@ pub enum ResizablePanelGroupEvent {
 /// moves the space between the panels in the core, frame by frame, with
 /// no round trip to JS, as far as the panels' `minSize` / `maxSize` let it
 /// (growing a panel takes from the panels after the handle, nearest first;
-/// shrinking it below its minimum takes from the panels before it), then
+/// shrinking it gives to them, nearest first, up to their `maxSize`, and
+/// below its minimum takes from the panels before it), then
 /// reports the new sizes with `onResize`. The group's own size never
 /// changes what a panel wants: while the group is too small for the
 /// panels' sizes they shrink (`fixed` ones do not), and they come back to
@@ -104,6 +105,11 @@ pub fn ResizablePanelGroup(
 ) -> impl IntoElement {
     let group = GroupContext::new(props.axis.get_untracked());
     provide_context(group.clone());
+    let shows_handles = use_context::<ShowHandles>().is_none_or(|show| show.0);
+    if !shows_handles {
+        // What its panels hold is the app's: a group in there has handles.
+        provide_context(ShowHandles(true));
+    }
     {
         let group = group.clone();
         effect(move || {
@@ -116,15 +122,23 @@ pub fn ResizablePanelGroup(
     }
     let handles = {
         let group = group.clone();
-        computed(move || {
-            group.tick.get();
-            group.model.borrow().handles()
+        computed(move || match shows_handles {
+            true => {
+                group.tick.get();
+                group.model.borrow().handles()
+            }
+            false => Vec::new(),
         })
     };
     // In a terminal the panes are a Cell apart, the handle's line between
     // them: a column (8 points) beside each other, a row (24 points, the
-    // least a terminal gives a row of) one above the other.
+    // least a terminal gives a row of) one above the other. Without handles
+    // they touch.
     let terminal = terminal_cell().is_some();
+    let (column, row) = match shows_handles {
+        true => (px(8.0), px(24.0)),
+        false => (px(0.0), px(0.0)),
+    };
     view()
         .size_full()
         .style_with(move |s| match (props.axis.get(), terminal) {
@@ -132,8 +146,8 @@ pub fn ResizablePanelGroup(
             (Axis::Vertical, false) => s.flex_col(),
             // A terminal keeps no percentage height for a box of content:
             // the group grows to fill its parent instead.
-            (Axis::Horizontal, true) => s.flex_row().flex_grow(1.0).gap(px(8.0)),
-            (Axis::Vertical, true) => s.flex_col().flex_grow(1.0).gap(px(24.0)),
+            (Axis::Horizontal, true) => s.flex_row().flex_grow(1.0).gap(column),
+            (Axis::Vertical, true) => s.flex_col().flex_grow(1.0).gap(row),
         })
         .on_layout({
             let group = group.clone();
@@ -336,6 +350,16 @@ pub fn ResizablePanel(
         .into_element()
 }
 
+/// Whether a group places handles between its panels, read as it is made
+/// (none provided: it does). A dock area whose sizes its owner keeps
+/// (`SplitView`'s columns) provides `ShowHandles(false)` where it makes a
+/// split: that group has no handles at all, nothing a pointer drags, a
+/// screen reader adjusts or Tab stops on, rather than handles that do
+/// nothing (`disabled`). The group provides `ShowHandles(true)` to what
+/// it holds, so a group in its panels' content has its handles.
+#[derive(Clone, Copy)]
+pub(crate) struct ShowHandles(pub(crate) bool);
+
 /// What a group's panels and handles share: its model and the signal
 /// that tells them it changed.
 #[derive(Clone)]
@@ -435,6 +459,9 @@ struct DragState {
     from: Points,
     /// Every panel's then.
     before: Vec<Points>,
+    /// Every panel's user size then, given back to a panel the drag
+    /// brings back to its size at the press.
+    held: Vec<Option<Points>>,
     /// The sizes as `gpui-base`'s rules move them.
     state: ResizableState,
     /// The one panel without a size, when there was one: it stays without
@@ -743,10 +770,16 @@ impl Model {
             .copied()
             .filter(|&id| self.entry(id).is_some_and(|e| e.wanted().is_none()))
             .collect();
+        let held = self
+            .ids
+            .iter()
+            .map(|&id| self.entry(id).and_then(|e| e.dragged))
+            .collect();
         self.drag = Some(DragState {
             ix,
             from: sizes[ix],
             before: sizes,
+            held,
             state,
             flexible: (flexible.len() == 1).then(|| flexible[0]),
         });
@@ -760,13 +793,15 @@ impl Model {
         };
         drag.state.resize_panel_at_handle(drag.ix, drag.from + by);
         let sizes = drag.state.sizes().to_vec();
-        let (before, flexible) = (drag.before.clone(), drag.flexible);
-        for ((&id, &now), &was) in self.ids.iter().zip(&sizes).zip(&before) {
-            if now == was || Some(id) == flexible {
+        let (before, held, flexible) = (drag.before.clone(), drag.held.clone(), drag.flexible);
+        for (((&id, &now), &was), &held) in self.ids.iter().zip(&sizes).zip(&before).zip(&held) {
+            if Some(id) == flexible {
                 continue;
             }
             if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
-                entry.dragged = Some(now);
+                // Back at its size at the press: it wants what it wanted
+                // then, not the size an earlier move of this drag gave it.
+                entry.dragged = if now == was { held } else { Some(now) };
             }
         }
         self.expected = Some(sizes);
@@ -854,5 +889,126 @@ impl PanelFlex {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A group 600 wide: a panel of 200 (200 to 400) and one taking the rest.
+    fn model() -> Model {
+        let mut m = Model {
+            axis: Axis::Horizontal,
+            ..Model::default()
+        };
+        let props = |size, min, max| PanelProps {
+            size,
+            min,
+            max,
+            fixed: false,
+            visible: true,
+        };
+        m.set_container(Bounds::new(
+            point(px(0.0), px(0.0)),
+            size(px(600.0), px(100.0)),
+        ));
+        m.register(
+            0,
+            props(Some(px(200.0)), px(200.0), Some(px(400.0))),
+            Rc::new(|_| {}),
+        );
+        m.register(1, props(None, Points::ZERO, None), Rc::new(|_| {}));
+        m.set_frame(
+            0,
+            Bounds::new(point(px(0.0), px(0.0)), size(px(200.0), px(100.0))),
+        );
+        m.set_frame(
+            1,
+            Bounds::new(point(px(200.0), px(0.0)), size(px(400.0), px(100.0))),
+        );
+        m
+    }
+
+    /// A group 900 wide: a panel taking the rest, then a fixed one of 300
+    /// (220 to 480), as an inspector on the right.
+    fn inspector() -> Model {
+        let mut m = Model {
+            axis: Axis::Horizontal,
+            ..Model::default()
+        };
+        m.set_container(Bounds::new(
+            point(px(0.0), px(0.0)),
+            size(px(900.0), px(100.0)),
+        ));
+        let props = |size, min, max, fixed| PanelProps {
+            size,
+            min,
+            max,
+            fixed,
+            visible: true,
+        };
+        m.register(0, props(None, px(320.0), None, false), Rc::new(|_| {}));
+        m.register(
+            1,
+            props(Some(px(300.0)), px(220.0), Some(px(480.0)), true),
+            Rc::new(|_| {}),
+        );
+        m.set_frame(
+            0,
+            Bounds::new(point(px(0.0), px(0.0)), size(px(600.0), px(100.0))),
+        );
+        m.set_frame(
+            1,
+            Bounds::new(point(px(600.0), px(0.0)), size(px(300.0), px(100.0))),
+        );
+        m
+    }
+
+    #[test]
+    fn the_handle_stops_where_the_panel_after_it_reaches_its_maximum() {
+        let mut m = inspector();
+        let at = |m: &Model| m.handles()[0].at + HANDLE_PADDING;
+        assert_eq!(at(&m), px(600.0));
+        m.start_drag(0);
+        // 400 to the left: the inspector stops at 480, and so does the
+        // handle, at 900 - 480, not under the pointer at 200.
+        m.drag(px(-400.0));
+        assert_eq!(m.flex(1).basis, Some(px(480.0)));
+        assert_eq!(at(&m), px(420.0));
+        let (sizes, _) = m.end_drag().expect("the drag resized");
+        assert_eq!(sizes, [px(420.0), px(480.0)]);
+    }
+
+    #[test]
+    fn a_drag_back_to_the_size_at_the_press_lays_the_panel_out_there() {
+        let mut m = model();
+        m.start_drag(0);
+        m.drag(px(50.0));
+        assert_eq!(m.flex(0).basis, Some(px(250.0)));
+        // Back past its minimum: clamped to 200, its size at the press.
+        m.drag(px(-30.0));
+        assert_eq!(m.flex(0).basis, Some(px(200.0)));
+        assert!(m.end_drag().is_none());
+        assert_eq!(m.entry(0).unwrap().dragged, None);
+    }
+
+    #[test]
+    fn a_drag_back_keeps_the_size_an_earlier_drag_gave() {
+        let mut m = model();
+        m.step(0, px(100.0)).expect("the step resized");
+        m.set_frame(
+            0,
+            Bounds::new(point(px(0.0), px(0.0)), size(px(300.0), px(100.0))),
+        );
+        m.set_frame(
+            1,
+            Bounds::new(point(px(300.0), px(0.0)), size(px(300.0), px(100.0))),
+        );
+        m.start_drag(0);
+        m.drag(px(50.0));
+        m.drag(px(0.0));
+        assert_eq!(m.flex(0).basis, Some(px(300.0)));
+        assert!(m.end_drag().is_none());
     }
 }

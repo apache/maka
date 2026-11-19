@@ -20,20 +20,18 @@
 use maka_agent_facts::interaction::ClosureReason;
 use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
-use maka_event_log::SessionStore;
+use maka_agent_ports::execution::Interactions;
 
 pub async fn wait(
-    store: &SessionStore,
+    access: &dyn Interactions,
     expected: &InteractionRecord,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<InteractionOutcome, &'static str> {
     let id = &expected.request_id;
-    let mut commits = store
-        .subscribe_session_commits(&expected.session_id)
-        .map_err(|_| "interaction_store_closed")?;
+    let mut commits = access.changes().map_err(|_| "interaction_store_closed")?;
     loop {
-        let record = store
-            .interaction(id)
+        let record = access
+            .read(id)
             .await
             .map_err(|_| "interaction_read_unavailable")?
             .ok_or("interaction_missing")?;
@@ -43,35 +41,34 @@ pub async fn wait(
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
-                return store.commit_interaction_outcome(id, InteractionOutcome::Closure {
+                return access.commit_outcome(id, InteractionOutcome::Closure {
                     reason: ClosureReason::ProducerCancelled, committed_at: crate::now(),
-                }).await.map_err(|_| "interaction_closure_unavailable")?.record.outcome.ok_or("interaction_outcome_missing");
+                }).await.map_err(|_| "interaction_closure_unavailable")?.outcome.ok_or("interaction_outcome_missing");
             }
             result = commits.changed() => result.map_err(|_| "interaction_store_closed")?,
         }
     }
 }
 pub async fn withdraw(
-    store: &SessionStore,
+    access: &dyn Interactions,
     expected: &InteractionRecord,
 ) -> Result<Option<InteractionOutcome>, &'static str> {
-    let Some(record) = store
-        .interaction(&expected.request_id)
+    let Some(record) = access
+        .read(&expected.request_id)
         .await
         .map_err(|_| "interaction_cleanup_unconfirmed")?
     else {
         return Ok(None);
     };
-    if record.session_id != expected.session_id
-        || record.turn_id != expected.turn_id
-        || record.run_id != expected.run_id
+    if record.execution.session_id != expected.execution.session_id
+        || record.execution.run_id != expected.execution.run_id
         || record.request != expected.request
     {
         return Err("interaction_cleanup_identity_conflict");
     }
     let record = if record.outcome.is_none() {
-        store
-            .commit_interaction_outcome(
+        access
+            .commit_outcome(
                 &record.request_id,
                 InteractionOutcome::Closure {
                     reason: ClosureReason::ProducerCancelled,
@@ -80,7 +77,6 @@ pub async fn withdraw(
             )
             .await
             .map_err(|_| "interaction_cleanup_unconfirmed")?
-            .record
     } else {
         record
     };
@@ -89,9 +85,8 @@ pub async fn withdraw(
 
 /// The admitted call retains custody until publication or withdrawal is reconciled.
 pub async fn publish(
-    store: &SessionStore,
+    access: &dyn Interactions,
     context: &maka_host_runtime::application::Context,
-    invocation: &maka_agent_facts::event::Invocation,
     record: &InteractionRecord,
 ) -> Result<Option<InteractionOutcome>, String> {
     let mut ticket = context
@@ -101,14 +96,11 @@ pub async fn publish(
         .map_err(|e| e.to_string())?;
     ticket.start();
     let result = async {
-        let committed = store
-            .establish_run_interaction(invocation, record)
+        access
+            .establish(record)
             .await
             .map_err(|_| "interaction_publication_unavailable")?;
-        if !committed.matches {
-            return Err("interaction_identity_conflict");
-        }
-        wait(store, record, &context.scope().cancellation).await
+        wait(access, record, &context.scope().cancellation).await
     }
     .await;
     match result {
@@ -116,7 +108,7 @@ pub async fn publish(
             ticket.complete(Ok(()));
             Ok(Some(outcome))
         }
-        Err(error) => match withdraw(store, record).await {
+        Err(error) => match withdraw(access, record).await {
             Ok(Some(outcome)) => {
                 ticket.complete(Ok(()));
                 Ok(Some(outcome))

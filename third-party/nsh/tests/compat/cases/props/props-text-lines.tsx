@@ -40,6 +40,10 @@ function App() {
         {LONG}
       </Text>
       <Text testID="plain">Plain</Text>
+      {/* A fixed box retains its first line when Dynamic Type grows the font. */}
+      <Text testID="fixed-height" style={{ numberOfLines: 1, height: 20, lineHeight: 20 }}>
+        Hello
+      </Text>
     </View>
   );
 }

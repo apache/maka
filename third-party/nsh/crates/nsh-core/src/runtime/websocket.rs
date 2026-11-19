@@ -45,7 +45,7 @@ use crate::{
     },
     websocket::{WebSocketData, WebSocketEvent, WebSocketRequest, WebSocketTask},
 };
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
 mod native;
 /// The largest message one write sends or one read returns, and the bytes
 /// of unread messages past which reading pauses.
@@ -147,7 +147,7 @@ pub(crate) struct ConnectOptions {
 impl JsValue for ConnectOptions {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("WebSocketConnectOptions", |_| {
-            "/** `connect`'s options. */\nexport interface WebSocketConnectOptions {\n  /** Extra handshake headers; credentials and handshake-control headers are refused. */\n  headers?: Record<string, string>;\n}".into()
+            "/** `connect`'s options. */\nexport interface WebSocketConnectOptions {\n  /** Extra handshake headers, including explicit Cookie and Authorization on native hosts. Proxy-Authorization and handshake-control headers are refused; browsers reject all custom headers. */\n  headers?: Record<string, string>;\n}".into()
         })
     }
 
@@ -175,16 +175,11 @@ impl JsValue for ConnectOptions {
             let normalized = name.to_ascii_lowercase();
             if matches!(
                 normalized.as_str(),
-                "authorization"
-                    | "proxy-authorization"
-                    | "cookie"
-                    | "host"
-                    | "connection"
-                    | "upgrade"
+                "proxy-authorization" | "host" | "connection" | "upgrade"
             ) || normalized.starts_with("sec-websocket-")
             {
                 return Err(PropError(format!(
-                    "headers may not set handshake-control or credential header `{name}`"
+                    "headers may not set handshake-control or proxy authorization header `{name}`"
                 )));
             }
             if normalized.is_empty()
@@ -272,7 +267,7 @@ impl WebSocket {
         sys: System,
     ) -> Result<Later<WebSocketConnection>, JsError> {
         let Some(transport) = sys.websocket.clone() else {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
             {
                 let connection = native::WebSocket::connect(url, options, sys)?;
                 return Ok(Later::new(async move {
@@ -286,6 +281,12 @@ impl WebSocket {
                 JsError::Error("The host has no WebSocket transport configured".into())
                     .with_code(codes::UNAVAILABLE),
             );
+            #[cfg(all(not(target_arch = "wasm32"), not(feature = "websocket")))]
+            return Err(JsError::Error(
+                "this build has no WebSocket transport: nsh-core's `websocket` feature is off"
+                    .into(),
+            )
+            .with_code(codes::UNAVAILABLE));
         };
         let parsed = url::Url::parse(&url)
             .map_err(|error| JsError::Type(format!("invalid WebSocket URL: {error}")))?;
@@ -356,7 +357,7 @@ impl WebSocket {
 }
 
 enum Connection {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
     Native(native::WebSocketConnection),
     Host(HostConnection),
 }
@@ -375,7 +376,7 @@ impl WebSocketConnection {
     /// with `ERR_SOCKET_CLOSED`.
     pub(crate) fn write(&self, data: Data) -> Result<Later<()>, JsError> {
         match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
             Connection::Native(connection) => connection.write(data),
             Connection::Host(host) => {
                 let data = match data {
@@ -441,7 +442,7 @@ impl WebSocketConnection {
     /// takes one.
     pub(crate) fn read(&self) -> Result<Later<Option<Data>>, JsError> {
         match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
             Connection::Native(connection) => connection.read(),
             Connection::Host(host) => {
                 if host.state.borrow_mut().reading.replace(true) {
@@ -494,7 +495,7 @@ impl WebSocketConnection {
     ) -> Result<Later<()>, JsError> {
         let frame = CloseStatus::requested(code, reason)?;
         Ok(match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
             Connection::Native(connection) => connection.close(frame),
             Connection::Host(host) => {
                 let paused = {
@@ -572,7 +573,7 @@ impl WebSocketConnection {
     /// How the connection closed, once it did.
     fn status(&self) -> Option<CloseStatus> {
         match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
             Connection::Native(connection) => connection.status(),
             Connection::Host(host) => host.state.borrow().status.clone(),
         }
@@ -754,6 +755,11 @@ impl HostState {
 }
 
 #[cfg(test)]
+// Without the native client, `Connection` has only `Host`.
+#[cfg_attr(
+    any(target_arch = "wasm32", not(feature = "websocket")),
+    allow(irrefutable_let_patterns)
+)]
 mod tests {
     /// What `later` settles JS's promise with: its value as JSON (`null`
     /// for `undefined` too), or its error's `code`.
@@ -838,7 +844,7 @@ mod tests {
 
     // Android has no other dependency selecting a TLS provider. A peer closing
     // at once must produce a handshake error, not a missing-provider panic.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
     #[tokio::test]
     async fn native_wss_has_a_tls_provider() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -910,7 +916,7 @@ mod tests {
             ..System::default()
         }
         .with_refuse_connections(Some(refuse));
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
         {
             let Err(error) = WebSocket::connect("ws://example.com".into(), None, native.clone())
             else {
@@ -932,20 +938,42 @@ mod tests {
 
     #[test]
     fn host_checks_grants_headers_and_shared_quota_before_connecting() {
+        EVENTS.with(|events| events.borrow_mut().take());
         let mut denied = system();
         denied.access = Arc::new(Access {
             declared: crate::access::Capabilities::default(),
             granted: None,
         });
-        let Err(error) = WebSocket::connect("ws://example.com".into(), None, denied) else {
+        let credentials = ConnectOptions {
+            headers: vec![
+                ("authorization".into(), "Bearer token".into()),
+                ("cookie".into(), "session=token".into()),
+            ],
+        };
+        let Err(error) = WebSocket::connect("ws://example.com".into(), Some(credentials), denied)
+        else {
             panic!("an ungranted URL connected")
         };
         assert_eq!(error.code(), Some(codes::ACCESS_DENIED));
         let sys = system();
-        let headers = ConnectOptions {
-            headers: vec![("x-test".into(), "test".into())],
-        };
-        assert!(WebSocket::connect("ws://example.com".into(), Some(headers), sys.clone()).is_err());
+        for name in ["x-test", "authorization", "cookie"] {
+            let headers = ConnectOptions {
+                headers: vec![(name.into(), "test".into())],
+            };
+            let Err(error) =
+                WebSocket::connect("ws://example.com".into(), Some(headers), sys.clone())
+            else {
+                panic!("a browser connection accepted `{name}`")
+            };
+            assert_eq!(
+                error,
+                JsError::Type(
+                    "The browser WebSocket API does not support custom handshake headers".into()
+                )
+            );
+            assert_eq!(sys.quotas.held(WEBSOCKETS), 0);
+        }
+        EVENTS.with(|events| assert!(events.borrow().is_none()));
         let _held = sys
             .quotas
             .reserve(WEBSOCKETS, MAX_WEBSOCKETS, MAX_WEBSOCKETS)

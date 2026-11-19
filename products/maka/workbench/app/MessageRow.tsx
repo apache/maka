@@ -19,43 +19,52 @@
 
 import { tr } from './locale';
 import { CompactionDivider, NoteDivider } from './CompactionDivider';
-import { computed, inputAction, signal, Text, View } from 'nsh';
+import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX, Signal } from 'nsh';
-import { platform } from 'nsh';
+import { platform, reduceMotion } from 'nsh';
 import { ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { createMessageMenu, type MessageMenu } from './messageMenu';
 import type { MessageSenders } from './messageSenders';
 import { Icon } from './Icon';
-import { messageKey, senderSession, type Row } from './history';
+import { hasTextPrefix, messageBytes, messageKey, senderSession, type Row } from './history';
 import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
+import type { InlineCitation } from './answerCitations';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
-import { SkillMessage } from './SkillMessage';
+import { SkillMessage, userMessagePresentation } from './SkillMessage';
 import {
   C,
   bodyTextStyle,
   captionTextStyle,
   controlDisabledStyle,
-  controlHoverStyle,
   controlStyle,
   secondaryTextStyle,
   Disclosure,
   disclosureContentInset,
   disclosureTitleStyle,
   IconButton,
+  floatingStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
 } from './ui';
 import { HistoryAttachments } from './Attachments';
 import type { ToolActivity } from './toolActivity';
 import { ToolCard } from './ToolCard';
-import { useHost } from './host';
-import { QuickMessageTools, messageTime } from './QuickMessageTools';
-import { MessageCopy, readOriginal } from './MessageCopy';
+import { MessageQuotes } from './MessageQuotes';
+import { MessageCopy, readOriginal, type OriginalMessage } from './MessageCopy';
 import type { ImagePreview } from './ImageThumbnail';
+import type { InlineEdit } from './MessageEdit';
+import { LoadingIndicator } from './Loading';
+import { useHost } from './host';
+import { createText, errorText } from './text';
 
 /** What names a message the Host generated in place of its text; null for the user's own. */
 export function originLabel(origin: MessageOrigin | null | undefined): string | null {
+  // One line: an objective written on several lines reads on as far as there is room.
   return origin?.kind === 'goal'
-    ? tr('Pursuing Goal: {objective}', { objective: origin.objective })
+    ? tr('Pursuing Goal: {objective}', {
+        objective: origin.objective.replace(/\s+/g, ' ').trim(),
+      })
     : null;
 }
 
@@ -82,9 +91,58 @@ function SenderLink(props: { sessionId(): string; senders?: MessageSenders }) {
   );
 }
 
+function FullAgentMessage(props: {
+  original: OriginalMessage;
+  sourceId: string;
+  /** How the text reads once it is here; plain text when absent. */
+  render?(text: () => string): JSX.Element;
+}) {
+  const host = useHost();
+  const body = signal<string | null>(null);
+  const failure = createText();
+  let alive = true;
+  cleanup(() => {
+    alive = false;
+  });
+  void readOriginal(host, props.original, () => alive).then(
+    (text) => {
+      if (alive) body.set(text);
+    },
+    (reason) => {
+      if (alive) failure.set(errorText(reason, 'Message is unavailable'));
+    },
+  );
+  return (
+    <If
+      when={body() !== null || !!failure()}
+      else={<LoadingIndicator label={tr('Reading details…')} color={C.muted} />}
+    >
+      <If
+        when={!failure() && props.render}
+        else={
+          <Text
+            style={{
+              ...secondaryTextStyle,
+              color: failure() ? C.danger : C.text,
+              userSelect: 'text',
+            }}
+            textSource={failure() ? undefined : { id: props.sourceId, offset: 0 }}
+          >
+            {failure() || body()}
+          </Text>
+        }
+      >
+        {props.render!(() => body() ?? '')}
+      </If>
+    </If>
+  );
+}
+
 export type MessageViewState = {
   expanded: Signal<boolean>;
   sourceMode: Signal<boolean>;
+  /** An edit open in place of a user message. */
+  edit?: Signal<InlineEdit | null>;
 };
 type MessageRowToggle = {
   sessionId: string;
@@ -93,49 +151,61 @@ type MessageRowToggle = {
 };
 
 export function MessageRow({
-  compact: quickTools,
   item,
+  citations,
+  hasSources,
+  openSources,
+  highlighted,
   repeats,
   sessionId,
   through,
   viewState,
   previewImage,
+  previewTerminal,
   openLink,
+  openSession,
   senders,
   userScroll,
-  onExpand,
   ownerKey,
   toolMaxHeight,
   toolProgress,
   onToolReading,
+  inspectTool,
   finalActions,
   editMessage,
+  messageEditor,
   failureActions,
 }: {
-  compact?: boolean;
   item: () => Row;
+  citations?(): readonly InlineCitation[] | undefined;
+  hasSources?(): boolean;
+  openSources?(): void;
+  highlighted?: () => boolean;
   /** How many identical failures this row stands for. */
   repeats?: () => number;
   sessionId: string;
   through: () => number;
   viewState?: MessageViewState;
   previewImage(image: ImagePreview): void;
+  previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
+  openSession?(sessionId: string): void;
   senders?: MessageSenders;
   userScroll(): void;
-  onExpand?(key: string): void;
   ownerKey?: () => string;
   toolMaxHeight: () => number;
   toolProgress?(id: string): ToolActivity['phase'] | null;
   onToolReading?(key: string): void;
+  inspectTool?(key: string): void;
   finalActions?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
   /** An action on a user message, beside its copy button. */
   editMessage?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
+  /** What takes a user message's place while `viewState.edit` holds an edit of it. */
+  messageEditor?(row: () => Row, ownerKey: () => string): JSX.Element;
   /** An action beside a failure notice. */
   failureActions?(row: () => Row): JSX.Element;
 }) {
   const rowKey = (row: Row) => ownerKey?.() ?? messageKey(row);
-  const host = useHost();
   return (
     <Each of={[item()]} key={rowKey}>
       {(row) => {
@@ -149,15 +219,35 @@ export function MessageRow({
         if (note()) return <NoteDivider label={note()!} />;
         // A failure is a notice about the run, not an answer: one quiet line, with
         // no source view since its source is the same text.
+        // On the desktop its mark sits over Retry's, and the text over Retry's label.
         if (row().role === 'failure')
           return (
             <View style={{ gap: 4, paddingVertical: 4 }}>
-              <Text style={[{ ...secondaryTextStyle, color: C.warning }, { userSelect: 'text' }]}>
-                {row().text}
-                {(repeats?.() ?? 1) > 1
-                  ? ` · ${tr('Failed {count} times', { count: repeats!() })}`
-                  : ''}
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 4 }}>
+                <If when={platform.idiom !== 'terminal'}>
+                  <View
+                    style={{
+                      height: secondaryTextStyle.lineHeight,
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Icon name="statusError" color={C.warning} />
+                  </View>
+                </If>
+                <Text
+                  style={[
+                    { ...secondaryTextStyle, color: C.warning, flex: 1, minWidth: 0 },
+                    { userSelect: 'text' },
+                  ]}
+                >
+                  {/* Host reasons start in lower case: "model HTTP request failed …". */}
+                  {row().text.replace(/^[a-z]/, (letter) => letter.toUpperCase())}
+                  {(repeats?.() ?? 1) > 1
+                    ? ` · ${tr('Failed {count} times', { count: repeats!() })}`
+                    : ''}
+                </Text>
+              </View>
               {failureActions?.(row)}
             </View>
           );
@@ -172,21 +262,73 @@ export function MessageRow({
         const setExpanded = (action: MessageRowToggle) => {
           if (!ownsRow(action)) return;
           expanded.set(action.value);
-          if (action.value) onExpand?.(action.key);
         };
-        // On the desktop the replies between tool calls carry no actions, so
-        // only the final reply (or one already showing its source) has a row.
-        const actionRow = () => platform.idiom === 'terminal' || row().finalOutput || sourceMode();
-        const sourceId = () => `${sessionId}/${row().messageId}/${row().field}`;
+        const actionRow = () =>
+          platform.idiom === 'terminal' || row().finalOutput || sourceMode() || hasSources?.();
+        const sourceId = () => `${sessionId}/${rowKey(row())}`;
+        const userPresentation = computed(() => userMessagePresentation(row()));
         const sender = () => (row().role === 'user' ? senderSession(row().origin) : null);
-        if (sender())
+        const automation = () => {
+          const origin = row().origin;
+          return row().role === 'user' && origin?.kind === 'automation' ? origin : null;
+        };
+        if (sender() || automation()) {
+          const title = () => {
+            const origin = automation();
+            return origin
+              ? tr('Automation: {title}', { title: origin.title })
+              : senderLabel(sender()!, senders);
+          };
+          const preview = computed(() => {
+            if (expanded()) return '';
+            const value = row();
+            if (value.fragments && value.fragments[0]?.offset !== 0) return '';
+            const start = /\S[\s\S]{0,239}/u.exec(value.text)?.[0];
+            return start
+              ? TextView.plainText(TextView.parse(start, { streaming: true }))
+                  .replace(/\s+/g, ' ')
+                  .trim()
+              : '';
+          });
+          const original = computed<OriginalMessage | null>(() => {
+            if (!expanded()) return null;
+            const value = row();
+            if (
+              value.field !== 'body' ||
+              !value.position ||
+              value.totalBytes === undefined ||
+              (hasTextPrefix(value) && messageBytes(value.text) === value.totalBytes)
+            )
+              return null;
+            return {
+              sessionId,
+              key: rowKey(value),
+              role: 'user',
+              position: value.position,
+              through: value.metadataThrough ?? through(),
+            };
+          });
+          // An agent writes Markdown; an Automation's prompt is the user's own text.
+          const agentMarkdown = (text?: () => string) => (
+            <MarkdownBody
+              sessionId={sessionId}
+              row={row}
+              sourceId={sourceId()}
+              compact
+              fullColor
+              text={text}
+              openLink={openLink}
+              userScroll={userScroll}
+            />
+          );
           return (
-            <View>
+            <View style={{ width: '100%', minWidth: 0 }}>
               <Disclosure
-                label={tr('Agent message')}
-                tooltip={senderLabel(sender()!, senders)}
-                icon="split"
+                label={preview() ? `${title()} · ${preview()}` : title()}
+                tooltip={title()}
+                icon={automation() ? 'activity' : 'split'}
                 open={expanded()}
+                terminalInset={controlStyle.paddingHorizontal}
                 onPress={inputAction(setExpanded, {
                   sessionId,
                   key: rowKey(row()),
@@ -195,7 +337,9 @@ export function MessageRow({
                 trailing={
                   <If when={expanded()}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <SenderLink sessionId={() => sender()!} senders={senders} />
+                      <If when={sender()}>
+                        <SenderLink sessionId={() => sender()!} senders={senders} />
+                      </If>
                       <MessageCopy
                         row={row}
                         ownerKey={() => rowKey(row())}
@@ -206,14 +350,43 @@ export function MessageRow({
                   </If>
                 }
               >
-                <Text
-                  style={[
-                    { ...disclosureTitleStyle, color: C.secondary },
-                    { numberOfLines: 1, textOverflow: 'ellipsis' },
-                  ]}
+                <View
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 6,
+                  }}
                 >
-                  {senderLabel(sender()!, senders)}
-                </Text>
+                  <Text
+                    style={[
+                      {
+                        ...captionTextStyle,
+                        minWidth: 0,
+                        maxWidth: preview() ? '48%' : undefined,
+                        flexShrink: 1,
+                        color: expanded() ? C.text : C.secondary,
+                      },
+                      { numberOfLines: 1, textOverflow: 'ellipsis' },
+                    ]}
+                  >
+                    {title()}
+                  </Text>
+                  <If when={preview()}>
+                    <Text
+                      style={[
+                        { ...captionTextStyle, minWidth: 0, flexShrink: 1, color: C.muted },
+                        { numberOfLines: 1, textOverflow: 'ellipsis' },
+                      ]}
+                    >
+                      {`·  ${preview()}`}
+                    </Text>
+                  </If>
+                  <If when={platform.idiom !== 'terminal'}>
+                    <Icon name={expanded() ? 'down' : 'right'} size={12} color={C.muted} />
+                  </If>
+                </View>
               </Disclosure>
               <If when={expanded()}>
                 <View
@@ -223,11 +396,29 @@ export function MessageRow({
                     gap: 8,
                   }}
                 >
-                  <Text
-                    style={[{ ...secondaryTextStyle, color: C.secondary }, { userSelect: 'text' }]}
+                  <If
+                    when={original()}
+                    else={
+                      <If
+                        when={sender()}
+                        else={
+                          <Text
+                            style={{ ...secondaryTextStyle, color: C.text, userSelect: 'text' }}
+                          >
+                            <SourceText row={row} sourceId={sourceId()} />
+                          </Text>
+                        }
+                      >
+                        {agentMarkdown()}
+                      </If>
+                    }
                   >
-                    <SourceText row={row} sourceId={sourceId()} />
-                  </Text>
+                    <FullAgentMessage
+                      original={original()!}
+                      sourceId={sourceId()}
+                      render={sender() ? agentMarkdown : undefined}
+                    />
+                  </If>
                   <If when={(row().attachments?.length ?? 0) > 0}>
                     <HistoryAttachments
                       userScroll={userScroll}
@@ -242,6 +433,7 @@ export function MessageRow({
               </If>
             </View>
           );
+        }
         const text = computed(() => row().text);
         const thinking = () => row().field === 'thinking' || row().role === 'thinking';
         const firstLine = computed(() => (thinking() ? /\S[^\r\n]*/.exec(text()) : null));
@@ -263,19 +455,31 @@ export function MessageRow({
         const compact = () => thinking() || isTool();
         const user = () => row().role === 'user';
         const summary = () => `${tr('Thinking')}${preview() ? ` · ${preview()}` : ''}`;
+        const timestamp = () => {
+          const value = (row() as Row & { timestamp?: number }).timestamp;
+          if (typeof value !== 'number') return '';
+          const date = new Date(value);
+          return Number.isNaN(date.getTime())
+            ? ''
+            : `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+        };
         // On the desktop a message's actions show while the pointer is on it or
         // the keyboard focus is in them; its context menu has the same commands.
-        const menu =
-          platform.idiom === 'terminal' || compact() || quickTools
-            ? undefined
-            : createMessageMenu();
+        const menu = platform.idiom === 'terminal' || compact() ? undefined : createMessageMenu();
         const revealed = menu && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100';
         const toggleSource = () =>
           inputAction(setSourceMode, { sessionId, key: rowKey(row()), value: !sourceMode() });
         const message = (
           <View
             class={menu && 'group'}
-            style={{ paddingVertical: user() ? (quickTools ? 6 : 16) : 0, gap: 0, width: '100%' }}
+            // On the desktop a user's message ends in its action row (shown on
+            // hover), and that row is the space below it.
+            style={{
+              paddingTop: user() ? 16 : 0,
+              paddingBottom: user() && platform.idiom === 'terminal' ? 16 : 0,
+              gap: 0,
+              width: '100%',
+            }}
           >
             <If
               when={user()}
@@ -301,6 +505,7 @@ export function MessageRow({
                             }
                           >
                             <MarkdownBody
+                              citations={citations}
                               sessionId={sessionId}
                               row={row}
                               sourceId={sourceId()}
@@ -310,21 +515,7 @@ export function MessageRow({
                           </If>
                         }
                       >
-                        <Text
-                          style={[
-                            {
-                              color: C.text,
-                              ...bodyTextStyle,
-                              ...(quickTools
-                                ? {
-                                    fontSize: 14,
-                                    lineHeight: 22,
-                                  }
-                                : {}),
-                            },
-                            { userSelect: 'text' },
-                          ]}
-                        >
+                        <Text style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}>
                           <SourceText row={row} sourceId={sourceId()} />
                         </Text>
                       </If>
@@ -365,6 +556,13 @@ export function MessageRow({
                             >
                               {finalActions?.(row, () => rowKey(row()), menu)}
                             </If>
+                          </If>
+                          <If when={hasSources?.()}>
+                            <IconButton
+                              label={tr('Sources')}
+                              icon="globe"
+                              onPress={() => openSources?.()}
+                            />
                           </If>
                           <IconButton
                             label={
@@ -438,6 +636,7 @@ export function MessageRow({
                               when={sourceMode()}
                               else={
                                 <MarkdownBody
+                                  citations={citations}
                                   sessionId={sessionId}
                                   row={row}
                                   sourceId={sourceId()}
@@ -462,6 +661,7 @@ export function MessageRow({
                     }
                   >
                     <ToolCard
+                      openLink={openLink}
                       row={row}
                       progress={() => toolProgress?.(row().tool?.toolUseId ?? '') ?? null}
                       sessionId={sessionId}
@@ -474,89 +674,97 @@ export function MessageRow({
                         if (expanded()) onToolReading?.(rowKey(row()));
                       }}
                       previewImage={previewImage}
+                      previewTerminal={previewTerminal}
+                      senders={senders}
                       userScroll={userScroll}
-                      expand={setExpanded}
+                      expand={(action) => {
+                        if (!ownsRow(action)) return;
+                        setExpanded(action);
+                        if (action.value) onToolReading?.(action.key);
+                      }}
                       showOriginal={setSourceMode}
+                      inspect={inspectTool}
                     />
                   </If>
                 </If>
               }
             >
-              <QuickMessageTools
-                enabled={Boolean(quickTools)}
-                user
-                timestamp={row().timestamp}
-                text={async (current) => {
-                  const item = row();
-                  if (!item.position || item.field !== 'body') return item.text;
-                  return readOriginal(
-                    host,
-                    {
-                      sessionId,
-                      key: rowKey(item),
-                      role: 'user',
-                      position: item.position,
-                      through: item.metadataThrough ?? through(),
-                    },
-                    current,
-                  );
-                }}
+              <If
+                when={!!messageEditor && (viewState?.edit?.() ?? null) !== null}
+                else={
+                  <>
+                    <View
+                      class={
+                        highlighted && !reduceMotion()
+                          ? 'transition-colors duration-300'
+                          : undefined
+                      }
+                      style={{
+                        alignSelf: 'flex-end',
+                        maxWidth: '78%',
+                        width: userPresentation().kind === 'markdown' ? '78%' : undefined,
+                        paddingHorizontal: 16,
+                        paddingVertical: 16,
+                        borderRadius: 20,
+                        backgroundColor: highlighted?.() ? C.cardRaised : C.card,
+                        gap: 8,
+                      }}
+                    >
+                      <MessageQuotes quotes={() => row().quotes ?? []} />
+                      <SkillMessage
+                        row={row}
+                        presentation={userPresentation}
+                        sourceId={sourceId()}
+                        sessionId={sessionId}
+                        openSession={openSession}
+                        openLink={openLink}
+                        userScroll={userScroll}
+                      />
+                      <If when={(row().attachments?.length ?? 0) > 0}>
+                        <HistoryAttachments
+                          userScroll={userScroll}
+                          sessionId={sessionId}
+                          through={row().metadataThrough ?? through()}
+                          position={row().position}
+                          attachments={row().attachments!}
+                          preview={previewImage}
+                        />
+                      </If>
+                    </View>
+                    <View
+                      class={revealed}
+                      style={{
+                        alignSelf: 'flex-end',
+                        width: '78%',
+                        minWidth: 0,
+                        flexDirection: 'row',
+                        flexWrap: 'wrap',
+                        alignItems: 'center',
+                        justifyContent: 'flex-end',
+                        gap: 8,
+                        paddingTop: 4,
+                        // The last glyph ends where the bubble does.
+                        marginRight: platform.idiom === 'terminal' ? 0 : -8,
+                      }}
+                    >
+                      <If when={timestamp()}>
+                        <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>
+                          {timestamp()}
+                        </Text>
+                      </If>
+                      <MessageCopy
+                        row={row}
+                        ownerKey={() => rowKey(row())}
+                        sessionId={sessionId}
+                        through={through}
+                        menu={menu}
+                      />
+                      {editMessage?.(row, () => rowKey(row()), menu)}
+                    </View>
+                  </>
+                }
               >
-                <View
-                  style={{
-                    alignSelf: 'flex-end',
-                    maxWidth: quickTools ? '80%' : '78%',
-                    paddingHorizontal: quickTools ? 10 : 16,
-                    paddingVertical: quickTools ? 7 : 16,
-                    borderRadius: quickTools ? 8 : 20,
-                    backgroundColor: quickTools ? C.raised : C.card,
-                    gap: 8,
-                  }}
-                >
-                  <SkillMessage row={row} sourceId={sourceId()} />
-                  <If when={(row().attachments?.length ?? 0) > 0}>
-                    <HistoryAttachments
-                      userScroll={userScroll}
-                      sessionId={sessionId}
-                      through={row().metadataThrough ?? through()}
-                      position={row().position}
-                      attachments={row().attachments!}
-                      preview={previewImage}
-                    />
-                  </If>
-                </View>
-              </QuickMessageTools>
-              <If when={!quickTools}>
-                <View
-                  class={revealed}
-                  style={{
-                    alignSelf: 'flex-end',
-                    width: '78%',
-                    minWidth: 0,
-                    flexDirection: 'row',
-                    flexWrap: 'wrap',
-                    alignItems: 'center',
-                    justifyContent: 'flex-end',
-                    gap: 8,
-                    paddingTop: 4,
-                    // The last glyph ends where the bubble does.
-                    marginRight: platform.idiom === 'terminal' ? 0 : -8,
-                  }}
-                >
-                  <If when={messageTime(row().timestamp)}>
-                    <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>
-                      {messageTime(row().timestamp)}
-                    </Text>
-                  </If>
-                  <MessageCopy
-                    row={row}
-                    ownerKey={() => rowKey(row())}
-                    sessionId={sessionId}
-                    through={through}
-                    menu={menu}
-                  />
-                  {!quickTools && editMessage?.(row, () => rowKey(row()), menu)}
-                </View>
+                {messageEditor?.(row, () => rowKey(row()))}
               </If>
             </If>
           </View>
@@ -567,27 +775,16 @@ export function MessageRow({
             accessibilityLabel={props.label}
             disabled={props.disabled}
             onSelect={props.select}
-            style={{ ...controlStyle, minWidth: 160 }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlHoverStyle()}
+            style={{ ...menuRowStyle(), minWidth: 160 }}
+            hoverStyle={menuRowHoverStyle()}
+            focusStyle={menuRowHoverStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Text style={{ ...captionTextStyle, color: C.text }}>{props.label}</Text>
           </MenuItem>
         );
         return (
-          <ContextMenu
-            offset={4}
-            margin={8}
-            popupStyle={{
-              padding: 4,
-              backgroundColor: C.surface,
-              borderWidth: 1,
-              borderColor: C.line,
-              borderRadius: 12,
-            }}
-            trigger={message}
-          >
+          <ContextMenu offset={4} margin={8} popupStyle={floatingStyle()} trigger={message}>
             <Each
               of={menu.commands().filter((command) => command.action() !== null)}
               key={(command) => command.kind}

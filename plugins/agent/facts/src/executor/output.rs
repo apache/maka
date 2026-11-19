@@ -58,7 +58,28 @@ pub enum Output {
         text: String,
         #[serde(default)]
         is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<ToolResultDetails>,
     },
+    TurnUsage {
+        usage: TurnUsage,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolResultDetails {
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "ExecutorTurnUsage")]
+pub struct TurnUsage {
+    pub tokens: crate::model::ModelUsage,
+    pub total_tokens: Option<u64>,
+    pub duration_ms: Option<u64>,
 }
 
 impl Output {
@@ -82,6 +103,7 @@ impl Output {
             | Self::ToolResult {
                 tool_call_id, text, ..
             } => (Some(tool_call_id), Some(text)),
+            Self::TurnUsage { .. } => (None, None),
         };
         if let Some(id) = id {
             opaque(id)?;

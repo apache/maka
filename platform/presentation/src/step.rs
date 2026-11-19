@@ -17,7 +17,8 @@
  * under the License.
  */
 
-use crate::{Content, Message, ProjectionError, Thinking};
+use crate::{Content, Message, ModelIdentity, ProjectionError, Thinking};
+use maka_agent_facts::durable::{ModelAttemptId, StepId};
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::model::recorded::{CompletionPart, ModelPartRecord};
 use maka_agent_facts::model::{ModelPart, TextKind};
@@ -26,7 +27,7 @@ use std::collections::BTreeMap;
 pub(crate) mod reasoning;
 
 pub(super) struct Step {
-    id: String,
+    id: ModelIdentity,
     pub item_acceptance: bool,
     model: String,
     records: BTreeMap<u64, (String, ModelPartRecord)>,
@@ -34,7 +35,7 @@ pub(super) struct Step {
 }
 
 impl Step {
-    pub fn new(id: String, model: String, item_acceptance: bool) -> Self {
+    pub fn new(id: ModelIdentity, model: String, item_acceptance: bool) -> Self {
         Self {
             id,
             item_acceptance,
@@ -44,12 +45,22 @@ impl Step {
         }
     }
 
-    pub fn check_id(&self, id: &str) -> Result<(), ProjectionError> {
-        if self.id == id {
+    pub fn check_id(&self, step: StepId, attempt: ModelAttemptId) -> Result<(), ProjectionError> {
+        if self.id.step_id == step && self.id.attempt_id == attempt {
             Ok(())
         } else {
             Err(ProjectionError::Invalid("model step identity changed"))
         }
+    }
+
+    pub fn presented(&self, ordinal: u64) -> bool {
+        self.records.get(&ordinal).is_some_and(|(_, record)| {
+            self.item_acceptance
+                || matches!(
+                    record.part.as_ref(),
+                    ModelPart::ToolCall { .. } | ModelPart::ToolResult { .. }
+                )
+        })
     }
 
     pub fn observe(&mut self, event: &RuntimeEvent, record: &ModelPartRecord) {
@@ -125,7 +136,9 @@ impl Step {
         };
         Ok(Some(Message {
             id: record.message_id.clone(),
-            turn_id: event.invocation.turn_id.clone(),
+            run_id: event.execution.run_id,
+            model: Some(self.id),
+            turn_id: event.execution.turn_id.clone(),
             ts: crate::message::capture_time(record.started_at)?,
             content: Content::Assistant {
                 imported: false,

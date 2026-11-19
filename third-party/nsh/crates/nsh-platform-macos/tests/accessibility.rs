@@ -26,11 +26,17 @@ mod macos {
     use nsh_core::{element::Root, prelude::*};
     use nsh_platform_macos::{
         AppOptions, AppView,
-        objc2::{MainThreadMarker, MainThreadOnly, Message, rc::Retained, runtime::AnyObject},
-        objc2_app_kit::{
-            NSAccessibility, NSApplication, NSBackingStoreType, NSView, NSWindow, NSWindowStyleMask,
+        objc2::{
+            MainThreadMarker, MainThreadOnly, Message, msg_send, rc::Retained, runtime::AnyObject,
+            sel,
         },
-        objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoop, NSSize, NSString},
+        objc2_app_kit::{
+            NSAccessibility, NSApplication, NSBackingStoreType, NSTextField, NSView, NSWindow,
+            NSWindowStyleMask,
+        },
+        objc2_foundation::{
+            NSDate, NSNumber, NSPoint, NSRange, NSRect, NSRunLoop, NSSize, NSString,
+        },
     };
 
     /// The test sets it to change the texts inside the elements.
@@ -38,6 +44,12 @@ mod macos {
 
     /// The scale requested by the frame checks, in percent.
     static ZOOM: AtomicU32 = AtomicU32::new(100);
+
+    /// The test sets it to scroll the scroll area to its end.
+    static SCROLLED: AtomicBool = AtomicBool::new(false);
+
+    /// The test sets it to open the dialog.
+    static OPENED: AtomicBool = AtomicBool::new(false);
 
     /// An option and a tree item holding only a text, an option with a
     /// label of its own, and a button holding only a text.
@@ -78,7 +90,185 @@ mod macos {
                     .on_press(|| {})
                     .child(name("Save", "Save all")),
             )
+            .child(inline_links())
             .child(geometry())
+            .child(order())
+            .child(scroll_area())
+            .child(confirm())
+    }
+
+    #[component]
+    fn InlineLinks() -> impl IntoElement {
+        let linked = || text("Guide").on_press(|| {});
+        view()
+            .selectable(true)
+            .child(
+                text("")
+                    .test_id("body-links")
+                    .child(text("Before "))
+                    .child(linked())
+                    .child(text(" after")),
+            )
+            .child(
+                text("")
+                    .test_id("heading-links")
+                    .role(AccessibilityRole::Header)
+                    .child(text("Heading "))
+                    .child(linked()),
+            )
+            .child(
+                text("")
+                    .test_id("labelled-links")
+                    .label("Summary")
+                    .child(text("Shown "))
+                    .child(linked()),
+            )
+            .child(text("Cannot select").test_id("unselectable").select_none())
+    }
+
+    fn check_inline_links(root: &NSView) {
+        until("inline link mount", || {
+            view_with_id(root, "body-links").is_some()
+        });
+        let body = view_with_id(root, "body-links").unwrap();
+        assert!(!body.isAccessibilityElement());
+        let children = body.accessibilityChildren().unwrap();
+        let values: Vec<Option<String>> = children
+            .iter()
+            .map(|child| {
+                // SAFETY: the child implements NSAccessibility.
+                let value: Option<Retained<AnyObject>> =
+                    unsafe { msg_send![&*child, accessibilityValue] };
+                string(value)
+            })
+            .collect();
+        assert_eq!(
+            values,
+            [
+                Some("Before ".into()),
+                Some("Guide".into()),
+                Some(" after".into())
+            ]
+        );
+        for (id, role) in [
+            ("heading-links", "AXHeading"),
+            ("labelled-links", "AXStaticText"),
+        ] {
+            let view = view_with_id(root, id).unwrap();
+            assert_eq!(view.accessibilityRole().unwrap().to_string(), role);
+            let children = view.accessibilityChildren().unwrap();
+            assert_eq!(children.count(), 1, "only the link is a child of {id}");
+            let child = children.firstObject().unwrap();
+            // SAFETY: the child implements NSAccessibility.
+            let value: Option<Retained<AnyObject>> =
+                unsafe { msg_send![&*child, accessibilityValue] };
+            assert_eq!(string(value).as_deref(), Some("Guide"));
+        }
+        let labelled = view_with_id(root, "labelled-links").unwrap();
+        assert_eq!(
+            string(labelled.accessibilityValue()).as_deref(),
+            Some("Summary")
+        );
+        let allowed = |object: &AnyObject, selector| -> bool {
+            // SAFETY: each tested object implements NSAccessibility.
+            unsafe { msg_send![object, isAccessibilitySelectorAllowed: selector] }
+        };
+        for selector in [
+            sel!(setAccessibilitySelectedTextRange:),
+            sel!(accessibilitySelectedTextRange),
+            sel!(accessibilitySelectedText),
+        ] {
+            assert!(allowed(&body, selector));
+            assert!(!allowed(
+                &view_with_id(root, "unselectable").unwrap(),
+                selector
+            ));
+            assert!(!allowed(&find(root, "button").unwrap(), selector));
+            assert!(!allowed(&labelled, selector));
+        }
+        let link = children.objectAtIndex(1);
+        // SAFETY: the link exposes these selection selectors, checked above.
+        let _: () =
+            unsafe { msg_send![&*link, setAccessibilitySelectedTextRange: NSRange::new(0, 5)] };
+        // SAFETY: the link implements the getter paired with that setter.
+        let range: NSRange = unsafe { msg_send![&*link, accessibilitySelectedTextRange] };
+        // SAFETY: selected text is an NSString NSAccessibility property.
+        let selected: Option<Retained<AnyObject>> =
+            unsafe { msg_send![&*link, accessibilitySelectedText] };
+        assert_eq!(range, NSRange::new(0, 5));
+        assert_eq!(string(selected).as_deref(), Some("Guide"));
+    }
+
+    /// A dialog named by its title and described by its message, opened
+    /// once the test asks.
+    #[component]
+    fn Confirm() -> impl IntoElement {
+        let open = signal(false);
+        set_interval(Duration::from_millis(20), move || {
+            if OPENED.load(Ordering::SeqCst) && !open.get_untracked() {
+                open.set(true);
+            }
+        });
+        when(open, || {
+            nsh_base::dialog()
+                .test_id("rename")
+                .label("Rename file")
+                .accessibility_description("Other apps see the new name too.")
+                .child(
+                    view()
+                        .child(text("Rename file"))
+                        .child(view().test_id("save").on_press(|| {}).child(text("Save"))),
+                )
+        })
+    }
+
+    /// A scroll view and a plain view, each holding two texts made bottom
+    /// first, as a list's recycled cells can be.
+    #[component]
+    fn Order() -> impl IntoElement {
+        let two = |second: &'static str, first: &'static str| {
+            [
+                text("Second").test_id(second).absolute().top(px(40.0)),
+                text("First").test_id(first).absolute().top(px(0.0)),
+            ]
+        };
+        view()
+            .absolute()
+            .left(px(260.0))
+            .top(px(0.0))
+            .w(px(120.0))
+            .child(
+                scroll()
+                    .test_id("scrolled")
+                    .h(px(80.0))
+                    .children(two("scrolled-second", "scrolled-first")),
+            )
+            .child(
+                view()
+                    .test_id("plain")
+                    .h(px(80.0))
+                    .children(two("plain-second", "plain-first")),
+            )
+    }
+
+    /// A scroll view whose content is three times its height.
+    #[component]
+    fn ScrollArea() -> impl IntoElement {
+        let area = element_ref();
+        set_interval(Duration::from_millis(20), move || {
+            if SCROLLED.swap(false, Ordering::SeqCst) {
+                area.scroll_to_end(false);
+            }
+        });
+        scroll()
+            .element_ref(&area)
+            .test_id("scroll-area")
+            .absolute()
+            .left(px(260.0))
+            .top(px(180.0))
+            .w(px(100.0))
+            .h(px(50.0))
+            .child(view().h(px(150.0)))
     }
 
     /// Fixed geometry makes the expected screen frames independent of
@@ -176,6 +366,106 @@ mod macos {
         }
     }
 
+    #[component]
+    fn InputRoles() -> impl IntoElement {
+        let list = element_ref();
+        let option = element_ref();
+        let field = |id| {
+            nsh_base::input()
+                .test_id(id)
+                .default_value("Sample value")
+                .w(px(200.0))
+                .h(px(30.0))
+        };
+        view()
+            .child(field("plain-field"))
+            .child(field("secure-field").masked(true))
+            .child(
+                field("closed-combo")
+                    .role(AccessibilityRole::Combobox)
+                    .label("Closed choices")
+                    .accessibility_state(AccessibilityState {
+                        expanded: Some(false),
+                        ..Default::default()
+                    }),
+            )
+            .child(
+                field("open-combo")
+                    .role(AccessibilityRole::Combobox)
+                    .label("Open choices")
+                    .accessibility_state(AccessibilityState {
+                        expanded: Some(true),
+                        ..Default::default()
+                    })
+                    .accessibility_controls(Some(list))
+                    .accessibility_active_descendant(Some(option)),
+            )
+            .child(
+                view()
+                    .element_ref(&list)
+                    .test_id("choices")
+                    .role(AccessibilityRole::Listbox)
+                    .child(
+                        view()
+                            .element_ref(&option)
+                            .test_id("choice")
+                            .role(AccessibilityRole::Option)
+                            .child(text("First choice")),
+                    ),
+            )
+    }
+
+    fn check_input_roles(app: &AppView, root: &NSView) {
+        fn native_field(view: &NSView) -> Option<Retained<NSTextField>> {
+            view.retain().downcast::<NSTextField>().ok().or_else(|| {
+                view.subviews()
+                    .iter()
+                    .find_map(|child| native_field(&child))
+            })
+        }
+        app.load(Root::of::<InputRoles>().into());
+        until("input roles mount", || find(root, "choice").is_some());
+        for (id, role) in [
+            ("plain-field", "AXTextField"),
+            ("secure-field", "AXTextField"),
+            ("closed-combo", "AXComboBox"),
+            ("open-combo", "AXComboBox"),
+        ] {
+            let input = view_with_id(root, id).unwrap();
+            let field = native_field(&input).expect("the input's native text field");
+            assert_eq!(field.accessibilityRole().unwrap().to_string(), role, "{id}");
+            assert_eq!(field.stringValue().to_string(), "Sample value");
+            if id.ends_with("combo") {
+                let open = id == "open-combo";
+                assert_eq!(field.isAccessibilityExpanded(), open);
+                assert_eq!(
+                    field.accessibilityLabel().unwrap().to_string(),
+                    if open {
+                        "Open choices"
+                    } else {
+                        "Closed choices"
+                    }
+                );
+                for (children, target) in [
+                    (field.accessibilitySelectedChildren(), "choice"),
+                    (field.accessibilityLinkedUIElements(), "choices"),
+                ] {
+                    if open {
+                        let children = children.unwrap();
+                        assert_eq!(children.count(), 1);
+                        assert!(std::ptr::eq(
+                            &*children.objectAtIndex(0),
+                            &*find(root, target).unwrap() as *const NSView as *const AnyObject
+                        ));
+                    } else {
+                        assert!(children.is_none_or(|c| c.is_empty()));
+                    }
+                }
+            }
+        }
+        println!("input accessibility: text fields and editable combobox relations ok");
+    }
+
     /// Runs the main run loop until `done` holds, for at most 5 s.
     fn until(what: &str, mut done: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -200,6 +490,47 @@ mod macos {
             .iter()
             .filter_map(|c| c.downcast::<NSView>().ok())
             .find_map(|c| find(&c, id))
+    }
+
+    /// The view with identifier `id` under `view`, through the view tree
+    /// (it need not be an element).
+    fn view_with_id(view: &NSView, id: &str) -> Option<Retained<NSView>> {
+        if view
+            .accessibilityIdentifier()
+            .is_some_and(|i| i.to_string() == id)
+        {
+            return Some(view.retain());
+        }
+        view.subviews().iter().find_map(|c| view_with_id(&c, id))
+    }
+
+    /// The identifiers of the accessibility children of view `id`, in
+    /// their order.
+    fn children_of(root: &NSView, id: &str) -> Vec<String> {
+        let view = view_with_id(root, id).unwrap_or_else(|| panic!("no view {id}"));
+        view.accessibilityChildren()
+            .map(|children| {
+                children
+                    .iter()
+                    .filter_map(|c| c.downcast::<NSView>().ok())
+                    .filter_map(|c| c.accessibilityIdentifier().map(|i| i.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The role and value of the accessibility element `object`.
+    fn role_and_value(object: &AnyObject) -> (Option<String>, Option<f64>) {
+        // SAFETY: NSAccessibility getters, sent to an element on the main
+        // thread.
+        let role: Option<Retained<NSString>> = unsafe { msg_send![object, accessibilityRole] };
+        let value: Option<Retained<AnyObject>> = unsafe { msg_send![object, accessibilityValue] };
+        (
+            role.map(|r| r.to_string()),
+            value
+                .and_then(|v| v.downcast::<NSNumber>().ok())
+                .map(|n| n.as_f64()),
+        )
     }
 
     fn string(object: Option<Retained<AnyObject>>) -> Option<String> {
@@ -257,6 +588,8 @@ mod macos {
         // A button reads its name as its label.
         assert_eq!(read(&root, "button"), (Some("Save".into()), None, 0));
 
+        check_inline_links(&root);
+
         // The texts change: what clients read follows.
         RENAMED.store(true, Ordering::SeqCst);
         until("the option's new value", || {
@@ -268,6 +601,46 @@ mod macos {
         );
         assert_eq!(read(&root, "labelled"), (None, Some("Fixed".into()), 0));
         assert_eq!(read(&root, "button"), (Some("Save all".into()), None, 0));
+
+        // A scroll view's content is read in the order it is on screen,
+        // not the order its views were made in; elsewhere the tree's order
+        // stays.
+        until("the order mount", || {
+            find(&root, "scrolled-first").is_some()
+        });
+        assert_eq!(
+            children_of(&root, "scrolled"),
+            ["scrolled-first", "scrolled-second"]
+        );
+        assert_eq!(children_of(&root, "plain"), ["plain-second", "plain-first"]);
+
+        // A scroll view is a scroll area, its scroll bar on its axis telling
+        // where it is scrolled to, from 0 at the start to 1 at the end.
+        until("the scroll area", || find(&root, "scroll-area").is_some());
+        let area = find(&root, "scroll-area").expect("the scroll area");
+        assert_eq!(
+            area.accessibilityRole().map(|r| r.to_string()).as_deref(),
+            Some("AXScrollArea")
+        );
+        assert!(area.accessibilityHorizontalScrollBar().is_none());
+        let bar = area
+            .accessibilityVerticalScrollBar()
+            .expect("a vertical bar");
+        assert_eq!(
+            role_and_value(&bar),
+            (Some("AXScrollBar".into()), Some(0.0))
+        );
+        let children = area.accessibilityChildren().expect("children");
+        assert!(
+            children
+                .iter()
+                .any(|c| std::ptr::eq(&*c as *const AnyObject, &*bar as *const AnyObject)),
+            "the bar is among the children"
+        );
+        SCROLLED.store(true, Ordering::SeqCst);
+        until("the bar's value at the end", || {
+            role_and_value(&bar).1 == Some(1.0)
+        });
 
         until("the geometry mount", || find(&root, "nested-row").is_some());
         println!("window backing scale: {}", window.backingScaleFactor());
@@ -295,6 +668,40 @@ mod macos {
                 (140.0, 180.0 - 60.0 * s, 30.0 * s, 10.0 * s),
             );
         }
+
+        // A dialog is an AXGroup with the dialog subrole, as WebKit makes
+        // ARIA's `dialog`, named by its label; its controls stay elements
+        // of their own inside it.
+        OPENED.store(true, Ordering::SeqCst);
+        until("the dialog", || find(&root, "rename").is_some());
+        let dialog = find(&root, "rename").expect("the dialog");
+        assert_eq!(
+            dialog.accessibilityRole().map(|r| r.to_string()).as_deref(),
+            Some("AXGroup")
+        );
+        assert_eq!(
+            dialog
+                .accessibilitySubrole()
+                .map(|r| r.to_string())
+                .as_deref(),
+            Some("AXApplicationDialog")
+        );
+        assert_eq!(
+            dialog
+                .accessibilityLabel()
+                .map(|s| s.to_string())
+                .as_deref(),
+            Some("Rename file")
+        );
+        // Its description is its help, which VoiceOver reads after the
+        // name.
+        assert_eq!(
+            dialog.accessibilityHelp().map(|s| s.to_string()).as_deref(),
+            Some("Other apps see the new name too.")
+        );
+        assert_eq!(read(&dialog, "save"), (Some("Save".into()), None, 0));
+
+        check_input_roles(&app, &root);
 
         app.stop();
         window.close();

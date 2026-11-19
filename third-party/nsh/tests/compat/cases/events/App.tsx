@@ -7,8 +7,10 @@ import EventsComposition from "./events-composition";
 import EventsContextMenu from "./events-context-menu";
 import EventsGestures from "./events-gestures";
 import EventsInput from "./events-input";
+import EventsKeyboard from "./events-keyboard";
 import EventsLayout from "./events-layout";
 import EventsMedia from "./events-media";
+import EventsPinch from "./events-pinch";
 import EventsPointer from "./events-pointer";
 import EventsScroll from "./events-scroll";
 import EventsTouch from "./events-touch";
@@ -18,8 +20,10 @@ const cases: Record<string, () => JSX.Element> = {
   "events-context-menu": EventsContextMenu,
   "events-gestures": EventsGestures,
   "events-input": EventsInput,
+  "events-keyboard": EventsKeyboard,
   "events-layout": EventsLayout,
   "events-media": EventsMedia,
+  "events-pinch": EventsPinch,
   "events-pointer": EventsPointer,
   "events-scroll": EventsScroll,
   "events-touch": EventsTouch,

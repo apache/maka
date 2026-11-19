@@ -17,22 +17,27 @@
  * under the License.
  */
 
-import { cleanup, effect, keymap, lifecycle, signal, untracked, type JSX } from 'nsh';
+import { cleanup, effect, keymap, lifecycle, platform, signal, untracked, type JSX } from 'nsh';
 import type { UiModule, UiViewProps } from '../../../packages/plugin-sdk/src/workbench.js';
-import type {
-  SettingsPageInput,
-  SettingsPageNavigation,
-  SettingsRoute,
-  SettingsViewInput,
+import {
+  quickToolView,
+  type SettingsPageInput,
+  type SettingsPageNavigation,
+  type SettingsRoute,
+  type SettingsViewInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { QuickToolsSettingsPage } from '../../../products/maka/workbench/app/QuickToolsSettingsPage';
 import { ModelSettings } from '../../../products/maka/workbench/app/ModelSettings';
+import { dictationPreferences } from '../../../products/maka/workbench/app/dictationPreferences';
+import { LoadingIndicator } from '../../../products/maka/workbench/app/Loading';
+import { SettingsProblem } from '../../../products/maka/workbench/app/SettingsPage';
 import { ConnectionSettings } from '../../../products/maka/workbench/app/ConnectionSettings';
 import { GeneralSettings } from '../../../products/maka/workbench/app/GeneralSettings';
 import { NetworkSettings } from '../../../products/maka/workbench/app/NetworkSettings';
+import { WebSearchSettings } from '../../../products/maka/workbench/app/WebSearchSettings';
+import { createWebSearchSettings } from '../../../products/maka/workbench/app/webSearchSettingsState';
+import { CommunityPlugins } from '../../../products/maka/workbench/app/CommunityPlugins';
 import { PluginSettings } from '../../../products/maka/workbench/app/PluginSettings';
 import { SkillSettings } from '../../../products/maka/workbench/app/SkillSettings';
-import { ExternalAgentSettings } from '../../../products/maka/workbench/app/ExternalAgentSettings';
 import { createExternalAgentSettings } from '../../../products/maka/workbench/app/externalAgentSettingsState';
 import { McpSettings } from '../../../products/maka/workbench/app/McpSettings';
 import { createSkillSettings } from '../../../products/maka/workbench/app/skillSettingsState';
@@ -58,6 +63,7 @@ import { createSettingsOperations } from '../../../products/maka/workbench/app/s
 import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
 import { providerLabel } from '../../../products/maka/workbench/app/settingsLabels';
 import { appearance, initializeAppearance } from '../../../products/maka/workbench/app/appearance';
+import { initializeComposerToolbar } from '../../../products/maka/workbench/app/composerToolbar';
 import {
   initializeUiScale,
   uiScale,
@@ -68,7 +74,14 @@ import { createHost, HostProvider } from '../../../products/maka/workbench/app/h
 
 import { createPendingRecovery } from '../../../products/maka/workbench/app/pendingRecovery';
 
+import { SubagentSettings } from '../../../products/maka/workbench/app/SubagentSettings';
+import {
+  createPresetSettings,
+  type PresetSettingsSnapshot,
+} from '../../../products/maka/workbench/app/presetSettingsState';
+
 type Snapshot = {
+  presets?: PresetSettingsSnapshot;
   route: SettingsRoute | null;
   connections: ModelSettingsSnapshot;
   general: GeneralSettingsSnapshot;
@@ -91,20 +104,41 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const host = createHost(context.application);
   const operations = createSettingsOperations(host);
   const defaultRoute: SettingsRoute = { instance: context.instance, id: 'connections' };
-  const route = signal<SettingsRoute | null>(restored?.route ?? defaultRoute);
+  const isOwnExternalAgents = (candidate: SettingsRoute | null | undefined) =>
+    candidate?.id === 'external-agents' && sameValue(candidate.instance, context.instance);
+  const route = signal<SettingsRoute | null>(
+    restored?.route
+      ? isOwnExternalAgents(restored.route)
+        ? defaultRoute
+        : restored.route
+      : defaultRoute,
+  );
+  const restoredConnections: ModelSettingsSnapshot | undefined =
+    isOwnExternalAgents(restored?.route) && restored?.connections
+      ? {
+          ...restored.connections,
+          page: 'connections',
+          connectionQuery: '',
+          editor: null,
+          model: null,
+          credential: null,
+          discovery: 'idle',
+          confirmation: null,
+          initialModel: null,
+        }
+      : restored?.connections;
   const mounted = new Map<string, number>();
   const active = (id: string) => () => (mounted.get(id) ?? 0) > 0;
-  const views = new Set<SettingsViewInput>();
-  const changed = () => {
-    for (const view of views) view.changed();
-  };
   const connections = createModelSettings(
     host,
-    changed,
     operations,
     active('connections'),
     undefined,
-    restored?.connections,
+    restoredConnections,
+    undefined,
+    platform.os === 'macos' && platform.idiom !== 'terminal'
+      ? dictationPreferences.enableForConnection
+      : undefined,
   );
   const general = createGeneralSettings(
     host,
@@ -113,25 +147,42 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     restored?.general,
     (locale) => runtime.setLocale(locale),
   );
+  const webSearch = createWebSearchSettings(host, operations, active('web-search'));
   const network = createNetworkSettings(host, operations, active('network'), restored?.network);
   const plugins = createPluginSettings(
     host,
     operations,
-    active('plugins'),
+    () => active('plugins')() || active('marketplace')(),
     runtime,
     context,
     restored?.plugins,
   );
-  const externalAgents = createExternalAgentSettings(
-    host,
-    operations,
-    active('external-agents'),
-    changed,
-  );
+  const externalAgents = createExternalAgentSettings(host, operations, active('connections'));
+  const modelsOwner: PageOwner = {
+    activate() {
+      connections.activate();
+      externalAgents.activate();
+    },
+    deactivate() {
+      connections.deactivate();
+      externalAgents.deactivate();
+    },
+    navigation: () => JSON.stringify([connections.navigation(), externalAgents.navigation()]),
+    back() {
+      if (externalAgents.confirmation()) return externalAgents.back();
+      return connections.back();
+    },
+    refresh() {
+      connections.refresh();
+      if (connections.page() === 'connections') externalAgents.refresh();
+    },
+  };
+  const presets = createPresetSettings(host, operations, restored?.presets);
   const configurationWorkspace = createConfigurationWorkspace(operations);
   const skills = createSkillSettings(host, operations, configurationWorkspace);
   const mcp = createMcpSettings(host, operations, configurationWorkspace);
   initializeAppearance();
+  initializeComposerToolbar();
   initializeUiScale(restored?.scale);
   void general.initializeLanguage().catch(operations.report);
   effect(() => {
@@ -166,6 +217,12 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     operations.recover(async (original, value) => {
       if (original.endpoint === 'agent' && original.method === 'updateGlobalInstructions')
         await general.recovered(value);
+      else if (
+        original.endpoint === 'agent' &&
+        ['createPreset', 'updatePreset', 'deletePreset'].includes(original.method)
+      )
+        await presets.recovered(value);
+      else if (original.endpoint === 'web') await webSearch.load();
       else if (original.endpoint === 'skills') skills.recovered();
       else if (original.endpoint === 'agent' && original.method === 'manageMcpServer')
         mcp.recovered();
@@ -175,12 +232,10 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
         if (original.method === 'configureBatch') await host.refresh();
         plugins.reset();
         externalAgents.reset();
-        if (original.method === 'configureBatch') changed();
       } else if (original.method === 'updateAssistantPreferences') general.reset();
       else if (original.method === 'updateNetwork') network.reset();
       else {
         connections.reset();
-        changed();
       }
     });
   createPendingRecovery({
@@ -232,7 +287,16 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
             if (!input.opened()) return;
             untracked(() => {
               if (input.page) {
-                route.set({ instance: context.instance, id: input.page });
+                if (input.page === 'external-agents') {
+                  route.set(defaultRoute);
+                  if (externalAgents.confirmation()) externalAgents.cancel(externalAgents.action());
+                  connections.leave(() => {
+                    connections.connectionQuery.set('');
+                    connections.reset();
+                  });
+                } else {
+                  route.set({ instance: context.instance, id: input.page });
+                }
                 restoreOpen = false;
               } else if (restoreOpen) restoreOpen = false;
               else {
@@ -241,8 +305,6 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               }
             });
           });
-          views.add(input);
-          cleanup(() => views.delete(input));
           return (
             <HostProvider value={host}>
               <If when={input.opened()}>
@@ -258,43 +320,98 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
           );
         },
       },
-      'quick-tools': {
-        kind: 'settings',
-        render: () => <QuickToolsSettingsPage />,
-      },
       general: {
         kind: 'settings',
-        render: (props) =>
-          mountPage(
+        render: (props) => {
+          const adding = signal(false);
+          const finish = () => {
+            adding.set(false);
+            form.deactivate();
+          };
+          const form = createModelSettings(host, operations, adding, undefined, undefined, (id) => {
+            finish();
+            void dictationPreferences.save('connection', id);
+          });
+          const open = async () => {
+            adding.set(false);
+            form.reset();
+            adding.set(true);
+            // Creation needs the current catalog revision before the editor opens.
+            await form.loadConnections();
+            if (!adding() || form.revision() === null) return;
+            form.newConnection();
+            await form.chooseProvider({
+              packageId: 'maka.providers',
+              entryId: 'maka.providers',
+              scope: 'profile',
+              name: 'deepseek',
+            });
+          };
+          const back = () => {
+            if (!adding()) return general.back();
+            if (
+              form.discardTarget() ||
+              form.confirmation() ||
+              form.page() === 'advanced' ||
+              form.page() === 'model'
+            )
+              return form.back();
+            form.leave(finish);
+            return false;
+          };
+          return mountPage(
             'general',
             general,
             props,
             {
-              title: general.title,
+              title: () =>
+                adding()
+                  ? form.page() === 'advanced'
+                    ? tr('Advanced')
+                    : tr('Add a DeepSeek connection')
+                  : general.title(),
               nested: () => general.editor() !== null,
-              navigation: general.navigation,
-              back: general.back,
-              leave: general.leave,
+              navigation: () => (adding() ? form.navigation() : general.navigation()),
+              back,
+              leave: (next) => (adding() ? form.leave(next) : general.leave(next)),
               backLabel: () => tr('Back from general settings'),
-              busy: operations.busy,
+              busy: operations.navigationBusy,
             },
-            () => <GeneralSettings owner={general} />,
-          ),
+            () => (
+              <If
+                when={adding()}
+                else={<GeneralSettings owner={general} addConnection={() => void open()} />}
+              >
+                <If
+                  when={form.editor() !== null}
+                  else={
+                    <If when={!!operations.error()} else={<LoadingIndicator />}>
+                      <SettingsProblem message={operations.error()} retry={() => void open()} />
+                    </If>
+                  }
+                >
+                  <ConnectionSettings owner={form} />
+                </If>
+              </If>
+            ),
+          );
+        },
       },
       connections: {
         kind: 'settings',
         render: (props) =>
           mountPage(
             'connections',
-            connections,
+            modelsOwner,
             props,
             {
               title: () => {
+                if (externalAgents.confirmation()) return externalAgents.title();
                 const editor = connections.editor();
                 const model = connections.model();
                 switch (connections.page()) {
                   case 'connections':
-                    return tr('Connections & models');
+                    return tr('Models');
                   case 'providers':
                     return tr('Add connection');
                   case 'connection':
@@ -311,21 +428,55 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
                 }
               },
               action: () =>
-                connections.page() === 'connections' && !connections.confirmation()
+                connections.page() === 'connections' &&
+                !connections.confirmation() &&
+                !externalAgents.confirmation()
                   ? {
                       label: tr('Add connection'),
                       run: connections.newConnection,
                       disabled: connections.loading(),
                     }
                   : null,
-              nested: () => connections.page() !== 'connections' || !!connections.confirmation(),
-              navigation: connections.navigation,
-              back: connections.back,
-              leave: connections.leave,
+              nested: () =>
+                connections.page() !== 'connections' ||
+                !!connections.confirmation() ||
+                !!externalAgents.confirmation(),
+              navigation: modelsOwner.navigation,
+              back: modelsOwner.back,
+              leave: (next) => {
+                if (externalAgents.confirmation()) externalAgents.cancel(externalAgents.action());
+                connections.leave(next);
+              },
               backLabel: () => tr('Back from connection settings'),
-              busy: operations.busy,
+              busy: operations.navigationBusy,
             },
-            () => <ConnectionSettings owner={connections} />,
+            () => <ConnectionSettings owner={connections} externalAgents={externalAgents} />,
+          ),
+      },
+      subagents: {
+        kind: 'settings',
+        render: (props) =>
+          mountPage(
+            'subagents',
+            presets,
+            props,
+            {
+              title: () => tr('Subagents'),
+              action: () =>
+                !presets.editor()
+                  ? {
+                      label: tr('Add subagent'),
+                      run: () => void presets.open(null),
+                      disabled: presets.loading() || presets.busy(),
+                    }
+                  : null,
+              nested: () => !!presets.editor(),
+              navigation: presets.navigation,
+              back: presets.back,
+              leave: presets.leave,
+              busy: presets.busy,
+            },
+            () => <SubagentSettings owner={presets} />,
           ),
       },
       skills: {
@@ -349,7 +500,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               nested: () => skills.screen() !== 'library' || !!skills.deleting(),
               navigation: skills.navigation,
               back: skills.back,
-              busy: operations.busy,
+              busy: operations.navigationBusy,
             },
             () => <SkillSettings owner={skills} />,
           ),
@@ -380,26 +531,27 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               navigation: mcp.navigation,
               back: mcp.back,
               leave: mcp.leave,
-              busy: operations.busy,
+              busy: operations.navigationBusy,
             },
             () => <McpSettings owner={mcp} />,
           ),
       },
-      'external-agents': {
+      'web-search': {
         kind: 'settings',
         render: (props) =>
           mountPage(
-            'external-agents',
-            externalAgents,
+            'web-search',
+            webSearch,
             props,
             {
-              title: externalAgents.title,
-              nested: () => !!externalAgents.confirmation(),
-              navigation: externalAgents.navigation,
-              back: externalAgents.back,
-              busy: operations.busy,
+              title: webSearch.title,
+              nested: () => false,
+              navigation: webSearch.navigation,
+              back: webSearch.back,
+              leave: webSearch.leave,
+              busy: operations.navigationBusy,
             },
-            () => <ExternalAgentSettings owner={externalAgents} />,
+            () => <WebSearchSettings owner={webSearch} />,
           ),
       },
       network: {
@@ -415,9 +567,26 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               navigation: network.navigation,
               back: network.back,
               leave: network.leave,
-              busy: operations.busy,
+              busy: operations.navigationBusy,
             },
             () => <NetworkSettings owner={network} />,
+          ),
+      },
+      marketplace: {
+        kind: 'settings',
+        render: (props) =>
+          mountPage(
+            'marketplace',
+            plugins,
+            props,
+            {
+              title: () => tr('Plugin marketplace'),
+              nested: () => false,
+              navigation: () => 'marketplace',
+              back: () => true,
+              busy: operations.navigationBusy,
+            },
+            () => <CommunityPlugins owner={plugins} />,
           ),
       },
       plugins: {
@@ -434,9 +603,23 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               back: plugins.back,
               leave: plugins.leave,
               backLabel: () => tr('Back from plugins settings'),
-              busy: () => operations.busy() || plugins.rootUi.busy(),
+              busy: () => operations.navigationBusy() || plugins.rootUi.busy(),
             },
-            () => <PluginSettings owner={plugins} />,
+            () => (
+              <PluginSettings
+                owner={plugins}
+                quickTool={(instance) =>
+                  runtime
+                    .contributions()
+                    .some(
+                      (item) =>
+                        item.declaration.kind === 'view' &&
+                        item.declaration.contract === quickToolView.id &&
+                        sameValue(item.instance.instance, instance.instance),
+                    )
+                }
+              />
+            ),
           ),
       },
     },
@@ -456,6 +639,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
       );
       return {
         route: route(),
+        presets: presets.snapshot(),
         connections: connections.snapshot(),
         general: general.snapshot(),
         network: network.snapshotState(),

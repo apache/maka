@@ -19,54 +19,130 @@
 
 use super::*;
 use futures_util::FutureExt;
-use maka_agent_facts::interaction::PermissionRequest;
-use maka_agent_facts::tool_call::ToolCallIdentity;
-use maka_agent_facts::tools::PreparedEffect;
-use maka_agent_facts::tools::ToolCallContext;
+use maka_agent_authority::computer::NativeCallContext;
+use maka_agent_facts::interaction::{PermissionRequest, PermissionSource};
 use maka_agent_facts::tools::ToolError;
-use maka_agent_facts::tools::ToolJournal;
 use maka_capabilities::call::Scope;
 use maka_capabilities::http::Error;
 use maka_host_runtime::http::{Authority, Worker};
 use maka_sandbox::{Destination, Network, Sandbox};
 use std::panic::AssertUnwindSafe;
 
+#[derive(Clone, Default)]
+pub(super) struct Failure(Arc<std::sync::Mutex<Option<ToolError>>>);
+impl Failure {
+    pub(super) fn observe(&self, error: &ToolError) {
+        if matches!(
+            error,
+            ToolError::OutcomeUnknown(_)
+                | ToolError::CleanupUnconfirmed(_)
+                | ToolError::Persistence(_)
+        ) {
+            self.0
+                .lock()
+                .expect("Web call failure")
+                .get_or_insert_with(|| error.clone());
+        }
+    }
+    /// Every request this plugin sends (fetch, search, probe, key check) is a
+    /// query that changes nothing remote. Losing its response (an error page
+    /// closed unread, a timeout, a dropped connection) leaves no effect to
+    /// reconcile, so the call fails like any other Web error.
+    fn observe_http(&self, error: &ToolError) {
+        if !matches!(error, ToolError::OutcomeUnknown(_)) {
+            self.observe(error);
+        }
+    }
+    pub(super) fn is_uncertain(&self) -> bool {
+        self.0.lock().expect("Web call failure").is_some()
+    }
+    pub(super) fn returned(&self, diagnostic: String) -> HandlerError {
+        match self.0.lock().expect("Web call failure").as_ref() {
+            Some(error) => HandlerError::Unknown {
+                diagnostic: format!("{diagnostic}; {error}"),
+            },
+            None => HandlerError::Returned { diagnostic },
+        }
+    }
+}
+
+pub(super) async fn native_call(
+    owner: &Web,
+    context: &Context,
+    failure: &Failure,
+) -> Result<Option<Arc<NativeCallContext>>, String> {
+    let Some(execution) = context.scope().identity.agent() else {
+        return Ok(None);
+    };
+    let native = context
+        .native_context::<NativeCallContext>()
+        .ok_or("web_requires_native_call")?;
+    let access = native.access();
+    let call = access.call();
+    let custody = context.work_custody().ok_or("web_work_custody_missing")?;
+    if execution != &call.execution
+        || context.scope().identity.operation_id() != Some(call.operation_id.as_str())
+        || call
+            .custody
+            .as_ref()
+            .is_none_or(|original| !Arc::ptr_eq(original, custody))
+    {
+        return Err("web_native_call_mismatch".into());
+    }
+    owner
+        .log
+        .session_for_work(custody.as_ref(), &call.execution.session_id)
+        .map_err(message)?;
+    if context.operation().is_some() {
+        access.bind_original(context).await.map_err(|error| {
+            failure.observe(&error);
+            message(error)
+        })?;
+    }
+    access.current().await.map_err(|error| {
+        failure.observe(&error);
+        message(error)
+    })?;
+    Ok(Some(native))
+}
+
 #[derive(Clone)]
-enum Purpose {
-    Retrieval { basis: Basis, search: bool },
+pub(super) enum Purpose {
+    Fetch { basis: Basis },
+    Search { basis: Basis, key: Option<String> },
     Health,
 }
 #[derive(Clone)]
 pub(super) struct Access {
     owner: Arc<Web>,
-    tool: ToolCallContext,
+    native: Arc<NativeCallContext>,
     caller: Scope,
     purpose: Purpose,
+    failure: Failure,
 }
 impl Access {
-    pub fn new(owner: Arc<Web>, scope: &Scope, basis: Basis, search: bool) -> Result<Self, String> {
-        Self::for_purpose(owner, scope, Purpose::Retrieval { basis, search })
-    }
-    pub fn health(owner: Arc<Web>, scope: &Scope) -> Result<Self, String> {
-        Self::for_purpose(owner, scope, Purpose::Health)
-    }
-    fn for_purpose(owner: Arc<Web>, scope: &Scope, purpose: Purpose) -> Result<Self, String> {
-        let invocation = scope.identity.agent().ok_or("web_requires_agent")?.clone();
-        let operation_id = scope
-            .identity
-            .operation_id()
-            .ok_or("web_requires_tool")?
-            .into();
+    pub fn new(
+        owner: Arc<Web>,
+        scope: &Scope,
+        native: Arc<NativeCallContext>,
+        purpose: Purpose,
+        failure: Failure,
+    ) -> Result<Self, String> {
         Ok(Self {
             owner,
-            tool: ToolCallContext {
-                execution: scope.execution().cloned(),
-                invocation,
-                operation_id,
-            },
+            native,
             caller: scope.clone(),
             purpose,
+            failure,
         })
+    }
+    pub fn health(
+        owner: Arc<Web>,
+        scope: &Scope,
+        native: Arc<NativeCallContext>,
+        failure: Failure,
+    ) -> Result<Self, String> {
+        Self::new(owner, scope, native, Purpose::Health, failure)
     }
     async fn current(
         &self,
@@ -75,41 +151,51 @@ impl Access {
     ) -> Result<(maka_agent_api::session::ResolvedConfiguration, bool), Error> {
         let _lease = self.admit(call)?;
         let available = match &self.purpose {
-            Purpose::Retrieval { basis, search } => self.owner.current(basis, *search).await,
+            Purpose::Fetch { basis } => self.owner.fetch_is_current(basis).await,
+            Purpose::Search { basis, key } => self
+                .owner
+                .repository
+                .search_is_current(basis, key.as_deref())
+                .await
+                .map_err(message),
             Purpose::Health => Ok(true),
         }
         .map_err(Error::Failed)?;
         if !available {
             return Err(Error::Denied);
         }
-        let configuration = maka_agent_authority::permissions::live(
-            &maka_agent_authority::permissions::execution(
-                &self.owner.log,
-                &self.tool.invocation,
-                self.tool.execution.as_deref(),
-            )
-            .map_err(|_| Error::Denied)?,
-            &self.tool.invocation,
-        )
-        .await
-        .map_err(|_| Error::Denied)?;
+        let configuration = self.native.access().current().await.map_err(|error| {
+            self.failure.observe(&error);
+            Error::Denied
+        })?;
         let workspace = configuration.workspace.clone();
         let ceiling = self.owner.network.clone();
+        let floor = self
+            .caller
+            .sandbox_floor()
+            .intersect(call.sandbox_floor())
+            .map_err(|_| Error::Denied)?;
         let destination_copy = destination.clone();
         let allowed = tokio::task::spawn_blocking(move || {
-            let path = std::path::PathBuf::from(&workspace.path);
-            let directory = maka_fs_tools::directory::open(&path, &workspace.directory_identity)
-                .map_err(|_| Error::Denied)?;
-            if maka_fs_tools::workspace::read_directory_identity(path.clone(), directory)
-                .map_err(|_| Error::Denied)?
-                != workspace.identity
+            let requested = std::path::PathBuf::from(&workspace.path);
+            let (path, _directory, identity) =
+                maka_fs_tools::directory::capture_directory(&requested)
+                    .map_err(|_| Error::Denied)?;
+            if maka_fs_tools::workspace::project::host_path(&path).map_err(|_| Error::Denied)?
+                != workspace.path
+            {
+                return Err(Error::Denied);
+            }
+            if let Some(binding) = &workspace.worktree
+                && binding.directory() != requested.as_path()
             {
                 return Err(Error::Denied);
             }
             let (_, policy) =
                 maka_fs_tools::workspace::permissions::resolve(maka_sandbox::Mode::ReadOnly, &path)
                     .map_err(|_| Error::Denied)?;
-            let metadata = match policy {
+            maka_fs_tools::directory::open(&path, &identity).map_err(|_| Error::Denied)?;
+            let metadata = match policy.intersect(&floor).map_err(|_| Error::Denied)? {
                 Sandbox::Managed { network, .. } | Sandbox::External { network } => network,
                 Sandbox::Disabled => Network::Allowed,
             };
@@ -120,19 +206,19 @@ impl Access {
         if !allowed {
             return Err(Error::Denied);
         }
-        let grants = maka_agent_authority::permissions::execution(
-            &self.owner.log,
-            &self.tool.invocation,
-            self.tool.execution.as_deref(),
-        )
-        .map_err(|_| Error::Denied)?
-        .permission_grants(
-            &self.tool.invocation,
-            Some(&self.tool.tool_use_id()),
-            &configuration.permission_basis(),
-        )
-        .await
-        .map_err(|error| Error::Failed(error.to_string()))?;
+        let grants = self
+            .native
+            .access()
+            .permission_grants(
+                self.native.access().target(),
+                &configuration.permission_basis(),
+                PermissionSource::Web,
+            )
+            .await
+            .map_err(|error| {
+                self.failure.observe(&error);
+                Error::Failed(error.to_string())
+            })?;
         Ok((
             configuration,
             grants
@@ -146,30 +232,26 @@ impl Access {
         destination: &Destination,
         origin: String,
     ) -> Result<maka_network::Policy, Error> {
-        let (configuration, granted) = self.current(call, destination).await?;
+        let (_, granted) = self.current(call, destination).await?;
         if !granted {
             let cancellation = call.cancellation.child_token();
-            let store = maka_agent_authority::permissions::execution(
-                &self.owner.log,
-                &self.tool.invocation,
-                self.tool.execution.as_deref(),
-            )
-            .map_err(|_| Error::Denied)?;
             let request = maka_agent_authority::permissions::request(
-                &store,
-                &configuration,
+                self.native.access(),
                 PermissionRequest {
                     reason: match self.purpose {
                         Purpose::Health => format!("Allow health check access to {origin}"),
-                        Purpose::Retrieval { .. } => format!("Allow Web access to {origin}"),
+                        Purpose::Fetch { .. } | Purpose::Search { .. } => {
+                            format!("Allow Web access to {origin}")
+                        }
                     },
                     command: None,
                     permissions: maka_sandbox::grant::Permissions {
                         filesystem: Vec::new(),
                         network: Network::destination(destination.clone()),
                     },
+                    source: PermissionSource::Web,
                 },
-                &self.tool,
+                self.native.access().target(),
                 &cancellation,
             );
             tokio::pin!(request);
@@ -177,9 +259,12 @@ impl Access {
                 result = &mut request => result,
                 _ = self.owner.stopping.cancelled() => { cancellation.cancel(); request.await },
             };
-            result.map_err(|error| match error {
-                ToolError::CleanupUnconfirmed(_) => Error::CleanupUnconfirmed,
-                _ => Error::Denied,
+            result.map_err(|error| {
+                self.failure.observe(&error);
+                match error {
+                    ToolError::CleanupUnconfirmed(_) => Error::CleanupUnconfirmed,
+                    _ => Error::Denied,
+                }
             })?;
         }
         self.check(call, destination).await?;
@@ -199,6 +284,11 @@ impl Authority for Access {
             || self.caller.cancellation.is_cancelled()
             || call.cancellation.is_cancelled()
             || call.identity != self.caller.identity
+            || match (call.work_custody(), self.caller.work_custody()) {
+                (Some(actual), Some(original)) => !Arc::ptr_eq(actual, original),
+                (None, None) => false,
+                _ => true,
+            }
         {
             return Err(Error::Denied);
         }
@@ -223,6 +313,9 @@ impl Authority for Access {
                 let result = owner.authorize(&call, &destination, origin).await;
                 let cleanup = if matches!(result, Err(Error::CleanupUnconfirmed)) {
                     owner.owner.stopping.cancel();
+                    owner.failure.observe(&ToolError::CleanupUnconfirmed(
+                        "Web permission cleanup unconfirmed".into(),
+                    ));
                     Err("Web permission cleanup unconfirmed".into())
                 } else {
                     Ok(())
@@ -251,7 +344,7 @@ impl Authority for Access {
     fn record(
         &self,
         call: Scope,
-        operation: maka_event_log::effects::Operation,
+        _operation: maka_event_log::effects::Operation,
         destination: Destination,
         effect: BoxFuture<'static, Result<Value, ToolError>>,
     ) -> BoxFuture<'static, Result<Value, ToolError>> {
@@ -261,44 +354,10 @@ impl Authority for Access {
                 .check(&call, &destination)
                 .await
                 .map_err(|e| ToolError::Failed(e.to_string()))?;
-            let mut origin = owner.owner.origin.clone();
-            if let maka_agent_facts::tool_call::ToolOrigin::HostSdk { parent, .. } = &mut origin {
-                *parent = Some(maka_agent_facts::tool_call::HostSdkParent::NestedEffect {
-                    operation_id: owner.tool.operation_id.clone(),
-                });
+            let result = effect.await;
+            if let Err(error) = &result {
+                owner.failure.observe_http(error);
             }
-            let journal = ToolJournal::new(
-                Arc::new(maka_agent_authority::permissions::execution(
-                    &owner.owner.log,
-                    &owner.tool.invocation,
-                    owner.tool.execution.as_deref(),
-                )?),
-                owner.tool.invocation.clone(),
-            );
-            let effect_owner = owner.clone();
-            let result = journal
-                .invoke_prepared_call(
-                    uuid::Uuid::new_v4().to_string(),
-                    ToolCallIdentity {
-                        tool_call_id: uuid::Uuid::new_v4().to_string(),
-                        origin,
-                    },
-                    "Http".into(),
-                    serde_json::to_value(operation)
-                        .map_err(|e| ToolError::Failed(e.to_string()))?,
-                    None,
-                    call.cancellation.clone(),
-                    PreparedEffect::new(move |_| {
-                        Box::pin(async move {
-                            effect_owner
-                                .check(&call, &destination)
-                                .await
-                                .map_err(|e| ToolError::Failed(e.to_string()))?;
-                            effect.await.map(Into::into)
-                        })
-                    }),
-                )
-                .await;
             if matches!(
                 result,
                 Err(ToolError::Persistence(_) | ToolError::CleanupUnconfirmed(_))
@@ -333,12 +392,15 @@ fn spawn(owner: &Web, worker: Worker) -> Result<(), Error> {
 }
 
 /// Explicit credential checks belong to their admitted application operation.
-/// They have no Agent invocation and cannot borrow a session's tool grants.
+/// They cannot borrow a Session's Agent tool grants.
 #[derive(Clone)]
 pub(super) struct CredentialCheck {
     pub owner: Arc<Web>,
     pub caller: Scope,
-    pub revision: u64,
+    pub basis: Basis,
+    pub key: Option<String>,
+    pub destination: Destination,
+    pub failure: Failure,
 }
 impl Authority for CredentialCheck {
     fn admit(&self, call: &Scope) -> Result<Box<dyn Send>, Error> {
@@ -346,6 +408,11 @@ impl Authority for CredentialCheck {
             || self.caller.cancellation.is_cancelled()
             || call.cancellation.is_cancelled()
             || call.identity != self.caller.identity
+            || match (call.work_custody(), self.caller.work_custody()) {
+                (Some(actual), Some(original)) => !Arc::ptr_eq(actual, original),
+                (None, None) => false,
+                _ => true,
+            }
         {
             return Err(Error::Denied);
         }
@@ -376,20 +443,19 @@ impl Authority for CredentialCheck {
     ) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             let _lease = self.admit(call)?;
-            if destination.host() != "api.tavily.com"
-                || destination.port() != 443
+            if *destination != self.destination
                 || !self.owner.network.allows(destination)
+                || !floor_network(call.sandbox_floor()).allows(destination)
+                || !floor_network(self.caller.sandbox_floor()).allows(destination)
             {
                 return Err(Error::Denied);
             }
-            let snapshot = self
+            if !self
                 .owner
                 .repository
-                .snapshot()
+                .search_is_current(&self.basis, self.key.as_deref())
                 .await
-                .map_err(|e| Error::Failed(e.to_string()))?;
-            if snapshot.credential.revision != Some(self.revision)
-                || !snapshot.credential.configured
+                .map_err(|error| Error::Failed(error.to_string()))?
             {
                 return Err(Error::Denied);
             }
@@ -411,10 +477,21 @@ impl Authority for CredentialCheck {
                 .map_err(|e| ToolError::Failed(e.to_string()))?;
             // The actual checkKey operation was durably recorded before dispatch.
             // The shared worker owns socket settlement, even after observer loss.
-            effect.await
+            let result = effect.await;
+            if let Err(error) = &result {
+                authority.failure.observe_http(error);
+            }
+            result
         })
     }
     fn spawn(&self, worker: Worker) -> Result<(), Error> {
         spawn(&self.owner, worker)
+    }
+}
+
+fn floor_network(floor: &Sandbox) -> Network {
+    match floor {
+        Sandbox::Disabled => Network::Allowed,
+        Sandbox::Managed { network, .. } | Sandbox::External { network } => network.clone(),
     }
 }

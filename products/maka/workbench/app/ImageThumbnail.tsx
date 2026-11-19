@@ -24,7 +24,7 @@ import { cleanup, inputAction, signal, Text, View, Image } from 'nsh';
 import { Button } from 'nsh/base';
 import { windowSize } from 'nsh';
 import type { ViewRef } from 'nsh';
-import { C, captionTextStyle, controlStyle } from './ui';
+import { C, captionTextStyle, controlStyle, richTooltipStyle, tooltipTextStyle } from './ui';
 import { Icon } from './Icon';
 import { ImageViewer } from './ImageViewer';
 import { tr } from './locale';
@@ -43,6 +43,9 @@ export type ImagePreview = {
   height: number;
   restoreFocus?(): boolean;
 };
+
+/** The largest a hovered image is drawn; its bubble carries it whole. */
+const HOVER_MAX = { width: 480, height: 320 };
 
 export function ImageThumbnail(props: {
   source: PreviewSource;
@@ -93,7 +96,7 @@ export function ImageThumbnail(props: {
   const hoverSize = () => {
     const value = size();
     if (!value) return { width: 0, height: 0 };
-    const scale = Math.min(1, 480 / value.width, 320 / value.height);
+    const scale = Math.min(1, HOVER_MAX.width / value.width, HOVER_MAX.height / value.height);
     return { width: Math.round(value.width * scale), height: Math.round(value.height * scale) };
   };
   const caption = () =>
@@ -125,13 +128,18 @@ export function ImageThumbnail(props: {
           props.mini ? (
             <Tooltip
               disabled={!size() && !error()}
-              class="rounded-md border border-border bg-popover p-1"
+              style={{
+                ...richTooltipStyle(),
+                padding: 4,
+                gap: 4,
+                maxWidth: HOVER_MAX.width + 8,
+              }}
             >
               <View style={{ gap: 4 }}>
                 <If when={size()}>
                   <Image src={uri} style={[{ ...hoverSize() }, { objectFit: 'contain' }]} />
                 </If>
-                <Text class="text-xs text-popover-foreground">{caption()}</Text>
+                <Text style={tooltipTextStyle()}>{caption()}</Text>
               </View>
             </Tooltip>
           ) : (

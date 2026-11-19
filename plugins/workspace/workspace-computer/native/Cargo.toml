@@ -36,8 +36,8 @@ maka-host-runtime.workspace = true
 maka-js-runtime.workspace = true
 maka-plugin-core.workspace = true
 maka-sandbox.workspace = true
-maka-workspace-support.workspace = true
 maka-workspace-api.workspace = true
+base64 = "0.23.1"
 futures-util.workspace = true
 jsonschema.workspace = true
 serde_json.workspace = true
@@ -50,3 +50,5 @@ url = "2.5.8"
 
 [dev-dependencies]
 tempfile.workspace = true
+maka-agent-state.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }

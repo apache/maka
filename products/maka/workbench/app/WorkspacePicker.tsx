@@ -47,6 +47,7 @@ import {
 import { Icon } from './Icon';
 import { WorkspaceLocations } from './WorkspaceLocations';
 import { dialogTop, ownTitleBar } from './chrome';
+import { dialogCardStyle } from './ModalDialog';
 import { createSettingsOperations } from './settingsOperations';
 
 type Location = {
@@ -190,7 +191,10 @@ export function WorkspacePicker(props: {
             ? message(
                 'This folder is unavailable or cannot be opened. Choose another location or retry.',
               )
-            : errorText(reason),
+            : errorText(
+                reason,
+                'This folder is unavailable or cannot be opened. Choose another location or retry.',
+              ),
         );
     } finally {
       read.reading = false;
@@ -293,7 +297,13 @@ export function WorkspacePicker(props: {
         if (alive && props.close(props.instance))
           void props.create({ kind: 'directory', path: resolved }, path);
       } catch (reason) {
-        if (alive) error.set(errorText(reason));
+        if (alive)
+          error.set(
+            errorText(
+              reason,
+              'This folder is unavailable or cannot be opened. Choose another location or retry.',
+            ),
+          );
       } finally {
         if (alive) picking.set(false);
       }
@@ -426,14 +436,11 @@ export function WorkspacePicker(props: {
               }}
               style={{
                 width: '100%',
-                maxWidth: 680,
+                maxWidth: 720,
                 flex: 1,
                 minHeight: 0,
                 maxHeight: Math.min(500, windowSize().height - 32),
-                backgroundColor: C.surface,
-                borderWidth: 1,
-                borderRadius: 16,
-                borderColor: C.line,
+                ...dialogCardStyle(),
               }}
             >
               <View

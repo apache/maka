@@ -36,6 +36,7 @@ import {
   SettingsSection,
   SettingsSelect,
   SettingsSwitch,
+  settingsInset,
 } from './SettingsPage';
 import {
   C,
@@ -112,7 +113,9 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
           <SettingsSwitch
             label={tr('Default for new conversations')}
             checked={isDefault()}
-            disabled={disabled() || !owner.editor()!.enabled}
+            disabled={
+              disabled() || !owner.editor()!.enabled || !owner.enabledModels().has(model().id)
+            }
             onPress={() =>
               void owner.setDefault(
                 isDefault() ? null : { connectionId: connectionId(), modelId: model().originalId! },
@@ -179,53 +182,55 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
           }
         />
         <If when={model().thinkingLevels !== null}>
-          <SettingsRow
-            label={tr('Supported reasoning efforts')}
-            trailing={
-              <View
-                style={{
-                  flexDirection: 'row',
-                  flexWrap: 'wrap',
-                  justifyContent: 'flex-end',
-                  gap: 4,
-                  flexShrink: 1,
-                }}
-              >
-                <Each of={thinkingLevels} key={(level) => level}>
-                  {(level) => (
-                    <Button
-                      disabled={disabled()}
-                      selected={supported().includes(level())}
-                      accessibilityLabel={tr('Support effort {level}', { level: level() })}
-                      onPress={inputAction(owner.toggleThinking, {
-                        ...owner.modelAction(),
-                        level: level(),
-                      })}
-                      style={{
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 6,
-                        minHeight: platform.idiom === 'terminal' ? 16 : 28,
-                        paddingHorizontal: platform.idiom === 'terminal' ? 0 : 8,
-                        borderRadius: 8,
-                      }}
-                      hoverStyle={controlHoverStyle()}
-                      focusStyle={controlFocusStyle()}
-                      activeStyle={{ backgroundColor: C.line }}
-                      disabledStyle={controlDisabledStyle}
-                    >
-                      <ChoiceIndicator
-                        kind="checkbox"
-                        checked={supported().includes(level())}
-                        disabled={disabled()}
-                      />
-                      <Text style={{ ...captionTextStyle, color: C.text }}>{level()}</Text>
-                    </Button>
-                  )}
-                </Each>
-              </View>
-            }
-          />
+          <View
+            style={{
+              flexDirection: 'row',
+              flexWrap: 'wrap',
+              paddingHorizontal: settingsInset,
+              paddingBottom: settingsInset,
+              gap: 4,
+            }}
+          >
+            <Each of={thinkingLevels} key={(level) => level}>
+              {(level) => (
+                <Button
+                  disabled={disabled()}
+                  selected={supported().includes(level())}
+                  accessibilityLabel={tr('Support effort {level}', { level: level() })}
+                  onPress={inputAction(owner.toggleThinking, {
+                    ...owner.modelAction(),
+                    level: level(),
+                  })}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 6,
+                    minHeight: platform.idiom === 'terminal' ? 16 : 28,
+                    paddingHorizontal: platform.idiom === 'terminal' ? 0 : 8,
+                    borderRadius: 8,
+                  }}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
+                  activeStyle={{ backgroundColor: C.line }}
+                  disabledStyle={controlDisabledStyle}
+                >
+                  <ChoiceIndicator
+                    kind="checkbox"
+                    checked={supported().includes(level())}
+                    disabled={disabled()}
+                  />
+                  <Text
+                    style={{
+                      ...captionTextStyle,
+                      color: C.text,
+                    }}
+                  >
+                    {level()}
+                  </Text>
+                </Button>
+              )}
+            </Each>
+          </View>
         </If>
       </SettingsSection>
       <SettingsSection title={tr('Model capabilities')}>
@@ -266,7 +271,12 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
           }
         />
       </SettingsSection>
-      <If when={model().originalId !== null}>
+      <If
+        when={
+          model().originalId !== null &&
+          !owner.editor()?.baseline?.editing?.discoveredModelIds.includes(model().id)
+        }
+      >
         <SettingsSection>
           <SettingsRow
             label={tr('Remove model')}

@@ -37,40 +37,32 @@ pub(super) fn resolve(
     thinking_levels: &[ThinkingLevel],
     thinking_level: Option<ThinkingLevel>,
     route: &Route,
+    service_tier: Option<&str>,
 ) -> Result<Value, Error> {
     let wire = route.wire;
     let parallel = row
         .model
         .capabilities
         .and_then(|caps| caps.parallel_tool_calls);
-    match &route.kind {
-        ProviderKind::Anthropic => Ok(anthropic(
-            facts,
-            row.model,
-            thinking_levels,
-            thinking_level,
-            parallel,
-        )),
+    let mut options = match &route.kind {
+        ProviderKind::Anthropic => {
+            anthropic(facts, row.model, thinking_levels, thinking_level, parallel)
+        }
         ProviderKind::OpenaiResponses if row.provider == "openai-responses-compatible" => {
             relay::responses(row, thinking_level, parallel.unwrap_or(true))
         }
         ProviderKind::OpenaiChatCompletions | ProviderKind::OpenaiResponses => {
             // An explicit account capability can opt out; it never gates rendering.
             let summary = row.model.supports_reasoning_summary.unwrap_or(false);
-            Ok(openai(
-                wire,
-                thinking_level,
-                summary,
-                parallel.unwrap_or(true),
-            ))
+            openai(wire, thinking_level, summary, parallel.unwrap_or(true))
         }
         ProviderKind::OpenaiCompatible { name } => {
             let mut options = compatible::chat_completions(name, thinking_level, parallel);
-            if let crate::facts::adapter::AdapterKind::OpenaiCompatible {
+            if let crate::facts::adapter::RuntimeAdapter::OpenaiCompatible {
                 include_usage,
                 replay_assistant_reasoning_as,
                 ..
-            } = &route.adapter.kind
+            } = route.adapter
             {
                 if let Some(include) = include_usage {
                     options["maka"]["includeUsage"] = json!(include);
@@ -81,7 +73,7 @@ pub(super) fn resolve(
                     options["maka"]["openAiChatReasoningField"] = json!("reasoning");
                 }
             }
-            Ok(options)
+            options
         }
         ProviderKind::OpenResponses(contract) => {
             if parallel == Some(false) {
@@ -101,9 +93,24 @@ pub(super) fn resolve(
             {
                 options["reasoningSummary"] = json!("auto");
             }
-            Ok(json!({"openResponses":options}))
+            json!({"openResponses":options})
         }
+    };
+    if let Some(tier) = service_tier {
+        if !row.model.service_tiers.iter().any(|entry| entry.id == tier) {
+            return Err(Error::Invalid(format!(
+                "unsupported model service tier: {tier}"
+            )));
+        }
+        let namespace = match route.kind {
+            ProviderKind::OpenaiResponses | ProviderKind::OpenaiChatCompletions => "openai",
+            ProviderKind::OpenaiCompatible { .. } => "openaiCompatible",
+            ProviderKind::OpenResponses(_) => "openResponses",
+            ProviderKind::Anthropic => return Err(Error::UnsupportedProtocol),
+        };
+        options[namespace]["serviceTier"] = json!(tier);
     }
+    Ok(options)
 }
 
 fn openai(wire: Wire, level: Option<ThinkingLevel>, summary: bool, parallel: bool) -> Value {

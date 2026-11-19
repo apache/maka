@@ -135,7 +135,7 @@ bar lays them out, however deep each one sits, and an item the app shows later t
 | A separator | the bar, a group | `ToolbarSeparator`'s `class`, `style` | |
 | An item | the bar, a group | the item's own `class`, `style` | its own: `aria-pressed:`, `disabled:`, `hover:`, `focus:`, `active:` |
 
-Show the item the keyboard is on with `focus:` styles, and a pressed toggle through its own surface (see
+Show the item the keyboard is on with `focus-visible:` styles, and a pressed toggle through its own surface (see
 [Design guides](../docs/design-guides.md#interaction-states)).
 
 ## Vertical

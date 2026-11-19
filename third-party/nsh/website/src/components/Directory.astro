@@ -1,0 +1,154 @@
+---
+// The Directory: community libraries, components, templates and tools for
+// Native Shell, from `directory/` in `longbridge/nsh-showcases`. Every entry
+// is rendered here; the script below searches and filters them.
+import Button from './ui/Button.astro';
+import Input from './ui/Input.astro';
+import type { DirectoryEntry } from '../lib/directory';
+import { SHOWCASES_URL, type Lang } from '../lib/site';
+
+export interface Props {
+  entries: DirectoryEntry[];
+  lang: Lang;
+}
+
+const { entries, lang } = Astro.props;
+const zh = lang === 'zh-CN';
+const SINGULAR: Record<string, [string, string]> = { library: ['Library', '功能库'], component: ['Component', '组件'], template: ['Template', '模板'], tool: ['Tool', '工具'] };
+const categoryLabel = Object.fromEntries(Object.entries(SINGULAR).map(([id, [en, cn]]) => [id, zh ? cn : en]));
+const submitUrl = `${SHOWCASES_URL}#submit-a-directory-entry`;
+// A stable hue per project so the letter marks differ without any image.
+const hue = (name: string) => [...name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
+
+const t = zh
+  ? {
+      kicker: '社区生态',
+      title: '为 Native Shell 打造的库、组件与工具。',
+      lead: '社区开发的功能库、UI 组件、项目模板和开发工具，帮你更快做出 Native Shell 应用。所有条目都通过 Showcase 仓库的 PR 审核收录。',
+      count: `${entries.length} 个项目`,
+      searchLabel: '搜索',
+      searchPlaceholder: '名称、作者、描述…',
+      filterLabel: '按类别筛选',
+      clear: '清除筛选',
+      empty: '没有找到匹配的项目。',
+      none: '还没有收录项目，欢迎提交第一个。',
+      ctaTitle: '你为 Native Shell 做了库或工具？',
+      ctaLead: '在 Showcase 仓库的 directory/ 下添加一个 manifest.json 并提交 PR，审核合并后自动列在本页。应用请提交到应用案例。',
+      ctaAction: '提交项目',
+    }
+  : {
+      kicker: 'Directory',
+      title: 'Libraries, components and tools for Native Shell.',
+      lead: 'Community libraries, UI components, starter templates and developer tools that help you build Native Shell apps. Every entry is reviewed through a PR in the Showcase repository.',
+      count: `${entries.length} ${entries.length === 1 ? 'project' : 'projects'}`,
+      searchLabel: 'Search',
+      searchPlaceholder: 'Name, author, description…',
+      filterLabel: 'Filter by category',
+      clear: 'Clear filters',
+      empty: 'No projects match your search.',
+      none: 'No projects are listed yet. Be the first to submit one.',
+      ctaTitle: 'Built a library or tool for Native Shell?',
+      ctaLead: 'Add a manifest.json under directory/ in the Showcase repository and open a PR. Merged entries are published here automatically. Apps go to App Stories.',
+      ctaAction: 'Submit a project',
+    };
+---
+
+<div class="directory-page" data-directory>
+  <div class="directory-hero">
+    <h1>{t.kicker}</h1>
+    <p class="directory-lead">{t.lead}</p>
+    <div class="directory-actions">
+      <Button href={submitUrl} size="sm" target="_blank" rel="noopener noreferrer">{t.ctaAction}</Button>
+      <span class="directory-count">{t.count}</span>
+    </div>
+  </div>
+
+  {entries.length === 0 ? (
+    <p class="directory-pending">{t.none}</p>
+  ) : (
+    <section class="directory-section">
+      <Input type="search" id="directory-query" aria-label={t.searchLabel} placeholder={t.searchPlaceholder} autocomplete="off" data-query>
+        <svg slot="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+      </Input>
+      <ul class="directory-list" data-list>
+        {entries.map((e) => (
+          <li class="directory-item" data-search={[e.name, e.author, e.description, e.category, ...e.platforms].join(' ').toLowerCase()}>
+            <span class="directory-item__mark" aria-hidden="true" style={`--mark-hue: ${hue(e.name)}`}>{e.name.trim().charAt(0).toUpperCase()}</span>
+            <div class="directory-item__body">
+              <div class="directory-item__head">
+                <a class="directory-item__name" href={e.website ?? e.source} target="_blank" rel="noopener noreferrer">{e.name}</a>
+                <span class="directory-item__category">{categoryLabel[e.category]}</span>
+              </div>
+              <p class="directory-item__desc">{e.description}</p>
+            </div>
+            <div class="directory-item__side">
+              {e.stars != null && <span class="directory-item__stars" aria-label={`${e.stars} GitHub Stars`}>★ {e.stars}</span>}
+              <svg class="directory-item__arrow" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <div class="directory-empty" data-empty hidden>
+        <p>{t.empty}</p>
+        <Button variant="secondary" size="sm" data-reset>{t.clear}</Button>
+      </div>
+      <p class="directory-foot">{t.ctaLead}</p>
+    </section>
+  )}
+</div>
+
+<script>
+  for (const root of document.querySelectorAll<HTMLElement>('[data-directory]')) {
+    const query = root.querySelector<HTMLInputElement>('[data-query]');
+    if (!query) continue;
+    const items = [...root.querySelectorAll<HTMLElement>('li[data-search]')];
+    const empty = root.querySelector<HTMLElement>('[data-empty]')!;
+    const render = () => {
+      const words = query.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      let shown = 0;
+      for (const item of items) {
+        const visible = words.every((w) => item.dataset.search!.includes(w));
+        item.hidden = !visible;
+        if (visible) shown++;
+      }
+      empty.hidden = shown > 0;
+    };
+    query.addEventListener('input', render);
+    root.querySelector('[data-reset]')?.addEventListener('click', () => { query.value = ''; render(); query.focus(); });
+    render();
+  }
+</script>
+
+<style is:global>
+  .directory-page { max-width: 52rem; margin: 0 auto; padding: 3rem clamp(1rem, 3vw, 2.5rem) 4rem; color: var(--foreground); }
+  .directory-hero { margin-bottom: 2rem; }
+  .directory-hero h1 { margin: 0; font-size: 2rem; font-weight: 650; line-height: 1.2; letter-spacing: -0.01em; }
+  .directory-lead { margin: 0.75rem 0 0; color: var(--muted-foreground); font-size: 1rem; line-height: 1.65; }
+  .directory-actions { display: flex; align-items: center; gap: 1rem; margin-top: 1.25rem; }
+  .directory-count { color: var(--muted-foreground); font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
+  .directory-pending { padding: 3rem 1rem; border: 1px dashed var(--border); border-radius: var(--radius-card); color: var(--muted-foreground); text-align: center; }
+  .directory-list { margin: 1rem 0 0; padding: 0; list-style: none; }
+  .directory-item { position: relative; display: flex; align-items: center; gap: 1rem; margin: 0; padding: 1rem 0.75rem; margin-inline: -0.75rem; border-radius: 0.5rem; transition: background-color 120ms; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+  .directory-item:first-child { border-top: 0; }
+  .directory-item[hidden] { display: none; }
+  .directory-item__mark { display: grid; place-items: center; flex-shrink: 0; width: 2.5rem; height: 2.5rem; border-radius: 0.625rem; background: hsl(var(--mark-hue) 70% 94%); color: hsl(var(--mark-hue) 55% 34%); font-size: 1.0625rem; font-weight: 650; }
+  .dark .directory-item__mark { background: hsl(var(--mark-hue) 35% 20%); color: hsl(var(--mark-hue) 70% 78%); }
+  .directory-item__body { flex: 1; min-width: 0; }
+  .directory-item__head { display: flex; align-items: baseline; gap: 0.5rem; }
+  .directory-item__name { color: var(--foreground); font-weight: 600; text-decoration: none; }
+  .directory-item__name::after { content: ''; position: absolute; inset: 0; border-radius: inherit; }
+  .directory-item:hover { background: color-mix(in oklab, var(--foreground) 4%, transparent); }
+  .directory-item:hover + .directory-item, .directory-item:hover { border-top-color: transparent; }
+  .directory-item__arrow { width: 1rem; height: 1rem; color: var(--muted-foreground); transition: transform 120ms, color 120ms; }
+  .directory-item:hover .directory-item__arrow { color: var(--foreground); transform: translate(2px, -2px); }
+  .directory-item__category { color: var(--muted-foreground); font-size: 0.75rem; }
+  .directory-item__desc { margin: 0.25rem 0 0; color: var(--muted-foreground); font-size: 0.875rem; line-height: 1.5; }
+  .directory-item__side { display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
+  .directory-item__stars { color: var(--muted-foreground); font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
+  .directory-empty { display: flex; flex-direction: column; align-items: center; gap: 0.75rem; margin-top: 1rem; padding: 2.5rem 1rem; border: 1px dashed var(--border); border-radius: var(--radius-card); color: var(--muted-foreground); text-align: center; }
+  .directory-empty[hidden] { display: none; }
+  .directory-empty p { margin: 0; }
+  .directory-foot { margin: 1.5rem 0 0; color: var(--muted-foreground); font-size: 0.875rem; line-height: 1.6; }
+  .directory-page a:not([data-slot]):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  @media (max-width: 640px) { .directory-item { align-items: start; } .directory-item__side .directory-item__stars { display: none; } }
+</style>

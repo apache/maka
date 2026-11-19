@@ -71,6 +71,7 @@ fn start_root(root: Root) -> (Engine, Receiver<MountBatch>) {
         app: App::Rust(root),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -81,7 +82,7 @@ fn start_root(root: Root) -> (Engine, Receiver<MountBatch>) {
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -94,6 +95,8 @@ fn start_root(root: Root) -> (Engine, Receiver<MountBatch>) {
         chunk_loader: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     (
         Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap(),

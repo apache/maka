@@ -34,8 +34,8 @@ fn main() -> native::Result<()> {
 #[cfg(windows)]
 mod native {
     use futures_util::FutureExt;
-    use maka_agent_facts::terminal::TerminalSize;
     use maka_host_runtime::sandbox::windows::{self, Backend, Installation, Status};
+    use maka_plugin_core::terminal::TerminalSize;
     use maka_process::{
         Command, ObservedProcess, PipeEvent, ProcessOutcome, Termination, bootstrap, pipe, pty,
     };
@@ -252,7 +252,7 @@ mod native {
                     Rule::subtree(self.work.join(".git"), Access::Read),
                     Rule::subtree(self.work.join(".agents"), Access::Read),
                     Rule::subtree(self.work.join(".maka"), Access::Read),
-                    Rule::exact(self.work.join(".maka-workspace.json"), Access::Read),
+                    Rule::exact(self.work.join("guarded.file"), Access::Read),
                     Rule::subtree(self.work.join("private"), Access::Deny),
                 ],
                 deny_globs: vec![],
@@ -399,7 +399,7 @@ mod native {
         std::fs::write(fixture.work.join("private/secret"), "private-original")?;
         let outside = fixture.directory.path().join("outside");
         std::fs::write(&outside, "outside-original")?;
-        for name in [".agents", ".maka", ".maka-workspace.json"] {
+        for name in [".agents", ".maka", "guarded.file"] {
             assert!(
                 !fixture.work.join(name).exists(),
                 "metadata must be missing before admission: {name}"
@@ -527,11 +527,13 @@ mod native {
             std::fs::remove_dir(&path)?;
             filesystem.rules.push(Rule::subtree(path, Access::Read));
         }
-        let marker = root.join(".maka-workspace.json");
-        std::fs::write(&marker, "host-positive-control")?;
-        std::fs::remove_file(&marker)?;
-        filesystem.rules.push(Rule::exact(&marker, Access::Read));
-        for name in [".git", ".agents", ".maka", ".maka-workspace.json"] {
+        let guarded_file = root.join("guarded.file");
+        std::fs::write(&guarded_file, "host-positive-control")?;
+        std::fs::remove_file(&guarded_file)?;
+        filesystem
+            .rules
+            .push(Rule::exact(&guarded_file, Access::Read));
+        for name in [".git", ".agents", ".maka", "guarded.file"] {
             assert!(
                 !root.join(name).exists(),
                 "metadata must be missing before admission: {name}"
@@ -549,7 +551,7 @@ mod native {
             std::fs::read_to_string(root.join("ordinary"))?,
             "ordinary-write"
         );
-        for name in [".git", ".agents", ".maka", ".maka-workspace.json"] {
+        for name in [".git", ".agents", ".maka", "guarded.file"] {
             assert!(
                 !root.join(name).exists(),
                 "created protected metadata: {name}"
@@ -559,7 +561,7 @@ mod native {
                 "renamed protected metadata: {name}"
             );
         }
-        println!("PASS missing .git/.agents/.maka and exact workspace marker cannot be created");
+        println!("PASS missing .git/.agents/.maka and exact guarded file cannot be created");
         Ok(())
     }
 
@@ -681,7 +683,7 @@ mod native {
     }
 
     async fn guard_registry(fixture: &Fixture) -> Result<()> {
-        let home = maka_event_log::root::windows::account_home()?;
+        let home = maka_sandbox::account_home()?;
         let registry = home.join(".maka-sandbox-guards");
         maka_event_log::root::private_directory(&registry)?;
         let id = uuid::Uuid::new_v4();
@@ -896,7 +898,7 @@ mod native {
                     settled = true;
                     match outcome? {
                         Ok(mut spawned) => {
-                            spawned.child.terminate()?;
+                            spawned.child.terminate().await?;
                             spawned.child.wait().await?;
                             return Err("hung-helper admission unexpectedly started a command".into());
                         }
@@ -922,7 +924,7 @@ mod native {
         let failure = match outcome? {
             Err(failure) => failure,
             Ok(mut spawned) => {
-                spawned.child.terminate()?;
+                spawned.child.terminate().await?;
                 spawned.child.wait().await?;
                 return Err("cancelled hung-helper admission started a command".into());
             }
@@ -950,7 +952,7 @@ mod native {
         if !settled {
             match startup.await? {
                 Ok(mut spawned) => {
-                    spawned.child.terminate()?;
+                    spawned.child.terminate().await?;
                     spawned.child.wait().await?;
                 }
                 Err(maka_agent_facts::tools::ToolError::CleanupUnconfirmed(message)) => {
@@ -1242,14 +1244,14 @@ mod native {
                 for name in [".git", ".agents", ".maka"] {
                     results.push((name, MetadataProbe::capture(&root.join(name), true)));
                 }
-                let marker = MetadataProbe::capture(&root.join(".maka-workspace.json"), false);
+                let guarded_file = MetadataProbe::capture(&root.join("guarded.file"), false);
                 let all_denied =
-                    results.iter().all(|(_, probe)| probe.protected()) && marker.protected();
+                    results.iter().all(|(_, probe)| probe.protected()) && guarded_file.protected();
                 if !all_denied {
                     for (name, probe) in &results {
                         println!("guarded {name}: {probe:?}");
                     }
-                    println!("guarded .maka-workspace.json: {marker:?}");
+                    println!("guarded guarded.file: {guarded_file:?}");
                     io::stdout().flush()?;
                 }
                 assert!(

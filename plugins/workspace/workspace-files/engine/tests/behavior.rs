@@ -18,13 +18,9 @@
  */
 
 mod edit;
-mod glob;
-mod grep;
-mod grep_scope;
 mod patch;
 mod policy;
 mod read;
 mod windows_read;
-mod workspace_identity;
 mod worktree;
 mod write;

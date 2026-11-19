@@ -17,11 +17,8 @@
  * under the License.
  */
 
-use crate::{
-    event::Invocation,
-    execution::ModelBinding,
-    tool_call::{RejectionKind, ToolCallIdentity},
-};
+use crate::durable::{ExecutionIdentity, ExternalTaskId, RunOwner};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -33,41 +30,48 @@ pub enum ToolStatus {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolUsage {
+    pub request_id: String,
+    pub source: ToolUsageSource,
+    pub name: String,
+    pub binding: Option<crate::execution::ModelBinding>,
+    pub completed_at: f64,
+    pub result: ToolUsageResult,
+    pub cleanup: Option<maka_plugin_core::operation::OperationCleanup>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
-    rename_all_fields = "camelCase"
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
 )]
-#[schemars(rename = "UsageToolResult")]
-pub enum ToolResult {
-    /// No effect was admitted, so no execution duration is reported.
-    Rejected { reason: RejectionKind },
+pub enum ToolUsageResult {
+    Rejected {
+        reason: Option<crate::tool_call::RejectionKind>,
+    },
     Settled {
         started_at: f64,
         outcome: ToolStatus,
     },
 }
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "UsageToolAttempt")]
-pub struct ToolAttempt {
-    pub request_id: String,
-    pub invocation: Invocation,
-    pub call: ToolCallIdentity,
-    pub name: String,
-    pub binding: Option<ModelBinding>,
-    pub completed_at: f64,
-    pub result: ToolResult,
-}
-impl ToolAttempt {
-    pub fn latency_ms(&self) -> Option<f64> {
-        match &self.result {
-            ToolResult::Rejected { .. } => None,
-            ToolResult::Settled { started_at, .. } => {
-                Some((self.completed_at - started_at).max(0.0))
-            }
-        }
-    }
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ToolUsageSource {
+    Agent {
+        execution: ExecutionIdentity,
+        call: crate::tool_call::ToolCallIdentity,
+    },
+    Cell {
+        cell: crate::cells::CellId,
+        owner: crate::cells::CellOwner,
+        operation: uuid::Uuid,
+    },
+    External {
+        task: ExternalTaskId,
+        owner: RunOwner,
+        operation: uuid::Uuid,
+    },
 }

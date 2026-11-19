@@ -8,7 +8,9 @@ use ratatui_core::{
 
 use super::SharedOutput;
 
-/// A terminal backend that counts Cells only while its AppView monitor is enabled.
+/// A terminal backend that counts Cells only while its AppView monitor is
+/// enabled, and draws the Cells of the text inside a view with an `href`
+/// (a `Link`'s) as OSC 8 hyperlinks (`crate::link`).
 #[non_exhaustive]
 pub struct MeasuredBackend<B> {
     pub(crate) inner: B,
@@ -41,6 +43,31 @@ impl<B: Backend> Backend for MeasuredBackend<B> {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
+        let links = self.output.links.borrow();
+        if !links.is_empty() {
+            // The diff decided which Cells to draw from their plain
+            // symbols; only what is written for a linked one changes.
+            let content: Vec<_> = content.collect();
+            let wrapped: Vec<_> = content
+                .iter()
+                .map(|&(x, y, cell)| links.get(&(x, y)).map(|open| crate::link::wrap(cell, open)))
+                .collect();
+            let content = content
+                .iter()
+                .zip(&wrapped)
+                .map(|(&(x, y, cell), wrapped)| (x, y, wrapped.as_ref().unwrap_or(cell)));
+            return if self.output.enabled.get() {
+                let mut cells = 0;
+                self.inner.draw(content.inspect(|_| cells += 1))?;
+                self.output
+                    .cells
+                    .set(Some(self.output.cells.get().unwrap_or(0) + cells));
+                Ok(())
+            } else {
+                self.inner.draw(content)
+            };
+        }
+        drop(links);
         if !self.output.enabled.get() {
             return self.inner.draw(content);
         }

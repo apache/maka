@@ -36,7 +36,7 @@ fn files() -> impl IntoElement {
         .list_class("p-1")
         .item_class(
             "group rounded-md hover:bg-accent selected:bg-primary/10 \
-             focus:outline-2 focus:-outline-offset-2 focus:outline-ring disabled:opacity-50",
+             focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:opacity-50",
         )
         .render_item(|entry: &TreeEntry| {
             view()
@@ -81,7 +81,7 @@ function App() {
       accessibilityLabel="Files"
       class="h-80 w-64 rounded-lg border border-border"
       listClass="p-1"
-      itemClass="group h-8 rounded-md hover:bg-accent selected:bg-primary/10 focus:outline-2 focus:-outline-offset-2 focus:outline-ring disabled:opacity-50"
+      itemClass="group h-8 rounded-md hover:bg-accent selected:bg-primary/10 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
       renderItem={(entry) => (
         <View class="h-8 flex-row items-center gap-2" style={{ paddingLeft: 8 + entry.depth * 16 }}>
           <Text class="w-3 text-muted-foreground transition-transform group-aria-expanded:rotate-90">
@@ -113,6 +113,7 @@ the typed style methods.
 | `id` | `string` | What identifies it in `expanded`, `selected` and the events: unique in the tree (an id given twice is logged, and only its first item expands or is selected). |
 | `label` | `string` | What its row shows unless `renderItem` draws it, what screen readers say and what typeahead matches. |
 | `children` | `TreeItem[]` | The items under it, in order. With any, it is a folder: it expands and collapses. |
+| `expandable` | `boolean` | Treat an empty item as a folder, for example when loading children on expansion. |
 | `disabled` | `boolean` | The user cannot select, expand or collapse it: presses and keys pass it by, `disabled:` styles apply. Its children stay as `expanded` says. |
 
 `renderItem` gets a `TreeEntry` for each row in view: the item's `id`, `label` and `disabled`, its `depth` (0 at the
@@ -130,6 +131,7 @@ chevron turns with a transition.
 | `selected` | `.selected(..)` | `string \| null` | none | The selected item's id (controlled), `null` for none. |
 | `defaultSelected` | `.default_selected(..)` | `string` | none | The selected item at first, while `selected` is not set. |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | A read-only tree: no presses or keys, no stop of the keyboard focus, `disabled:` on every row; it shows what `expanded` and `selected` say. |
+| `singleClickAction` | `.single_click_action(..)` | `boolean` | `false` | Activate leaves on a single click or tap. |
 | `reveal` | `.reveal(..)` | `boolean` | `false` | Expanding and collapsing move the rows after the item to their new places with a spring, run natively. Off with reduced motion. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers call the tree ("Files"). |
 | `renderItem` | `.render_item(..)` | `(entry: TreeEntry) => JSX.Element` | none | A row's content, for the rows in view; without it a row shows the item's label. |
@@ -164,12 +166,13 @@ moving through the files previews them one by one, Return or a double click open
 |---|---|---|---|
 | The tree | | `class`, `style` | |
 | The list | the tree | `listClass`, `listStyle` | |
-| A row | the list | `itemClass`, `itemStyle` | `selected:`, `aria-expanded:` (a folder that is open), `focus:` (while the tree has the keyboard focus, the row the keys act on: the selected row, the collapsed item a hidden selection is under, or the first row while nothing is selected), `disabled:`, `hover:`, `active:` |
-| A row's content | a row | `renderItem` | `group-selected:`, `group-aria-expanded:`, `group-focus:`, `group-disabled:` under `group` in `itemClass` |
+| A row | the list | `itemClass`, `itemStyle` | `selected:`, `aria-expanded:` (a folder that is open), `focus:` (while the tree has the keyboard focus, the row the keys act on: the selected row, the collapsed item a hidden selection is under, or the first row while nothing is selected), `focus-visible:` (that row while the tree's focus shows: the keys moved it, not a click), `disabled:`, `hover:`, `active:` |
+| A row's content | a row | `renderItem` | `group-selected:`, `group-aria-expanded:`, `group-focus:`, `group-focus-visible:`, `group-disabled:` under `group` in `itemClass` |
 
-Show the selected row with `selected:` and the keyboard's place with `focus:` (see
+Show the selected row with `selected:` and the keyboard's place with `focus-visible:`, which shows
+once the keys move and not after a click (see
 [Design guides](../docs/design-guides.md#interaction-states)). Draw the focus inside the row
-(`focus:outline-2 focus:-outline-offset-2`): the list clips what reaches past its sides.
+(`focus-visible:outline-2 focus-visible:-outline-offset-2`): the list clips what reaches past its sides.
 
 ## Ref
 

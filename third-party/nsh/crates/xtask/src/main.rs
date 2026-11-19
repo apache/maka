@@ -11,14 +11,18 @@
 //!   `NativeShellDev.xcframework`) into `dist/nsh/embed/ios`.
 //! - `web`: the WebAssembly runtime, its player and the website's demos
 //!   (`website/public/play` by default).
+//! - `emoji-data <version>`: `EmojiPicker`'s emoji from a release of
+//!   emojibase-data (`crates/nsh-base/src/emoji_picker/emoji.tsv`).
 //! - `compat`: holds this checkout to what NSH's releases froze, kept in
 //!   the `nsh-compat` repository, and runs the apps of `tests/compat/`;
 //!   `compat record <version>` records a release there
 //!   (docs/dev/compatibility.md).
 
 mod android;
+mod cargo;
 mod compat;
 mod dist;
+mod emoji;
 mod ios;
 mod run;
 mod term;
@@ -79,6 +83,11 @@ enum Task {
         /// Output directory.
         #[arg(long, default_value = "website/public/play")]
         out: std::path::PathBuf,
+    },
+    /// Generate `EmojiPicker`'s emoji from a release of emojibase-data.
+    EmojiData {
+        /// The release (`18.0.0`).
+        version: String,
     },
     /// Hold this checkout to what NSH's releases froze (the `nsh-compat`
     /// repository), and run the apps of `tests/compat/`.
@@ -150,6 +159,7 @@ fn task(task: Task) -> anyhow::Result<()> {
         Task::Dist => dist::dist(),
         Task::IosEmbed(options) => ios::build(options).map(|out| term::note(out.display())),
         Task::Web { out } => web::build(&out),
+        Task::EmojiData { version } => emoji::generate(&version),
         Task::Compat { record } => compat::compat(match &record {
             Some(CompatTask::Record { version }) => Some(version),
             None => None,

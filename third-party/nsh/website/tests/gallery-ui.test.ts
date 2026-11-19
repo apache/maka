@@ -65,11 +65,12 @@ test('the shared looks in look/ inline with the demos that use them', () => {
 });
 
 test('the menu and overlay looks inline with their parts and the popup surface', () => {
-  const source = 'import { backdrop, MenuPanel, menuItemLook, popoverLook, SubmenuRow, toastActionLook } from "./palette";\nmount(() => null);';
+  const source = 'import { backdrop, menuPopup, menuItemLook, popoverLook, SubmenuRow, toastActionLook } from "./palette";\nmount(() => null);';
   const inlined = inlineGalleryUi(source, realSources);
   // look/menu.tsx and look/overlay.ts are scopes of their own, with the
   // popup surface, the icons and the button look they build on.
-  expect(inlined).toContain('function MenuPanel(');
+  expect(inlined).toContain('function menuPopup(');
+  expect(inlined).toContain('function popInStyles(');
   expect(inlined).toContain('function popoverLook(');
   expect(inlined).toContain('const popupSurface = ');
   expect(inlined).toMatch(/menuItemLook: __nshGalleryModule\d+\.menuItemLook/);

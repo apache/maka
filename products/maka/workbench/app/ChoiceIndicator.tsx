@@ -19,16 +19,18 @@
 
 import { Canvas, Text } from 'nsh';
 import { platform } from 'nsh';
-import { C } from './ui';
+import { C, isDark } from './ui';
 
 // Decoration only: the enclosing control keeps its original native action.
 export function ChoiceIndicator(props: {
   kind: 'checkbox' | 'radio' | 'switch';
   checked: boolean;
+  mixed?: boolean;
   disabled?: boolean;
 }) {
   const width = () => (props.kind === 'switch' ? 32 : 16);
-  const color = () => (props.disabled ? C.muted : props.checked ? C.accent : C.muted);
+  const color = () =>
+    props.disabled ? C.muted : props.checked || props.mixed ? C.accent : C.muted;
   if (platform.idiom === 'terminal')
     return (
       <Text
@@ -46,9 +48,11 @@ export function ChoiceIndicator(props: {
         ]}
       >
         {props.kind === 'checkbox'
-          ? props.checked
-            ? '☑'
-            : '☐'
+          ? props.mixed
+            ? '⊟'
+            : props.checked
+              ? '☑'
+              : '☐'
           : props.kind === 'radio'
             ? props.checked
               ? '●'
@@ -75,7 +79,10 @@ export function ChoiceIndicator(props: {
           cx.fill();
           cx.beginPath();
           cx.arc(props.checked ? 24 : 8, 8, 5, 0, Math.PI * 2);
-          cx.fillStyle = props.checked && !props.disabled ? C.background : C.secondary;
+          // A light switch's knob stays white when off, as the system's does; a dark
+          // one keeps a light knob on its dark track.
+          cx.fillStyle =
+            props.checked && !props.disabled ? C.background : isDark() ? C.secondary : C.background;
           cx.fill();
         } else if (props.kind === 'radio') {
           cx.arc(8, 8, 6, 0, Math.PI * 2);
@@ -87,14 +94,17 @@ export function ChoiceIndicator(props: {
           }
         } else {
           cx.roundRect(2, 2, 12, 12, 3);
-          if (props.checked) cx.fill();
+          if (props.checked || props.mixed) cx.fill();
           else cx.stroke();
-          if (props.checked) {
+          if (props.checked || props.mixed) {
             cx.beginPath();
             cx.strokeStyle = C.background;
             cx.moveTo(4.5, 8);
-            cx.lineTo(7, 10.5);
-            cx.lineTo(11.5, 5.5);
+            if (props.mixed) cx.lineTo(11.5, 8);
+            else {
+              cx.lineTo(7, 10.5);
+              cx.lineTo(11.5, 5.5);
+            }
             cx.stroke();
           }
         }

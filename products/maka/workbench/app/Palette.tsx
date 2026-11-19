@@ -17,28 +17,24 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
 import { tr } from './locale';
-import { cleanup, computed, inputAction, signal, Text, View, List } from 'nsh';
+import { cleanup, computed, signal, Text, View, List } from 'nsh';
 import { Input } from 'nsh/base';
 import type { ListRef, ViewStyle } from 'nsh';
 import { keymap } from 'nsh';
-import { Button, Dialog } from 'nsh/base';
-import { windowSize } from 'nsh';
+import { Button } from 'nsh/base';
 import { Icon } from './Icon';
 import type { CommandEntry } from './composerCommands';
 import {
   C,
   captionTextStyle,
-  inputBorderRadius,
   compact,
-  controlStyle,
-  controlHoverStyle,
-  controlFocusStyle,
   controlDisabledStyle,
+  controlHoverStyle,
+  menuSeparatorStyle,
   secondaryTextStyle,
 } from './ui';
-import { dialogTop } from './chrome';
+import { ModalDialog } from './ModalDialog';
 
 export function Palette(props: {
   instance: number;
@@ -50,17 +46,13 @@ export function Palette(props: {
   const rowStyle = () =>
     ({
       height: 48,
-      paddingHorizontal: 12,
+      paddingHorizontal: 8,
       paddingVertical: 4,
       flexDirection: 'row',
       alignItems: 'center',
       gap: 12,
-      borderWidth: 1,
-      borderColor: 'transparent',
       borderRadius: 8,
-      backgroundColor: C.surface,
     }) satisfies ViewStyle;
-  const selectedRowStyle = () => ({ backgroundColor: C.raised }) satisfies ViewStyle;
   let removeSearchKeys = () => {};
   cleanup(() => removeSearchKeys());
   const matches = computed(() => {
@@ -84,54 +76,14 @@ export function Palette(props: {
     entry.run();
   };
   return (
-    <Dialog
-      animation="none"
-      onOpenChange={() => {
-        props.close(props.instance);
-      }}
-      style={{
-        flex: 1,
-        justifyContent: 'flex-start',
-        alignItems: 'center',
-        backgroundColor: C.scrim,
-        paddingHorizontal: 16,
-        paddingTop: compact() ? dialogTop(16) : windowSize().height / 8,
-        paddingBottom: 16,
-      }}
+    <ModalDialog
+      size="form"
+      launcher
+      onCancel={() => props.close(props.instance)}
+      style={{ maxWidth: 640, flexShrink: 1, padding: 4, gap: 0 }}
     >
-      <View
-        style={{
-          width: '100%',
-          maxWidth: 640,
-          maxHeight: '100%',
-          minHeight: 0,
-          flexShrink: 1,
-          backgroundColor: C.surface,
-          padding: 16,
-          gap: 16,
-          borderWidth: 1,
-          borderRadius: 16,
-          borderColor: C.line,
-        }}
-      >
-        <View
-          style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}
-        >
-          <Text style={{ color: C.text, fontSize: 18, lineHeight: 24, fontWeight: '600' }}>
-            {tr('Commands')}
-          </Text>
-          <Button
-            accessibilityLabel={tr('Close commands')}
-            tooltip={textTooltip(() => tr('Close · Esc'))}
-            onPress={inputAction(props.close, props.instance)}
-            style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Icon name="close" color={C.muted} />
-          </Button>
-        </View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 8 }}>
+        <Icon name="search" color={C.muted} />
         <Input
           ref={(node) => {
             removeSearchKeys();
@@ -159,94 +111,93 @@ export function Palette(props: {
           }}
           placeholder={tr('Search commands…')}
           style={{
+            flex: 1,
             placeholderColor: C.muted,
             color: C.text,
             height: compact() ? 32 : 40,
-            backgroundColor: C.background,
-            borderRadius: inputBorderRadius,
-            paddingHorizontal: 12,
             fontSize: 14,
           }}
         />
-        <List
-          each={ids()}
-          ref={(node) => {
-            list = node;
-          }}
-          estimatedItemSize={48}
-          style={{ height: Math.max(1, ids().length) * 48, flexShrink: 1, minHeight: 0 }}
-          empty={<Text style={{ color: C.muted }}>{tr('No matches.')}</Text>}
-        >
-          {(id) => (
-            <Each of={[id()]} key={(key: string) => key}>
-              {(key) => {
-                const initial = byId().get(key());
-                if (!initial) return <View />;
-                const entry = () => byId().get(key()) ?? initial;
-                return (
-                  <Button
-                    accessibilityLabel={entry().title}
-                    selected={matches()[index()]?.id === entry().id}
-                    onPress={entry().run}
-                    style={rowStyle()}
-                    selectedStyle={selectedRowStyle()}
-                    hoverStyle={controlHoverStyle()}
-                    focusStyle={controlFocusStyle()}
-                    disabledStyle={controlDisabledStyle}
-                  >
-                    <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'none' }]}>
+      </View>
+      <View style={menuSeparatorStyle()} />
+      <List
+        each={ids()}
+        ref={(node) => {
+          list = node;
+        }}
+        estimatedItemSize={48}
+        style={{ height: Math.max(1, ids().length) * 48, flexShrink: 1, minHeight: 0 }}
+        empty={<Text style={{ color: C.muted, padding: 8 }}>{tr('No matches.')}</Text>}
+      >
+        {(id) => (
+          <Each of={[id()]} key={(key: string) => key}>
+            {(key) => {
+              const initial = byId().get(key());
+              if (!initial) return <View />;
+              const entry = () => byId().get(key()) ?? initial;
+              return (
+                <Button
+                  accessibilityLabel={entry().title}
+                  selected={matches()[index()]?.id === entry().id}
+                  onPress={entry().run}
+                  style={rowStyle()}
+                  selectedStyle={controlHoverStyle()}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlHoverStyle()}
+                  disabledStyle={controlDisabledStyle}
+                >
+                  <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'none' }]}>
+                    <Text
+                      style={[
+                        {
+                          ...secondaryTextStyle,
+                          color: C.text,
+                          fontSize: 14,
+                          fontWeight: '500',
+                        },
+                        { numberOfLines: 1, textOverflow: 'ellipsis' },
+                      ]}
+                    >
+                      {entry().title}
+                    </Text>
+                    <If when={entry().detail}>
                       <Text
                         style={[
-                          {
-                            ...secondaryTextStyle,
-                            color: C.text,
-                            fontSize: 14,
-                            fontWeight: '500',
-                          },
+                          { ...captionTextStyle, color: C.muted },
                           { numberOfLines: 1, textOverflow: 'ellipsis' },
                         ]}
                       >
-                        {entry().title}
-                      </Text>
-                      <If when={entry().detail}>
-                        <Text
-                          style={[
-                            { ...captionTextStyle, color: C.muted },
-                            { numberOfLines: 1, textOverflow: 'ellipsis' },
-                          ]}
-                        >
-                          {entry().detail}
-                        </Text>
-                      </If>
-                    </View>
-                    <If when={entry().hint}>
-                      <Text
-                        style={[
-                          {
-                            ...captionTextStyle,
-                            color: C.muted,
-                            fontSize: 11,
-                            paddingHorizontal: 6,
-                            paddingVertical: 2,
-                            borderWidth: 1,
-                            borderColor: C.line,
-                            borderRadius: 4,
-                            backgroundColor: C.background,
-                            flexShrink: 0,
-                          },
-                          { pointerEvents: 'none' },
-                        ]}
-                      >
-                        {entry().hint}
+                        {entry().detail}
                       </Text>
                     </If>
-                  </Button>
-                );
-              }}
-            </Each>
-          )}
-        </List>
-      </View>
-    </Dialog>
+                  </View>
+                  <If when={entry().hint}>
+                    <Text
+                      style={[
+                        {
+                          ...captionTextStyle,
+                          color: C.muted,
+                          fontSize: 11,
+                          paddingHorizontal: 6,
+                          paddingVertical: 2,
+                          borderWidth: 1,
+                          borderColor: C.line,
+                          borderRadius: 4,
+                          backgroundColor: C.background,
+                          flexShrink: 0,
+                        },
+                        { pointerEvents: 'none' },
+                      ]}
+                    >
+                      {entry().hint}
+                    </Text>
+                  </If>
+                </Button>
+              );
+            }}
+          </Each>
+        )}
+      </List>
+    </ModalDialog>
   );
 }

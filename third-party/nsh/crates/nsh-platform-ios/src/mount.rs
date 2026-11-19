@@ -17,23 +17,26 @@ use nsh_core::{
 };
 use nsh_engine::EngineControl;
 use objc2::{
-    MainThreadMarker, MainThreadOnly, Message, rc::Retained, runtime::ProtocolObject, sel,
+    ClassType, MainThreadMarker, MainThreadOnly, Message, rc::Retained, runtime::ProtocolObject,
+    sel,
 };
-use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
+use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize, CGVector};
 use objc2_quartz_core::{CAAnimation, CALayer, CAMediaTiming, CATransform3D};
 use objc2_ui_kit::{
-    UIActivityIndicatorView, UIActivityIndicatorViewStyle, UIControlEvents, UIDevice,
-    UIGestureRecognizer, UIGestureRecognizerState, UIPanGestureRecognizer,
-    UIPinchGestureRecognizer, UIRefreshControl, UIRotationGestureRecognizer, UIScrollView,
-    UIScrollViewContentInsetAdjustmentBehavior, UIScrollViewKeyboardDismissMode,
-    UITraitEnvironment, UIUserInterfaceIdiom, UIView, UIViewAnimationOptions,
+    UIActivityIndicatorView, UIActivityIndicatorViewStyle, UIControlEvents,
+    UICubicTimingParameters, UIDevice, UIGestureRecognizer, UIGestureRecognizerState,
+    UINavigationController, UIPanGestureRecognizer, UIPinchGestureRecognizer, UIRefreshControl,
+    UIRotationGestureRecognizer, UIScrollView, UIScrollViewContentInsetAdjustmentBehavior,
+    UIScrollViewKeyboardDismissMode, UISpringTimingParameters, UITraitEnvironment,
+    UIUserInterfaceIdiom, UIView, UIViewAnimating, UIViewAnimationOptions,
     UIViewControllerTransitionCoordinator, UIViewControllerTransitionCoordinatorContext,
+    UIViewPropertyAnimator,
 };
 
 use crate::{
     animation::Animator,
     decor::{self, Decor},
-    image::{AssetBase, DecodedImage, ImageLoader, Request, not_a_bitmap},
+    image::{AssetBase, DecodedImage, ImageLoader, Request},
     input::Input,
     native_view::NshView,
     navigation::{ModalHost, ScreenHost, StackHost},
@@ -44,8 +47,10 @@ use crate::{
     web::WebHost,
 };
 
+/// The mounter of a surface, reached on the main thread.
+pub(crate) type MounterCell = MainThreadBound<RefCell<Option<Mounter>>>;
 /// The mounter of one surface, shared with native callbacks.
-pub(crate) type SharedMounter = Arc<MainThreadBound<RefCell<Option<Mounter>>>>;
+pub(crate) type SharedMounter = Arc<MounterCell>;
 
 enum Native {
     /// The surface root (owned by the platform).
@@ -67,6 +72,44 @@ enum Native {
     Video(Box<VideoHost>),
     /// A registered native component in its container.
     Component(Box<crate::component::ComponentHost>),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct InitialInputLayout {
+    frame: Option<Bounds<Points>>,
+    content: Option<Bounds<Points>>,
+}
+
+/// The geometry a new input receives later in this batch. Inputs are inserted
+/// before layout emits their frame and content box, but UIKit may draw an
+/// inserted text field immediately; creating it with this geometry keeps that
+/// first draw from using zero text insets.
+fn initial_input_layouts(items: &[MountItem]) -> rustc_hash::FxHashMap<NodeId, InitialInputLayout> {
+    let mut inputs = rustc_hash::FxHashMap::default();
+    for item in items {
+        if let MountItem::Create {
+            id,
+            kind: ViewKind::Input,
+        } = item
+        {
+            inputs.insert(*id, InitialInputLayout::default());
+        }
+    }
+    if inputs.is_empty() {
+        return inputs;
+    }
+    for item in items {
+        let (id, frame, content) = match item {
+            MountItem::Frame { id, frame } => (*id, Some(*frame), None),
+            MountItem::InputContent { id, content } => (*id, None, Some(*content)),
+            _ => continue,
+        };
+        if let Some(layout) = inputs.get_mut(&id) {
+            layout.frame = frame.or(layout.frame);
+            layout.content = content.or(layout.content);
+        }
+    }
+    inputs
 }
 
 impl Native {
@@ -106,6 +149,21 @@ impl Native {
             Native::Modal(m) => Some(&m.view),
             Native::Web(w) => Some(&w.view),
             Native::Video(v) => Some(&v.view),
+            _ => None,
+        }
+    }
+
+    /// The view `ref.focus()` / `ref.blur()` move the keyboard focus to, if
+    /// it is one of the app's own views: inputs, embedded native views,
+    /// screens, stacks and modals keep their own keys.
+    fn focus_view(&self) -> Option<&NshView> {
+        match self {
+            Native::View(v)
+            | Native::Image(v)
+            | Native::HeaderItem(v)
+            | Native::InputAccessory(v) => Some(v),
+            Native::Text(v) => Some(v.as_super()),
+            Native::Canvas(v) => Some(v.as_super()),
             _ => None,
         }
     }
@@ -155,6 +213,9 @@ struct Gestures {
 struct PanScroll {
     view: Retained<UIScrollView>,
     offset: f32,
+    /// `onPanStart` went out: it waits for the panel to move, so scrolling
+    /// alone does not start a sheet's drag (which ends editing).
+    started: bool,
 }
 
 /// Pull-to-refresh. `UIRefreshControl` throws under Mac Catalyst's Mac
@@ -168,6 +229,27 @@ enum Refresh {
         spinner: Option<Retained<UIActivityIndicatorView>>,
         refreshing: bool,
     },
+}
+
+/// Whether `refresh`, a scroll view's pull to refresh, is `control` itself
+/// (not merely a control in the same place).
+fn holds_refresh(refresh: Option<&Refresh>, control: &UIRefreshControl) -> bool {
+    matches!(refresh, Some(Refresh::Native(held)) if std::ptr::eq(&**held, control))
+}
+
+/// A refresh control for scroll view `id`. It names its scroll view itself
+/// ([`refresh_owner`]): UIKit may place it in a container of its own (iOS 26
+/// under a large title), so its superview is not the scroll view.
+fn refresh_control(id: NodeId, mtm: MainThreadMarker) -> Retained<UIRefreshControl> {
+    let control = UIRefreshControl::new(mtm);
+    control.setTag(id as isize);
+    control
+}
+
+/// The scroll view refresh control `control` was made for
+/// ([`refresh_control`]), wherever UIKit placed it.
+pub(crate) fn refresh_owner(control: &UIRefreshControl) -> NodeId {
+    control.tag() as NodeId
 }
 
 /// Lays UIKit's own content of `view` (controls, navigation bars, text
@@ -382,12 +464,15 @@ fn set_pan(view: &UIView, shift: CGFloat, motion: KeyboardMotion, mtm: MainThrea
     });
 }
 
-/// Sets the bottom inset of `scroll` and scrolls `reveal` (a rectangle in
-/// its content) into view in one animation along `motion`, the keyboard's,
-/// so that the content moves with the keyboard.
+/// Sets the bottom inset of `scroll`'s content to `bottom` and of its
+/// vertical indicator to `indicator` (the app's own insets plus the room
+/// kept for the keyboard), and scrolls `reveal` (a rectangle in its
+/// content) into view in one animation along `motion`, the keyboard's, so
+/// that the content moves with the keyboard.
 fn set_bottom_inset(
     scroll: &UIScrollView,
     bottom: CGFloat,
+    indicator: CGFloat,
     reveal: Option<CGRect>,
     motion: KeyboardMotion,
     mtm: MainThreadMarker,
@@ -399,7 +484,7 @@ fn set_bottom_inset(
         inset.bottom = bottom;
         scroll.setContentInset(inset);
         let mut indicators = scroll.verticalScrollIndicatorInsets();
-        indicators.bottom = bottom;
+        indicators.bottom = indicator;
         scroll.setVerticalScrollIndicatorInsets(indicators);
         if let Some(rect) = reveal {
             let insets = scroll.adjustedContentInset();
@@ -457,6 +542,19 @@ struct Slot {
     style: ViewStyle,
     decor: Decor,
     events: EventMask,
+    /// The logical parent the core inserted this node in, for hardware-key
+    /// ancestry even when the native view is hosted elsewhere (a screen, a
+    /// modal, a header item).
+    parent: Option<NodeId>,
+    /// `ViewProps::key_capture`: the rule this node mounts for its focused
+    /// descendants (not only `NshView`: a scroll view has one too).
+    key_capture: nsh_core::KeyCapture,
+    /// `ViewProps::accessibility.state.disabled`, for capture rules.
+    disabled: bool,
+    /// `ViewProps::key_parent`: the logical parent of a portaled view (an
+    /// overlay's native Insert is at the root, not under its app parent).
+    /// `None` uses the Insert parent.
+    key_parent: Option<NodeId>,
     gestures: Gestures,
     bindings: Vec<(AnimationProp, nsh_core::animation::NodeId)>,
     values: GestureValues,
@@ -523,6 +621,10 @@ impl Slot {
             native,
             style: ViewStyle::default(),
             events: EventMask::default(),
+            parent: None,
+            key_capture: nsh_core::KeyCapture::None,
+            disabled: false,
+            key_parent: None,
             gestures: Gestures::default(),
             bindings: Vec::new(),
             values: GestureValues::default(),
@@ -571,6 +673,8 @@ pub(crate) struct Mounter {
     target: Retained<EventTarget>,
     animator: Animator,
     images: ImageLoader,
+    /// `OffscreenCanvas` renders waiting for their images.
+    offscreen: crate::canvas::Offscreen,
     /// The engine's sounds and players ([`crate::audio`]).
     audio: crate::audio::Speaker,
     /// What the app may reach (web view navigations check it).
@@ -614,8 +718,18 @@ pub(crate) struct Mounter {
     /// catch up when it ends (UIKit breaks transitions that start while
     /// another one is running).
     deferred_stacks: Vec<NodeId>,
+    /// The orientations the root was last given, until they are applied:
+    /// after the batch's pushes and pops, and after any transition under
+    /// way (a turn started during a push can make UIKit cancel the push).
+    orientations: Option<u8>,
+    /// Whether applying them waits for a transition to end.
+    orientations_waiting: bool,
     /// Screens whose header changed in the current batch.
     dirty_headers: Vec<NodeId>,
+    /// Screens whose header follows the scroll view under it
+    /// (`headerBackgroundOnScroll`): checked after every batch, which may
+    /// add, move or remove that scroll view.
+    following_scroll: Vec<NodeId>,
     /// Modals to present or dismiss at the end of the current batch.
     dirty_modals: Vec<NodeId>,
     /// Where `asset:/` URIs of videos resolve.
@@ -624,19 +738,21 @@ pub(crate) struct Mounter {
     touch_trackers: Vec<(NodeId, Retained<crate::touch::TouchTracker>)>,
     /// Views listening to touches (the trackers run while there are any).
     touch_listeners: usize,
-    /// Scroll views a JS responder keeps from scrolling.
-    blocked_scrolls: Vec<Retained<UIScrollView>>,
-    /// Vertical scroll views whose content size arrived in this batch, with
-    /// the height that came with it. A batch applies a scroll view's content
+    /// The native gestures a JS responder keeps from taking its touches:
+    /// the pans of the scroll views and the swipe back of the stacks around
+    /// it.
+    blocked_gestures: Vec<Retained<UIGestureRecognizer>>,
+    /// Vertical scroll views whose content size arrived in this batch. Judge
+    /// the final size once per view. A batch applies a scroll view's content
     /// size before the frames of the children it measures (`ScrollContent` is
     /// queued when the scroll view is, its children after it), so a size that
     /// looks too wide is only judged after the whole batch is in place.
-    content_sizes: Vec<(NodeId, CGFloat)>,
-    /// The core's width and height for every vertical scroll view the platform
+    content_sizes: rustc_hash::FxHashSet<NodeId>,
+    /// The core's width for every vertical scroll view the platform
     /// narrowed, by id. The core does not resend a content size it did not
     /// change, so a later batch that widens what such a scroll view holds has
     /// to give that width back from here.
-    narrowed: Vec<(NodeId, CGFloat, CGFloat)>,
+    narrowed: Vec<(NodeId, CGFloat)>,
     /// Whether this batch moved any frame: nothing under a narrowed scroll
     /// view can have grown otherwise, so the judgement is skipped.
     frames_applied: bool,
@@ -646,6 +762,10 @@ pub(crate) struct Mounter {
     sticky: rustc_hash::FxHashMap<NodeId, Vec<StickyCell>>,
     /// The native components the app registered.
     components: crate::component::Components,
+    /// The scroll views the embedding app watches, by `nativeID`
+    /// ([`crate::scroll_watch`]), and those of this surface it may watch.
+    scroll_watchers: crate::ScrollWatchers,
+    scrolls: crate::scroll_watch::SurfaceScrolls,
     /// Selectable views (`ViewProps::selectable_view`) and their selections.
     areas: Vec<(NodeId, Retained<crate::selectable_view::AreaResponder>)>,
     /// The performance monitor, while it measures ([`Mounter::measure`]).
@@ -663,6 +783,19 @@ pub(crate) struct Mounter {
     /// The tint of this surface's alerts and action sheets, from its
     /// tokens ([`crate::system::alert_tint`]).
     alert_tint: Option<nsh_core::element::AdaptiveColor>,
+    /// The alerts shown and not answered yet (`Command::CloseDialog`).
+    dialogs: crate::system::Dialogs,
+    /// The surface's share sheet, which a new share replaces
+    /// ([`crate::share`]).
+    share: crate::share::Current,
+    /// The sign-in session showing ([`crate::auth_session`]).
+    auth_session: crate::auth_session::Current,
+    /// `SplitView`s' splits, by their native component's node
+    /// ([`crate::split`]).
+    splits: rustc_hash::FxHashMap<NodeId, crate::split::SplitHost>,
+    /// The app's address given to the system ([`crate::SurfaceOptions::handoff`]):
+    /// `None` while the app has not opted in.
+    handoff: Option<nsh_platform_apple::handoff::Activity>,
     mtm: MainThreadMarker,
 }
 
@@ -676,8 +809,10 @@ impl Mounter {
         access: std::sync::Arc<nsh_engine::Access>,
         components: crate::component::Components,
     ) -> Self {
-        let target = EventTarget::new(mtm, control.clone(), shared.clone());
+        let scrolls = crate::scroll_watch::SurfaceScrolls::default();
+        let target = EventTarget::new(mtm, control.clone(), shared.clone(), scrolls.clone());
         let target_for_link = target.clone();
+        let shaders = crate::shader::Shaders::new(&target_for_link, &shared);
         let mut views = Vec::with_capacity(256);
         views.resize_with(2, || None);
         root.setTag(nsh_core::ROOT_ID as isize);
@@ -702,6 +837,7 @@ impl Mounter {
                 },
                 access.clone(),
             ),
+            offscreen: Default::default(),
             audio: Default::default(),
             control,
             access,
@@ -721,31 +857,47 @@ impl Mounter {
             created: Vec::new(),
             disappearing: Default::default(),
             frame_link: crate::animation::frame_link(&target_for_link),
-            shaders: crate::shader::Shaders::new(&target_for_link),
+            shaders,
             text_colors: crate::interaction::TextColors::new(&target_for_link),
             nav_shaders: rustc_hash::FxHashMap::default(),
             leaving_screens: rustc_hash::FxHashMap::default(),
             alert_tint: None,
+            dialogs: Default::default(),
+            share: Default::default(),
+            auth_session: Default::default(),
             hosts: Default::default(),
             dirty_stacks: Vec::new(),
             bottom_bar_dirty: false,
             deferred_stacks: Vec::new(),
+            orientations: None,
+            orientations_waiting: false,
             dirty_headers: Vec::new(),
+            following_scroll: Vec::new(),
             dirty_modals: Vec::new(),
             asset_base: asset_base.clone(),
             sticky: Default::default(),
             touch_trackers: Vec::new(),
             touch_listeners: 0,
-            blocked_scrolls: Vec::new(),
-            content_sizes: Vec::new(),
+            blocked_gestures: Vec::new(),
+            content_sizes: Default::default(),
             narrowed: Vec::new(),
             frames_applied: false,
             rtl: false,
             components,
+            scroll_watchers: crate::ScrollWatchers::default(),
+            scrolls,
             areas: Vec::new(),
             fps: None,
+            splits: Default::default(),
+            handoff: None,
             mtm,
         }
+    }
+
+    /// Gives the app's addresses to the system from now on
+    /// ([`crate::SurfaceOptions::handoff`]).
+    pub(crate) fn hand_off(&mut self) {
+        self.handoff.get_or_insert_default();
     }
 
     /// Measures the surface's frames and commits with a performance
@@ -775,15 +927,17 @@ impl Mounter {
     }
 
     fn apply_batch(&mut self, batch: MountBatch) {
+        let initial_inputs = initial_input_layouts(&batch.items);
         let mut animation_changed = false;
         for item in batch.items {
-            animation_changed |= self.apply_item(item);
+            animation_changed |= self.apply_item(item, &initial_inputs);
         }
         if let Some(animation) = self.layout_animation.take() {
             self.animate_appearing(&animation);
         }
         self.created.clear();
         self.finish_navigation();
+        self.apply_orientations();
         if animation_changed {
             self.apply_animations();
         }
@@ -810,15 +964,15 @@ impl Mounter {
     /// that really is wider than the viewport.
     fn settle_content_sizes(&mut self) {
         let frames_applied = std::mem::take(&mut self.frames_applied);
-        for (id, height) in std::mem::take(&mut self.content_sizes) {
+        for id in std::mem::take(&mut self.content_sizes) {
             let mut narrowed = None;
-            if let Some(Slot {
-                native: Native::Scroll(scroll),
-                ..
-            }) = self.slot(id)
+            if let Some(slot) = self.slot(id)
+                && let Native::Scroll(scroll) = &slot.native
+                && still_judged(slot.horizontal, slot.zoom_view().is_some())
             {
                 let viewport = scroll.bounds().size.width;
-                let content = scroll.contentSize().width;
+                let size = scroll.contentSize();
+                let content = size.width;
                 // Content that fits cannot be narrowed; walking the subtree
                 // to learn that would cost the page on every batch.
                 if viewport > 0.0 && content > viewport {
@@ -828,14 +982,14 @@ impl Mounter {
                         reaches_beyond(scroll, viewport + 0.5),
                     );
                     if width != content {
-                        scroll.setContentSize(CGSize::new(width, height));
-                        narrowed = Some((content, height));
+                        scroll.setContentSize(CGSize::new(width, size.height));
+                        narrowed = Some(content);
                     }
                 }
             }
             self.narrowed.retain(|&(n, ..)| n != id);
-            if let Some((width, height)) = narrowed {
-                self.narrowed.push((id, width, height));
+            if let Some(width) = narrowed {
+                self.narrowed.push((id, width));
             }
         }
         if frames_applied {
@@ -850,7 +1004,7 @@ impl Mounter {
     fn rejudge_narrowed(&mut self) {
         let mut i = 0;
         while i < self.narrowed.len() {
-            let (id, core, height) = self.narrowed[i];
+            let (id, core) = self.narrowed[i];
             let mut done = true;
             if let Some(slot) = self.slot(id)
                 && let Native::Scroll(scroll) = &slot.native
@@ -859,8 +1013,9 @@ impl Mounter {
                 let viewport = scroll.bounds().size.width;
                 let reaches = reaches_beyond(scroll, viewport + 0.5);
                 let width = narrowed_width(viewport, core, reaches);
-                if width != scroll.contentSize().width {
-                    scroll.setContentSize(CGSize::new(width, height));
+                let size = scroll.contentSize();
+                if width != size.width {
+                    scroll.setContentSize(CGSize::new(width, size.height));
                 }
                 done = width == core;
             }
@@ -902,8 +1057,8 @@ impl Mounter {
         &self.target
     }
 
-    /// Node `id`'s view (`nsh test --target ios`).
-    #[cfg(feature = "dev")]
+    /// Node `id`'s view (the root's window for the orientations;
+    /// `nsh test --target ios`).
     pub(crate) fn ui_view(&self, id: NodeId) -> Option<Retained<UIView>> {
         Some(self.slot(id)?.native.view().retain())
     }
@@ -915,6 +1070,34 @@ impl Mounter {
             Native::Text(text) => Some(text.clone()),
             _ => None,
         }
+    }
+
+    /// How far scroll view `id` can still scroll back towards its start
+    /// and on towards its end along its axis (`None`: it is no scroll
+    /// view).
+    #[cfg(feature = "dev")]
+    pub(crate) fn scroll_room(&self, id: NodeId, horizontal: bool) -> Option<(CGFloat, CGFloat)> {
+        let Native::Scroll(scroll) = &self.slot(id)?.native else {
+            return None;
+        };
+        let inset = scroll.adjustedContentInset();
+        let (offset, content, size) = (
+            scroll.contentOffset(),
+            scroll.contentSize(),
+            scroll.bounds().size,
+        );
+        let (start, end) = if horizontal {
+            (
+                offset.x + inset.left,
+                content.width + inset.right - size.width - offset.x,
+            )
+        } else {
+            (
+                offset.y + inset.top,
+                content.height + inset.bottom - size.height - offset.y,
+            )
+        };
+        Some((start.max(0.0), end.max(0.0)))
     }
 
     /// The text input `id` holds (`None`: it is no input).
@@ -960,7 +1143,11 @@ impl Mounter {
     }
 
     /// Returns true if animation values or bindings changed.
-    fn apply_item(&mut self, item: MountItem) -> bool {
+    fn apply_item(
+        &mut self,
+        item: MountItem,
+        initial_inputs: &rustc_hash::FxHashMap<NodeId, InitialInputLayout>,
+    ) -> bool {
         match item {
             MountItem::Create { id, kind } => {
                 let native = match kind {
@@ -968,7 +1155,16 @@ impl Mounter {
                     ViewKind::Text => Native::Text(TextView::new(self.mtm)),
                     ViewKind::Image => Native::Image(NshView::new(self.mtm)),
                     ViewKind::Input => {
-                        Native::Input(Box::new(Input::new(self.mtm, id, &self.target)))
+                        let mut input = Box::new(Input::new(self.mtm, id, &self.target));
+                        if let Some(initial) = initial_inputs.get(&id) {
+                            if let Some(frame) = initial.frame {
+                                set_frame(input.view(), frame);
+                            }
+                            if let Some(content) = initial.content {
+                                input.set_content(content);
+                            }
+                        }
+                        Native::Input(input)
                     }
                     ViewKind::Stack => {
                         Native::Stack(Box::new(StackHost::new(self.mtm, id, self.shared.clone())))
@@ -1041,6 +1237,9 @@ impl Mounter {
                 child,
                 before,
             } => {
+                if let Some(s) = self.slot_mut(child) {
+                    s.parent = Some(parent);
+                }
                 if self.insert_hosted(parent, child, before) {
                     return false;
                 }
@@ -1070,6 +1269,9 @@ impl Mounter {
                 }
             }
             MountItem::Remove { id } => {
+                if let Some(s) = self.slot_mut(id) {
+                    s.parent = None;
+                }
                 if self.remove_hosted(id) {
                     return false;
                 }
@@ -1084,12 +1286,28 @@ impl Mounter {
                 }
             }
             MountItem::Delete { id } => {
+                // A focused view removed with its node leaves no first
+                // responder; the root takes the keys back once the removal
+                // is done and no other view took the focus.
+                let restore = self
+                    .views
+                    .get(id as usize)
+                    .and_then(Option::as_ref)
+                    .and_then(|s| {
+                        let view = s.native.view();
+                        if !view.isFirstResponder() {
+                            return None;
+                        }
+                        Some((self.root_view_of(view)?, view.window()?))
+                    });
                 self.remove_hosted(id);
                 self.sticky.remove(&id);
+                self.split_deleted(id);
                 // A removal animation it was running ends with it: its end
                 // must not find the id, which a new view may take.
                 self.disappearing.remove(&id);
                 self.target.scroll_deleted(id);
+                self.scrolls.remove(&self.scroll_watchers, id);
                 if let Some(i) = self.areas.iter().position(|(a, _)| *a == id) {
                     self.areas.remove(i).1.delete();
                 }
@@ -1119,6 +1337,9 @@ impl Mounter {
                     self.release_root_effect();
                 }
                 self.nav_shaders.remove(&id);
+                if let Some((root, window)) = restore {
+                    self.target.restore_root_focus(root, window);
+                }
             }
             MountItem::Frame { id, frame } => {
                 self.frames_applied = true;
@@ -1343,8 +1564,9 @@ impl Mounter {
                         None => scroll.setContentSize(size),
                     }
                     if vertical {
-                        self.content_sizes.push((id, size.height));
+                        self.content_sizes.insert(id);
                     }
+                    self.scrolls.resized(id);
                 }
             }
             MountItem::ScrollBy { id, dx, dy } => {
@@ -1395,6 +1617,7 @@ impl Mounter {
                     scroll.setDecelerationRate(rate as CGFloat);
                     scroll.setScrollEnabled(b.enabled);
                     scroll.setBounces(b.bounces);
+                    scroll.setScrollsToTop(b.scrolls_to_top);
                     scroll.setAlwaysBounceVertical(b.bounces && !s.horizontal);
                     scroll.setAlwaysBounceHorizontal(b.bounces && s.horizontal);
                     // The keyboard and refreshing add to the content inset.
@@ -1416,7 +1639,50 @@ impl Mounter {
                     inset.left += new.left - old.left;
                     inset.bottom += new.bottom - old.bottom;
                     inset.right += new.right - old.right;
+                    // UIKit keeps the offset when the inset changes: content
+                    // resting at its start would end up under the new inset
+                    // (a page's first rows under a header it scrolls under),
+                    // or short of it. It rests at the new start instead.
+                    let horizontal = s.horizontal;
+                    let start = |scroll: &UIScrollView| {
+                        let inset = scroll.adjustedContentInset();
+                        if horizontal { -inset.left } else { -inset.top }
+                    };
+                    let along = |offset: CGPoint| if horizontal { offset.x } else { offset.y };
+                    let at_start =
+                        !scroll.isDragging() && along(scroll.contentOffset()) <= start(scroll);
                     scroll.setContentInset(inset);
+                    if at_start && along(scroll.contentOffset()) != start(scroll) {
+                        let mut offset = scroll.contentOffset();
+                        if horizontal {
+                            offset.x = start(scroll);
+                        } else {
+                            offset.y = start(scroll);
+                        }
+                        scroll.setContentOffset(offset);
+                    }
+                    // The indicators' insets by the same change, keeping the
+                    // keyboard's room (`set_bottom_inset`) in the bottom one.
+                    let old = ui_insets(
+                        s.behavior
+                            .as_ref()
+                            .map(|b| b.scrollbar_inset)
+                            .unwrap_or_default(),
+                    );
+                    let new = ui_insets(b.scrollbar_inset);
+                    let moved = |mut i: objc2_ui_kit::UIEdgeInsets| {
+                        i.top += new.top - old.top;
+                        i.left += new.left - old.left;
+                        i.bottom += new.bottom - old.bottom;
+                        i.right += new.right - old.right;
+                        i
+                    };
+                    scroll.setVerticalScrollIndicatorInsets(moved(
+                        scroll.verticalScrollIndicatorInsets(),
+                    ));
+                    scroll.setHorizontalScrollIndicatorInsets(moved(
+                        scroll.horizontalScrollIndicatorInsets(),
+                    ));
                     // Zooming (UIKit asks the delegate for the zoom view).
                     scroll.setMinimumZoomScale(b.min_zoom as CGFloat);
                     scroll.setMaximumZoomScale(b.max_zoom.max(b.min_zoom) as CGFloat);
@@ -1451,6 +1717,7 @@ impl Mounter {
                 let scale = self.display_scale();
                 let was_screen = self.shaders.draws_screen(id);
                 let role = layer.as_ref().map(|l| l.role);
+                let mounted = layer.is_some();
                 let screen = matches!(
                     role,
                     Some(ShaderRole::Screen | ShaderRole::ScreenTransition)
@@ -1478,6 +1745,11 @@ impl Mounter {
                 {
                     self.shaders
                         .set(id, &host, children, &s.style, scale, layer);
+                    // No GPU: the app hears it (`shadersAvailable()`); the
+                    // engine takes the first report only.
+                    if mounted && self.shaders.without_device() {
+                        self.control.shaders_unavailable();
+                    }
                 }
                 if was_screen && !screen {
                     self.release_root_effect();
@@ -1589,6 +1861,20 @@ impl Mounter {
                     input.set_content(content);
                 }
             }
+            MountItem::Component { id, name }
+                if &*name == nsh_core::platform::SPLIT_VIEW_COMPONENT =>
+            {
+                // NSH's own split: the mounter keeps it, as it does stacks.
+                let split = crate::split::SplitHost::new(self.mtm, id, self.shared.clone());
+                if let Some(Slot {
+                    native: Native::Component(host),
+                    ..
+                }) = self.slot_mut(id)
+                {
+                    host.attach(Box::new(SplitHolder(split.holder.clone())));
+                }
+                self.splits.insert(id, split);
+            }
             MountItem::Component { id, name } => {
                 let made = self.components.make(&name, id, &self.control);
                 if let (
@@ -1617,6 +1903,13 @@ impl Mounter {
                 {
                     host.slots = names;
                     host.forget();
+                }
+            }
+            MountItem::ComponentProps { id, props } if self.splits.contains_key(&id) => {
+                if let Some(split) = self.splits.get_mut(&id) {
+                    for (name, value) in &props {
+                        split.set_prop(name, value.as_ref());
+                    }
                 }
             }
             MountItem::ComponentProps { id, props } => {
@@ -1658,17 +1951,35 @@ impl Mounter {
                 | Command::GoBack
                 | Command::GoForward
                 | Command::StopLoading
+                | Command::Evaluate { .. }
+                | Command::CancelEvaluate { .. }
                 | Command::InjectJavaScript(_)
                 | Command::PostMessage(_)
                 | Command::Load(_)),
                 Native::Web(web),
             ) => web.command(&c),
+            (Command::WebViewRequest(request), Native::Web(web)) => web.web_request(&request),
             (Command::Seek(seconds), Native::Video(video)) => video.seek(seconds),
             (Command::Focus, Native::Input(input)) => {
                 input.editor_view().becomeFirstResponder();
+                crate::keyboard::request_focus(input.editor_view());
             }
             (Command::Blur, Native::Input(input)) => {
                 input.editor_view().resignFirstResponder();
+            }
+            // `ref.focus()` / `ref.blur()` on a view that is not an input:
+            // the keyboard focus moves to it as Tab does, if it is a stop.
+            (Command::Focus, native) if id != nsh_core::ROOT_ID => {
+                if let Some(view) = native.focus_view()
+                    && view.becomeFirstResponder()
+                {
+                    crate::keyboard::request_focus(view);
+                }
+            }
+            (Command::Blur, native) if id != nsh_core::ROOT_ID => {
+                if let Some(view) = native.focus_view() {
+                    view.resignFirstResponder();
+                }
             }
             // On the root: whatever is focused, also in the modals this
             // surface presents (UIKit hosts them outside the root view). Not
@@ -1682,6 +1993,7 @@ impl Mounter {
                         modal.view.endEditing(true);
                     }
                 }
+                self.restore_root_focus();
             }
             (Command::ScrollTo { x, y, animated }, Native::Scroll(scroll)) => {
                 let inset = scroll.adjustedContentInset();
@@ -1716,7 +2028,16 @@ impl Mounter {
                 crate::system::set_status_bar(config, native.view());
             }
             (Command::Dialog(dialog), native) if id == nsh_core::ROOT_ID => {
-                crate::system::show_dialog(&dialog, self.alert_tint, native.view(), &self.control);
+                crate::system::show_dialog(
+                    &dialog,
+                    self.alert_tint,
+                    native.view(),
+                    &self.control,
+                    &self.dialogs,
+                );
+            }
+            (Command::CloseDialog(dialog), _) if id == nsh_core::ROOT_ID => {
+                crate::system::close_dialog(&self.dialogs, dialog);
             }
             (
                 Command::PickImages {
@@ -1727,6 +2048,22 @@ impl Mounter {
             ) if id == nsh_core::ROOT_ID => {
                 crate::picker::pick_images(request, asked, native.view(), &self.control);
             }
+            (
+                Command::FileRequest {
+                    id: request_id,
+                    request,
+                },
+                native,
+            ) if id == nsh_core::ROOT_ID => match *request {
+                nsh_core::file_dialog::FileRequest::OpenDialog(dialog) => {
+                    crate::picker::pick_paths(request_id, dialog, native.view(), &self.control);
+                }
+                _ => self.control.dispatch_event(
+                    nsh_core::ROOT_ID,
+                    nsh_core::EventKind::FileRequest,
+                    nsh_core::EventPayload::file_failed(request_id, "not supported on iOS"),
+                ),
+            },
             (Command::Notification(command), _) if id == nsh_core::ROOT_ID => {
                 crate::notifications::command(&self.control, &command);
             }
@@ -1738,6 +2075,55 @@ impl Mounter {
                 native,
             ) if id == nsh_core::ROOT_ID => {
                 crate::picker::pick_files(request, asked, native.view(), &self.control);
+            }
+            (Command::AuthSession { id: request, page }, native) if id == nsh_core::ROOT_ID => {
+                crate::auth_session::open(
+                    request,
+                    &page,
+                    native.view(),
+                    &self.auth_session,
+                    &self.control,
+                );
+            }
+            (Command::CloseAuthSession(request), _) if id == nsh_core::ROOT_ID => {
+                crate::auth_session::close(request, &self.auth_session);
+            }
+            (Command::Share { id: request, sheet }, native) if id == nsh_core::ROOT_ID => {
+                let anchor = sheet.anchor.and_then(|anchor| self.ui_view(anchor));
+                crate::share::show(
+                    request,
+                    &sheet,
+                    native.view(),
+                    anchor.as_deref(),
+                    &self.share,
+                    &self.control,
+                );
+            }
+            (
+                Command::RenderCanvas {
+                    id: request,
+                    drawing,
+                    width,
+                    height,
+                    scale,
+                    format,
+                },
+                _,
+            ) if id == nsh_core::ROOT_ID => {
+                let display_scale = self.display_scale();
+                self.offscreen.render(
+                    crate::canvas::RenderRequest {
+                        id: request,
+                        drawing,
+                        width,
+                        height,
+                        scale,
+                        format,
+                    },
+                    &mut self.images,
+                    display_scale,
+                    &self.control,
+                );
             }
             (Command::Speech(command), _) if id == nsh_core::ROOT_ID => {
                 crate::speech::command(&self.control, &command);
@@ -1754,22 +2140,59 @@ impl Mounter {
             (Command::SetSelection { start, end }, Native::Input(input)) => {
                 input.select(start, end)
             }
+            // Not carried out on iOS yet: the app's paste is lost, so say so.
+            (Command::InsertText(_), _) => {
+                log::warn!("insertText is not supported on iOS yet; nothing inserted")
+            }
+            (Command::OpenEditMenu { bounds, actions }, Native::Input(input)) => {
+                let view = input.editor_view();
+                let rect = CGRect::new(
+                    CGPoint::new(bounds.origin.x.0.into(), bounds.origin.y.0.into()),
+                    CGSize::new(bounds.size.width.0.into(), bounds.size.height.0.into()),
+                );
+                // The bounds are in the root view (the surface's, or the
+                // modal's the input is in).
+                let rect = match self.root_view_of(view) {
+                    Some(root) => view.convertRect_fromView(rect, Some(&root)),
+                    None => rect,
+                };
+                crate::input::open_edit_menu(view, rect, actions);
+            }
+            (Command::CloseEditMenu, Native::Input(input)) => {
+                crate::input::close_edit_menu(input.editor_view())
+            }
             (Command::ClearJsResponder, _) => self.clear_js_responder(),
             (Command::Announce(text), _) => crate::system::announce(&text),
+            (Command::Haptic(haptic), _) => self.target.haptics().play(haptic, self.mtm),
+            (Command::Orientations(bits), _) if id == nsh_core::ROOT_ID => {
+                self.orientations = Some(bits);
+            }
+            (Command::SetAppUrl(url) | Command::PushAppUrl(url), _) if id == nsh_core::ROOT_ID => {
+                if let Some(activity) = &mut self.handoff {
+                    activity.publish(&url);
+                }
+            }
             (Command::PerfMonitor(true), _) => self.measure(),
             (Command::PerfMonitor(false), _) => self.stop_measuring(),
             (Command::Tokens(tokens), _) => self.alert_tint = crate::system::alert_tint(&tokens),
             (Command::ImageInfo { id, uri }, _) => self.images.info(id, &uri),
             (Command::SetClipboard(text), _) => crate::system::set_clipboard(&text),
+            (Command::SetClipboardItem(item), _) => match &item.html {
+                Some(html) => crate::system::set_clipboard_html(&item.text, html),
+                None => crate::system::set_clipboard(&item.text),
+            },
             (Command::OpenUrl { id, url }, _) => crate::system::open_url(id, &url, &self.control),
             (Command::ReadClipboard { id, has_only }, _) => {
-                let (has, text) = crate::system::read_clipboard(has_only);
+                let (has, text, denied) = crate::system::read_clipboard(has_only);
                 let mut fields = vec![
                     ("id", PayloadValue::Number(id as f64)),
                     ("has", PayloadValue::Bool(has)),
                 ];
                 if let Some(text) = text {
                     fields.push(("text", PayloadValue::Str(text)));
+                }
+                if denied {
+                    fields.push(("denied", PayloadValue::Bool(true)));
                 }
                 self.control.dispatch_event(
                     nsh_core::ROOT_ID,
@@ -1908,6 +2331,93 @@ impl Mounter {
         } else if self.focused == Some(id) {
             self.focused = None;
         }
+        if !focused
+            && let Some(view) = self.slot(id).map(|s| s.native.view().retain())
+            && let Some(window) = view.window()
+            && let Some(root) = self.root_view_of(&view)
+        {
+            // Another view or input may take the focus in this turn: the
+            // target checks the window again then, and restores the root
+            // only where no responder is left.
+            self.target.restore_root_focus(root, window);
+        }
+    }
+
+    /// The keyboard focus entered or left custom view `id`: its `focus:`
+    /// styles follow (`onFocus` / `onBlur` are dispatched by the target).
+    pub(crate) fn view_focused(&mut self, id: NodeId, focused: bool) {
+        self.report_state(id, nsh_core::tailwind::state::FOCUSED, focused);
+    }
+
+    /// Whether `id` or a logical ancestor listens to raw key events or
+    /// mounts a capture rule. Walks the core's ancestry, preferring a
+    /// portaled node's `key_parent` over the native Insert parent, so a
+    /// scroll view or any other managed node counts and an Overlay keeps
+    /// its app parent. Stops at the modal's own window boundary as the
+    /// core's bubbling does.
+    pub(crate) fn listens_keys(&self, id: NodeId) -> bool {
+        let mut current = Some(id);
+        let mut seen = rustc_hash::FxHashSet::default();
+        while let Some(id) = current {
+            if !seen.insert(id) {
+                break;
+            }
+            let Some(slot) = self.slot(id) else { break };
+            if slot.events.contains(EventKind::KeyDown)
+                || slot.events.contains(EventKind::KeyUp)
+                || !slot.key_capture.is_none()
+            {
+                return true;
+            }
+            if matches!(&slot.native, Native::Modal(_)) {
+                break;
+            }
+            current = slot.key_parent.or(slot.parent);
+        }
+        false
+    }
+
+    /// Whether the enabled `id` or a logical ancestor captures `stroke`
+    /// (the keymap's canonical keystroke) with its mounted `capture_keys`.
+    pub(crate) fn captures_stroke(
+        &self,
+        id: NodeId,
+        stroke: Option<&nsh_core::keymap::Keystroke>,
+    ) -> bool {
+        let mut current = Some(id);
+        let mut seen = rustc_hash::FxHashSet::default();
+        while let Some(id) = current {
+            if !seen.insert(id) {
+                break;
+            }
+            let Some(slot) = self.slot(id) else { break };
+            if !slot.disabled && slot.key_capture.captures_key(stroke) {
+                return true;
+            }
+            if matches!(&slot.native, Native::Modal(_)) {
+                break;
+            }
+            current = slot.key_parent.or(slot.parent);
+        }
+        false
+    }
+
+    /// The native view whose subtree Tab walks from `view`: the modal view
+    /// it is in, else the surface's root, so Tab never enters the stops a
+    /// presented modal covers. `None` when the view is in neither.
+    pub(crate) fn focus_scope(&self, view: &UIView) -> Option<Retained<UIView>> {
+        let mut current: Option<Retained<UIView>> = Some(view.retain());
+        while let Some(v) = current {
+            let tag = v.tag();
+            if tag > 0
+                && let Some(slot) = self.slot(tag as NodeId)
+                && matches!(&slot.native, Native::Modal(_) | Native::Root(_))
+            {
+                return Some(v);
+            }
+            current = v.superview();
+        }
+        None
     }
 
     /// Return pressed in an input that submits (`submitBehavior`): reports
@@ -2054,8 +2564,11 @@ impl Mounter {
                 ..
             }) = self.slot(previous)
         {
-            let base = self.base_inset(previous).bottom;
-            set_bottom_inset(view, base, None, motion, self.mtm);
+            let (base, bar) = (
+                self.base_inset(previous).bottom,
+                self.base_bar_inset(previous).bottom,
+            );
+            set_bottom_inset(view, base, bar, None, motion, self.mtm);
         }
         let Some((scroll_id, scroll)) = scroll else {
             return;
@@ -2074,6 +2587,7 @@ impl Mounter {
         };
         let covered = (frame.origin.y + frame.size.height - keyboard_top).max(0.0);
         let base = self.base_inset(scroll_id).bottom;
+        let bar = self.base_bar_inset(scroll_id).bottom;
         let reveal = match self.focused.and_then(|id| self.slot(id)) {
             Some(Slot {
                 native: Native::Input(input),
@@ -2089,7 +2603,14 @@ impl Mounter {
             }
             _ => None,
         };
-        set_bottom_inset(&scroll, base + covered, reveal, motion, self.mtm);
+        set_bottom_inset(
+            &scroll,
+            base + covered,
+            bar + covered,
+            reveal,
+            motion,
+            self.mtm,
+        );
         self.avoiding = Some(scroll_id);
     }
 
@@ -2100,6 +2621,16 @@ impl Mounter {
             self.slot(id)
                 .and_then(|s| s.behavior.as_ref())
                 .map(|b| b.content_inset)
+                .unwrap_or_default(),
+        )
+    }
+
+    /// The `scrollbarInset` the app set on scroll view `id`.
+    fn base_bar_inset(&self, id: NodeId) -> objc2_ui_kit::UIEdgeInsets {
+        ui_insets(
+            self.slot(id)
+                .and_then(|s| s.behavior.as_ref())
+                .map(|b| b.scrollbar_inset)
                 .unwrap_or_default(),
         )
     }
@@ -2248,9 +2779,10 @@ impl Mounter {
     }
 
     /// A JS responder took the touches on `id`: with `block`, the scroll
-    /// views around it stop scrolling until it lets go, and the presses of
-    /// the views around it end without a press (the finger is the
-    /// responder's: a drag of a selection handle is no tap on the text).
+    /// views around it stop scrolling and the stacks around it take no
+    /// swipe back until it lets go, and the presses of the views around it
+    /// end without a press (the finger is the responder's: a drag of a
+    /// selection handle is no tap on the text).
     fn set_js_responder(&mut self, id: NodeId, block: bool) {
         self.clear_js_responder();
         if !block {
@@ -2267,11 +2799,20 @@ impl Mounter {
                     recognizer.setEnabled(true);
                 }
             }
-            if let Some(scroll) = v.downcast_ref::<UIScrollView>() {
-                let pan = scroll.panGestureRecognizer();
-                if pan.isEnabled() {
-                    pan.setEnabled(false);
-                    self.blocked_scrolls.push(scroll.retain());
+            let scroll = v
+                .downcast_ref::<UIScrollView>()
+                .map(|scroll| Retained::into_super(scroll.panGestureRecognizer()));
+            // A stack's view: its controller is the next responder.
+            let swipes = v
+                .nextResponder()
+                .and_then(|r| r.downcast::<UINavigationController>().ok())
+                .map(|nav| crate::navigation::back_swipes(&nav))
+                .unwrap_or_default();
+            for gesture in scroll.into_iter().chain(swipes) {
+                if gesture.isEnabled() {
+                    // Turning it off also cancels a gesture that began.
+                    gesture.setEnabled(false);
+                    self.blocked_gestures.push(gesture);
                 }
             }
             current = v.superview();
@@ -2279,8 +2820,29 @@ impl Mounter {
     }
 
     fn clear_js_responder(&mut self) {
-        for scroll in self.blocked_scrolls.drain(..) {
-            scroll.panGestureRecognizer().setEnabled(true);
+        for gesture in self.blocked_gestures.drain(..) {
+            gesture.setEnabled(true);
+        }
+    }
+
+    /// Restore hardware-key delivery after a window or root-wide blur,
+    /// including when the root itself was the only first responder.
+    fn restore_root_focus(&self) {
+        // A presented modal owns its responder scope, even with no input
+        // focused. Do not route its keys to the background surface.
+        if self
+            .views
+            .iter()
+            .flatten()
+            .any(|slot| matches!(&slot.native, Native::Modal(modal) if modal.presented))
+        {
+            return;
+        }
+        if let Some(root) = self.slot(nsh_core::ROOT_ID)
+            && let Some(window) = root.native.view().window()
+        {
+            self.target
+                .restore_root_focus(root.native.view().retain(), window);
         }
     }
 
@@ -2288,6 +2850,7 @@ impl Mounter {
         if let Some(root) = self.slot(nsh_core::ROOT_ID) {
             root.native.view().window().map(|w| w.endEditing(true));
         }
+        self.restore_root_focus();
     }
 
     /// Where a fling of scroll view `id` ends when it snaps: `target` is
@@ -2385,7 +2948,7 @@ impl Mounter {
         // `transition::restyle` and Android's mounter skip it the same way).
         let transition = style
             .transition
-            .filter(|t| t.duration > 0.0 && s.styled && view.window().is_some());
+            .filter(|t| t.run_ms() > 0.0 && s.styled && view.window().is_some());
         s.style = style;
         s.styled = true;
         view.setHidden(s.style.hidden);
@@ -2588,7 +3151,7 @@ impl Mounter {
 
     /// The root view `view` is in: the surface's, or its modal's (touches'
     /// page coordinates are in it).
-    fn root_view_of(&self, view: &UIView) -> Option<Retained<UIView>> {
+    pub(crate) fn root_view_of(&self, view: &UIView) -> Option<Retained<UIView>> {
         let mut current = Some(view.retain());
         while let Some(v) = current {
             let tag = v.tag() as NodeId;
@@ -2688,6 +3251,7 @@ impl Mounter {
     /// take the pictures they missed.
     pub(crate) fn window_changed(&mut self) {
         self.shaders.revisit();
+        self.restore_root_focus();
     }
 
     /// The surface's traits changed: on a screen of another scale (an
@@ -2828,9 +3392,6 @@ impl Mounter {
                 scale,
                 crate::image::Look::default(),
             ) {
-                Request::Ready(decoded) if decoded.vector => {
-                    log::warn!("canvas image failed: {}", not_a_bitmap(&image.uri));
-                }
                 Request::Ready(decoded) => view.set_image(image.uri.clone(), decoded.image),
                 Request::Pending => {}
             }
@@ -2839,6 +3400,11 @@ impl Mounter {
 
     /// What the image loader reports.
     /// The disk cache the images it loads go through.
+    /// The scroll views the embedding app watches ([`crate::AppView::watch_scroll`]).
+    pub(crate) fn watch_scrolls(&mut self, watchers: crate::ScrollWatchers) {
+        self.scroll_watchers = watchers;
+    }
+
     pub(crate) fn set_image_cache(&mut self, cache: Option<nsh_core::image::DiskCache>) {
         self.images.set_disk_cache(cache);
     }
@@ -2885,6 +3451,7 @@ impl Mounter {
     }
 
     pub(crate) fn image_loaded(&mut self, key: &str, result: Result<DecodedImage, String>) {
+        self.offscreen.image_loaded(key, &result, &self.control);
         for id in self.images.finish(key, &result) {
             if let Some(Slot {
                 native: Native::Canvas(view),
@@ -2893,9 +3460,6 @@ impl Mounter {
             {
                 // Canvas images are requested at their natural size.
                 match (&result, key.strip_prefix("0@")) {
-                    (Ok(decoded), Some(uri)) if decoded.vector => {
-                        log::warn!("canvas image failed: {}", not_a_bitmap(uri));
-                    }
                     (Ok(decoded), Some(uri)) => view.set_image(uri.into(), decoded.image.clone()),
                     (Err(message), _) => log::warn!("canvas image failed: {message}"),
                     _ => {}
@@ -2991,6 +3555,9 @@ impl Mounter {
             return;
         };
         slot.events = events;
+        if let Native::Web(web) = &slot.native {
+            web.set_events(events);
+        }
         if let Native::Input(input) = &mut slot.native {
             input.set_paste_listens(events.contains(EventKind::Paste));
         }
@@ -3057,7 +3624,7 @@ impl Mounter {
         }
         if let Some(press) = &g.press {
             press.set_long_press(events.contains(EventKind::LongPress) || links_long_press);
-            press.set_own(own_press, handles_press);
+            press.set_own(own_press, handles_press, nsh_core::input::has_tap(events));
             press.set_long_press_delay(slot.long_press_delay);
         }
         let wants_hover = nsh_core::input::hoverable(slot.tracked, events);
@@ -3104,7 +3671,10 @@ impl Mounter {
             view.setUserInteractionEnabled(true);
         }
         if let Some(nsh) = slot.native.nsh() {
+            nsh.set_target(&target);
+            nsh.set_events(events);
             nsh.set_pressable(events.contains(EventKind::Press), &control);
+            nsh.update_focus_tap(&target);
         }
         self.sync_refresh(id);
     }
@@ -3179,7 +3749,7 @@ impl Mounter {
                 });
             }
             Some(None) => {
-                let control = UIRefreshControl::new(mtm);
+                let control = refresh_control(id, mtm);
                 // SAFETY: `handleRefresh:` is implemented by the target.
                 unsafe {
                     control.addTarget_action_forControlEvents(
@@ -3243,21 +3813,37 @@ impl Mounter {
                     .get(&id)
                     .filter(|_| !reduce_motion())
                     .cloned();
-                let Some(Slot {
-                    native: Native::Stack(stack),
-                    ..
-                }) = self.slot_mut(parent)
-                else {
+                // A collapsed split shows its columns' pages in its compact
+                // stack: the page leaves that one, keyed by the split.
+                let shown_in = match self.collapsed_split_of(parent) {
+                    Some(split) => self
+                        .splits
+                        .get(&split)
+                        .map(|host| (split, host.compact.nav.clone())),
+                    None => match self.slot(parent) {
+                        Some(Slot {
+                            native: Native::Stack(stack),
+                            ..
+                        }) => Some((parent, stack.nav.clone())),
+                        _ => None,
+                    },
+                };
+                let Some((key, nav)) = shown_in else {
                     return true;
                 };
-                let shown = stack
-                    .nav
+                let shown = nav
                     .topViewController()
                     .and_then(|c| c.downcast::<crate::navigation::ScreenController>().ok())
                     .is_some_and(|c| c.screen_id() == id);
-                stack.screens.retain(|&s| s != id);
-                stack.popped.retain(|&s| s != id);
-                let view = stack.nav.view();
+                if let Some(Slot {
+                    native: Native::Stack(stack),
+                    ..
+                }) = self.slot_mut(parent)
+                {
+                    stack.screens.retain(|&s| s != id);
+                    stack.popped.retain(|&s| s != id);
+                }
+                let view = nav.view();
                 self.dirty_stacks.push(parent);
                 if !shown {
                     return true;
@@ -3267,7 +3853,7 @@ impl Mounter {
                 // showed is pictured now when it leaves through a shader.
                 let through = shader.is_some();
                 self.leaving_screens.insert(
-                    parent,
+                    key,
                     LeavingScreen {
                         id,
                         shader,
@@ -3280,7 +3866,7 @@ impl Mounter {
                 {
                     let rect = view.convertRect_toView(view.bounds(), Some(&window));
                     let scale = self.display_scale();
-                    self.shaders.hold(parent, &window, rect, scale);
+                    self.shaders.hold(key, &window, rect, scale);
                 }
             }
             Some(Native::HeaderItem(view)) => {
@@ -3341,10 +3927,26 @@ impl Mounter {
     /// and are laid out: pushes and pops screens, updates headers, presents
     /// and dismisses modals.
     fn finish_navigation(&mut self) {
+        // Splits first: they adopt their columns' stacks and take their
+        // pages into the compact stack, or give them back.
+        let splits: Vec<NodeId> = self.splits.keys().copied().collect();
+        for id in splits {
+            self.sync_split(id);
+        }
         let mut stacks = std::mem::take(&mut self.dirty_stacks);
+        // A collapsed split's column shows in the split's compact stack.
+        for id in &mut stacks {
+            if let Some(split) = self.collapsed_split_of(*id) {
+                *id = split;
+            }
+        }
         stacks.sort_unstable();
         stacks.dedup();
         for id in stacks {
+            if self.splits.contains_key(&id) {
+                self.reconcile_compact(id);
+                continue;
+            }
             let Some(Slot {
                 native: Native::Stack(stack),
                 ..
@@ -3447,10 +4049,15 @@ impl Mounter {
                     stack.sync_bottom_bar();
                 }
             }
+            // A collapsed split's pages are in its compact stack.
+            for split in self.splits.values() {
+                split.compact.sync_bottom_bar();
+            }
         }
         let mut headers = std::mem::take(&mut self.dirty_headers);
         headers.sort_unstable();
         headers.dedup();
+        let mut follows = Vec::new();
         for id in headers {
             let Some(Slot {
                 native: Native::Screen(screen),
@@ -3467,13 +4074,37 @@ impl Mounter {
                 },
                 press,
             );
+            follows.push((
+                id,
+                screen.config.header_transparent && screen.config.header_background_on_scroll,
+            ));
             if screen.config.large_title {
                 // Large titles collapse as the content scrolls under them.
-                if let Some(scroll) = first_scroll_view(&screen.view) {
+                if let Some(scroll) = first_scroll_view(&screen.view)
+                    && scroll.contentInsetAdjustmentBehavior()
+                        != UIScrollViewContentInsetAdjustmentBehavior::Automatic
+                {
+                    // UIKit keeps a scroll view at its top when its safe area
+                    // changes, not when it starts to adjust for it. One
+                    // already on screen (new content, or a header that turned
+                    // large in place) would keep its offset: its content
+                    // under the header, read as scrolled, the title collapsed.
+                    let at_top = scroll.contentOffset().y <= -scroll.adjustedContentInset().top;
                     scroll.setContentInsetAdjustmentBehavior(
                         UIScrollViewContentInsetAdjustmentBehavior::Automatic,
                     );
+                    if at_top {
+                        let mut offset = scroll.contentOffset();
+                        offset.y = -scroll.adjustedContentInset().top;
+                        scroll.setContentOffset(offset);
+                    }
                 }
+            }
+        }
+        for (id, follows) in follows {
+            self.following_scroll.retain(|&other| other != id);
+            if follows {
+                self.following_scroll.push(id);
             }
         }
         let modals = std::mem::take(&mut self.dirty_modals);
@@ -3507,6 +4138,19 @@ impl Mounter {
                 });
             }
         }
+        let views = &self.views;
+        self.following_scroll.retain(
+            |&id| match views.get(id as usize).and_then(Option::as_ref) {
+                Some(Slot {
+                    native: Native::Screen(screen),
+                    ..
+                }) => {
+                    screen.controller.follow_content_scroll();
+                    true
+                }
+                _ => false,
+            },
+        );
         // What no change used goes, but for stacks whose change waits for
         // UIKit's transition to end.
         let deferred = &self.deferred_stacks;
@@ -3544,10 +4188,71 @@ impl Mounter {
     /// swipe) are reported so the app removes them.
     pub(crate) fn stack_did_show(&mut self, id: NodeId) {
         self.shaders.revisit();
-        self.report_popped(id);
+        if self.splits.contains_key(&id) {
+            self.compact_did_show(id);
+        } else {
+            self.report_popped(id);
+        }
         if self.deferred_stacks.contains(&id) {
             Self::finish_deferred(&self.shared, id);
         }
+    }
+
+    /// Applies the orientations the root was last given, once no stack is
+    /// pushing or popping and nothing is being presented: UIKit can cancel
+    /// a push the screen starts turning during, which reads as the user
+    /// going back.
+    fn apply_orientations(&mut self) {
+        let Some(bits) = self.orientations else {
+            return;
+        };
+        if self.orientations_waiting {
+            return;
+        }
+        let Some(root) = self.ui_view(nsh_core::ROOT_ID) else {
+            return;
+        };
+        let presenting = root
+            .window()
+            .and_then(|w| w.rootViewController())
+            .and_then(|c| c.transitionCoordinator());
+        let moving = presenting.or_else(|| {
+            self.views
+                .iter()
+                .flatten()
+                .find_map(|slot| match &slot.native {
+                    Native::Stack(stack) => stack.nav.transitionCoordinator(),
+                    _ => None,
+                })
+        });
+        if let Some(coordinator) = moving {
+            self.orientations_waiting = true;
+            let shared = self.shared.clone();
+            let done = RcBlock::new(
+                move |_: NonNull<
+                    ProtocolObject<dyn UIViewControllerTransitionCoordinatorContext>,
+                >| {
+                    // On the next turn, as the stacks catch up
+                    // (`finish_deferred`): the coordinator outlives this
+                    // callback, and a push they make waits its turn too.
+                    let shared = shared.clone();
+                    DispatchQueue::main().exec_async(move || {
+                        let mtm = MainThreadMarker::new().expect("main queue");
+                        if let Some(m) = shared.get(mtm).borrow_mut().as_mut() {
+                            m.orientations_waiting = false;
+                            m.apply_orientations();
+                        }
+                    });
+                },
+            );
+            // Refused when the transition is already ending.
+            if coordinator.animateAlongsideTransition_completion(None, Some(&done)) {
+                return;
+            }
+            self.orientations_waiting = false;
+        }
+        self.orientations = None;
+        crate::system::set_orientations(bits, &root);
     }
 
     /// Applies the changes stack `id` deferred during a transition, on the
@@ -3612,18 +4317,24 @@ impl Mounter {
     /// The top screen of stack `id`, whether it listens to `onBackPress`
     /// and whether it keeps the user (`popOnBack` false).
     pub(crate) fn stack_back_press(&self, id: NodeId) -> Option<(NodeId, bool, bool)> {
-        let Some(Slot {
-            native: Native::Stack(stack),
-            ..
-        }) = self.slot(id)
-        else {
-            return None;
+        let top = match self.splits.get(&id) {
+            // The compact stack's top page, whichever column it is of.
+            Some(split) => compact_top(split)?,
+            None => {
+                let Some(Slot {
+                    native: Native::Stack(stack),
+                    ..
+                }) = self.slot(id)
+                else {
+                    return None;
+                };
+                *stack
+                    .screens
+                    .iter()
+                    .rev()
+                    .find(|s| !stack.popped.contains(s))?
+            }
         };
-        let top = *stack
-            .screens
-            .iter()
-            .rev()
-            .find(|s| !stack.popped.contains(s))?;
         match self.slot(top) {
             Some(Slot {
                 native: Native::Screen(screen),
@@ -3645,6 +4356,9 @@ impl Mounter {
 
     /// Whether the user may pop the top screen of stack `id`.
     pub(crate) fn stack_can_pop(&self, id: NodeId) -> bool {
+        if let Some(split) = self.splits.get(&id) {
+            return self.compact_can_pop(split);
+        }
         let Some(Slot {
             native: Native::Stack(stack),
             ..
@@ -3669,6 +4383,515 @@ impl Mounter {
             && top.unwrap_or(true)
     }
 
+    // --- Split views (`crate::split`) -------------------------------------
+
+    /// The split whose compact stack shows stack `id`'s pages, while it is
+    /// collapsed.
+    fn collapsed_split_of(&self, id: NodeId) -> Option<NodeId> {
+        let Some(Slot {
+            native: Native::Stack(stack),
+            ..
+        }) = self.slot(id)
+        else {
+            return None;
+        };
+        let split = stack.split?;
+        self.splits
+            .get(&split)
+            .filter(|s| s.collapsed)
+            .map(|_| split)
+    }
+
+    /// The stacks of split `id`'s columns: in the column wrappers, the
+    /// views before its container in column order (`nsh-base`'s
+    /// `split_view.rs` renders them so), each its wrapper's first stack.
+    fn split_column_stacks(&self, id: NodeId, triple: bool) -> [Option<NodeId>; 3] {
+        let mut columns = [None; 3];
+        let Some(container) = self.slot(id).map(|s| s.native.view().retain()) else {
+            return columns;
+        };
+        let Some(parent) = container.superview() else {
+            return columns;
+        };
+        let wrappers: Vec<Retained<UIView>> = parent
+            .subviews()
+            .iter()
+            .take_while(|v| !std::ptr::eq::<UIView>(&**v, &*container))
+            .filter(|v| v.tag() > 0 && self.slot(v.tag() as NodeId).is_some())
+            .collect();
+        let order: &[usize] = if triple { &[0, 1, 2] } else { &[0, 2] };
+        for (wrapper, &column) in wrappers.iter().zip(order) {
+            columns[column] = self.first_stack(wrapper);
+        }
+        columns
+    }
+
+    /// The first stack in `view`, breadth first.
+    fn first_stack(&self, view: &UIView) -> Option<NodeId> {
+        let mut pending = std::collections::VecDeque::from([view.retain()]);
+        while let Some(view) = pending.pop_front() {
+            let id = view.tag();
+            if id > 0
+                && let Some(Slot {
+                    native: Native::Stack(_),
+                    ..
+                }) = self.slot(id as NodeId)
+            {
+                return Some(id as NodeId);
+            }
+            pending.extend(view.subviews().iter());
+        }
+        None
+    }
+
+    /// Brings split `id` up to date: its controller (made for the number of
+    /// columns) and its parent, the stacks of its columns, where the
+    /// columns' pages are (in the columns, or in its compact stack while it
+    /// is collapsed), the app's visibility and the columns' sizes.
+    fn sync_split(&mut self, id: NodeId) {
+        let Some(mut split) = self.splits.remove(&id) else {
+            return;
+        };
+        let controller = split.controller_for_columns(self.mtm, id, &self.shared);
+        split.contain();
+        // The columns: each the navigation controller of its stack.
+        let wanted = self.split_column_stacks(id, split.triple);
+        for column in 0..3 {
+            if column == 1 && !split.triple {
+                continue;
+            }
+            if wanted[column] == split.columns[column] {
+                continue;
+            }
+            let old = split.columns[column].take();
+            let nav = wanted[column].and_then(|new| match self.slot_mut(new) {
+                Some(Slot {
+                    native: Native::Stack(stack),
+                    ..
+                }) => {
+                    stack.join_split(id);
+                    Some(stack.nav.clone())
+                }
+                _ => None,
+            });
+            let vc = nav
+                .as_deref()
+                .map(|nav| -> &objc2_ui_kit::UIViewController { nav });
+            controller.setViewController_forColumn(vc, crate::split::column(column));
+            split.columns[column] = wanted[column];
+            // The stack the column showed takes its navigation controller
+            // back once the split let it go (not before: letting it go takes
+            // the controller's view out of where it is).
+            if let Some(old) = old
+                && !wanted.contains(&Some(old))
+            {
+                if let Some(Slot {
+                    native: Native::Stack(stack),
+                    ..
+                }) = self.slot_mut(old)
+                {
+                    stack.leave_split();
+                }
+                // Its pages go back to it, out of the compact stack too.
+                self.dirty_stacks.push(old);
+                self.dirty_stacks.push(id);
+            }
+            if let Some(new) = wanted[column] {
+                // Its pages go where the split shows them.
+                if split.collapsed
+                    && let Some(Slot {
+                        native: Native::Stack(stack),
+                        ..
+                    }) = self.slot(new)
+                {
+                    stack.detach_screens();
+                }
+                self.dirty_stacks.push(new);
+                self.dirty_stacks.push(id);
+            }
+        }
+        // Collapsed or expanded: the pages move between the columns and the
+        // compact stack.
+        let collapsed = controller.isCollapsed();
+        if collapsed != split.collapsed {
+            split.collapsed = collapsed;
+            if collapsed {
+                for &stack_id in split.columns.iter().flatten() {
+                    if let Some(Slot {
+                        native: Native::Stack(stack),
+                        ..
+                    }) = self.slot(stack_id)
+                    {
+                        stack.detach_screens();
+                    }
+                }
+                split.compact_columns =
+                    crate::split::compact_columns(split.requested, split.triple);
+                split.applied = Some((split.requested, split.revision));
+            } else {
+                split.compact.detach_screens();
+                // The expanded split shows the app's visibility again.
+                split.applied = None;
+                self.dirty_stacks
+                    .extend(split.columns.iter().flatten().copied());
+            }
+            self.dirty_stacks.push(id);
+        }
+        // The app's visibility: the columns of the compact stack, or the
+        // display mode.
+        if split.collapsed {
+            let request = (split.requested, split.revision);
+            if split.applied != Some(request) {
+                split.applied = Some(request);
+                split.compact_columns =
+                    crate::split::compact_columns(split.requested, split.triple);
+                self.dirty_stacks.push(id);
+            }
+        } else {
+            split.apply_visibility();
+        }
+        self.splits.insert(id, split);
+        self.report_split_sizes(id);
+    }
+
+    /// Split `id` collapsed or expanded (its delegate, or a layout pass
+    /// that found it so): the pages move, and the stacks follow.
+    pub(crate) fn split_settle(&mut self, id: NodeId) {
+        let Some(split) = self.splits.get(&id) else {
+            return;
+        };
+        let moved = split
+            .controller
+            .as_ref()
+            .is_some_and(|c| c.isCollapsed() != split.collapsed);
+        if moved {
+            self.finish_navigation();
+        } else {
+            self.report_split_sizes(id);
+        }
+    }
+
+    /// Split `id` is about to show `mode`: what the user or the system
+    /// shows is reported, not the app's own visibility applied, nor the
+    /// system's choice while the window changes (or first shows the split)
+    /// when the app leaves it to the system (`automatic`).
+    pub(crate) fn split_display_mode(
+        &mut self,
+        id: NodeId,
+        mode: objc2_ui_kit::UISplitViewControllerDisplayMode,
+        system: bool,
+    ) {
+        let Some(split) = self.splits.get_mut(&id) else {
+            return;
+        };
+        if split.collapsed {
+            return;
+        }
+        let Some(shown) = crate::split::visibility_of(mode, split.triple) else {
+            return;
+        };
+        if split.shown.replace(shown) == Some(shown) || shown == split.requested {
+            return;
+        }
+        if system && split.requested == nsh_base::ColumnVisibility::Automatic {
+            return;
+        }
+        self.control.dispatch_event(
+            id,
+            EventKind::NativeEvent,
+            EventPayload::Native {
+                name: "columnVisibilityChange".into(),
+                data: shown.name().into(),
+            },
+        );
+    }
+
+    /// The display mode split `id` expands to (`None`: the one UIKit
+    /// proposes).
+    pub(crate) fn split_expanding_mode(
+        &self,
+        id: NodeId,
+    ) -> Option<objc2_ui_kit::UISplitViewControllerDisplayMode> {
+        self.splits.get(&id)?.expanding_mode()
+    }
+
+    /// A column of a split (stack `id`), or a split's compact stack (`id`
+    /// the split), was laid out: the columns' sizes are reported.
+    pub(crate) fn split_column_laid_out(&mut self, id: NodeId) {
+        let split = if self.splits.contains_key(&id) {
+            Some(id)
+        } else {
+            match self.slot(id) {
+                Some(Slot {
+                    native: Native::Stack(stack),
+                    ..
+                }) => stack.split,
+                _ => None,
+            }
+        };
+        if let Some(split) = split {
+            self.report_split_sizes(split);
+        }
+    }
+
+    /// Reports the size each column of split `id` lays its stack's pages
+    /// out at (the compact stack's for each, while it is collapsed), when
+    /// it changed.
+    fn report_split_sizes(&mut self, id: NodeId) {
+        let Some(split) = self.splits.get(&id) else {
+            return;
+        };
+        let size_of = |nav: &objc2_ui_kit::UINavigationController| {
+            nav.viewIfLoaded()
+                .map(|v| v.bounds().size)
+                .filter(|s| s.width > 0.0 && s.height > 0.0)
+                .map(|s| (s.width as f32, s.height as f32))
+        };
+        let mut sizes = [None; 3];
+        for (column, stack) in split.columns.iter().enumerate() {
+            let Some(stack) = stack else { continue };
+            sizes[column] = if split.collapsed {
+                size_of(&split.compact.nav)
+            } else {
+                match self.slot(*stack) {
+                    Some(Slot {
+                        native: Native::Stack(stack),
+                        ..
+                    }) => size_of(&stack.nav),
+                    _ => None,
+                }
+            };
+        }
+        if sizes == split.sizes {
+            return;
+        }
+        let mut data = serde_json::Map::new();
+        for (key, size) in ["sidebar", "content", "detail"].into_iter().zip(sizes) {
+            if let Some((width, height)) = size {
+                data.insert(
+                    key.into(),
+                    serde_json::json!({ "width": width, "height": height }),
+                );
+            }
+        }
+        if let Some(split) = self.splits.get_mut(&id) {
+            split.sizes = sizes;
+        }
+        self.control.dispatch_event(
+            id,
+            EventKind::NativeEvent,
+            EventPayload::Native {
+                name: "layout".into(),
+                data: nsh_core::JsonValue::Object(data),
+            },
+        );
+    }
+
+    /// Shows the pages of the columns collapsed split `id` shows in its
+    /// compact stack: the sidebar's, then the content's and the detail's
+    /// as far as the visibility (or the user's way back) goes. A change
+    /// waits for a running transition, as a stack's does.
+    fn reconcile_compact(&mut self, id: NodeId) {
+        let Some(split) = self.splits.get(&id) else {
+            return;
+        };
+        if !split.collapsed {
+            return;
+        }
+        if let Some(coordinator) = split.compact.nav.transitionCoordinator() {
+            if !self.deferred_stacks.contains(&id) {
+                self.deferred_stacks.push(id);
+                let shared = self.shared.clone();
+                let done = RcBlock::new(
+                    move |_: NonNull<
+                        ProtocolObject<dyn UIViewControllerTransitionCoordinatorContext>,
+                    >| { Self::finish_deferred(&shared, id) },
+                );
+                if !coordinator.animateAlongsideTransition_completion(None, Some(&done)) {
+                    Self::finish_deferred(&self.shared, id);
+                }
+            }
+            return;
+        }
+        let order: &[usize] = if split.triple { &[0, 1, 2] } else { &[0, 2] };
+        let mut screens = Vec::new();
+        for &column in order.iter().take(split.compact_columns) {
+            let Some(Slot {
+                native: Native::Stack(stack),
+                ..
+            }) = split.columns[column].and_then(|s| self.slot(s))
+            else {
+                continue;
+            };
+            for &s in stack.screens.iter().filter(|s| !stack.popped.contains(s)) {
+                if let Some(Slot {
+                    native: Native::Screen(screen),
+                    ..
+                }) = self.slot(s)
+                {
+                    screens.push((s, screen.controller.clone(), screen.config.animation));
+                }
+            }
+        }
+        // As a stack's change: the leaving page's animation and the
+        // pages' transition shaders, the removed page's kept by
+        // [`Mounter::remove_hosted`] under the split's id.
+        let top = screens.last().map(|s| s.0);
+        let leaving_id = compact_top(split);
+        let leaving = leaving_id.and_then(|s| match self.slot(s).map(|s| &s.native) {
+            Some(Native::Screen(screen)) => Some(screen.config.animation),
+            _ => None,
+        });
+        let recorded = self
+            .leaving_screens
+            .remove(&id)
+            .filter(|l| Some(l.id) == leaving_id);
+        let leaving = leaving.or(recorded.as_ref().map(|l| l.animation));
+        let shaders = if reduce_motion() {
+            (None, None)
+        } else {
+            (
+                top.and_then(|id| self.nav_shaders.get(&id)),
+                leaving_id
+                    .and_then(|id| self.nav_shaders.get(&id))
+                    .or(recorded.as_ref().and_then(|l| l.shader.as_ref())),
+            )
+        };
+        let scale = self.display_scale();
+        let overlays = &mut self.shaders;
+        split
+            .compact
+            .reconcile(&screens, leaving, shaders, |view, shader, pops| {
+                let Some(window) = view.window() else {
+                    return false;
+                };
+                let rect = view.convertRect_toView(view.bounds(), Some(&window));
+                overlays.nav_overlay(id, &window, rect, scale, shader, pops)
+            });
+        split.compact.sync_bottom_bar();
+    }
+
+    /// Split `id`'s compact stack finished a transition: a page the user
+    /// left that is not its stack's first is reported to it as a native
+    /// pop; going back past a column's first page shows the column before
+    /// (`compactColumnChange`), and its stack keeps its pages.
+    fn compact_did_show(&mut self, id: NodeId) {
+        let Some(split) = self.splits.get(&id) else {
+            return;
+        };
+        let shown: Vec<NodeId> = split
+            .compact
+            .nav
+            .viewControllers()
+            .iter()
+            .filter_map(|c| c.downcast::<crate::navigation::ScreenController>().ok())
+            .map(|c| c.screen_id())
+            .collect();
+        let gone: Vec<NodeId> = split
+            .compact
+            .applied
+            .borrow()
+            .iter()
+            .copied()
+            .filter(|s| !shown.contains(s))
+            .collect();
+        if gone.is_empty() {
+            return;
+        }
+        *split.compact.applied.borrow_mut() = shown.clone();
+        let first_of = |stack: NodeId| match self.slot(stack) {
+            Some(Slot {
+                native: Native::Stack(stack),
+                ..
+            }) => stack
+                .screens
+                .iter()
+                .find(|s| !stack.popped.contains(s))
+                .copied(),
+            _ => None,
+        };
+        let popped: Vec<(NodeId, NodeId)> = gone
+            .iter()
+            .filter_map(|&s| {
+                let stack = *self.hosts.get(&s)?;
+                (first_of(stack) != Some(s)).then_some((stack, s))
+            })
+            .collect();
+        // The columns still shown: those whose first page is.
+        let order: &[usize] = if split.triple { &[0, 1, 2] } else { &[0, 2] };
+        let still = order
+            .iter()
+            .take(split.compact_columns)
+            .take_while(|&&column| {
+                split.columns[column]
+                    .and_then(first_of)
+                    .is_none_or(|first| shown.contains(&first))
+            })
+            .count();
+        let went_back = still < split.compact_columns && still > 0;
+        for &(stack, screen) in &popped {
+            if let Some(Slot {
+                native: Native::Stack(stack),
+                ..
+            }) = self.slot_mut(stack)
+            {
+                stack.popped.push(screen);
+            }
+            self.control
+                .dispatch_event(screen, EventKind::Dismiss, EventPayload::None);
+        }
+        if went_back {
+            if let Some(split) = self.splits.get_mut(&id) {
+                split.compact_columns = still;
+            }
+            self.control.dispatch_event(
+                id,
+                EventKind::NativeEvent,
+                EventPayload::Native {
+                    name: "compactColumnChange".into(),
+                    data: nsh_core::JsonValue::from(still - 1),
+                },
+            );
+        }
+    }
+
+    /// Whether the user may go back in `split`'s compact stack: below its
+    /// top page there is one, no transition runs, and the page allows it.
+    fn compact_can_pop(&self, split: &crate::split::SplitHost) -> bool {
+        let nav = &split.compact.nav;
+        let allowed = compact_top(split).and_then(|s| match self.slot(s).map(|s| &s.native) {
+            Some(Native::Screen(screen)) => {
+                Some(screen.config.gesture_enabled && !screen.config.prevent_back)
+            }
+            _ => None,
+        });
+        nav.viewControllers().count() > 1
+            && nav.transitionCoordinator().is_none()
+            && allowed.unwrap_or(true)
+    }
+
+    /// Node `id` was deleted: if it was a split's, the split lets its
+    /// columns go (their stacks take back their navigation controllers and
+    /// pages).
+    fn split_deleted(&mut self, id: NodeId) {
+        let Some(mut split) = self.splits.remove(&id) else {
+            return;
+        };
+        split.compact.detach_screens();
+        for &stack in split.columns.iter().flatten() {
+            if let Some(Slot {
+                native: Native::Stack(host),
+                ..
+            }) = self.slot_mut(stack)
+            {
+                host.leave_split();
+            }
+            self.dirty_stacks.push(stack);
+        }
+        split.release();
+        self.deferred_stacks.retain(|&s| s != id);
+    }
+
     /// Properties of a web view or video.
     fn set_native_props(&mut self, id: NodeId, props: nsh_core::NativeProps) {
         use nsh_core::NativeProps as P;
@@ -3682,8 +4905,12 @@ impl Mounter {
 
     /// Touch, accessibility and test properties.
     fn set_view_props(&mut self, id: NodeId, props: ViewProps) {
-        let (control, mtm) = (self.control.clone(), self.mtm);
+        let (control, mtm, target) = (self.control.clone(), self.mtm, self.target.clone());
+        let native_id = props.native_id.clone();
         let Some(s) = self.slot_mut(id) else { return };
+        s.key_capture = props.key_capture.clone();
+        s.disabled = props.accessibility.state.disabled;
+        s.key_parent = props.key_parent;
         s.long_press_delay = props.long_press_delay;
         s.pan_scroll_handoff = props.pan_scroll_handoff;
         if let Some(pan) = &s.gestures.pan {
@@ -3712,7 +4939,11 @@ impl Mounter {
         let was_area = self.areas.iter().any(|(a, _)| *a == id);
         let Some(s) = self.slot_mut(id) else { return };
         match s.native.nsh() {
-            Some(view) => view.set_props(props, &control),
+            Some(view) => {
+                view.set_props(props, &control);
+                view.set_target(&target);
+                view.update_focus_tap(&target);
+            }
             None => {
                 // Scroll views and inputs: only what UIKit offers directly.
                 use objc2_ui_kit::{NSObjectUIAccessibility, UIAccessibilityIdentification};
@@ -3763,6 +4994,16 @@ impl Mounter {
             }
             _ => {}
         }
+        // A scroll view the host may watch by its `nativeID`.
+        if let Some(Slot {
+            native: Native::Scroll(scroll),
+            ..
+        }) = self.slot(id)
+        {
+            let scroll = scroll.clone();
+            self.scrolls
+                .props(&self.scroll_watchers, id, &scroll, &self.target, native_id);
+        }
     }
 
     /// Only the label of the view's props changed.
@@ -3779,6 +5020,18 @@ impl Mounter {
         }
     }
 
+    /// Give a tapped focus stop keyboard focus. An input using the software
+    /// keyboard keeps focus so the layout stays in place under the finger.
+    pub(crate) fn focus_node(&mut self, id: NodeId) {
+        if !self.typing()
+            && let Some(view) = self.slot(id).and_then(|s| s.native.focus_view())
+            && view.is_focus_stop()
+            && view.becomeFirstResponder()
+        {
+            crate::keyboard::request_focus(view);
+        }
+    }
+
     /// A finger went down on (or left) a pressable view.
     pub(crate) fn press_changed(&mut self, id: NodeId, pressed: bool, at: PressAt) {
         self.report_state(id, nsh_core::tailwind::state::PRESSED, pressed);
@@ -3792,6 +5045,17 @@ impl Mounter {
             let payload = self.press_payload(id, at);
             self.control.dispatch_event(id, event, payload);
         }
+        // Queue press-down before UIKit sends the resulting focus notifications.
+        if pressed {
+            self.focus_node(id);
+        }
+    }
+
+    /// Whether the software keyboard is up for the focused input: a touch
+    /// on a control leaves it there, as UIKit's controls do, so the
+    /// keyboard stays and the layout does not move under the finger.
+    fn typing(&self) -> bool {
+        self.focused.is_some() && self.keyboard > 0.0
     }
 
     /// A press event on pressable text span `node` of text view `view`.
@@ -3859,6 +5123,16 @@ impl Mounter {
         }
     }
 
+    /// A trailing `ios.headerRightItems` press or menu action: the root's
+    /// [`EventKind::Menu`] with the item's numeric id.
+    pub(crate) fn menu_id_event(&self, id: u32) {
+        self.control.dispatch_event(
+            nsh_core::ROOT_ID,
+            EventKind::Menu,
+            EventPayload::Map(vec![("id", nsh_core::PayloadValue::Number(id as f64))]),
+        );
+    }
+
     /// The finger lifted on a pressable view.
     pub(crate) fn pressed(&mut self, id: NodeId, at: PressAt) {
         if let Some(s) = self.slot(id)
@@ -3915,6 +5189,7 @@ impl Mounter {
                     view: scroll.retain(),
                     offset: (scroll.contentOffset().y + scroll.adjustedContentInset().top).max(0.0)
                         as f32,
+                    started: false,
                 });
                 break;
             }
@@ -3961,7 +5236,7 @@ impl Mounter {
                 ) || pan.state() == UIGestureRecognizerState::Ended && scroll.isDragging())
             {
                 let t = pan.translationInView(view.superview().as_deref());
-                if s.gesture_start[1] + t.y as f32 > touched.offset {
+                if t.y as f32 > touched.offset {
                     return CGPoint::new(offset.x, -scroll.adjustedContentInset().top);
                 }
             }
@@ -4007,7 +5282,8 @@ impl Mounter {
             if let Some(s) = self.slot_mut(id) {
                 (s.gesture_start[0], s.gesture_start[1]) = (x, y);
             }
-            if events.contains(EventKind::PanStart) {
+            let deferred = self.slot(id).is_some_and(|s| s.pan_scroll.is_some());
+            if events.contains(EventKind::PanStart) && !deferred {
                 self.control
                     .dispatch_event(id, EventKind::PanStart, payload(self));
             }
@@ -4021,12 +5297,24 @@ impl Mounter {
                 self.animator.set(n, start[0] + t.x as f32);
             }
             if let Some(n) = values.pan_y {
-                let y = self
-                    .slot(id)
-                    .and_then(|s| s.pan_scroll.as_ref())
-                    .map_or(start[1] + t.y as f32, |scroll| {
-                        (start[1] + t.y as f32 - scroll.offset).max(0.0)
-                    });
+                let y = self.slot(id).and_then(|s| s.pan_scroll.as_ref()).map_or(
+                    start[1] + t.y as f32,
+                    |scroll| {
+                        // From where the value was (a sheet resting at a
+                        // detent stands below 0): only the downward
+                        // distance the scroll left over moves it.
+                        start[1] + (t.y as f32 - scroll.offset).max(0.0)
+                    },
+                );
+                let begins = y != start[1]
+                    && self
+                        .slot_mut(id)
+                        .and_then(|s| s.pan_scroll.as_mut())
+                        .is_some_and(|scroll| !std::mem::replace(&mut scroll.started, true));
+                if begins && events.contains(EventKind::PanStart) {
+                    self.control
+                        .dispatch_event(id, EventKind::PanStart, payload(self));
+                }
                 self.animator.set(n, y);
                 if let Some(scroll) = self.slot(id).and_then(|s| s.pan_scroll.as_ref()) {
                     let offset = scroll.view.contentOffset();
@@ -4130,6 +5418,14 @@ impl Mounter {
     /// The shaders' display link fired.
     pub(crate) fn shader_frame(&mut self) {
         self.shaders.frame();
+    }
+
+    /// The GPU device the shaders asked for opened (`None`: there is none,
+    /// which the app hears: `shadersAvailable()`).
+    pub(crate) fn shaders_opened(&mut self, renderer: Option<nsh_engine::shader::Renderer>) {
+        if self.shaders.opened(renderer) {
+            self.control.shaders_unavailable();
+        }
     }
 
     /// The display link of texts whose color transitions fired.
@@ -4291,6 +5587,18 @@ impl Mounter {
             && behavior.refreshes(Points(pulled as f32))
         {
             self.set_refreshing(id, true);
+            self.control
+                .dispatch_event(id, EventKind::Refresh, EventPayload::None);
+        }
+    }
+
+    /// UIKit's refresh control `control`, made for scroll view `id`, was
+    /// pulled. Only the control that scroll view holds now refreshes it: one
+    /// left over from a deleted view (whose id a new view may take) or
+    /// replaced by another indicator reports nothing.
+    pub(crate) fn refresh_pulled(&self, id: NodeId, control: &UIRefreshControl) {
+        let held = self.slot(id).and_then(|s| s.gestures.refresh.as_ref());
+        if holds_refresh(held, control) {
             self.control
                 .dispatch_event(id, EventKind::Refresh, EventPayload::None);
         }
@@ -4467,13 +5775,15 @@ impl Mounter {
 
 impl Drop for Mounter {
     fn drop(&mut self) {
+        // The app stopped: the host's handles to its scroll views die.
+        self.scrolls.clear(&self.scroll_watchers);
         // The link retains its target; invalidating breaks the cycle.
         self.frame_link.invalidate();
     }
 }
 
 /// The first scroll view in `view`'s subtree (breadth first).
-fn first_scroll_view(view: &UIView) -> Option<Retained<UIScrollView>> {
+pub(crate) fn first_scroll_view(view: &UIView) -> Option<Retained<UIScrollView>> {
     let mut queue = vec![view.retain()];
     while !queue.is_empty() {
         let mut next = Vec::new();
@@ -4738,7 +6048,7 @@ fn animate(
     f: impl Fn() + 'static,
 ) {
     let block = block2::RcBlock::new(f);
-    let (duration, delay) = (t.duration_ms as f64 / 1000.0, t.delay_ms as f64 / 1000.0);
+    let (duration, delay) = (t.run_ms() as f64 / 1000.0, t.delay_ms as f64 / 1000.0);
     let base = UIViewAnimationOptions::BeginFromCurrentState
         | UIViewAnimationOptions::AllowUserInteraction;
     match t.curve {
@@ -4753,17 +6063,50 @@ fn animate(
                 mtm,
             )
         }),
-        LayoutCurve::Spring { damping } => {
+        LayoutCurve::FittedSpring { damping_ratio } => {
             UIView::animateWithDuration_delay_usingSpringWithDamping_initialSpringVelocity_options_animations_completion(
                 duration,
                 delay,
-                damping as CGFloat,
+                damping_ratio as CGFloat,
                 0.0,
                 base,
                 &block,
                 None,
                 mtm,
             )
+        }
+        // UIKit's own spring of the same physics, which UIKit times by the
+        // physics (`duration`, the time it settles in, is left aside).
+        LayoutCurve::Spring(spring) => {
+            let timing = UISpringTimingParameters::initWithMass_stiffness_damping_initialVelocity(
+                UISpringTimingParameters::alloc(mtm),
+                spring.mass as CGFloat,
+                spring.stiffness as CGFloat,
+                spring.damping as CGFloat,
+                CGVector { dx: 0.0, dy: 0.0 },
+            );
+            let animator = UIViewPropertyAnimator::initWithDuration_timingParameters(
+                UIViewPropertyAnimator::alloc(mtm),
+                duration,
+                ProtocolObject::from_ref(&*timing),
+            );
+            animator.addAnimations(&block);
+            animator.startAnimationAfterDelay(delay);
+        }
+        // UIKit's cubic timing of the same control points.
+        LayoutCurve::Bezier([x1, y1, x2, y2]) => {
+            let timing = UICubicTimingParameters::initWithControlPoint1_controlPoint2(
+                UICubicTimingParameters::alloc(mtm),
+                CGPoint::new(x1 as CGFloat, y1 as CGFloat),
+                CGPoint::new(x2 as CGFloat, y2 as CGFloat),
+            );
+            let animator = UIViewPropertyAnimator::initWithDuration_timingParameters(
+                UIViewPropertyAnimator::alloc(mtm),
+                duration,
+                ProtocolObject::from_ref(&*timing),
+            );
+            animator.addAnimations(&block);
+            animator.startAnimationAfterDelay(delay);
         }
         curve => {
             let curve = match curve {
@@ -4810,7 +6153,7 @@ fn disappear(
         }
     });
     UIView::animateWithDuration_delay_options_animations_completion(
-        t.duration_ms as f64 / 1000.0,
+        t.run_ms() as f64 / 1000.0,
         t.delay_ms as f64 / 1000.0,
         UIViewAnimationOptions::BeginFromCurrentState,
         &block,
@@ -4819,9 +6162,66 @@ fn disappear(
     );
 }
 
+/// The user asked for less motion: pages and dialogs come and go with
+/// UIKit's own motion, not through their `transitionShader`.
+/// What a split's native component shows: the view its controller's view
+/// fills ([`crate::split::SplitHost::holder`]).
+struct SplitHolder(Retained<UIView>);
+
+impl crate::component::NativeComponent for SplitHolder {
+    fn view(&self) -> &UIView {
+        &self.0
+    }
+
+    fn set_prop(&mut self, _name: &str, _value: Option<&nsh_core::JsonValue>) {}
+}
+
+/// The page on top of `split`'s compact stack.
+fn compact_top(split: &crate::split::SplitHost) -> Option<NodeId> {
+    split
+        .compact
+        .nav
+        .topViewController()
+        .and_then(|c| c.downcast::<crate::navigation::ScreenController>().ok())
+        .map(|c| c.screen_id())
+}
+
+pub(crate) fn reduce_motion() -> bool {
+    objc2_ui_kit::UIAccessibilityIsReduceMotionEnabled()
+}
+
 #[cfg(test)]
 mod tests {
+    use nsh_core::geometry::px;
+
     use super::*;
+
+    #[test]
+    fn a_new_input_has_its_layout_before_insertion() {
+        let frame = Bounds::new(point(px(12.0), px(20.0)), size(px(240.0), px(36.0)));
+        let content = Bounds::new(point(px(12.0), px(8.0)), size(px(216.0), px(20.0)));
+        let items = vec![
+            MountItem::Create {
+                id: 2,
+                kind: ViewKind::Input,
+            },
+            MountItem::Insert {
+                parent: nsh_core::ROOT_ID,
+                child: 2,
+                before: None,
+            },
+            MountItem::Frame { id: 2, frame },
+            MountItem::InputContent { id: 2, content },
+        ];
+
+        assert_eq!(
+            initial_input_layouts(&items).get(&2),
+            Some(&InitialInputLayout {
+                frame: Some(frame),
+                content: Some(content),
+            })
+        );
+    }
 
     /// A first mount's children arrive after the content size does; judged
     /// once they are in place, a row wider than the viewport keeps its width.
@@ -4895,10 +6295,47 @@ mod tests {
             320.0
         );
     }
-}
 
-/// The user asked for less motion: pages and dialogs come and go with
-/// UIKit's own motion, not through their `transitionShader`.
-fn reduce_motion() -> bool {
-    objc2_ui_kit::UIAccessibilityIsReduceMotionEnabled()
+    /// iOS 26 moves a scroll view's refresh control under a large title into
+    /// an untagged container: the control still names its own scroll view,
+    /// never node 0 from the container.
+    #[test]
+    #[ignore = "requires a UIKit main-thread harness"]
+    fn a_reparented_refresh_control_names_its_scroll_view() {
+        let mtm = MainThreadMarker::new().expect(
+            "UIKit views need the main thread: run this test from a UIKit main-thread harness, not a plain `cargo test` thread",
+        );
+        let scroll = UIScrollView::new(mtm);
+        scroll.setTag(6);
+        let control = refresh_control(6, mtm);
+        scroll.setRefreshControl(Some(&control));
+        assert_eq!(refresh_owner(&control), 6);
+
+        let container = UIView::new(mtm);
+        scroll.addSubview(&container);
+        container.addSubview(&control);
+        assert_eq!(control.superview().map(|v| v.tag()), Some(0));
+        assert_eq!(refresh_owner(&control), 6);
+    }
+
+    /// Only the control a scroll view holds now refreshes it: one it replaced,
+    /// or one of a deleted view whose id a new view took, is not it.
+    #[test]
+    #[ignore = "requires a UIKit main-thread harness"]
+    fn only_the_held_refresh_control_refreshes() {
+        let mtm = MainThreadMarker::new().expect(
+            "UIKit views need the main thread: run this test from a UIKit main-thread harness, not a plain `cargo test` thread",
+        );
+        let (old, new) = (refresh_control(6, mtm), refresh_control(6, mtm));
+        let held = Refresh::Native(new.clone());
+        assert!(holds_refresh(Some(&held), &new));
+        assert!(!holds_refresh(Some(&held), &old));
+        // Deleted, or switched to a pull detected here.
+        assert!(!holds_refresh(None, &new));
+        let custom = Refresh::Custom {
+            spinner: None,
+            refreshing: false,
+        };
+        assert!(!holds_refresh(Some(&custom), &new));
+    }
 }

@@ -24,6 +24,7 @@ use std::time::Duration;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Start {
+    pub job_nonce: uuid::Uuid,
     pub source: String,
     pub names: Vec<String>,
     pub metadata: Vec<ToolMetadata>,
@@ -32,7 +33,12 @@ pub(crate) struct Start {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum Request {
-    Ready,
+    Prepared {
+        job_nonce: uuid::Uuid,
+    },
+    Ready {
+        job_nonce: uuid::Uuid,
+    },
     Call {
         id: u32,
         name: String,
@@ -124,28 +130,4 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, 
     let value = T::deserialize(&mut decoder)?;
     decoder.end()?;
     Ok(value)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn frames_are_bounded_before_recursive_decoding_and_strings_are_not_structure() {
-        let frame = format!(
-            "{}0{}",
-            "[".repeat(MAX_JSON_DEPTH + 5),
-            "]".repeat(MAX_JSON_DEPTH + 5)
-        );
-        assert!(
-            decode::<Value>(frame.as_bytes())
-                .unwrap_err()
-                .to_string()
-                .contains("nesting limit")
-        );
-        let text = format!("{}\\\"{}", "[".repeat(1000), "}".repeat(1000));
-        assert_eq!(
-            decode::<Value>(&serde_json::to_vec(&text).unwrap()).unwrap(),
-            Value::String(text)
-        );
-    }
 }

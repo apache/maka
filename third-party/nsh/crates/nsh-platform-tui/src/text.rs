@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
 use nsh_core::{
-    AttachmentAlignments, AttributedText, EllipsizeMode, FontExtent, Point, Points, Size,
-    TextAlign, TextEngine, TextLayout, TextLine,
+    Affinity, AttachmentAlignments, AttributedText, Bounds, EllipsizeMode, FontExtent, Point,
+    Points, Size, TextAlign, TextEngine, TextLayout, TextLine, TextPosition,
 };
 use ratatui_core::style::{Modifier, Style};
 use unicode_segmentation::UnicodeSegmentation;
@@ -59,6 +59,24 @@ pub(crate) struct CellLayout {
     metrics: Vec<TextLine>,
     attachments: Vec<Option<Point<Points>>>,
     pub(crate) glyphs: Vec<(nsh_core::Bounds<Points>, std::ops::Range<u32>)>,
+}
+
+impl CellLayout {
+    fn line_glyphs(&self, line: &TextLine) -> impl Iterator<Item = &(Bounds<Points>, Range<u32>)> {
+        let first = self
+            .glyphs
+            .partition_point(|(_, range)| range.end <= line.start);
+        let end = line.end;
+        self.glyphs[first..]
+            .iter()
+            .take_while(move |(_, range)| range.start < end)
+    }
+
+    fn caret_x(&self, line: &TextLine, offset: u32) -> Points {
+        self.line_glyphs(line)
+            .find(|(_, range)| offset < range.end)
+            .map_or(line.x + line.width, |(bounds, _)| bounds.left())
+    }
 }
 
 pub(crate) struct Row {
@@ -133,15 +151,21 @@ fn glyphs(text: &AttributedText, cells: CellSize, alignments: &AttachmentAlignme
             );
             let attachment = attachment.map(|(index, a)| {
                 let font = FontExtent::new(cells.height(), Points::ZERO, cells.height() / 2.0);
-                let (ascent, descent) = a.extent(font, alignments.get(start));
+                let (ascent, descent) = alignments.extent(a, font);
                 Attachment {
                     index,
                     ascent: (ascent / cells.height()).ceil() as usize,
                     descent: (descent / cells.height()).ceil() as usize,
                 }
             });
+            // A hidden run (`visibility: "hidden"`) keeps its Cells and
+            // shows nothing in them: a terminal draws no transparent text.
+            let hidden = span.is_some_and(|span| span.style.hidden);
+            if hidden {
+                style = Style::default();
+            }
             Glyph {
-                text: if attachment.is_some() {
+                text: if attachment.is_some() || hidden {
                     Arc::from(" ".repeat(width))
                 } else {
                     Arc::from(grapheme)
@@ -239,6 +263,22 @@ impl CellTextEngine {
                     .filter(|glyph| glyph.start >= start && !glyph.text.contains('\n'))
                     .cloned()
                     .collect();
+            } else if truncated
+                && text.ellipsize == EllipsizeMode::Tail
+                && let Some(row) = rows.last_mut()
+                && let Some(first) = row.first()
+            {
+                // The last row a clamp shows holds the rest of its
+                // paragraph and is cut at the box, as CoreText, Pango and
+                // StaticLayout cut it: ending it where it wrapped would
+                // leave the ellipsis after a word that fit and the box
+                // empty past it.
+                let from = glyphs.partition_point(|glyph| glyph.start < first.start);
+                *row = glyphs[from..]
+                    .iter()
+                    .take_while(|glyph| !glyph.text.contains('\n'))
+                    .cloned()
+                    .collect();
             }
             let available = width.map_or(usize::MAX, |w| {
                 (w / self.cells.width() + 0.01).floor() as usize
@@ -297,6 +337,14 @@ impl TextEngine for CellTextEngine {
                     })
                     .sum::<usize>() as f32,
         )
+    }
+
+    /// The bottom of the first row's own Cells: a Cell is its font's
+    /// ascent, with nothing below the baseline.
+    fn first_baseline(&self, text: &Self::Prepared, width: Points) -> Option<Points> {
+        let rows = self.rows(text, Some(width));
+        let (ascent, _) = row_extent(rows.first()?);
+        Some(self.cells.height() * ascent as f32)
     }
 
     fn layout(&self, text: &Self::Prepared, size: Size<Points>) -> TextLayout {
@@ -401,6 +449,63 @@ impl TextEngine for CellTextEngine {
             .map_or_else(Vec::new, |l| l.attachments.clone())
     }
 
+    fn hit_test(&self, layout: &TextLayout, point: Point<Points>) -> TextPosition {
+        let Some(layout) = layout.downcast::<CellLayout>() else {
+            return TextPosition::default();
+        };
+        let Some((index, line)) = layout
+            .metrics
+            .iter()
+            .enumerate()
+            .find(|(_, line)| point.y < line.y + line.height)
+            .or_else(|| layout.metrics.iter().enumerate().last())
+        else {
+            return TextPosition::default();
+        };
+        let offset = layout
+            .line_glyphs(line)
+            .find(|(bounds, _)| point.x <= bounds.center().x)
+            .map_or(line.end, |(_, range)| range.start);
+        let affinity = if offset == line.end
+            && line.start < offset
+            && layout
+                .metrics
+                .get(index + 1)
+                .is_some_and(|next| next.start == offset)
+        {
+            Affinity::Upstream
+        } else {
+            Affinity::Downstream
+        };
+        TextPosition::new(offset, affinity)
+    }
+
+    fn caret_rect(&self, layout: &TextLayout, position: TextPosition) -> Option<Bounds<Points>> {
+        let layout = layout.downcast::<CellLayout>()?;
+        let line = layout.metrics.get(position.line(&layout.metrics)?)?;
+        Some(Bounds::new(
+            Point::new(layout.caret_x(line, position.offset), line.y),
+            Size::new(Points::ZERO, line.height),
+        ))
+    }
+
+    fn range_rects(&self, layout: &TextLayout, range: Range<u32>, out: &mut Vec<Bounds<Points>>) {
+        let Some(layout) = layout.downcast::<CellLayout>() else {
+            return;
+        };
+        for line in &layout.metrics {
+            let start = range.start.max(line.start);
+            let end = range.end.min(line.end);
+            if start < end {
+                let x = layout.caret_x(line, start);
+                out.push(Bounds::new(
+                    Point::new(x, line.y),
+                    Size::new(layout.caret_x(line, end) - x, line.height),
+                ));
+            }
+        }
+    }
+
     fn register_font(&self, _: &[u8]) -> Result<(), String> {
         Ok(())
     }
@@ -421,6 +526,15 @@ fn ellipsize(row: &mut Vec<Glyph>, columns: usize, mode: EllipsizeMode) {
     while left < original.len() && used + original[left].width <= left_budget {
         used += original[left].width;
         left += 1;
+    }
+    if mode == EllipsizeMode::Tail && marker > 0 {
+        // Spaces before the ellipsis go, as on the other backends.
+        while left > 0
+            && original[left - 1].attachment.is_none()
+            && original[left - 1].text.as_ref() == " "
+        {
+            left -= 1;
+        }
     }
     if matches!(mode, EllipsizeMode::Head | EllipsizeMode::Middle) {
         while right > left && used + original[right - 1].width <= budget {
@@ -447,4 +561,35 @@ fn ellipsize(row: &mut Vec<Glyph>, columns: usize, mode: EllipsizeMode) {
         });
     }
     row.extend_from_slice(&original[right..]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn caret_and_selection_use_the_cells_of_a_wide_glyph() {
+        let engine = CellTextEngine::default();
+        let mut text = AttributedText::default();
+        text.push("a啊b", Default::default());
+        let layout = engine.layout(
+            &engine.prepare(&text),
+            Size::new(Points(80.0), Points(16.0)),
+        );
+        let caret = engine.hit_test(&layout, Point::new(Points(18.0), Points(8.0)));
+        assert_eq!(caret, TextPosition::new(2, Affinity::Downstream));
+        assert_eq!(
+            engine.caret_rect(&layout, caret).unwrap().left(),
+            Points(24.0)
+        );
+        let mut ranges = Vec::new();
+        engine.range_rects(&layout, 1..2, &mut ranges);
+        assert_eq!(
+            ranges,
+            [Bounds::new(
+                Point::new(Points(8.0), Points::ZERO),
+                Size::new(Points(16.0), Points(16.0)),
+            )]
+        );
+    }
 }

@@ -19,8 +19,8 @@
 
 import { textTooltip } from './ui';
 import { tr } from './locale';
-import { cleanup, computed, inputAction, Scroll, signal, Text, View } from 'nsh';
-import { Button } from 'nsh/base';
+import { cleanup, computed, inputAction, platform, Scroll, signal, Text, View } from 'nsh';
+import { Button, DiffView } from 'nsh/base';
 import { Clipboard } from 'nsh';
 import type { ToolSource } from './ToolSource';
 import type { ToolChange, ToolProcess, ToolProjection, ToolRead, ToolSection } from './toolCards';
@@ -33,6 +33,12 @@ import {
   controlStyle,
 } from './ui';
 import { Icon } from './Icon';
+import { codePieces } from './codePieces';
+
+const desktop = platform.idiom !== 'terminal';
+
+/** What a tool printed, or what a change added, removed or warns about. */
+type Tone = 'added' | 'removed' | 'warning' | 'output';
 
 function Copy(props: { text(): string; label: string; source: ToolSource }) {
   const feedback = signal<{ text: string; error: string } | null>(null);
@@ -97,7 +103,8 @@ function ToolText(props: {
   source: ToolSource;
   userScroll(): void;
   gutter?: string;
-  tone?: 'added' | 'removed' | 'warning';
+  tone?: Tone;
+  wrap?: boolean;
 }) {
   return (
     <View style={{ minWidth: 0 }}>
@@ -116,6 +123,7 @@ function ToolText(props: {
         text={props.text}
         gutter={props.gutter}
         tone={props.tone}
+        wrap={props.wrap}
         userScroll={props.userScroll}
       />
     </View>
@@ -126,17 +134,64 @@ function CodeText(props: {
   text: string;
   userScroll(): void;
   gutter?: string;
-  tone?: 'added' | 'removed' | 'warning';
+  tone?: Tone;
   prompt?: boolean;
+  /** Long lines wrap at the column instead of scrolling sideways. */
+  wrap?: boolean;
 }) {
-  const color =
+  // Read when drawn: the theme can change after the text is made.
+  const color = () =>
     props.tone === 'removed'
       ? C.danger
       : props.tone === 'added'
         ? C.success
         : props.tone === 'warning'
           ? C.warning
-          : C.text;
+          : // What a command printed reads a step under the command, as in a terminal app.
+            props.tone === 'output' && desktop
+            ? C.secondary
+            : C.text;
+  const width = signal(0);
+  const pieces = () => (
+    <Each of={codePieces(props.text, props.gutter, props.wrap ? width() : undefined)} key="index">
+      {(piece) => (
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
+          <If when={piece().gutter !== undefined}>
+            <Text
+              accessibilityElementsHidden
+              style={[
+                { ...codeTextStyle, color: C.muted, textAlign: 'right' },
+                { pointerEvents: 'none', userSelect: 'none' },
+              ]}
+            >
+              {piece().gutter}
+            </Text>
+            <View
+              style={[
+                { width: 1, alignSelf: 'stretch', backgroundColor: C.line },
+                { pointerEvents: 'none' },
+              ]}
+            />
+          </If>
+          <Text
+            style={[
+              {
+                ...codeTextStyle,
+                color: color(),
+                ...(props.wrap ? { flex: 1, minWidth: 0 } : {}),
+              },
+              { userSelect: 'text' },
+            ]}
+          >
+            <If when={props.prompt && piece().index === 0}>
+              <Text style={[{ color: C.muted }, { userSelect: 'none' }]}>$ </Text>
+            </If>
+            {piece().text}
+          </Text>
+        </View>
+      )}
+    </Each>
+  );
   return (
     <If
       when={props.text !== ''}
@@ -146,33 +201,15 @@ function CodeText(props: {
         </Text>
       }
     >
-      <Scroll horizontal onScrollIntent={props.userScroll}>
-        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
-          <If when={props.gutter !== undefined}>
-            <Text
-              accessibilityElementsHidden
-              style={[
-                { ...codeTextStyle, color: C.muted, textAlign: 'right' },
-                { pointerEvents: 'none', userSelect: 'none' },
-              ]}
-            >
-              {props.gutter}
-            </Text>
-            <View
-              style={[
-                { width: 1, alignSelf: 'stretch', backgroundColor: C.line },
-                { pointerEvents: 'none' },
-              ]}
-            />
-          </If>
-          <Text style={[{ ...codeTextStyle, color }, { userSelect: 'text' }]}>
-            <If when={props.prompt}>
-              <Text style={[{ color: C.muted }, { userSelect: 'none' }]}>$ </Text>
-            </If>
-            {props.text}
-          </Text>
+      {props.wrap ? (
+        <View style={{ minWidth: 0 }} onLayout={({ bounds }) => width.set(bounds.size.width)}>
+          <If when={width() > 0}>{pieces()}</If>
         </View>
-      </Scroll>
+      ) : (
+        <Scroll horizontal onScrollIntent={props.userScroll}>
+          <View style={{ minWidth: 0 }}>{pieces()}</View>
+        </Scroll>
+      )}
     </If>
   );
 }
@@ -207,7 +244,7 @@ function Read(props: { value: ToolRead; source: ToolSource; userScroll(): void }
       </If>
       <If when={value.hasMore}>
         <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'none' }]}>
-          {tr('The tool read a range of this file; this card preserves that original range.')}
+          {tr('More lines are available.')}
         </Text>
       </If>
     </View>
@@ -233,23 +270,31 @@ function Process(props: { value: ToolProcess; source: ToolSource; userScroll(): 
   const output = value.output;
   return (
     <View style={{ gap: 8 }}>
-      <View style={{ minWidth: 0 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+      {/* A wider gap under the command tells it apart from what it printed. */}
+      <View style={{ minWidth: 0, gap: 4, marginBottom: desktop ? 4 : 0 }}>
+        <View style={{ flexDirection: 'row', minWidth: 0 }}>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Shell')} · </Text>
           <Text
             style={[
               { ...captionTextStyle, color: C.muted, flex: 1, minWidth: 0 },
-              { numberOfLines: 1, textOverflow: 'ellipsis', userSelect: 'text' },
+              // A long working folder keeps its last folders in view.
+              { numberOfLines: 1, textOverflow: 'ellipsis-start', userSelect: 'text' },
             ]}
           >
-            {tr('Shell')} · {value.cwd}
+            {value.cwd}
           </Text>
+        </View>
+        {/* Each copy button stands beside the first line of what it copies. */}
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <CodeText text={value.command} prompt wrap={desktop} userScroll={props.userScroll} />
+          </View>
           <Copy
             label={tr('Copy recorded command')}
             text={() => value.command}
             source={props.source}
           />
         </View>
-        <CodeText text={value.command} prompt userScroll={props.userScroll} />
       </View>
       <If when={value.status !== 'completed' || exited}>
         <Text
@@ -272,7 +317,7 @@ function Process(props: { value: ToolProcess; source: ToolSource; userScroll(): 
       </If>
       <If when={output === null}>
         <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'none' }]}>
-          {tr('No output was included in this original result.')}
+          {tr('No output recorded.')}
         </Text>
       </If>
       {output?.mode === 'pipes' ? (
@@ -280,7 +325,12 @@ function Process(props: { value: ToolProcess; source: ToolSource; userScroll(): 
           <If when={output.stdout !== '' || output.stderr === ''}>
             <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
               <View style={{ flex: 1, minWidth: 0 }}>
-                <CodeText text={output.stdout} userScroll={props.userScroll} />
+                <CodeText
+                  text={output.stdout}
+                  tone="output"
+                  wrap={desktop}
+                  userScroll={props.userScroll}
+                />
               </View>
               <If when={output.stdout !== ''}>
                 <Copy label={tr('Copy stdout')} text={() => output.stdout} source={props.source} />
@@ -295,6 +345,7 @@ function Process(props: { value: ToolProcess; source: ToolSource; userScroll(): 
               source={props.source}
               userScroll={props.userScroll}
               tone="warning"
+              wrap={desktop}
             />
           </If>
           <If when={output.stdoutTruncated || output.stderrTruncated}>
@@ -344,142 +395,176 @@ function Process(props: { value: ToolProcess; source: ToolSource; userScroll(): 
   );
 }
 
+function FileDiff(props: {
+  path: string;
+  before: string;
+  after: string;
+  lineNumbers?: boolean;
+  userScroll(): void;
+}) {
+  const height = signal(72);
+  let previousOffset = 0;
+  return (
+    <If
+      when={props.before !== props.after}
+      else={<Text style={{ ...captionTextStyle, color: C.muted }}>{tr('No text changes')}</Text>}
+    >
+      <View accessibilityLabel={tr('File changes')}>
+        <DiffView
+          language={props.path}
+          oldValue={props.before}
+          newValue={props.after}
+          layout="unified"
+          indicators="classic"
+          lineNumbers={props.lineNumbers ?? false}
+          fontSize={codeTextStyle.fontSize}
+          lineHeight={codeTextStyle.lineHeight}
+          softWrap
+          style={{ height: height(), borderRadius: 6, overflow: 'hidden' }}
+          onScroll={({ offset, contentSize }) => {
+            if (contentSize.height > 0)
+              height.set(Math.min(240, Math.max(codeTextStyle.lineHeight, contentSize.height)));
+            if (offset.y !== previousOffset) {
+              previousOffset = offset.y;
+              props.userScroll();
+            }
+          }}
+        />
+      </View>
+    </If>
+  );
+}
+
+function FilePath(props: { path: string }) {
+  return (
+    <Text style={[{ ...captionTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
+      {props.path}
+    </Text>
+  );
+}
+
 function Change(props: { value: ToolChange; source: ToolSource; userScroll(): void }) {
   const value = props.value;
-  if (value.phase === 'requested')
+  if (value.phase === 'requested') {
+    if (value.operation === 'patch')
+      return (
+        <View style={{ gap: 12 }}>
+          <Each of={value.files} key="index">
+            {(file) => (
+              <View style={{ gap: 6 }}>
+                <FilePath path={file().path} />
+                <If when={file().operation === 'delete'}>
+                  <Text style={{ ...captionTextStyle, color: C.danger }}>{tr('Delete file')}</Text>
+                </If>
+                <Each of={file().hunks} key="index">
+                  {(hunk) => (
+                    <View style={{ gap: 4 }}>
+                      <If when={hunk().context !== ''}>
+                        <Text style={{ ...codeTextStyle, color: C.muted }}>{hunk().context}</Text>
+                      </If>
+                      <FileDiff
+                        path={file().path}
+                        before={hunk().before}
+                        after={hunk().after}
+                        userScroll={props.userScroll}
+                      />
+                    </View>
+                  )}
+                </Each>
+              </View>
+            )}
+          </Each>
+        </View>
+      );
     return (
-      <View style={{ gap: 8 }}>
-        <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'none' }]}>
-          {tr('File')}
-        </Text>
-        <Text style={[{ ...bodyTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
-          {value.path}
-        </Text>
-        {value.operation === 'write' ? (
+      <View style={{ gap: 6 }}>
+        <FilePath path={value.path} />
+        {value.operation === 'edit' ? (
+          <FileDiff
+            path={value.path}
+            before={value.before}
+            after={value.after}
+            userScroll={props.userScroll}
+          />
+        ) : value.previous === undefined ? (
           <ToolText
             label={tr('Requested file contents')}
             text={value.content}
             copyLabel={tr('Copy requested file contents')}
-            tone="added"
             source={props.source}
             userScroll={props.userScroll}
           />
-        ) : value.operation === 'edit' ? (
-          <View style={{ gap: 8 }}>
-            <ToolText
-              label={tr('Requested removal')}
-              text={value.before}
-              copyLabel={tr('Copy requested removal')}
-              tone="removed"
-              source={props.source}
-              userScroll={props.userScroll}
-            />
-            <ToolText
-              label={tr('Requested replacement')}
-              text={value.after}
-              copyLabel={tr('Copy requested replacement')}
-              tone="added"
-              source={props.source}
-              userScroll={props.userScroll}
-            />
-          </View>
         ) : (
-          <View style={{ gap: 8 }}>
-            <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'none' }]}>
-              {tr('Requested operation')} · {value.type}
-            </Text>
-            <If when={value.diff !== null}>
-              <ToolText
-                label={tr('Requested patch')}
-                text={value.diff!}
-                copyLabel={tr('Copy requested patch')}
-                source={props.source}
-                userScroll={props.userScroll}
-              />
-            </If>
-          </View>
+          <FileDiff
+            path={value.path}
+            before={value.previous}
+            after={value.content}
+            lineNumbers
+            userScroll={props.userScroll}
+          />
         )}
       </View>
     );
+  }
   if (value.operation === 'patch')
     return (
       <Text style={[{ ...captionTextStyle, color: C.secondary }, { userSelect: 'none' }]}>
-        {tr(
-          'Recorded patch result · Operation completed. The patch below is the original request.',
-        )}
+        {tr('Patch applied')}
       </Text>
     );
+  const summary =
+    value.operation === 'write'
+      ? [tr('Recorded write'), tr('{count} bytes', { count: value.bytes })]
+      : [
+          tr('Recorded edit'),
+          value.replacements === 1
+            ? tr('1 replacement')
+            : tr('{count} replacements', { count: value.replacements }),
+          value.startLine !== null && value.endLine !== null
+            ? value.startLine === value.endLine
+              ? tr('Recorded line {line}', { line: value.startLine })
+              : tr('Recorded lines {first}–{last}', { first: value.startLine, last: value.endLine })
+            : '',
+        ];
   return (
-    <View style={{ gap: 8 }}>
+    <View style={{ gap: 6 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
         <Icon name="check" color={C.accent} />
         <Text style={[{ ...captionTextStyle, color: C.secondary }, { userSelect: 'none' }]}>
-          {value.operation === 'write' ? tr('Recorded write') : tr('Recorded edit')}
+          {summary.filter(Boolean).join(' · ')}
         </Text>
       </View>
-      <Text style={[{ ...bodyTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
-        {value.path}
-      </Text>
-      {value.operation === 'write' ? (
-        <View style={{ gap: 8 }}>
-          <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'none' }]}>
-            {tr('{count} bytes', { count: value.bytes })}
-          </Text>
-          <If
-            when={value.previous !== null}
-            else={
-              <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'none' }]}>
-                {tr('Previous contents were not included in this original result.')}
-              </Text>
-            }
-          >
-            <ToolText
-              label={tr('Recorded previous contents')}
-              text={value.previous!}
-              copyLabel={tr('Copy recorded previous contents')}
-              source={props.source}
-              userScroll={props.userScroll}
-              tone="removed"
-            />
-          </If>
-        </View>
-      ) : (
-        <View style={{ gap: 4 }}>
-          <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'none' }]}>
-            {tr('{count} replacements', { count: value.replacements })}
-          </Text>
-          <If when={value.startLine !== null && value.endLine !== null}>
-            <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'none' }]}>
-              {tr('Recorded lines {first}–{last}', {
-                first: value.startLine!,
-                last: value.endLine!,
-              })}
-            </Text>
-          </If>
-          <If when={value.matchedVia !== null}>
-            <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'none' }]}>
-              {tr('Match method')} · {value.matchedVia}
-            </Text>
-          </If>
-        </View>
-      )}
+      <If when={value.operation === 'write' && value.previous === null}>
+        <Text style={{ ...captionTextStyle, color: C.muted }}>
+          {tr('Previous contents were not included in this original result.')}
+        </Text>
+      </If>
+      <If
+        when={
+          value.operation === 'edit' && value.matchedVia !== null && value.matchedVia !== 'exact'
+        }
+      >
+        <Text style={{ ...captionTextStyle, color: C.muted }}>
+          {tr('The editor matched a normalized version of the requested text.')}
+        </Text>
+      </If>
     </View>
   );
 }
 
 function Sections(props: { items: ToolSection[] }) {
   return (
-    <View style={{ gap: 8, minWidth: 0 }}>
+    <View style={{ gap: 12, minWidth: 0 }}>
       <Each of={props.items} key="index">
         {(section) => (
           <View style={{ gap: 4 }}>
-            <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'none' }]}>
+            <Text style={[{ ...captionTextStyle, color: C.secondary }, { userSelect: 'none' }]}>
               {section().label}
             </Text>
             <Text
               style={[
                 {
-                  ...codeTextStyle,
+                  ...(section().style === 'code' ? codeTextStyle : bodyTextStyle),
                   color:
                     section().tone === 'error' || section().tone === 'removed'
                       ? C.danger
@@ -487,7 +572,10 @@ function Sections(props: { items: ToolSection[] }) {
                         ? C.warning
                         : section().tone === 'added'
                           ? C.success
-                          : C.text,
+                          : // Code reads a step under the reply, as a process's output does.
+                            section().style === 'code' && desktop
+                            ? C.secondary
+                            : C.text,
                 },
                 { userSelect: 'text' },
               ]}
@@ -521,15 +609,15 @@ export function ToolReader(props: {
     case 'failure':
       return (
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
-          <Icon name="close" color={C.danger} />
-          <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
-            <Text style={[{ ...captionTextStyle, color: C.danger }, { userSelect: 'none' }]}>
-              {tr('Tool failed')}
-            </Text>
-            <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
-              {(props.value as Extract<ToolProjection, { kind: 'failure' }>).message}
-            </Text>
-          </View>
+          <Icon name="statusError" color={C.danger} />
+          <Text
+            style={[
+              { ...bodyTextStyle, color: C.text, flex: 1, minWidth: 0 },
+              { userSelect: 'text' },
+            ]}
+          >
+            {(props.value as Extract<ToolProjection, { kind: 'failure' }>).message}
+          </Text>
         </View>
       );
   }

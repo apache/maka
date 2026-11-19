@@ -63,6 +63,10 @@ impl Environment {
         })
     }
 
+    pub(super) fn is_empty(&self) -> bool {
+        self.http.is_none() && self.https.is_none()
+    }
+
     pub(super) fn proxy_for(&self, scheme: &str, host: &str) -> Option<&Url> {
         let proxy = match scheme {
             "http" => self.http.as_ref()?,
@@ -87,7 +91,7 @@ impl Environment {
     }
 }
 
-fn parse(raw: &str) -> Result<Option<Url>, Error> {
+pub(super) fn parse(raw: &str) -> Result<Option<Url>, Error> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Ok(None);
@@ -101,8 +105,10 @@ fn parse(raw: &str) -> Result<Option<Url>, Error> {
         format!("http://{raw}")
     })
     .map_err(|_| Error::InvalidProxy)?;
-    if !matches!(url.scheme(), "http" | "https" | "socks5" | "socks5h")
-        || url.host_str().is_none()
+    if !matches!(
+        url.scheme(),
+        "http" | "https" | "socks4" | "socks5" | "socks5h"
+    ) || url.host_str().is_none()
         || !matches!(url.path(), "" | "/")
         || url.query().is_some()
         || url.fragment().is_some()
@@ -110,7 +116,7 @@ fn parse(raw: &str) -> Result<Option<Url>, Error> {
     {
         return Err(Error::InvalidProxy);
     }
-    if matches!(url.scheme(), "socks5" | "socks5h") && url.port().is_none() {
+    if matches!(url.scheme(), "socks4" | "socks5" | "socks5h") && url.port().is_none() {
         url.set_port(Some(1080)).map_err(|_| Error::InvalidProxy)?;
     }
     // Matcher intentionally ignores malformed input. Reject it here instead of
@@ -190,7 +196,7 @@ mod tests {
     #[test]
     fn invalid_proxy_is_not_silently_direct_and_errors_never_echo_credentials() {
         for raw in [
-            "socks4://user:secret@proxy",
+            "socks4a://user:secret@proxy",
             "http://proxy:0",
             "http://proxy/path",
             "http://proxy/?secret",
@@ -207,6 +213,7 @@ mod tests {
         for raw in [
             "proxy:8080",
             "https://user:secret@proxy",
+            "socks4://proxy",
             "socks5://proxy",
             "socks5h://[::1]:1080",
         ] {
@@ -254,6 +261,82 @@ mod tests {
             let mut bytes = [0; 5];
             stream.read_exact(&mut bytes).await.unwrap();
             assert_eq!(&bytes, b"ready");
+            server.await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn socks4_connect_sends_a_locally_resolved_ipv4_address() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("socks4://{}", listener.local_addr().unwrap());
+            let policy = super::super::Policy(Some(std::sync::Arc::new(
+                super::super::Route::Environment(capture(&[("ALL_PROXY", &url)])),
+            )));
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut head = [0; 8];
+                stream.read_exact(&mut head).await.unwrap();
+                assert_eq!(&head[..2], &[4, 1]);
+                assert_eq!(u16::from_be_bytes([head[2], head[3]]), 8443);
+                assert_eq!(&head[4..], &[127, 0, 0, 1]);
+                assert_eq!(stream.read_u8().await.unwrap(), 0);
+                stream.write_all(&[0, 90, 0, 0, 0, 0, 0, 0]).await.unwrap();
+                stream.write_all(b"ready").await.unwrap();
+            });
+            let destination = maka_sandbox::Destination::new("localhost", 8443).unwrap();
+            let mut stream = crate::tunnel::connect(&policy, &destination).await.unwrap();
+            let mut bytes = [0; 5];
+            stream.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(&bytes, b"ready");
+            server.await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn socks4_http_skips_ipv6_results_listed_first() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("socks4://{}", listener.local_addr().unwrap());
+            let policy = super::super::Policy(Some(std::sync::Arc::new(
+                super::super::Route::Environment(capture(&[("ALL_PROXY", &url)])),
+            )));
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut head = [0; 8];
+                stream.read_exact(&mut head).await.unwrap();
+                assert_eq!(&head[..4], &[4, 1, 0x20, 0xfb]);
+                assert_eq!(&head[4..], &[127, 0, 0, 1], "SOCKS4 needs the IPv4 result");
+                while stream.read_u8().await.unwrap() != 0 {}
+                stream.write_all(&[0, 90, 0, 0, 0, 0, 0, 0]).await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(stream.read_u8().await.unwrap());
+                }
+                stream
+                    .write_all(b"HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n")
+                    .await
+                    .unwrap();
+            });
+            let client = policy
+                .client_builder()
+                .resolve_to_addrs(
+                    "dual.test",
+                    &[
+                        "[::1]:8443".parse().unwrap(),
+                        "127.0.0.1:8443".parse().unwrap(),
+                    ],
+                )
+                .build()
+                .unwrap();
+            let response = client.get("http://dual.test:8443/").send().await.unwrap();
+            assert_eq!(response.status(), 204);
             server.await.unwrap();
         })
         .await

@@ -37,8 +37,10 @@
   `transform` lists, `translate` / `scale` pairs, shadows' layers (`{ x, y, blur, spread, color, inset }`),
   `pointerEvents`' `box-none` / `box-only` (React Native's, for the view alone), `textOverflow`'s `ellipsis-start` /
   `ellipsis-middle` (where a clamped text is cut), `textAlign`'s `auto` (React Native's: the text's natural side, by its
-  direction); variants past Tailwind's: `selected:` (`accessibilityState.selected`, `selectedStyle`), `ios:` /
-  `android:` / `web:` (the platform). A new one joins this list.
+  direction), `transitionTimingFunction`'s `spring(stiffness, damping[, mass])` (class `ease-spring-[k,c]` /
+  `ease-spring-[k,c,m]`, `Styled::ease_spring`: a transition on a spring's physics that times itself,
+  `Transition::spring`; `animation.md`); variants past Tailwind's: `selected:` (`accessibilityState.selected`, `selectedStyle`), `ios:` /
+  `android:` / `web:` (the platform), `terminal:` (drawn in a terminal, `Idiom::Terminal`). A new one joins this list.
 - **CSS's meanings**: inline styles mean what classes mean: a style key is the CSS property of its name (or of the form
   "Forms past CSS's" gives it). Every view, however it is styled, keeps
   React Native's defaults for what nothing sets (a column while no display is set, `flexShrink: 0`,
@@ -58,13 +60,14 @@
   keep React Native's column; `block` /
   `flow-root` use Taffy's block layout, and so do `inline` / `inline-block`: a browser blockifies inline boxes in flex
   and grid containers, which every NSH parent but a block is (there is no inline formatting context). Variants: `dark:`, `sm:`…`2xl:` / `max-*:` / `min-[..]:`, `portrait:` /
-  `landscape:`, `ios:` / `android:` / `web:`, `rtl:` / `ltr:`, `motion-safe:` / `motion-reduce:`, `active:` / `hover:` /
+  `landscape:`, `ios:` / `android:` / `web:`, `terminal:`, `pointer-fine:` / `pointer-coarse:` (CSS's `pointer` media
+  feature: fine on the desktops, a desktop browser and a terminal (`Environment::desktop()`), coarse on touch), `rtl:` / `ltr:`, `motion-safe:` / `motion-reduce:`, `active:` / `hover:` /
   `focus:` / `focus-within:` (text inputs always report their focus, so the views around one read it) / `disabled:` / `enabled:` / `selected:` (`accessibilityState.selected`, a `Button`'s
   `selected`) / `checked:` (`accessibilityState.checked`, not mixed) / `indeterminate:` (`accessibilityState.checked`
   mixed, CSS's `:indeterminate`) / `aria-expanded:` (`accessibilityState.expanded`: a `Popover`'s or `Menu`'s trigger
   while its popup is open) / `aria-pressed:` (`accessibilityState.pressed` true: a toggle button that is on; not
-  `active:`, a press in progress) / `aria-busy:` / `aria-checked:` / `aria-selected:` (Tailwind v4's
-  `&[aria-busy="true"]`, ...: `busy`, `checked` true, `selected`; `aria-current:` and Tailwind's other `aria-*` names are
+  `active:`, a press in progress) / `aria-busy:` / `aria-checked:` / `aria-invalid:` / `aria-selected:` (Tailwind v4's
+  `&[aria-busy="true"]`, ...: `busy`, `checked` true, `invalid`, `selected`; `aria-current:` and Tailwind's other `aria-*` names are
   unknown, NSH has no such states), `data-<name>:` (Tailwind v4's boolean form, `&[data-<name>]`: a `data-*` attribute
   a Rust component's part shows, `Interactive::project_data`, `Prop::ProjectedData`, as a calendar's day shows
   `data-range-start`; names of lower case letters, digits and `-`; the value form `data-[state=open]:` is unknown;
@@ -72,18 +75,25 @@
   sends nothing when its attributes change), `group-*:` (named groups `group/name`; `group-data-<name>:` too), `first:` / `last:` /
   `odd:` / `even:` / `only:`, `placeholder:` / `selection:` (a color only, the pseudo-element's: `placeholder:text-*` / `selection:bg-*`, the
   `placeholderColor` / `selectionColor` style keys; other utilities under them are unknown), `!` (important). The state classes have style props of their own (`activeStyle`, `hoverStyle`,
-  `focusStyle`, `focusWithinStyle`, `disabledStyle`, `checkedStyle`, `indeterminateStyle`, `expandedStyle`,
-  `pressedStyle`, a `Button`'s `selectedStyle`), resolved the same way: later states win, `disabled` over all. `selected`, `checked`, `indeterminate`,
-  `expanded`, `pressed` (`state::ARIA_PRESSED`) and `busy` are value states (`state::ACCESSIBILITY`, set by
+  `focusStyle`, `focusVisibleStyle`, `focusWithinStyle`, `disabledStyle`, `checkedStyle`, `indeterminateStyle`, `expandedStyle`,
+  `pressedStyle`, a `Button`'s `selectedStyle`), resolved the same way: later states win, `disabled` over all. A nested `<Text>` takes `hover:` and `active:` from the pointer over its characters (`text.md`
+  "Span states"). `selected`, `checked`, `indeterminate`,
+  `expanded`, `pressed` (`state::ARIA_PRESSED`), `busy` and `invalid` are value states (`state::ACCESSIBILITY`, set by
   `Core::set_accessibility_states` from `classes::accessibility_states`) the core sets from the accessibility state (never reported by the platform). The first three are
   below the interaction states: `checked`, then `indeterminate` (Tailwind's order), then `selected`, then `hover`,
   `focus`, `active` (gpui-base's order of value states); the `aria-*` variants are above them (`aria-busy`,
-  `aria-checked`, `aria-expanded`, `aria-pressed`, `aria-selected`, by name), as Tailwind's `aria-*` variants come
+  `aria-checked`, `aria-expanded`, `aria-invalid`, `aria-pressed`, `aria-selected`, by name), as Tailwind's `aria-*` variants come
   after its pseudo-classes, so an open popup's trigger keeps its look while hovered or pressed. `disabled` (any element) applies `disabled:` and drops
   the node's press listeners from what is mounted, so it shows no press feedback either. A part of a Rust component
   shows its control's `checked`, `indeterminate` and `disabled` to its own classes and state styles
   (`Interactive::project_checked`, `project_indeterminate`, `project_disabled`, and `project_focused` for the part the keys act on; `Prop::ProjectedStates`; `project_data` its `data-*` attributes, `Prop::ProjectedData`): a switch's thumb styled `checked:translate-x-4`, with no accessibility
-  state or press change on the part, so screen readers hear the control alone. `focus-within:` (and
+  state or press change on the part, so screen readers hear the control alone. A part shows its control's press
+  the same way (`Interactive::project_group_active(group)`, `Prop::ProjectedActive`): the control is a group of an
+  NSH name (`Switch`'s `nsh-switch`), so the platform reports its press, and the part's `active:` classes and active
+  style apply while that group is pressed, besides the part's own press (`classes::styled_states`); a press change of
+  the group restyles those parts in its `restyle_subtree` walk (`group_press_changed`). They change as for any other
+  state: a transform animates with `transition-*`, a width at once, so a thumb that stretches smoothly scales
+  (`origin-left active:scale-x-125` with `transition-transform`). `focus-within:` (and
   `focusWithinStyle`, `.focus_within(..)`) is the core's: the platforms report `FOCUSED` for whatever view the
   keyboard focus reaches, whether or not it tracks it (`input::reported_states`; one report per focus change), and the
   core keeps one focus per surface and puts `state::FOCUS_WITHIN` on it and the views around it in the core's tree
@@ -94,7 +104,8 @@
   view taking it (AppKit's first responder when no view has it) is no focus. A view whose classes read only
   `focus-within:` tracks nothing natively. Rust components hear the focus come into an element and leave it with
   `ElementRef::on_focus_in` / `on_focus_out` (GPUI's names, a focus handle's), watches the core runs at the end of
-  the commit round the focus moved in (`core/watch.rs`). `dark:` follows the appearance
+  the commit round the focus moved in (`core/watch.rs`); an element removed with the focus inside it, or that stops
+  carrying the ref, is left, and the ref's next element hears the focus come in. `dark:` follows the appearance
   shown: the app's own when it set one (`nsh.json` `"appearance"`, `setColorScheme`; `Core::set_appearance`), else the
   system's. The theme is Tailwind 4's
   extended by `nsh.json` `"tailwind"` (`colors`, `spacing`, `breakpoints`, `fontSize`, `radius`, `shadow`, ...; unknown
@@ -147,8 +158,15 @@
   `flex-start`, which makes taffy's block a formatting context); strings keep their whitespace (`whitespace-*` sets
   wrapping only; the JSX compiler collapses literal JSX text); `transition` / `transition-all` animate their groups
   (`TransitionProps`: colors, opacity, transform, shadows, shape), and filters, backdrop filters, gradients and layout
-  take their new values at once; `focus-visible:` is `focus:` (the state bits, a `u8`, have none left for a focus's
-  origin, which only the desktops and the web report).
+  take their new values at once; `focus-visible:` (`state::FOCUS_VISIBLE`) is the focus that shows, after the
+  browsers' `:focus-visible`: the platforms report only how the user last gave input (`InputModality`: a key, or a
+  pointer, pen or finger going down; `EngineControl::set_input_modality`), and the core decides (`classes.rs`
+  `focus_shows`): an input that edits always shows its focus, any other view unless the last input was a pointer, so
+  Tab, a group's arrows and a shortcut show it, a press or a tap does not, a move the app makes (`focus()`, a calendar
+  or a dialog opening) shows it after a key and not after a press, and a key typed while the focus does not show
+  shows it. `focus:` is any focus. A part projected focused (`project_focused`: a tree's or a list's cursor, the
+  control keeping the platform's focus) also shows `focus-visible:` while the focus shows, so on such a part
+  `focus:` is the cursor and `focus-visible:` the cursor the keyboard is on.
 - **Layout values**: `box-content` / `box-border` select Taffy's content-box / border-box sizing. Width and
   height accept `min-content`, `max-content` and `fit-content` (`w/h/size-min/max/fit`); min-content text measures
   each Unicode line-breaking segment with the platform text engine and caches the widest one. `flow-root` uses
@@ -210,6 +228,10 @@
   `Painter::*_from_view`, `canvas.md`), kept per node in `Style::paint` (`PaintStyle`) and resolved by the core when
   it sends the drawing (`Core::resolved_paint`); views draw nothing with them. `fill-inherit` / `stroke-inherit` set
   nothing (they inherit already).
+- **Accent** (`accentColor`, Tailwind's `accent-*`): CSS's `accent-color`, the color a system control shows its state in.
+  The core passes a native component's own `accentColor` to it as its `accentColor` prop (`Core::sync_accent`), and
+  the control prefers it over the theme color it is otherwise given. Set on the control, not inherited. `nsh/mobile`'s
+  `Switch` reads it (its track when on); the system's segmented control and tab bar could later.
 - **Text style inheritance** (CSS-like): a view's text properties (color, font, size, alignment, ...) pass to the texts and inputs
   inside it, so `class="text-white"` on a button styles its label. So do its `whitespace-*` / `text-wrap` / `text-nowrap`
   (and `truncate`'s no wrapping) and `select-*` classes, as CSS's `white-space` and `user-select: auto` (`Core::inherited_text_props`:

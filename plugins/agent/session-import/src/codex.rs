@@ -19,6 +19,8 @@
 
 //! Codex rollout conversion. Event messages own conversation; response items own
 //! tool observations. Provider message mirrors never become duplicate history.
+mod exact;
+pub use exact::read as read_exact;
 mod wire;
 use crate::{
     Error, Transcript, jsonl,

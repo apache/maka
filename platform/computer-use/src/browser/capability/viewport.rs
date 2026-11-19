@@ -23,6 +23,7 @@ use super::*;
 #[derive(Clone, Debug)]
 pub(in crate::browser) struct Pending {
     pub(in crate::browser) turn: String,
+    pub(in crate::browser) execution: crate::ExecutionCorrelation,
     pub(in crate::browser) value: Option<Viewport>,
 }
 
@@ -32,6 +33,7 @@ impl Host {
         owner: uuid::Uuid,
         browser: &BrowserIdentity,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
         value: Option<Viewport>,
     ) -> Result<Option<TabIdentity>, ToolError> {
         self.known(browser)?;
@@ -39,7 +41,11 @@ impl Host {
             .extension
             .get(&(owner, browser.clone()))
             .ok_or_else(|| failed("Browser session is unavailable"))?;
-        if state.current_turn.as_deref() != Some(turn) {
+        if !state
+            .current_scope
+            .as_ref()
+            .is_some_and(|scope| scope.turn == turn && &scope.execution == execution)
+        {
             return Err(failed("Viewport operation lost its browser turn"));
         }
         let selected = self.logical_active(owner, browser);
@@ -67,6 +73,7 @@ impl Host {
                 .ok_or_else(|| failed("Browser session is unavailable"))?
                 .pending_viewport = Some(Pending {
                 turn: turn.to_owned(),
+                execution: execution.clone(),
                 value,
             });
             Ok(None)
@@ -80,6 +87,7 @@ impl Host {
         owner: uuid::Uuid,
         identity: &TabIdentity,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
     ) -> Result<Option<Option<Viewport>>, ToolError> {
         let lease = self
             .tabs
@@ -98,7 +106,7 @@ impl Host {
         if state
             .pending_viewport
             .as_ref()
-            .is_none_or(|pending| pending.turn != turn)
+            .is_none_or(|pending| pending.turn != turn || &pending.execution != execution)
         {
             return Ok(None);
         }
@@ -115,12 +123,13 @@ impl Host {
         owner: uuid::Uuid,
         browser: &BrowserIdentity,
         turn: &str,
+        execution: &crate::ExecutionCorrelation,
     ) {
         if let Some(state) = self.extension.get_mut(&(owner, browser.clone()))
             && state
                 .pending_viewport
                 .as_ref()
-                .is_some_and(|pending| pending.turn == turn)
+                .is_some_and(|pending| pending.turn == turn && &pending.execution == execution)
         {
             state.pending_viewport = None;
         }
@@ -159,6 +168,7 @@ impl Tab {
             self.cursor_owner,
             &identity,
             call.invocation.turn(),
+            call.invocation.execution_correlation(),
         )?;
         if let Some(value) = value {
             apply(self, value).await?

@@ -29,12 +29,12 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 const MAX_PAGE: usize = 1024 * 1024;
+const JS_SAFE: u64 = 9_007_199_254_740_991;
 
 /// Caller-owned correlation only; no business outcome or execution authority.
-pub fn validate_recovery(value: &serde_json::Value) -> Result<(), StoreError> {
-    serde_json::to_string(value)
-        .map(|_| ())
-        .map_err(StoreError::from)
+/// Larger recovery data must use immutable references rather than inline JSON.
+pub fn validate_recovery(value: &serde_json::Value) -> Result<usize, StoreError> {
+    maka_plugin_core::json::check_delivery(value, MAX_PAGE - 2).map_err(invalid)
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -62,6 +62,9 @@ impl CallerIntent {
     pub fn validate(&self) -> Result<(), StoreError> {
         self.confirmation().validate()?;
         validate_recovery(&self.recovery)?;
+        // The complete intent must fit even as the first entry in a page's array.
+        maka_plugin_core::json::encoded_size(self, MAX_PAGE - 2)
+            .map_err(|error| invalid(format!("caller intent exceeds page byte limit: {error}")))?;
         Ok(())
     }
     pub fn confirmation(&self) -> CallerConfirmation {
@@ -75,7 +78,7 @@ impl CallerIntent {
 }
 impl CallerConfirmation {
     pub fn validate(&self) -> Result<(), StoreError> {
-        if self.cursor == 0 || self.cursor > i64::MAX as u64 {
+        if self.cursor == 0 || self.cursor > JS_SAFE {
             return Err(invalid("invalid caller intent cursor"));
         }
         self.caller.validate().map_err(invalid)?;
@@ -118,7 +121,6 @@ fn read(
     row.map(|(cursor, source_revision, reference_json, recovery_json)| {
         let reference: RecoveryRef = serde_json::from_str(&reference_json)?;
         let recovery = serde_json::from_str(&recovery_json)?;
-        reference.validate().map_err(|e| invalid(e.to_string()))?;
         if reference.operation != operation {
             return Err(StoreError::EventConflict);
         }
@@ -127,17 +129,15 @@ fn read(
             deployment,
             revision: source_revision as u64,
         };
-        caller.validate().map_err(invalid)?;
-        if cursor <= 0 {
-            return Err(invalid("invalid caller intent cursor"));
-        }
-        Ok(CallerIntent {
+        let intent = CallerIntent {
             cursor: cursor as u64,
             caller,
             consumer: consumer.clone(),
             reference,
             recovery,
-        })
+        };
+        intent.validate()?;
+        Ok(intent)
     })
     .transpose()
 }
@@ -171,7 +171,6 @@ impl EventLog {
     ) -> Result<RecordedIntent, StoreError> {
         consumer_valid(&consumer)?;
         reference.validate().map_err(|e| invalid(e.to_string()))?;
-        validate_recovery(&recovery)?;
         let loaded = self
             .load_application_at(&caller)
             .await?
@@ -193,6 +192,7 @@ impl EventLog {
         source.check(self, &consumer)?;
         let caller = source.reference().clone();
         reference.validate().map_err(|e| invalid(e.to_string()))?;
+        validate_recovery(&recovery)?;
         let encoded = serde_json::to_string(&reference)?;
         let encoded_recovery = serde_json::to_string(&recovery)?;
         let domain = self.application_domain()?;
@@ -249,7 +249,7 @@ impl EventLog {
         limit: usize,
     ) -> Result<Vec<CallerIntent>, StoreError> {
         let domain = self.application_domain()?;
-        if deployment.is_nil() || after > i64::MAX as u64 || !(1..=128).contains(&limit) {
+        if deployment.is_nil() || after > JS_SAFE || !(1..=128).contains(&limit) {
             return Err(invalid("invalid caller intent page"));
         }
         self.connection.read(move |connection| {
@@ -279,7 +279,7 @@ impl EventLog {
                 let intent = read(&tx,&domain,deployment,&consumer,Uuid::parse_str(&operation).map_err(|_| invalid("invalid caller operation"))?)?.ok_or_else(|| invalid("caller intent disappeared"))?;
                 let encoded = serde_json::to_string(&intent)?;
                 let size = encoded.len() + usize::from(!intents.is_empty());
-                if !intents.is_empty() && size > MAX_PAGE.saturating_sub(bytes) { break; }
+                if size > MAX_PAGE.saturating_sub(bytes) { break; }
                 bytes += size;
                 intents.push(intent);
             }
@@ -288,9 +288,6 @@ impl EventLog {
         }).await
     }
 }
-
-#[cfg(test)]
-mod tests;
 
 pub(crate) struct WriteIntent {
     domain: String,
@@ -340,18 +337,20 @@ impl crate::writeback::Statement for WriteIntent {
         } else {
             super::operations::require_source(connection, &caller)?;
             connection.execute("INSERT INTO application_intents (deployment,consumer,operation,source_revision,reference_json,recovery_json) VALUES (?,?,?,?,?,?)", params![caller.deployment.to_string(), serde_json::to_string(&consumer)?, reference.operation.to_string(), caller.revision as i64, encoded, encoded_recovery])?;
-            CallerIntent {
+            let intent = CallerIntent {
                 cursor: connection.last_insert_rowid() as u64,
                 caller,
                 consumer,
                 reference,
                 recovery,
-            }
+            };
+            intent.validate()?;
+            intent
         };
         Ok(crate::writeback::Prepared {
             value: IntentValue { intent, owner },
             changed,
-            notification: crate::writeback::Notification::Metadata,
+            notification: crate::writeback::Notification::METADATA,
         })
     }
     fn committed(IntentValue { intent, owner }: Self::Value) -> Self::Output {

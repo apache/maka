@@ -90,6 +90,9 @@ struct Inner {
 struct Render {
     /// The component it mounted.
     app: V,
+    /// Made outside any module's run (after an `await`): kept with the
+    /// entry's renders.
+    late: bool,
     /// What `mount` returned: undoes it.
     dispose: V,
 }
@@ -171,12 +174,16 @@ fn install(cx: Ctx) -> Raw {
 }
 
 /// `mount(app)` ran: what it returned is undone when the module running
-/// now runs again (unless that run mounts `app` again: [`reuse`]).
+/// now runs again (unless that run mounts `app` again: [`reuse`]). A
+/// `mount` outside any module's run (after an `await` in the entry) is
+/// undone when the entry runs again.
 pub(crate) fn rendered(cx: Ctx, app: Raw, dispose: Raw) {
     with(cx, |h| {
-        if let Some(id) = h.current.clone() {
+        let late = h.current.is_none();
+        if let Some(id) = h.current.clone().or_else(|| h.entry.clone()) {
             h.renders.entry(id).or_default().push(Render {
                 app: V::dup(cx, app),
+                late,
                 dispose: V::dup(cx, dispose),
             });
         }
@@ -213,11 +220,22 @@ pub(crate) fn forget_undo(cx: Ctx, f: Raw) -> Option<V> {
 /// render stays and its disposer (a new reference) is returned. Otherwise
 /// the previous run's remaining renders are undone, so this one mounts
 /// after what stays.
+///
+/// Outside any module's run, an earlier late `mount` of the same `app` is
+/// undone first: a run the entry made before it ran again can still finish
+/// its `await` and mount after the new run did.
 pub(crate) fn reuse(cx: Ctx, app: Raw, props: Raw) -> Option<Raw> {
     // SAFETY: an inline tag check.
     let has_props = unsafe { qjs::JS_IsObject(props) };
     let (kept, undo) = with(cx, |h| {
-        let id = h.current.clone()?;
+        let Some(id) = h.current.clone() else {
+            let renders = h.renders.get_mut(h.entry.as_ref()?)?;
+            let (stale, live): (Vec<_>, Vec<_>) = std::mem::take(renders)
+                .into_iter()
+                .partition(|r| r.late && js::same(r.app.raw(), app));
+            *renders = live;
+            return Some((None, stale));
+        };
         let pending = h.pending.get_mut(&id)?;
         if !has_props && pending.first().is_some_and(|r| js::same(r.app.raw(), app)) {
             let render = pending.remove(0);

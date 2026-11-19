@@ -57,3 +57,16 @@ test("a selectable TextView reports its selected text", async () => {
   await app.waitFor("text:Markdown []");
   expect(app.shows("text:Area []")).toBe(true);
 });
+
+// A right click on a selection opens the platform's edit menu (Copy,
+// Select All) and keeps the selection: the menu acts on it. Linux only (the
+// web keeps the browser's own menu).
+test("a right click on a selection keeps it", async () => {
+  const app = await open("./fixtures/selection-change.tsx", desktop);
+  if (!app.shows("Platform: linux")) return;
+  await app.drag("text:Alpha beta gamma", { x: 0, y: 40 });
+  await app.waitUntil(() => app.texts().some((t) => t.startsWith("Area [") && t.includes("Delta")));
+  const selected = app.texts().find((t) => t.startsWith("Area ["))!;
+  await app.rightClick("text:Delta epsilon");
+  expect(app.shows(`text:${selected}`)).toBe(true);
+});

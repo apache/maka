@@ -72,8 +72,6 @@ pub enum Operation {
     Read(ReadInput),
     Write(Write),
     Edit(Edit),
-    Glob(Glob),
-    Grep(Grep),
     Patch(Patch),
     Entries(entries::Operation),
 }
@@ -91,22 +89,6 @@ pub struct Edit {
     pub new_string: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Glob {
-    pub pattern: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<String>,
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Grep {
-    pub pattern: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub glob: Option<String>,
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Patch {
     CreateFile { path: String, diff: String },
@@ -116,15 +98,9 @@ pub enum Patch {
 impl Operation {
     pub fn is_read(&self) -> bool {
         match self {
-            Self::Read(_) | Self::Glob(_) | Self::Grep(_) => true,
+            Self::Read(_) => true,
             Self::Entries(operation) => operation.is_read(),
             _ => false,
-        }
-    }
-    pub fn required_tool(&self) -> &'static str {
-        match self {
-            Self::Entries(operation) => operation.required_tool(),
-            _ => self.name(),
         }
     }
     pub fn name(&self) -> &'static str {
@@ -132,8 +108,6 @@ impl Operation {
             Self::Read(_) => "Read",
             Self::Write(_) => "Write",
             Self::Edit(_) => "Edit",
-            Self::Glob(_) => "Glob",
-            Self::Grep(_) => "Grep",
             Self::Patch(_) => "apply_patch",
             Self::Entries(operation) => operation.name(),
         }

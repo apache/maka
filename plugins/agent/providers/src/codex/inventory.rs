@@ -18,7 +18,7 @@
  */
 
 use maka_agent_facts::configuration::ModelCapabilities;
-use maka_agent_facts::configuration::ModelInfo;
+use maka_agent_facts::configuration::{ModelInfo, ModelServiceTier};
 use maka_agent_ports::provider::Error;
 use serde::{Deserialize, Deserializer};
 use std::collections::HashSet;
@@ -31,6 +31,8 @@ struct Inventory {
 #[derive(Deserialize)]
 struct Row {
     slug: Option<String>,
+    #[serde(default)]
+    service_tiers: Vec<ModelServiceTier>,
     comp_hash: Option<String>,
     visibility: Option<String>,
     priority: Option<f64>,
@@ -84,6 +86,7 @@ pub fn decode_model_inventory(bytes: &[u8]) -> Result<Vec<ModelInfo>, Error> {
             continue;
         }
         let mut info = ModelInfo::new(id);
+        info.service_tiers = row.service_tiers;
         info.codex_compaction_hash = row.comp_hash;
         info.max_output_tokens = output_capacity(id)?;
         info.display_name = row.display_name;

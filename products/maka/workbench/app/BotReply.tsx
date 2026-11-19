@@ -17,29 +17,28 @@
  * under the License.
  */
 
-import { View, cleanup, type ViewRef } from 'nsh';
-import { Button, TextView } from 'nsh/base';
-import { MermaidView, mermaidExtensions } from './MermaidView';
+import { Clipboard, computed, signal, Text, View } from 'nsh';
+import { Button, ContextMenu, MenuItem, TextView } from 'nsh/base';
+import { MarkdownImageView } from './MarkdownImage';
+import { MermaidView } from './MermaidView';
+import { SpecView, markdownExtensions } from './SpecView';
 import type { BotTranscriptMessage } from './botTranscript';
 import { tr } from './locale';
-import { closeCjkEmphasis } from './markdownEmphasis';
-import { Text } from 'nsh';
-import { QuickMessageTools } from './QuickMessageTools';
 import { Icon } from './Icon';
+import { splitSpecMarkdown } from './spec/session.ts';
 import { C, bodyTextStyle, captionTextStyle } from './ui';
 
 /** Messages the Bot sent with `SendUser`, shown as its reply in the Chat view. */
 export function BotReply(props: {
-  compact?: boolean;
-  isNew?(sequence: number): boolean;
   messages: () => BotTranscriptMessage[];
+  sessionId?: string;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   userScroll(): void;
-  tailRef?(node: ViewRef | null): void;
+  quote?(message: BotTranscriptMessage, text: string): void;
+  openInvestigation?(sessionId: string): void;
   /** The worker whose finished run this reply reports, when the Turn was started by one. */
   worker?: { title: () => string; exists: () => boolean; open(): void };
 }) {
-  cleanup(() => props.tailRef?.(null));
   const recordLabel = () => {
     const title = props.worker?.title().trim() ?? '';
     return title
@@ -47,106 +46,139 @@ export function BotReply(props: {
       : tr('View the record of the worker');
   };
   return (
-    <View
-      selectable
-      style={{ width: '100%', paddingVertical: props.compact ? 6 : 8, gap: props.compact ? 8 : 16 }}
-    >
+    <View style={{ width: '100%', paddingVertical: 8, gap: 16 }}>
       <Each of={props.messages()} key={(message) => String(message.sequence)}>
-        {(message) => (
-          <QuickMessageTools
-            enabled={Boolean(props.compact)}
-            timestamp={message().at}
-            text={() => message().text}
-          >
-            <View
-              style={{ flexDirection: 'row', gap: props.compact ? 8 : 0, alignItems: 'flex-start' }}
-            >
-              <If when={props.compact}>
-                <View
-                  style={{
-                    width: 24,
-                    height: 24,
-                    flexShrink: 0,
-                    borderRadius: 6,
-                    backgroundColor: C.surface,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    marginTop: 2,
-                  }}
-                >
-                  <Text style={{ fontSize: 16, lineHeight: 24 }}>🤖</Text>
-                </View>
+        {(message) => {
+          const segments = computed(() => splitSpecMarkdown(message().text));
+          return (
+            <View style={{ width: '100%', gap: 16 }}>
+              <If when={!!message().discovery}>
+                <Text style={{ ...captionTextStyle, color: C.muted }}>
+                  {tr('Proactive discovery')}
+                </Text>
               </If>
-              <View
-                style={
-                  props.compact
-                    ? {
-                        backgroundColor: C.raised,
-                        borderRadius: 8,
-                        paddingHorizontal: 10,
-                        paddingVertical: 7,
-                        flex: 1,
-                        marginRight: 32,
-                        minWidth: 0,
-                      }
-                    : { width: '100%' }
-                }
-              >
-                <TextView
-                  markdown={closeCjkEmphasis(message().text)}
-                  extensions={mermaidExtensions}
-                  renderCustom={(node) => <MermaidView source={() => node.text ?? ''} />}
-                  sourceId={`bot/${message().sequence}`}
-                  selectable
-                  contentStyle={{ rowGap: props.compact ? 8 : 16 }}
-                  options={{ preserveLineBreaks: true }}
-                  labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
-                  onScrollIntent={props.userScroll}
-                  onLinkPress={(event) => void props.openLink(event.url, () => false)}
-                  styles={{
-                    root: {
-                      ...bodyTextStyle,
-                      color: C.text,
-                      ...(props.compact
-                        ? {
-                            fontSize: 14,
-                            lineHeight: 22,
+              <Each of={segments()} key={(seg) => seg.key}>
+                {(seg) => {
+                  const selected = signal('');
+                  const menuText = signal('');
+                  let menuOpen = false;
+                  return (
+                    <If
+                      when={seg().kind === 'spec'}
+                      else={
+                        <ContextMenu
+                          onOpenChange={({ open }) => {
+                            menuOpen = open;
+                            if (open) menuText.set(selected());
+                          }}
+                          trigger={
+                            <TextView
+                              markdown={(() => {
+                                const s = seg();
+                                return s.kind === 'markdown' ? s.text : '';
+                              })()}
+                              extensions={markdownExtensions}
+                              renderCustom={(node) =>
+                                node.name === 'spec' ? (
+                                  <SpecView
+                                    source={() => node.text ?? ''}
+                                    sessionId={props.sessionId}
+                                    openLink={props.openLink}
+                                  />
+                                ) : (
+                                  <MermaidView source={() => node.text ?? ''} />
+                                )
+                              }
+                              sourceId={(() => {
+                                const s = seg();
+                                return s.kind === 'markdown' && s.start === 0
+                                  ? `bot/${message().sequence}`
+                                  : undefined;
+                              })()}
+                              selectable
+                              onSelectionChange={({ text }) => {
+                                if (!menuOpen) selected.set(text);
+                              }}
+                              contentStyle={{ rowGap: 16 }}
+                              options={{ preserveLineBreaks: true }}
+                              labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
+                              onScrollIntent={props.userScroll}
+                              onLinkPress={(event) => {
+                                const target = event.target;
+                                if (!target || target.isLive()) {
+                                  void props.openLink(event.url, () =>
+                                    target ? target.focus() : false,
+                                  );
+                                }
+                              }}
+                              renderImage={
+                                props.sessionId
+                                  ? (context) => (
+                                      <MarkdownImageView
+                                        image={() => context.image}
+                                        sessionId={props.sessionId!}
+                                        linked={context.linked}
+                                        flow={context.flow}
+                                        lineHeight={context.lineHeight}
+                                      />
+                                    )
+                                  : undefined
+                              }
+                              styles={{
+                                root: { ...bodyTextStyle, color: C.text },
+                                paragraph: bodyTextStyle,
+                                code: { color: C.accentHover, backgroundColor: C.card },
+                              }}
+                            />
                           }
-                        : {}),
-                    },
-                    paragraph: props.compact ? { fontSize: 14, lineHeight: 22 } : bodyTextStyle,
-                    code: { color: C.accentHover, backgroundColor: C.card },
+                        >
+                          <MenuItem
+                            onSelect={() => void Clipboard.writeText(menuText() || message().text)}
+                          >
+                            <Text>{tr('Copy message')}</Text>
+                          </MenuItem>
+                          <If when={!!props.quote && !!menuText().trim()}>
+                            <MenuItem onSelect={() => props.quote?.(message(), menuText())}>
+                              <Text>{tr('Quote selection')}</Text>
+                            </MenuItem>
+                          </If>
+                        </ContextMenu>
+                      }
+                    >
+                      <SpecView
+                        source={() => {
+                          const current = seg();
+                          return current.kind === 'spec' ? current.source : '';
+                        }}
+                        sessionId={props.sessionId}
+                        openLink={props.openLink}
+                      />
+                    </If>
+                  );
+                }}
+              </Each>
+              <If when={!!message().discovery && !!props.openInvestigation}>
+                <Button
+                  accessibilityLabel={tr('Open investigation')}
+                  onPress={() => props.openInvestigation?.(message().discovery!.workerSessionId)}
+                  style={{
+                    flexDirection: 'row',
+                    gap: 6,
+                    alignSelf: 'flex-start',
+                    alignItems: 'center',
                   }}
-                />
-                <If when={props.isNew?.(message().sequence)}>
-                  <View
-                    accessibilityLabel={tr('New assistant reply')}
-                    style={{
-                      position: 'absolute',
-                      right: 2,
-                      top: 2,
-                      width: 5,
-                      height: 5,
-                      borderRadius: 3,
-                      backgroundColor: C.accent,
-                      pointerEvents: 'none',
-                    }}
-                  />
-                </If>
-                <If
-                  when={props.compact && message().sequence === props.messages().at(-1)?.sequence}
                 >
-                  <View ref={(node) => props.tailRef?.(node)} style={{ height: 1 }} />
-                </If>
-              </View>
+                  <Icon name="split" color={C.accent} />
+                  <Text style={{ ...captionTextStyle, color: C.accent }}>
+                    {tr('Open investigation')}
+                  </Text>
+                </Button>
+              </If>
             </View>
-          </QuickMessageTools>
-        )}
+          );
+        }}
       </Each>
-      <If when={!props.compact}>
-        <View ref={(node) => props.tailRef?.(node)} style={{ height: 1 }} />
-      </If>
-      <If when={props.worker?.exists()}>
+      <If when={props.worker?.exists() && !props.messages().some((message) => !!message.discovery)}>
         <Button
           accessibilityLabel={recordLabel()}
           style={{
@@ -216,7 +248,7 @@ export function BotWaiting(props: {
   );
 }
 
-/** Shown at the end of the Bot's Chat while it is working on a Turn. */
+/** Shown at the end of Chat while a Turn is at work and has no header of its own yet. */
 export function BotWorking(props: { detail: () => string }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 }}>

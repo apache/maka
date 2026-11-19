@@ -9,9 +9,5 @@
     "declarationMap": false
   },
   "include": ["src", "../../../plugins/**/*.ts", "../workbench/package.ts"],
-  "exclude": [
-    "../../../plugins/**/ui/**",
-    "../../../plugins/application/quick-tools/runtime/**",
-    "../../../plugins/application/quick-tools/tools/**"
-  ]
+  "exclude": ["../../../plugins/**/ui/**"]
 }

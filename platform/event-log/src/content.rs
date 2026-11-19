@@ -24,7 +24,8 @@ use rusqlite::OptionalExtension;
 const INSERT: &str = "INSERT INTO contents(content_sha256,payload) VALUES(?,?) ON CONFLICT(content_sha256) DO NOTHING RETURNING id";
 const READ_ID: &str = "SELECT id FROM contents WHERE content_sha256=?";
 
-pub(crate) fn put(
+/// Trusted native SQL content insertion; the domain owns the durable reference.
+pub fn put(
     connection: &rusqlite::Connection,
     digest: &str,
     bytes: &[u8],
@@ -40,3 +41,17 @@ pub(crate) fn put(
         .prepare_cached(INSERT)?
         .query_row(rusqlite::params![digest, bytes], |row| row.get(0))?)
 }
+
+/// Read immutable bytes by digest in the caller's already authorized Root view.
+pub fn read(
+    connection: &rusqlite::Connection,
+    digest: &str,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    Ok(connection
+        .prepare_cached("SELECT payload FROM contents WHERE content_sha256=?")?
+        .query_row([digest], |row| row.get(0))
+        .optional()?)
+}
+
+mod stream;
+pub use stream::put_stream;

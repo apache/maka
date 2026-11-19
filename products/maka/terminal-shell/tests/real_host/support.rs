@@ -40,7 +40,7 @@ use maka_host_runtime::{
     ipc::{self, LocalListener},
 };
 use maka_packages::Package;
-use maka_plugin_core::operation::{OperationOutcome, Receipt};
+use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, OperationResult, Receipt};
 use nsh_platform_tui::{AppOptions, AppView};
 use serde_json::{Value, json};
 use std::{
@@ -148,6 +148,8 @@ pub struct Options {
     pub images: bool,
     pub session_tools: bool,
     pub code_mode: bool,
+    pub responses: bool,
+    pub usage_limits: bool,
 }
 
 impl Fixture {
@@ -204,7 +206,15 @@ impl Fixture {
                 .filter(|tool| options.session_tools
                     && matches!(
                         tool["name"].as_str(),
-                        Some("SessionCreate" | "SessionSend" | "SessionRespond")
+                        Some(
+                            "SessionList"
+                                | "SessionRead"
+                                | "SessionCreate"
+                                | "SessionSend"
+                                | "SessionRespond"
+                                | "SessionStop"
+                                | "SessionManage"
+                        )
                     ))
                 .collect::<Vec<_>>()
         );
@@ -226,12 +236,15 @@ impl Fixture {
         let selection = configure(
             owner.clone(),
             &format!("http://{}/v1", listener.local_addr().unwrap()),
-            options.images,
-            options.code_mode,
+            &options,
             sandbox_mode,
         )
         .await;
-        let store = Arc::new(RootStore::open(owner).await.unwrap());
+        let store = Arc::new(
+            maka_transport::open_store(owner, &maka_product_native::root_migrations())
+                .await
+                .unwrap(),
+        );
 
         let source =
             std::fs::read_to_string(crate::product_bundle().join("authoring/composition.mjs"))
@@ -272,12 +285,20 @@ impl Fixture {
             )
             .await
             .unwrap();
+        let data = store.data_writer().unwrap();
+        let state = maka_agent_state::Store::new(
+            data.clone(),
+            maka_agent_state::DriverDomain::new(data).unwrap(),
+        )
+        .unwrap();
         let mut native = NativeRegistry::default();
         maka_product_native::provide(
             &mut native,
             Arc::new(maka_product_native::catalog::Catalog::new(
                 maka_product_native::catalog::Snapshot::bundled().unwrap(),
             )),
+            state,
+            crate::maka_executable(),
         )
         .unwrap();
         let host = Host::open(
@@ -300,6 +321,7 @@ impl Fixture {
             async move { host.serve_local(local, CancellationToken::new()).await }
         });
         let (send, requests) = mpsc::channel(8);
+        let responses = options.responses;
         let request_count = Arc::new(AtomicUsize::new(0));
         let provider = AbortOnDropHandle::new(tokio::spawn({
             let count = request_count.clone();
@@ -307,7 +329,18 @@ impl Fixture {
                 let mut connections = JoinSet::new();
                 loop {
                     tokio::select! {
-                        accepted=listener.accept()=> {let (stream,_)=accepted.unwrap(); let send=send.clone(); let count=count.clone(); connections.spawn(async move {ModelRequest::serve(stream,send,count).await;});},
+                        accepted = listener.accept() => {
+                            let (stream, _) = accepted.unwrap();
+                            let send = send.clone();
+                            let count = count.clone();
+                            connections.spawn(async move {
+                                if responses {
+                                    ModelRequest::serve_responses(stream, send, count).await;
+                                } else {
+                                    ModelRequest::serve(stream, send, count).await;
+                                }
+                            });
+                        },
                         Some(result)=connections.join_next(),if !connections.is_empty()=>{result.unwrap();}
                     }
                 }
@@ -407,8 +440,7 @@ impl Fixture {
 pub(crate) async fn configure(
     owner: Arc<RootOwner>,
     base: &str,
-    vision: bool,
-    code_mode: bool,
+    options: &Options,
     sandbox_mode: maka_agent_facts::execution::SandboxMode,
 ) -> Value {
     use maka_agent_facts::configuration::CatalogMutationResult;
@@ -417,11 +449,19 @@ pub(crate) async fn configure(
             .await
             .unwrap(),
     );
-    let provider = json!({"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"openai-compatible"});
-    let mut overrides = json!({"fixture-model":{"contextWindow":200000,"vision":vision},"fixture-model-alt":{"contextWindow":200000,"vision":vision}});
-    if code_mode {
-        overrides["fixture-model"]["codeMode"] = json!(true);
-    }
+    let provider_name = if options.responses {
+        "openai-responses-compatible"
+    } else if options.usage_limits {
+        "new-api"
+    } else {
+        "openai-compatible"
+    };
+    let provider = json!({"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":provider_name});
+    let vision = options.images;
+    let overrides = json!({
+        "fixture-model":{"contextWindow":200000,"vision":vision,"codeMode":options.code_mode},
+        "fixture-model-alt":{"contextWindow":200000,"vision":vision,"codeMode":false}
+    });
     let enabled_models = json!(["fixture-model", "fixture-model-alt"]);
     let CatalogMutationResult::Committed {connection:Some(connection),..} = config.create_connection(serde_json::from_value(json!({
         "expectedCatalogRevision":0,"connection":{"slug":"nsh-fixture","name":"NSH fixture","provider":provider,"configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":enabled_models,"modelOverrides":overrides}
@@ -493,8 +533,11 @@ pub async fn mutate(client: &Client, method: &str, input: Value) -> Value {
     let reply = mutation.confirm().await.unwrap();
     match reply.receipt {
         Receipt::Recorded {
-            outcome: OperationOutcome::Returned { value },
-            ..
+            outcome:
+                OperationOutcome::Returned {
+                    result: OperationResult::Success { value },
+                },
+            cleanup: OperationCleanup::Confirmed,
         } => value,
         other => panic!("unexpected actual Host receipt: {other:?}"),
     }
@@ -508,8 +551,19 @@ pub struct ModelRequest {
 type ModelBody = UnsyncBoxBody<Bytes, Infallible>;
 
 enum ModelReply {
-    Event(Bytes),
+    Event(Value),
+    Done,
     Rejected(Value),
+}
+
+impl ModelReply {
+    fn sse(self) -> Bytes {
+        match self {
+            Self::Event(value) => Bytes::from(format!("data: {value}\n\n")),
+            Self::Done => Bytes::from_static(b"data: [DONE]\n\n"),
+            Self::Rejected(_) => panic!("HTTP status cannot change after streaming starts"),
+        }
+    }
 }
 
 fn model_http_error(body: Value) -> Response<ModelBody> {
@@ -546,6 +600,17 @@ impl ModelRequest {
                             .unwrap(),
                     );
                 }
+                if request.method() == Method::GET && request.uri().path() == "/api/usage/token/" {
+                    let body = Bytes::from_static(
+                        br#"{"code":true,"data":{"unlimited_quota":false,"total_granted":100.0,"total_used":28.0,"total_available":72.0}}"#,
+                    );
+                    return Ok::<Response<ModelBody>, hyper::Error>(
+                        Response::builder()
+                            .header(hyper::header::CONTENT_TYPE, "application/json")
+                            .body(Full::new(body).boxed_unsync())
+                            .unwrap(),
+                    );
+                }
                 assert_eq!(request.method(), Method::POST);
                 assert_eq!(request.uri().path(), "/v1/chat/completions");
                 let bytes = request.into_body().collect().await?.to_bytes();
@@ -561,18 +626,12 @@ impl ModelRequest {
                     .await
                     .unwrap();
                 let first = match receiver.recv().await {
-                    Some(ModelReply::Event(bytes)) => Some(bytes),
                     Some(ModelReply::Rejected(body)) => return Ok(model_http_error(body)),
-                    None => None,
+                    reply => reply.map(ModelReply::sse),
                 };
                 let events = stream::iter(first)
                     .chain(stream::unfold(receiver, |mut receiver| async move {
-                        receiver.recv().await.map(|reply| {
-                            let ModelReply::Event(bytes) = reply else {
-                                panic!("HTTP status cannot change after streaming starts");
-                            };
-                            (bytes, receiver)
-                        })
+                        receiver.recv().await.map(|reply| (reply.sse(), receiver))
                     }))
                     .map(|bytes| Ok::<_, Infallible>(Frame::data(bytes)));
                 Ok(Response::builder()
@@ -592,13 +651,54 @@ impl ModelRequest {
             assert!(!error.is_parse(), "invalid fixture HTTP request: {error}");
         }
     }
-    async fn packet(&mut self, value: Value) {
-        let data = format!("data: {value}\n\n");
+    async fn serve_responses(
+        socket: TcpStream,
+        requests: mpsc::Sender<Self>,
+        count: Arc<AtomicUsize>,
+    ) {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::{
+            Message,
+            handshake::server::{Request, Response},
+        };
+
+        let mut socket =
+            tokio_tungstenite::accept_hdr_async(socket, |request: &Request, response: Response| {
+                assert_eq!(request.uri().path(), "/v1/responses");
+                assert_eq!(
+                    request.headers()["authorization"],
+                    format!("Bearer {PROVIDER_KEY}")
+                );
+                Ok(response)
+            })
+            .await
+            .unwrap();
+        let frame = socket.next().await.unwrap().unwrap().into_text().unwrap();
+        let body: Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(body["type"], "response.create");
+        let (response, mut receiver) = mpsc::channel(1);
+        let completed = Arc::new(Notify::new());
+        count.fetch_add(1, Ordering::SeqCst);
+        requests
+            .send(Self {
+                body,
+                response,
+                completed: completed.clone(),
+            })
+            .await
+            .unwrap();
+        while let Some(reply) = receiver.recv().await {
+            let ModelReply::Event(value) = reply else {
+                panic!("the Responses fixture expects JSON events");
+            };
+            socket.send(Message::text(value.to_string())).await.unwrap();
+        }
+        completed.notify_one();
+    }
+
+    pub async fn packet(&mut self, value: Value) {
         // The Agent may cancel an in-flight response and close its HTTP body.
-        let _ = self
-            .response
-            .send(ModelReply::Event(Bytes::from(data)))
-            .await;
+        let _ = self.response.send(ModelReply::Event(value)).await;
     }
     pub async fn delta(&mut self, text: &str) {
         self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]})).await;
@@ -610,7 +710,7 @@ impl ModelRequest {
         self.finish_with_reason("stop").await;
     }
     /// Ends the reply with one call to `name`.
-    #[cfg(feature = "desktop-tests")]
+    #[cfg(any(unix, feature = "desktop-tests"))]
     pub async fn tool_call(mut self, name: &str, arguments: Value) {
         self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"nsh-real-call","type":"function","function":{"name":name,"arguments":arguments.to_string()}}]},"finish_reason":null}]})).await;
         self.finish_with_reason("tool_calls").await;
@@ -627,10 +727,11 @@ impl ModelRequest {
 
     async fn finish_with_reason(mut self, reason: &str) {
         self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}})).await;
-        let _ = self
-            .response
-            .send(ModelReply::Event(Bytes::from_static(b"data: [DONE]\n\n")))
-            .await;
+        let _ = self.response.send(ModelReply::Done).await;
+        self.finish_stream().await;
+    }
+
+    pub async fn finish_stream(self) {
         drop(self.response);
         self.completed.notified().await;
     }

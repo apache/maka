@@ -19,17 +19,20 @@ use nsh_dev::{
 };
 use nsh_testing::{Host, HostOptions, StartHost};
 
-use crate::run::{BUNDLE_ID, simctl};
+use crate::run::{BUNDLE_ID, simctl, simctl_with_env};
 
 /// How long the host may take to launch and connect.
 const CONNECT: Duration = Duration::from_secs(90);
 
-/// Starts the apps tests open in a simulator (a booted one, else the
-/// newest iPhone, booted first), installing the development host there;
-/// `fps` has it log its performance monitor's readings.
-pub(crate) fn starter(work: &Path, fps: bool) -> anyhow::Result<StartHost> {
+/// Starts the apps tests open in a simulator (`device`, by name or UDID;
+/// else a booted one, else the newest iPhone, booted first), installing the
+/// development host there; `fps` has it log its performance monitor's
+/// readings.
+pub(crate) fn starter(work: &Path, fps: bool, device: Option<&str>) -> anyhow::Result<StartHost> {
     let host = crate::runtime::test_host(crate::runtime::Platform::IphoneSimulator)?;
-    let udid = crate::run::simulator(None)?;
+    // Behind the app the user types in: the touches and keys go to the
+    // app in the simulator directly.
+    let udid = crate::run::simulator(device, crate::run::SimulatorWindow::Behind)?;
     let app = crate::run::package_ios(&work.join("ios"), &host)?;
     let step = crate::ui::Step::start("installing the development host in the simulator");
     simctl(&["install", &udid, &app.to_string_lossy()])?;
@@ -120,7 +123,9 @@ fn start(
     if fps {
         launch.push("--fps");
     }
-    simctl(&launch).map_err(|e| format!("cannot launch the development host: {e:#}"))?;
+    let config = crate::package::read_config(entry).map_err(|e| format!("{e:#}"))?;
+    simctl_with_env(&launch, &crate::run::simctl_app_env(&config))
+        .map_err(|e| format!("cannot launch the development host: {e:#}"))?;
     let deadline = Instant::now() + CONNECT;
     while !server.has_tester() {
         if Instant::now() >= deadline {

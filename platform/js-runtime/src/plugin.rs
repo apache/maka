@@ -38,8 +38,19 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug, thiserror::Error)]
-#[error("plugin VM: {0}")]
-pub struct Error(pub String);
+pub enum Error {
+    #[error("plugin VM: {diagnostic}")]
+    Rejected { diagnostic: String },
+    #[error("plugin VM: {diagnostic}")]
+    Unavailable { diagnostic: String },
+}
+impl Error {
+    fn diagnostic(&self) -> &str {
+        match self {
+            Self::Rejected { diagnostic } | Self::Unavailable { diagnostic } => diagnostic,
+        }
+    }
+}
 type Result<T> = std::result::Result<T, Error>;
 
 const INPUT_WINDOW: usize = 32 * 1024 * 1024;
@@ -172,7 +183,7 @@ impl Health {
             } else {
                 "script poll"
             };
-            failed(format!("{} (phase: {phase})", error.0))
+            failed(format!("{} (phase: {phase})", error.diagnostic()))
         });
         self.stopped.cancel();
         if let Some(isolate) = self.isolate.get() {
@@ -431,5 +442,12 @@ async fn monitor(health: Arc<Health>, slice: Duration) {
     }
 }
 fn failed(error: impl ToString) -> Error {
-    Error(error.to_string())
+    Error::Unavailable {
+        diagnostic: error.to_string(),
+    }
+}
+fn rejected(error: impl ToString) -> Error {
+    Error::Rejected {
+        diagnostic: error.to_string(),
+    }
 }

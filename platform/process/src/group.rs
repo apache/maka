@@ -28,6 +28,7 @@ pub(crate) struct Group {
     changed: tokio::signal::unix::Signal,
     cleaned: bool,
     signalled: bool,
+    terminate_on_drop: bool,
 }
 impl Group {
     pub fn new(child: tokio::process::Child, changed: tokio::signal::unix::Signal) -> Self {
@@ -40,8 +41,14 @@ impl Group {
             changed,
             cleaned: false,
             signalled: false,
+            terminate_on_drop: true,
         }
     }
+    /// An external owner outlives its observer; explicit wait/control remain live.
+    pub(crate) fn detach_on_drop(&mut self) {
+        self.terminate_on_drop = false;
+    }
+
     pub fn pid(&self) -> Pid {
         self.pid
     }
@@ -133,34 +140,40 @@ impl Group {
         if !self.cleaned {
             // Observation after reaping is harmless even if a group ID is reused:
             // it can conservatively fail cleanup, never signal an unrelated group.
-            tokio::time::timeout(Duration::from_secs(2), async {
-                loop {
-                    let result = unsafe { libc::kill(-self.pid.as_raw_nonzero().get(), 0) };
-                    if result != 0 {
-                        let error = io::Error::last_os_error();
-                        if error.raw_os_error() == Some(libc::ESRCH) {
-                            return Ok(());
-                        }
-                        if error.raw_os_error() != Some(libc::EPERM) {
-                            return Err(io::Error::new(
-                                error.kind(),
-                                format!("observe process group cleanup: {error}"),
-                            ));
-                        }
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .map_err(|_| io::Error::other("process group exit is unconfirmed"))??;
+            wait_group_closed(self.pid).await?;
             self.cleaned = true;
         }
         Ok(self.status.expect("root was reaped"))
     }
 }
+pub(crate) async fn wait_group_closed(pid: Pid) -> io::Result<()> {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            // SAFETY: pid is positive and signal zero only observes; a reused group can only delay closure.
+            let result = unsafe { libc::kill(-pid.as_raw_nonzero().get(), 0) };
+            if result != 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ESRCH) {
+                    return Ok(());
+                }
+                if error.raw_os_error() != Some(libc::EPERM) {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!("observe process group cleanup: {error}"),
+                    ));
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| io::Error::other("process group exit is unconfirmed"))?
+}
 impl Drop for Group {
     fn drop(&mut self) {
         // Emergency signal only; callers must await the real group-exit fence.
-        let _ = self.terminate();
+        if self.terminate_on_drop {
+            let _ = self.terminate();
+        }
     }
 }

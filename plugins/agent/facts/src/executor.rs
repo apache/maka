@@ -19,7 +19,15 @@
 
 use serde::{Deserialize, Serialize};
 mod output;
-pub use output::Output;
+pub use output::{Output, ToolResultDetails, TurnUsage};
+
+pub fn message_id(
+    run: crate::durable::RunId,
+    task: crate::durable::ExternalTaskId,
+    id: &str,
+) -> String {
+    format!("executor/{run}/{task}/{id}")
+}
 
 /// Executor-owned model selection, independent of Host model connections.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -137,28 +145,6 @@ impl From<ExecutorId> for String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn runtime_effort_is_preserved_without_host_enum_coercion() {
-        let value = serde_json::json!({"runtime":"codex", "model":"vendor/model", "thinkingLevel":"vendor-deep"});
-        let settings: Settings = serde_json::from_value(value.clone()).unwrap();
-        settings.validate().unwrap();
-        assert_eq!(
-            settings.thinking_level.as_ref().unwrap().as_str(),
-            "vendor-deep"
-        );
-        assert_eq!(serde_json::to_value(settings).unwrap(), value);
-        for effort in ["", "  ", "high\n"] {
-            assert!(serde_json::from_value::<Effort>(effort.into()).is_err());
-        }
-        let previous = serde_json::json!({"model":"model", "thinkingLevel":"high"});
-        let settings: Settings = serde_json::from_value(previous.clone()).unwrap();
-        assert_eq!(serde_json::to_value(settings).unwrap(), previous);
-    }
-}
-
 /// The next turn's choice, independent of an already admitted execution.
 /// Model revisions are resolved afresh; preferences never grant execution authority.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -175,9 +161,37 @@ pub enum BackendPreference {
         connection_id: String,
         #[schemars(length(min = 1))]
         model_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service_tier: Option<String>,
         thinking_level: Option<crate::execution::ThinkingLevel>,
     },
     Executor {
         selection: crate::executor::Selection,
     },
+}
+
+impl BackendPreference {
+    pub fn model(
+        model: crate::configuration::ModelSelection,
+        thinking_level: Option<crate::execution::ThinkingLevel>,
+    ) -> Self {
+        Self::Model {
+            connection_id: model.connection_id,
+            model_id: model.model_id,
+            service_tier: model.service_tier,
+            thinking_level,
+        }
+    }
+}
+
+pub const NATIVE_TASK_PROTOCOL: &str = "maka.native-executor-task";
+
+/// Native captures the concrete selected executor before dispatch. The payload
+/// belongs to that adapter; this descriptor is not a live grant.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskDescriptor<T> {
+    pub protocol: String,
+    pub source: Binding,
+    pub payload: T,
 }

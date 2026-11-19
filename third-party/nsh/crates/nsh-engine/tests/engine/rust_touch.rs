@@ -64,6 +64,7 @@ fn touch(phase: TouchPhase, path: &[u32], x: f32, y: f32, t: f64) -> EventPayloa
     EventPayload::Touch(Box::new(TouchEvent {
         phase,
         timestamp: t,
+        modifiers: Default::default(),
         activated: None,
         points: vec![TouchPoint {
             id: 1,
@@ -76,6 +77,10 @@ fn touch(phase: TouchPhase, path: &[u32], x: f32, y: f32, t: f64) -> EventPayloa
             page: nsh_core::geometry::point(px(x), px(y + 100.0)),
             location: nsh_core::geometry::point(px(x), px(y)),
             changed: true,
+            pointer_type: nsh_core::PointerType::Touch,
+            pressure: 0.5,
+            tilt_x: 0.0,
+            tilt_y: 0.0,
         }],
     }))
 }
@@ -124,6 +129,7 @@ fn a_rust_element_claims_touches_in_a_scroll_view() {
         app: App::Rust(Root::of::<Sketch>()),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -135,7 +141,7 @@ fn a_rust_element_claims_touches_in_a_scroll_view() {
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -147,6 +153,8 @@ fn a_rust_element_claims_touches_in_a_scroll_view() {
         speech: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
     let first = rx.recv_timeout(Duration::from_secs(5)).unwrap();

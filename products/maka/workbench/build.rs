@@ -18,7 +18,26 @@
  */
 
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        let source = "src/bindings/dictation.m";
+        println!("cargo:rerun-if-changed={source}");
+        cc::Build::new()
+            .file(source)
+            .flag("-fobjc-arc")
+            .compile("maka_dictation");
+        for framework in ["AVFoundation", "AppKit", "Security"] {
+            println!("cargo:rustc-link-lib=framework={framework}");
+        }
+    }
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("build output"));
+    let crate_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo = crate_dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
     let compiler = maka_ui_build::compiler_identity().expect("UI build script identity");
     for (entry, name) in [
         ("app/Bootstrap.tsx", "bootstrap"),
@@ -31,6 +50,7 @@ fn main() {
         let module = maka_ui_build::compile_cached(
             std::path::Path::new(entry),
             &output.join(name),
+            Some(repo),
             &compiler,
         )
         .expect("bundle shared UI surface");

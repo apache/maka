@@ -4,8 +4,8 @@
 // (`onChange({ value })`), confirmed as it closes (`onConfirm`), the app's
 // query typed in its input (`query`, `onQueryChange`, `placeholder`), the
 // trigger button, the footer and its part, and a single combobox whose
-// input typing opens and whose choice replaces the value and closes. Its
-// script checks each.
+// input typing opens and whose choice replaces the value and closes, its
+// input found by its test id (`inputTestID`). Its script checks each.
 import { Text, View, signal } from "nsh";
 import { Combobox } from "nsh/base";
 
@@ -46,6 +46,7 @@ function App() {
         defaultValue={["blue"]}
         onChange={({ value }) => one.set(value)}
         accessibilityLabel="One"
+        inputTestID="one-input"
         placeholder="FindOne"
         triggerButton={<View testID="one" style={{ height: 30 }}><Text>OneTrigger</Text></View>}
       />

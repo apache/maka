@@ -142,6 +142,21 @@ mount(App);
 
 `footer` 是显示在行下方的内容，位于它自己的部件中（`footerClass`、`footerStyle`）：一个操作（"管理标签"）、一个计数、一句提示。行滚动时它保持不动。
 
+<a id="entrance-and-exit"></a>
+
+## 出现与离开
+
+在桌面平台上，弹出层像 [Popover](./popover.md#entrance-and-exit) 一样随你的过渡出现和离开：`popupStartingClass` 是它第一帧的外观，`popupClass` 里的 `transition-*` 类把它过渡到自己的外观；`popupEndingClass` 是关闭后的外观，在这些过渡播放期间它会保留、不接受按压，随后触发 `onClose`。关闭时键盘焦点就回到输入框，除非选择的 `onChange` 把焦点移到了别的视图（比如表单的下一个输入框），那样焦点就留在那里。在离开途中再次打开时，它从当前状态回到自己的外观。`popupStartingStyle` 和 `popupEndingStyle` 以内联样式做同样的事。用户要求减少动态效果时，它立即出现、立即离开；触摸屏上的 sheet 自带滑入和滑出的动作。
+
+```tsx
+<Combobox
+  items={items}
+  popupClass="rounded-lg bg-popover p-1 shadow-md transition-all duration-150 ease-out"
+  popupStartingClass="opacity-0 -translate-y-1"
+  popupEndingClass="opacity-0"
+/>
+```
+
 <a id="props"></a>
 
 ## 属性
@@ -161,11 +176,14 @@ mount(App);
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 这次选择是关于什么的，供屏幕阅读器使用。 |
 | `placement`、`align`、`offset`、`margin` | `.placement(..)` 等 | 同 `Select` | `"bottom"`、`"start"`、0、0 | 桌面平台：弹出层相对字段的位置。 |
 | `popupClass`、`popupStyle` | `.popup_class(..)`、`.popup_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 弹出层（桌面平台）或 sheet（触屏设备）。 |
+| `popupStartingClass`、`popupStartingStyle` | `.popup_starting_class(..)`、`.popup_starting_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 桌面：弹出层第一帧的外观，叠加在它自己的外观之上：它的过渡从这里开始。 |
+| `popupEndingClass`、`popupEndingStyle` | `.popup_ending_class(..)`、`.popup_ending_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 桌面：弹出层关闭后的外观，叠加在它自己的外观之上：过渡播放期间它会保留。 |
 | `backdropClass`、`backdropStyle` | `.backdrop_class(..)`、`.backdrop_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | sheet 后面的背景层。 |
 | `listClass`、`listStyle` | `.list_class(..)`、`.list_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 列表，即行所在的滚动视图。 |
 | `itemClass`、`itemStyle` | `.item_class(..)`、`.item_style(..)` | `string`、`StyleProp<TextStyle>` | 无 | 每个条目的行：高亮时应用 `focus:`，已选时应用 `selected:`，不可选时应用 `disabled:`。 |
 | `groupClass`、`groupStyle` | `.group_class(..)`、`.group_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 每个分组的标题。 |
 | `inputClass`、`inputStyle` | `.input_class(..)`、`.input_style(..)` | `string`、`StyleProp<InputStyle>` | 无 | 输入框：编辑时应用 `focus:`，组合框禁用时应用 `disabled:`。 |
+| `inputTestID` | `.input_test_id(..)` | `string` | 无 | UI 测试查找输入框所用的 id（`nsh/test` 的 `id:`），与 `testID` 指向组合框自己的视图一样。 |
 | `footerClass`、`footerStyle` | `.footer_class(..)`、`.footer_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 行下方的底部区域。 |
 | `clearButtonClass`、`clearButtonStyle` | `.clear_button_class(..)`、`.clear_button_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 清除按钮（`cleanable`）。 |
 | `clearButton` | `.clear_button(..)` | `JSX.Element` | 无 | 清除按钮的内容。 |
@@ -202,7 +220,7 @@ mount(App);
 |---|---|---|
 | 字段 | 组合框的视图，一行 | `class`、`style` |
 | 前缀 | 字段中的第一个 | 应用自己的元素（`prefix`） |
-| 输入框 | 字段中，前缀之后 | `inputClass`、`inputStyle`、`placeholder` |
+| 输入框 | 字段中，前缀之后 | `inputClass`、`inputStyle`、`placeholder`、`inputTestID` |
 | 清除按钮 | 字段中，输入框之后（`cleanable`，有已选条目时） | `clearButtonClass`、`clearButtonStyle`；内容 `clearButton` |
 | 触发按钮 | 字段中，清除按钮之后 | 应用自己的元素（`triggerButton`） |
 | 后缀 | 字段中的最后一个 | 应用自己的元素（`suffix`） |
@@ -218,7 +236,7 @@ mount(App);
 
 ## 键盘
 
-输入框保持焦点时，按键与选择框的相同（见[键盘](./select.md#keyboard)），区别在于：字母和数字输入到输入框中并筛选列表，而不是输入跳转；Down 和 Up 打开关闭着的列表；在 `multiple` 时，Return 切换高亮的条目并保持列表打开；Mac 上的 Cmd+Return（其他平台为 Ctrl+Return）关闭列表并确认。Tab 和 Shift+Tab 关闭打开的列表，焦点移到下一个或上一个控件。在桌面平台上列表以其他方式关闭时，焦点留在输入框。
+输入框保持焦点时，按键与选择框的相同（见[键盘](./select.md#keyboard)），区别在于：字母和数字输入到输入框中并筛选列表，而不是输入跳转；Down 和 Up 打开关闭着的列表；在 `multiple` 时，Return 切换高亮的条目并保持列表打开；Mac 上的 Cmd+Return（其他平台为 Ctrl+Return）关闭列表并确认。Tab 和 Shift+Tab 关闭打开的列表，焦点移到下一个或上一个控件。在桌面平台上列表以其他方式关闭时，焦点留在输入框，除非选择的 `onChange` 把它移到了别的视图。
 
 <a id="accessibility"></a>
 

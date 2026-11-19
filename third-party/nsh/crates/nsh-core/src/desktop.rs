@@ -5,29 +5,69 @@
 //! [`crate::EventKind::Menu`]; mobile platforms ignore them. The platforms
 //! report the main window's state in the environment ([`WindowState`]),
 //! the other windows' as [`WindowEvent`]s, and the displays with their own
-//! message ([`Display`]).
+//! message ([`Display`]). The app's login item is a backend the runner
+//! gives the core ([`LoginItemBackend`]).
 
 use std::sync::Arc;
 
 use crate::{
     ImageSource,
-    element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropEnum, PropError, TsTypes},
+    color::Hsla,
+    element::{JsHost, JsIn, JsKind, JsObject, JsOwned, JsValue, PropEnum, PropError, TsTypes},
     geometry::{Point, Points},
     keymap::{self, Keystroke, Modifiers, When},
+    platform::Os,
 };
 
+mod login_item;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod menu_icon;
 pub mod window;
 mod window_state;
 
+pub(crate) use login_item::LoginItems;
+pub use login_item::{LaunchAtLoginError, LoginItemBackend, LoginItemStatus};
 pub use window::{
     Backdrop, CloseReason, MainWindowOptions, OpenWindow, ProgressState, ResizeEdge, SizeToContent,
     TitleBarOptions, WindowAttributes, WindowBackend, WindowCloseCause, WindowControl, WindowEvent,
     WindowKind, WindowMode, WindowOptions, WindowPointerEvents, WindowPosition, WindowProgress,
     WindowRequest, Workspaces,
 };
-pub use window_state::{Display, DisplayId, WindowPlacement, WindowState};
+pub use window_state::{
+    Display, DisplayId, NativeDesktopBounds, NativeDesktopUnit, WindowPlacement, WindowState, notch,
+};
+
+/// Additional sources of quit requests on standalone macOS apps. Both
+/// options default to false and require a quit request listener. Other
+/// platforms and embedded views keep their existing lifecycle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, JsObject)]
+#[non_exhaustive]
+pub struct QuitRequestOptions {
+    /// Asks the app before logout, restart or shutdown. Call `quit()` to
+    /// approve, or `cancel_quit_request()` to cancel the system request.
+    #[prop(default)]
+    pub system: bool,
+    /// Asks before a user closes the main window when that would end the
+    /// app. A window with `close_on_press: false` uses its close handler
+    /// instead; a window kept alive on close still hides as before.
+    #[prop(default)]
+    pub main_window_close: bool,
+}
+
+impl QuitRequestOptions {
+    /// Whether logout, restart and shutdown ask the quit listener.
+    pub fn system(mut self, system: bool) -> Self {
+        self.system = system;
+        self
+    }
+
+    /// Whether closing the main window asks the quit listener when that
+    /// close would end the app.
+    pub fn main_window_close(mut self, main_window_close: bool) -> Self {
+        self.main_window_close = main_window_close;
+        self
+    }
+}
 
 /// How a window's title bar looks ([`TitleBarOptions::style`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
@@ -327,9 +367,23 @@ impl Shortcut {
         out
     }
 
+    /// Its label on `os`: on macOS as symbols in the order Apple writes
+    /// them (`⌃⌥⇧⌘C`), else [`Shortcut::label`].
+    pub fn label_for(&self, os: Os) -> String {
+        if os != Os::MacOs {
+            return self.label();
+        }
+        self.keystroke().label(os, true)
+    }
+
     /// Whether a focused text field uses this shortcut itself, as it uses
     /// the same keystroke of `nsh/keymap` ([`Keystroke::edits_text`]).
     pub fn edits_text(&self) -> bool {
+        self.keystroke().edits_text()
+    }
+
+    /// The same keystroke as `nsh/keymap` reads it.
+    fn keystroke(&self) -> Keystroke {
         let key = match self.key {
             Key::Char(c) => keymap::Key::Char(c),
             Key::Space => keymap::Key::Char(' '),
@@ -355,7 +409,7 @@ impl Shortcut {
             shift: self.shift,
             cmd: self.meta,
         };
-        Keystroke { modifiers, key }.edits_text()
+        Keystroke { modifiers, key }
     }
 }
 
@@ -529,7 +583,7 @@ fn parse_key(text: &str, key: &str) -> Result<Key, ShortcutError> {
 
 /// A standard menu item: the platform carries it out (and labels it when
 /// the item has no label of its own).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PropEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PropEnum)]
 pub enum MenuRole {
     /// The about panel (macOS).
     About,
@@ -661,6 +715,73 @@ impl MenuRole {
     }
 }
 
+/// The translated labels sent by the core to desktop backends for the
+/// menus NSH builds. These follow the app's language (`nsh/i18n`); apps
+/// override individual menu items through their existing `label` field.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct MenuLabels {
+    /// Role labels; `%{app}` is replaced with the app name on macOS.
+    pub roles: std::collections::HashMap<MenuRole, String>,
+    /// The title of the standard menu bar's Edit menu (`"Edit"`).
+    pub edit_menu: Option<String>,
+    /// The title of the standard menu bar's Window menu (`"Window"`).
+    pub window_menu: Option<String>,
+    /// The Delete item of a text field's edit menu, where NSH shows its own
+    /// (`"Delete"`).
+    pub delete: Option<String>,
+}
+
+impl MenuLabels {
+    pub(crate) fn for_locale(locale: crate::platform::Locale, mac: bool) -> Self {
+        static TEXTS: std::sync::OnceLock<crate::i18n::Translations> = std::sync::OnceLock::new();
+        let texts = TEXTS.get_or_init(|| {
+            crate::i18n::Translations::from_json(include_str!("desktop/menu.json"))
+                .expect("the built-in menu translations are valid")
+        });
+        // Region-only Chinese tags select the traditional script there.
+        let language = match locale.as_str() {
+            "zh-TW" | "zh-HK" | "zh-MO" => "zh-Hant",
+            language => language,
+        };
+        let text = |key: &str| texts.lookup(language, key).map(|text| text.into_owned());
+        Self {
+            roles: MenuRole::ALL
+                .iter()
+                .filter_map(|role| {
+                    let key = match (role, mac) {
+                        (MenuRole::About, true) => "About App",
+                        (MenuRole::Hide, true) => "Hide App",
+                        (MenuRole::Quit, true) => "Quit App",
+                        (MenuRole::ToggleFullScreen, true) => "Enter Full Screen",
+                        _ => role.label(),
+                    };
+                    let label = if mac {
+                        text(key)
+                    } else {
+                        text(&format!("Windows {key}")).or_else(|| text(key))
+                    };
+                    label.map(|label| (*role, label))
+                })
+                .collect(),
+            edit_menu: text("Edit"),
+            window_menu: text("Window"),
+            delete: text("Delete"),
+        }
+    }
+
+    /// NSH's translated label of `role`, when available.
+    pub fn role(&self, role: MenuRole) -> Option<&str> {
+        self.roles.get(&role).map(String::as_str)
+    }
+
+    /// The label of an item with `role` and no label of its own: the
+    /// translated label, else [`MenuRole::label`].
+    pub fn label(&self, role: MenuRole) -> &str {
+        self.role(role).unwrap_or(role.label())
+    }
+}
+
 /// An item of a menu that does something.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MenuAction {
@@ -682,6 +803,12 @@ pub struct MenuAction {
     pub when: When,
     /// What it shows beside its label, the app's own image ([`menu_icon`]).
     pub icon: Option<ImageSource>,
+    /// An SF Symbol name beside its label in iOS header menus; ignored
+    /// elsewhere (including macOS). Prefer this over putting a symbol name
+    /// in [`Self::icon`], which is an image source.
+    pub symbol: Option<String>,
+    /// Shown as a destructive action on iOS (red); the desktops ignore it.
+    pub destructive: bool,
 }
 
 impl MenuAction {
@@ -705,7 +832,8 @@ pub enum MenuItem {
     /// An item that does something.
     Action(MenuAction),
     /// An item opening a menu of its own (the top-level menus of a menu
-    /// bar).
+    /// bar), or an inline section when [`inline`](Self::Submenu::inline) is
+    /// set.
     Submenu {
         /// What it shows.
         label: String,
@@ -716,10 +844,160 @@ pub enum MenuItem {
         /// What it shows beside its label ([`menu_icon`]), but for the
         /// top-level menus of a menu bar, which show their titles alone.
         icon: Option<ImageSource>,
+        /// An SF Symbol name beside its label in iOS header menus; ignored
+        /// elsewhere (including macOS).
+        symbol: Option<String>,
+        /// An inline section: on iOS, `UIMenuOptions.displayInline` with
+        /// `label` as the section title; on the desktops, its items between
+        /// separators, its label not shown ([`Self::with_inline_expanded`]).
+        inline: bool,
     },
 }
 
 impl MenuItem {
+    /// The items of a selection menu (`selectionMenu`), as the platforms
+    /// show them after the system's own: plain items and separators.
+    /// Inline sections are expanded ([`Self::with_inline_expanded`]);
+    /// submenus, roles (the system's items are there already), shortcuts
+    /// and check marks are left out, as are items with no label and
+    /// separators that separate nothing.
+    pub fn selection_menu(items: &[MenuItem]) -> Vec<MenuItem> {
+        let mut out: Vec<MenuItem> = Vec::new();
+        for item in Self::with_inline_expanded(items) {
+            match item {
+                MenuItem::Separator => {
+                    if matches!(out.last(), Some(MenuItem::Action(_))) {
+                        out.push(MenuItem::Separator);
+                    }
+                }
+                MenuItem::Action(action) if action.role.is_none() && !action.label.is_empty() => {
+                    out.push(MenuItem::Action(MenuAction {
+                        shortcut: None,
+                        checked: None,
+                        when: When::Always,
+                        ..action
+                    }));
+                }
+                MenuItem::Action(_) | MenuItem::Submenu { .. } => {}
+            }
+        }
+        if matches!(out.last(), Some(MenuItem::Separator)) {
+            out.pop();
+        }
+        out
+    }
+
+    /// Expands [`inline`](Self::Submenu::inline) submenus into their items
+    /// between separators (no leading or trailing separator, label not
+    /// shown), for the desktops. Nested non-inline submenus are kept;
+    /// their children are expanded the same way. A disabled inline section
+    /// disables the items it brings, as iOS disables a disabled section's
+    /// children. iOS header menus keep inline sections as they are.
+    #[doc(hidden)]
+    pub fn with_inline_expanded(items: &[MenuItem]) -> Vec<MenuItem> {
+        let mut out = Vec::new();
+        for item in items {
+            match item {
+                MenuItem::Submenu {
+                    items,
+                    enabled,
+                    inline: true,
+                    ..
+                } => {
+                    if !out.is_empty() && !matches!(out.last(), Some(MenuItem::Separator)) {
+                        out.push(MenuItem::Separator);
+                    }
+                    let expanded = Self::with_inline_expanded(items);
+                    if *enabled {
+                        out.extend(expanded);
+                    } else {
+                        out.extend(expanded.into_iter().map(MenuItem::disabled));
+                    }
+                    if !matches!(out.last(), Some(MenuItem::Separator) | None) {
+                        out.push(MenuItem::Separator);
+                    }
+                }
+                MenuItem::Submenu {
+                    label,
+                    enabled,
+                    items,
+                    icon,
+                    symbol,
+                    inline: false,
+                } => out.push(MenuItem::Submenu {
+                    label: label.clone(),
+                    enabled: *enabled,
+                    items: Self::with_inline_expanded(items),
+                    icon: icon.clone(),
+                    symbol: symbol.clone(),
+                    inline: false,
+                }),
+                // An explicit separator after an inline section would
+                // otherwise double the one the expansion already pushed.
+                MenuItem::Separator if matches!(out.last(), Some(MenuItem::Separator)) => {}
+                other => out.push(other.clone()),
+            }
+        }
+        while matches!(out.last(), Some(MenuItem::Separator)) {
+            out.pop();
+        }
+        out
+    }
+
+    /// This item, disabled: an action can't be chosen, a submenu can't be
+    /// opened. A separator stays as it is.
+    fn disabled(self) -> MenuItem {
+        match self {
+            MenuItem::Action(action) => MenuItem::Action(MenuAction {
+                enabled: false,
+                ..action
+            }),
+            MenuItem::Submenu {
+                label,
+                items,
+                icon,
+                symbol,
+                inline,
+                ..
+            } => MenuItem::Submenu {
+                label,
+                enabled: false,
+                items,
+                icon,
+                symbol,
+                inline,
+            },
+            MenuItem::Separator => MenuItem::Separator,
+        }
+    }
+
+    /// The index in `items` (a menu bar's top-level items) of its Window
+    /// menu: the first submenu holding a window role (`Minimize`, `Zoom`,
+    /// `ToggleFullScreen` or `Close`), at any depth. macOS lists the app's
+    /// open windows at its end.
+    #[doc(hidden)]
+    pub fn window_menu(items: &[MenuItem]) -> Option<usize> {
+        fn has_window_role(items: &[MenuItem]) -> bool {
+            items.iter().any(|item| match item {
+                MenuItem::Action(action) => matches!(
+                    action.role,
+                    Some(
+                        MenuRole::Minimize
+                            | MenuRole::Zoom
+                            | MenuRole::ToggleFullScreen
+                            | MenuRole::Close
+                    )
+                ),
+                MenuItem::Submenu { items, .. } => has_window_role(items),
+                MenuItem::Separator => false,
+            })
+        }
+        items.iter().position(|item| match item {
+            MenuItem::Submenu { items, .. } => has_window_role(items),
+            _ => false,
+        })
+    }
+
     /// Calls `f` with the icon of every item of `items`, submenus' too.
     pub fn each_icon<'a>(items: &'a [MenuItem], f: &mut impl FnMut(&'a ImageSource)) {
         for item in items {
@@ -797,12 +1075,31 @@ pub enum DesktopCommand {
     /// ([`crate::restart`]). A view embedded in another app leaves the
     /// app's lifecycle to that app: nothing happens there.
     Restart,
+    /// Whether the user's quit requests quit the app: its Quit item and
+    /// the platform's quit key (Command-Q, Ctrl+Q). `false` while the app
+    /// listens to them ([`crate::element::desktop::on_quit_request`]): the
+    /// platform reports them on the root ([`WindowEvent::QuitRequest`])
+    /// instead, and the app sends [`DesktopCommand::Quit`] when it is
+    /// ready. The system ending the app quits either way by default;
+    /// macOS can include it with [`DesktopCommand::SetQuitRequestOptions`].
+    /// Sent when it changes; `true` until the first. On the
+    /// web, while it is `false`, the user leaving the page is the request.
+    SetQuitOnRequest(bool),
+    /// Sets the additional macOS quit request sources. Both default to
+    /// false. Other platforms ignore this command.
+    SetQuitRequestOptions(QuitRequestOptions),
+    /// Cancels a pending macOS quit request, including the system's
+    /// logout or shutdown. Nothing happens without a pending request.
+    CancelQuitRequest,
     /// The application menu (macOS's menu bar, the window's menu bar on
     /// Windows and Linux; not shown there while the title bar is hidden,
     /// its shortcuts still work); `None` restores the platform's default.
     SetMenu(Option<Arc<[MenuItem]>>),
     /// When the menu bar the window draws for the application menu shows.
     SetMenuBar(MenuBarMode),
+    /// The core translated the labels of NSH's menus for the language
+    /// the app shows. Native backends update their menus at once.
+    SetMenuLabels(Box<MenuLabels>),
     /// Shows a context menu at `at` (root coordinates, points) or at the
     /// pointer.
     PopupMenu {
@@ -853,6 +1150,45 @@ impl DesktopCommand {
     }
 }
 
+/// A run of a tray's title ([`Tray::title`]): text in one color, as GPUI's
+/// `TextRun`s are.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct TrayTitleRun {
+    /// The text.
+    pub text: String,
+    /// Its color; `None`: the panel's text color (on macOS the menu bar's,
+    /// which follows its appearance).
+    pub color: Option<Hsla>,
+}
+
+impl TrayTitleRun {
+    /// A run of `text` in the panel's text color.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            color: None,
+        }
+    }
+
+    /// The run in `color`.
+    pub fn color(mut self, color: impl Into<Hsla>) -> Self {
+        self.color = Some(color.into());
+        self
+    }
+}
+
+/// Which side of the tray's icon its title shows on ([`Tray::title_placement`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
+pub enum TrayTitlePlacement {
+    /// Right of the icon, as menu bar apps usually show it.
+    #[default]
+    Right,
+    /// Left of the icon. macOS only: Linux's panels draw the title right of
+    /// the icon.
+    Left,
+}
+
 /// The app's icon in the system tray ([`DesktopCommand::SetTray`]).
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
@@ -863,11 +1199,22 @@ pub struct Tray {
     pub icon: Option<ImageSource>,
     /// Shown when the pointer rests on it; `""` for the app's name.
     pub tooltip: String,
+    /// Text beside the icon, in runs each of its own color: what the app
+    /// keeps in sight (a price, a count). macOS's menu bar shows it in its
+    /// colors; Linux's panels that show AppIndicator labels (GNOME's
+    /// AppIndicator extension, Unity, MATE, Budgie) show its text right of
+    /// the icon; Windows' notification area shows the icon alone. Empty: the
+    /// icon alone.
+    pub title: Vec<TrayTitleRun>,
+    /// Which side of the icon the title shows on.
+    pub title_placement: TrayTitlePlacement,
     /// Its menu: opened by a secondary click (a primary one too when
     /// [`Self::click`] is 0); empty for none.
     pub menu: Arc<[MenuItem]>,
     /// Reported as [`crate::EventKind::Menu`] when the icon is clicked
-    /// (primary button); 0: the click opens the menu.
+    /// (primary button), with `bounds`: the icon's frame in screen points
+    /// (as [`WindowState::bounds`]), left out where the platform does not
+    /// know it; 0: the click opens the menu.
     pub click: u32,
 }
 
@@ -879,8 +1226,76 @@ pub(crate) fn title_bar_height(height: Option<Points>) -> Option<Points> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn built_in_menu_labels_follow_locale_fallbacks_and_platform_titles() {
+        for (locale, copy, quit) in [
+            ("en", "Copy", "Quit"),
+            ("ja-JP", "コピー", "終了"),
+            ("zh-CN", "复制", "退出"),
+            ("zh-Hant-TW", "複製", "結束"),
+            ("zh-TW", "複製", "結束"),
+            ("zh-MO", "複製", "結束"),
+            ("fr-FR", "Copy", "Quit"),
+        ] {
+            let locale = crate::platform::Locale::parse(locale).unwrap();
+            let labels = MenuLabels::for_locale(locale, false);
+            assert_eq!(labels.label(MenuRole::Copy), copy);
+            assert_eq!(labels.label(MenuRole::Quit), quit);
+            for role in MenuRole::ALL {
+                assert!(!labels.label(*role).contains("%{app}"));
+            }
+        }
+        let japanese = crate::platform::Locale::parse("ja").unwrap();
+        let labels = MenuLabels::for_locale(japanese, true);
+        assert_eq!(labels.label(MenuRole::Quit), "%{app}を終了");
+        assert_eq!(labels.delete.as_deref(), Some("削除"));
+        assert_eq!(
+            MenuLabels::for_locale(japanese, false).label(MenuRole::Paste),
+            "貼り付け"
+        );
+    }
+
     use super::*;
     use crate::geometry::px;
+
+    #[test]
+    fn window_menu_is_the_submenu_with_a_window_role() {
+        let action = |role: Option<MenuRole>| {
+            MenuItem::Action(MenuAction {
+                id: 0,
+                label: String::new(),
+                shortcut: None,
+                enabled: true,
+                checked: None,
+                role,
+                when: When::default(),
+                icon: None,
+                symbol: None,
+                destructive: false,
+            })
+        };
+        let sub = |items: Vec<MenuItem>| MenuItem::Submenu {
+            label: String::new(),
+            enabled: true,
+            items,
+            icon: None,
+            symbol: None,
+            inline: false,
+        };
+        let bar = vec![
+            sub(vec![action(Some(MenuRole::Quit))]),
+            sub(vec![action(Some(MenuRole::Copy))]),
+            sub(vec![action(None), sub(vec![action(Some(MenuRole::Zoom))])]),
+            sub(vec![action(Some(MenuRole::Minimize))]),
+        ];
+        assert_eq!(MenuItem::window_menu(&bar), Some(2));
+        assert_eq!(MenuItem::window_menu(&bar[..2]), None);
+        // A top-level role item is not a submenu of the bar.
+        assert_eq!(
+            MenuItem::window_menu(&[action(Some(MenuRole::Close))]),
+            None
+        );
+    }
 
     #[test]
     fn custom_title_bar_height_is_finite_positive_and_bounded() {
@@ -895,6 +1310,40 @@ mod tests {
         }
         assert_eq!(title_bar_height(Some(px(42.0))), Some(px(42.0)));
         assert_eq!(title_bar_height(Some(px(300.0))), Some(px(200.0)));
+    }
+
+    #[test]
+    fn mac_labels_use_symbols() {
+        let copy = MenuRole::Copy.shortcut(true).unwrap();
+        assert_eq!(copy.label_for(Os::MacOs), "⌘C");
+        assert_eq!(
+            MenuRole::Redo.shortcut(true).unwrap().label_for(Os::MacOs),
+            "⇧⌘Z"
+        );
+        assert_eq!(
+            MenuRole::ToggleFullScreen
+                .shortcut(true)
+                .unwrap()
+                .label_for(Os::MacOs),
+            "⌃⌘F"
+        );
+        assert_eq!(
+            MenuRole::Copy
+                .shortcut(false)
+                .unwrap()
+                .label_for(Os::Windows),
+            "Ctrl+C"
+        );
+        // Off macOS it is `label()` as it was, `Win+` and all.
+        let win = Shortcut {
+            meta: true,
+            ..Shortcut::key(Key::Char('e'))
+        };
+        assert_eq!(win.label_for(Os::Linux), win.label());
+        assert_eq!(win.label_for(Os::Windows), win.label());
+        assert_eq!(win.label_for(Os::Linux), "Win+E");
+        let copy = MenuRole::Copy.shortcut(false).unwrap();
+        assert_eq!(copy.label_for(Os::Linux), copy.label());
     }
 
     #[test]
@@ -991,6 +1440,8 @@ mod tests {
                 role,
                 when: When::Always,
                 icon: None,
+                symbol: None,
+                destructive: false,
             })
         };
         let menu = vec![MenuItem::Submenu {
@@ -1002,6 +1453,8 @@ mod tests {
                 action(0, copy, Some(MenuRole::Copy)),
             ],
             icon: None,
+            symbol: None,
+            inline: false,
         }];
         assert_eq!(MenuItem::find_shortcut(&menu, &new).map(|a| a.id), Some(1));
         // Text fields keep their own shortcuts.
@@ -1019,6 +1472,8 @@ mod tests {
             role: None,
             when,
             icon: None,
+            symbol: None,
+            destructive: false,
         };
         let fires = |shortcut, when| item(shortcut, when).fires_while_editing();
         assert!(fires("ctrl+z", When::Always));
@@ -1031,5 +1486,206 @@ mod tests {
         assert!(fires("ctrl+shift+n", When::Auto));
         assert!(fires("f5", When::Auto));
         assert!(!fires("ctrl+shift+n", When::NotEditing));
+    }
+
+    #[test]
+    fn inline_submenus_expand_between_separators() {
+        let action = |label: &str| {
+            MenuItem::Action(MenuAction {
+                id: 0,
+                label: label.into(),
+                shortcut: None,
+                enabled: true,
+                checked: None,
+                role: None,
+                when: When::Always,
+                icon: None,
+                symbol: None,
+                destructive: false,
+            })
+        };
+        let items = [
+            action("New"),
+            MenuItem::Submenu {
+                label: "Danger".into(),
+                enabled: true,
+                items: vec![action("Delete"), action("Wipe")],
+                icon: None,
+                symbol: None,
+                inline: true,
+            },
+            action("Quit"),
+            MenuItem::Submenu {
+                label: "More".into(),
+                enabled: true,
+                items: vec![
+                    action("Share"),
+                    MenuItem::Submenu {
+                        label: "Nested".into(),
+                        enabled: true,
+                        items: vec![action("Deep")],
+                        icon: None,
+                        symbol: None,
+                        inline: true,
+                    },
+                ],
+                icon: None,
+                symbol: None,
+                inline: false,
+            },
+        ];
+        let expanded = MenuItem::with_inline_expanded(&items);
+        assert_eq!(
+            expanded
+                .iter()
+                .map(|i| match i {
+                    MenuItem::Separator => "—".into(),
+                    MenuItem::Action(a) => a.label.clone(),
+                    MenuItem::Submenu {
+                        label,
+                        items,
+                        inline,
+                        ..
+                    } => {
+                        assert!(!inline, "nested non-inline kept");
+                        format!(
+                            "{label}[{}]",
+                            items
+                                .iter()
+                                .map(|c| match c {
+                                    MenuItem::Separator => "—",
+                                    MenuItem::Action(a) => a.label.as_str(),
+                                    MenuItem::Submenu { .. } => "sub",
+                                })
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        )
+                    }
+                })
+                .collect::<Vec<String>>(),
+            [
+                "New",
+                "—",
+                "Delete",
+                "Wipe",
+                "—",
+                "Quit",
+                "More[Share,—,Deep]",
+            ]
+            .map(str::to_owned)
+        );
+        // Separators only between groups: none leading or trailing.
+        assert!(!matches!(expanded.first(), Some(MenuItem::Separator)));
+        assert!(!matches!(expanded.last(), Some(MenuItem::Separator)));
+        // A lone inline group: no separators around it.
+        let alone = MenuItem::with_inline_expanded(&[MenuItem::Submenu {
+            label: "Only".into(),
+            enabled: true,
+            items: vec![action("A"), action("B")],
+            icon: None,
+            symbol: None,
+            inline: true,
+        }]);
+        assert_eq!(
+            alone
+                .iter()
+                .map(|i| match i {
+                    MenuItem::Action(a) => a.label.as_str(),
+                    _ => "?",
+                })
+                .collect::<Vec<_>>(),
+            ["A", "B"]
+        );
+        // An explicit separator after an inline section must not double.
+        let after_inline = MenuItem::with_inline_expanded(&[
+            action("A"),
+            MenuItem::Submenu {
+                label: "Group".into(),
+                enabled: true,
+                items: vec![action("B")],
+                icon: None,
+                symbol: None,
+                inline: true,
+            },
+            MenuItem::Separator,
+            action("C"),
+        ]);
+        assert_eq!(
+            after_inline
+                .iter()
+                .map(|i| match i {
+                    MenuItem::Separator => "—",
+                    MenuItem::Action(a) => a.label.as_str(),
+                    _ => "?",
+                })
+                .collect::<Vec<_>>(),
+            ["A", "—", "B", "—", "C"]
+        );
+    }
+
+    #[test]
+    fn a_disabled_inline_section_disables_its_items() {
+        let action = |label: &str| {
+            MenuItem::Action(MenuAction {
+                id: 1,
+                label: label.into(),
+                shortcut: None,
+                enabled: true,
+                checked: None,
+                role: None,
+                when: Default::default(),
+                icon: None,
+                symbol: None,
+                destructive: false,
+            })
+        };
+        let section = |enabled: bool| MenuItem::Submenu {
+            label: "Group".into(),
+            enabled,
+            items: vec![
+                action("B"),
+                MenuItem::Submenu {
+                    label: "More".into(),
+                    enabled: true,
+                    items: vec![action("C")],
+                    icon: None,
+                    symbol: None,
+                    inline: false,
+                },
+            ],
+            icon: None,
+            symbol: None,
+            inline: true,
+        };
+        let enabled = |items: &[MenuItem]| {
+            items
+                .iter()
+                .map(|i| match i {
+                    MenuItem::Action(a) => (a.label.clone(), a.enabled),
+                    MenuItem::Submenu { label, enabled, .. } => (label.clone(), *enabled),
+                    MenuItem::Separator => ("—".into(), true),
+                })
+                .collect::<Vec<_>>()
+        };
+        let off = MenuItem::with_inline_expanded(&[action("A"), section(false)]);
+        assert_eq!(
+            enabled(&off),
+            [
+                ("A".into(), true),
+                ("—".into(), true),
+                ("B".into(), false),
+                ("More".into(), false)
+            ]
+        );
+        let on = MenuItem::with_inline_expanded(&[action("A"), section(true)]);
+        assert_eq!(
+            enabled(&on),
+            [
+                ("A".into(), true),
+                ("—".into(), true),
+                ("B".into(), true),
+                ("More".into(), true)
+            ]
+        );
     }
 }

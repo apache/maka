@@ -30,38 +30,42 @@ const FILE_STREAM_BYTES: usize = 32 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum DraftWorkspace {
-    Directory(maka_skills_api::contract::CandidateDirectory),
-    Session(Box<Workspace>),
+    Directory {
+        path: String,
+        identity: maka_fs_tools::directory::Observation,
+    },
+    Session {
+        workspace: Box<Workspace>,
+        identity: maka_fs_tools::directory::Observation,
+    },
 }
 impl DraftWorkspace {
     fn path(&self) -> &str {
         match self {
-            Self::Directory(directory) => &directory.path,
-            Self::Session(workspace) => &workspace.path,
+            Self::Directory { path, .. } => path,
+            Self::Session { workspace, .. } => &workspace.path,
         }
     }
-    fn directory_identity(&self) -> &maka_agent_facts::execution::DirectoryIdentity {
+    fn directory_identity(&self) -> &maka_fs_tools::directory::Observation {
         match self {
-            Self::Directory(directory) => &directory.directory_identity,
-            Self::Session(workspace) => &workspace.directory_identity,
+            Self::Directory { identity, .. } | Self::Session { identity, .. } => identity,
         }
     }
     fn worktree(&self) -> Option<&maka_fs_tools::worktree::Binding> {
         match self {
-            Self::Directory(_) => None,
-            Self::Session(workspace) => workspace.worktree.as_deref(),
+            Self::Directory { .. } => None,
+            Self::Session { workspace, .. } => workspace.worktree.as_deref(),
         }
     }
     pub(super) fn workspace(&self) -> Option<&Workspace> {
         match self {
-            Self::Directory(_) => None,
-            Self::Session(workspace) => Some(workspace),
+            Self::Directory { .. } => None,
+            Self::Session { workspace, .. } => Some(workspace),
         }
     }
     pub(super) fn directory(&self) -> maka_skills_api::contract::CandidateDirectory {
         maka_skills_api::contract::CandidateDirectory {
             path: self.path().into(),
-            directory_identity: self.directory_identity().clone(),
         }
     }
 }
@@ -91,15 +95,23 @@ impl Owner {
             if !self.project_accepts_session(&workspace).await? {
                 return Err("agent_workspace_unavailable".into());
             }
-            workspace::validate(&self.workspace_roots, &workspace, &self.managed_worktrees).await?;
-            return Ok(Some(DraftWorkspace::Session(Box::new(workspace))));
+            let (_, _, identity) = workspace::open_workspace_observation(
+                &self.workspace_roots,
+                &workspace,
+                &self.managed_worktrees,
+            )
+            .await?;
+            return Ok(Some(DraftWorkspace::Session {
+                workspace: Box::new(workspace),
+                identity,
+            }));
         }
         let path = match selection {
             WorkspaceSelection::Directory { path } | WorkspaceSelection::IsolatedGit { path } => {
                 path.clone()
             }
-            WorkspaceSelection::Project { project, path } => {
-                self.project_selection(project, path)
+            WorkspaceSelection::Project { project_id, path } => {
+                self.project_selection(*project_id, path)
                     .await?
                     .ok_or("agent_project_unavailable")?
                     .1
@@ -114,12 +126,84 @@ impl Owner {
         )
         .await?
         .ok_or("agent_workspace_unavailable")?;
-        Ok(Some(DraftWorkspace::Directory(
-            maka_skills_api::contract::CandidateDirectory {
-                path: observed.path,
-                directory_identity: observed.identity,
-            },
-        )))
+        Ok(Some(DraftWorkspace::Directory {
+            path: observed.path,
+            identity: observed.identity,
+        }))
+    }
+
+    pub async fn save_file(
+        &self,
+        input: SaveFile,
+        context: &Context,
+    ) -> Result<SaveFileResult, String> {
+        let scope = context.scope();
+        if !matches!(
+            scope.identity,
+            maka_capabilities::call::Identity::Native
+                | maka_capabilities::call::Identity::Remote { .. }
+        ) {
+            return Err("Only the workspace client may save an edited file.".into());
+        }
+        let (original, directory) = self.file_directory(&input.session_id, None, scope).await?;
+        let sandbox = self
+            .capture_sandbox(&original, scope.sandbox_floor())
+            .await?;
+        self.check_file_session(&input.session_id, &original, scope)
+            .await?;
+        let content = context
+            .attachments()
+            .get("content")
+            .ok_or("Missing file content.")?
+            .clone();
+        worktrees::blocking(scope, &self.stop, move |cancel| {
+            let policy = match sandbox {
+                maka_sandbox::Sandbox::Managed { filesystem, .. } => {
+                    Some(filesystem.compile().map_err(|e| e.to_string())?)
+                }
+                maka_sandbox::Sandbox::Disabled => None,
+                maka_sandbox::Sandbox::External { .. } => {
+                    return Err("File editing requires a local workspace.".into());
+                }
+            };
+            let bytes = content.read(0..content.bytes())?;
+            let text = std::str::from_utf8(&bytes).map_err(|_| "files_invalid_text")?;
+            match directory.save_text(
+                &input.path,
+                &input.expected_version,
+                text,
+                policy.as_ref(),
+                &cancel,
+            ) {
+                Ok(Some(version)) => Ok(SaveFileResult::Saved { version }),
+                Ok(None) => Ok(SaveFileResult::Conflict),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+        .await
+    }
+
+    pub async fn resolve_file_link(
+        &self,
+        input: FileLinkRead,
+        scope: &Scope,
+    ) -> Result<FileReadPath, String> {
+        let (original, directory) = self.file_directory(&input.session_id, None, scope).await?;
+        let sandbox = self
+            .capture_sandbox(&original, scope.sandbox_floor())
+            .await?;
+        let selected = worktrees::blocking(scope, &self.stop, move |_| {
+            let bytes = STANDARD
+                .decode(&input.path_bytes)
+                .map_err(|_| "agent_files_invalid_path")?;
+            directory
+                .resolve_link(bytes, read_policy(&sandbox)?.as_ref())
+                .map_err(file_failure)
+        })
+        .await?;
+        self.check_file_session(&input.session_id, &original, scope)
+            .await?;
+        Ok(selected)
     }
 
     pub async fn read_file(
@@ -133,10 +217,24 @@ impl Owner {
                 let (original, directory) = owner
                     .file_directory(&input.session_id, None, &scope)
                     .await?;
+                let sandbox = owner
+                    .capture_sandbox(&original, scope.sandbox_floor())
+                    .await?;
                 let capture = worktrees::blocking(&scope, &owner.stop, move |cancel| {
-                    directory
-                        .read_file(&input.path, input.expected_version.as_deref(), &cancel)
-                        .map_err(file_failure)
+                    let policy = read_policy(&sandbox)?;
+                    let version = input.expected_version.as_deref();
+                    match &input.path {
+                        FileReadPath::Workspace(path) => {
+                            directory.read_permitted_file(path, version, policy.as_ref(), &cancel)
+                        }
+                        FileReadPath::External { absolute } => directory.read_external_image(
+                            Path::new(absolute),
+                            policy.as_ref(),
+                            version,
+                            &cancel,
+                        ),
+                    }
+                    .map_err(file_failure)
                 })
                 .await;
                 owner
@@ -449,7 +547,7 @@ impl Owner {
         .await
     }
 
-    async fn file_directory(
+    pub(super) async fn file_directory(
         &self,
         session: &str,
         path: Option<WorkspacePath>,
@@ -458,7 +556,7 @@ impl Owner {
         if let Some(path) = &path {
             path.validate().map_err(|_| "agent_files_invalid_path")?;
         }
-        let original = self.session(session).await?.configuration;
+        let original = self.scoped_session(scope, session).await?.configuration;
         self.check_file_session(session, &original, scope).await?;
         let root = self
             .store
@@ -466,11 +564,17 @@ impl Owner {
             .map_err(|_| "agent_root_unavailable")?;
         let private = root.canonical_path().to_owned();
         let control = root.control_directory().to_owned();
+        let (resolved_path, _, observed) = workspace::open_workspace_observation(
+            &self.workspace_roots,
+            &original.workspace,
+            &self.managed_worktrees,
+        )
+        .await?;
         let selected = original.workspace.clone();
         let directory = worktrees::blocking(scope, &self.stop, move |cancel| {
             Directory::open(
-                Path::new(&selected.path),
-                &selected.directory_identity,
+                &resolved_path,
+                &observed,
                 &private,
                 &control,
                 selected.worktree.as_deref(),
@@ -485,7 +589,7 @@ impl Owner {
         Ok((original, directory))
     }
 
-    async fn check_file_session(
+    pub(super) async fn check_file_session(
         &self,
         session: &str,
         original: &ResolvedConfiguration,
@@ -527,10 +631,7 @@ impl Owner {
             // are caught by the read; later changes remain pending on this receiver.
             let mut commits = self.store.session(session).await.map_err(|error| error.to_string())?.subscribe_commits().map_err(|error| error.to_string())?;
             commits.borrow_and_update();
-            #[cfg(not(all(test, target_os = "macos")))]
             let native_hints = true;
-            #[cfg(all(test, target_os = "macos"))]
-            let native_hints = self.file_native_hints.load(std::sync::atomic::Ordering::Relaxed);
             #[cfg(target_os = "macos")]
             let mut next_scan;
             #[cfg(target_os = "macos")]
@@ -678,6 +779,20 @@ fn next_file_scan(elapsed: std::time::Duration) -> tokio::time::Instant {
     // consuming a core continuously; native hints remain active between scans.
     let pause = std::time::Duration::from_secs(1).max(elapsed.saturating_mul(9));
     tokio::time::Instant::now() + pause
+}
+
+fn read_policy(
+    sandbox: &maka_sandbox::Sandbox,
+) -> Result<Option<maka_sandbox::filesystem::Compiled>, String> {
+    match sandbox {
+        maka_sandbox::Sandbox::Managed { filesystem, .. } => {
+            filesystem.compile().map(Some).map_err(|e| e.to_string())
+        }
+        maka_sandbox::Sandbox::Disabled => Ok(None),
+        maka_sandbox::Sandbox::External { .. } => {
+            Err("File preview requires a local workspace.".into())
+        }
+    }
 }
 
 // Only backend-owned static causes cross the service boundary. OS paths and

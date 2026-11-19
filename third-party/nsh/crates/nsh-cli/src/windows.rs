@@ -6,7 +6,10 @@
 //! `nsh\icon.ico`, which the runner shows on its windows when the
 //! executable has none (packaged off Windows) and registers for its
 //! notifications; the development host gets one made the same way
-//! ([`host_args`]).
+//! ([`host_args`]). An installer, `<name>-setup.exe`, is compiled from the
+//! directory with Inno Setup (`ISCC.exe`) when it is installed, as
+//! Longbridge's desktop apps are; its script, `<name>.iss`, is written
+//! either way ([`installer`]).
 
 use std::{
     ffi::OsString,
@@ -37,8 +40,8 @@ const ICON_SIZES: [u32; 7] = [16, 20, 24, 32, 40, 48, 64];
 /// A directory `<out>/<name>`: the release runner as `<name>.exe` (the
 /// app's icon embedded), the bundle and assets in `nsh\` (where the runner
 /// looks, next to itself), `nsh\app.json` (the window's title, the app's
-/// id and appearance, which the window opens in); then the same as
-/// `<name>.zip`.
+/// id and appearance, which the window opens in, and the main window's
+/// options); then the same as `<name>.zip`.
 pub(crate) fn package(
     options: &PackageOptions<'_>,
     config: &AppConfig,
@@ -79,12 +82,9 @@ pub(crate) fn package(
         fs::copy(&asset.source, &dest).with_context(|| format!("copy {}", asset.path))?;
     }
     let version = config.version.as_deref().unwrap_or("1.0.0");
-    let mut info = serde_json::json!({ "name": name, "id": id, "version": version });
-    if let Some(appearance) = &config.appearance {
-        info["appearance"] = appearance.as_str().into();
-    }
+    let info = crate::package::desktop_app_json(config, name, id, version);
     fs::write(resources.join("app.json"), info.to_string())?;
-    if let Some(icon) = &config.icon {
+    if let Some(icon) = config.icon(crate::package::PackageTarget::Windows) {
         let images = icon_images(icon)?;
         fs::write(resources.join("icon.ico"), icon_file(&images))?;
         set_icon(&exe, &images)
@@ -92,12 +92,13 @@ pub(crate) fn package(
     }
     let archive = options.out.join(format!("{name}.zip"));
     zip_dir(&dir, name, &archive).with_context(|| format!("create {}", archive.display()))?;
-    crate::updater::copy_archive(config, name, &archive, options.out)?;
+    crate::updater::copy_archive(config, name, &update_platform(), &archive, options.out)?;
     step.done(format!(
         "packaged {} and {}",
         ui::path(&dir),
         ui::path(&archive)
     ));
+    installer(options.out, name, id, version, &dir, &exe)?;
     if options.run {
         Command::new(&exe)
             .current_dir(&dir)
@@ -109,6 +110,255 @@ pub(crate) fn package(
         ui::done(format!("launched {name}"));
     }
     Ok(())
+}
+
+/// Writes `<out>/<name>.iss`, an Inno Setup script installing `dir`, and
+/// compiles it to `<out>/<name>-setup.exe` with `ISCC.exe` when Inno Setup
+/// is installed (a warning says how otherwise).
+///
+/// The installer installs for the current user, without elevation, in
+/// `%LOCALAPPDATA%\Programs\<name>`, with a Start menu shortcut (carrying
+/// the app id as its AppUserModelID, which the taskbar and notifications
+/// use) and an entry in Installed apps that uninstalls it. Its AppId is the
+/// app's id, so a newer version installs over the older one: the upgrade
+/// closes the running app, replaces the files and keeps the app's data
+/// (`%APPDATA%`, `%LOCALAPPDATA%\<id>`), which the uninstaller leaves too.
+/// The uninstaller removes the app's login item (`Application.setLoginItem`:
+/// the value of the user's `Run` key named by the app's id) when it starts
+/// this installation's executable.
+fn installer(
+    out: &Path,
+    name: &str,
+    id: &str,
+    version: &str,
+    dir: &Path,
+    exe: &Path,
+) -> anyhow::Result<()> {
+    let stem = file_stem(name);
+    let script_path = out.join(format!("{stem}.iss"));
+    let exe_name = exe
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| format!("{stem}.exe"));
+    let icon = dir.join("nsh").join("icon.ico");
+    let icon_rel = Path::new(dir.file_name().unwrap_or_default())
+        .join("nsh")
+        .join("icon.ico");
+    let script = inno_script(&InnoApp {
+        name,
+        id,
+        version,
+        // Relative to the script, which Inno Setup resolves from its own
+        // directory: the script also compiles where the package was copied,
+        // packaged off Windows.
+        source: &dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| name.to_owned()),
+        exe: &exe_name,
+        setup: &format!("{stem}-setup"),
+        icon: icon
+            .is_file()
+            .then(|| icon_rel.to_string_lossy().replace('/', "\\")),
+    });
+    fs::write(&script_path, script).with_context(|| format!("write {}", script_path.display()))?;
+    let Some(iscc) = find_iscc() else {
+        ui::warn(format!(
+            "wrote {} but not the installer: install Inno Setup 6 (https://jrsoftware.org/isinfo.php, or `winget install JRSoftware.InnoSetup`) and package again, or run ISCC.exe on it",
+            ui::path(&script_path)
+        ));
+        return Ok(());
+    };
+    let setup = out.join(format!("{stem}-setup.exe"));
+    let step = ui::Step::start(format!("compiling {}", ui::path(&setup)));
+    let output = Command::new(&iscc)
+        .arg("/Q")
+        .arg(format!("/O{}", out.display()))
+        .arg(&script_path)
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("run {}", iscc.display()))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Inno Setup failed on {}:\n{}{}",
+        script_path.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    step.done(format!("built the installer {}", ui::path(&setup)));
+    Ok(())
+}
+
+/// `ISCC.exe`, Inno Setup's compiler: on `PATH`, else where its installer
+/// (and winget's, per user) puts it.
+fn find_iscc() -> Option<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            for file in ["ISCC.exe", "iscc.exe", "iscc"] {
+                let candidate = dir.join(file);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    let dirs = ["ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"];
+    dirs.iter()
+        .filter_map(std::env::var_os)
+        .flat_map(|base| {
+            let base = std::path::PathBuf::from(base);
+            [
+                base.join("Inno Setup 6").join("ISCC.exe"),
+                base.join("Programs").join("Inno Setup 6").join("ISCC.exe"),
+            ]
+        })
+        .find(|p| p.is_file())
+}
+
+/// What the installer script is made of.
+struct InnoApp<'a> {
+    name: &'a str,
+    id: &'a str,
+    version: &'a str,
+    /// The packaged directory, relative to the script, installed as is.
+    source: &'a str,
+    /// The executable's file name in it.
+    exe: &'a str,
+    /// The installer's file name, without `.exe`.
+    setup: &'a str,
+    /// The app's `.ico`, the installer's icon too.
+    icon: Option<String>,
+}
+
+/// The Inno Setup script of `app`.
+fn inno_script(app: &InnoApp<'_>) -> String {
+    // In directive values and section parameters, `{` starts a constant and
+    // `"` ends a quoted string.
+    fn esc(value: &str) -> String {
+        value.replace('{', "{{").replace('"', "\"\"")
+    }
+    let name = esc(app.name);
+    let dir_name = esc(&file_stem(app.name));
+    let id = esc(app.id);
+    let exe = esc(app.exe);
+    let mut s = String::new();
+    s.push_str("; Made by `nsh package --target windows`; compile with Inno Setup 6 (ISCC.exe).\n");
+    s.push_str("[Setup]\n");
+    s.push_str(&format!("AppId={id}\n"));
+    s.push_str(&format!("AppName={name}\n"));
+    s.push_str(&format!("AppVersion={}\n", esc(app.version)));
+    s.push_str(&format!("AppVerName={name} {}\n", esc(app.version)));
+    s.push_str(&format!("DefaultDirName={{autopf}}\\{dir_name}\n"));
+    s.push_str(&format!("DefaultGroupName={name}\n"));
+    s.push_str("DisableProgramGroupPage=yes\n");
+    s.push_str("DisableDirPage=auto\n");
+    s.push_str("PrivilegesRequired=lowest\n");
+    s.push_str("ArchitecturesAllowed=x64compatible\n");
+    s.push_str("ArchitecturesInstallIn64BitMode=x64compatible\n");
+    s.push_str("MinVersion=10.0.17763\n");
+    s.push_str(&format!("OutputBaseFilename={}\n", esc(app.setup)));
+    s.push_str("Compression=lzma2\nSolidCompression=yes\nWizardStyle=modern\n");
+    s.push_str("CloseApplications=force\n");
+    s.push_str(&format!("UninstallDisplayIcon={{app}}\\{exe}\n"));
+    s.push_str(&format!("UninstallDisplayName={name}\n"));
+    if let Some(icon) = &app.icon {
+        s.push_str(&format!("SetupIconFile={}\n", esc(icon)));
+    }
+    s.push_str("\n[Tasks]\n");
+    s.push_str("Name: \"desktopicon\"; Description: \"{cm:CreateDesktopIcon}\"; GroupDescription: \"{cm:AdditionalIcons}\"; Flags: unchecked\n");
+    s.push_str("\n[InstallDelete]\n");
+    // The bundle and assets of the previous version go: a file it had and
+    // this one has not must not stay.
+    s.push_str("Type: filesandordirs; Name: \"{app}\\nsh\"\n");
+    s.push_str("\n[Files]\n");
+    s.push_str(&format!(
+        "Source: \"{}\\*\"; DestDir: \"{{app}}\"; Flags: ignoreversion recursesubdirs createallsubdirs\n",
+        esc(app.source)
+    ));
+    s.push_str("\n[Icons]\n");
+    s.push_str(&format!(
+        "Name: \"{{autoprograms}}\\{dir_name}\"; Filename: \"{{app}}\\{exe}\"; AppUserModelID: \"{id}\"\n"
+    ));
+    s.push_str(&format!(
+        "Name: \"{{autodesktop}}\\{dir_name}\"; Filename: \"{{app}}\\{exe}\"; AppUserModelID: \"{id}\"; Tasks: desktopicon\n"
+    ));
+    s.push_str("\n[Run]\n");
+    s.push_str(&format!(
+        "Filename: \"{{app}}\\{exe}\"; Description: \"{{cm:LaunchProgram,{}}}\"; Flags: nowait postinstall skipifsilent\n",
+        // Inside a constant, `%` escapes: `%2c` a comma, `%7b` `%7d` braces.
+        app.name
+            .replace('%', "%25")
+            .replace(',', "%2c")
+            .replace('{', "%7b")
+            .replace('}', "%7d")
+            .replace('"', "\"\"")
+    ));
+    // The login item goes with the app (`nsh-platform-windows`'
+    // `login_item.rs` writes it): only when it starts this installation's
+    // executable, a copy elsewhere keeping its own. Its program is read as
+    // the app's `names` reads it: quoted or up to the first space or tab, `/`
+    // a `\`, a verbatim `\\?\` or `\\?\UNC\` prefix dropped, case aside.
+    // Pascal strings double `'`; the executable's name is outside
+    // `ExpandConstant`, where `{` would start a constant.
+    fn pascal(value: &str) -> String {
+        value.replace('\'', "''")
+    }
+    let run = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    let (id, exe) = (pascal(app.id), pascal(app.exe));
+    s.push_str("\n[Code]\n");
+    s.push_str(concat!(
+        "function NshExpandEnvironmentStrings(Source: String; Target: String; Size: DWORD): DWORD;\n",
+        "  external 'ExpandEnvironmentStringsW@kernel32.dll stdcall';\n\n",
+        "function NshExpand(const Value: String): String;\n",
+        "var\n  Buffer: String;\n  Size: DWORD;\nbegin\n",
+        "  Result := Value;\n",
+        "  Size := NshExpandEnvironmentStrings(Value, #0, 0);\n",
+        "  if Size = 0 then\n    Exit;\n",
+        "  SetLength(Buffer, Size);\n",
+        "  if NshExpandEnvironmentStrings(Value, Buffer, Size) > 0 then\n",
+        "    Result := Copy(Buffer, 1, Size - 1);\n",
+        "end;\n\n",
+    ));
+    s.push_str(concat!(
+        "function NshProgram(Command: String): String;\n",
+        "var\n  Quote: Integer;\nbegin\n",
+        "  StringChangeEx(Command, #9, ' ', True);\n",
+        "  Result := TrimLeft(Command);\n",
+        "  if Copy(Result, 1, 1) = '\"' then\n  begin\n",
+        "    Delete(Result, 1, 1);\n",
+        "    Quote := Pos('\"', Result);\n",
+        "    if Quote > 0 then\n      Result := Copy(Result, 1, Quote - 1);\n",
+        "  end\n  else if Pos(' ', Result) > 0 then\n",
+        "    Result := Copy(Result, 1, Pos(' ', Result) - 1);\n",
+        "  StringChangeEx(Result, '/', '\\', True);\n",
+        "  if CompareText(Copy(Result, 1, 8), '\\\\?\\UNC\\') = 0 then\n",
+        "    Result := '\\' + Copy(Result, 8, Length(Result))\n",
+        "  else if Copy(Result, 1, 4) = '\\\\?\\' then\n",
+        "    Delete(Result, 1, 4);\n",
+        "end;\n\n",
+    ));
+    s.push_str("procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);\n");
+    s.push_str("var\n  Command, Exe: String;\nbegin\n");
+    s.push_str("  if CurUninstallStep <> usUninstall then\n    Exit;\n");
+    s.push_str(&format!(
+        "  if not RegQueryStringValue(HKEY_CURRENT_USER, '{run}', '{id}', Command) then\n    Exit;\n"
+    ));
+    s.push_str(&format!(
+        "  Exe := ExpandConstant('{{app}}') + '\\{exe}';\n"
+    ));
+    // The value as written or expanded names it: `RegQueryStringValue` does
+    // not say whether it read a `REG_SZ` value, which the app reads as
+    // written (and writes), or a `REG_EXPAND_SZ` one, which the app expands.
+    // So a value of either type is removed when either reading names this
+    // installation; the app itself tells the two apart.
+    s.push_str(concat!(
+        "  if (CompareText(NshProgram(Command), Exe) = 0)\n",
+        "    or (CompareText(NshProgram(NshExpand(Command)), Exe) = 0) then\n",
+    ));
+    s.push_str(&format!(
+        "    RegDeleteValue(HKEY_CURRENT_USER, '{run}', '{id}');\nend;\n"
+    ));
+    s
 }
 
 /// `name` without what Windows does not allow in file names.
@@ -136,7 +386,7 @@ pub(crate) fn host_args(entry: &Path, work: &Path) -> Vec<OsString> {
     let config = crate::package::read_config(entry).unwrap_or_default();
     let (name, _) = crate::package::name_and_id(entry, &config);
     let mut args = vec!["--name".into(), name.into()];
-    if let Some(icon) = &config.icon {
+    if let Some(icon) = config.icon(crate::package::PackageTarget::Windows) {
         let ico = work.join("windows").join("icon.ico");
         match host_icon(icon, &ico) {
             Ok(()) => args.extend(["--icon".into(), ico.into_os_string()]),
@@ -365,9 +615,97 @@ fn zip_dir(dir: &Path, root: &str, archive: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The updater's name of the platform a Windows package runs on: the runner
+/// is built for this machine on Windows, else cross-compiled for
+/// `x86_64-pc-windows-msvc`, whose archive must not be named after the
+/// machine that built it.
+fn update_platform() -> String {
+    if cfg!(windows) {
+        nsh_updater::platform()
+    } else {
+        "windows-x86_64".to_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A package cross-built on Linux or macOS is the update of Windows, not
+    /// of the machine that built it.
+    #[test]
+    fn update_archives_are_named_for_windows() {
+        assert!(
+            update_platform().starts_with("windows-"),
+            "{}",
+            update_platform()
+        );
+    }
+
+    #[test]
+    fn installer_scripts_install_per_user_and_upgrade_by_id() {
+        let script = inno_script(&InnoApp {
+            name: "Hopper {Lab}",
+            id: "com.example.hopper",
+            version: "1.2.0",
+            source: "Hopper {Lab}",
+            exe: "Hopper {Lab}.exe",
+            setup: "Hopper {Lab}-setup",
+            icon: None,
+        });
+        assert!(script.contains("AppId=com.example.hopper\n"));
+        assert!(script.contains("AppName=Hopper {{Lab}\n"));
+        assert!(script.contains("PrivilegesRequired=lowest\n"));
+        assert!(script.contains(r"DefaultDirName={autopf}\Hopper {{Lab}"));
+        assert!(script.contains(r#"Source: "Hopper {{Lab}\*""#));
+        assert!(script.contains(r#"AppUserModelID: "com.example.hopper""#));
+        assert!(script.contains(r#"Type: filesandordirs; Name: "{app}\nsh""#));
+        assert!(script.contains("{cm:LaunchProgram,Hopper %7bLab%7d}"));
+        assert!(!script.contains("SetupIconFile"));
+    }
+
+    #[test]
+    fn uninstalling_removes_the_login_item_that_starts_this_installation() {
+        let script = inno_script(&InnoApp {
+            name: "O'Hare {Lab}",
+            id: "com.example.o'hare",
+            version: "1.0.0",
+            source: "O'Hare {Lab}",
+            exe: "O'Hare {Lab}.exe",
+            setup: "O'Hare {Lab}-setup",
+            icon: None,
+        });
+        let code = &script[script.find("\n[Code]\n").expect("a [Code] section")..];
+        let run = r"Software\Microsoft\Windows\CurrentVersion\Run";
+        assert!(code.contains("CurUninstallStep <> usUninstall"));
+        // The value the app's id names, its `'` doubled.
+        assert!(code.contains(&format!(
+            "RegQueryStringValue(HKEY_CURRENT_USER, '{run}', 'com.example.o''hare', Command)"
+        )));
+        // The command's program, read as the app reads it (as written or
+        // with its environment variables expanded, quoted or up to a space or
+        // tab, `/` a `\`, a verbatim prefix dropped), compared without case;
+        // the name outside `ExpandConstant`, its `'` doubled.
+        assert!(code.contains("external 'ExpandEnvironmentStringsW@kernel32.dll stdcall';"));
+        for line in [
+            "  StringChangeEx(Command, #9, ' ', True);",
+            r#"  if Copy(Result, 1, 1) = '"' then"#,
+            r#"    Quote := Pos('"', Result);"#,
+            r"    Result := Copy(Result, 1, Pos(' ', Result) - 1);",
+            r"  StringChangeEx(Result, '/', '\', True);",
+            r"  if CompareText(Copy(Result, 1, 8), '\\?\UNC\') = 0 then",
+            r"    Result := '\' + Copy(Result, 8, Length(Result))",
+            r"  else if Copy(Result, 1, 4) = '\\?\' then",
+            r"  Exe := ExpandConstant('{app}') + '\O''Hare {Lab}.exe';",
+            "  if (CompareText(NshProgram(Command), Exe) = 0)",
+            "    or (CompareText(NshProgram(NshExpand(Command)), Exe) = 0) then",
+        ] {
+            assert!(code.contains(line), "{line}\n{code}");
+        }
+        assert!(code.contains(&format!(
+            "RegDeleteValue(HKEY_CURRENT_USER, '{run}', 'com.example.o''hare');"
+        )));
+    }
 
     #[test]
     fn file_names_drop_what_windows_forbids() {

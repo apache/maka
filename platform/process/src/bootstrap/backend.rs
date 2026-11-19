@@ -103,7 +103,7 @@ impl Launch {
     pub(crate) async fn terminal(
         self,
         command: crate::command::Prepared,
-        size: maka_agent_facts::terminal::TerminalSize,
+        size: maka_plugin_core::terminal::TerminalSize,
     ) -> io::Result<(crate::pty::PtyChild, crate::pty::PtyIo)> {
         match self {
             Self::Account {

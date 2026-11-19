@@ -23,6 +23,8 @@ pub(crate) struct Running {
     velocity: f32,
     /// First frame time (seconds); set on the first step.
     start: Option<f64>,
+    /// The frame time (seconds) of the last step.
+    last: Option<f64>,
 }
 
 impl Running {
@@ -33,7 +35,15 @@ impl Running {
         self
     }
 
+    /// The frame time (seconds) of its last step: where an animation that
+    /// replaces it starts, holding the value and velocity of that frame.
+    pub(crate) fn last_step(&self) -> Option<f64> {
+        self.last
+    }
+
     pub(crate) fn new(id: AnimationId, driver: Driver, from: f32, velocity: f32) -> Self {
+        let driver = sanitized(driver, from);
+        let velocity = if velocity.is_finite() { velocity } else { 0.0 };
         let velocity = match driver {
             Driver::Spring {
                 velocity: Some(v), ..
@@ -49,6 +59,7 @@ impl Running {
             from,
             velocity,
             start: None,
+            last: None,
         }
     }
 
@@ -103,8 +114,26 @@ impl Running {
     }
 
     /// Advances to `now` (seconds). Returns `(value, velocity, finished)`.
+    /// A value that is not finite ends the animation (the parameters are
+    /// checked when it starts; this is for numbers that overflow on the
+    /// way, such as a velocity near `f32::MAX`): a timing or spring at its
+    /// target, a decay where it started (its travel is what overflowed, on
+    /// its first frame).
     pub(crate) fn step(&mut self, now: f64) -> (f32, f32, bool) {
+        let (value, velocity, done) = self.advance(now);
+        if value.is_finite() && velocity.is_finite() {
+            return (value, velocity, done);
+        }
+        let rest = match self.driver {
+            Driver::Timing { to, .. } | Driver::Spring { to, .. } => to,
+            Driver::Decay { .. } => self.from,
+        };
+        (rest, 0.0, true)
+    }
+
+    fn advance(&mut self, now: f64) -> (f32, f32, bool) {
         let start = *self.start.get_or_insert(now);
+        self.last = Some(now);
         if let Driver::Decay {
             deceleration,
             clamp: Some(bounds),
@@ -132,7 +161,12 @@ impl Running {
                 if t_ms >= duration_ms {
                     return (to, 0.0, true);
                 }
-                let p = ease(easing, t_ms / duration_ms);
+                let linear = t_ms / duration_ms;
+                // A curve that overflows (`poly` of a negative power near
+                // 0) moves linearly there, keeping the duration.
+                let p = Some(ease(easing, linear))
+                    .filter(|p| p.is_finite())
+                    .unwrap_or(linear);
                 (self.from + (to - self.from) * p, 0.0, false)
             }
             Driver::Spring {
@@ -209,6 +243,193 @@ impl Running {
     }
 }
 
+/// `driver` with parameters its closed form can run, starting from `from`.
+/// The decoders take any number from JS or Rust, and a spring without
+/// stiffness once computed `0 * inf`: its value was NaN on every frame and
+/// it never came to rest. What cannot move the value (stiffness or mass
+/// not above 0, damping or a target that is not finite, a NaN or infinite
+/// duration) ends at once where it would rest; negative damping, which
+/// would grow without end, is no damping (it oscillates as an undamped
+/// spring does); a velocity that is not finite is 0; an easing whose
+/// numbers are not finite is linear; a NaN delay is none (an infinite one
+/// waits, as a sequence's does); a NaN deceleration or bounce is 0 (the
+/// clamps of [`decay`] and the bounds already hold infinite ones); and
+/// bounds that leave no finite place, both NaN (which made `f32::clamp`
+/// panic) or both the same infinity (the value became it), are none.
+/// Silent: it runs again on every pass of a loop, so [`warn_out_of_range`]
+/// reports once where the animation starts.
+fn sanitized(driver: Driver, from: f32) -> Driver {
+    match driver {
+        Driver::Timing {
+            to,
+            duration_ms,
+            easing,
+            delay_ms,
+            frame_rate,
+        } => Driver::Timing {
+            to: finite_or(to, from),
+            // A negative one, -inf too, already ended at once.
+            duration_ms: if never_ends(duration_ms) {
+                0.0
+            } else {
+                duration_ms
+            },
+            easing: if easing_finite(easing) {
+                easing
+            } else {
+                Easing::Linear
+            },
+            delay_ms: nan_or(delay_ms, 0.0),
+            frame_rate,
+        },
+        Driver::Spring {
+            to,
+            stiffness,
+            damping,
+            mass,
+            velocity,
+            frame_rate,
+        } => {
+            let to = finite_or(to, from);
+            if !spring_moves(stiffness, damping, mass) {
+                return Driver::Timing {
+                    to,
+                    duration_ms: 0.0,
+                    easing: Easing::Linear,
+                    delay_ms: 0.0,
+                    frame_rate,
+                };
+            }
+            Driver::Spring {
+                to,
+                stiffness,
+                damping: damping.max(0.0),
+                mass,
+                velocity: velocity.map(|v| finite_or(v, 0.0)),
+                frame_rate,
+            }
+        }
+        Driver::Decay {
+            velocity,
+            deceleration,
+            clamp,
+            bounce,
+            frame_rate,
+        } => Driver::Decay {
+            velocity: velocity.map(|v| finite_or(v, 0.0)),
+            deceleration: nan_or(deceleration, 0.0),
+            // One NaN bound is the other (`min` / `max` pick it, as on
+            // `main`).
+            clamp: clamp.filter(|&(a, b)| bounds_hold(a, b)),
+            bounce: nan_or(bounce, 0.0),
+            frame_rate,
+        },
+    }
+}
+
+/// Whether a spring of these parameters moves a value: stiffness and mass
+/// above 0, a finite damping.
+fn spring_moves(stiffness: f32, damping: f32, mass: f32) -> bool {
+    let positive = |v: f32| v.is_finite() && v > 0.0;
+    positive(stiffness) && positive(mass) && damping.is_finite()
+}
+
+/// Whether a duration never ends a timing: NaN (no time reaches it) or
+/// infinite.
+fn never_ends(duration_ms: f32) -> bool {
+    duration_ms.is_nan() || duration_ms == f32::INFINITY
+}
+
+/// Whether `easing`'s own numbers are finite.
+fn easing_finite(easing: Easing) -> bool {
+    match easing {
+        Easing::Bezier(x1, y1, x2, y2) => [x1, y1, x2, y2].iter().all(|v| v.is_finite()),
+        Easing::Curve(Curve::Poly(n) | Curve::Elastic(n) | Curve::Back(n), _) => n.is_finite(),
+        _ => true,
+    }
+}
+
+/// Whether bounds leave a finite place for the value: not both NaN, not
+/// both the same infinity (after `min` / `max`, which take the other of
+/// one NaN).
+fn bounds_hold(a: f32, b: f32) -> bool {
+    let (lo, hi) = (a.min(b), a.max(b));
+    !lo.is_nan() && !(lo.is_infinite() && lo == hi)
+}
+
+/// Whether [`sanitized`] changes `driver` (a target it keeps is a finite
+/// one, so `from` does not matter).
+fn out_of_range(driver: &Driver) -> bool {
+    match *driver {
+        Driver::Timing {
+            to,
+            duration_ms,
+            easing,
+            delay_ms,
+            ..
+        } => {
+            !to.is_finite()
+                || never_ends(duration_ms)
+                || !easing_finite(easing)
+                || delay_ms.is_nan()
+        }
+        Driver::Spring {
+            to,
+            stiffness,
+            damping,
+            mass,
+            velocity,
+            ..
+        } => {
+            !(to.is_finite()
+                && spring_moves(stiffness, damping, mass)
+                && damping >= 0.0
+                && velocity.is_none_or(f32::is_finite))
+        }
+        Driver::Decay {
+            velocity,
+            deceleration,
+            clamp,
+            bounce,
+            ..
+        } => {
+            velocity.is_some_and(|v| !v.is_finite())
+                || deceleration.is_nan()
+                || bounce.is_nan()
+                || clamp.is_some_and(|(a, b)| !bounds_hold(a, b))
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How often [`warn_out_of_range`] warned on this thread: tests count
+    /// the warnings without a global logger.
+    pub(crate) static WARNINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Logs, once where an animation starts, that `driver` holds parameters
+/// [`sanitized`] replaces, so the app learns why it moved as it did.
+pub(crate) fn warn_out_of_range(driver: &Driver) {
+    if out_of_range(driver) {
+        #[cfg(test)]
+        WARNINGS.with(|n| n.set(n.get() + 1));
+        log::warn!(
+            "animation parameters out of range ({driver:?}): replaced by ones it can run (a spring that cannot move jumps to its target)"
+        );
+    }
+}
+
+/// `v`, or `default` when it is not finite.
+fn finite_or(v: f32, default: f32) -> f32 {
+    if v.is_finite() { v } else { default }
+}
+
+/// `v`, or `default` when it is not a number.
+fn nan_or(v: f32, default: f32) -> f32 {
+    if v.is_nan() { default } else { v }
+}
+
 /// `1 - deceleration`: the fraction of velocity lost per millisecond.
 fn decay_rate(deceleration: f32) -> f32 {
     1.0 - deceleration.clamp(0.0, 0.999_999)
@@ -247,6 +468,7 @@ pub fn sample_easing(easing: Easing, count: usize) -> Vec<f32> {
 /// seconds from its start until it ends (the last sample is where it
 /// ends), at most `max` of them: the exact curve the animation runs.
 pub fn sample_driver(driver: Driver, from: f32, step: f64, max: usize) -> Vec<f32> {
+    warn_out_of_range(&driver);
     let mut running = Running::new(0, driver, from, 0.0).starting_at(0.0);
     let step = step.max(1e-4);
     let mut out = Vec::new();
@@ -287,14 +509,18 @@ fn spring(x0: f32, v0: f32, k: f32, c: f32, m: f32, t: f32) -> (f32, f32) {
         let b = v0 + w0 * x0;
         (e * (x0 + b * t), e * (b - w0 * (x0 + b * t)))
     } else {
-        let wd = w0 * (zeta * zeta - 1.0).sqrt();
-        let a = x0;
-        let b = (v0 + zeta * w0 * x0) / wd;
-        let e = (-zeta * w0 * t).exp();
-        let (ch, sh) = ((wd * t).cosh(), (wd * t).sinh());
-        let x = e * (a * ch + b * sh);
-        let v = e * ((b * wd - zeta * w0 * a) * ch + (a * wd - zeta * w0 * b) * sh);
-        (x, v)
+        // Two decaying exponentials, not `e^(-ζω₀t) · cosh(ω_d t)`: cosh
+        // overflows (`ω_d t` past ~710) long before the product is small,
+        // so a strongly overdamped spring (from about ζ 7.5 over a travel
+        // of 1) went infinite, then NaN, mid-flight.
+        // `r1` is written so it does not cancel when ζ is large.
+        let s = (zeta * zeta - 1.0).sqrt();
+        let r1 = -w0 / (zeta + s);
+        let r2 = -w0 * (zeta + s);
+        let c1 = (v0 - r2 * x0) / (r1 - r2);
+        let c2 = x0 - c1;
+        let (e1, e2) = ((r1 * t).exp(), (r2 * t).exp());
+        (c1 * e1 + c2 * e2, c1 * r1 * e1 + c2 * r2 * e2)
     };
     (x as f32, v as f32)
 }
@@ -610,5 +836,272 @@ mod tests {
         let mut r = Running::new(1, spring, 0.0, 0.0).starting_at(0.0);
         assert_eq!(r.step(10.0 / 60.0).0, samples[10]);
         assert_eq!(sample_driver(spring, 0.0, 1.0 / 60.0, 3).len(), 3);
+    }
+
+    /// Every value a driver gives is finite, as is when it expects to end
+    /// while no frames are drawn ([`Running::deadline`]), and it ends within
+    /// `limit` seconds.
+    fn ends_finite(driver: Driver, from: f32, limit: f64) -> f32 {
+        // What is replaced is also what is reported.
+        assert!(out_of_range(&driver), "{driver:?}: not reported");
+        let mut r = Running::new(1, driver, from, 0.0).starting_at(0.0);
+        let mut now = 0.0;
+        loop {
+            assert!(r.deadline(now).is_finite(), "{driver:?}: deadline");
+            let (v, velocity, done) = r.step(now);
+            assert!(
+                v.is_finite() && velocity.is_finite(),
+                "{driver:?}: {v} {velocity}"
+            );
+            if done {
+                return v;
+            }
+            assert!(now < limit, "{driver:?} never ends");
+            now += 1.0 / 60.0;
+        }
+    }
+
+    #[test]
+    fn invalid_spring_parameters_end_at_the_target() {
+        let spring = |stiffness, damping, mass, velocity| Driver::Spring {
+            to: 1.0,
+            stiffness,
+            damping,
+            mass,
+            velocity,
+            frame_rate: None,
+        };
+        for driver in [
+            // No stiffness: the overdamped form once computed 0 * inf.
+            spring(0.0, 26.0, 1.0, None),
+            spring(0.0, 0.0, 1.0, None),
+            spring(-10.0, 26.0, 1.0, None),
+            spring(f32::NAN, 26.0, 1.0, None),
+            spring(f32::INFINITY, 26.0, 1.0, None),
+            spring(170.0, f32::NAN, 1.0, None),
+            spring(170.0, 26.0, f32::INFINITY, None),
+            spring(170.0, 26.0, f32::NAN, None),
+            spring(170.0, 26.0, -1.0, None),
+            // A negative mass without damping never ended.
+            spring(170.0, 0.0, -1.0, None),
+            spring(170.0, 26.0, 1.0, Some(f32::NAN)),
+            spring(170.0, 26.0, 1.0, Some(f32::INFINITY)),
+        ] {
+            assert_eq!(ends_finite(driver, 0.0, 30.0), 1.0, "{driver:?}");
+        }
+        // Negative damping would grow without end: it is treated as none,
+        // a spring that keeps oscillating within its first amplitude.
+        let mut r = Running::new(1, spring(170.0, -5.0, 1.0, None), 0.0, 0.0).starting_at(0.0);
+        for i in 0..600 {
+            let (v, _, _) = r.step(i as f64 / 60.0);
+            assert!(v.is_finite() && (-1.5..=3.5).contains(&v), "{v}");
+        }
+        // A target that is not a number leaves the value where it is.
+        let to_nan = Driver::Spring {
+            to: f32::NAN,
+            stiffness: 170.0,
+            damping: 26.0,
+            mass: 1.0,
+            velocity: None,
+            frame_rate: None,
+        };
+        assert_eq!(ends_finite(to_nan, 4.0, 30.0), 4.0);
+    }
+
+    /// What `main` already ran to an end, or waits for on purpose, keeps its
+    /// behavior: a negative delay starts part-way, an infinite one waits, an
+    /// infinite deceleration or bounce is held by the clamps (it coasts, it
+    /// bounces with all its speed), and of bounds with one NaN the other is
+    /// both.
+    #[test]
+    fn parameters_that_already_end_keep_their_behavior() {
+        let timing = Driver::Timing {
+            to: 1.0,
+            duration_ms: 300.0,
+            easing: Easing::Linear,
+            delay_ms: -100.0,
+            frame_rate: None,
+        };
+        let mut r = Running::new(1, timing, 0.0, 0.0).starting_at(0.0);
+        assert!((r.step(0.1).0 - 2.0 / 3.0).abs() < 1e-3);
+        // A duration of -inf ends at once, as a negative one does.
+        let ended = Driver::Timing {
+            to: 1.0,
+            duration_ms: f32::NEG_INFINITY,
+            easing: Easing::Linear,
+            delay_ms: 0.0,
+            frame_rate: None,
+        };
+        let mut r = Running::new(1, ended, 0.0, 0.0).starting_at(0.0);
+        assert_eq!(r.step(0.0), (1.0, 0.0, true));
+        // An infinite delay waits, as a sequence's infinite delay does.
+        let waiting = Driver::Timing {
+            to: 1.0,
+            duration_ms: 300.0,
+            easing: Easing::Linear,
+            delay_ms: f32::INFINITY,
+            frame_rate: None,
+        };
+        let mut r = Running::new(1, waiting, 0.0, 0.0).starting_at(0.0);
+        assert_eq!(r.step(60.0), (0.0, 0.0, false));
+        let decay = |deceleration, clamp, bounce| Driver::Decay {
+            velocity: Some(500.0),
+            deceleration,
+            clamp,
+            bounce,
+            frame_rate: None,
+        };
+        let mut coasting =
+            Running::new(1, decay(f32::INFINITY, None, 0.0), 0.0, 0.0).starting_at(0.0);
+        let (v, velocity, done) = coasting.step(1.0);
+        assert!(!done && v > 400.0 && velocity > 400.0, "{v} {velocity}");
+        assert!(coasting.deadline(1.0).is_finite());
+        let mut bouncing =
+            Running::new(1, decay(0.998, Some((0.0, 10.0)), f32::INFINITY), 0.0, 0.0)
+                .starting_at(0.0);
+        let (v, _, done) = bouncing.step(0.03);
+        assert!(!done && (0.0..10.0).contains(&v), "{v}");
+        // One NaN bound: the other is both, so it stops there at once.
+        let mut one_bound =
+            Running::new(1, decay(0.998, Some((f32::NAN, 10.0)), 0.5), 0.0, 0.0).starting_at(0.0);
+        assert_eq!(one_bound.step(0.0), (10.0, 0.0, true));
+        // None of them is out of range: nothing is replaced or reported.
+        for driver in [
+            timing,
+            ended,
+            waiting,
+            decay(f32::INFINITY, None, 0.0),
+            decay(0.998, Some((0.0, 10.0)), f32::INFINITY),
+            decay(0.998, Some((f32::NAN, 10.0)), 0.5),
+        ] {
+            assert!(!out_of_range(&driver), "{driver:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_timing_and_decay_parameters_end() {
+        let timing = |to, duration_ms, delay_ms| Driver::Timing {
+            to,
+            duration_ms,
+            easing: Easing::EaseInOut,
+            delay_ms,
+            frame_rate: None,
+        };
+        assert_eq!(ends_finite(timing(1.0, f32::NAN, 0.0), 0.0, 1.0), 1.0);
+        assert_eq!(ends_finite(timing(1.0, f32::INFINITY, 0.0), 0.0, 1.0), 1.0);
+        assert_eq!(ends_finite(timing(1.0, 100.0, f32::NAN), 0.0, 1.0), 1.0);
+        assert_eq!(ends_finite(timing(f32::NAN, 100.0, 0.0), 2.0, 1.0), 2.0);
+        assert_eq!(
+            ends_finite(timing(f32::INFINITY, 100.0, 0.0), 2.0, 1.0),
+            2.0
+        );
+        // An easing whose numbers are not finite is linear, over the same
+        // duration.
+        for easing in [
+            Easing::Bezier(0.0, f32::NAN, 1.0, 1.0),
+            Easing::Curve(Curve::Poly(f32::NAN), EaseMode::In),
+            Easing::Curve(Curve::Elastic(f32::NAN), EaseMode::Out),
+            Easing::Curve(Curve::Back(f32::INFINITY), EaseMode::In),
+        ] {
+            let driver = Driver::Timing {
+                to: 1.0,
+                duration_ms: 1000.0,
+                easing,
+                delay_ms: 0.0,
+                frame_rate: None,
+            };
+            assert!(out_of_range(&driver), "{driver:?}");
+            let mut r = Running::new(1, driver, 0.0, 0.0).starting_at(0.0);
+            assert_eq!(r.step(0.5), (0.5, 0.0, false), "{easing:?}");
+            assert_eq!(r.step(1.0), (1.0, 0.0, true), "{easing:?}");
+        }
+        let decay = |velocity, deceleration, clamp, bounce| Driver::Decay {
+            velocity,
+            deceleration,
+            clamp,
+            bounce,
+            frame_rate: None,
+        };
+        for driver in [
+            decay(Some(f32::NAN), 0.998, None, 0.0),
+            decay(Some(f32::INFINITY), 0.998, None, 0.0),
+            decay(Some(500.0), f32::NAN, None, 0.0),
+            decay(Some(500.0), 0.998, Some((f32::NAN, f32::NAN)), 0.5),
+            // Bounds at one infinity made the value that infinity.
+            decay(
+                Some(500.0),
+                0.998,
+                Some((f32::INFINITY, f32::INFINITY)),
+                0.5,
+            ),
+            decay(Some(500.0), 0.998, Some((f32::NAN, f32::INFINITY)), 0.5),
+            decay(
+                Some(-500.0),
+                0.998,
+                Some((f32::NEG_INFINITY, f32::NEG_INFINITY)),
+                0.5,
+            ),
+            decay(Some(500.0), 0.998, Some((0.0, 10.0)), f32::NAN),
+        ] {
+            ends_finite(driver, 0.0, 30.0);
+        }
+    }
+    /// A strongly overdamped spring (ζ of 10 to 31.5 here, one of them by a
+    /// tiny mass) moves to its target and settles there: `cosh` overflowed
+    /// on the way and made it infinite, then NaN.
+    #[test]
+    fn overdamped_springs_settle_without_a_jump() {
+        for (stiffness, damping, mass) in [
+            (170.0, 26.0, 0.001),
+            (1000.0, 1000.0, 1.0),
+            (100.0, 200.0, 1.0),
+        ] {
+            let driver = Driver::Spring {
+                to: 1.0,
+                stiffness,
+                damping,
+                mass,
+                velocity: None,
+                frame_rate: None,
+            };
+            assert!(!out_of_range(&driver));
+            let mut r = Running::new(1, driver, 0.0, 0.0).starting_at(0.0);
+            let (mut now, mut last) = (0.0, 0.0);
+            loop {
+                let (v, velocity, done) = r.step(now);
+                assert!(v.is_finite() && velocity.is_finite(), "{driver:?} at {now}");
+                // Overdamped: it never passes the target, and it settles
+                // from close to it, not from part-way.
+                assert!(
+                    (last..=1.0).contains(&v),
+                    "{driver:?} at {now}: {last} -> {v}"
+                );
+                if done {
+                    assert!(1.0 - last < 0.01, "{driver:?}: jumped from {last}");
+                    break;
+                }
+                assert!(now < 120.0, "{driver:?} never ends");
+                last = v;
+                now += 1.0 / 60.0;
+            }
+        }
+    }
+
+    /// A curve that overflows for numbers that are finite (`poly` of a
+    /// negative power near 0) still takes its duration.
+    #[test]
+    fn an_easing_that_overflows_keeps_its_duration() {
+        let driver = Driver::Timing {
+            to: 1.0,
+            duration_ms: 1000.0,
+            easing: Easing::Curve(Curve::Poly(-200.0), EaseMode::In),
+            delay_ms: 0.0,
+            frame_rate: None,
+        };
+        assert!(!out_of_range(&driver));
+        let mut r = Running::new(1, driver, 0.0, 0.0).starting_at(0.0);
+        let (v, _, done) = r.step(0.1);
+        assert_eq!((v, done), (0.1, false));
+        assert_eq!(r.step(1.0), (1.0, 0.0, true));
     }
 }

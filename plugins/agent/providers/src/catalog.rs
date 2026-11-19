@@ -22,7 +22,8 @@
 //! policy remain separate.
 
 use maka_agent_facts::{
-    configuration::{CatalogModelReference, ModelInfo, validation},
+    configuration::{CatalogModelReference, ModelInfo, ModelOverride, validation},
+    context::effective_input_limit,
     public_catalog::PublicCatalogBody,
 };
 use serde_json::Value;
@@ -362,17 +363,23 @@ impl Snapshot {
             })
     }
 
-    /// Account facts, including explicit false and empty values, take precedence.
-    pub fn resolve(
+    /// Resolve route facts and user overrides into the model used for execution.
+    pub(crate) fn resolve(
         &self,
         provider: &str,
         reported: ModelInfo,
-        reference: Option<&CatalogModelReference>,
+        overrides: Option<&ModelOverride>,
     ) -> ModelInfo {
-        match self.model_base(provider, &reported.id, reference) {
+        let reference = overrides.and_then(|value| value.catalog_model.as_ref());
+        let mut model = match self.model_base(provider, &reported.id, reference) {
             Some(public) => merge::reported(reported, &public),
             None => reported,
+        };
+        if let Some(overrides) = overrides {
+            model = overrides.apply(&model);
         }
+        model.input_limit = effective_input_limit(model.context_window, model.input_limit);
+        model
     }
 }
 

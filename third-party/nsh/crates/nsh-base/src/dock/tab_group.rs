@@ -34,7 +34,7 @@ use std::{
 };
 
 use nsh_core::{
-    AccessibilityState,
+    AccessibilityState, RevealOptions, ScrollAlignment,
     element::{LayoutAnimation, LayoutCurve, LayoutTransition},
     geometry::{Bounds, Point, Points},
     prelude::*,
@@ -81,6 +81,20 @@ pub(crate) fn tab_value(a: AreaCx, panel: &PanelId) -> Option<DockTab> {
     })
 }
 
+/// The tabs of a tab bar: `tabs` in a row in a horizontal scroll view, so
+/// tabs that do not fit scroll instead of running past the bar's end. The
+/// scroll view is as wide as its tabs and shrinks to the room the bar
+/// leaves it.
+pub(crate) fn tab_strip(tabs: impl IntoElement) -> AnyElement {
+    scroll()
+        .horizontal()
+        .scrollbar(false)
+        .flex_shrink(1.0)
+        .min_w(px(0.0))
+        .child(view().flex_row().child(tabs))
+        .into_element()
+}
+
 /// Tab group `node`: its frame, tab bar and content frame.
 pub(crate) fn tab_group(a: AreaCx, node: NodeId) -> AnyElement {
     let group = computed(move || a.area.with(|area| area.group(node)));
@@ -116,7 +130,7 @@ pub(crate) fn tab_group(a: AreaCx, node: NodeId) -> AnyElement {
                 .element_ref(&refs.bar)
                 .app_class(a.props.tab_bar_class)
                 .inline_style(a.props.tab_bar_style)
-                .child(each(
+                .child(tab_strip(each(
                     move || tabs.get(),
                     |panel: &PanelId| panel.clone(),
                     move |panel, _| {
@@ -127,7 +141,7 @@ pub(crate) fn tab_group(a: AreaCx, node: NodeId) -> AnyElement {
                         };
                         tab(a, id, Some(node), value, tab_refs.clone())
                     },
-                )),
+                ))),
         )
         .child(
             view()
@@ -325,6 +339,14 @@ pub(crate) fn tab(
         })
     };
     let selected = move || value.with(|v| v.as_ref().is_some_and(|v| v.active));
+    // The tab that becomes the displayed one (a press in another group,
+    // the ref's `selectPanel`, a panel added) comes into view in its bar's
+    // scroll view, by as little as shows it.
+    effect(move || {
+        if selected() {
+            me.reveal(RevealOptions::default().vertical(ScrollAlignment::Nearest));
+        }
+    });
     let pressed = panel.clone();
     let dragged = panel.clone();
     view()
@@ -361,6 +383,18 @@ pub(crate) fn tab(
                 request.claim();
             }
         }))
+        // A terminal's pointer scrolls a scroll view by dragging it, and
+        // would take the tabs' before the claim above is answered: there
+        // the platform itself recognizes the tab's drag, as a pan.
+        .when(crate::terminal::is_terminal(), |tab| {
+            tab.claim_touches(TouchClaim::on_pan(PanActivation::default()).ask(
+                move |request: &ClaimRequest| {
+                    if can_drag() {
+                        request.claim();
+                    }
+                },
+            ))
+        })
         .keep_touches(true)
         .on_responder_grant(move |e: &ResponderEvent| a.start_drag(dragged.clone(), source, e.page))
         .on_responder_move(move |e: &ResponderEvent| a.drag_to(e.page))

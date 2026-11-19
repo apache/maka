@@ -21,39 +21,55 @@
 
 [简体中文](ARCHITECTURE.zh-CN.md)
 
-Maka assembles applications from plugins. A package declares what it provides and what it needs. A composition chooses instances and connects their imports to exports. Host services perform work; UI plugins contribute NSH components to the shared terminal and desktop workbench.
+Maka separates runtime infrastructure, domain plugins, and product assembly into three layers:
 
-## Code ownership
+- **[Platform](platform/README.md)** — package loader, composition planner, SQLite persistence (`maka-event-log`), Host service lifecycle, V8/Python sandboxes, OS process isolation, Computer Use, and NSH UI support.
+- **[Plugins](plugins/README.md)** — business capabilities (`agent`, `workspace`, `skills`, `settings`, `interactions`) and their public wire contracts.
+- **[Products](products/maka/README.md)** — native factory registration, default plugin composition, the shared NSH workbench, CLI, ACP server, and terminal/desktop shells.
 
-[Platform](platform/README.md) contains the package loader, composition kernel, execution owners and renderers. [Plugins](plugins/README.md) contain business features and their declarations. [The Maka product](products/maka/README.md) selects packages, native factories and startup behavior.
+A plugin package (`package.ts`) is an authored deployment unit (`host`, `ui`, or `composition`), whereas a Cargo crate is a Rust compilation boundary. The two do not map 1:1: the Agent domain splits across multiple crates with strict one-way dependencies, while smaller plugin entries can share a single native crate.
 
-A `package.ts` identifies an authored plugin. A Cargo crate identifies code compiled together. They need not correspond one-to-one: an Agent service can use several domain crates, while related plugin entries can share one native implementation crate.
+## Package composition and UI runtime
 
-The composition kernel models Host, UI and structural instances in one source. `host-js` executes JavaScript Host services through the existing background runtime. The [workbench](products/maka/workbench/README.md) runs trusted UI modules in its shared NSH VM; both shells supply the same Host bindings. NSH owns reactive layout, input and rendering. Shared fact types remain explicit dependencies where persistence or presentation needs them.
+1. The package loader validates immutable `.maka-plugin` bytes and addresses them by content digest.
+2. The composition planner type-checks Host, UI, and composition instances against their configuration schemas and import/export contracts.
+3. The State Root commits the desired deployment source and package bytes at a new monotonic revision.
+4. `maka-host-runtime` reconciles enabled Host services in the background, while the NSH workbench observes the same source and mounts enabled UI contributions.
 
-## From package to running application
+Installing a package adds it to the local store without activating it; explicit composition nodes control what runs. Reconfiguring a deployment keeps unchanged service activations alive, while modified or removed instances stop admitting new requests and drain in-flight operations before retiring.
 
-1. The package loader validates immutable bytes and computes their reference.
-2. The composition planner checks each Host, UI or structural node, its configuration and bindings.
-3. A Root stores the desired source and its package bytes at a revision.
-4. The Host reconciles enabled Host services. The workbench observes the same source and lazily loads enabled UI contributions when they are used.
+Both the terminal shell (cell grid or pixel graphics) and the desktop window execute the same TSX/NSH workbench in a single shared VM. Trusted UI modules export `activate(context)` to register roots, views, commands, panels, settings pages, and tool cards; an optional `prepareReload()` hands off JSON state across live UI reloads for the same instance identity.
 
-Installation adds immutable packages to the available set; explicit UI nodes determine which contributions are enabled. User-installed UI plugins are trusted: they run in the workbench VM with its existing NSH and Host capabilities, without a separate plugin sandbox or permission workflow. Host admission still checks the caller, method, input and actual resources. Local IPC connections carry the launcher’s method and recovery grants.
+## State Root and two-phase operation journal
 
-Updating a source preserves unchanged activations and their captured bindings. Changed instances retire before replacement. Already accepted work remains with its original owner, including when the caller disconnects or a component disappears.
+[maka-event-log](platform/event-log/README.md) owns persistence for each State Root: one exclusive OS file lock (`RootOwner`) and one SQLite database (`RootStore`). A single writer queue serializes commits, independent reader connections serve consistent snapshots, and a disposable background lane maintains derived transcript and FTS indexes. Domain crates register SQL migrations on `RootStore` instead of opening separate databases.
 
-## State and effects
+Persistent plugin state is keyed by `(Root, deployment, instance)`. Updating package bytes or restarting an activation never creates a new state namespace.
 
-The EventLog owns the durable Root and canonical records. Stable plugin data belongs to a Root, deployment and instance. Package revisions and activation epochs describe code and execution; neither creates a new data namespace by itself.
+Side-effecting Host calls use a two-phase ledger that separates caller intent from provider settlement:
 
-Mutations have receipts. Business completion and physical cleanup are recorded separately. If a reply is lost, the caller resolves the original receipt instead of issuing a replacement operation. Cancellation asks work to stop; resources remain owned until their actual cleanup completes.
+- **Caller intent (`CallerIntent`)** — Before a mutation reaches a provider, the Host records the caller's `RecoveryRef` (target instance, method, operation UUID, request fingerprint, and contract digest). On retry or restart, an owner inspects its own intent journal rather than blindly re-issuing mutations.
+- **Independent `Outcome` and `Cleanup`** — Provider receipts (`application_operations`) track business `Outcome` (`NotExecuted`, `Returned`, `Unknown`) separately from physical resource `Cleanup` (`Unconfirmed`, `Confirmed`, `Failed`). Both advance monotonically.
+- **Honest uncertainty** — Once caller intent is recorded, a missing receipt never proves non-execution. In-flight interruptions settle to `Unknown`, blocking automatic replay while still accepting late authoritative completion (`OperationObserved`) without rewriting historical cuts.
+- **Atomic local mutations** — Pure state mutations on the same Root commit in the same SQLite transaction as their `Returned` receipt, with no network or subprocess I/O inside the write lock.
+- **Evidence pinning** — Active runs, `Unknown` operations, unconfirmed cleanups, live Code Mode cells, and history snapshots pin their content-addressed blobs until both outcome and cleanup settle.
 
-Desktop, terminal pixel rendering and terminal Unicode rendering run the same TSX/NSH workbench. UI modules contribute commands, panels, settings pages and tool renderers. The plugin contract depends on NSH, rather than GPUI or a terminal scene language; backend-specific native components remain a renderer concern.
+## Agent execution and crash recovery
 
-A UI module is evaluated by immutable package identity and activated under an NSH reactive owner. Its visible components have their own lifetimes. Disabling an instance, changing its package or configuration, or removing it cleans up the activation and its contributions. Source revision changes that leave an instance unchanged do not reload it. NSH component cleanup releases subscriptions and timers; accepted Host work and mutation receipts remain with their original client owner. Native file snapshots and clipboard resource support live in [ui-support](platform/ui-support/README.md).
+The [Agent domain](plugins/agent/README.md) enforces a one-way crate dependency chain:
 
-## Development and distribution
+- **`facts`, `api`, `ports`** — persisted record types, public wire schemas, and execution traits (no live Host handles).
+- **`state`** — SQLite migrations, canonical fact appends, and deterministic in-transaction projections (active run frontier, level-triggered waits, Code Mode cells, `SessionData`, artifacts, snapshots, catalog, usage, and Recall).
+- **`engine`** — the deterministic reconciler and turn driver. Live turns, user approvals, model retries, context compaction, and cold-restart recovery all step through the same frontier loop.
+- **`authority`, `native`** — live activation custody, workspace permission intersection, model/tool/executor bindings, and background run scheduling.
 
-Each CLI build embeds the product bundle, and each workbench build embeds its TSX application. UI plugin source modules and assets use the existing immutable package installation and read paths, so installing or updating UI plugins does not require rebuilding the client. Rebuilding the executable does not replace an installation’s saved composition.
+Core execution guarantees:
 
-Rust contracts generate the [JavaScript SDK](packages/plugin-sdk/README.md) through [maka-schema](tools/schema/README.md), without building the product. The npm package is a [native executable launcher](packages/cli/README.md).
+- **Stable `RunId`** — One logical run keeps its `RunId` across approvals, retries, compaction, and Host restarts, decomposed into `StepId`s and upstream `ModelAttempt`s. Continuing after a terminal `Failed` or `Cancelled` run starts a new `RunId` over a verified history cut.
+- **Obligation frontier** — Streamed tool calls, user prompts, and background cells form an explicit obligation set. On restart, the engine reconciles original receipts first; if an effect's outcome cannot be established, the run fails explicitly rather than re-running side effects under a new ID.
+- **Code Mode (`Cell` and `SessionData`)** — Code Mode persists cell lifecycles, nested tool bindings, and key-value `SessionData` (published atomically when a cell completes). Maka never snapshots V8/Python heaps or replays scripts on recovery.
+- **External CLI executors** — Built-in adapters for Claude Code, Codex, and Antigravity run in the user's workspace under `TaskOwner` process custody, while the ACP service adapter (`acp-executor`) runs in an isolated workspace and publishes accepted edits through the Host.
+
+## Build, SDK generation, and CI
+
+`maka-schema` (`tools/schema`) exports Rust contracts into [`@maka-agent/plugin-sdk`](packages/plugin-sdk/README.md) without compiling V8 or the full product. CLI builds embed the default product bundle and workbench UI, while installed plugins load dynamically from the package store. Local `just` recipes and GitHub Actions share change-based test routing and `cargo nextest` archive execution in [`scripts/ci.mjs`](scripts/ci.mjs).

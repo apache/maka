@@ -78,7 +78,7 @@ function App() {
                       {i() > 0 ? <View style={{ height: 1, marginLeft: 12, backgroundColor: ui().line }} /> : null}
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 12, height: size.row + 4, paddingHorizontal: 12 }}>
                         <Text style={{ flex: 1, fontSize: 13, color: ui().muted }}>{a().detail}</Text>
-                        <Button onPress={() => show(a().options)} {...button(a().danger ? "danger" : "secondary")}>
+                        <Button onPress={() => show(a().options)} {...button(a().danger ? "danger" : "secondary", { align: "center" })}>
                           <Text style={buttonText(a().danger ? "danger" : "secondary")}>{a().label}</Text>
                         </Button>
                       </View>
@@ -98,7 +98,7 @@ function App() {
           <View style={{ gap: 10 }}>
             <Each of={alerts}>
               {(a) => (
-                <Button onPress={() => show(a().options)} style={row()} activeStyle={press.activeStyle} hoverStyle={hoverFill()} focusStyle={focusRing()}>
+                <Button onPress={() => show(a().options)} style={row()} activeStyle={press.activeStyle} hoverStyle={hoverFill()} focusVisibleStyle={focusRing()}>
                   <Text style={{ color: a().danger ? ui().danger : ui().text, fontSize: 16, fontWeight: "600" }}>{a().label}</Text>
                   <Text style={{ color: ui().muted, fontSize: 13 }}>{a().detail}</Text>
                 </Button>

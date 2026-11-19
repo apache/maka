@@ -103,6 +103,7 @@ Fingers drag scroll views. On the desktop (macOS, Windows, Linux) and in the bro
 | `bounces` | `.bounces(..)` | `boolean` | `true` | Overscroll past the edges. |
 | `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | The scroll indicator shows. |
 | `contentInset` | `.content_inset(EdgeInsets { .. })` | `Partial<Edges>` | | Room around the content, scrollable into. |
+| `scrollbarInset` | `.scrollbar_inset(EdgeInsets { .. })` | `Partial<Edges>` | | Keeps the scroll indicator this far from the view's edges. |
 | `contentOffset` | `.content_offset(point(..))` | `{ x?, y? }` | | Where it starts. |
 | `decelerationRate` | `.deceleration(rate)` | `"normal" \| "fast" \| number` | the platform's | How fast a fling slows down: `"normal"`, `"fast"`, or the velocity kept per millisecond (`0.998` is normal, `0.99` fast; `0` is the platform's default). |
 
@@ -535,6 +536,8 @@ mount(Photo);
 
 Text and canvases inside a zoomed scroll view are drawn again at the new resolution when the zoom ends, so they stay sharp on iOS. On Android, NSH zooms with a scroll view of its own, which scales around the pinch's focal point, pans with any number of fingers, flings and rubber-bands at the edges and zoom limits. Android starts a pinch once the fingers are about 27 mm apart, as the system's gesture detector does.
 
+A zoomable scroll view inside another scroll view, such as an image viewer's horizontal pager, works as photo viewers do on touch screens (iOS, Android and the web): a swipe on an image that is not zoomed in turns the page, a swipe on a zoomed image pans it, and at the image's edge the rest of the swipe goes on to the next or previous page.
+
 ## Scrolling from code
 
 Give the scroll view a ref (`element_ref()` and `.element_ref(&scroller)` in Rust, a [`ref`](./jsx-and-components.md) in TSX) and call its methods. Commands run after the rest of the changes in the same update, so scrolling to content you just added works.
@@ -560,6 +563,34 @@ let scroll!: ScrollRef;
 
 Lists add `scrollToIndex`, `scrollToOffset` and `scrollToEnd`; see [Lists](./lists.md#scrolling-from-code).
 
+### Revealing a view
+
+Every element's ref has `reveal`: it scrolls the scroll views around the view, innermost first, so the view shows,
+with the layout of the update it goes out with. `vertical` places the view along vertical scroll views and
+`horizontal` along horizontal ones: `"start"` (the default for `vertical`), `"center"`, `"end"`, or `"nearest"` (the
+default for `horizontal`), which leaves a view in full view, or one covering the viewport, where it is and otherwise
+brings the edge it is past to that edge of the viewport (a view longer than the viewport: its other edge to the
+viewport's other edge). `"start"` and `"end"` are physical: top and bottom along vertical scroll views, left and right
+along horizontal ones, in left-to-right and right-to-left layouts alike. Each scroll view starts from where the scrolls
+sent to it before put it, reported or not, and stops at its content's ends, past them by its `contentInset`. The view
+is placed from the layout, as `measure()` places it, so transforms (animations included) are not taken into account,
+and neither is a `zoomTo` the platform has not applied yet. It animates by default; `animated: false` jumps. Rows of a
+`List` scroll with the list's own `scrollToIndex`.
+
+```rust tabs
+let row = element_ref();
+
+view().element_ref(&row).child(text("Quality check"))
+view().on_press(move || row.reveal(RevealOptions::default().vertical(ScrollAlignment::Center)))
+```
+
+```tsx tabs
+let row!: ViewRef;
+
+<View ref={row}>…</View>
+<View onPress={() => row.reveal({ vertical: "center" })}>…</View>
+```
+
 ## Scroll views and the keyboard
 
 NSH keeps a focused input visible on its own: when the keyboard shows, the scroll view around the input gets a bottom inset as tall as the keyboard and scrolls the input into view. This happens natively, with no code in your app. Use `env(keyboard-inset-height)` as a bottom padding ([Content outside scroll views](./forms-and-keyboard.md#content-outside-scroll-views)) for content outside scroll views, such as a message bar pinned to the bottom.
@@ -573,7 +604,7 @@ Two props decide how scrolling and taps interact with the keyboard:
 
 `keyboardShouldPersistTaps`:
 
-- `"never"`: a tap outside the focused input only hides the keyboard, and buttons get the next tap. The user taps once to dismiss, again to press.
+- `"never"`: a tap outside the focused input only hides the keyboard, and buttons get the next tap. The user taps once to dismiss, again to press. Nothing inside acts on that tap: no `onPress` (`onPressIn` / `onPressOut` and `active:` styles still show while the finger is down), a responder's touch ends with `onResponderTerminate` instead of `onResponderRelease`, and native views such as a web view get no click. Only taps are held back and hide it: long presses (`onLongPress`, context menus), drags and scrolling work as they do with the keyboard down.
 - `"handled"`: a tap on something that handles it (a button) goes through and the keyboard stays; a tap on empty space hides it. Usually the right choice for forms.
 - `"always"`: the keyboard stays up through every tap.
 

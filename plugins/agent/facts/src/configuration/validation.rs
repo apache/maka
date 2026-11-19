@@ -108,6 +108,10 @@ pub fn profiles(values: &BTreeMap<String, ModelOverride>) -> ValidationResult {
 
 pub fn model_override(id: &str, p: &ModelOverride) -> ValidationResult {
     text(id)?;
+    if matches!((p.context_window, p.input_limit), (Some(context), Some(input)) if input > context)
+    {
+        return Err("model input limit exceeds the context window".into());
+    }
     if let Some(reference) = &p.catalog_model {
         for id in [&reference.provider, &reference.model_id] {
             text(id)?;

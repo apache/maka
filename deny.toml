@@ -60,6 +60,7 @@ exceptions = [
   { crate = "cssparser-macros@0.7.1", allow = ["MPL-2.0"] },
   { crate = "dtoa-short@0.3.5", allow = ["MPL-2.0"] },
   { crate = "selectors@0.38.0", allow = ["MPL-2.0"] },
+  { crate = "smartstring@1.0.1", allow = ["MPL-2.0"] },
   { crate = "option-ext@0.2.0", allow = ["MPL-2.0"] },
   { crate = "uniffi@0.31.0", allow = ["MPL-2.0"] },
   { crate = "uniffi_core@0.31.0", allow = ["MPL-2.0"] },
@@ -68,6 +69,11 @@ exceptions = [
   { crate = "uniffi_meta@0.31.0", allow = ["MPL-2.0"] },
   { crate = "uniffi_pipeline@0.31.0", allow = ["MPL-2.0"] },
 ]
+
+[[licenses.clarify]]
+crate = "libuv-sys-lite@1.48.4"
+expression = "MIT AND BSD-2-Clause AND ISC"
+license-files = [{ path = "LICENSE", hash = 0xc2efc575 }]
 
 [sources]
 allow-git = [

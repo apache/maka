@@ -26,7 +26,7 @@ import type {
   AgentExecution,
   AgentGoalView,
   GoalControl,
-  AgentResumable,
+  RunId,
   AgentQueueAction,
   AgentQueueMessageResult,
   AgentQueueMutationResult,
@@ -38,6 +38,7 @@ import type {
   AgentBackendPreference,
   AgentModelChoice,
   WorkspacePath,
+  QuoteRef,
 } from './generated/runtime.js';
 import type { ServiceMethods } from './generated/methods.js';
 import type { UiSubscription } from './workbench.js';
@@ -65,6 +66,7 @@ export type ComposerModelDetails =
   | { kind: 'ready'; choice: AgentModelChoice };
 
 export interface ComposerSendAction {
+  quotes: QuoteRef[];
   owner: string;
   text: string;
   backend: ComposerBackend;
@@ -74,6 +76,7 @@ export interface ComposerSendAction {
 
 export interface ComposerSendStatus {
   id: string;
+  quotes?: QuoteRef[];
   text: string;
   attachments: ClientDraftAttachment[];
   state: 'sending' | 'accepted' | 'failed' | 'unknown';
@@ -113,6 +116,23 @@ export interface ComposerAttachmentTarget {
   id: string;
 }
 
+/** Native paste payload matching `RichEditorPastedFiles` (`RichEditorFile` entries). */
+export interface ComposerPaste {
+  uris: string[];
+  files: { name: string; mime: string; data: Uint8Array }[];
+}
+
+/**
+ * Attachment intake request mirrored by `uploads::IntakeInput` (`maka/host` `ComposerIntake`).
+ * For `paste`, non-empty `uris` take precedence over `files`. `clipboard` and `paste` emit
+ * newline-joined path text via `onText` when any resolved path is a directory; `files` requires
+ * regular files.
+ */
+export type ComposerIntake =
+  | { kind: 'clipboard' }
+  | ({ kind: 'paste' } & ComposerPaste)
+  | { kind: 'files'; paths: string[] };
+
 /** The session owns uploads and receipts; a composer owns their presentation. */
 export interface ComposerAttachments<Element = unknown> {
   readonly sessionId: string;
@@ -127,8 +147,8 @@ export interface ComposerAttachments<Element = unknown> {
   imageUri(read: AgentAttachmentImageRead): string;
   /** Mount as a component so prop changes retain the native picker owner. */
   renderPicker(input: ComposerAttachmentPickerInput): Element;
-  pasteClipboard(onText: (text: string) => void): void;
-  dropFiles(uris: string[], onText: (text: string) => void): void;
+  intake(input: Extract<ComposerIntake, { kind: 'files' }>): void;
+  intake(input: ComposerIntake, onText: (text: string) => void): void;
   open(target: { owner: string; value: boolean }): void;
   remove(target: ComposerAttachmentTarget): void;
   reportError(reason: unknown): void;
@@ -210,11 +230,24 @@ export interface ComposerCompletionSource {
     query: string;
     backend: AgentBackendPreference;
   }): Promise<ServiceMethods['agent']['skillCandidates']['output']>;
+  sessions(query: string): Promise<AgentSession[]>;
   pathLabel(path: WorkspacePath): string;
+}
+
+/** A terminal source observed at its exact Run-local fence. Continuing admits a new Run. */
+export interface ComposerContinuation {
+  readonly source: AgentExecution & {
+    readonly state: Extract<
+      AgentExecution['state'],
+      { kind: 'completed' | 'failed' | 'cancelled' }
+    >;
+  };
 }
 
 /** A stable projection of the resident session, without its lifecycle or subscriptions. */
 export interface ComposerSession<Element = unknown> {
+  quotes(): QuoteRef[];
+  removeQuote(index: number): void;
   readonly sessionId: string;
   readonly prediction: ComposerPrediction;
   readonly queue: ComposerQueue;
@@ -236,30 +269,40 @@ export interface ComposerSession<Element = unknown> {
   workspace(): string;
   empty(): boolean;
   error(): string;
+  dismissError(): void;
   notice(): string;
   sends(): ComposerSendStatus[];
   retrySend(id: string): Promise<void>;
+  editSend(id: string): Promise<void>;
   checkSend(id: string): Promise<void>;
   dismissSend(id: string): Promise<void>;
   recovering(): boolean;
   connected(): boolean;
-  invocation(): string | null;
+  run(): RunId | null;
+  execution(): AgentExecution | null;
   stopping(): boolean;
-  resumable(): AgentResumable | null;
-  resuming(): boolean;
-  resume(source: AgentExecution, backend: ComposerBackend): Promise<void>;
+  continuation(): ComposerContinuation | null;
+  continuing(): boolean;
+  continueRun(source: AgentExecution, backend: ComposerBackend): Promise<void>;
   metrics(): string;
   /** How much of its model's context the conversation uses, when the model reports a window. */
   contextUsage?(): ComposerContextUsage | null;
   changeDraft(text: string): void;
   submit(event: { text: string }): void;
   sendRendered(action: ComposerSendAction): void;
-  stop(invocationId: string | null): Promise<void>;
+  stop(runId: RunId | null): Promise<void>;
+}
+
+/** Pass trimmed text for submission and verbatim text when checking draft occupancy. */
+export function hasComposerContent(
+  text: string,
+  attachments: readonly ClientDraftAttachment[],
+  quotes: readonly QuoteRef[] = [],
+): boolean {
+  return text.length > 0 || attachments.length > 0 || quotes.length > 0;
 }
 
 export interface ComposerViewInput<Element = unknown> {
-  quickTools?: boolean;
-  quickToolsBack?(): void;
   session(): ComposerSession<Element> | null;
   pending?(): {
     readonly id: string;
@@ -276,9 +319,8 @@ export interface ComposerViewInput<Element = unknown> {
     ready(): boolean;
     files(): { id: string; name: string; bytes: number; imageUri: string | null }[];
     picking(): boolean;
-    selectFiles(files: string[]): void;
-    dropFiles(uris: string[], onText: (text: string) => void): void;
-    pasteClipboard(onText: (text: string) => void): void;
+    intake(input: Extract<ComposerIntake, { kind: 'files' }>): void;
+    intake(input: ComposerIntake, onText: (text: string) => void): void;
     reportError(reason: unknown): void;
     removeFile(id: string): void;
     openPicker(open: boolean): void;
@@ -293,6 +335,11 @@ export interface ComposerViewInput<Element = unknown> {
   chooseWorkspace(): void;
   /** Optional product-owned directory switcher, in the existing composer location. */
   readonly workspacePicker?: Element;
+  /** Optional product-owned usage limits indicator rendered in the composer toolbar. */
+  readonly usageLimits?: Element;
+  /** Opens workspace files in an established conversation, at the same slot as workspacePicker. */
+  openFiles?(): void;
+  filesOpener?(node: { focus(): void }): void;
   settings(): void;
   /** The Host has no model connection: a desktop start pane asks for one first. */
   needsConnection?(): boolean;

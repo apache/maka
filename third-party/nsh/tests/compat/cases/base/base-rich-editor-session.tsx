@@ -160,6 +160,10 @@ function App() {
       other.setContent("**b**", "markdown");
       return `${plain} ${other.getMarkdown().trim()}`;
     });
+    step("Html", () => {
+      const html = createRichEditor({ content: "<h2>T</h2><p>a <em>b</em></p>", format: "html", plugins: [starterKit()] });
+      return html.getHTML();
+    });
     step("Insert", () => {
       other.run(setTextSelection(1));
       other.run(insertContent("x"));

@@ -157,10 +157,14 @@ player.dispose();
 
 - `Sound.available(): Promise<boolean>`: whether this platform plays sounds
   (`Environment::audio`, or the core has an `AudioBackend`).
-- `Sound.load(src: string): Promise<Sound>`: fetches the bytes and has the
+- `Sound.load(src: string | Uint8Array): Promise<Sound>`: fetches the bytes and has the
   platform decode them to PCM. `src` is what `Image` takes: a bundled asset
   (relative path or `asset:`; TSX imports `.wav`, `.m4a`, `.aac` and `.mp3`
-  files as their `asset:/` URL and ships them, `nsh-bundler`'s `plugin.rs`), a `file:` URL, `data:` / `blob:`, or `http(s)`.
+  files, and any file with `?url`, as their `asset:/` URL and ships them,
+  `nsh-bundler`'s `plugin.rs`), a `file:` URL, `data:` / `blob:`, or `http(s)`;
+  or a sound file's bytes (`SoundSource::Bytes` in Rust, which also takes
+  `include_bytes!`), sent to the platform as a `data:` source's are, named
+  by the format their first bytes say and a digest of them.
   The bytes come through the image loader's L1–L3 (`image-loading-design.md`:
   assets, files, the remote loader with its disk cache, dedup and limits) so
   `Sound.load` never writes a second loader; the platform only decodes.
@@ -298,7 +302,7 @@ The rest of the Rust face is the builder's, patterned on `speech.rs`'s.
 
 | Platform | `Sound` | `AudioPlayer` | Notes |
 |---|---|---|---|
-| iOS, macOS | `AVAudioEngine` with one `AVAudioPlayerNode` per playback over a shared mixer; `AVAudioFile` / `AVAudioPCMBuffer` decoded once at `Load` | `AVPlayer`, the class `Video` uses in `native.rs`, with no layer | one `AVAudioEngine` per NSH engine (`AppView` / `NshAppView`), started lazily, stopped with it; `AVAudioSession` `.ambient` (mixes with others, honours the silent switch) set once on iOS when the first sound or player starts; a player pauses on `UIApplication.didEnterBackground` |
+| iOS, macOS | `AVAudioEngine` with one `AVAudioPlayerNode` per playback over a shared mixer; `AVAudioFile` / `AVAudioPCMBuffer` decoded once at `Load` | `AVPlayer`, the class `Video` uses in `native.rs`, with no layer | one `AVAudioEngine` per NSH engine (`AppView` / `NshAppView`), made with the first sound's decode on its background queue (making it opens the output device), started at the first play, stopped with it; sounds' plays, stops and unloads run on a serial queue of the engine's own (`Sounds`), so the main thread only hands them over and a play never holds up a frame; `AVAudioSession` `.ambient` (mixes with others, honours the silent switch) set once on iOS when the first sound or player starts; a player pauses on `UIApplication.didEnterBackground` |
 | Android | `SoundPool` (one per NSH engine, max 32 streams), `load` from a temp file or an `AssetFileDescriptor`; the duration read from the container with `MediaExtractor` before `load` (`SoundPool` reports none) — under the 5 s cap its own decoded-size limit (about 1.5 MiB) is never hit | `MediaPlayer`, the class `VideoBox.java` uses, with its `AudioFocusRequest` handling repeated | `Audio.java` next to `VideoBox.java`; events through the same JNI event map (`Native.java`'s key list updated) |
 | Windows | `XAudio2` (one engine per NSH engine; `IXAudio2SourceVoice` per playback over a mastering voice), Media Foundation's `IMFSourceReader` decodes to PCM at `Load`, on one decoding thread for the process | `IMFMediaEngine`, the class `native/video.rs` uses, audio-only (no video output) | |
 | Linux | GStreamer (`sound.rs`): decoded once off the main thread (`decodebin` into 48 kHz stereo floats, cut at the length allowed), played from memory by one live pipeline per engine, an `appsrc` per voice into an `audiomixer` pad (its volume; another rate resamples the samples once) | `gtk::MediaFile`, as `native.rs`'s video; GTK media streams have no rate, so a player's `rate` is ignored there | the `gstreamer`, `gstreamer-app` and `gstreamer-audio` crates (GTK already plays media through GStreamer; the review of #955 showed a stream per play could not keep `Sound`'s promise of decoding once and starting within a frame); GTK has no buffering signal, so `buffer` is reported only while a play waits for its load |

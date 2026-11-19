@@ -19,6 +19,7 @@
 
 //! Shared shell request parsing; authority and resource ownership remain with the caller.
 
+use maka_agent_facts::tools::ToolError;
 use serde::Deserialize;
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -77,4 +78,26 @@ pub fn parse_ref(reference: &str) -> Option<&str> {
     reference
         .strip_prefix(maka_presentation::shell::RESOURCE_REF_PREFIX)
         .filter(|id| maka_agent_facts::interaction::entity_id(id).is_ok())
+}
+
+pub fn require_ref(reference: &str) -> Result<&str, ToolError> {
+    parse_ref(reference).ok_or_else(|| {
+        ToolError::Failed(
+            "Invalid process resource ref; expected the ref returned by Shell with run_in_background: true"
+                .into(),
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn require_ref_accepts_background_shell_refs_and_rejects_bare_ids() {
+        let valid = format!("{}run_1", maka_presentation::shell::RESOURCE_REF_PREFIX);
+        assert_eq!(require_ref(&valid).unwrap(), "run_1");
+        let err = require_ref("5ad6c18d-1c8f-83e8-9185-5d1d3026361f").unwrap_err();
+        assert!(matches!(err, ToolError::Failed(msg) if msg.contains("run_in_background: true")));
+    }
 }

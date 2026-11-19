@@ -18,7 +18,7 @@
  */
 
 import { createPendingRecovery } from './pendingRecovery';
-import { errorText, isObservationCancelled, renderText, UiError } from './text';
+import { ActionPending, errorText, isObservationCancelled, renderText, UiError } from './text';
 import { cleanup, effect, signal, untracked, type Signal } from 'nsh';
 import { TerminalGrid } from 'maka/host';
 import { terminalMutation, pendingTerminals, recoverTerminal, abandonTerminal } from './host';
@@ -60,7 +60,8 @@ export function completed<T>(
   if (outcome.kind === 'failed') throw new Error(outcome.message);
   return outcome.value;
 }
-const running = (entry: ResourceUpdate) => ['starting', 'running'].includes(entry.result.status);
+export const terminalRunning = (entry: ResourceUpdate) =>
+  entry.result.status === 'starting' || entry.result.status === 'running';
 const stop = (watch: Watch<unknown> | null) => {
   if (!watch) return;
   watch.closed = true;
@@ -109,7 +110,7 @@ export function createTerminals(
       method !== 'release' &&
       (!owns(owner.sessionId) || scope !== owner || !known() || pending().length)
     )
-      throw new UiError('Checking action status…');
+      throw new ActionPending();
     try {
       return await terminalMutation(owner, method, input);
     } catch (reason) {
@@ -143,7 +144,7 @@ export function createTerminals(
           let row = previous.get(entry.result.ref);
           if (row) row.value.set(entry);
           else row = { value: signal(entry) };
-          models.get(entry.result.ref)?.update(entry);
+          if (entry.result.mode === 'pty') models.get(entry.result.ref)?.update(entry);
           return row;
         }),
     );
@@ -212,7 +213,8 @@ export function createTerminals(
         }
       } catch (reason) {
         if (current()) {
-          error.set(reason);
+          console.warn('Could not load conversation terminals:', reason);
+          error.set(new UiError('Could not load terminals. Refresh to try again.'));
           loading.set(false);
         }
       } finally {
@@ -221,12 +223,8 @@ export function createTerminals(
       }
     })();
   };
-  const open = (target: TerminalTarget) => {
-    if (!scope || !owns(target.sessionId)) return;
-    const entry = entries()
-      .find((row) => row.value().result.ref === target.ref)
-      ?.value();
-    if (!entry) return;
+  const open = (entry: ResourceUpdate) => {
+    if (!scope || !owns(entry.sessionId)) return;
     let model = models.get(entry.result.ref);
     if (!model) {
       model = createTerminal(host, entry, scope, {
@@ -298,7 +296,7 @@ export function createTerminals(
           .filter((item) => item.result.ref !== entry.result.ref),
         entry,
       ]);
-      open({ sessionId: entry.sessionId, ref: entry.result.ref });
+      open(entry);
     } catch (reason) {
       if (owns(selected) && scope === owner) error.set(reason);
     } finally {
@@ -321,7 +319,11 @@ export function createTerminals(
       else {
         const reply: OperationReply = await recoverTerminal(owner, target.id);
         if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
-          throw new UiError('This action could not be completed.');
+          throw new Error(
+            `Terminal recovery: no returned result (${reply.receipt.kind === 'recorded' ? reply.receipt.outcome.kind : reply.receipt.kind})`,
+          );
+        if (reply.receipt.outcome.result.kind === 'failure')
+          throw new Error(reply.receipt.outcome.result.diagnostic);
       }
       if (owns(target.sessionId) && scope === owner && options.active()) follow(target.sessionId);
     } catch (reason) {
@@ -354,7 +356,7 @@ export function createTerminals(
   });
   return {
     entries,
-    error: () => renderText(errorText(error())),
+    error: () => renderText(errorText(error(), 'Could not complete the terminal command.')),
     loading,
     starting,
     pending,
@@ -379,6 +381,7 @@ function createTerminal(
 ) {
   const entry = signal(initial);
   const version = signal(0);
+  const focusRequested = signal(false);
   const state = signal<'idle' | 'loading' | 'live' | 'closed' | 'unavailable' | 'failed'>('idle');
   const error = signal<unknown>('');
   const control = signal<'none' | 'acquiring' | 'held' | 'refused'>('none');
@@ -397,14 +400,15 @@ function createTerminal(
   let queue: RawAction[] = [];
   let sending = false;
   const local = () => entry().ownership.kind === 'local';
-  const agentOwned = () => entry().sourceTurnId !== entry().sourceToolCallId;
+  const agentOwned = () => initial.initiator === 'agent';
   const controllable = () =>
     alive &&
     active &&
     !stopping() &&
+    !agentOwned() &&
     hooks.admitted() &&
     local() &&
-    running(entry()) &&
+    terminalRunning(entry()) &&
     entry().result.mode === 'pty' &&
     state() === 'live';
   const release = () => {
@@ -433,7 +437,7 @@ function createTerminal(
     release();
   };
   const snapshot = () => {
-    if (!alive || !active || running(entry()) || retained) return;
+    if (!alive || !active || terminalRunning(entry()) || retained) return;
     const run: Watch<unknown> = { closed: false, stream: null };
     retained = run;
     grid.discardDisplay();
@@ -459,7 +463,10 @@ function createTerminal(
         version.set(version() + 1);
         state.set('closed');
       } catch (reason) {
-        if (!run.closed && alive && active) fail(reason);
+        if (!run.closed && alive && active) {
+          console.warn('Could not read terminal output:', reason);
+          fail(new UiError('Could not read terminal output. Try reconnecting.'));
+        }
       } finally {
         stop(run);
         if (retained === run) {
@@ -485,10 +492,13 @@ function createTerminal(
           if (!alive || !active || run.closed || observing !== run) return;
           if (!value) throw new UiError('The Host closed the terminal resource observation.');
           entry.set(completed(value));
-          if (state() === 'unavailable' && !running(entry())) snapshot();
+          if (state() === 'unavailable' && !terminalRunning(entry())) snapshot();
         }
       } catch (reason) {
-        if (!run.closed && alive && active) fail(reason);
+        if (!run.closed && alive && active) {
+          console.warn('Could not read terminal output:', reason);
+          fail(new UiError('Could not read terminal output. Try reconnecting.'));
+        }
       } finally {
         stop(run);
         if (observing === run) observing = null;
@@ -541,7 +551,10 @@ function createTerminal(
           }
         }
       } catch (reason) {
-        if (!run.closed && alive && active) fail(reason);
+        if (!run.closed && alive && active) {
+          console.warn('Could not read terminal output:', reason);
+          fail(new UiError('Could not read terminal output. Try reconnecting.'));
+        }
       } finally {
         stop(run);
         if (reading === run) reading = null;
@@ -549,7 +562,7 @@ function createTerminal(
     })();
   };
   const wantedSize = () =>
-    agentOwned() || (sentSize?.cols === size.cols && sentSize?.rows === size.rows) ? null : size;
+    sentSize?.cols === size.cols && sentSize?.rows === size.rows ? null : size;
   const pump = async () => {
     const owner = lease;
     if (sending || !owner || !owner.held || !owner.id) return;
@@ -661,6 +674,8 @@ function createTerminal(
   };
   const suspend = () => {
     active = false;
+    focusRequested.set(false);
+    if (state() === 'live' || state() === 'loading') state.set('idle');
     stop(reading);
     reading = null;
     stop(observing);
@@ -676,19 +691,20 @@ function createTerminal(
     version,
     grid,
     state,
-    error: () => renderText(errorText(error())),
+    error: () => renderText(errorText(error(), 'Could not control the terminal.')),
     control,
     stopping,
-    running: () => running(entry()),
+    running: () => terminalRunning(entry()),
     local,
     agentOwned,
+    focusRequested,
     controllable,
     position: { x: 0, y: 0 },
     atBottom: true,
     update(value: ResourceUpdate) {
       if (alive && value.sessionId === target.sessionId && value.result.ref === target.ref) {
         entry.set(value);
-        if (state() === 'unavailable' && !running(value)) snapshot();
+        if (state() === 'unavailable' && !terminalRunning(value)) snapshot();
       }
     },
     activate() {
@@ -724,7 +740,14 @@ function createTerminal(
       }
     },
     async stop() {
-      if (!alive || !active || !hooks.admitted() || !local() || !running(entry()) || stopping())
+      if (
+        !alive ||
+        !active ||
+        !hooks.admitted() ||
+        !local() ||
+        !terminalRunning(entry()) ||
+        stopping()
+      )
         return;
       stopping.set(true);
       try {

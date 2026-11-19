@@ -17,13 +17,8 @@
  * under the License.
  */
 
-mod captured;
 mod conpty;
-mod foreground;
-mod protocol;
-mod pty;
-mod sandbox;
-mod terminal;
+
 mod windows_foreground;
 mod windows_restricted;
 

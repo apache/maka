@@ -53,6 +53,9 @@ enum Command {
     Code(code::Args),
     /// Serve Agent Client Protocol v1 and v2 over stdin/stdout.
     Acp(crate::acp::Args),
+    /// Export or open an immutable Session checkpoint.
+    #[command(subcommand)]
+    Checkpoint(crate::checkpoint::Command),
     /// Inspect the committed execution log.
     Inspect(Log),
     /// Diagnose commands and manage native sandbox setup.
@@ -270,24 +273,25 @@ impl Cli {
                 println!("{}", serde_json::to_string(&result)?);
                 Ok(())
             }),
+            Command::Checkpoint(args) => command_exit(args.run()),
             Command::Code(args) => command_exit(code::run(args)),
             Command::Acp(args) => command_exit(crate::acp::run(args)),
             Command::Inspect(args) => command_exit(async move {
                 let store = crate::application::open_store(args.root).await?;
-                let session = store.session(&args.session).await?;
-                let prefix = session
-                    .scoped_prefix(
-                        maka_agent_facts::event::LogScope::Session {
-                            id: session.id().into(),
-                        },
-                        10_000,
-                        8 * 1024 * 1024,
-                    )
-                    .await;
+                let inspection = async {
+                    let session = store.session(&args.session).await?;
+                    session
+                        .get::<serde_json::Value>()
+                        .await?
+                        .ok_or(maka_event_log::StoreError::SessionNotFound)?;
+                    let data = store.data_writer()?;
+                    maka_agent_state::session_history::inspection::read(&data, session.id()).await
+                }
+                .await;
                 let closed = store.shutdown().await;
-                let prefix = prefix?;
+                let inspection = inspection?;
                 closed?;
-                println!("{}", serde_json::to_string(&prefix)?);
+                println!("{}", serde_json::to_string(&inspection)?);
                 Ok(())
             }),
         }

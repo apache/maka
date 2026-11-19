@@ -119,12 +119,31 @@ impl RecoveryRef {
     }
 }
 
-/// Unresolved means no durable result is known, including after process loss.
+/// An observation of a provider fence, not a capability to create that fence.
+/// Only the original provider may establish this proof before handler start.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NotExecutedProof {
+    ProviderPreventedBeforeStart,
+}
+
+/// A definite handler return. Failure does not imply absence of side effects.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum OperationOutcome {
+pub enum OperationResult {
+    Success { value: Value },
+    Failure { diagnostic: String },
+}
+
+/// Unresolved and Unknown may advance to authoritative original evidence.
+/// Returned and NotExecuted are immutable; handler errors are Returned too.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "OperationOutcome")]
+pub enum OperationOutcome<R = OperationResult> {
     Unresolved,
-    Returned { value: Value },
+    Returned { result: R },
+    NotExecuted { proof: NotExecutedProof },
     Unknown { diagnostic: String },
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -146,11 +165,13 @@ pub struct OperationObservation {
 /// no claim about the journal's contents or physical cleanup.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Receipt {
+#[schemars(rename = "Receipt")]
+pub enum Receipt<R = OperationResult> {
     /// An authorized lookup found no row at the exact original reference.
+    /// This is not proof of non-execution: the original request may arrive later.
     NotRecorded,
     Recorded {
-        outcome: OperationOutcome,
+        outcome: OperationOutcome<R>,
         cleanup: OperationCleanup,
     },
     Unavailable {
@@ -159,9 +180,41 @@ pub enum Receipt {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct OperationReply {
+#[schemars(rename = "OperationReply")]
+pub struct OperationReply<R = OperationResult> {
     pub reference: RecoveryRef,
-    pub receipt: Receipt,
+    pub receipt: Receipt<R>,
+}
+
+impl<R> OperationReply<R> {
+    pub fn try_map_result<T, E>(
+        self,
+        map: impl FnOnce(R) -> Result<T, E>,
+    ) -> Result<OperationReply<T>, E> {
+        let receipt = match self.receipt {
+            Receipt::Recorded { outcome, cleanup } => {
+                let outcome = match outcome {
+                    OperationOutcome::Returned { result } => OperationOutcome::Returned {
+                        result: map(result)?,
+                    },
+                    OperationOutcome::Unresolved => OperationOutcome::Unresolved,
+                    OperationOutcome::Unknown { diagnostic } => {
+                        OperationOutcome::Unknown { diagnostic }
+                    }
+                    OperationOutcome::NotExecuted { proof } => {
+                        OperationOutcome::NotExecuted { proof }
+                    }
+                };
+                Receipt::Recorded { outcome, cleanup }
+            }
+            Receipt::NotRecorded => Receipt::NotRecorded,
+            Receipt::Unavailable { diagnostic } => Receipt::Unavailable { diagnostic },
+        };
+        Ok(OperationReply {
+            reference: self.reference,
+            receipt,
+        })
+    }
 }
 
 /// A portable observation of the exact original journal, never a replay grant.

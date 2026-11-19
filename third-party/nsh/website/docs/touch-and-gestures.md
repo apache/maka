@@ -76,6 +76,7 @@ mount(App);
 How presses behave:
 
 - **Only the innermost pressable view responds.** A pressable row containing a pressable button gets no press when the button is pressed.
+- **A view with only `onLongPress` leaves the taps to the view around it.** Its long press is its own, but a tap goes to the nearest pressable view outwards, as a long press recognizer takes no taps on the Web, iOS and Android: a row's content can hold a long-press menu and the row still selects on a tap.
 - **Inside a scroll view, the press waits about 130 ms** before it starts (and shows feedback), so a drag that begins on a button scrolls instead of pressing it.
 - **Sliding off cancels.** Moving the finger out of the view ends the press with the press-up handler and no press.
 - **Disabling removes the press listeners** from what is mounted, so the view shows no feedback at all, and the disabled style applies (`.disabled_style(..)`, `class="disabled:opacity-40"`).
@@ -90,6 +91,7 @@ Press feedback is the app's: styles the view takes while it is pressed, hovered,
 | `.active(\|s\| ..)` | `activeStyle` | `active:` | While pressed. |
 | `.hover(\|s\| ..)` | `hoverStyle` | `hover:` | While a pointer is over it (desktops, iPad pointers, browsers). |
 | `.focus(\|s\| ..)` | `focusStyle` | `focus:` | While it has focus. |
+| `.focus_visible(\|s\| ..)` | `focusVisibleStyle` | `focus-visible:` | While it has focus and shows it: the keyboard moved it there (a press or a tap gives focus without it). |
 | `.focus_within(\|s\| ..)` | `focusWithinStyle` | `focus-within:` | While it or a view inside it has focus: a field's frame around the input that edits. |
 | `.disabled_style(\|s\| ..)` | `disabledStyle` | `disabled:` | While disabled. |
 | `.ripple(Ripple { .. })` | `android={{ ripple }}` | | Android's material ripple (`color`, `borderless`, `radius`, `foreground`), in addition to the styles. |
@@ -177,7 +179,7 @@ view()
 |---|---|---|
 | `.hit_slop(EdgeInsets)` | `hitSlop: number \| { top?, right?, bottom?, left? }` | Points added around the bounds. `EdgeInsets::all(..)` and a TSX number apply to all four sides. |
 
-Keep the extended area inside the parent's bounds (give the small view some margin or padding around it): hit testing reaches a child through its parent, so a touch outside the parent never gets to the child's slop.
+The extended area takes touches even where it reaches outside the parent and the views above it, as a child placed outside its parent does (below): a 24-point button in a row of the same height with a slop of 10 takes touches 10 points above and below the row. Where views overlap, the one on top still wins, slop or not. A view that clips its overflow (`overflow: hidden`, a scroll view, a list) also clips the slop of what it holds: a touch outside it, where nothing shows, does not reach in.
 
 ## Children outside their parent
 
@@ -305,6 +307,8 @@ What the native side does for you:
 - **Pan, pinch and rotation run together** on the same view: one card can be dragged, pinched and rotated at once.
 - **Release velocity for physics.** The pan end's velocity feeds a spring's or a decay's velocity directly; the values let you pick a snap point.
 
+A view pans while it has a pan handler or `pan` values, so a condition in the expression turns its pan off and on: with `onPanEnd={zoomed() ? undefined : close}` the drags go to the content inside while `zoomed()` is true. The condition goes in the expression itself: a plain name (`onPanEnd={handler}`) is set once ([What runs again](./jsx-and-components.md#what-runs-again)).
+
 ```rust tabs
 // A card that snaps to the left or right edge.
 view()
@@ -357,6 +361,7 @@ Each TSX handler gets a `GestureResponderEvent`:
 | `timestamp` | Milliseconds. |
 | `touches` | Every finger that is down. |
 | `changedTouches` | The fingers this event is about. |
+| `modifiers` | The modifier keys held when the finger or mouse button went down (`{ control, alt, shift, platform }`, as a press event's): an Alt-drag or a Shift-click reads them in the grant. The touch events and the grant come before the same press's `onPressDown` on every target. |
 | `nativeEvent` | The event itself, so `e.nativeEvent.locationX` works too. |
 | `stopPropagation()` | Views further out do not see this touch event. |
 
@@ -438,7 +443,7 @@ While responding:
 
 | Rust | TSX | Description |
 |---|---|---|
-| `.on_responder_grant(..)` | `onResponderGrant` | This view is now the responder. Rust keeps native scroll views from taking the touches by default (`TouchClaim::block_native(false)` lets them); in TSX, return `true` for that. |
+| `.on_responder_grant(..)` | `onResponderGrant` | This view is now the responder. Rust keeps native scroll views, and on iOS the swipe back of the navigation stacks around it, from taking the touches by default (`TouchClaim::block_native(false)` lets them); in TSX, return `true` for that. |
 | `.on_responder_reject(..)` | `onResponderReject` | Another view is the responder and would not let go. |
 | `.on_responder_start(..)` | `onResponderStart` | Another finger went down. |
 | `.on_responder_move(..)` | `onResponderMove` | A finger moved. |
@@ -449,7 +454,7 @@ While responding:
 
 A Rust component's responder stays pressed from its grant until its touches end, wherever the finger or pointer goes, as CSS's `:active` holds until the button is released: its `.active(..)` styles and the `group-active:` classes inside it keep their look for the whole drag (a resize handle dragged off its band).
 
-The Rust handlers get a `ResponderEvent`: the finger's `location` in the view it went down on, its `page` position, the `timestamp` and the `gesture` since the grant.
+The Rust handlers get a `ResponderEvent`: the finger's `location` in the view it went down on, its `page` position, the `timestamp`, the `modifiers` held when it went down and the `gesture` since the grant.
 
 ```rust tabs
 use nsh_core::prelude::*;

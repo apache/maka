@@ -47,10 +47,14 @@ view()
 | `.accessible(..)` | `accessible` | `boolean` | 视图作为一个整体元素提供给辅助技术；子元素不单独暴露。 |
 | `.label(..)` | `accessibilityLabel` | `string` | 屏幕阅读器朗读的内容，代替内部的文字。 |
 | `.hint(..)` | `accessibilityHint` | `string` | 激活元素会发生什么，在停顿后朗读。 |
+| `.accessibility_description(..)` | `accessibilityDescription` | `string` | 名字之外对元素的说明，在名字之后朗读：对话框的说明文字、输入框要求的格式。 |
 | `.role(..)` | `role` | `AccessibilityRole` | 元素是什么。 |
 | `.accessibility_state(..)` | `accessibilityState` | `AccessibilityState` | 它的状态：禁用、选中、勾选、忙碌、展开、按下、当前项、弹出层。`selected` 同时让选中样式生效，`checked` 为 true 时让勾选样式生效，为 `"mixed"` 时让半选样式生效，`pressed` 为 true 时让按下样式生效。 |
 | `.accessibility_level(..)` | `accessibilityLevel` | `number` | 标题的级别（1 为最高），树节点的深度（顶层为 1）。 |
 | `.accessibility_value(..)` | `accessibilityValue` | `{ min?, max?, now?, text? }` | 范围类或文本类元素的值。 |
+| `.accessibility_active_descendant(..)` | `accessibilityActiveDescendant` | `ViewRef \| null` | 获得焦点的元素里当前活动的那一项：组合框高亮的选项、列表的光标行。 |
+| `.accessibility_controls(..)` | `accessibilityControls` | `ViewRef \| null` | 内容由这个元素控制的元素：组合框的列表。 |
+| `.accessibility_described_by(..)` | `accessibilityDescribedBy` | `ViewRef \| null` | 文字用来说明这个元素的元素：输入框的错误提示行。 |
 | | `accessibilityActions` | `{ name, label? }[]` | 提供给辅助技术的操作。 |
 | `.on_accessibility_action(..)` | `onAccessibilityAction` | `(e: { actionName }) => void` | 执行了某个操作（Rust：操作名称）。 |
 | `.accessibility_elements_hidden(..)` | `accessibilityElementsHidden` | `boolean` | 对辅助技术隐藏该视图及其子树。 |
@@ -62,7 +66,7 @@ view()
 
 ### 角色
 
-角色（`.role(AccessibilityRole::Header)`、`role="header"`）告诉用户这是哪一类元素、如何操作。在 Rust 中它是 `AccessibilityRole` 的一个变体（`Button`、`Header`、`Switch` 等）；TSX 的取值有 `"none"`、`"button"`、`"link"`、`"search"`、`"image"`、`"imagebutton"`、`"keyboardkey"`、`"text"`、`"adjustable"`、`"header"`、`"summary"`、`"alert"`、`"checkbox"`、`"combobox"`、`"menu"`、`"menubar"`、`"menuitem"`、`"progressbar"`、`"radio"`、`"radiogroup"`、`"scrollbar"`、`"spinbutton"`、`"switch"`、`"tab"`、`"tablist"`、`"timer"`、`"toolbar"`、`"list"`、`"grid"`、`"table"`、`"rowgroup"`、`"row"`、`"columnheader"`、`"cell"`（[`Table`](../elements/table.md) 各部件的角色），以及 `"listbox"` 和 `"option"`（一组可供选择的选项，例如 [`Select`](../elements/select.md) 弹出的列表，及其中的选项，选中的那项由 `accessibilityState.selected` 标出），`"group"`（一组相关的元素），`"region"`（值得单独到达的一块区域，例如折叠面板的内容），`"navigation"`（在应用内跳转的一组链接，例如分页），`"tree"` 和 `"treeitem"`（可展开、收起的节点，各在自己的 `accessibilityLevel`），`"menuitemcheckbox"` 和 `"menuitemradio"`（可勾选的菜单项，单独勾选或在一组中单选）。
+角色（`.role(AccessibilityRole::Header)`、`role="header"`）告诉用户这是哪一类元素、如何操作。在 Rust 中它是 `AccessibilityRole` 的一个变体（`Button`、`Header`、`Switch` 等）；TSX 的取值有 `"none"`、`"button"`、`"link"`、`"search"`、`"image"`、`"imagebutton"`、`"keyboardkey"`、`"text"`、`"adjustable"`、`"header"`、`"summary"`、`"alert"`、`"checkbox"`、`"combobox"`、`"menu"`、`"menubar"`、`"menuitem"`、`"progressbar"`、`"radio"`、`"radiogroup"`、`"scrollbar"`、`"spinbutton"`、`"switch"`、`"tab"`、`"tablist"`、`"timer"`、`"toolbar"`、`"list"`、`"grid"`、`"table"`、`"rowgroup"`、`"row"`、`"columnheader"`、`"cell"`（[`Table`](../elements/table.md) 各部件的角色），以及 `"listbox"` 和 `"option"`（一组可供选择的选项，例如 [`Select`](../elements/select.md) 弹出的列表，及其中的选项，选中的那项由 `accessibilityState.selected` 标出），`"group"`（一组相关的元素），`"region"`（值得单独到达的一块区域，例如折叠面板的内容），`"navigation"`（在应用内跳转的一组链接，例如分页），`"tree"` 和 `"treeitem"`（可展开、收起的节点，各在自己的 `accessibilityLevel`），`"menuitemcheckbox"` 和 `"menuitemradio"`（可勾选的菜单项，单独勾选或在一组中单选），`"dialog"` 和 `"alertdialog"`（位于应用其余内容之上、以 `accessibilityLabel` 命名的对话框，以及请用户确认某件事的对话框；[`Dialog`](../elements/dialog.md) 默认是 `"dialog"`，除非它的 `role` 另有指定）。
 
 最常用的几个：
 
@@ -132,7 +136,102 @@ view()
 </View>
 ```
 
-状态在 Rust 中是 `AccessibilityState { disabled, selected, checked: Option<Checked>, busy, expanded, pressed: Option<Checked>, current: Option<AccessibilityCurrent>, has_popup }`，在 TSX 中是 `{ disabled?, selected?, checked?: boolean | "mixed", busy?, expanded?, pressed?: boolean | "mixed", current?: boolean | "page" | "step" | "location" | "date" | "time", hasPopup? }`。`pressed` 让按钮成为切换按钮（ARIA 的 `aria-pressed`）；`current` 标出一组中的当前项（ARIA 的 `aria-current`）：分页的当前页、向导的当前步骤；`hasPopup` 标出打开弹出层、菜单或列表的触发器（ARIA 的 `aria-haspopup`），它的 `expanded` 表示弹出层是否打开，没有 `hasPopup` 的 `expanded` 元素是就地展开内容的折叠项（`Popover`、`Menu`、`HoverCard`、`Select`、`Combobox` 和 `DatePicker` 会在各自的触发器上设置它）。禁用视图（`.disabled(..)`、`disabled`）也意味着禁用状态。带 `min`、`max` 和 `now` 的 `accessibilityValue` 以百分比朗读；带 `text` 时按原文朗读（"3 of 10"、"Medium"）。
+状态在 Rust 中是 `AccessibilityState { disabled, selected, checked: Option<Checked>, busy, expanded, pressed: Option<Checked>, current: Option<AccessibilityCurrent>, has_popup, invalid }`，在 TSX 中是 `{ disabled?, selected?, checked?: boolean | "mixed", busy?, expanded?, pressed?: boolean | "mixed", current?: boolean | "page" | "step" | "location" | "date" | "time", hasPopup?, invalid? }`。`pressed` 让按钮成为切换按钮（ARIA 的 `aria-pressed`）；`current` 标出一组中的当前项（ARIA 的 `aria-current`）：分页的当前页、向导的当前步骤；`hasPopup` 标出打开弹出层、菜单或列表的触发器（ARIA 的 `aria-haspopup`），它的 `expanded` 表示弹出层是否打开，没有 `hasPopup` 的 `expanded` 元素是就地展开内容的折叠项（`Popover`、`Menu`、`HoverCard`、`Select`、`Combobox` 和 `DatePicker` 会在各自的触发器上设置它）；`invalid` 标出没有通过应用校验的内容（ARIA 的 `aria-invalid`）：文字被拒绝的输入框、必选却留空的下拉选择。读屏随元素一起读出它，`aria-invalid:` 类可以为它设置样式。禁用视图（`.disabled(..)`、`disabled`）也意味着禁用状态。带 `min`、`max` 和 `now` 的 `accessibilityValue` 以百分比朗读；带 `text` 时按原文朗读（"3 of 10"、"Medium"）。
+
+### 获得焦点的元素里的活动项
+
+有的控件在用户浏览其中各项时一直保有键盘焦点：方向键走过组合框的列表时，焦点仍在它的输入框里；列表移动的是一行光标。`accessibilityActiveDescendant` 指出当前活动的那一项，`accessibilityControls` 指出控件所控制的元素，这样焦点留在用户打字的地方，屏幕阅读器也会在每一项变为活动时读出它。两者都接受被指元素的 ref（TSX 中是 `ViewRef`，Rust 中是 `ElementRef`），被指的元素可以比控件晚渲染，例如虚拟化列表的行；被指的元素不在屏幕上时，这个关系不指向任何元素。
+
+```rust tabs
+// 一直保有焦点、移动光标行的列表。
+let rows: Rc<Vec<ElementRef>> = Rc::new(results.iter().map(|_| element_ref()).collect());
+let named = rows.clone();
+view()
+    .role(AccessibilityRole::Listbox)
+    .label("Results")
+    .focusable(true)
+    .accessibility_active_descendant(move || named.get(cursor.get()).copied())
+    .children(results.iter().enumerate().map(|(i, result)| {
+        view()
+            .role(AccessibilityRole::Option)
+            .element_ref(&rows[i])
+            .accessibility_state(move || AccessibilityState {
+                selected: cursor.get() == i,
+                ..AccessibilityState::default()
+            })
+            .child(text(result.title.clone()))
+    }))
+```
+
+```tsx tabs
+// 一直保有焦点、移动光标行的列表。
+const cursor = signal(0);
+const rows = signal<ViewRef[]>([]);
+<View
+  role="listbox"
+  accessibilityLabel="Results"
+  focusable
+  accessibilityActiveDescendant={rows()[cursor()] ?? null}
+>
+  <Each of={results()}>
+    {(result, i) => (
+      <View
+        ref={(row) =>
+          rows.update((all) => {
+            const next = all.slice();
+            next[i()] = row;
+            return next;
+          })
+        }
+        role="option"
+        accessibilityState={{ selected: cursor() === i() }}
+      >
+        <Text>{result().title}</Text>
+      </View>
+    )}
+  </Each>
+</View>
+```
+
+在 Web 上它们是 `aria-activedescendant` 和 `aria-controls`；在 macOS 上 VoiceOver 把活动项当作控件的选中子元素读出。`Select`、`Combobox` 和 `Command` 用这种方式指出高亮的项和它们的列表，在其他平台上它们自己把高亮的项读给屏幕阅读器。
+
+### 说明另一个元素的元素
+
+表单把输入框的错误或帮助写在单独的一行里，与输入框分开。在输入框上用 `accessibilityDescribedBy` 指出这一行，屏幕阅读器每次焦点来到输入框时都会在它的名称之后读出这行文字，这行文字变了也会读新的。它和 `accessibilityControls` 一样接受被指出元素的 ref；那个元素里的标签和文字就是输入框的说明，代替输入框自己的 `accessibilityDescription`，被指出的元素不在屏幕上时，输入框自己的说明又回来。这一行可以设 `accessibilityHidden`，让它只随输入框读一次：被指出的元素照样读出它的文字。每个平台都在读说明的地方读它；在 Web 上它是 `aria-describedby`。
+
+```rust tabs
+// 输入框和它下面的错误行。
+let error = element_ref();
+view()
+    .child(
+        input()
+            .label("Name")
+            .accessibility_state(move || AccessibilityState {
+                invalid: message.get().is_some(),
+                ..AccessibilityState::default()
+            })
+            .accessibility_described_by(move || message.get().map(|_| error)),
+    )
+    .child(when(
+        move || message.get().is_some(),
+        move || text(move || message.get().unwrap_or_default()).element_ref(&error),
+    ))
+```
+
+```tsx tabs
+// 输入框和它下面的错误行。
+const error = signal<ViewRef>();
+<View>
+  <Input
+    accessibilityLabel="Name"
+    accessibilityState={{ invalid: message() != null }}
+    accessibilityDescribedBy={message() != null ? error() ?? null : null}
+  />
+  <If when={message()}>
+    <Text ref={error}>{message()}</Text>
+  </If>
+</View>
+```
 
 ## 操作
 
@@ -209,6 +308,8 @@ view()
 </View>
 ```
 
+带标签的容器仍是容器：`"list"`、`"listbox"`、`"group"`、`"toolbar"`、`"radiogroup"`、`"tablist"`、`"navigation"`、`"region"` 或 `"dialog"` 的标签是读屏进入时念出的名字，里面的元素仍然一个个读到。VoiceOver 还会告诉用户列表从哪里开始、到哪里结束。只有要整体朗读时，才把容器设为无障碍元素。
+
 隐藏没有信息量的东西：装饰性图片、分隔线、旁边文字已经表达了同样意思的图标。
 
 ```tsx
@@ -277,6 +378,8 @@ function Upload() {
 ```
 
 播报那些用户否则会错过的变化：后台保存完成、在焦点之外出现的错误、计时结束。在 Android 上，给视图设置 `android={{ accessibilityLiveRegion: "polite" }}`，TalkBack 就会自动播报它的变化。
+
+在 macOS 和 Web 上，警告（`.role(AccessibilityRole::Alert)`、`role="alert"`）会自己被读出：出现时、以及内容变化时，读它的标签，没有标签就读其中的文字，并打断屏幕阅读器正在读的内容。带这个角色显示的错误在这两个平台上不必再自己播报；在 macOS 上，同一次更新里播报的相同文字只读一次。在其他平台上，仍要自己播报。
 
 ## 文字大小
 

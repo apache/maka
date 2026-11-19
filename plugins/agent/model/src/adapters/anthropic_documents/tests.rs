@@ -45,15 +45,18 @@ impl WireSource for SourceWithCatalog {
     }
 }
 fn deferred(index: usize, title: Option<&str>) -> Event {
-    Event::Source(Source::DeferredDocument {
-        id: format!("source-{index}"),
-        document_index: index,
-        title: title.map(str::to_owned),
-        extensions: Some(BTreeMap::from([(
-            "anthropic".into(),
-            json!({"citedText":"quoted"}),
-        )])),
-    })
+    Event::Source {
+        anchor: None,
+        source: Source::DeferredDocument {
+            id: format!("source-{index}"),
+            document_index: index,
+            title: title.map(str::to_owned),
+            extensions: Some(BTreeMap::from([(
+                "anthropic".into(),
+                json!({"citedText":"quoted"}),
+            )])),
+        },
+    }
 }
 #[tokio::test]
 async fn independent_catalog_resolves_ordinals_and_preserves_response_title() {
@@ -71,11 +74,11 @@ async fn independent_catalog_resolves_ordinals_and_preserves_response_title() {
         .await
         .unwrap();
     assert!(
-        matches!(&events[0], Event::Source(Source::Document { id, media_type, title, filename: None, extensions: Some(extensions) })
+        matches!(&events[0], Event::Source { source: Source::Document { id, media_type, title, filename: None, extensions: Some(extensions) }, .. }
         if id == "source-0" && media_type == "text/plain" && title == "Untitled Document" && extensions["anthropic"]["citedText"] == "quoted")
     );
     assert!(
-        matches!(&events[1], Event::Source(Source::Document { id, media_type, title, filename: None, .. })
+        matches!(&events[1], Event::Source { source: Source::Document { id, media_type, title, filename: None, .. }, .. }
         if id == "source-1" && media_type == "application/pdf" && title == "provider title")
     );
 }
@@ -95,6 +98,9 @@ async fn invalid_document_index_is_an_error_and_cancellation_does_not_resolve() 
     ));
     assert!(matches!(
         events[0],
-        Event::Source(Source::DeferredDocument { .. })
+        Event::Source {
+            source: Source::DeferredDocument { .. },
+            ..
+        }
     ));
 }

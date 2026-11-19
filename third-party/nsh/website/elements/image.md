@@ -91,6 +91,9 @@ crate ships its `assets/` directory with `registry.assets(assets!())`). See
 > [!NOTE]
 > When the app declares [capabilities](../docs/sandbox-and-capabilities.md), remote images load from the hosts it
 > lists; an image from any other host is not requested and fails with `onError`, whose `code` is `"ERR_ACCESS_DENIED"`. `asset:` URIs, `data:` URIs and `blob:` URLs always load.
+> A local file (an absolute path or a `file:` URL) loads on the desktops when `fs.read` holds it, and not on mobile or
+> the web. Files from `onFileDrop`, from the clipboard and those named from `import.meta.url` are `file:` URLs, so they
+> need a read root too.
 
 ## Props
 
@@ -171,5 +174,5 @@ None of its own.
 - The cache key includes the decode size and the blur radius: the same URL shown at two sizes is decoded twice but
   downloaded once.
 - iOS plays animated images as a keyframe animation (up to 600 frames); a tinted animated image shows its first frame.
-- Android plays animated images from API 28 (`AnimatedImageDrawable`), uncached and unblurred.
+- Android plays animated images from API 28 (`AnimatedImageDrawable`) and GIFs from API 26, uncached and unblurred.
 - On Android borders are drawn above the image, as on iOS.

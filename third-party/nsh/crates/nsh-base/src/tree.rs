@@ -16,7 +16,8 @@
 //!   view exist, and the children of a collapsed item are never made. A
 //!   row's look is the app's (`itemClass`, `renderItem`); its states are
 //!   its classes' (`selected:`, `aria-expanded:`, `disabled:`, `focus:`
-//!   for the keys' row while the tree has the keyboard focus), so the
+//!   for the keys' row while the tree has the keyboard focus,
+//!   `focus-visible:` while that focus shows), so the
 //!   app's drawing of a row is made once per item and its chevron turns
 //!   with a transition (`group-aria-expanded:rotate-90`).
 //! - **Its cost**: a move of the selection notifies the rows it leaves and
@@ -51,7 +52,7 @@ use nsh_core::{
 use rustc_hash::{FxHashMap, FxHasher};
 
 use crate::{
-    collapsible::REVEAL,
+    collapsible::reveal_motion,
     keys::directed,
     listbox::{self, Typeahead},
     select::SelectValue,
@@ -87,6 +88,9 @@ pub struct TreeItem {
     /// expands and collapses.
     #[prop(default)]
     pub children: Vec<TreeItem>,
+    /// An empty folder, including one whose children load on expansion.
+    #[prop(default)]
+    pub expandable: bool,
     /// It cannot be selected, expanded or collapsed by the user: the keys
     /// pass over it, presses do nothing, `disabled:` styles apply and
     /// screen readers say it is dimmed. Its children stay as `expanded`
@@ -114,6 +118,12 @@ impl TreeItem {
     /// Adds `children` under it.
     pub fn children(mut self, children: impl IntoIterator<Item = TreeItem>) -> Self {
         self.children.extend(children);
+        self
+    }
+
+    /// Marks a folder whose children may be loaded later.
+    pub fn expandable(mut self, expandable: bool) -> Self {
+        self.expandable = expandable;
         self
     }
 
@@ -156,15 +166,10 @@ struct Node {
     /// The index past its subtree: its next sibling's, or its parent's
     /// next sibling's.
     end: u32,
+    folder: bool,
     disabled: bool,
     /// Its row key, hashed.
     key: u64,
-}
-
-impl Node {
-    fn folder(&self, at: usize) -> bool {
-        self.end as usize > at + 1
-    }
 }
 
 /// The items, depth first, made once per change of them.
@@ -207,6 +212,7 @@ impl Flat {
                 parent,
                 depth,
                 end: at + 1,
+                folder: item.expandable || !item.children.is_empty(),
                 disabled: item.disabled,
                 key: hash(&item.id),
             });
@@ -227,7 +233,7 @@ impl Flat {
     }
 
     fn folder(&self, node: usize) -> bool {
-        self.nodes.get(node).is_some_and(|n| n.folder(node))
+        self.nodes.get(node).is_some_and(|n| n.folder)
     }
 
     fn enabled(&self, node: usize) -> bool {
@@ -271,7 +277,7 @@ impl Flat {
             id: n.id.clone(),
             label: n.label.clone(),
             depth: n.depth,
-            folder: n.folder(node),
+            folder: n.folder,
             disabled: n.disabled,
         })
     }
@@ -457,6 +463,9 @@ pub struct TreeProps {
     /// leave at once. Off by default, and with reduced motion.
     #[prop(default)]
     pub reveal: Prop<bool>,
+    /// Activate leaves with one click or tap. Arrow keys still only select.
+    #[prop(default)]
+    pub single_click_action: Prop<bool>,
     /// What screen readers call the tree.
     pub accessibility_label: Prop<Option<SharedString>>,
     /// The classes of the list, the scroll view of the rows inside the
@@ -471,7 +480,9 @@ pub struct TreeProps {
     /// `aria-expanded:` while it is expanded, `focus:` while the tree has
     /// the keyboard focus and the keys act on it (the selected row; the
     /// collapsed item the selection is hidden under; with nothing
-    /// selected, the first enabled row), `disabled:` while it
+    /// selected, the first enabled row), `focus-visible:` on that row
+    /// while the tree's focus shows (the keys moved it, not a press: the
+    /// keyboard's ring), `disabled:` while it
     /// cannot be acted on, `hover:` and `active:`; `group` for its content
     /// to follow them (`group-aria-expanded:rotate-90` on a chevron).
     pub item_class: Prop<Option<SharedString>>,
@@ -684,8 +695,8 @@ struct TreeModel {
 /// expand or collapse a folder, Return acts on a leaf (`onAction`), and
 /// letters and digits select by typeahead; a selection hidden under a
 /// collapsed item is acted on from that item's row. It looks like nothing: the app sizes it (`class`), styles the
-/// rows (`itemClass` with `selected:`, `aria-expanded:`, `focus:` and
-/// `disabled:`) and draws them (`renderItem`, given each item's depth).
+/// rows (`itemClass` with `selected:`, `aria-expanded:`,
+/// `focus-visible:` and `disabled:`) and draws them (`renderItem`, given each item's depth).
 /// Screen readers hear a tree of items, each with its level, whether it is
 /// expanded and whether it is selected. In a terminal a row the tree draws
 /// itself (no `renderItem`) is its label indented two Cells a level after
@@ -778,7 +789,7 @@ pub fn Tree(props: TreeProps, cx: Scope<TreeEvent>) -> impl IntoElement {
             let same = last_flat.with(|l| l.as_ref() == Some(&now));
             last_flat.replace(Some(now));
             if same && props.reveal.get() && !reduce_motion() {
-                list.animate_layout(REVEAL);
+                list.animate_layout(reveal_motion(None));
             }
         });
     });
@@ -920,6 +931,7 @@ pub fn Tree(props: TreeProps, cx: Scope<TreeEvent>) -> impl IntoElement {
                 KeyOptions {
                     when: When::NotEditing,
                     repeat,
+                    for_focus: true,
                     ..Default::default()
                 },
                 move |_| f(),
@@ -935,6 +947,7 @@ pub fn Tree(props: TreeProps, cx: Scope<TreeEvent>) -> impl IntoElement {
         bind("space", false, Rc::new(toggle_current));
     });
     listbox::bind_typeahead(
+        When::Always,
         move || active.get(),
         Rc::new(move |c| {
             let at = now();
@@ -960,8 +973,9 @@ pub fn Tree(props: TreeProps, cx: Scope<TreeEvent>) -> impl IntoElement {
         if desktop && !focused.get_untracked() {
             root.focus();
         }
-        // The second press of a double press (a triple one acts once).
-        if clicks == 2 {
+        let single =
+            props.single_click_action.get_untracked() && !flat.with_untracked(|f| f.0.folder(node));
+        if (single && clicks <= 1) || (!single && clicks == 2) {
             act(node);
         }
     });

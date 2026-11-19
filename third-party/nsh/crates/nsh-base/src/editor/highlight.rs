@@ -74,20 +74,26 @@ pub(crate) const GUESS_CONTEXT: usize = 40;
 /// thread, so scrolling down finds the lines highlighted).
 pub(crate) const LOOKAHEAD: usize = 1000;
 
-/// Runs `f` on a blocking thread where there are threads (WebAssembly has
-/// none: there it runs at once).
-pub(crate) async fn off_thread<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        match nsh_core::prelude::blocking(f).await {
+/// Runs `f` on a blocking thread, from now on, not from when the result is
+/// first awaited: a task awaiting it first runs after the engine thread's
+/// turn, which mounting a view can make tens of milliseconds long.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn off_thread<R: Send + 'static>(
+    f: impl FnOnce() -> R + Send + 'static,
+) -> impl Future<Output = R> {
+    let handle = nsh_core::prelude::blocking(f);
+    async move {
+        match handle.await {
             Ok(r) => r,
             Err(error) => std::panic::resume_unwind(error.into_panic()),
         }
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        f()
-    }
+}
+
+/// Runs `f` when awaited: WebAssembly has no threads.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn off_thread<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
+    f()
 }
 
 /// Makes the highlighters of an app's language ([`super::register_highlighter`]).
@@ -127,8 +133,8 @@ impl Syntax {
         matches!(self, Syntax::Plain)
     }
 
-    /// Whether a highlighter can be made now: the built-in one needs its
-    /// syntaxes loaded first ([`Highlighter::load`], off the engine thread).
+    /// Whether a highlighter can be made now: on the web the built-in one
+    /// needs its syntaxes loaded first ([`Highlighter::load_async`]).
     pub(crate) fn ready(&self) -> bool {
         match self {
             Syntax::Builtin(_) => Highlighter::ready(),
@@ -169,6 +175,9 @@ struct Known {
     /// start ([`Highlighter::guess`]), or kept over an edit: shown until
     /// the highlighting from the start gives the line its own.
     guessed: bool,
+    /// Kept over an edit (moved with the text, the typed text in the
+    /// token it continues): a guess of the lines in view guesses it again.
+    kept: bool,
 }
 
 /// Highlights a text as it changes: the tokens (on the engine thread, for
@@ -275,14 +284,17 @@ impl Highlighter {
         })
     }
 
-    /// Whether the built-in syntaxes are loaded (loading takes tens of
-    /// ms: the view loads them on a blocking thread first).
+    /// Whether the built-in highlighter can be made now. Where there are
+    /// threads it always can: made before the syntaxes are loaded, its
+    /// first job loads them, off the engine thread, and goes on to parse
+    /// the lines in view. The web loads them from the page first
+    /// ([`Self::load_async`]).
     pub(crate) fn ready() -> bool {
-        #[cfg(feature = "highlight")]
+        #[cfg(all(feature = "highlight", target_arch = "wasm32"))]
         {
             crate::syntax::loaded()
         }
-        #[cfg(not(feature = "highlight"))]
+        #[cfg(not(all(feature = "highlight", target_arch = "wasm32")))]
         {
             true
         }
@@ -419,6 +431,7 @@ impl Highlighter {
                 Some(Known {
                     tokens,
                     guessed: true,
+                    kept: true,
                 })
             };
             if let Some(slot) = self.tokens.get_mut(first) {
@@ -513,6 +526,7 @@ impl Highlighter {
             *slot = Some(Known {
                 tokens,
                 guessed: false,
+                kept: false,
             });
             changed = Some(match changed {
                 Some(range) => range.start.min(line)..range.end.max(line + 1),
@@ -541,7 +555,9 @@ impl Highlighter {
     /// The lines `first..=last` highlighted from a fresh state, starting
     /// at byte `offset` (line `first`'s start), for lines far past the
     /// highlighting from the start to show colors at once; None when every
-    /// line from `first + GUESS_CONTEXT` to `last` has tokens, or the
+    /// line from `first + GUESS_CONTEXT` to `last` has tokens not just kept
+    /// over an edit (typing far past the parse is guessed again, not left
+    /// in the colors it continued until the parse comes), or the
     /// language's highlighter does not guess.
     pub(crate) fn guess(
         &self,
@@ -554,10 +570,11 @@ impl Highlighter {
             return None;
         }
         let shown = (first + GUESS_CONTEXT).min(last)..last + 1;
-        if shown
-            .clone()
-            .all(|line| self.tokens.get(line).is_some_and(Option::is_some))
-        {
+        if shown.clone().all(|line| {
+            self.tokens
+                .get(line)
+                .is_some_and(|k| k.as_ref().is_some_and(|k| !k.kept))
+        }) {
             return None;
         }
         Some(Guess {
@@ -593,6 +610,7 @@ impl Highlighter {
             *slot = Some(Known {
                 tokens,
                 guessed: true,
+                kept: false,
             });
             changed = Some(match changed {
                 Some(range) => range.start.min(line)..range.end.max(line + 1),
@@ -611,7 +629,7 @@ impl Highlighter {
     }
 
     #[cfg(all(test, feature = "highlight"))]
-    fn parses(&mut self) -> &mut usize {
+    pub(crate) fn parses(&mut self) -> &mut usize {
         &mut self.parses
     }
 }
@@ -790,13 +808,13 @@ mod syntect_lines {
     use std::time::Duration;
 
     use nsh_core::time::Instant;
-    use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
+    use syntect::parsing::{ScopeStack, SyntaxReference, SyntaxSet};
 
     use super::{EditorHighlighter, EditorText, EditorTextEdit, EditorTokens, Tokens, splice};
-    use crate::syntax::{find_syntax, scope_token, syntaxes};
+    use crate::syntax::{Parse, find_syntax, loaded, plain, scope_token, syntaxes};
 
     /// The parser and the scopes open at a line's start.
-    type State = (ParseState, ScopeStack);
+    type State = Parse;
 
     /// The parser keeps its state at the start of every this many lines
     /// (and of the lines it kept one for before an edit shifted them): a
@@ -820,7 +838,13 @@ mod syntect_lines {
     /// The built-in highlighter: syntect, line by line, from the states
     /// it kept.
     pub(crate) struct Syntect {
-        syntax: &'static SyntaxReference,
+        /// None for a language syntect lacks, and until `hint` is looked
+        /// up.
+        syntax: Option<&'static SyntaxReference>,
+        /// The language's syntax hint while it is not looked up: a
+        /// highlighter made before the syntaxes are loaded looks it up in
+        /// its first job, which loads them off the engine thread.
+        hint: Option<&'static str>,
         /// The lines from the first one, as far as they have been parsed
         /// (one past the last line parsed, unless that was the last line
         /// of the text).
@@ -837,15 +861,25 @@ mod syntect_lines {
     }
 
     impl Syntect {
-        /// None for plain text, a language syntect lacks. `hint`: the
-        /// language's syntax hint (an extension or a name syntect knows).
-        /// Loads the syntaxes when they are not loaded yet.
-        pub(crate) fn new(hint: &str) -> Option<Syntect> {
-            let syntax = find_syntax(hint)?;
+        /// None for plain text, a language syntect lacks (as far as is
+        /// known: with the syntaxes not loaded yet, its first job finds
+        /// out, and gives no tokens). `hint`: the language's syntax hint
+        /// (an extension or a name syntect knows). Never loads the
+        /// syntaxes.
+        pub(crate) fn new(hint: &'static str) -> Option<Syntect> {
+            if plain(hint.trim()) {
+                return None;
+            }
+            // The web's syntaxes come from the page ([`super::Highlighter::ready`]).
+            let (syntax, hint) = match loaded() || cfg!(target_arch = "wasm32") {
+                true => (Some(find_syntax(hint)?), None),
+                false => (None, Some(hint)),
+            };
             Some(Syntect {
                 syntax,
+                hint,
                 lines: vec![Line {
-                    start: Some((ParseState::new(syntax), ScopeStack::new())),
+                    start: syntax.map(Parse::new),
                     ..Line::default()
                 }],
                 parsed: 0,
@@ -853,6 +887,31 @@ mod syntect_lines {
                 state: None,
                 line: String::new(),
             })
+        }
+
+        /// The language's syntax, looked up (and the syntaxes loaded) the
+        /// first time: blocking, in a job.
+        fn syntax(&mut self) -> Option<&'static SyntaxReference> {
+            if let Some(hint) = self.hint.take() {
+                self.syntax = find_syntax(hint);
+                // The state parsing starts from (and goes back to after an
+                // edit before the first checkpoint).
+                if let (Some(syntax), Some(first)) = (self.syntax, self.lines.first_mut()) {
+                    first.start.get_or_insert_with(|| Parse::new(syntax));
+                }
+            }
+            self.syntax
+        }
+
+        /// A highlighter of `hint` that looks its syntax up in its first
+        /// job, as one made before the syntaxes are loaded does.
+        #[cfg(test)]
+        pub(super) fn deferred(hint: &'static str) -> Syntect {
+            let mut syntect = Syntect::new(hint).unwrap();
+            syntect.syntax = None;
+            syntect.hint = Some(hint);
+            syntect.lines[0].start = None;
+            syntect
         }
 
         /// Whether the lines up to `last_line` are current.
@@ -907,6 +966,9 @@ mod syntect_lines {
             out: &mut EditorTokens,
         ) {
             let started = Instant::now();
+            let Some(syntax) = self.syntax() else {
+                return;
+            };
             let set = syntaxes();
             while self.parsed < self.lines.len() && self.parsed <= last_line {
                 if self.offset > text.len() {
@@ -933,7 +995,7 @@ mod syntect_lines {
                     None => self.lines[index]
                         .start
                         .clone()
-                        .unwrap_or_else(|| (ParseState::new(self.syntax), ScopeStack::new())),
+                        .unwrap_or_else(|| Parse::new(syntax)),
                 };
                 out.push(index, parse(&mut state, &self.line, content, set));
                 let line = &mut self.lines[index];
@@ -990,6 +1052,10 @@ mod syntect_lines {
             budget: Duration,
             tokens: &mut EditorTokens,
         ) -> bool {
+            if self.syntax().is_none() {
+                // A language syntect lacks: nothing to parse.
+                return true;
+            }
             self.parse_on(text, last_line, budget, tokens);
             self.current(last_line)
         }
@@ -1006,8 +1072,11 @@ mod syntect_lines {
             last_line: usize,
             tokens: &mut EditorTokens,
         ) -> bool {
+            let Some(syntax) = self.syntax() else {
+                return false;
+            };
             let set = syntaxes();
-            let mut state = (ParseState::new(self.syntax), ScopeStack::new());
+            let mut state = Parse::new(syntax);
             let mut offset = offset;
             for index in first_line..=last_line {
                 if offset > text.len() {
@@ -1033,7 +1102,10 @@ mod syntect_lines {
     /// without), parsed on from `state`, which it leaves at the line's end.
     fn parse(state: &mut State, line: &str, content: usize, set: &SyntaxSet) -> Tokens {
         let mut tokens = Vec::new();
-        let (parser, scopes) = state;
+        let Parse {
+            state: parser,
+            scopes,
+        } = state;
         // A line syntect cannot parse keeps the scopes it started with;
         // the next line starts over from them.
         let Ok(operations) = parser.parse_line(line, set) else {
@@ -1412,6 +1484,21 @@ mod tests {
             changed
         }
 
+        #[test]
+        fn a_highlighter_made_before_the_syntaxes_looks_its_syntax_up_in_its_first_job() {
+            let deferred = Syntax::App(Rc::new(|| {
+                Box::new(syntect_lines::Syntect::deferred("rust")) as Box<dyn EditorHighlighter>
+            }));
+            let text = rust_lines(40);
+            let mut highlighter = Highlighter::with(&deferred).unwrap();
+            check_fresh(&mut highlighter, "rust", &text);
+            // An edit before the first checkpoint after the first one
+            // parses again from the text's start.
+            let at = text.find("    let x3 ").unwrap();
+            let text = edit(&mut highlighter, &text, at..at, "/* ");
+            check_fresh(&mut highlighter, "rust", &text);
+        }
+
         fn rust_lines(count: usize) -> String {
             let mut text = String::from("fn main() {\n");
             for i in 0..count {
@@ -1612,6 +1699,29 @@ mod tests {
             assert!(highlighter.guess(&rope, 900, offset, 950).is_none());
             // The parse from the start takes the lines over.
             check_fresh(&mut highlighter, "rust", &text);
+        }
+
+        #[test]
+        fn typing_far_past_the_parse_is_guessed_again() {
+            let text = rust_lines(1000);
+            let rope = Rope::from_str(&text);
+            let mut highlighter = Highlighter::new("rust").unwrap();
+            let offset = text.match_indices('\n').nth(899).unwrap().0 + 1;
+            let guess = highlighter.guess(&rope, 900, offset, 950).unwrap();
+            highlighter.guessed(guess.run());
+            // A character typed at the start of line 945 (in view, past
+            // the guess's context): the line keeps its colors moved, until
+            // a guess gives it its own.
+            let len = text.split('\n').nth(945).unwrap().len();
+            highlighter.edited_keeping(
+                EditorTextEdit::lines(945, 1, 1),
+                Some(line_edit(0, 1, len, Some(len))),
+            );
+            assert!(highlighter.tokens(945).is_some());
+            let guess = highlighter.guess(&rope, 900, offset, 950);
+            assert!(guess.is_some(), "the edited line is guessed again");
+            highlighter.guessed(guess.unwrap().run());
+            assert!(highlighter.guess(&rope, 900, offset, 950).is_none());
         }
     }
 }

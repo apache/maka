@@ -23,8 +23,8 @@ use crate::call::Scope;
 use crate::process::Command;
 pub use crate::process::Error;
 use futures_util::future::BoxFuture;
-pub use maka_agent_facts::shell_run::ShellOutcome as Outcome;
-pub use maka_agent_facts::terminal::TerminalSize as Size;
+pub use maka_plugin_core::shell_run::ShellOutcome as Outcome;
+pub use maka_plugin_core::terminal::TerminalSize as Size;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

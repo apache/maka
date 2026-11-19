@@ -53,6 +53,7 @@ scroll().flex_1().child(
 | `disableIntervalMomentum` | `.disable_interval_momentum(..)` | `boolean` | `false` | 一次惯性滑动最多移动一个吸附点。 |
 | `decelerationRate` | `.deceleration(rate)` | `"normal" \| "fast" \| number` | 平台默认 | 惯性滑动减速的快慢：每毫秒保留的速度比例（`normal` 为 0.998，`fast` 为 0.99）。 |
 | `contentInset` | `.content_inset(EdgeInsets { .. })` | `Partial<Edges>` | | 内容四周的留白。 |
+| `scrollbarInset` | `.scrollbar_inset(EdgeInsets { .. })` | `Partial<Edges>` | | 滚动指示条与视图各边保持的距离，用来避开浮在视图上的栏；内容仍从这些栏下面滚过。 |
 | `contentOffset` | `.content_offset(point(..))` | `{ x?, y? }` | | 初始位置。 |
 | `contentStyle` | 内容视图自身的样式 | `ViewStyle` | | 包住子元素、随它们一起滚动的视图的样式；`flexGrow: 1` 让它至少和视口一样高（居中的空状态）。 |
 | `contentClass` | 内容视图自身的样式 | `string` | | 同上，写成类名，例如 `"grow justify-center p-4"`。 |
@@ -184,4 +185,5 @@ scroller.scrollTo({ y: 0, animated: true });
 - Android：下拉刷新由 NSH 自行绘制（越界回弹效果仍是原生的），`contentInset` 以内边距的方式实现，`decelerationRate` 影响吸附时的滑动。
 - Android 用 NSH 自己的滚动视图实现缩放，围绕内容左上角缩放并支持双向滚动。双指间距超过 Android 的最小距离（约 27 mm）后才开始捏合。
 - 在 Mac Catalyst（Mac 界面风格）上，NSH 自行检测下拉并显示加载指示器。
+- `scrollbarInset`：iOS 会在底部再加上键盘占的高度，和内容的留白一样。触屏浏览器只在指示条滚动的方向上让开，不能自定义滚动条样式的浏览器（Firefox）忽略它。Android 上各边都是 0 时，指示条照旧留在 `contentInset` 以内；设了任意一边，就和其他平台一样只按 `scrollbarInset` 走。
 - iOS 在缩放结束后会按缩放后的分辨率重绘文本和画布。

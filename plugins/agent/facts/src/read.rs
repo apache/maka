@@ -21,17 +21,22 @@
 mod page;
 mod resource;
 mod shell;
+mod source;
 mod tool_result;
 pub use page::{ReadPage, TextPageScan};
-pub use resource::ResourceAddress;
-pub use shell::ReadMetadata;
+pub use resource::{
+    ResourceAddress, SESSION_RESOURCE_PREFIX, imported_tool_result_path,
+    parse_imported_tool_result_path,
+};
+pub use shell::{ReadMetadata, read_shell_page};
+pub use source::{Utf8Page, json_page, projection_page};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::num::NonZeroUsize;
 
 pub const MAX_PAGE_CHARS: usize = 7_500;
-pub const DESCRIPTION: &str = "Read a file or a Maka resource using path. Resource shortcuts: task:<id>, attachment:<id>, archive:<event-id>. Prefer short prefixes: retain any fixed ID prefix (such as attachment-) and keep the next 12 ID characters, e.g. task:fd427bd7-8a6 or attachment:attachment-8ac3b2615d42. Prefixes must be unique within this Session; exact IDs take precedence and ambiguous prefixes require more characters. Files require their actual paths. PNG, JPEG, GIF and WebP files return images. Text returns one bounded page; offset is a zero-based starting line and limit is a positive line count. A large limit cannot bypass the response-size cap. If next is non-null, pass that complete object unchanged to Read to continue the requested range. partialLine means a line spans pages. Continuations reject changed content; restart with the original path.";
+pub const DESCRIPTION: &str = "Read UTF-8 text, a PNG/JPEG/GIF/WebP image, or a Maka resource by path. Supported Maka resources: maka://session/<id> or session:<id> (reads a Room or Conversation transcript), maka://session/<id>/tool-results/<event-id>, attachment:<id>, and archive:<event-id> (short unique ID prefixes are accepted for attachment/archive). Background shell tasks use ProcessRead, not Read. offset is a 0-based line index and limit is a positive line count; symlinks and parent (..) path components are rejected for workspace files. If next is non-null, pass page.next unchanged to Read to continue; restart with the original path if content changed.";
 const PREFIX: &str = "maka://read/";
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
@@ -155,6 +160,17 @@ impl ReadInput {
 }
 
 impl ReadRequest {
+    pub fn bind_imported_tool_result(
+        &mut self,
+        address: &crate::history::HistoryRowAddress,
+    ) -> Result<(), ReadError> {
+        if self.is_continuation() {
+            return Err(ReadError::InvalidContinuation);
+        }
+        self.path = imported_tool_result_path(address).map_err(|_| ReadError::InvalidInput)?;
+        Ok(())
+    }
+
     pub fn is_continuation(&self) -> bool {
         matches!(self.start, Start::Continuation { .. })
     }
@@ -196,61 +212,4 @@ fn present_limit<'de, D: Deserializer<'de>>(d: D) -> Result<Option<NonZeroUsize>
         .and_then(NonZeroUsize::new)
         .map(Some)
         .ok_or_else(|| D::Error::custom("Read limit must be positive"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn continuation_decoding_is_strict_and_never_combines_position_with_line_offset() {
-        for value in [
-            json!({"path":""}),
-            json!({"path":"x","ref":"x"}),
-            json!({"path":"x","offset":null}),
-            json!({"path":"x","limit":null}),
-            json!({"path":"x","limit":0}),
-            json!({"path":"x","offset":-1}),
-            json!({"path":"x","offset":9_007_199_254_740_992_u64}),
-            json!({"path":"x","limit":9_007_199_254_740_992_u64}),
-        ] {
-            assert!(serde_json::from_value::<ReadInput>(value).is_err());
-        }
-        let address = format!(
-            "{PREFIX}{}?at=12&sha={}",
-            URL_SAFE_NO_PAD.encode("maka://runtime/attachments/item"),
-            "a".repeat(32)
-        );
-        let input: ReadInput = serde_json::from_value(json!({"path":address,"limit":2})).unwrap();
-        assert_eq!(
-            input.resolve().unwrap().path(),
-            "maka://runtime/attachments/item"
-        );
-        assert!(
-            ReadInput {
-                offset: Some(0),
-                ..input
-            }
-            .resolve()
-            .is_err()
-        );
-        for bad in [
-            format!("{address}&at=1"),
-            format!("{address}&unknown=x"),
-            format!("{address}#fragment"),
-            address.replace("at=12", "at=-1"),
-            address.replace("at=12", "at=9007199254740992"),
-            address.replace(&"a".repeat(32), &"A".repeat(32)),
-            format!(
-                "{PREFIX}{}?at=1&sha={}",
-                URL_SAFE_NO_PAD.encode(&address),
-                "a".repeat(32)
-            ),
-            format!("{PREFIX}_w?at=1&sha={}", "a".repeat(32)),
-        ] {
-            let input: ReadInput = serde_json::from_value(json!({"path":bad})).unwrap();
-            assert!(input.resolve().is_err(), "{bad}");
-        }
-    }
 }

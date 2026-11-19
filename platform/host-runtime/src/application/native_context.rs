@@ -86,6 +86,17 @@ pub struct NativeServices {
 pub(super) struct NativeOrigin {
     pub activation: Activation,
     pub selected_method: Option<Arc<SelectedNativeMethod>>,
+    pub caller_context: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    direct_resources:
+        std::sync::OnceLock<std::sync::Weak<maka_plugin_core::work::resources::Resources>>,
+}
+impl NativeOrigin {
+    pub(super) fn is_direct(&self, scope: &Scope) -> bool {
+        self.direct_resources
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .is_some_and(|resources| Arc::ptr_eq(&resources, &scope.resources))
+    }
 }
 
 /// An in-memory method capability captured by trusted native initialization.
@@ -131,7 +142,24 @@ impl NativeServices {
     /// made from this handle authorize only that original binding and method;
     /// auxiliary calls still require the embedding's independent native grants.
     pub fn select_method(&self, target: &ServiceTarget, method: &str) -> Result<Self> {
-        let binding = self.binding(target)?;
+        self.select_binding_method(self.binding(target)?, method)
+    }
+    /// Select a member of this activation's actual captured import bindings.
+    /// The index selects only from that immutable capture; it is not a grant.
+    pub fn select_import_method(
+        &self,
+        import: &str,
+        provider: usize,
+        method: &str,
+    ) -> Result<Self> {
+        let binding = self
+            .imports
+            .get(import)
+            .and_then(|bindings| bindings.get(provider))
+            .ok_or("selected native import provider is unavailable")?;
+        self.select_binding_method(binding, method)
+    }
+    fn select_binding_method(&self, binding: &Binding, method: &str) -> Result<Self> {
         let Interface::Service { methods } = &binding.contract().interface else {
             return Err("selected native method requires a service".into());
         };
@@ -152,43 +180,79 @@ impl NativeServices {
         identity: maka_capabilities::call::Identity,
         cancellation: CancellationToken,
     ) -> Result<NativeRequest> {
-        self.request_inner(identity, cancellation, None)
+        self.request_inner(identity, cancellation, None, None)
     }
-    /// Inherit the original Engine custody through actual Host child scopes.
-    pub fn request_with_execution(
+    /// Carry actual native context for work without a Session or Run custody.
+    pub fn request_with_context<T: std::any::Any + Send + Sync>(
         &self,
         identity: maka_capabilities::call::Identity,
         cancellation: CancellationToken,
-        execution: Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
+        context: Arc<T>,
     ) -> Result<NativeRequest> {
-        self.request_inner(identity, cancellation, Some(execution))
+        self.request_inner(identity, cancellation, None, Some(context))
     }
+
+    /// Inherit the original work custody through actual Host child scopes.
+    pub fn request_with_work(
+        &self,
+        identity: maka_capabilities::call::Identity,
+        cancellation: CancellationToken,
+        custody: Arc<dyn maka_plugin_core::work::WorkCustody>,
+    ) -> Result<NativeRequest> {
+        self.request_inner(identity, cancellation, Some(custody), None)
+    }
+    /// Carry one actual native domain context through local Host dispatch.
+    /// It is never encoded, recovered from identifiers, or sent to another Host.
+    pub fn request_with_work_and_context<T: std::any::Any + Send + Sync>(
+        &self,
+        identity: maka_capabilities::call::Identity,
+        cancellation: CancellationToken,
+        custody: Arc<dyn maka_plugin_core::work::WorkCustody>,
+        context: Arc<T>,
+    ) -> Result<NativeRequest> {
+        self.request_inner(identity, cancellation, Some(custody), Some(context))
+    }
+
     fn request_inner(
         &self,
         identity: maka_capabilities::call::Identity,
         cancellation: CancellationToken,
-        execution: Option<Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
+        custody: Option<Arc<dyn maka_plugin_core::work::WorkCustody>>,
+        caller_context: Option<Arc<dyn std::any::Any + Send + Sync>>,
     ) -> Result<NativeRequest> {
         let origin = NativeOrigin {
             activation: self.activation.clone(),
             selected_method: self.selected_method.clone(),
+            caller_context,
+            direct_resources: std::sync::OnceLock::new(),
         };
-        let scope = match execution {
-            Some(execution) => {
-                self.issuer
-                    .issue_with_execution(identity, origin, cancellation, execution)
-            }
+        let scope = match custody {
+            Some(custody) => self
+                .issuer
+                .issue_with_work(identity, origin, cancellation, custody),
             None => self.issuer.issue_with(identity, origin, cancellation),
         }
         .map_err(|error| error.to_string())?;
+        let origin = self
+            .issuer
+            .evidence::<NativeOrigin>(&scope)
+            .expect("just-issued native scope");
+        assert!(
+            origin
+                .direct_resources
+                .set(Arc::downgrade(&scope.resources))
+                .is_ok()
+        );
         Ok(NativeRequest(Context {
             stream: None,
             caller: None,
+            native_context: None,
             scope,
             consumer: self.activation.clone(),
             requester: self.activation.clone(),
             operation: None,
             operation_scope: None,
+            state: Err("native requests have no captured provider state".into()),
             attachments: Attachments::default(),
             imports: self.imports.clone(),
             exports: self.exports.clone(),
@@ -207,6 +271,15 @@ impl std::ops::Deref for NativeRequest {
     }
 }
 impl NativeRequest {
+    /// Only adds restrictions; the request still needs its original admission.
+    pub fn with_sandbox_floor(mut self, floor: &maka_sandbox::Sandbox) -> Result<Self> {
+        self.0
+            .scope
+            .restrict_sandbox(floor)
+            .map_err(|error| error.to_string())?;
+        Ok(self)
+    }
+
     pub async fn finish(&self) -> Result<()> {
         self.0
             .scope

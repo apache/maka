@@ -31,7 +31,7 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSEvent, NSEventModifierFlags, NSEventType,
     NSView, NSWindow,
 };
-use objc2_foundation::{NSRect, NSSize};
+use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 use crate::{surface::Surface, synth};
 
@@ -314,12 +314,13 @@ fn mapped(view: &crate::view::NshView, rect: NSRect) -> Option<Bounds<Points>> {
     let (x0, y0) = (rect.origin.x as f32, rect.origin.y as f32);
     let (w, h) = (rect.size.width as f32, rect.size.height as f32);
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    // Each corner from the plain box's top left, as the frames, scroll
+    // offsets and zooms place it, then moved by the transforms.
+    let base = crate::input::to_top(view, (x0, y0), false)?;
     for (dx, dy) in [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)] {
-        let corner = (x0 + dx, y0 + dy);
-        let moved = crate::input::to_top(view, corner, true)?;
-        let still = crate::input::to_top(view, corner, false)?;
-        let x = plain.origin.x.0 + dx + moved.0 - still.0;
-        let y = plain.origin.y.0 + dy + moved.1 - still.1;
+        let moved = crate::input::to_top(view, (x0 + dx, y0 + dy), true)?;
+        let x = plain.origin.x.0 + moved.0 - base.0;
+        let y = plain.origin.y.0 + moved.1 - base.1;
         (min_x, min_y) = (min_x.min(x), min_y.min(y));
         (max_x, max_y) = (max_x.max(x), max_y.max(y));
     }
@@ -327,6 +328,17 @@ fn mapped(view: &crate::view::NshView, rect: NSRect) -> Option<Bounds<Points>> {
         point(Points(min_x), Points(min_y)),
         Size::new(Points(max_x - min_x), Points(max_y - min_y)),
     ))
+}
+
+/// Where `frame` goes to lie within `area` (both in screen coordinates,
+/// from the bottom), moved as little as it takes; one wider or taller than
+/// the area keeps its left edge and its top (the title bar) in it.
+fn within(frame: NSRect, area: NSRect) -> NSPoint {
+    let right = area.origin.x + area.size.width - frame.size.width;
+    let x = frame.origin.x.min(right).max(area.origin.x);
+    let top = area.origin.y + area.size.height - frame.size.height;
+    let y = frame.origin.y.max(area.origin.y).min(top);
+    NSPoint::new(x, y)
 }
 
 impl Native for MacNative {
@@ -448,10 +460,23 @@ impl Native for MacNative {
         self.on_key(move |surface, window| synth::type_text(surface, window, &text));
     }
 
+    fn focused(&self) -> Option<NodeId> {
+        self.on_key(|_, window| crate::text_input::test_focused(window))
+            .flatten()
+    }
+
+    fn compose(&self, text: &str) -> Result<(), String> {
+        let text = text.to_owned();
+        self.on_key(move |_, window| crate::text_input::test_compose(window, &text))
+            .unwrap_or_else(|| Err("the window is gone".into()))
+    }
+
     fn paste(&self, content: &nsh_core::PasteEvent) -> Result<(), String> {
         let content = content.clone();
-        self.on_key(move |_, window| crate::text_input::test_paste(window, &content))
-            .unwrap_or_else(|| Err("the window is gone".into()))
+        self.on_key(move |surface, window| {
+            crate::text_input::paste_or_hold(surface, window, &content)
+        })
+        .unwrap_or_else(|| Err("the window is gone".into()))
     }
 
     fn key(&self, key: Key) {
@@ -508,12 +533,38 @@ impl Native for MacNative {
                 let root = (target != ROOT_ID)
                     .then(|| crate::window::root_view(surface, target))
                     .flatten();
+                // The window stays the input's, as after a real move: what
+                // the hover changes (the controls it shows) is picked again
+                // where the pointer is (`input::content_moved`), not in the
+                // main window, where the hovered views would hear a leave.
                 crate::input::enter(surface, root);
                 crate::input::event(surface, &event);
-                crate::input::enter(surface, None);
             }
         })
         .ok_or_else(|| "the window is gone".to_owned())
+    }
+
+    fn drop_files(&self, at: Point<Points>, uris: Vec<String>) -> Result<(), String> {
+        let (x, y) = (at.x.0, at.y.0);
+        let target = self.target();
+        let dropped = self.on_target(move |surface, _| {
+            let root = (target != ROOT_ID)
+                .then(|| crate::window::root_view(surface, target))
+                .flatten();
+            // The agent's drop does not move the pointer (`input.last`): the
+            // window it was in stays the input's, so what the drop changes
+            // is picked again where the pointer is (a hover in this window
+            // included), not in the main window.
+            let pointer = crate::input::enter(surface, root);
+            let dropped = crate::file_drop::drop_uris(surface, x, y, uris);
+            crate::input::enter(surface, pointer);
+            dropped
+        });
+        match dropped {
+            Some(true) => Ok(()),
+            Some(false) => Err("no view there listens to `onFileDrop`".into()),
+            None => Err("the window is gone".into()),
+        }
     }
 
     fn press_keys(&self, keys: &str) -> Result<(), String> {
@@ -569,7 +620,9 @@ impl Native for MacNative {
         // Escape, as a user goes back: in a focused field it only leaves
         // it, so then once more.
         self.on_key(|surface, window| {
-            if crate::text_input::editing(surface) {
+            // The field of the window the keys go to: the input's window is
+            // where the pointer last was (a hover elsewhere included).
+            if crate::text_input::editing_in(&crate::input::root_in(surface, window)) {
                 synth::key(surface, window, "Escape");
             }
             synth::key(surface, window, "Escape");
@@ -599,7 +652,25 @@ impl Native for MacNative {
 
     fn resize(&self, width: Points, height: Points) -> Result<(), String> {
         self.on_main(|_, window| {
-            window.setContentSize(NSSize::new(f64::from(width.0), f64::from(height.0)));
+            let content = NSSize::new(f64::from(width.0), f64::from(height.0));
+            let old = window.frame();
+            let size = window
+                .frameRectForContentRect(NSRect::new(NSPoint::new(0.0, 0.0), content))
+                .size;
+            // Grown from its top left corner, it may reach past the
+            // display's edge, where a screenshot of it shows nothing: moved
+            // back just enough, so a window the app placed keeps its place
+            // when it still fits. Its display is the one it was on (grown,
+            // most of it may be on another).
+            let top_left = NSPoint::new(old.origin.x, old.origin.y + old.size.height - size.height);
+            let mut frame = NSRect::new(top_left, size);
+            if let Some(screen) = window.screen() {
+                frame.origin = within(frame, screen.visibleFrame());
+            }
+            // One change: a resize, then a move, left the screenshots that
+            // followed misplaced on the window (its title bar in, its right
+            // edge out).
+            window.setFrame_display(frame, true);
         })
         .ok_or_else(|| "the window is gone".to_owned())
     }

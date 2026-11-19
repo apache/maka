@@ -2,13 +2,16 @@
 //! `style` applied on top) and resolving them again when what they depend
 //! on changes: the appearance, the window size, the layout direction, the
 //! node's interaction states, its group's states or its sibling position.
+//! A sibling-position change restyles, in one pass over the parent's
+//! children (`positions_changed`), only those whose position bits moved;
+//! ordinary restyling queries its position.
 
 use super::{Core, Key, Kind, NO_KEY, dirty, disabling_changes};
 use crate::{
     geometry::{Points, Size},
     mount::MountItem,
     ops::NodeId,
-    platform::{Appearance, ColorScheme},
+    platform::{Appearance, ColorScheme, InputModality},
     props::PointerEvents,
     style::{Color, Style, StylePatch, ViewStyle},
     tailwind::{
@@ -67,6 +70,8 @@ pub(super) enum Part {
     Pressed,
     /// `focusWithinStyle`.
     FocusWithin,
+    /// `focusVisibleStyle`.
+    FocusVisible,
     /// A page's `headerStyle` / `headerClass`.
     Header,
     /// A list's `contentClass`.
@@ -87,6 +92,7 @@ impl Part {
             Part::Expanded => (state::EXPANDED, rank::EXPANDED),
             Part::Pressed => (state::ARIA_PRESSED, rank::ARIA_PRESSED),
             Part::FocusWithin => (state::FOCUS_WITHIN, rank::FOCUS_WITHIN),
+            Part::FocusVisible => (state::FOCUS_VISIBLE, rank::FOCUS_VISIBLE),
             _ => return None,
         })
     }
@@ -97,19 +103,34 @@ impl Part {
 pub(super) struct NodeParts {
     /// The classes as set, before the state styles are merged in.
     base: Option<std::rc::Rc<ClassList>>,
-    /// The state styles, by [`Part`] (the first ten).
-    states: [Option<std::rc::Rc<StylePatch>>; 10],
+    /// The state styles, by [`Part`] (the first eleven).
+    states: [Option<std::rc::Rc<StylePatch>>; 11],
     /// The state styles as rules (none without any).
     state_rules: Option<std::rc::Rc<ClassList>>,
     /// The inline styles of the other parts.
     styles: Vec<(Part, std::rc::Rc<StylePatch>)>,
     /// The classes of the other parts.
     classes: Vec<(Part, std::rc::Rc<ClassList>)>,
+    /// The names a part's classes were set by (`headerClass`,
+    /// `contentClass`; a typed list has none): they are parsed again when
+    /// the theme or the design tokens they read change.
+    class_names: Vec<(Part, Box<str>)>,
+    /// The group whose press it shows as a part (`Prop::ProjectedActive`).
+    active_group: Option<&'static str>,
+    /// It was last styled with that group's press.
+    group_pressed: bool,
+}
+
+impl NodeParts {
+    /// The group whose press it shows as a part.
+    pub(super) fn active_group(&self) -> Option<&'static str> {
+        self.active_group
+    }
 }
 
 /// The [`state`] bits an element is in by its accessibility state `s`:
 /// selected, checked (true), indeterminate (checked mixed), expanded,
-/// pressed (true: a toggle button that is on) and busy.
+/// pressed (true: a toggle button that is on), busy and invalid.
 pub(super) fn accessibility_states(s: &crate::AccessibilityState) -> u16 {
     use crate::Checked;
     let mut states = 0;
@@ -130,11 +151,14 @@ pub(super) fn accessibility_states(s: &crate::AccessibilityState) -> u16 {
     if s.busy {
         states |= state::BUSY;
     }
+    if s.invalid {
+        states |= state::INVALID;
+    }
     states
 }
 
 /// The state style parts, by their index in [`NodeParts::states`].
-const STATE_PARTS: [Part; 10] = [
+const STATE_PARTS: [Part; 11] = [
     Part::Active,
     Part::Hover,
     Part::Focus,
@@ -145,6 +169,7 @@ const STATE_PARTS: [Part; 10] = [
     Part::Expanded,
     Part::Pressed,
     Part::FocusWithin,
+    Part::FocusVisible,
 ];
 
 impl<M: TextEngine> Core<M> {
@@ -192,6 +217,11 @@ impl<M: TextEngine> Core<M> {
         }
         let changed = (if env.dark != self.class_env.dark { deps::DARK } else { 0 })
             | (if env.reduce_motion != self.class_env.reduce_motion { deps::MOTION } else { 0 })
+            | (if env.pointer != self.class_env.pointer || env.terminal != self.class_env.terminal {
+                deps::DEVICE
+            } else {
+                0
+            })
             // `ios:` / `android:` never change at run time, but a new
             // platform must reach classes resolved before it was known.
             | (if env.platform != self.class_env.platform { u16::MAX } else { 0 });
@@ -221,6 +251,10 @@ impl<M: TextEngine> Core<M> {
         if held {
             new |= state::PRESSED;
         }
+        if !held && self.press_cancelled(key) {
+            new &= !state::PRESSED;
+        }
+        let node = &mut self.nodes[key as usize];
         if new == node.states {
             return;
         }
@@ -232,24 +266,176 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
+    /// A span of a text heard the pointer come or go, or a press go in or
+    /// out (`kind`): its hover and press states, which no view reports
+    /// for it.
+    pub(super) fn span_state(&mut self, id: NodeId, kind: crate::ops::EventKind) {
+        use crate::ops::EventKind;
+        let (bit, on) = match kind {
+            EventKind::MouseEnter => (state::HOVERED, true),
+            EventKind::MouseLeave => (state::HOVERED, false),
+            EventKind::PressDown => (state::PRESSED, true),
+            EventKind::PressUp => (state::PRESSED, false),
+            _ => return,
+        };
+        let Ok(key) = self.key(id) else { return };
+        let tracked = self.nodes[key as usize]
+            .classes
+            .as_ref()
+            .map_or(0, |c| c.tracked_states());
+        if tracked & bit == 0 || !self.is_text_span(key) {
+            return;
+        }
+        let node = &mut self.nodes[key as usize];
+        let new = if on {
+            node.states | bit
+        } else {
+            node.states & !bit
+        };
+        if new != node.states {
+            node.states = new;
+            self.states_changed(key);
+        }
+    }
+
     /// View `key` took (or lost) the keyboard focus. A surface has one: a
     /// view taking it is the focus whether or not the one before reported
     /// losing it yet, and a view losing it that is not the focus changes
     /// nothing. The chain is worked out in the next commit round, once for
     /// all the reports before it, so a move reported as a blur then a
-    /// focus leaves the views both chains share as they were. The root
+    /// focus leaves the views both chains share as they were; a blur no
+    /// focus follows in that round waits for the next display frame
+    /// (`blur_held`), so the focus arriving in a later message is still
+    /// the same move. The root
     /// view taking it (macOS's first responder when no view has it) is no
     /// focus.
     fn focus_reported(&mut self, key: Key, focused: bool) {
         let id = self.nodes[key as usize].id;
         if focused {
             self.focus = (key != self.root).then_some((key, id));
+            self.focus_visible = self.focus_shows(key);
+            self.focus_by_keyboard = self.keyboard_moves_focus() && !self.restoring_modal_focus;
+            self.blur_held = false;
         } else if self.focus == Some((key, id)) {
             self.focus = None;
+            self.blur_held = true;
         } else {
             return;
         }
         self.focus_moved = true;
+    }
+
+    /// The platform reports what the user gave the surface input with
+    /// last ([`InputModality`]), before the focus moves it causes: a key
+    /// typed while the focus does not show makes it show, as browsers
+    /// do. A pointer leaves a focus that shows as it is: only a move of
+    /// the focus decides again ([`Self::focus_shows`]). A hint the focus
+    /// shows is decided only as the focus moves
+    /// ([`Self::keyboard_moves_focus`]): a key typed after a press shows
+    /// the focus, never the hint of the view it is on.
+    pub fn set_input_modality(&mut self, modality: InputModality) {
+        self.restoring_modal_focus = false;
+        self.modality = Some(modality);
+        if modality == InputModality::Keyboard && self.focus.is_some() && !self.focus_visible {
+            self.focus_visible = true;
+            self.focus_visible_moved = true;
+        }
+    }
+
+    /// Whether the focus coming to `key` shows (`focus-visible:`), the
+    /// one rule every platform follows, after CSS's `:focus-visible`: an
+    /// input that edits always shows it (it takes typing), any other view
+    /// when the keyboard moved the focus ([`Self::keyboard_moves_focus`]).
+    pub(super) fn focus_shows(&self, key: Key) -> bool {
+        let node = &self.nodes[key as usize];
+        let edits = node.kind == Kind::Input
+            && node
+                .input
+                .as_ref()
+                .is_some_and(|input| input.config.editable);
+        edits || self.keyboard_moves_focus()
+    }
+
+    /// Whether the focus moving now is the keyboard's, by the surface's
+    /// last input: unless that was a pointer, so the keyboard's moves
+    /// count (Tab, a group's arrows, a shortcut) and so does a move the
+    /// app makes (`focus()`, a calendar or a dialog moving it as it opens)
+    /// after a key, while a press, a tap or a move after one do not.
+    /// Before any input it counts, as a browser's `autofocus` shows its
+    /// focus. `focus-visible:` ([`Self::focus_shows`]) and the hints the
+    /// focus shows (`Core::focus_hints`) follow it; a hint has no
+    /// exception for an input that edits, so a click into a field leaves
+    /// its tooltip to the pointer.
+    fn keyboard_moves_focus(&self) -> bool {
+        self.modality != Some(InputModality::Pointer)
+    }
+
+    /// Puts `FOCUS_VISIBLE` on the focus while it shows and takes it off
+    /// the view that had it: one view changes, the rest are not touched.
+    pub(super) fn update_focus_visible(&mut self) {
+        let alive = |this: &Self, (k, id): (Key, NodeId)| {
+            this.nodes.get(k as usize).is_some_and(|n| n.id == id)
+        };
+        let target = self.focus.filter(|&f| self.focus_visible && alive(self, f));
+        if target == self.focus_visible_on {
+            return;
+        }
+        let flipped = target.is_some() != self.focus_visible_on.is_some();
+        if let Some(old) = self.focus_visible_on.take()
+            && alive(self, old)
+        {
+            let node = &mut self.nodes[old.0 as usize];
+            if node.states & state::FOCUS_VISIBLE != 0 {
+                node.states &= !state::FOCUS_VISIBLE;
+                self.states_changed(old.0);
+            }
+        }
+        if let Some((k, _)) = target {
+            let node = &mut self.nodes[k as usize];
+            if node.states & state::FOCUS_VISIBLE == 0 {
+                node.states |= state::FOCUS_VISIBLE;
+                self.states_changed(k);
+            }
+        }
+        self.focus_visible_on = target;
+        if flipped {
+            self.restyle_projected_focus();
+        }
+    }
+
+    /// The states `key` is styled by: its own, those it shows as a part
+    /// of a control and a hover a component passes on to it, with
+    /// `FOCUS_VISIBLE` on a part projected focused while the focus shows.
+    /// Virtual focus is projected while its control has the focus, so on
+    /// its rows `focus:` is the cursor and `focus-visible:` the cursor the
+    /// keyboard is on.
+    pub(super) fn styled_states(&self, key: Key) -> u16 {
+        let node = &self.nodes[key as usize];
+        let passed = if node.passed_hover { state::HOVERED } else { 0 };
+        let mut states = node.states | node.projected | passed;
+        if let Some(group) = node.parts.as_ref().and_then(|p| p.active_group) {
+            states |= self.group_states(key, group) & state::PRESSED;
+        }
+        if node.projected & state::FOCUSED != 0 && self.focus_visible_on.is_some() {
+            states | state::FOCUS_VISIBLE
+        } else {
+            states
+        }
+    }
+
+    /// Restyles the parts projected focused: the focus started or stopped
+    /// showing. Those released since are dropped.
+    fn restyle_projected_focus(&mut self) {
+        let mut parts = std::mem::take(&mut self.projected_focus);
+        parts.retain(|&(k, id)| {
+            self.nodes
+                .get(k as usize)
+                .is_some_and(|n| n.id == id && n.projected & state::FOCUSED != 0)
+        });
+        for &(k, _) in &parts {
+            self.states_changed(k);
+        }
+        self.projected_focus = parts;
     }
 
     /// Puts `focus-within` on the focus and the views around it, and takes
@@ -261,6 +447,7 @@ impl<M: TextEngine> Core<M> {
     /// is in, as in a React portal.
     pub(super) fn update_focus_within(&mut self) {
         self.focus_moved = false;
+        self.blur_held = false;
         let focus = self
             .focus
             .filter(|&(k, id)| self.nodes.get(k as usize).is_some_and(|n| n.id == id));
@@ -366,7 +553,7 @@ impl<M: TextEngine> Core<M> {
 
     /// Restyles `key` if its classes read its states, and the nodes inside
     /// it that read its group states.
-    fn states_changed(&mut self, key: Key) {
+    pub(super) fn states_changed(&mut self, key: Key) {
         let Some(classes) = self.nodes[key as usize].classes.clone() else {
             return;
         };
@@ -395,13 +582,69 @@ impl<M: TextEngine> Core<M> {
     pub(super) fn set_projected_states(&mut self, key: Key, states: u16) {
         let node = &mut self.nodes[key as usize];
         if node.projected != states {
+            let focus_changed = (node.projected ^ states) & state::FOCUSED != 0;
             node.projected = states;
+            let id = node.id;
             if self.mount_projected && node.created {
-                let id = node.id;
                 self.mount.push(MountItem::ProjectStates { id, states });
+            }
+            if focus_changed {
+                // The key's entry before, and those released since, go.
+                let nodes = &self.nodes;
+                self.projected_focus
+                    .retain(|&(k, i)| k != key && nodes.get(k as usize).is_some_and(|n| n.id == i));
+                if states & state::FOCUSED != 0 {
+                    self.projected_focus.push((key, id));
+                }
             }
             self.states_changed(key);
         }
+    }
+
+    /// The group whose press `key` shows as a part of a control
+    /// (`Prop::ProjectedActive`).
+    pub(super) fn set_projected_active(&mut self, key: Key, group: Option<&'static str>) {
+        let node = &mut self.nodes[key as usize];
+        if node.parts.as_ref().and_then(|p| p.active_group) == group {
+            return;
+        }
+        let base = node.classes.clone();
+        let parts = node.parts.get_or_insert_with(|| {
+            Box::new(NodeParts {
+                base,
+                ..NodeParts::default()
+            })
+        });
+        parts.active_group = group;
+        parts.group_pressed = false;
+        self.states_changed(key);
+    }
+
+    /// A group around part `key` that shows its press changed its states:
+    /// restyled when the press it shows came or went.
+    fn group_press_changed(&mut self, key: Key) {
+        let Some(group) = self.nodes[key as usize]
+            .parts
+            .as_ref()
+            .and_then(|p| p.active_group)
+        else {
+            return;
+        };
+        let pressed = self.group_states(key, group) & state::PRESSED != 0;
+        let node = &mut self.nodes[key as usize];
+        let parts = node.parts.as_mut().expect("a part with its group");
+        if parts.group_pressed == pressed {
+            return;
+        }
+        parts.group_pressed = pressed;
+        if !node
+            .classes
+            .as_ref()
+            .is_some_and(|c| c.deps() & deps::STATE != 0)
+        {
+            return;
+        }
+        self.restyle(key);
     }
 
     /// The `data-*` attributes `key` shows as a part of a component
@@ -551,7 +794,33 @@ impl<M: TextEngine> Core<M> {
     /// content).
     pub(super) fn set_part_class(&mut self, key: Key, part: Part, names: &str) {
         let classes = (!names.trim().is_empty()).then(|| self.tailwind.classes(names));
+        let named = classes.is_some();
         self.set_part_class_list(key, part, classes);
+        if named && let Some(parts) = self.nodes[key as usize].parts.as_deref_mut() {
+            parts.class_names.push((part, names.into()));
+        }
+    }
+
+    /// Parses again the parts' classes set by name whose rules `reads`
+    /// (the theme was replaced, or design tokens they name changed).
+    fn part_classes_again(&mut self, reads: impl Fn(&ClassList) -> bool) {
+        let named: Vec<(Key, Part, Box<str>)> = self
+            .nodes
+            .iter()
+            .filter_map(|(k, n)| Some((k as Key, n.parts.as_deref()?)))
+            .flat_map(|(k, p)| {
+                let reads = &reads;
+                p.class_names
+                    .iter()
+                    .filter(move |(part, _)| {
+                        p.classes.iter().any(|(of, list)| of == part && reads(list))
+                    })
+                    .map(move |(part, names)| (k, *part, names.clone()))
+            })
+            .collect();
+        for (key, part, names) in named {
+            self.set_part_class(key, part, &names);
+        }
     }
 
     /// Sets `part`'s classes of `key` to `classes`, already parsed (typed
@@ -570,6 +839,7 @@ impl<M: TextEngine> Core<M> {
                 ..NodeParts::default()
             })
         });
+        parts.class_names.retain(|(p, _)| *p != part);
         let at = parts.classes.iter().position(|(p, _)| *p == part);
         match (at, classes) {
             (Some(i), Some(c)) => parts.classes[i].1 = c,
@@ -592,8 +862,10 @@ impl<M: TextEngine> Core<M> {
             }
             Part::Content => {
                 let content = self.list_content(key);
-                if let Some(list) = self.nodes[key as usize].list.as_mut() {
-                    list.set_class_content(content);
+                if let Some(list) = self.nodes[key as usize].list.as_mut()
+                    && list.set_class_content(content)
+                {
+                    self.needs_layout = true;
                 }
             }
             _ => {}
@@ -762,9 +1034,7 @@ impl<M: TextEngine> Core<M> {
             .transition
             .filter(|t| t.properties.0 != 0)
             .map_or(std::time::Duration::ZERO, |t| {
-                std::time::Duration::from_secs_f32(
-                    (t.duration.max(0.0) + t.delay.max(0.0)) / 1000.0,
-                )
+                std::time::Duration::from_secs_f32((t.run_ms() + t.delay.max(0.0)) / 1000.0)
             })
     }
 
@@ -794,10 +1064,12 @@ impl<M: TextEngine> Core<M> {
         for key in keys {
             self.set_classes(key, None, None);
         }
+        self.part_classes_again(|_| true);
     }
 
     /// The design tokens changed: classes naming them
-    /// (`bg-primary`) are resolved again, on nodes and on Rust components.
+    /// (`bg-primary`) are resolved again, on nodes, on their parts (a
+    /// page's header, a list's content) and on Rust components.
     pub(super) fn class_tokens_changed(&mut self) {
         let tokens = self.components.tokens.clone();
         let Some(changed) = self.tailwind.set_tokens(&tokens) else {
@@ -815,6 +1087,7 @@ impl<M: TextEngine> Core<M> {
         for key in keys {
             self.set_classes(key, None, None);
         }
+        self.part_classes_again(|c| changed == u16::MAX || c.deps() & changed != 0);
         let hosts: Vec<NodeId> = self
             .components
             .instances
@@ -918,12 +1191,20 @@ impl<M: TextEngine> Core<M> {
         while let Some(k) = stack.pop() {
             let node = &self.nodes[k as usize];
             stack.extend_from_slice(&node.children);
+            let follows = changed & deps::GROUP != 0
+                && node
+                    .parts
+                    .as_ref()
+                    .is_some_and(|p| p.active_group.is_some());
             if node
                 .classes
                 .as_ref()
                 .is_some_and(|c| c.deps() & changed != 0)
             {
                 self.restyle(k);
+            }
+            if follows {
+                self.group_press_changed(k);
             }
         }
     }
@@ -948,7 +1229,7 @@ impl<M: TextEngine> Core<M> {
                 return;
             }
             let n = &self.nodes[k as usize];
-            if (n.states | n.projected != 0 || !n.data.is_empty())
+            if (n.states | n.projected != 0 || n.passed_hover || !n.data.is_empty())
                 && n.classes.as_ref().is_some_and(|c| !c.groups().is_empty())
             {
                 break;
@@ -964,13 +1245,32 @@ impl<M: TextEngine> Core<M> {
     /// Restyles the children of `parent` that depend on their position.
     pub(super) fn positions_changed(&mut self, parent: Key) {
         let children = self.nodes[parent as usize].children.clone();
+        let count = children
+            .iter()
+            .filter(|&&c| self.is_element_child(c))
+            .count();
+        let mut next = 0;
         for c in children {
-            if self.nodes[c as usize]
+            let index = if self.is_element_child(c) {
+                let index = next;
+                next += 1;
+                index
+            } else {
+                // Keep position_bits' fallback for a child that does not count.
+                0
+            };
+            let node = &self.nodes[c as usize];
+            if node
                 .classes
                 .as_ref()
                 .is_some_and(|c| c.deps() & deps::POSITION != 0)
             {
-                self.restyle(c);
+                // Only the children whose bits moved: an append restyles the
+                // old last row and the new one, not every sibling.
+                let bits = Self::position_at(index, count);
+                if node.position_used != bits {
+                    self.restyle_at(c, Some(bits));
+                }
             }
         }
     }
@@ -996,8 +1296,11 @@ impl<M: TextEngine> Core<M> {
             .filter(|&c| self.is_element_child(c))
             .collect();
         let i = siblings.iter().position(|&c| c == key).unwrap_or(0);
-        let n = siblings.len();
-        let mut bits = if i % 2 == 0 {
+        Self::position_at(i, siblings.len())
+    }
+
+    fn position_at(i: usize, n: usize) -> u8 {
+        let mut bits = if i.is_multiple_of(2) {
             position::ODD
         } else {
             position::EVEN
@@ -1024,7 +1327,7 @@ impl<M: TextEngine> Core<M> {
                 .as_ref()
                 .is_some_and(|c| c.groups().iter().any(|g| **g == *name))
             {
-                return node.states | node.projected;
+                return self.styled_states(k);
             }
             k = node.parent;
         }
@@ -1111,6 +1414,11 @@ impl<M: TextEngine> Core<M> {
 
     /// Resolves `key`'s style from its classes and inline style.
     pub(super) fn restyle(&mut self, key: Key) {
+        self.restyle_at(key, None);
+    }
+
+    /// [`Self::restyle`] with `position` already known (`None`: query it).
+    fn restyle_at(&mut self, key: Key, position: Option<u8>) {
         let mut base = Style::default();
         // Under its own classes and style, as `:where()` is in CSS.
         let space = self.space_of(key);
@@ -1148,13 +1456,13 @@ impl<M: TextEngine> Core<M> {
             None => {
                 style = base;
                 props = ClassProps::default();
-                self.resolve_classes(key, ch, &mut style, &mut props);
+                self.resolve_classes(key, ch, position, &mut style, &mut props);
             }
             // Again with its own font's, once its classes set one.
             Some(inherited) => loop {
                 style = base.clone();
                 props = ClassProps::default();
-                self.resolve_classes(key, ch, &mut style, &mut props);
+                self.resolve_classes(key, ch, position, &mut style, &mut props);
                 let own = self.zero_advance(inherited.inherit(&style.text));
                 if own == ch {
                     break;
@@ -1260,7 +1568,14 @@ impl<M: TextEngine> Core<M> {
 
     /// `key`'s classes and inline style over `style`, `ch` the advance of
     /// its font's `0`.
-    fn resolve_classes(&mut self, key: Key, ch: f32, style: &mut Style, props: &mut ClassProps) {
+    fn resolve_classes(
+        &mut self,
+        key: Key,
+        ch: f32,
+        position: Option<u8>,
+        style: &mut Style,
+        props: &mut ClassProps,
+    ) {
         let node = &self.nodes[key as usize];
         if let Some(classes) = node.classes.clone() {
             let group = |name: &str| self.group_states(key, name);
@@ -1269,7 +1584,7 @@ impl<M: TextEngine> Core<M> {
                 Some(group) => self.group_data(key, group).contains(&name),
             };
             let pos = if classes.deps() & deps::POSITION != 0 {
-                self.position_bits(key)
+                position.unwrap_or_else(|| self.position_bits(key))
             } else {
                 0
             };
@@ -1282,7 +1597,7 @@ impl<M: TextEngine> Core<M> {
                 // detached takes the root's), so its sided classes land
                 // right the first time.
                 rtl: self.resolved_rtl(key),
-                states: node.states | node.projected,
+                states: self.styled_states(key),
                 position: pos,
                 group: &group,
             };
@@ -1310,6 +1625,7 @@ impl<M: TextEngine> Core<M> {
                     }
                 },
             );
+            self.nodes[key as usize].position_used = if positional { pos } else { 0 };
             if positional {
                 let parent = self.nodes[key as usize].parent;
                 self.nodes[parent as usize].positional_children = true;
@@ -1389,11 +1705,38 @@ impl<M: TextEngine> Core<M> {
         top
     }
 
-    /// `parent` gained or lost a child: the region it is in follows.
+    /// `parent` gained or lost a child: the region it is in follows, at
+    /// the round's end ([`Self::flush_pointer_events`]).
     pub(super) fn pointer_events_moved(&mut self, parent: Key) {
         if let Some(top) = self.pointer_region(parent) {
+            self.pointer_pending.push(top);
+        }
+    }
+
+    /// Works out the regions views joined, left or changed in this round
+    /// ([`Self::update_pointer_events`]), each once, with the tree as the
+    /// round left it: each view noted is taken to the top of the region it
+    /// is in now (a view taken out of a region and put into another is
+    /// worked out from that one's top, as the views above it block). A
+    /// view released since is skipped; a key reused by another view is
+    /// worked out where that view is.
+    pub(super) fn flush_pointer_events(&mut self) {
+        if self.pointer_pending.is_empty() {
+            return;
+        }
+        let mut pending = std::mem::take(&mut self.pointer_pending);
+        pending.retain(|&k| self.nodes.contains(k as usize));
+        for k in &mut pending {
+            *k = self.pointer_region(*k).unwrap_or(*k);
+        }
+        pending.sort_unstable();
+        pending.dedup();
+        for &top in &pending {
             self.update_pointer_events(top);
         }
+        // The buffer, for the next round.
+        pending.clear();
+        self.pointer_pending = pending;
     }
 
     /// What the views of `top`'s subtree mount for the `pointer-events-*`
@@ -1519,7 +1862,7 @@ impl<M: TextEngine> Core<M> {
         }
         if pointer {
             let top = self.pointer_region(key).unwrap_or(key);
-            self.update_pointer_events(top);
+            self.pointer_pending.push(top);
         }
         if selection && kind == Kind::Text {
             self.mark_text_block(key);

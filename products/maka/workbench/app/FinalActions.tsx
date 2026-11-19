@@ -24,12 +24,13 @@ import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX } from 'nsh';
 import { useHost } from './host';
 import { sameValue } from '../../../../plugins/shared/value';
-import type { Position, Row } from './history';
+import { sameHistoryRow, type Row } from './history';
+import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/index.js';
 import { MessageCopy } from './MessageCopy';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { Button } from 'nsh/base';
 import type { MessageMenu } from './messageMenu';
-import { TurnUsage } from './TurnUsage';
+import { cacheHitRate, executorUsageLabel, TurnUsage } from './TurnUsage';
 import {
   C,
   controlDisabledStyle,
@@ -44,8 +45,8 @@ import {
 type Target = {
   sessionId: string;
   key: string;
-  position: Position;
-  turnId: string;
+  position: HistoryRowAddress;
+  turnId?: string;
 };
 const sameTarget = (left: Target | null, right: Target | null) =>
   left === right ||
@@ -54,8 +55,7 @@ const sameTarget = (left: Target | null, right: Target | null) =>
     left.sessionId === right.sessionId &&
     left.key === right.key &&
     left.turnId === right.turnId &&
-    left.position.sourceSequence === right.position.sourceSequence &&
-    left.position.itemIndex === right.position.itemIndex);
+    sameHistoryRow(left.position, right.position));
 
 /** Actions retain this exact completed reply, even if a later turn is running. */
 export function FinalActions(props: {
@@ -71,7 +71,7 @@ export function FinalActions(props: {
   const host = useHost();
   const pending = signal(false);
   const notice = createText();
-  const usage = signal<Target | null>(null);
+  const usage = signal<(Target & { turnId: string }) | null>(null);
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -79,7 +79,9 @@ export function FinalActions(props: {
   const target = computed<Target | null>(
     () => {
       const row = props.row();
-      return row.finalOutput && row.position && row.turnId
+      return row.position &&
+        (row.finalOutput ||
+          (row.position.kind !== 'live' && row.role === 'assistant' && row.field === 'body'))
         ? {
             sessionId: props.sessionId,
             key: props.ownerKey(),
@@ -108,11 +110,11 @@ export function FinalActions(props: {
         kind: 'fork',
         session: observed.session,
         title: forkTitle(observed.session.title),
-        position: { kind: 'through_turn', turnId: original.turnId },
+        position: { kind: 'through_source_turn', position: original.position },
       });
       if (owns(original)) notice.set(uiMessage('Fork created. Open it in Sessions.'));
     } catch (reason) {
-      if (owns(original)) notice.set(errorText(reason));
+      if (owns(original)) notice.set(errorText(reason, 'Could not fork the conversation.'));
     } finally {
       if (alive) pending.set(false);
     }
@@ -123,8 +125,15 @@ export function FinalActions(props: {
     busy: pending,
     action: () => (target() === null ? null : inputAction(fork, target())),
   });
+  const reportedUsage = () => props.row().timing?.executorUsage ?? undefined;
   const showUsage = (original: Target | null) => {
-    if (original && owns(original)) usage.set(original);
+    if (
+      original &&
+      owns(original) &&
+      (original.position.kind === 'live' || reportedUsage() !== undefined) &&
+      original.turnId !== undefined
+    )
+      usage.set({ ...original, turnId: original.turnId });
   };
   const closeUsage = (original: Target | null) => {
     if (!alive || original === null || !sameValue(usage(), original)) return;
@@ -141,7 +150,16 @@ export function FinalActions(props: {
         ? timing.finished.at - timing.startedAt
         : null;
     const duration = elapsed === null ? '' : formatDuration(elapsed, true);
-    return [name, duration].filter(Boolean).join(' · ');
+    const reported = reportedUsage();
+    const cache = row.timing?.promptCache;
+    return [
+      name,
+      duration,
+      reported ? executorUsageLabel(reported) : '',
+      cache ? tr('Cache hit {rate}', { rate: cacheHitRate(cache) }) : '',
+    ]
+      .filter(Boolean)
+      .join(' · ');
   };
   return (
     <View style={{ gap: 8, maxWidth: '100%' }}>
@@ -171,7 +189,10 @@ export function FinalActions(props: {
         <Button
           accessibilityLabel={tr("View this turn's model usage")}
           tooltip={textTooltip(() => tr("View this turn's model usage"))}
-          disabled={target() === null}
+          disabled={
+            (target()?.position.kind !== 'live' && !reportedUsage()) ||
+            target()?.turnId === undefined
+          }
           onPress={inputAction(showUsage, target())}
           style={{ ...controlStyle, paddingHorizontal: 8 }}
           hoverStyle={quietHoverStyle()}
@@ -180,7 +201,7 @@ export function FinalActions(props: {
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>
-            {details() || tr('Main model usage')}
+            {details() || tr(reportedUsage() ? 'Turn usage' : 'Main model usage')}
           </Text>
         </Button>
       </View>
@@ -190,6 +211,8 @@ export function FinalActions(props: {
       <If when={usage()}>
         <TurnUsage
           sessionId={usage()!.sessionId}
+          reported={reportedUsage()}
+          promptCache={props.row().timing?.promptCache}
           turnId={usage()!.turnId}
           current={() => usage() !== null && owns(usage()!)}
           close={inputAction(closeUsage, usage())}

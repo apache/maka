@@ -59,7 +59,7 @@ function App() {
                   backgroundColor: todo().done ? ui().accent : "transparent",
                 }}
                 hoverStyle={{ opacity: 0.88 }}
-                focusStyle={focusRing()}
+                focusVisibleStyle={focusRing()}
                 activeStyle={{ opacity: 0.7 }}
               />
               <Text
@@ -73,7 +73,7 @@ function App() {
                 {index() + 1}. {todo().title}
               </Text>
               <If when={todo().done}>
-                <View onPress={() => remove(todo().id)} hitSlop={8} hoverStyle={hoverFill()} focusStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
+                <View onPress={() => remove(todo().id)} hitSlop={8} hoverStyle={hoverFill()} focusVisibleStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
                   <Text style={{ color: ui().down, fontSize: wide() ? 13 : undefined }}>Remove</Text>
                 </View>
               </If>

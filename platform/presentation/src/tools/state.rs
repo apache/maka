@@ -61,10 +61,12 @@ impl Tools {
         if let ToolOrigin::CodeMode {
             parent_operation_id,
             parent_tool_call_id,
+            ..
         }
         | ToolOrigin::CodeCell {
             parent_operation_id,
             parent_tool_call_id,
+            ..
         } = &identity.origin
         {
             let parent = self
@@ -77,8 +79,7 @@ impl Tools {
                 return Err(ProjectionError::Invalid("nested call parent mismatch"));
             }
         }
-        let metadata =
-            ToolMetadata::from_origin(&identity.origin, &event.invocation.invocation_id)?;
+        let metadata = ToolMetadata::from_origin(&identity.origin, event.execution.run_id)?;
         self.pending.insert(
             operation.into(),
             Pending {

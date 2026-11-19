@@ -31,9 +31,6 @@ use std::{
 // Cold lifecycle fixtures reached 20s in CI; leave room before declaring a hung startup.
 const STARTUP_WAIT: Duration = Duration::from_secs(60);
 
-#[cfg(unix)]
-mod crash;
-mod owned;
 mod startup;
 
 #[test]
@@ -52,6 +49,7 @@ fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle(
     enum End {
         OwnerLoss,
         ReleasedIdle,
+        DesktopQuit,
         Retirement,
         Standalone,
         Takeover,
@@ -60,6 +58,7 @@ fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle(
     for end in [
         End::OwnerLoss,
         End::ReleasedIdle,
+        End::DesktopQuit,
         End::Retirement,
         End::Standalone,
         End::Takeover,
@@ -195,8 +194,21 @@ fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle(
         let status: Value = serde_json::from_slice(&status.stdout).unwrap();
         assert_eq!(status["epoch"], registration["hostEpoch"]);
         assert_eq!(status["closing"], false);
+        if matches!(end, End::DesktopQuit) {
+            runtime.block_on(async {
+                let mut desktop = connect(&fixture.root).await;
+                let endpoint = discovery::read(&fixture.root).unwrap().endpoint;
+                desktop.quit_ephemeral().await.unwrap();
+                let status = Client::status(&endpoint, Some(client.epoch()))
+                    .await
+                    .unwrap();
+                assert_eq!(status.sessions, 1);
+                assert!(!status.closing);
+                client.quit_ephemeral().await.unwrap();
+            });
+        }
         if matches!(end, End::Standalone) {
-            runtime.block_on(client.close()).unwrap();
+            runtime.block_on(client.quit_ephemeral()).unwrap();
             let stale = Command::new(crate::maka_executable())
                 .args(["host", "retire", "--root"])
                 .arg(&fixture.root)
@@ -401,24 +413,6 @@ impl CandidateFixture {
         }
     }
 
-    pub fn adopt_existing(root: PathBuf) -> Self {
-        let namespaces = RootNamespaces::for_current_account().unwrap();
-        let location = maka_event_log::root::resolve(&root).unwrap();
-        Self {
-            child: None,
-            root,
-            root_id: location.root_id().to_owned(),
-            registration: namespaces
-                .control
-                .join(location.root_id())
-                .join("registration.json"),
-            lock: namespaces
-                .ownership
-                .join(format!("{}.lock", location.root_id())),
-            cleanup: FixtureCleanup::Pending,
-        }
-    }
-
     pub fn wait_for_registration(&mut self) -> Value {
         let deadline = Instant::now() + STARTUP_WAIT;
         loop {
@@ -563,73 +557,5 @@ impl CandidateFixture {
 impl Drop for CandidateFixture {
     fn drop(&mut self) {
         self.cleanup();
-    }
-}
-
-pub(super) struct RootStartupFixture {
-    directory: Option<tempfile::TempDir>,
-    pub(super) root: PathBuf,
-    initialized: Option<CandidateFixture>,
-    admission_pending: bool,
-}
-
-impl RootStartupFixture {
-    fn new() -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root");
-        Self {
-            directory: Some(directory),
-            root,
-            initialized: None,
-            admission_pending: true,
-        }
-    }
-
-    fn directory(&self) -> &Path {
-        self.directory.as_ref().unwrap().path()
-    }
-
-    pub(super) fn initialized(directory: tempfile::TempDir, fixture: CandidateFixture) -> Self {
-        Self {
-            root: fixture.root.clone(),
-            directory: Some(directory),
-            initialized: Some(fixture),
-            admission_pending: false,
-        }
-    }
-
-    pub(super) fn adopt(&mut self) -> &CandidateFixture {
-        let fixture = self
-            .initialized
-            .get_or_insert_with(|| CandidateFixture::adopt_existing(self.root.clone()));
-        self.admission_pending = false;
-        fixture
-    }
-
-    pub(super) fn begin_admission(&mut self) {
-        self.admission_pending = true;
-    }
-}
-
-impl Drop for RootStartupFixture {
-    fn drop(&mut self) {
-        let settled = if self.admission_pending {
-            if let Some(fixture) = &mut self.initialized {
-                fixture.cleanup = FixtureCleanup::Unconfirmed;
-            }
-            false
-        } else {
-            self.initialized
-                .as_mut()
-                .is_some_and(CandidateFixture::cleanup)
-        };
-        if !settled && let Some(directory) = self.directory.take() {
-            // A failed admission exposes no helper handle. It may still be
-            // initializing this Root, even before publishing its identity.
-            eprintln!(
-                "startup fixture cleanup unconfirmed; retaining {}",
-                directory.keep().display()
-            );
-        }
     }
 }

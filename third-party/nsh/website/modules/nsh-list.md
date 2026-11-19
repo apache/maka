@@ -69,6 +69,7 @@ element takes, which go to the list's scroll view.
 | `separator` | `ListSlot` | | Rendered between items (one column). |
 | `keyExtractor` | `(item: T, index: number) => string` | `item.key`, `item.id`, or the index | The key of an item in viewability tokens. |
 | `initialScrollIndex` | `number` | | Scrolls to this item before the first frame. |
+| `initialScrollAtEnd` | `boolean` | `false` | Opens at the end before the first frame and follows it while rows measure. Short content stays at the top. Takes precedence over `initialScrollIndex`. |
 | `contentStyle` | `ListContentStyle` | | Padding and gaps of the content: `padding`, `paddingHorizontal`, `paddingVertical`, `paddingTop`, `paddingRight`, `paddingBottom`, `paddingLeft`, `gap`, `rowGap`, `columnGap` (numbers). |
 | `contentClass` | `string` | | Padding and gaps of the content as classes (`p-*`, `gap-*`); `contentStyle` wins over them. |
 | `style` | `StyleProp<ViewStyle>` | | The list's own style (give it a size: `flex: 1` or a height). |
@@ -124,6 +125,7 @@ interface ViewabilityConfig {
 | `disableIntervalMomentum` | `boolean` | `false` | A fling moves one snap point at most. |
 | `decelerationRate` | `"normal" \| "fast" \| number` | platform | How fast a fling slows down (`0.998` / `0.99`, or the velocity kept per millisecond). |
 | `contentInset` | `Partial<Edges>` | | Room around the content. |
+| `scrollbarInset` | `Partial<Edges>` | | Keeps the scroll indicator this far from the view's edges. |
 | `contentOffset` | `{ x?, y? }` | | Where it starts. |
 | `keyboardShouldPersistTaps` | `"never" \| "always" \| "handled" \| boolean` | `"never"` | Whether a tap dismisses the keyboard (`"never"`: the tap only dismisses it). |
 | `keyboardDismissMode` | `"none" \| "on-drag" \| "interactive"` | `"none"` | Whether dragging dismisses the keyboard. |
@@ -210,7 +212,7 @@ const refresh = async () => {
 
 ```ts
 type ListItemsProps<T> = Pick<ListProps<T>,
-  "each" | "children" | "keyExtractor" | "stickyHeaderIndices" | "initialScrollIndex"
+  "each" | "children" | "keyExtractor" | "stickyHeaderIndices" | "initialScrollIndex" | "initialScrollAtEnd"
   | "onViewableItemsChange" | "viewabilityConfig" | "refreshing" | "onRefresh"
   | "onLoadMore" | "loadMoreThreshold"
   | "header" | "footer" | "empty">;

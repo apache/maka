@@ -23,6 +23,7 @@ demo: guide-device
 | `locale()` | `locale()`（`nsh`） | 用户的区域设置，BCP 47 标签（`"en-US"`、`"zh-Hans-CN"`）：`Intl` 默认按它格式化。 |
 | `locale_settings()` | `localeSettings()`（`nsh`） | 用户的语言与地区设置：偏好语言、时区、12 小时制或 24 小时制、每周的第一天、度量单位和温度单位（[语言与地区设置](#语言与地区设置)）。 |
 | `lifecycle()` | `lifecycle()`（`nsh`） | 应用是否正在使用：`active`、`inactive`（可见但没有焦点）或 `background`（[在后台](#在后台)）。 |
+| `wake_count()` | `wakeCount()`（`nsh`） | 应用运行期间系统从睡眠中唤醒的次数（[睡眠之后](#睡眠之后)）。 |
 | `reduce_motion()`、`screen_reader()` | `reduceMotion()`、`screenReaderEnabled()`（`nsh`） | 见[无障碍](./accessibility.md)。 |
 
 ```rust tabs
@@ -365,11 +366,31 @@ effect(() => {
 });
 ```
 
-用 `background` 暂停工作，并在用户做出更改时就保存它：系统可能在应用进入后台几秒后就将其挂起，早于读取这一变化的副作用运行。显示在原生应用中的应用跟随该应用的状态；应用有多个窗口时（iPad、桌面），视图跟随它所在的窗口。在测试中，`nsh/test` 的 `app.setLifecycle("background")` 会把应用移到后台（[测试](./testing-and-trace.md#操作步骤)）。
+用 `background` 暂停工作，并在用户做出更改时就保存它：系统可能在应用进入后台几秒后就将其挂起，早于读取这一变化的副作用运行。显示在原生应用中的应用跟随该应用的状态；应用有多个窗口时（iPad、桌面），视图跟随它所在的窗口。在 macOS 和 Windows 上，屏幕锁定或关闭时、窗口在另一个桌面（Space、虚拟桌面）上时，独立应用以及嵌入 AppKit 和 Win32 应用中的视图也处于 `background`。在 Windows 上，用户注销、Windows 关机或重启、安装程序关闭应用时，应用会进入 `background`，它的处理函数在会话结束前运行；随后应用退出（[`Application.on("quit")`](../modules/nsh-desktop.md#退出)）。Linux 上的独立应用在用户注销、系统关机或重启时，以及收到 `SIGTERM` 时（systemd 结束会话或停止服务时会发送它）也是如此。在测试中，`nsh/test` 的 `app.setLifecycle("background")` 会把应用移到后台（[测试](./testing-and-trace.md#操作步骤)）。
+
+## 睡眠之后
+
+`wake_count()`（TSX 中为 `wakeCount()`）统计应用运行期间系统从睡眠中唤醒的次数：启动时为 0，每次唤醒后加一。笔记本合上再打开、应用一直在前台时，应用始终是 `active`，但它持有的网络连接和设置的定时器并没有挺过这次睡眠。读取这个计数的 effect 会在每次唤醒后重新运行，应用就在这里检查连接或重新建立连接：
+
+```rust tabs
+effect(move || {
+    if wake_count() > 0 {
+        feed.reconnect();
+    }
+});
+```
+
+```tsx tabs
+effect(() => {
+  if (wakeCount() > 0) feed.reconnect();
+});
+```
+
+独立应用以及嵌入 AppKit、Win32 和 GTK 应用中的视图在 macOS、Windows 和 Linux 上统计唤醒（Linux 通过 systemd 的 `logind`）。在 iOS 和 Android 上，设备睡眠会把应用移到后台，由 `lifecycle()` 报告。在测试中，`nsh/test` 的 `app.wake()` 会唤醒系统（[测试](./testing-and-trace.md#操作步骤)）。
 
 ## 安全区域
 
-刘海、Home 指示条、状态栏、Android 导航栏以及 Mac Catalyst 的标题栏会遮挡 surface 的一部分。NSH 应用在所有平台上都是全屏绘制，被遮挡的部分以 inset 的形式提供。
+刘海、Home 指示条、状态栏、Android 导航栏、Mac Catalyst 的标题栏以及窗口化 iPad 应用的窗口控件会遮挡 surface 的一部分。NSH 应用在所有平台上都是全屏绘制，被遮挡的部分以 inset 的形式提供。在 iPadOS 26 及更高版本上，窗口化应用的前缘 inset 与其顶部前缘角落的窗口控件一样宽，覆盖整条前缘；全屏和 iPhone 上就是普通的安全区。
 
 - `safe_area()`（TSX：`safeArea()`）给出整个 surface 的 inset。
 - 组件的 `cx.insets()`（TSX：`safeAreaInsets()`）给出**组件渲染位置**的 inset：在导航[页面](./navigation.md#标题栏下的安全区域)中从标题栏下方算起，在[对话框](../elements/dialog.md)中是对话框自己的。可能出现在多个地方的组件应该优先用它。
@@ -476,6 +497,22 @@ const hapticsSupported = platform.os === "ios" || (platform.os === "android" && 
 
 在终端中（[终端后端](./tui.md)），`platform.idiom` 为 `"terminal"`，`platform.desktop` 为 `true`，`platform.os` 是本机自己的系统。
 `colorScheme()` 跟随终端的背景色，`reduceMotion()` 为 `true`，安全区域和键盘高度为 0。
+
+## 应用数据目录
+
+Rust 中的 `data_dir()`，即 TSX 中的 `process.dataDir`，是应用存放自己文件（例如 SQLite 数据库）的目录，与 `storage.json` 同一目录，在所有原生平台上可用，包括 Android 和 iOS。默认是系统应用数据目录下以应用 id 命名的目录：macOS 为 `~/Library/Application Support/<id>`，Windows 为 `%APPDATA%\<id>`，Linux 为 `$XDG_DATA_HOME/<id>`（`~/.local/share/<id>`）；嵌入到其他应用中时，位于宿主应用的数据目录下。桌面应用可以用 `nsh.json` 的 `dataDir` 指定自己的目录（见[项目结构](./project-structure.md)），`process.dataDir` 和 `${dataDir}` 随之改变。宿主不为应用保存文件时（例如 Web）为 `None`（`undefined`）。目录可能尚未创建，写入前先创建。
+
+打包的桌面应用把日志写到其中的 `logs/app.log`：Rust 中是 `log_file()`，TSX 中是 `process.logFile`
+（[桌面上的日志文件和级别](./dev-server-and-debugging.md#log-files-and-levels-on-the-desktop)）。
+
+```rust
+use nsh_core::prelude::*;
+
+if let Some(dir) = data_dir() {
+    std::fs::create_dir_all(&dir)?;
+    let db = dir.join("app.sqlite");
+}
+```
 
 ## 像素密度
 

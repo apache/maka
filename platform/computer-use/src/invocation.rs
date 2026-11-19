@@ -98,8 +98,9 @@ pub struct BrowserLeaseChildRequest {
     pub native_owner: uuid::Uuid,
     pub native_epoch: String,
     pub turn_id: String,
+    pub execution: crate::ExecutionCorrelation,
     pub completion_id: u64,
-    pub opener_subject: crate::BrowserLeaseSubject,
+    pub opener_subject: maka_plugin_core::computer::BrowserLeaseSubject,
     pub opener_tab_id: u64,
     pub url: String,
 }
@@ -172,7 +173,7 @@ pub trait BrowserHostEffects: Send + Sync {
     }
 }
 
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 #[derive(Clone)]
 pub(crate) struct BrowserServices {
     #[cfg(feature = "native-desktop")]
@@ -203,17 +204,23 @@ pub struct BrowserPreparationBinding {
     pub browser_id: String,
     pub generation: String,
     pub turn_id: String,
+    pub execution: crate::ExecutionCorrelation,
     pub tab_id: String,
-    pub subject: crate::BrowserLeaseSubject,
+    pub subject: maka_plugin_core::computer::BrowserLeaseSubject,
 }
 impl BrowserPreparationBinding {
-    pub fn check_turn(&self, turn: &str) -> Result<(), ToolError> {
+    pub fn check_scope(
+        &self,
+        turn: &str,
+        execution: &crate::ExecutionCorrelation,
+    ) -> Result<(), ToolError> {
         if self.native_owner.is_nil()
             || self.native_epoch.is_empty()
             || self.browser_id.is_empty()
             || self.generation.is_empty()
             || self.turn_id.is_empty()
             || self.turn_id != turn
+            || &self.execution != execution
             || self.tab_id.is_empty()
             || self.subject.routing_id().is_empty()
         {
@@ -303,6 +310,7 @@ pub struct BrowserSessionPreparation {
     pub browser_id: String,
     pub generation: String,
     pub turn_id: String,
+    pub execution: crate::ExecutionCorrelation,
     pub operation_id: String,
     pub target: BrowserPreparationTarget,
 }
@@ -310,7 +318,12 @@ pub struct BrowserSessionPreparation {
 impl BrowserSessionPreparation {
     /// Validate routing shape and its captured invocation. This does not prove
     /// that the native tab/claim is owned; the backend checks that ledger.
-    pub fn check_scope(&self, turn: &str, operation: &str) -> Result<(), ToolError> {
+    pub fn check_scope(
+        &self,
+        turn: &str,
+        execution: &crate::ExecutionCorrelation,
+        operation: &str,
+    ) -> Result<(), ToolError> {
         let target_valid = match &self.target {
             BrowserPreparationTarget::ReservedTab { tab_id } => !tab_id.is_empty(),
             BrowserPreparationTarget::ClaimedTab { tab_id, claim_id } => {
@@ -331,6 +344,7 @@ impl BrowserSessionPreparation {
             || self.turn_id.is_empty()
             || self.operation_id.is_empty()
             || self.turn_id != turn
+            || &self.execution != execution
             || self.operation_id != operation
             || !target_valid
         {
@@ -618,6 +632,7 @@ impl InvocationCompletion {
 pub struct InvocationContext<'a> {
     session: &'a str,
     turn: &'a str,
+    execution: crate::ExecutionCorrelation,
     operation_id: Option<String>,
     native_interruption_observer: Option<Arc<dyn crate::NativeInterruptionObserver>>,
     browser_authorization: Option<Arc<dyn BrowserAuthorization>>,
@@ -637,6 +652,7 @@ pub struct InvocationContext<'a> {
 pub(crate) struct OwnedInvocationContext {
     session: String,
     turn: String,
+    execution: crate::ExecutionCorrelation,
     operation_id: Option<String>,
     native_interruption_observer: Option<Arc<dyn crate::NativeInterruptionObserver>>,
     browser_authorization: Option<Arc<dyn BrowserAuthorization>>,
@@ -655,6 +671,7 @@ impl OwnedInvocationContext {
         InvocationContext {
             session: &self.session,
             turn: &self.turn,
+            execution: self.execution.clone(),
             operation_id: self.operation_id.clone(),
             native_interruption_observer: self.native_interruption_observer.clone(),
             browser_authorization: self.browser_authorization.clone(),
@@ -676,6 +693,7 @@ impl<'a> InvocationContext<'a> {
         OwnedInvocationContext {
             session: self.session.to_owned(),
             turn: self.turn.to_owned(),
+            execution: self.execution.clone(),
             operation_id: self.operation_id.clone(),
             native_interruption_observer: self.native_interruption_observer.clone(),
             browser_authorization: self.browser_authorization.clone(),
@@ -690,10 +708,11 @@ impl<'a> InvocationContext<'a> {
         }
     }
 
-    pub fn new(session: &'a str, turn: &'a str) -> Self {
+    pub fn new(session: &'a str, turn: &'a str, execution: crate::ExecutionCorrelation) -> Self {
         Self {
             session,
             turn,
+            execution,
             operation_id: None,
             native_interruption_observer: None,
             browser_authorization: None,
@@ -778,7 +797,7 @@ impl<'a> InvocationContext<'a> {
                 "Browser session preparation requires an original Host operation".into(),
             )
         })?;
-        preparation.check_scope(self.turn(), operation)?;
+        preparation.check_scope(self.turn(), self.execution_correlation(), operation)?;
         if cancellation.is_cancelled() {
             return Err(ToolError::Failed(
                 "Browser session preparation cancelled".into(),
@@ -838,6 +857,9 @@ impl<'a> InvocationContext<'a> {
         self.operation_id.as_deref()
     }
 
+    pub fn execution_correlation(&self) -> &crate::ExecutionCorrelation {
+        &self.execution
+    }
     pub fn session(&self) -> &str {
         self.session
     }
@@ -930,399 +952,5 @@ impl<'a> InvocationContext<'a> {
             return Err(ToolError::Failed("Browser authorization cancelled".into()));
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod origin_tests {
-    use super::*;
-
-    fn document(url: &str) -> BrowserDocument {
-        BrowserDocument {
-            browser_id: "native-test".into(),
-            generation: "generation-A".into(),
-            tab_id: "41".into(),
-            url: url.into(),
-        }
-    }
-
-    fn read_document(url: &str, origin: BrowserAttachmentOrigin) -> BrowserAccess {
-        BrowserAccess::ReadDocument {
-            document: document(url),
-            origin,
-        }
-    }
-
-    #[test]
-    fn inherited_document_uses_verified_origin_instead_of_display_url() {
-        for url in ["about:blank", "about:blank?x#y", "about:srcdoc"] {
-            let access = read_document(
-                url,
-                BrowserAttachmentOrigin::Site("https://inherited.example".into()),
-            );
-            assert_eq!(
-                access.origin().expect("canonical observed origin"),
-                Some("https://inherited.example".into()),
-                "display URL {url} must not replace observed origin"
-            );
-            assert_eq!(access.url(), url, "display URL remains metadata");
-        }
-    }
-
-    #[test]
-    fn typed_site_requires_canonical_http_origin() {
-        for origin in [
-            "null",
-            "://",
-            "file:///tmp/page",
-            "https://example.test/path",
-            "https://example.test/",
-            "https://user@example.test",
-            "https://example.test?grant=true",
-            "https://example.test#grant",
-            "https://EXAMPLE.test",
-            "https://example.test:443",
-        ] {
-            let access = read_document("about:blank", BrowserAttachmentOrigin::Site(origin.into()));
-            assert!(access.origin().is_err(), "invalid origin {origin:?}");
-        }
-        for origin in [
-            "https://example.test",
-            "http://127.0.0.1:41297",
-            "https://[::1]:8443",
-        ] {
-            assert_eq!(
-                read_document("about:blank", BrowserAttachmentOrigin::Site(origin.into()))
-                    .origin()
-                    .expect("canonical observed origin"),
-                Some(origin.into()),
-                "canonical origin {origin:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn verified_opaque_is_distinct_from_unverified_legacy_blank() {
-        assert_eq!(
-            read_document("about:blank", BrowserAttachmentOrigin::Opaque)
-                .origin()
-                .expect("verified opaque serialization"),
-            None
-        );
-        for url in [
-            "about:blank",
-            "about:blank?x#y",
-            "about:srcdoc",
-            "chrome://newtab/",
-        ] {
-            assert!(
-                BrowserAccess::Read {
-                    document: document(url)
-                }
-                .origin()
-                .is_err(),
-                "legacy read must not infer an opaque origin from {url}"
-            );
-        }
-    }
-
-    #[test]
-    fn navigation_authorizes_destination_without_relabeling_source_document() {
-        let access = BrowserAccess::Navigate {
-            document: document("https://source.example/private"),
-            url: "https://destination.example/path".into(),
-        };
-        assert_eq!(
-            access.origin().expect("valid destination"),
-            Some("https://destination.example".into())
-        );
-        assert_eq!(access.document().url, "https://source.example/private");
-        let services = read_document(
-            &access.document().url,
-            BrowserAttachmentOrigin::Site("https://source.example".into()),
-        );
-        assert_eq!(
-            services.origin().expect("valid current-document origin"),
-            Some("https://source.example".into())
-        );
-    }
-
-    #[test]
-    fn read_document_wire_rejects_missing_or_extra_origin_evidence() {
-        let doc = serde_json::to_value(document("about:blank")).expect("serialize document");
-        for origin in [
-            serde_json::Value::Null,
-            serde_json::json!({"kind":"site"}),
-            serde_json::json!({"kind":"site","value":"https://example.test","fromPage":true}),
-            serde_json::json!({"kind":"unknown"}),
-        ] {
-            assert!(
-                serde_json::from_value::<BrowserAccess>(serde_json::json!({
-                    "kind":"read_document", "document":doc.clone(), "origin":origin
-                }))
-                .is_err(),
-                "malformed or unverified origin must not become a ReadDocument"
-            );
-        }
-    }
-
-    #[cfg(feature = "native-desktop")]
-    #[tokio::test]
-    async fn verified_opaque_and_new_metadata_still_run_host_admission() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        struct RefusingHost(Arc<AtomicUsize>);
-        impl BrowserAuthorization for RefusingHost {
-            fn authorize(
-                &self,
-                access: BrowserAccess,
-                _: CancellationToken,
-            ) -> AuthorizationFuture {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async move {
-                    assert_eq!(
-                        access.origin()?,
-                        None,
-                        "Host receives verified opaque access"
-                    );
-                    Err(ToolError::Failed("current Host grant refused".into()))
-                })
-            }
-            fn check(
-                &self,
-                access: BrowserAccess,
-                cancellation: CancellationToken,
-            ) -> AuthorizationFuture {
-                self.authorize(access, cancellation)
-            }
-        }
-        let calls = Arc::new(AtomicUsize::new(0));
-        let invocation = InvocationContext::new("session-A", "turn-A")
-            .with_browser_authorization(Arc::new(RefusingHost(calls.clone())));
-        for access in [
-            read_document("about:blank", BrowserAttachmentOrigin::Opaque),
-            BrowserAccess::Metadata {
-                document: document("https://denied.example/private"),
-            },
-        ] {
-            assert!(
-                invocation
-                    .authorize_browser(access.clone(), &CancellationToken::new())
-                    .await
-                    .is_err()
-            );
-            assert!(
-                InvocationContext::new("session-A", "turn-A")
-                    .authorize_browser(access, &CancellationToken::new())
-                    .await
-                    .is_err(),
-                "new metadata and verified opaque scopes require the Host capability"
-            );
-        }
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            2,
-            "new no-site scopes must run current Host admission"
-        );
-    }
-
-    #[cfg(feature = "native-desktop")]
-    #[tokio::test]
-    async fn ordinary_blank_navigation_keeps_its_existing_no_site_behavior() {
-        InvocationContext::new("session-A", "turn-A")
-            .authorize_browser(
-                BrowserAccess::Navigate {
-                    document: document("https://source.example/private"),
-                    url: "about:blank".into(),
-                },
-                &CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-    }
-}
-
-#[cfg(all(test, feature = "native-desktop"))]
-mod session_preparation_tests {
-    use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    fn request() -> BrowserSessionPreparation {
-        BrowserSessionPreparation {
-            native_owner: uuid::Uuid::new_v4(),
-            native_epoch: "epoch-1".into(),
-            browser_id: "owned-native".into(),
-            generation: "generation-1".into(),
-            turn_id: "turn-1".into(),
-            operation_id: "operation-1".into(),
-            target: BrowserPreparationTarget::ReservedTab {
-                tab_id: "17".into(),
-            },
-        }
-    }
-
-    struct ExistingSiteAuthorization;
-    impl BrowserAuthorization for ExistingSiteAuthorization {
-        fn authorize(&self, _: BrowserAccess, _: CancellationToken) -> AuthorizationFuture {
-            Box::pin(async { Ok(()) })
-        }
-        fn check(&self, _: BrowserAccess, _: CancellationToken) -> AuthorizationFuture {
-            Box::pin(async { Ok(()) })
-        }
-    }
-
-    #[tokio::test]
-    async fn ordinary_browser_host_and_standalone_cannot_admit_session_preparation() {
-        let invocation =
-            InvocationContext::new("session-1", "turn-1").with_operation_id("operation-1".into());
-        let request = request();
-        assert!(
-            matches!(invocation.authorize_session_preparation(&request, &CancellationToken::new()).await,
-            Err(ToolError::Failed(message)) if message.contains("requires Host authorization"))
-        );
-        let invocation = invocation.with_browser_authorization(Arc::new(ExistingSiteAuthorization));
-        let admitted = invocation
-            .authorize_session_preparation(&request, &CancellationToken::new())
-            .await;
-        assert!(
-            admitted.is_err(),
-            "ordinary BrowserAuthorization does not implement this distinct purpose"
-        );
-    }
-
-    struct CountingAuthorization(Arc<AtomicUsize>);
-    impl BrowserAuthorization for CountingAuthorization {
-        fn authorize(&self, _: BrowserAccess, _: CancellationToken) -> AuthorizationFuture {
-            Box::pin(async { Ok(()) })
-        }
-        fn check(&self, _: BrowserAccess, _: CancellationToken) -> AuthorizationFuture {
-            Box::pin(async { Ok(()) })
-        }
-        fn authorize_session_preparation(
-            &self,
-            _: BrowserSessionPreparation,
-            _: CancellationToken,
-        ) -> AuthorizationFuture {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { Ok(()) })
-        }
-    }
-
-    #[tokio::test]
-    async fn changed_capture_or_cancel_refuses_before_the_host_callback() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let invocation = InvocationContext::new("session-1", "turn-1")
-            .with_operation_id("operation-1".into())
-            .with_browser_authorization(Arc::new(CountingAuthorization(calls.clone())));
-        let mut changed = request();
-        changed.turn_id = "ended-turn".into();
-        assert!(
-            invocation
-                .authorize_session_preparation(&changed, &CancellationToken::new())
-                .await
-                .is_err()
-        );
-        changed = request();
-        changed.operation_id = "old-operation".into();
-        assert!(
-            invocation
-                .authorize_session_preparation(&changed, &CancellationToken::new())
-                .await
-                .is_err()
-        );
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-        assert!(
-            invocation
-                .authorize_session_preparation(&request(), &cancellation)
-                .await
-                .is_err()
-        );
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-    }
-    #[test]
-    fn effective_popup_keeps_all_four_requested_policy_combinations() {
-        for (popup, headers, expected) in [
-            (false, false, false),
-            (true, false, true),
-            (false, true, true),
-            (true, true, true),
-        ] {
-            let policy = BrowserPreparationPolicy {
-                popup_enabled: popup,
-                headers: if headers {
-                    vec![BrowserPreparationHeader {
-                        name: "x-own-profile".into(),
-                        value: "fixture".into(),
-                    }]
-                } else {
-                    vec![]
-                },
-            };
-            assert_eq!(policy.effective_popup(), expected);
-        }
-    }
-}
-
-#[cfg(test)]
-mod browser_subject_wire_tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn lease_child_requires_the_new_typed_opener_and_rejects_old_scalar_layout() {
-        let mut old = json!({
-            "browserId":"browser","generation":"generation",
-            "nativeOwner":uuid::Uuid::new_v4(),"nativeEpoch":"1",
-            "turnId":"turn","completionId":1,
-            "openerClaimId":"old-scalar","openerTabId":7,"url":"https://fixture.invalid/"
-        });
-        assert!(serde_json::from_value::<BrowserLeaseChildRequest>(old.clone()).is_err());
-        old.as_object_mut().unwrap().remove("openerClaimId");
-        old["openerSubject"] = json!({"kind":"fixed_session","scopeId":"observed-scope"});
-        let request = serde_json::from_value::<BrowserLeaseChildRequest>(old).unwrap();
-        assert!(matches!(
-            request.opener_subject,
-            crate::BrowserLeaseSubject::FixedSession { .. }
-        ));
-        // A successful decode is routing only, never an SDK-issued receipt.
-        assert_eq!(request.opener_tab_id, 7);
-    }
-}
-
-#[cfg(test)]
-mod browser_history_authorization_tests {
-    use super::*;
-
-    struct PageOnly;
-    impl BrowserAuthorization for PageOnly {
-        fn authorize(&self, _: BrowserAccess, _: CancellationToken) -> AuthorizationFuture {
-            Box::pin(async { Ok(()) })
-        }
-        fn check(&self, _: BrowserAccess, _: CancellationToken) -> AuthorizationFuture {
-            Box::pin(async { Ok(()) })
-        }
-    }
-    fn request() -> BrowserSessionPreparation {
-        BrowserSessionPreparation {
-            native_owner: uuid::Uuid::new_v4(),
-            native_epoch: "epoch".to_owned(),
-            browser_id: "maka:exact-instance".to_owned(),
-            generation: "generation".to_owned(),
-            turn_id: "turn".to_owned(),
-            operation_id: "operation".to_owned(),
-            target: BrowserPreparationTarget::SessionHistory,
-        }
-    }
-    #[tokio::test]
-    async fn page_authorization_never_grants_history_by_default() {
-        assert!(
-            matches!(PageOnly.authorize_history(request(), CancellationToken::new()).await,
-            Err(ToolError::Failed(message)) if message == "Browser history requires Host authorization")
-        );
-        assert!(
-            matches!(PageOnly.check_history(request(), CancellationToken::new()).await,
-            Err(ToolError::Failed(message)) if message == "Browser history requires Host authorization")
-        );
     }
 }

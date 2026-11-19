@@ -18,8 +18,9 @@
  */
 
 //! Byte provenance through lexical rewrites. Generated syntax has no address.
-use nsh_core::{TextSourceKind, TextSourceSegment};
 use std::ops::{Deref, Range};
+
+use nsh_core::{TextSourceKind, TextSourceSegment};
 
 #[derive(Clone, Debug)]
 struct Piece {
@@ -230,6 +231,10 @@ pub(super) struct Writer<'a> {
     out: Source,
 }
 impl Writer<'_> {
+    pub(super) fn len(&self) -> usize {
+        self.out.len()
+    }
+
     /// A borrowed lexical slice of the input; never a substring lookup.
     pub(super) fn copy(&mut self, slice: &str) {
         let a = slice.as_ptr() as usize - self.input.as_ptr() as usize;

@@ -86,22 +86,37 @@ impl Evidence {
                 observed_output: self.observed,
             };
         }
+        // Z.ai documents these string codes in its error envelope, most of them
+        // under HTTP 429: https://docs.z.ai/api-reference/api-code
+        let zai_codes: Vec<&str> = if matches!(self.quota_scope, QuotaScope::Zai) {
+            records
+                .iter()
+                .flatten()
+                .filter_map(|record| record.get("code").and_then(Value::as_str))
+                .chain(error.code.as_ref().and_then(Value::as_str))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let positive_quota = has(&[
             "insufficient_quota",
             "insufficient_balance",
             "freeusagelimiterror",
             "exceeded_current_quota_error",
-        ]) || (matches!(self.quota_scope, QuotaScope::Zai)
-            // Z.ai documents these string codes in its error envelope.
-            // https://docs.z.ai/api-reference/api-code
-            && records
-                .iter()
-                .flatten()
-                .filter_map(|record| record.get("code").and_then(Value::as_str))
-                .chain(error.code.as_ref().and_then(Value::as_str))
-                .any(|code| matches!(code, "1308" | "1310" | "1316" | "1317" | "1318" | "1319" | "1320" | "1321")));
+        ]) || zai_codes.iter().any(|code| {
+            matches!(
+                *code,
+                "1113" | "1308" | "1310" | "1316" | "1317" | "1318" | "1319" | "1320" | "1321"
+            )
+        });
+        // A plan without the model, an expired package, a key bound to other use or
+        // a usage policy block: waiting does not change them.
+        let plan_refused = zai_codes
+            .iter()
+            .any(|code| matches!(*code, "1309" | "1311" | "1313" | "1314" | "1315"));
         let permanent = matches!(error.status, Some(401 | 403))
             || (error.status == Some(402) && !positive_quota)
+            || plan_refused
             || has(&[
                 "authentication_error",
                 "permission_error",
@@ -291,9 +306,56 @@ mod tests {
     // Synthetic envelopes based on the official Z.ai code table and Kimi Code's
     // exceeded_current_quota_error mapping; these are not captured wire fixtures.
     #[test]
+    fn zai_plan_refusals_fail_without_retrying() {
+        let evidence = Evidence {
+            quota_scope: QuotaScope::endpoint("https://open.bigmodel.cn/api/coding/paas/v4"),
+            ..Default::default()
+        };
+        for code in ["1309", "1311", "1313", "1314", "1315"] {
+            let error = evidence.provider(
+                http_error(
+                    429,
+                    &serde_json::to_vec(&json!({"error":{"code":code,"message":"Your current subscription plan does not yet include access to GLM-5.3-FlashX"}}))
+                        .unwrap(),
+                ),
+                None,
+            );
+            let ModelError::Http { status, message } = error else {
+                panic!("expected a final HTTP failure for {code}, got {error:?}")
+            };
+            assert_eq!(status, 429, "{code}");
+            assert_eq!(
+                message.as_deref(),
+                Some(
+                    "Your current subscription plan does not yet include access to GLM-5.3-FlashX"
+                )
+            );
+        }
+        // The documented rate limit and overload codes still wait and retry.
+        for code in ["1302", "1305"] {
+            let error = evidence.provider(
+                http_error(
+                    429,
+                    &serde_json::to_vec(&json!({"error":{"code":code,"message":"busy"}})).unwrap(),
+                ),
+                None,
+            );
+            let ModelError::Provider(failure) = error else {
+                panic!("expected a provider failure for {code}")
+            };
+            assert!(failure.retryable(), "{code}");
+        }
+        // Outside Z.ai the same number means nothing.
+        let ModelError::Provider(failure) = classify(429, json!({"error":{"code":"1311"}})) else {
+            panic!("expected a provider failure")
+        };
+        assert_eq!(failure.reason(), ProviderFailureReason::RateLimit);
+    }
+
+    #[test]
     fn documented_quota_codes_stop_retries_only_in_their_scope() {
         for code in [
-            "1308", "1310", "1316", "1317", "1318", "1319", "1320", "1321",
+            "1113", "1308", "1310", "1316", "1317", "1318", "1319", "1320", "1321",
         ] {
             let evidence = Evidence {
                 quota_scope: QuotaScope::endpoint("https://api.z.ai/api/coding/paas/v4"),

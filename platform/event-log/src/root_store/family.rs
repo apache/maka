@@ -20,10 +20,10 @@
 //! Durable creation commands and immutable family placement.
 use super::routes::Creation;
 use super::*;
-use crate::sessions::{PluginSession, SessionCopy, SessionCopyResult};
+use crate::sessions::PluginSession;
+use crate::writeback::{Notification, Prepared, Statement};
 use rusqlite::OptionalExtension;
 use serde::Deserialize;
-use serde_json::Value;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Origin {
@@ -60,7 +60,7 @@ impl Origin {
         let scope = maka_plugin_core::scope::Scope::try_from(self.scope).map_err(invalid)?;
         Ok(PluginSession {
             session_id: self.session_id,
-            creator: maka_capabilities::storage::Namespace::new(self.package, scope)
+            creator: maka_plugin_core::storage::Namespace::new(self.package, scope)
                 .map_err(invalid)?,
             fingerprint: self.fingerprint,
             authority_session_id: self.authority_session_id,
@@ -72,6 +72,152 @@ fn invalid(message: impl std::fmt::Display) -> StoreError {
 }
 
 impl RootStore {
+    /// Prepare metadata and a native domain statement for the original Host
+    /// completion transaction. A domain rejection must be an execute error, not
+    /// a successful statement whose opaque value happens to contain an error.
+    /// The guarded record describes that transaction's choice; it is not yet a
+    /// published Session or a durable receipt.
+    pub async fn prepare_plugin_session<T, S>(
+        &self,
+        claim: &PluginSession,
+        configuration: &T,
+        now: u64,
+        writer: &DataWriter,
+        statement: S,
+    ) -> Result<(SessionRecord<T>, DataChange), StoreError>
+    where
+        T: Serialize + DeserializeOwned + Send + 'static,
+        S: Statement,
+    {
+        if !self.data_writer()?.same_root(writer) {
+            return Err(invalid("foreign Root data writer"));
+        }
+        validate_origin(claim)?;
+        crate::sessions::validate_time(now)?;
+        let configuration = serde_json::to_value(configuration)?;
+        creation::validate_configuration(&configuration)?;
+        self.require_creation_dependencies(None, Some(claim))
+            .await?;
+        let command = Creation::Plugin {
+            origin: claim.into(),
+            configuration: configuration.clone(),
+            created_at: now,
+        };
+        let creation = self
+            .gates
+            .write([gates::Key::Creation(claim.session_id.clone())])
+            .await?;
+        let (sessions, bindings) = command.pin_inputs(&claim.session_id)?;
+        let log = Arc::new(
+            pin_sessions(self.log.clone(), &self.gates, &sessions, &bindings)
+                .await?
+                .scoped(Arc::new(creation)),
+        );
+        let requested = claim.clone();
+        let (expected, command) = log
+            .connection
+            .read(move |db| {
+                require_plugin_dependencies(db, &requested)?;
+                let command = creation::WriteReservation::existing(
+                    db,
+                    &requested.session_id,
+                    &requested.fingerprint,
+                    &command,
+                )?
+                .map_or(command, |reserved| reserved.command);
+                let Creation::Plugin {
+                    configuration,
+                    created_at,
+                    ..
+                } = &command
+                else {
+                    unreachable!("plugin creation")
+                };
+                let expected = requested.prepare_record(db, configuration, *created_at)?;
+                Ok((expected, command))
+            })
+            .await?;
+        let configuration: T = serde_json::from_value(expected.configuration.clone())?;
+        let record = expected.clone().map_configuration(|_| configuration);
+        // Reservation is deliberately deferred as well: an interrupted prepare
+        // must not leave a metadata-only command for startup recovery to publish.
+        let change = writer.prepare(PluginCreation {
+            command,
+            expected,
+            statement,
+            custody: log,
+        });
+        Ok((record, change))
+    }
+
+    /// Workspace candidates remain unpublished until the same statement installs
+    /// the original plugin Session and its domain facts. Metadata is read in SQL.
+    pub async fn prepare_plugin_session_with_workspace<S, W>(
+        &self,
+        claim: &PluginSession,
+        configuration: &serde_json::Value,
+        now: u64,
+        writer: &DataWriter,
+        workspace: W,
+        statement: S,
+    ) -> Result<
+        impl Statement<Value = (SessionRecord, S::Value), Output = (SessionRecord, S::Output)>
+        + use<S, W>,
+        StoreError,
+    >
+    where
+        S: Statement,
+        W: Statement<
+                Value = maka_sandbox::workspace::BindingRef,
+                Output = maka_sandbox::workspace::BindingRef,
+            >,
+    {
+        self.require_open()?;
+        self.validate_data_writer(writer)?;
+        validate_origin(claim)?;
+        crate::sessions::validate_time(now)?;
+        creation::validate_configuration(configuration)?;
+        self.require_creation_dependencies(None, Some(claim))
+            .await?;
+        let command = Creation::Plugin {
+            origin: claim.into(),
+            configuration: configuration.clone(),
+            created_at: now,
+        };
+        let creation = self
+            .gates
+            .write([gates::Key::Creation(claim.session_id.clone())])
+            .await?;
+        let (sessions, bindings) = command.pin_inputs(&claim.session_id)?;
+        // An uninstalled candidate is data, not an existing binding resource.
+        let bindings = self
+            .log
+            .connection
+            .read(move |connection| {
+                let mut existing = Vec::new();
+                for binding in bindings {
+                    if crate::workspace_bindings::read::<serde_json::Value>(connection, binding.id)?
+                        .is_some()
+                    {
+                        existing.push(binding);
+                    }
+                }
+                Ok(existing)
+            })
+            .await?;
+        let custody = Arc::new(
+            pin_sessions(self.log.clone(), &self.gates, &sessions, &bindings)
+                .await?
+                .scoped(Arc::new(creation)),
+        );
+        Ok(WorkspacePluginCreation {
+            command,
+            workspace,
+            statement,
+            custody,
+        })
+    }
+
     pub(super) async fn require_published_session(&self, id: &str) -> Result<(), StoreError> {
         self.session(id).await.map(|_| ())
     }
@@ -160,136 +306,213 @@ impl RootStore {
             .await?
             .ok_or(StoreError::SessionNotFound)
     }
+}
 
-    pub async fn copy_session<T: Serialize + DeserializeOwned + Send + 'static>(
-        &self,
-        request: SessionCopy,
-        configuration: &T,
-        now: u64,
-    ) -> Result<SessionCopyResult<T>, StoreError> {
-        self.copy_owned(request, configuration, now, None).await
-    }
-    pub async fn copy_plugin_session<T: Serialize + DeserializeOwned + Send + 'static>(
-        &self,
-        request: SessionCopy,
-        configuration: &T,
-        now: u64,
-        origin: PluginSession,
-    ) -> Result<SessionCopyResult<T>, StoreError> {
-        validate_origin(&origin)?;
-        if origin.session_id != request.target_session_id {
-            return Err(invalid("copy target differs from its creation owner"));
+fn require_plugin_dependencies(
+    db: &SqliteConnection,
+    origin: &PluginSession,
+) -> Result<(), StoreError> {
+    for id in Origin::from(origin).dependencies()? {
+        if id != origin.session_id && !super::catalog::session_visible(db, &id)? {
+            return Err(StoreError::SessionCreationRejected(
+                CreationRejection::MissingDependency,
+            ));
         }
-        self.copy_owned(request, configuration, now, Some(origin))
-            .await
     }
-    async fn copy_owned<T: Serialize + DeserializeOwned + Send + 'static>(
-        &self,
-        request: SessionCopy,
-        configuration: &T,
-        now: u64,
-        origin: Option<PluginSession>,
-    ) -> Result<SessionCopyResult<T>, StoreError> {
-        crate::sessions::validate_id(&request.target_session_id)?;
-        crate::sessions::validate_id(&request.source_session_id)?;
-        crate::sessions::validate_time(now)?;
-        if request.source_session_id == request.target_session_id
-            || request.expected_source_revision == 0
-            || request.expected_source_revision > 9_007_199_254_740_991
-        {
-            return Err(invalid("invalid Session copy identity or revision"));
+    Ok(())
+}
+
+struct PluginCreation<S> {
+    command: Creation,
+    expected: SessionRecord,
+    statement: S,
+    custody: Arc<EventLog>,
+}
+
+impl<S: Statement> Statement for PluginCreation<S> {
+    type Value = S::Value;
+    type Output = S::Output;
+    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
+    fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {
+        let mut inputs = self.statement.retain();
+        inputs.push(self.custody.clone());
+        inputs
+    }
+    fn prepare(mut self) -> Result<Self, StoreError> {
+        self.statement = self.statement.prepare()?;
+        Ok(self)
+    }
+    fn execute(self, db: &SqliteConnection) -> Result<Prepared<Self::Value>, StoreError> {
+        let id = self.expected.id.clone();
+        let Creation::Plugin { origin, .. } = &self.command else {
+            unreachable!("plugin creation")
+        };
+        let claim = origin.clone().claim()?;
+        require_plugin_dependencies(db, &claim)?;
+        let reserved = creation::WriteReservation {
+            id: id.clone(),
+            fingerprint: claim.fingerprint.clone(),
+            command: self.command,
+            members: vec![id.clone()],
         }
-        use maka_agent_facts::session::CopyPurpose;
-        if let CopyPurpose::Revision { turn_id }
-        | CopyPurpose::Branch {
-            position:
-                maka_agent_facts::session::ForkPosition::ThroughTurn { turn_id }
-                | maka_agent_facts::session::ForkPosition::BeforeTurn { turn_id },
+        .execute(db)?;
+        let Creation::Plugin {
+            configuration,
+            created_at,
             ..
-        } = &request.purpose
-        {
-            crate::sessions::validate_id(turn_id)?;
-        }
-        let configuration = serde_json::to_value(configuration)?;
-        creation::validate_configuration(&configuration)?;
-        let target = request.target_session_id.clone();
-        self.require_creation_dependencies(Some(&request.source_session_id), origin.as_ref())
-            .await?;
-        let fingerprint = origin.as_ref().map(|o| o.fingerprint.clone()).unwrap_or(
-            maka_agent_facts::artifact::content_digest(serde_json::to_string(&request)?.as_bytes()),
-        );
-        let command = Creation::Copy {
-            request,
-            origin: origin.as_ref().map(Into::into),
-            configuration,
-            created_at: now,
+        } = reserved.value.command
+        else {
+            unreachable!("plugin creation")
         };
-        match self
-            .execute_creation(&target, &fingerprint, command, vec![target.clone()])
-            .await
-        {
-            Err(StoreError::SessionCreationRejected(
-                CreationRejection::SourceRevisionConflict { expected, actual },
-            )) => Ok(SessionCopyResult::SourceRevisionConflict { expected, actual }),
-            Err(error) => Err(error),
-            Ok(()) => Ok(SessionCopyResult::Committed(Box::new(
-                self.handle(target)
-                    .get()
-                    .await?
-                    .ok_or(StoreError::SessionNotFound)?,
-            ))),
+        let inserted = claim.insert_metadata(db, &configuration, created_at)?;
+        if crate::sessions::read::<serde_json::Value>(db, &id)?.as_ref() != Some(&self.expected) {
+            return Err(invalid("prepared Session metadata changed"));
         }
+        let publication = creation::WritePublication {
+            id: id.clone(),
+            rejection: None,
+        }
+        .execute(db)?;
+        let domain = self.statement.execute(db)?;
+        Ok(Prepared {
+            value: domain.value,
+            changed: reserved.changed || inserted || domain.changed || publication.changed,
+            notification: domain
+                .notification
+                .combine(Notification::METADATA.with_sessions([id])),
+        })
     }
+    fn committed(value: Self::Value) -> Self::Output {
+        S::committed(value)
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        S::isolated_rejection(error)
+            || matches!(
+                error,
+                StoreError::SessionConflict
+                    | StoreError::SessionNotFound
+                    | StoreError::SessionRetired
+                    | StoreError::SessionCreationRejected(_)
+                    | StoreError::InvalidTransition(_)
+            )
+    }
+}
 
-    pub async fn import_session<T: Serialize + DeserializeOwned + Send + 'static>(
-        &self,
-        owner: &PluginSession,
-        source: &maka_agent_facts::import::Source,
-        configuration: &T,
-        records: Vec<maka_agent_facts::import::Record>,
-        now: u64,
-    ) -> Result<SessionRecord<T>, StoreError> {
-        validate_origin(owner)?;
-        source.validate().map_err(invalid)?;
-        crate::sessions::validate_time(now)?;
-        if records.is_empty()
-            || !records
-                .iter()
-                .any(maka_agent_facts::import::Record::is_conversation)
-        {
-            return Err(invalid("invalid complete import"));
-        }
-        let mut calls = std::collections::HashSet::new();
-        for record in &records {
-            record.validate().map_err(invalid)?;
-            if let maka_agent_facts::import::Content::ToolCall { call_id, .. } = &record.content
-                && !calls.insert(call_id)
-            {
-                return Err(invalid("duplicate imported tool call identity"));
-            }
-        }
-        let configuration = serde_json::to_value(configuration)?;
-        creation::validate_configuration(&configuration)?;
-        self.require_creation_dependencies(None, Some(owner))
-            .await?;
-        let command = Creation::Import {
-            origin: owner.into(),
-            source: source.clone(),
-            records,
+struct WorkspacePluginCreation<S, W> {
+    command: Creation,
+    workspace: W,
+    statement: S,
+    custody: Arc<EventLog>,
+}
+impl<S, W> Statement for WorkspacePluginCreation<S, W>
+where
+    S: Statement,
+    W: Statement<
+            Value = maka_sandbox::workspace::BindingRef,
+            Output = maka_sandbox::workspace::BindingRef,
+        >,
+{
+    type Value = (SessionRecord, S::Value);
+    type Output = (SessionRecord, S::Output);
+    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD || W::PREPARE_OFF_THREAD;
+
+    fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {
+        let mut retained = self.workspace.retain();
+        retained.extend(self.statement.retain());
+        retained.push(self.custody.clone());
+        retained
+    }
+    fn prepare(self) -> Result<Self, StoreError> {
+        Ok(Self {
+            workspace: self.workspace.prepare()?,
+            statement: self.statement.prepare()?,
+            ..self
+        })
+    }
+    fn execute(self, connection: &SqliteConnection) -> Result<Prepared<Self::Value>, StoreError> {
+        self.custody.connection.require_same_writer(connection)?;
+        let workspace = self.workspace.execute(connection)?;
+        let Creation::Plugin {
+            origin,
             configuration,
-            created_at: now,
+            ..
+        } = &self.command
+        else {
+            unreachable!("plugin creation")
         };
-        self.execute_creation(
-            &owner.session_id,
-            &owner.fingerprint,
+        if crate::workspace_bindings::attached(configuration)?.as_ref() != Some(&workspace.value) {
+            return Err(invalid(
+                "plugin creation workspace differs from the original candidate",
+            ));
+        }
+        let claim = origin.clone().claim()?;
+        require_plugin_dependencies(connection, &claim)?;
+        let command = creation::WriteReservation::existing(
+            connection,
+            &claim.session_id,
+            &claim.fingerprint,
+            &self.command,
+        )?
+        .map_or(self.command, |reserved| reserved.command);
+        let Creation::Plugin {
+            configuration,
+            created_at,
+            ..
+        } = &command
+        else {
+            unreachable!("plugin creation")
+        };
+        let expected = claim.prepare_record(connection, configuration, *created_at)?;
+        let creation = PluginCreation {
             command,
-            vec![owner.session_id.clone()],
-        )
-        .await?;
-        self.handle(owner.session_id.clone())
-            .get()
-            .await?
-            .ok_or(StoreError::SessionNotFound)
+            expected,
+            statement: RecordAfter {
+                session: claim.session_id,
+                statement: self.statement,
+            },
+            custody: self.custody,
+        }
+        .execute(connection)?;
+        Ok(Prepared {
+            value: creation.value,
+            changed: workspace.changed || creation.changed,
+            notification: workspace.notification.combine(creation.notification),
+        })
+    }
+    fn committed((record, value): Self::Value) -> Self::Output {
+        (record, S::committed(value))
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        W::isolated_rejection(error) || PluginCreation::<RecordAfter<S>>::isolated_rejection(error)
+    }
+}
+
+struct RecordAfter<S> {
+    session: String,
+    statement: S,
+}
+impl<S: Statement> Statement for RecordAfter<S> {
+    type Value = (SessionRecord, S::Value);
+    type Output = (SessionRecord, S::Output);
+    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
+    fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {
+        self.statement.retain()
+    }
+    fn execute(self, connection: &SqliteConnection) -> Result<Prepared<Self::Value>, StoreError> {
+        let domain = self.statement.execute(connection)?;
+        let record =
+            crate::sessions::read(connection, &self.session)?.ok_or(StoreError::SessionNotFound)?;
+        Ok(Prepared {
+            value: (record, domain.value),
+            changed: domain.changed,
+            notification: domain.notification,
+        })
+    }
+    fn committed((record, value): Self::Value) -> Self::Output {
+        (record, S::committed(value))
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        S::isolated_rejection(error)
     }
 }
 
@@ -308,7 +531,7 @@ fn validate_origin(origin: &PluginSession) -> Result<(), StoreError> {
 }
 
 pub(super) async fn commit(
-    root: &RootStore,
+    _root: &RootStore,
     store: &EventLog,
     command: Creation,
 ) -> Result<Option<CreationRejection>, StoreError> {
@@ -324,114 +547,16 @@ pub(super) async fn commit(
             .create_plugin_session(&origin.claim()?, &configuration, created_at)
             .await
             .map(|_| None),
-        Creation::Copy {
-            request,
-            origin,
-            configuration,
-            created_at,
-        } => {
-            let result = match origin {
-                Some(origin) => {
-                    store
-                        .copy_plugin_session(request, &configuration, created_at, origin.claim()?)
-                        .await
-                }
-                None => {
-                    store
-                        .copy_session(request, &configuration, created_at)
-                        .await
-                }
-            };
-            result.map(|result| match result {
-                SessionCopyResult::Committed(_) => None,
-                SessionCopyResult::SourceRevisionConflict { expected, actual } => {
-                    Some(CreationRejection::SourceRevisionConflict { expected, actual })
-                }
-            })
-        }
-        Creation::Import {
-            origin,
-            source,
-            records,
-            configuration,
-            created_at,
-        } => store
-            .import_session(
-                &origin.claim()?,
-                &source,
-                &configuration,
-                records,
-                created_at,
-            )
-            .await
-            .map(|_| None),
-        Creation::Bundle {
-            stage,
-            digest,
-            binding,
-            configurations,
-            ..
-        } => {
-            // A committed receipt survives deletion of the stage or changed bindings.
-            if store
-                .bundle_import_receipt(&digest, &binding)
-                .await?
-                .is_some()
-            {
-                return Ok(None);
-            }
-            let directory = store
-                .root_owner
-                .as_ref()
-                .ok_or_else(|| invalid("bundle requires Root owner"))?
-                .canonical_path()
-                .join("runtime-stages");
-            let path = stage_path(&directory, &stage)?;
-            let staged = crate::bundle::StagedBundle::reopen(&path, root.stage_owner()?).await?;
-            store
-                .import_bundle(staged, &binding, configurations)
-                .await
-                .map(|_| None)
-                .map_err(|error| match error {
-                    crate::bundle::BundleError::Store(error) => error,
-                    crate::bundle::BundleError::CandidateSetStale => {
-                        invalid("unexpected bundle inventory change")
-                    }
-                })
-        }
         Creation::Session { .. } => unreachable!("ordinary creation has its own receipt"),
     };
     let rejection = match result {
-        Ok(None) => return Ok(None),
-        Ok(rejection) => rejection,
-        Err(error) => Some(match error {
-            StoreError::SessionConflict => CreationRejection::IdentityConflict,
-            StoreError::SessionRetired => CreationRejection::Retired,
-            StoreError::SessionNotFound => CreationRejection::MissingDependency,
-            StoreError::HistoryTurnMissing => CreationRejection::HistoryTurnMissing,
-            StoreError::HistoryTurnSplit => CreationRejection::HistoryTurnSplit,
-            StoreError::HistoryUnsettled => CreationRejection::HistoryUnsettled,
-            StoreError::HistoryProviderEffectUnresolved => {
-                CreationRejection::HistoryProviderEffectUnresolved
-            }
-            StoreError::SessionCreationRejected(rejection) => rejection,
-            StoreError::InvalidTransition(ref message)
-                if message == "revision Turn has no editable input" =>
-            {
-                CreationRejection::RevisionInputMissing
-            }
-            StoreError::InvalidTransition(ref message)
-                if message == "revision family exhausted" =>
-            {
-                CreationRejection::RevisionFamilyExhausted
-            }
-            // Unknown InvalidTransition/storage errors retain their recovery obligation.
-            error => return Err(error),
-        }),
+        Ok(rejection) => return Ok(rejection),
+        Err(StoreError::SessionConflict) => CreationRejection::IdentityConflict,
+        Err(StoreError::SessionRetired) => CreationRejection::Retired,
+        Err(StoreError::SessionNotFound) => CreationRejection::MissingDependency,
+        Err(StoreError::SessionCreationRejected(rejection)) => rejection,
+        Err(error) => return Err(error),
     };
-    // Domain methods drop their SQL transaction on rejection. A subsequent BEGIN
-    // on this same writer can only succeed once SQLite has acknowledged rollback.
-    // Never terminalize a reservation if that acknowledgement fails.
     store
         .connection
         .run(|db| {
@@ -441,122 +566,8 @@ pub(super) async fn commit(
             Ok(())
         })
         .await?;
-    Ok(rejection)
+    Ok(Some(rejection))
 }
-
-fn stage_path(directory: &std::path::Path, stage: &str) -> Result<std::path::PathBuf, StoreError> {
-    let id = uuid::Uuid::parse_str(stage).map_err(invalid)?;
-    if id.to_string() != stage {
-        return Err(invalid("invalid durable stage identity"));
-    }
-    Ok(directory.join(format!("{stage}.sqlite")))
-}
-
-impl RootStore {
-    pub async fn import_bundle<T: Serialize + Send + 'static>(
-        &self,
-        mut staged: crate::bundle::StagedBundle,
-        binding_fingerprint: &str,
-        configurations: std::collections::BTreeMap<String, T>,
-    ) -> Result<crate::bundle::ImportReceipt, crate::bundle::BundleError> {
-        self.require_open()?;
-        if !maka_agent_facts::archive::valid_projection_digest(binding_fingerprint) {
-            return Err(invalid("invalid bundle binding fingerprint").into());
-        }
-        let configurations: std::collections::BTreeMap<String, Value> = configurations
-            .into_iter()
-            .map(|(id, configuration)| Ok((id, serde_json::to_value(configuration)?)))
-            .collect::<Result<_, serde_json::Error>>()
-            .map_err(StoreError::from)?;
-        if configurations.keys().ne(staged
-            .summary()
-            .inventory
-            .sessions
-            .iter()
-            .map(|session| &session.id))
-        {
-            return Err(invalid("bundle destination bindings differ from its inventory").into());
-        }
-        for configuration in configurations.values() {
-            creation::validate_configuration(configuration)?;
-        }
-        staged.validate_history().await?;
-        let members = staged.family_members().await?;
-        let id = staged.summary().inventory.root_session_id.clone();
-        let digest = staged.summary().digest.clone();
-        let stage = uuid::Uuid::new_v4().to_string();
-        let directory = self
-            .log
-            .root_owner
-            .as_ref()
-            .ok_or_else(|| invalid("bundle requires Root owner"))?
-            .canonical_path()
-            .join("runtime-stages");
-        root::private_directory(&directory).map_err(StoreError::from)?;
-        let path = stage_path(&directory, &stage)?;
-        staged.persist(&path, self.stage_owner()?).await?;
-        let command = Creation::Bundle {
-            stage,
-            digest: digest.clone(),
-            binding: binding_fingerprint.into(),
-            configurations,
-            members: members.clone(),
-        };
-        self.execute_creation(&id, binding_fingerprint, command, members)
-            .await?;
-        let receipt = self
-            .log
-            .bundle_import_receipt(&digest, binding_fingerprint)
-            .await?
-            .ok_or_else(|| invalid("committed bundle receipt is missing"))?;
-        std::fs::remove_file(&path).map_err(StoreError::from)?;
-        std::fs::File::open(directory)
-            .and_then(|file| file.sync_all())
-            .map_err(StoreError::from)?;
-        Ok(receipt)
-    }
-
-    /// Startup has not published this Root, so imports cannot race stage cleanup.
-    pub(super) async fn cleanup_stages(&self) -> Result<(), StoreError> {
-        let directory = self
-            .log
-            .root_owner
-            .as_ref()
-            .ok_or_else(|| invalid("bundle requires Root owner"))?
-            .canonical_path()
-            .join("runtime-stages");
-        let entries = match std::fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error.into()),
-        };
-        let pending: Vec<String> = self.log.connection.read(|db| {
-            Ok(db.prepare_cached("SELECT DISTINCT json_extract(command,'$.stage') FROM session_creations WHERE ready=0 AND json_extract(command,'$.kind')='bundle'")?.query_map(rusqlite::params![], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?)
-        }).await?;
-        let pending: std::collections::HashSet<_> = pending.into_iter().collect();
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            if path
-                .extension()
-                .is_some_and(|extension| extension == "sqlite")
-            {
-                let Some(stage) = path.file_stem().and_then(|stem| stem.to_str()) else {
-                    continue;
-                };
-                stage_path(&directory, stage)?;
-                if !pending.contains(stage) {
-                    std::fs::remove_file(path)?;
-                }
-            }
-        }
-        std::fs::File::open(directory)?.sync_all()?;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests;
 
 impl RootStore {
     async fn recover_target(&self, id: &str) -> Result<bool, StoreError> {
@@ -589,86 +600,24 @@ impl RootStore {
             false => Ok(None),
         }
     }
-
-    pub async fn session_copy_receipt(
-        &self,
-        target: &str,
-    ) -> Result<Option<maka_agent_facts::session::CopyReceipt>, StoreError> {
-        match self.recover_target(target).await? {
-            true => self.log.session_copy_receipt(target).await,
-            false => Ok(None),
-        }
-    }
-
-    pub async fn bundle_import_receipt(
-        &self,
-        digest: &str,
-        binding_fingerprint: &str,
-    ) -> Result<Option<crate::bundle::ImportReceipt>, StoreError> {
-        self.require_open()?;
-        let query_digest = digest.to_owned();
-        let id: Option<String> = self.log.connection.read(move |db| {
-            Ok(db.query_row("SELECT session_id FROM session_creations WHERE session_id=creation_id AND json_extract(command,'$.kind')='bundle' AND json_extract(command,'$.digest')=?", rusqlite::params![query_digest], |row| row.get(0)).optional()?)
-        }).await?;
-        let Some(id) = id else { return Ok(None) };
-        match self.recover_target(&id).await? {
-            true => {
-                self.log
-                    .bundle_import_receipt(digest, binding_fingerprint)
-                    .await
-            }
-            false => Ok(None),
-        }
-    }
 }
 
 // Receipt tables outlive mutable Session metadata and retirement. Recover before
 // checking current source revisions, bindings, or whether the target is readable.
 async fn committed_receipt(store: &EventLog, command: &Creation) -> Result<bool, StoreError> {
-    let (id, expected_origin, receipt) = match command {
-        Creation::Plugin { origin, .. } => (origin.session_id.clone(), Some(origin.clone()), None),
-        Creation::Copy {
-            request, origin, ..
-        } => {
-            let Some(receipt) = store
-                .session_copy_receipt(&request.target_session_id)
-                .await?
-            else {
-                return Ok(false);
-            };
-            if receipt.request != *request {
-                return Ok(false);
-            }
-            (request.target_session_id.clone(), origin.clone(), None)
-        }
-        Creation::Import {
-            origin,
-            source,
-            records,
-            configuration,
-            ..
-        } => (
-            origin.session_id.clone(),
-            Some(origin.clone()),
-            Some((
-                serde_json::to_string(source)?,
-                records.len() as i64,
-                configuration.clone(),
-            )),
-        ),
-        _ => return Ok(false),
+    let Creation::Plugin { origin, .. } = command else {
+        return Ok(false);
     };
+    let origin = origin.clone();
     store.connection.read(move |db| {
-        if let Some((source, count, configuration)) = receipt {
-            let imported: Option<(String, i64, String)> = db.query_row("SELECT source_json,records,configuration FROM session_imports WHERE session_id=? AND state='published'", rusqlite::params![&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
-            let Some((stored_source, stored_count, stored_configuration)) = imported else { return Ok(false) };
-            if stored_source != source || stored_count != count || serde_json::from_str::<Value>(&stored_configuration)? != configuration { return Ok(false); }
-        }
-        let stored: Option<(String,String,String,Option<String>)> = db.query_row("SELECT package_id,scope_id,fingerprint,authority_session_id FROM plugin_sessions WHERE session_id=?", rusqlite::params![&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
-        Ok(match (stored, expected_origin) {
-            (None, None) => true,
-            (Some((package,scope,fingerprint,authority)), Some(origin)) => package == origin.package && scope == origin.scope && fingerprint == origin.fingerprint && authority == origin.authority_session_id,
-            _ => false,
-        })
+        let stored: Option<(String,String,String,Option<String>)> = db.query_row(
+            "SELECT package_id,scope_id,fingerprint,authority_session_id FROM plugin_sessions WHERE session_id=?",
+            rusqlite::params![&origin.session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).optional()?;
+        Ok(stored.is_some_and(|(package,scope,fingerprint,authority)| {
+            package == origin.package && scope == origin.scope && fingerprint == origin.fingerprint
+                && authority == origin.authority_session_id
+        }))
     }).await
 }

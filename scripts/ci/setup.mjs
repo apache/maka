@@ -23,16 +23,19 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   renameSync,
+  lstatSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { gunzipSync } from 'node:zlib';
 import { command } from './command.mjs';
@@ -41,25 +44,26 @@ import { manifests } from './suites.mjs';
 const hash = (input) => createHash('sha256').update(input).digest('hex');
 const cargoHome = () => process.env.CARGO_HOME || join(homedir(), '.cargo');
 const role = process.env.MAKA_CI_ROLE;
+const cacheRole = process.env.MAKA_CI_CACHE_ROLE || role;
 const workspace = process.env.MAKA_CI_WORKSPACE;
 const version = process.env.MAKA_CI_NEXTEST;
-const selectedManifests = ['native-windows', 'native-macos'].includes(role)
-  ? [manifests.root, manifests.nsh]
-  : [manifests[workspace]];
+const selectedManifests = [manifests[workspace]];
 const tools =
   role === 'tooling'
     ? ['cargo-deny']
     : [
           'root',
           'replay',
-          'bridge',
+          'linux-checks',
           'desktop',
           'termina',
           'nsh',
-          'linux-nsh',
-          'native-ubuntu',
+          'macos-nsh',
+          'windows-nsh',
           'native-windows',
+          'native-windows-desktop-2',
           'native-macos',
+          'native-macos-agent',
         ].includes(role)
       ? [`cargo-nextest${version ? `@${version}` : ''}`]
       : [];
@@ -235,11 +239,37 @@ async function stageV8() {
       : `librusty_v8_simdutf_release_${target}.a.gz`;
   const url = `https://github.com/denoland/rusty_v8/releases/download/v${v8Version}/${assetName}`;
   const cachePath = join(cargoHome(), '.rusty_v8', url.replace(/[^0-9A-Za-z]/gu, '_'));
-  const libDir = join(TARGET_ROOT, 'debug', 'gn_out', 'obj');
-  const libPath = join(libDir, process.platform === 'win32' ? 'rusty_v8.lib' : 'librusty_v8.a');
-  const sumPath = join(libDir, process.platform === 'win32' ? 'rusty_v8.sum' : 'librusty_v8.sum');
-  if (existsSync(libPath) && existsSync(sumPath) && readFileSync(sumPath, 'utf8') === url) {
+  const libName = process.platform === 'win32' ? 'rusty_v8.lib' : 'librusty_v8.a';
+  const sumName = process.platform === 'win32' ? 'rusty_v8.sum' : 'librusty_v8.sum';
+  const libDirs = [
+    join(TARGET_ROOT, 'debug', 'gn_out', 'obj'),
+    join(TARGET_ROOT, 'debug', 'build', 'gn_out', 'obj'),
+  ];
+  const primaryLib = join(libDirs[0], libName);
+  const primarySum = join(libDirs[0], sumName);
+  const mirrorBuildDir = () => {
+    const secondaryLib = join(libDirs[1], libName);
+    const secondarySum = join(libDirs[1], sumName);
+    if (
+      existsSync(secondaryLib) &&
+      existsSync(secondarySum) &&
+      readFileSync(secondarySum, 'utf8') === url
+    ) {
+      return;
+    }
+    mkdirSync(libDirs[1], { recursive: true });
+    rmSync(secondaryLib, { force: true });
+    if (process.platform === 'win32') copyFileSync(primaryLib, secondaryLib);
+    else linkSync(primaryLib, secondaryLib);
+    writeAtomic(secondarySum, url);
+  };
+  if (
+    existsSync(primaryLib) &&
+    existsSync(primarySum) &&
+    readFileSync(primarySum, 'utf8') === url
+  ) {
     ensureCargoTargetTag();
+    mirrorBuildDir();
     return;
   }
   let archive;
@@ -263,9 +293,34 @@ async function stageV8() {
   ensureCargoTargetTag();
   // v8's build.rs skips writing `.sum` when reading `.cargo/.rusty_v8`, causing
   // parallel host/target build scripts to truncate the shared static library.
-  writeAtomic(libPath, archive);
-  writeAtomic(sumPath, url);
-  console.log(`Staged ${assetName} to ${libPath}`);
+  // Cargo 1.100+ places build script OUT_DIR under `target/debug/build/<pkg>/<hash>/out`,
+  // so v8's relative lookup resolves to `target/debug/build/gn_out/obj`.
+  writeAtomic(primaryLib, archive);
+  writeAtomic(primarySum, url);
+  mirrorBuildDir();
+  console.log(`Staged ${assetName} to ${primaryLib} and ${join(libDirs[1], libName)}`);
+}
+
+async function rootLocalPackages(manifest, wantThirdParty) {
+  const metadata = JSON.parse(
+    await command(
+      'cargo',
+      ['metadata', '--locked', '--format-version=1', '--manifest-path', manifest],
+      { capture: true },
+    ),
+  );
+  const repoRoot = process.cwd();
+  return [
+    ...new Set(
+      metadata.packages
+        .filter((pkg) => {
+          if (pkg.source !== null) return false;
+          const rel = relative(repoRoot, pkg.manifest_path).replaceAll('\\', '/');
+          return rel.startsWith('third-party/') === wantThirdParty;
+        })
+        .map((pkg) => pkg.name),
+    ),
+  ];
 }
 
 async function main(action) {
@@ -282,6 +337,16 @@ async function main(action) {
         selectedManifests.map((manifest) => readFileSync(join(dirname(manifest), 'Cargo.lock'))),
       ),
     );
+    let thirdPartyTree = 'none';
+    if (workspace === 'root') {
+      try {
+        thirdPartyTree = (
+          await command('git', ['rev-parse', 'HEAD:third-party'], { capture: true })
+        ).trim();
+      } catch {
+        thirdPartyTree = 'none';
+      }
+    }
     const configuration = hash(
       Buffer.concat([
         ...selectedManifests.map((manifest) => readFileSync(manifest)),
@@ -290,43 +355,75 @@ async function main(action) {
         readFileSync('.github/actions/ci-cache/action.yml'),
       ]),
     );
-    const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${role}-${configuration}`;
+    const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${cacheRole}-${configuration}`;
     output({
-      compiled: `${compiled}-${lock}-${hash(readFileSync(new URL(import.meta.url)))}`,
+      compiled: `${compiled}-${thirdPartyTree}-${lock}-${hash(readFileSync(new URL(import.meta.url)))}`,
       compiled_prefix: `${compiled}-`,
       downloads: `cargo-sources-${workspace}-${lock}`,
       downloads_prefix: `cargo-sources-${workspace}-`,
-      downloads_writer: role === 'tooling' || workspace !== 'root',
+      downloads_writer: role === 'root' || role === 'nsh' || role === 'termina',
     });
-  } else if (action === 'prune') {
-    if (existsSync(TARGET_ROOT)) ensureCargoTargetTag();
-    for (const manifest of selectedManifests) {
-      const packages = JSON.parse(
-        await command(
-          process.platform === 'win32' ? 'python' : 'python3',
-          [
-            '-c',
-            'import json, sys, tomllib; print(json.dumps([pkg["name"] for pkg in tomllib.load(open(sys.argv[1], "rb"))["package"] if "source" not in pkg]))',
-            join(dirname(manifest), 'Cargo.lock'),
-          ],
-          { capture: true },
-        ),
-      );
-      // Local path dependencies rebuild after checkout just like workspace members.
-      // Keep the immutable registry/Git dependencies instead of those large outputs.
+  } else if (action === 'stamp-third-party') {
+    const fixed = new Date('2020-01-01T00:00:00Z');
+    const visit = (dir) => {
+      for (const entry of readdirSync(dir)) {
+        const full = join(dir, entry);
+        const info = lstatSync(full);
+        if (info.isSymbolicLink()) continue;
+        if (info.isDirectory()) visit(full);
+        else if (info.isFile()) utimesSync(full, fixed, fixed);
+      }
+    };
+    if (existsSync('third-party')) visit('third-party');
+  } else if (action === 'clean-third-party') {
+    if (!existsSync(TARGET_ROOT)) return;
+    ensureCargoTargetTag();
+    const packages = await rootLocalPackages(manifests.root, true);
+    if (packages.length) {
       await command('cargo', [
         'clean',
         '--manifest-path',
-        manifest,
+        manifests.root,
         '--target-dir',
         TARGET_ROOT,
         ...packages.flatMap((name) => ['--package', name]),
       ]);
     }
+  } else if (action === 'prune') {
+    if (existsSync(TARGET_ROOT)) ensureCargoTargetTag();
+    for (const manifest of selectedManifests) {
+      let packages;
+      if (workspace === 'root') {
+        packages = await rootLocalPackages(manifest, false);
+      } else {
+        packages = JSON.parse(
+          await command(
+            process.platform === 'win32' ? 'python' : 'python3',
+            [
+              '-c',
+              'import json, sys, tomllib; print(json.dumps([pkg["name"] for pkg in tomllib.load(open(sys.argv[1], "rb"))["package"] if "source" not in pkg]))',
+              join(dirname(manifest), 'Cargo.lock'),
+            ],
+            { capture: true },
+          ),
+        );
+      }
+      if (packages.length) {
+        await command('cargo', [
+          'clean',
+          '--manifest-path',
+          manifest,
+          '--target-dir',
+          TARGET_ROOT,
+          ...packages.flatMap((name) => ['--package', name]),
+        ]);
+      }
+    }
   } else if (action === 'native') {
     const dependencies = process.env.MAKA_CI_DEPENDENCIES;
     const shared = [
       'clang',
+      'lld',
       'libclang-dev',
       'pkg-config',
       'libfontconfig1-dev',
@@ -334,6 +431,7 @@ async function main(action) {
       'libssl-dev',
     ];
     const headless = [
+      'at-spi2-core',
       'bubblewrap',
       'libgtk-4-dev',
       'libgstreamer1.0-dev',
@@ -355,21 +453,40 @@ async function main(action) {
       'libvulkan1',
       'mesa-vulkan-drivers',
     ];
+    const replay = [
+      'bubblewrap',
+      'ripgrep',
+      'xvfb',
+      'libgtk-4-1',
+      'libgstreamer1.0-0',
+      'libgstreamer-plugins-base1.0-0',
+      'gstreamer1.0-plugins-base',
+      'gstreamer1.0-plugins-good',
+      'libxkbcommon0',
+      'libxkbcommon-x11-0',
+      'libwayland-client0',
+      'libxtst6',
+      'libxi6',
+      'libvulkan1',
+      'mesa-vulkan-drivers',
+    ];
     const packages =
-      dependencies === 'computer-use'
-        ? [
-            ...shared,
-            'libx11-dev',
-            'libxi-dev',
-            'libxtst-dev',
-            'libxext-dev',
-            'libxrandr-dev',
-            'libxfixes-dev',
-            'libxkbcommon-dev',
-            'libwayland-dev',
-          ]
-        : [...shared, ...headless];
-    await command('sudo', ['apt-get', 'update']);
+      dependencies === 'replay'
+        ? replay
+        : dependencies === 'computer-use'
+          ? [
+              ...shared,
+              'libx11-dev',
+              'libxi-dev',
+              'libxtst-dev',
+              'libxext-dev',
+              'libxrandr-dev',
+              'libxfixes-dev',
+              'libxkbcommon-dev',
+              'libwayland-dev',
+            ]
+          : [...shared, ...headless];
+    await command('sudo', ['apt-get', '-o', 'APT::Update::Error-Mode=any', 'update']);
     await command('sudo', ['apt-get', 'install', '-y', ...packages]);
     if (dependencies !== 'computer-use')
       await command('sudo', ['sysctl', '-w', 'kernel.apparmor_restrict_unprivileged_userns=0']);

@@ -18,24 +18,33 @@ import BaseDialogBackdrop from "./base-dialog-backdrop";
 import BaseDataTable from "./base-data-table";
 import BaseDiff from "./base-diff";
 import BaseDock from "./base-dock";
+import BaseDockTabScroll from "./base-dock-tab-scroll";
+import BaseSplitView from "./base-split-view";
 import BaseEditor from "./base-editor";
 import BaseHoverCard from "./base-hover-card";
 import BaseLink from "./base-link";
 import BaseNavPage from "./base-nav-page";
+import BaseNavHeaderItems from "./base-nav-header-items";
 import BaseNavStack from "./base-nav-stack";
+import BaseNavStackChange from "./base-nav-stack-change";
 import BaseNumberInput from "./base-number-input";
 import BaseOtpInput from "./base-otp-input";
 import BasePagination from "./base-pagination";
 import BasePopups from "./base-popups";
 import BaseMenuChecked from "./base-menu-checked";
+import BaseMenuButton from "./base-menu-button";
 import BasePlot from "./base-plot";
 import BaseProgress from "./base-progress";
 import BaseTerminal from "./base-terminal";
 import BaseTable from "./base-table";
 import BaseRadio from "./base-radio";
 import BaseResizable from "./base-resizable";
+import BaseRichEditorContentSize from "./base-rich-editor-content-size";
 import BaseRichEditorExtensions from "./base-rich-editor-extensions";
+import BaseRichEditorComposition from "./base-rich-editor-composition";
 import BaseRichEditorKit from "./base-rich-editor-kit";
+import BaseRichEditorPasteHooks from "./base-rich-editor-paste-hooks";
+import BaseRichEditorNodeView from "./base-rich-editor-node-view";
 import BaseRichEditorSession from "./base-rich-editor-session";
 import BaseRichEditorTables from "./base-rich-editor-tables";
 import BaseRichEditorView from "./base-rich-editor-view";
@@ -43,6 +52,7 @@ import BaseSafeAreaKeyboard from "./base-safe-area-keyboard";
 import BaseCombobox from "./base-combobox";
 import BaseCommand from "./base-command";
 import BaseDatePicker from "./base-date-picker";
+import BaseEmojiPicker from "./base-emoji-picker";
 import BaseScrollbar from "./base-scrollbar";
 import BaseSelect from "./base-select";
 import BaseSelectableView from "./base-selectable-view";
@@ -70,16 +80,21 @@ const cases: Record<string, () => JSX.Element> = {
   "base-data-table": BaseDataTable,
   "base-diff": BaseDiff,
   "base-dock": BaseDock,
+  "base-dock-tab-scroll": BaseDockTabScroll,
+  "base-split-view": BaseSplitView,
   "base-editor": BaseEditor,
   "base-hover-card": BaseHoverCard,
   "base-link": BaseLink,
   "base-nav-page": BaseNavPage,
+  "base-nav-header-items": BaseNavHeaderItems,
   "base-nav-stack": BaseNavStack,
+  "base-nav-stack-change": BaseNavStackChange,
   "base-number-input": BaseNumberInput,
   "base-otp-input": BaseOtpInput,
   "base-pagination": BasePagination,
   "base-popups": BasePopups,
   "base-menu-checked": BaseMenuChecked,
+  "base-menu-button": BaseMenuButton,
   "base-safe-area-keyboard": BaseSafeAreaKeyboard,
   "base-text-view": BaseTextView,
   "base-selectable-view": BaseSelectableView,
@@ -87,8 +102,12 @@ const cases: Record<string, () => JSX.Element> = {
   "base-checkbox": BaseCheckbox,
   "base-radio": BaseRadio,
   "base-resizable": BaseResizable,
+  "base-rich-editor-content-size": BaseRichEditorContentSize,
   "base-rich-editor-extensions": BaseRichEditorExtensions,
+  "base-rich-editor-composition": BaseRichEditorComposition,
   "base-rich-editor-kit": BaseRichEditorKit,
+  "base-rich-editor-paste-hooks": BaseRichEditorPasteHooks,
+  "base-rich-editor-node-view": BaseRichEditorNodeView,
   "base-rich-editor-session": BaseRichEditorSession,
   "base-rich-editor-view": BaseRichEditorView,
   "base-rich-editor-tables": BaseRichEditorTables,
@@ -105,6 +124,7 @@ const cases: Record<string, () => JSX.Element> = {
   "base-combobox": BaseCombobox,
   "base-command": BaseCommand,
   "base-date-picker": BaseDatePicker,
+  "base-emoji-picker": BaseEmojiPicker,
   "base-scrollbar": BaseScrollbar,
   "base-select": BaseSelect,
   "base-slider": BaseSlider,

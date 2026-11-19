@@ -27,6 +27,7 @@ fn bundle(app: &str) -> Bundle {
         minify: false,
         split: false,
         ui_sets: Vec::new(),
+        ..Default::default()
     })
     .unwrap();
     let bytecode = nsh_js::compile_bytecode_with(&bundle.code, false, &[]).unwrap();
@@ -213,4 +214,108 @@ fn an_app_without_parameters_reads_an_empty_object() {
     let (engine, rx) = start(bundle(PARAMS), &HostChannel::new());
     wait_for(&rx, &["keys 0"]);
     drop(engine);
+}
+
+const PARAMS_ONLY: &str = r#"import { mount, signal, Text } from "nsh";
+import { host } from "nsh";
+
+const call = signal("pending");
+host.call("echo", 1).catch((e) => call.set(String(e.code)));
+mount(() => (
+  <Text>{`conversation ${host.params.conversation} available ${host.available()} call ${call()}`}</Text>
+));
+"#;
+
+#[test]
+fn parameters_alone_leave_calls_to_the_platform() {
+    // The web page's case: it passes parameters and answers calls with its
+    // own host, so the app's calls must not go to a channel that handles
+    // none. Here the platform has no host: the call fails as it says so.
+    let host = HostChannel::new();
+    let mut params = serde_json::Map::new();
+    params.insert("conversation".into(), json!("c-42"));
+    host.set_params(params);
+    let (engine, rx) = start(bundle(PARAMS_ONLY), &host);
+    wait_for(
+        &rx,
+        &[
+            "conversation c-42",
+            "available false",
+            "call ERR_FEATURE_UNAVAILABLE_ON_PLATFORM",
+        ],
+    );
+    drop(engine);
+}
+
+const QUITTER: &str = r#"import { host, mount, signal, Text } from "nsh";
+import { Application } from "nsh/desktop";
+
+Application.on("quit", async () => {
+  host.post("quit", "started");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  host.post("quit", "saved");
+});
+const stop = Application.on("quit", () => host.post("quit", "stopped listener"));
+stop();
+// Work that never ends (kept, so it is not collected).
+const forever = new Promise<void>(() => {});
+Application.on("quit", () => forever);
+
+// The listeners reach the core in a turn after this one.
+const ready = signal(false);
+setTimeout(() => ready.set(true), 30);
+mount(() => <Text>{ready() ? "ready" : "starting"}</Text>);
+"#;
+
+#[test]
+fn quit_listeners_run_and_are_awaited_as_the_engine_stops() {
+    let host = HostChannel::new();
+    let (posts_tx, posts) = crossbeam_channel::unbounded();
+    host.handle("quit", move |call| {
+        let _ = posts_tx.send(call.data().clone());
+    });
+    let (engine, rx) = start(bundle(QUITTER), &host);
+    wait_for(&rx, &["ready"]);
+    let started = std::time::Instant::now();
+    drop(engine);
+    // One listener never settles: the engine stops it after its time.
+    let took = started.elapsed();
+    assert!(took >= Duration::from_millis(150), "stopped after {took:?}");
+    assert!(took < Duration::from_secs(2), "stopped after {took:?}");
+    let posts: Vec<_> = posts.try_iter().collect();
+    assert_eq!(posts, [json!("started"), json!("saved")]);
+}
+
+#[test]
+fn an_app_without_quit_listeners_stops_at_once() {
+    let host = HostChannel::new();
+    let (engine, rx) = start(
+        bundle(r#"import { mount, Text } from "nsh"; mount(() => <Text>ready</Text>);"#),
+        &host,
+    );
+    wait_for(&rx, &["ready"]);
+    let started = std::time::Instant::now();
+    drop(engine);
+    assert!(started.elapsed() < Duration::from_millis(150));
+}
+
+#[test]
+fn a_quit_listener_that_never_returns_is_interrupted() {
+    let host = HostChannel::new();
+    let app = r#"import { mount, signal, Text } from "nsh";
+import { Application } from "nsh/desktop";
+
+Application.on("quit", () => {
+  for (;;) {}
+});
+const ready = signal(false);
+setTimeout(() => ready.set(true), 30);
+mount(() => <Text>{ready() ? "ready" : "starting"}</Text>);
+"#;
+    let (engine, rx) = start(bundle(app), &host);
+    wait_for(&rx, &["ready"]);
+    let started = std::time::Instant::now();
+    drop(engine);
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(2), "stopped after {took:?}");
 }

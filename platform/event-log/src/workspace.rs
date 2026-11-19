@@ -20,19 +20,6 @@
 use crate::{EventLog, StoreError};
 use rusqlite::params;
 
-/// Execution evidence for Sessions sharing an exact canonical working directory.
-/// Membership follows the current shared binding, not historical inline paths.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkspaceFence(pub Vec<WorkspaceSession>);
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkspaceSession {
-    pub session_id: String,
-    pub revision: i64,
-    pub event_sequence: i64,
-    pub orphaned_shells: bool,
-}
-
 impl EventLog {
     /// Ownership, not quiescence: another retained Session keeps a managed
     /// checkout alive regardless of how many past users shared that directory.
@@ -50,46 +37,15 @@ impl EventLog {
                         "SELECT EXISTS(SELECT 1 FROM workspace_bindings binding
                          JOIN session_control session INDEXED BY session_workspace_binding
                          ON json_extract(session.configuration,'$.workspace.id')=binding.id
-                         WHERE json_extract(binding.workspace_json,'$.path')=? AND session.id<>?)",
+                         WHERE json_extract(binding.workspace_json,'$.path')=? AND session.id<>?
+                         AND NOT EXISTS(SELECT 1 FROM session_retirements retirement
+                             WHERE retirement.session_id=session.id AND retirement.remove_session=1
+                                 AND retirement.completed=1))",
                         params![cwd, session],
                         |row| row.get(0),
                     )?)
                 }
             })
             .await
-    }
-
-    pub async fn workspace_fence(&self, cwd: &str) -> Result<WorkspaceFence, StoreError> {
-        let cwd = cwd.to_owned();
-        self.connection.read(move |connection| {
-            let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
-            let rows = tx.prepare_cached("SELECT s.id, s.revision,
-                 b.metadata_epoch,json_extract(s.configuration,'$.workspace.metadataEpochAtAttach') AS attached_epoch,
-                 COALESCE((SELECT MAX(e.sequence) FROM runtime_events e WHERE
-                    (e.event_header IS NOT NULL AND e.event_session=s.id)), 0) AS sequence,
-                 EXISTS(SELECT 1 FROM shell_runs r WHERE r.session_id = s.id AND
-                    json_extract(r.record_json, '$.state.outcome.kind') = 'orphaned') AS orphaned
-                 FROM workspace_bindings b
-                 JOIN session_control s INDEXED BY session_workspace_binding
-                 ON json_extract(s.configuration,'$.workspace.id')=b.id
-                 WHERE json_extract(b.workspace_json,'$.path') = ?
-                 ORDER BY s.id")?.query_map(params![cwd],|row| Ok((row.get::<_, String>(0)?,row.get::<_, i64>(1)?,row.get::<_, i64>(2)?,row.get::<_, i64>(3)?,row.get::<_, i64>(4)?,row.get::<_, bool>(5)?,)))?.collect::<std::result::Result<Vec<_>, _>>()?;
-            let mut result = Vec::with_capacity(rows.len());
-            for row in rows {
-                let local: i64 = row.1;
-                let current: i64 = row.2;
-                let attached: i64 = row.3;
-                let revision = current.checked_sub(attached).filter(|delta| *delta >= 0)
-                    .and_then(|delta| local.checked_add(delta))
-                    .filter(|revision| (0..=maka_agent_facts::interaction::MAX_SAFE_INTEGER as i64).contains(revision))
-                    .ok_or_else(|| StoreError::InvalidTransition("invalid effective workspace Session revision".into()))?;
-                result.push(WorkspaceSession {
-                    session_id: row.0, revision,
-                    event_sequence: row.4, orphaned_shells: row.5,
-                });
-            }
-            tx.commit()?;
-            Ok(WorkspaceFence(result))
-        }).await
     }
 }

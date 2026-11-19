@@ -50,7 +50,7 @@ function App() {
 mount(App);
 ```
 
-`Button` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中来自 `nsh-base` crate。在 TSX 中，它的外观是 `class` 和 `style`，配合状态变体 `active:`、`hover:`、`focus:`、`selected:` 和 `disabled:`（或对应的 `activeStyle`、`hoverStyle`、`focusStyle`、`selectedStyle` 和 `disabledStyle`）。在 Rust 中，`button()` 像 `view()` 创建视图那样创建按钮：每个属性一个设置方法（`.disabled(..)`、`.selected(..)`），每个事件一个监听方法（`.on_press(..)`），类型化的样式方法（`.px_4()`、`.bg(..)`）决定外观，状态方法（`.active(..)`、`.hover(..)`、`.focus(..)`、`.selected_style(..)`、`.disabled_style(..)`）设置各状态的样式，`.child(..)` 添加内容。
+`Button` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中来自 `nsh-base` crate。在 TSX 中，它的外观是 `class` 和 `style`，配合状态变体 `active:`、`hover:`、`focus-visible:`、`selected:` 和 `disabled:`（或对应的 `activeStyle`、`hoverStyle`、`focusVisibleStyle`、`selectedStyle` 和 `disabledStyle`）。在 Rust 中，`button()` 像 `view()` 创建视图那样创建按钮：每个属性一个设置方法（`.disabled(..)`、`.selected(..)`），每个事件一个监听方法（`.on_press(..)`），类型化的样式方法（`.px_4()`、`.bg(..)`）决定外观，状态方法（`.active(..)`、`.hover(..)`、`.focus(..)`、`.selected_style(..)`、`.disabled_style(..)`）设置各状态的样式，`.child(..)` 添加内容。
 
 <a id="props"></a>
 
@@ -61,6 +61,7 @@ mount(App);
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 不响应按压，也没有按压反馈；`disabled:` 样式生效，屏幕阅读器会报告它不可用。 |
 | `selected` | `.selected(..)` | `boolean` | `false` | 选中：当前项（文件夹、筛选条件）或菜单打开期间的触发按钮。开或关的东西用 `Toggle`。屏幕阅读器会报告。值由应用持有，样式也由应用决定。 |
 | `selectedStyle` | `.selected_style(\|s\| ..)` | `StyleProp<ViewStyle>` | 无 | `selected` 且未禁用时的样式，与 `selected:` 类相同。 |
+| `busy` | `.busy(..)` | `boolean` | `false` | 忙碌：它的操作正在进行，比如“保存中…”按钮。屏幕阅读器会报告。按压仍然有效；要拒绝按压，同时设置 `disabled`。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 内容不足以说明时（比如只有图标），屏幕阅读器读出的文字。 |
 | `role` | `.role(..)` | `AccessibilityRole` | `"button"` | 当 `nsh/base` 没有对应的组件时，它对屏幕阅读器而言是什么：`"link"`（打开一个 URL）等。 |
 | `hitSlop` | `.hit_slop(..)` | `number \| Partial<Edges>` | 无 | 按压在边界之外多远仍然算数，单位为点：一个数字表示每一边，或分别指定各边。与视图的 `hitSlop` 相同。 |
@@ -248,8 +249,8 @@ fn close(open: Signal<bool>) -> impl IntoElement {
 ## 无障碍
 
 - 对屏幕阅读器而言，按钮是一个元素，角色为 `"button"`，除非 `role` 另有指定。它的标签是它的文字内容；内容是图标或说明不足时，设置 `accessibilityLabel`。
-- `disabled` 和 `selected` 按平台的方式播报（VoiceOver、TalkBack、UI Automation、浏览器的无障碍树）。
-- 在 macOS 和 Web 上，按钮是键盘焦点的一站：Tab 可以到达它，Return 和空格按下它，`focus:` 样式显示焦点所在。
+- `disabled`、`selected` 和 `busy` 按平台的方式播报（VoiceOver、TalkBack、UI Automation、浏览器的无障碍树）。
+- 在 macOS 和 Web 上，按钮是键盘焦点的一站：Tab 可以到达它，Return 和空格按下它，`focus-visible:` 样式显示焦点所在。
 
 标签、角色和播报的一般用法见[无障碍](../docs/accessibility.md)。
 

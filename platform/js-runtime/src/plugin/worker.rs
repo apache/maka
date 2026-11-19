@@ -76,6 +76,9 @@ pub(super) async fn run(
                     value = poll_fn(|cx| {
                         if let Poll::Ready(Some((id, result))) = pending.poll_next_unpin(cx) { return Poll::Ready(Ok(Ready::Complete(id, result))); }
                         if let Poll::Ready(Err(error)) = runtime.poll_event_loop(cx, Default::default()) { return Poll::Ready(Err(failed(error))); }
+                        if health.stopped.is_cancelled() || runtime.v8_isolate().is_execution_terminating() {
+                            return Poll::Ready(Err(health.error()));
+                        }
                         if let Poll::Ready(Some((id, result))) = pending.poll_next_unpin(cx) { return Poll::Ready(Ok(Ready::Complete(id, result))); }
                         commands.poll_recv(cx).map(|command| Ok(Ready::Command(command)))
                     }) => value?,
@@ -225,8 +228,11 @@ pub(super) async fn run(
                         }
                     },
                     Ready::Complete(id, result) => {
-                        let mut request = requests.remove(&id).expect("pending call has an owner");
                         let result = result.and_then(|value| engine::value(&mut runtime, value));
+                        if health.stopped.is_cancelled() || runtime.v8_isolate().is_execution_terminating() {
+                            return Err(health.error());
+                        }
+                        let mut request = requests.remove(&id).expect("pending call has an owner");
                         // Context capabilities expire before completion becomes observable.
                         drop(request.context.take());
                         let _ = request.reply.send(result);

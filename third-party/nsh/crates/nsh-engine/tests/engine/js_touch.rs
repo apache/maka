@@ -1,14 +1,15 @@
-//! Touches in a TSX app: the responder negotiation's gesture state, and a
+//! Touches in a TSX app: the responder negotiation's gesture state, a
 //! view whose `panActivation` makes it the responder only when the
 //! platform activates its pan (inside a scroll view, which keeps the
-//! touches until then).
+//! touches until then), and a pan turned off by a followed handler.
 
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use nsh_core::{
-    ApproxTextEngine, Command, EventKind, EventPayload, MountBatch, MountItem, NodeId,
-    PanActivation, ROOT_ID, Size, TouchEvent, TouchPhase, TouchPoint, geometry::px,
+    ApproxTextEngine, Command, EventKind, EventMask, EventPayload, GestureValues, MountBatch,
+    MountItem, NodeId, PanActivation, ROOT_ID, Size, TouchEvent, TouchPhase, TouchPoint,
+    geometry::px, input::Candidate,
 };
 use nsh_engine::{Bundle, Engine, EngineConfig};
 
@@ -50,16 +51,37 @@ function App() {
 mount(App);
 "#;
 
+const PAN_APP: &str = r#"import { mount, signal, View } from "nsh";
+
+function App() {
+  const zoomed = signal(false);
+  const close = () => {};
+  return (
+    <View>
+      <View testID="zoom" onPress={() => zoomed.set(!zoomed())} />
+      <View testID="viewer" onPanEnd={zoomed() ? undefined : close} />
+    </View>
+  );
+}
+
+mount(App);
+"#;
+
 fn start() -> (Engine, Receiver<MountBatch>) {
-    let dir = std::env::temp_dir().join(format!("nsh-js-touch-{}", std::process::id()));
+    start_app("touch", APP)
+}
+
+fn start_app(name: &str, app: &str) -> (Engine, Receiver<MountBatch>) {
+    let dir = std::env::temp_dir().join(format!("nsh-js-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("App.tsx"), APP).unwrap();
+    std::fs::write(dir.join("App.tsx"), app).unwrap();
     let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
         entry: dir.join("App.tsx"),
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
     })
     .unwrap();
     let bytecode = nsh_js::compile_bytecode(&bundle.code, false).unwrap();
@@ -69,6 +91,7 @@ fn start() -> (Engine, Receiver<MountBatch>) {
         app: nsh_engine::App::Js(unsafe { Bundle::bytecode(bytecode) }),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -80,7 +103,7 @@ fn start() -> (Engine, Receiver<MountBatch>) {
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -92,6 +115,8 @@ fn start() -> (Engine, Receiver<MountBatch>) {
         speech: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     (
         Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap(),
@@ -110,6 +135,7 @@ fn touch(
     EventPayload::Touch(Box::new(TouchEvent {
         phase,
         timestamp: t,
+        modifiers: Default::default(),
         activated,
         points: vec![TouchPoint {
             id: 1,
@@ -122,6 +148,10 @@ fn touch(
             page: nsh_core::geometry::point(px(x), px(y + 100.0)),
             location: nsh_core::geometry::point(px(x), px(y)),
             changed: true,
+            pointer_type: nsh_core::PointerType::Touch,
+            pressure: 0.5,
+            tilt_x: 0.0,
+            tilt_y: 0.0,
         }],
     }))
 }
@@ -216,4 +246,65 @@ fn a_js_view_waits_for_its_pan_and_negotiations_get_the_gesture() {
     until_log(&rx, "|ask 10,3 of 1");
     send(TouchPhase::Move, swipe, 30.0, 4.0, 132.0, None);
     until_log(&rx, "|ask 30,4 of 1|swipe grant");
+}
+
+/// The event mask of `id` in the first batch within a few seconds that
+/// sends one.
+fn next_events(rx: &Receiver<MountBatch>, id: NodeId) -> EventMask {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while let Ok(batch) = rx.recv_deadline(deadline) {
+        if let Some(events) = batch.items.iter().find_map(|i| match i {
+            MountItem::Events { id: v, events } if *v == id => Some(*events),
+            _ => None,
+        }) {
+            return events;
+        }
+    }
+    panic!("no events of {id} were sent");
+}
+
+#[test]
+fn a_pan_handler_set_to_undefined_turns_the_pan_off() {
+    let (engine, rx) = start_app("pan-off", PAN_APP);
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    let id = |wanted: &str| {
+        first
+            .items
+            .iter()
+            .find_map(|i| match i {
+                MountItem::ViewProps { id, props } if props.test_id.as_deref() == Some(wanted) => {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{wanted} is mounted"))
+    };
+    let (zoom, viewer) = (id("zoom"), id("viewer"));
+    let pans = |events: EventMask| Candidate::pan(&GestureValues::default(), events).is_some();
+    let events = first
+        .items
+        .iter()
+        .find_map(|i| match i {
+            MountItem::Events { id, events } if *id == viewer => Some(*events),
+            _ => None,
+        })
+        .expect("the viewer listens");
+    assert!(events.contains(EventKind::PanEnd) && pans(events));
+
+    engine
+        .control()
+        .dispatch_event(zoom, EventKind::Press, EventPayload::None);
+    let events = next_events(&rx, viewer);
+    assert!(
+        !events.contains(EventKind::PanEnd) && !pans(events),
+        "an undefined handler stops the pan, so the drags go to the content"
+    );
+
+    engine
+        .control()
+        .dispatch_event(zoom, EventKind::Press, EventPayload::None);
+    let events = next_events(&rx, viewer);
+    assert!(events.contains(EventKind::PanEnd) && pans(events));
 }

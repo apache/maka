@@ -118,6 +118,7 @@ const coveredExtensions = new Map([
   ['.js', ['block']],
   ['.jsonc', ['slash']],
   ['.md', ['html']],
+  ['.m', ['block']],
   ['.mjs', ['block']],
   ['.mts', ['block']],
   ['.nsh', ['hash']],
@@ -166,6 +167,8 @@ const isUnder =
 const upstreamFiles = new Set(
   [
     'async-io',
+    'deno-tls',
+    'deno-node-sqlite',
     'gix-index',
     'gix-discover',
     'sqlx-sqlite',
@@ -237,8 +240,6 @@ export const exclusionRules = [
         'products/maka/workbench/app/lucide.ts',
         'products/maka/workbench/scripts/lucide.py',
         'products/maka/workbench/tests/fonts/IBMPlexSans-Regular.ttf',
-        // Simple Icons Bilibili mark (CC0); origin in the sibling ICON.md.
-        'plugins/application/quick-tools/tools/bilibili/icon.svg',
         // Codex Apache-2.0 adaptations; exact origins and modifications in SOURCE.md / LICENSE.
         'plugins/workspace/workspace-files/patch/src/lib.rs',
         'plugins/workspace/workspace-files/patch/src/parser.rs',

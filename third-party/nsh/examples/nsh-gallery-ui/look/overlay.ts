@@ -75,11 +75,12 @@ export type SheetSide = "bottom" | "top" | "left" | "right";
  * A sheet's panel (`nsh/base`'s `Sheet`'s `popupStyle`): the card's
  * surface with the border's edge. At the bottom (or the top) it spans the
  * width, its two inner corners 20 points round, 16 points of padding at its
- * sides and its rows 14 apart, kept above the keyboard and the home
- * indicator, and never taller than the screen below the status bar; put
- * `sheetGrabber` first in a bottom one. At the left or the right it is the
- * full height, at most 360 points wide (48 short of a narrow window), its
- * inner corners 16 round, 20 points of padding inside the safe area.
+ * sides and its rows 14 apart, kept above the home indicator (the sheet
+ * itself stands above the keyboard), and never taller than the screen
+ * below the status bar; put `sheetGrabber` first in a bottom one. At the
+ * left or the right it is the full height, at most 360 points wide (48
+ * short of a narrow window), its inner corners 16 round, 20 points of
+ * padding inside the safe area.
  */
 export function sheetPanel(side: SheetSide): ViewStyle {
   const surface: ViewStyle = { backgroundColor: colors.surface, borderColor: colors.border };
@@ -92,10 +93,12 @@ export function sheetPanel(side: SheetSide): ViewStyle {
         ? { borderBottomWidth: 0, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingTop: 8 }
         : { borderTopWidth: 0, borderBottomLeftRadius: 20, borderBottomRightRadius: 20, paddingTop: safeArea().top + 16, paddingBottom: 20 }),
       borderCurve: "continuous",
-      maxHeight: windowSize().height - (bottom ? safeArea().top : safeArea().bottom) - 24,
+      // A bottom sheet stands above the keyboard while a field has it (`Sheet` lifts it by the keyboard past the home
+      // indicator): its room is what the keyboard leaves.
+      maxHeight: windowSize().height - (bottom ? safeArea().top + Math.max(0, keyboardFrame().height - safeArea().bottom) : safeArea().bottom) - 24,
       paddingHorizontal: 16,
-      // Above the keyboard while a field has it, above the home indicator otherwise.
-      ...(bottom ? { paddingBottom: Math.max(safeArea().bottom, keyboardFrame().height) + 16 } : {}),
+      // Above the home indicator, which is behind the keyboard while it is up.
+      ...(bottom ? { paddingBottom: safeArea().bottom + 16 } : {}),
       gap: 14,
     };
   }
@@ -220,7 +223,7 @@ export function toastCloseLook() {
     get activeStyle(): ViewStyle {
       return { backgroundColor: alpha(colors.text, 0.1), ...pressSink(0.9).activeStyle };
     },
-    get focusStyle(): ViewStyle {
+    get focusVisibleStyle(): ViewStyle {
       return focusRing();
     },
   };

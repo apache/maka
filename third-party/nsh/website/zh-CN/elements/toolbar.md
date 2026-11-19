@@ -117,7 +117,7 @@ mount(App);
 | 分隔线 | 栏、分组 | `ToolbarSeparator` 的 `class`、`style` | |
 | 项目 | 栏、分组 | 项目自己的 `class`、`style` | 它自己的：`aria-pressed:`、`disabled:`、`hover:`、`focus:`、`active:` |
 
-用 `focus:` 样式显示键盘所在的项目，用按下的开关按钮自己的底色显示它的按下状态（见[设计指南](../docs/design-guides.md#交互状态)）。
+用 `focus-visible:` 样式显示键盘所在的项目，用按下的开关按钮自己的底色显示它的按下状态（见[设计指南](../docs/design-guides.md#交互状态)）。
 
 ## 竖排
 

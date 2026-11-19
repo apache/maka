@@ -17,43 +17,59 @@
   under the License.
 -->
 
-# 架构
+# 系统架构
 
 [English](ARCHITECTURE.md)
 
-Maka 通过插件组装应用。包声明自己提供和需要的能力，组合选择实例并将导入连接到导出。Host 服务执行工作，UI 插件向终端和桌面共用的工作台提供 NSH 组件。
+Maka 按职责切分为三层：
 
-## 代码归属
+- **[Platform](platform/README.zh-CN.md)** — 插件包加载器、组合规划器、SQLite 事件存储（`maka-event-log`）、Host 服务生命周期、V8/Python 运行时、系统沙箱、Computer Use 以及 NSH 原生客户端支撑。
+- **[Plugins](plugins/README.zh-CN.md)** — 业务领域实现（`agent`、`workspace`、`skills`、`settings`、`interactions`）及对外协议契约。
+- **[Products](products/maka/README.zh-CN.md)** — 原生工厂注册、默认产品组装、共享 NSH 工作台、CLI、ACP 服务以及终端/桌面壳层。
 
-[平台](platform/README.zh-CN.md)包含包加载器、组合内核、执行所有者和渲染器。[插件](plugins/README.zh-CN.md)包含业务功能及其声明。[Maka 产品](products/maka/README.zh-CN.md)选择包、原生工厂和启动行为。
+插件包（`package.ts`）是部署与组合单元（`host`、`ui` 或 `composition`），Cargo crate 则是 Rust 编译边界，两者不必一一对应：Agent 领域按单向依赖拆成多个 crate，而体量较小的相关插件可以共用同一个原生实现 crate。
 
-`package.ts` 标识一个开发者声明的插件，Cargo crate 标识一起编译的代码。两者不必一一对应：Agent 服务可以使用多个领域 crate，相关插件入口也可以共用一个原生实现 crate。
+## 插件组合与 UI 运行时
 
-组合内核在同一来源中描述 Host、UI 和结构性实例。`host-js` 通过现有后台运行时执行 JavaScript Host 服务。[工作台](products/maka/workbench/README.zh-CN.md)在共享 NSH VM 中运行可信 UI 模块，两种外壳注入相同的 Host 绑定。NSH 负责响应式布局、输入和渲染。存储与呈现所需的共用事实类型仍作为显式依赖存在。
+1. 包加载器校验不可变的 `.maka-plugin` 字节流并计算内容摘要。
+2. 组合规划器校验各 Host、UI 与组合节点的配置 schema 及导入导出契约。
+3. State Root 以递增版本号原子提交目标部署描述与插件包字节。
+4. `maka-host-runtime` 在后台按目标状态调谐 Host 服务；NSH 工作台监听同一份部署源并按需挂载启用的 UI 扩展。
 
-## 从包到运行中的应用
+安装插件只是把包写入本地不可变仓库，是否生效完全由组合图决定。热更新组合时，未变更的服务实例保持运行并保留已有绑定；变更或移除的实例先停止接纳新请求，待在途调用与底层资源全部结清后再退役。
 
-1. 包加载器校验不可变内容并计算引用。
-2. 组合规划器检查每个 Host、UI 或结构性节点及其配置和绑定。
-3. Root 按修订保存期望配置及包内容。
-4. Host 协调已启用的后台服务；工作台观察同一来源，在使用贡献时按需加载已启用的 UI 模块。
+桌面端窗口、终端像素渲染与终端字符网格运行同一套 TSX/NSH 工作台代码。可信 UI 模块通过 `activate(context)` 注册应用根节点、嵌入式视图、命令、面板、设置页与工具卡片；可选的 `prepareReload()` 用于在工作台热重载时向同一实例平滑移交 JSON 状态。
 
-安装将不可变包加入可用集合；显式 UI 节点决定启用哪些贡献。用户安装的 UI 插件视为可信代码，在工作台 VM 中使用已有 NSH 和 Host 能力，不另设插件沙箱或授权流程。每次调用准入时，Host 仍检查调用方、方法、输入和实际资源。本地 IPC 连接携带启动器提供的方法与回执恢复权限。
+## State Root 与两阶段操作日志
 
-更新配置会保留未改变的激活及其绑定。改变的实例先退役再替换。已接受的工作始终归原所有者管理，即使调用方断开或组件消失也是如此。
+[maka-event-log](platform/event-log/README.zh-CN.md) 负责单个 State Root 的持久化：一把操作系统级独占文件锁（`RootOwner`）配一个 SQLite 数据库（`RootStore`）。写入走单队列串行提交，读取走独立快照连接，另有一条可随时重建的后台通道维护对话摘要与全文检索索引。各业务领域直接在 `RootStore` 上注册 SQL migration，不单独拆库。
 
-## 状态与副作用
+插件持久化状态归属于 `(Root, deployment, instance)`；升级包版本或重启服务实例不会切换数据命名空间。
 
-EventLog 持有持久 Root 和规范记录。稳定的插件数据归属于 Root、部署和实例。包修订与激活 epoch 描述代码和执行，本身不会创建新的数据命名空间。
+带副作用的 Host 调用采用“调用方意图 + 提供方回执”两阶段账本：
 
-变更操作具有回执，业务完成和实际清理分别记录。响应丢失时，调用方查询原回执，不重新发起替代操作。取消表示请求停止工作；资源仍被持有，直到实际清理完成。
+- **调用方意图（`CallerIntent`）** — 变更进入目标服务前，Host 先落盘调用方的 `RecoveryRef`（目标实例、方法、操作 UUID、请求指纹与契约摘要）。断线重连或进程重启后，调用方先查意图账本核对原操作，而不是盲目重发。
+- **业务结果与资源清理分离** — 服务回执表（`application_operations`）将业务结果 `Outcome`（`NotExecuted`、`Returned`、`Unknown`）与物理资源清理 `Cleanup`（`Unconfirmed`、`Confirmed`、`Failed`）分开记录，各自单调推进。
+- **显式保留未知态** — 一旦记录了调用意图，缺失回执绝不等同于“未执行”。在途中断会落为 `Unknown`，阻止自动重放，同时允许晚到的权威结算（`OperationObserved`）归档而不篡改已消费的历史切面。
+- **同库状态原子提交** — 同一 Root 内的纯状态变更与其 `Returned` 回执在同一个 SQLite 写事务内原子提交，锁内不做网络或子进程 I/O。
+- **证据钉住（Pinning）** — 未完结的 Run、`Unknown` 操作、未确认清理的资源、活跃 Code Mode 单元及历史快照各自钉住关联的内容寻址对象，直到业务结果与物理清理双双结清。
 
-桌面、终端像素渲染和终端 Unicode 渲染运行同一个 TSX/NSH 工作台。UI 模块提供命令、面板、设置页和工具渲染器。插件契约依赖 NSH，不绑定 GPUI 或终端场景语言；后端专属原生组件由渲染器处理。
+## Agent 持久执行与中断恢复
 
-UI 模块按不可变包身份求值，并在 NSH 响应式所有者下激活；可见组件有自己的生命周期。禁用实例、修改包或配置、移除实例时，会清理该激活及其贡献。只改变来源修订、没有改变实例时，不重新加载。NSH 组件清理会释放订阅和定时器；已接受的 Host 工作与变更回执仍由原客户端所有者持有。原生文件快照和剪贴板资源支持位于 [ui-support](platform/ui-support/README.zh-CN.md)。
+[Agent 领域](plugins/agent/README.zh-CN.md)沿单向 crate 边界逐层解耦：
 
-## 开发与分发
+- **`facts`、`api`、`ports`** — 持久化事实结构、公开协议契约与抽象执行接口，不持有任何运行时句柄。
+- **`state`** — SQLite 表结构迁移、事实追加，以及同事务内的确定性状态折叠（并发运行前沿、水平触发等待、Code Mode 单元、`SessionData`、附件、历史快照、会话目录、用量统计与 Recall 索引）。
+- **`engine`** — 统一的确定性调谐器（Reconciler）与执行驱动。在线对话、工具审批、模型退避重试、上下文压缩以及冷启动恢复，全部走同一套状态前沿推进循环。
+- **`authority`、`native`** — 持有活跃实例租约与单驱动声明，求交初始 `RunSpec` 与当前工作区权限，绑定模型、工具与外部执行器并调度就绪任务。
 
-每次 CLI 构建都会嵌入产品 bundle，每次工作台构建都会嵌入其 TSX 应用。UI 插件源码模块及资源复用现有不可变包的安装和读取路径，因此安装或更新 UI 插件无需重新构建客户端。重建可执行文件不会替换已有安装保存的组合。
+核心执行不变量：
 
-Rust 契约通过 [maka-schema](tools/schema/README.zh-CN.md)生成 [JavaScript SDK](packages/plugin-sdk/README.zh-CN.md)，无需构建产品。npm 包只负责[启动原生可执行文件](packages/cli/README.zh-CN.md)。
+- **稳定的 `RunId`** — 一次逻辑运行在跨越工具审批、重试、上下文压缩与 Host 重启时始终保持同一个 `RunId`，内部划分为稳定的 `StepId` 与真实上游请求 `ModelAttempt`。运行失败或取消后的手动续跑，会基于已校验的历史切面开启新的 `RunId`。
+- **并发义务前沿（Obligation Frontier）** — 流式工具调用、用户交互与后台单元构成显式义务集合。恢复时优先核对原始回执；一旦某个副作用结果无法确认，Run 直接以明确诊断失败并封锁后续推进，绝不换新 ID 静默重跑。
+- **Code Mode（`Cell` 与 `SessionData`）** — 持久化单元生命周期、嵌套工具调用绑定以及随单元成功原子发布的键值存储 `SessionData`。Maka 不做 V8/Python 堆快照，恢复时也绝不重放脚本。
+- **外部执行器** — 内置的 Claude Code、Codex 与 Antigravity 适配器在原工作区由 `TaskOwner` 托管子进程并留存证据；独立的 ACP 服务适配器（`acp-executor`）则在隔离工作区运行并通过 Host 发布变更。
+
+## 构建、SDK 生成与 CI
+
+`maka-schema`（`tools/schema`）无需编译 V8 或完整产品即可直接从 Rust 契约生成 [`@maka-agent/plugin-sdk`](packages/plugin-sdk/README.zh-CN.md)。CLI 构建产物内嵌默认产品包与工作台代码，用户安装的插件则从不可变包仓库动态加载。本地 `just` 命令与 GitHub Actions 复用 [`scripts/ci.mjs`](scripts/ci.mjs) 中的变更路由与 `cargo nextest` 归档执行逻辑。

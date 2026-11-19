@@ -214,6 +214,17 @@ pub enum Block {
     WebSearchToolResult(HostResult),
     ToolSearchToolResult(HostResult),
     AdvisorToolResult(HostResult),
+    #[serde(untagged)]
+    ServerResult {
+        #[serde(rename = "type")]
+        kind: String,
+        tool_use_id: String,
+        content: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheDirective>,
+    },
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename = "tool_reference")]

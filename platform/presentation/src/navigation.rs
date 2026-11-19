@@ -38,23 +38,24 @@ pub struct TurnLandmark {
 pub struct TurnContribution {
     pub turn_id: String,
     pub first_position: RowPosition,
-    pub latest_state: Option<RecordedTurnState>,
+    pub latest_state: Option<RecordedRunState>,
     pub user_prompt_preview: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RecordedTurnState {
+pub struct RecordedRunState {
     pub position: RowPosition,
-    pub message: TurnStateMessage,
+    pub message: RunStateMessage,
 }
 
 /// The client presentation vocabulary is wider than the runtime's terminal outcome.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TurnStateMessage {
+pub struct RunStateMessage {
+    pub run_id: maka_agent_facts::durable::RunId,
     #[serde(rename = "type")]
-    pub kind: TurnStateKind,
+    pub kind: RunStateKind,
     pub id: String,
     pub turn_id: String,
     pub ts: f64,
@@ -83,8 +84,8 @@ pub struct TurnStateMessage {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TurnStateKind {
-    TurnState,
+pub enum RunStateKind {
+    RunState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

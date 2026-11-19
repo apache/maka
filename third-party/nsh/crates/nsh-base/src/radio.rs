@@ -118,15 +118,19 @@ pub fn Radio(props: RadioProps, cx: Scope<RadioEvent>) -> impl IntoElement {
 /// The props of [`RadioGroup`].
 #[derive(Debug, Clone, PartialEq, Props)]
 pub struct RadioGroupProps {
+    /// What screen readers call the set ("Plan", "Sort by"), said as they
+    /// enter it; its radios stay elements of their own.
+    pub accessibility_label: Prop<Option<SharedString>>,
     /// The radios of the set, and whatever the app lays out between them.
     pub children: Prop<Children>,
 }
 
 /// The container of a set of [`Radio`]s: screen readers hear the radios
-/// inside it as one set, each still an element of its own. It holds no
-/// value: each radio is told whether it is checked and reports a press
-/// with `onChange`, and the app keeps which one is. Its layout and look are
-/// the app's `class` and `style` (`flex-row` for a row).
+/// inside it as one set, named by its `accessibilityLabel`, each still an
+/// element of its own. It holds no value: each radio is told whether it is
+/// checked and reports a press with `onChange`, and the app keeps which one
+/// is. Its layout and look are the app's `class` and `style` (`flex-row`
+/// for a row).
 ///
 /// The keyboard, as WAI-ARIA's radio group pattern has it, where views
 /// that take presses are stops of the keyboard focus (macOS, the web): the
@@ -140,5 +144,6 @@ pub fn RadioGroup(props: RadioGroupProps, _cx: Scope<NoEvent>) -> impl IntoEleme
     provide_context(RadioGroupContext(Roving::new(Pattern::Radios)));
     view()
         .role(AccessibilityRole::Radiogroup)
+        .optional_label(props.accessibility_label)
         .child(props.children)
 }

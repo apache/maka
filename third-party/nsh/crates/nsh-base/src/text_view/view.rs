@@ -14,7 +14,7 @@ use nsh_core::{
         Arg, CallCx, Instance, JsHost, JsIn, JsOwned, JsValue, Owner, PropError, Renderer, Ret,
         ScrollIntent, Style, StyleRefinement, TsTypes,
     },
-    geometry::{DefiniteLength, Length},
+    geometry::Length,
     keymap::Modifiers,
     prelude::*,
 };
@@ -27,7 +27,11 @@ use super::{
     parts::{TextViewClasses, TextViewPart as Part, TextViewParts, TextViewStyles},
     selection::{Reported, Source, TextSelectionOptions, selected},
 };
-use crate::{terminal::is_terminal, theme::theme};
+use crate::{
+    link_hint::{HintAt, link_hint},
+    terminal::is_terminal,
+    theme::theme,
+};
 
 /// The props of [`TextView`].
 #[derive(Debug, Clone, Copy, PartialEq, Props)]
@@ -236,6 +240,11 @@ pub enum TextViewEvent {
     /// viewer of its own).
     #[args(image)]
     ImagePress(Image),
+    /// The box of a task item was pressed: which task of
+    /// the document, and the state the press asks for. The document does
+    /// not change: the app gives the view its edited source.
+    #[args(event)]
+    TaskPress(TextViewTaskPressEvent),
     /// An action of a code block was pressed (after the built-in `copy`
     /// copied): its id and the code block.
     #[args(event)]
@@ -296,6 +305,12 @@ pub struct TextViewSelectionEvent {
     /// Where it starts in the view's whole text (UTF-16 units), when the
     /// platform knows it.
     pub start: Option<u32>,
+    /// The box around it in the view, while something is selected and the
+    /// platform knows it.
+    pub bounds: Option<Bounds<Points>>,
+    /// The same box in the root view the view is in, as of the event (an
+    /// `Overlay`'s `anchor`).
+    pub page_bounds: Option<Bounds<Points>>,
 }
 
 /// An action of the code blocks of a [`TextView`] (`codeBlockActions`).
@@ -393,6 +408,17 @@ impl JsValue for TextViewLinkPressEvent {
         host.set_field(object.get().raw(), "target", target.into_raw())?;
         Ok(object)
     }
+}
+
+/// A press on a task item's box of a [`TextView`] (`onTaskPress`).
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct TextViewTaskPressEvent {
+    /// Which task item of the document, counted from 0 in reading order
+    /// (its footnotes' after its blocks').
+    pub index: u32,
+    /// The state the press asks for: the opposite of the one shown.
+    pub checked: bool,
 }
 
 /// A press on a code block's action (`onCodeBlockAction`).
@@ -592,6 +618,8 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
             cx.emit(TextViewEvent::SelectionChange(TextViewSelectionEvent {
                 text: e.text.clone().into(),
                 start: e.start,
+                bounds: e.bounds,
+                page_bounds: e.page_bounds,
             }));
         })
         .map(|mut el| {
@@ -716,6 +744,47 @@ struct ChoiceAddress {
     path: String,
 }
 
+/// Resolve on press so recycled cells, closed disclosures and offscreen rows
+/// all use the current document's reading order.
+fn task_index(document: &Document, address: &ChoiceAddress) -> Option<u32> {
+    let count = |blocks: &[Block]| blocks.iter().map(Block::tasks).sum::<u32>();
+    let mut index = 0;
+    let mut blocks = document.blocks.as_slice();
+    if let Some(label) = &address.footnote {
+        index = count(blocks);
+        let i = document.footnotes.iter().position(|n| &n.label == label)?;
+        index += document.footnotes[..i]
+            .iter()
+            .map(|n| count(&n.children))
+            .sum::<u32>();
+        blocks = &document.footnotes[i].children;
+    }
+    let mut path = address.path.split('.').peekable();
+    loop {
+        let i = path.next()?.parse::<usize>().ok()?;
+        let block = blocks.get(i)?;
+        index += count(&blocks[..i]);
+        blocks = match block {
+            Block::Blockquote { children, .. } | Block::Details { children, .. } => children,
+            Block::Custom(node) => &node.children,
+            Block::List { items, .. } => {
+                let j = path.next()?.parse::<usize>().ok()?;
+                let item = items.get(j)?;
+                index += items[..j]
+                    .iter()
+                    .map(|it| u32::from(it.checked.is_some()) + count(&it.children))
+                    .sum::<u32>();
+                if path.peek().is_none() {
+                    return item.checked.map(|_| index);
+                }
+                index += u32::from(item.checked.is_some());
+                &item.children
+            }
+            _ => return None,
+        };
+    }
+}
+
 /// Kind changes at any ancestor replace its logical owner and choices.
 /// Footnotes are addressed by label, independently of their display number.
 fn choice_owners(document: &Document, address: &ChoiceAddress) -> Option<Vec<String>> {
@@ -836,12 +905,15 @@ struct Cx {
     /// How many lists the blocks being made are in (a copy keeps the depth
     /// it was made at, for content made later).
     list_depth: std::cell::Cell<u8>,
+    /// Which task item of the document the next one made is (a copy keeps
+    /// its place, for content made later).
+
     /// The line height of the text being made, which images in it are
     /// sized by.
     line: std::cell::Cell<f32>,
-    /// The URL of the link the content being made is in: a press on an
-    /// image there is the link's.
-    link: std::cell::RefCell<Option<SharedString>>,
+    /// The URL and title of the link the content being made is in: a press
+    /// on an image there is the link's, and its hint the link's.
+    link: std::cell::RefCell<Option<LinkTo>>,
     highlighter: Option<CodeHighlighter>,
     links: TextViewLinks,
     scope: Scope<TextViewEvent>,
@@ -875,6 +947,7 @@ impl Cx {
             highlighter: use_context::<CodeHighlighter>(),
             caret_placed: Rc::default(),
             list_depth: std::cell::Cell::new(0),
+
             line: std::cell::Cell::new(BODY_SIZE * BODY_LINE),
             link: std::cell::RefCell::new(None),
             links: props.links.get(),
@@ -1343,27 +1416,7 @@ impl Cx {
                         computed(move || tail.get() && index.get() + 1 == items.with(Vec::len));
                     let mut child_cx = cx.clone();
                     child_cx.list_depth = std::cell::Cell::new(depth.saturating_add(1));
-                    let content = child_cx.blocks(
-                        view()
-                            .flex_col()
-                            .flex_1()
-                            .gap(move || {
-                                px(match block.get() {
-                                    Block::List { loose: true, .. } => BLOCK_GAP,
-                                    _ => ITEM_GAP,
-                                })
-                            })
-                            .when(done, |v| {
-                                v.text_color(move || theme().muted_foreground)
-                                    .line_through()
-                                    .text_decoration_color(move || {
-                                        theme().muted_foreground.opacity(0.6)
-                                    })
-                            }),
-                        children,
-                        key,
-                        last,
-                    );
+                    let address = task.then(|| cx.choices.address(&key));
                     let marker_cx = cx.clone();
                     let marker = dynamic(move || {
                         let (ordered, start, total) = match block.get() {
@@ -1380,7 +1433,8 @@ impl Cx {
                             start,
                             total,
                             index.get(),
-                            item.get().1.checked,
+                            &item.get().1,
+                            address.as_ref(),
                             depth,
                         )
                     })
@@ -1390,6 +1444,28 @@ impl Cx {
                     } else {
                         (None, Some(marker))
                     };
+                    let content = child_cx.blocks(
+                        view()
+                            .flex_col()
+                            .flex_1()
+                            .gap(move || {
+                                px(match block.get() {
+                                    Block::List { loose: true, .. } => BLOCK_GAP,
+                                    _ => ITEM_GAP,
+                                })
+                            })
+                            .when(done, |v| {
+                                v.text_color(move || theme().muted_foreground)
+                                    .line_through()
+                                    .text_decoration_color(move || {
+                                        theme().muted_foreground.opacity(0.6)
+                                    })
+                            })
+                            .child(inside),
+                        children,
+                        key,
+                        last,
+                    );
                     let row = view().flex_row().map(|v| {
                         if terminal {
                             v
@@ -1401,7 +1477,7 @@ impl Cx {
                     });
                     cx.part(row, Part::ListItem)
                         .child(before)
-                        .child(cx.part(content.child(inside), Part::ListItemContent))
+                        .child(cx.part(content, Part::ListItemContent))
                 },
             ))
             .into_element()
@@ -1413,12 +1489,31 @@ impl Cx {
         start: u32,
         total: usize,
         index: usize,
-        checked: Option<bool>,
+        item: &ListItem,
+        address: Option<&ChoiceAddress>,
         depth: u8,
     ) -> AnyElement {
         let terminal = is_terminal();
-        match checked {
+        let task_action = |checked: bool| {
+            let mut label = String::new();
+            if let Some(Block::Paragraph { content }) = item.children.first() {
+                super::document::inline_text(content, &mut label);
+            }
+            let document = self.choices.document;
+            let address = address.expect("task marker has a document address").clone();
+            let scope = self.scope;
+            (label, move || {
+                if let Some(index) = document.with_untracked(|d| task_index(d, &address)) {
+                    scope.emit(TextViewEvent::TaskPress(TextViewTaskPressEvent {
+                        index,
+                        checked: !checked,
+                    }));
+                }
+            })
+        };
+        match item.checked {
             Some(checked) if terminal => {
+                let (label, press) = task_action(checked);
                 let mut parts = vec![Part::ListMarker, Part::TaskMarker];
                 if checked {
                     parts.push(Part::TaskMarkerChecked);
@@ -1431,6 +1526,8 @@ impl Cx {
                         false => theme().muted_foreground,
                     })
                     .role(AccessibilityRole::Checkbox)
+                    .label(label)
+                    .on_press(press)
                     .accessibility_state(AccessibilityState {
                         checked: Some(if checked {
                             nsh_core::Checked::True
@@ -1455,6 +1552,7 @@ impl Cx {
                 self.part(marker, Part::ListMarker).into_element()
             }
             Some(checked) => {
+                let (label, press) = task_action(checked);
                 let mut parts = vec![Part::ListMarker, Part::TaskMarker];
                 if checked {
                     parts.push(Part::TaskMarkerChecked);
@@ -1469,6 +1567,8 @@ impl Cx {
                     .items_center()
                     .justify_center()
                     .role(AccessibilityRole::Checkbox)
+                    .label(label)
+                    .on_press(press)
                     .accessibility_state(AccessibilityState {
                         checked: Some(if checked {
                             nsh_core::Checked::True
@@ -1647,7 +1747,9 @@ impl Cx {
                     .into_element()
                 }
                 // Typeset, centered, scrolling sideways when wider than
-                // the view.
+                // the view. In a text, as the one thing in its line, so a
+                // selection takes it in as it does an inline formula
+                // (#2121).
                 None if let Some(formula) = self.formula(tex, true, BODY_SIZE * 1.1) => self
                     .attachment(
                         self.part(
@@ -1782,7 +1884,7 @@ impl Cx {
     /// the source grows, so keyboard focus and the user's wrap choice survive.
     fn code_block(&self, code: Memo<CodeBlock>, key: &str, tail: Memo<bool>) -> AnyElement {
         if is_terminal() && self.code_block_actions.is_empty() {
-            return self.terminal_code_block(code, tail);
+            return self.terminal_code_block(code, key.to_owned(), tail);
         }
         let wrapped = self.choices.signal(
             key,
@@ -1794,6 +1896,7 @@ impl Cx {
         let actions = computed(move || props.code_block_actions.get());
         let action_cx = self.clone();
         let action_key = key.to_owned();
+        let code_key = key.to_owned();
         let language = computed(move || code.get().language.unwrap_or_default());
         // The language at the start, the actions at the end.
         let header = self
@@ -1842,27 +1945,22 @@ impl Cx {
                 cx.math_loaded,
             );
             let code = code.get();
-            let body = match &cx.highlighter {
-                Some(h) => text("").children(h.spans(&code)),
-                None => match super::highlight::built_in(&code) {
-                    Some(spans) => text("").children(spans),
-                    None => text(code.code.clone()),
-                },
-            };
+            let body = cx.code_body(&code, &code_key);
+            let wrap = wrapped.get() || code.wrap;
             let body = cx
                 .source(body, code.source.clone())
                 .font_family(mono_font)
                 .px(px(16.0))
                 .py(px(14.0))
                 .min_w(px(0.0))
-                .when(wrapped.get(), |t| t.w_full())
+                .when(wrap, |t| t.w_full())
                 .when(cx.selectable, |t| t.select_text());
             let body = cx.caret_after(body, tail.get());
             let scope = cx.scope;
             cx.part(
                 scroll()
-                    .when(!wrapped.get(), |s| s.horizontal())
-                    .scrollable(!wrapped.get())
+                    .when(!wrap, |s| s.horizontal())
+                    .scrollable(!wrap)
                     .scrollbar(cx.code_scroll_indicator)
                     .on_scroll_intent(move |_: &ScrollIntent| {
                         scope.emit(TextViewEvent::ScrollIntent)
@@ -1874,12 +1972,30 @@ impl Cx {
         .into_element()
     }
 
+    fn code_body(&self, code: &CodeBlock, key: &str) -> Text {
+        match annotated(code) {
+            Some(content) => self.span(content, key),
+            None => match &self.highlighter {
+                Some(h) => text("").children(h.spans(code)),
+                None => match super::highlight::built_in(code) {
+                    Some(spans) => text("").children(spans),
+                    None => text(code.code.clone()),
+                },
+            },
+        }
+    }
+
     /// A code block in a terminal: a band as wide as its longest line and
     /// a Cell each side (at most the text's width, its longer lines
     /// wrapping), from the text's left edge, with no rows of padding; its
     /// language named above it in reverse (` ts `, bold, on the border
     /// color).
-    fn terminal_code_block(&self, code: Memo<CodeBlock>, tail: Memo<bool>) -> AnyElement {
+    fn terminal_code_block(
+        &self,
+        code: Memo<CodeBlock>,
+        key: String,
+        tail: Memo<bool>,
+    ) -> AnyElement {
         let cx = self.clone();
         dynamic(move || {
             let cx = Cx::read(
@@ -1891,13 +2007,7 @@ impl Cx {
                 cx.math_loaded,
             );
             let code = code.get();
-            let body = match &cx.highlighter {
-                Some(h) => text("").children(h.spans(&code)),
-                None => match super::highlight::built_in(&code) {
-                    Some(spans) => text("").children(spans),
-                    None => text(code.code.clone()),
-                },
-            };
+            let body = cx.code_body(&code, &key);
             let body = cx.caret_after(
                 cx.source(body, code.source.clone())
                     .font_family(mono_font)
@@ -1963,10 +2073,9 @@ impl Cx {
         // The Cells the text is wide, once laid out: the columns fit them
         // (their cells wrapping), or the table scrolls.
         let room = signal(0usize);
-        let widths = move || fit_columns(&natural, room.get());
+        let widths = computed(move || fit_columns(&natural, room.get()));
         let ruled = |ends: [char; 3]| {
-            let widths = widths.clone();
-            text(move || SharedString::from(table_rule(&widths(), ends)))
+            text(move || widths.with(|widths| SharedString::from(table_rule(widths, ends))))
                 .number_of_lines(1u32)
                 .text_color(move || theme().border)
                 .into_element()
@@ -2006,8 +2115,9 @@ impl Cx {
                 let end = tail && r == last_row && c + span == columns;
                 let key = format!("{key}.{r}.{c}");
                 // The columns it spans and the ` │ ` between them.
-                let widths = widths.clone();
-                let cells = move || widths()[c..c + span].iter().sum::<usize>() + 3 * (span - 1);
+                let cells = move || {
+                    widths.with(|widths| widths[c..c + span].iter().sum::<usize>() + 3 * (span - 1))
+                };
                 let t = self.paragraph(content, &key, end);
                 let t = match align(c) {
                     ColumnAlign::Center => t.text_center(),
@@ -2054,7 +2164,10 @@ impl Cx {
                         }),
                     Part::TableScroll,
                 )
-                .child(view().flex_col().items_start().children(lines)),
+                .child(
+                    self.part(view().flex_col().items_start(), Part::TableGrid)
+                        .children(lines),
+                ),
             )
             .into_element()
     }
@@ -2106,7 +2219,6 @@ impl Cx {
             .rounded(px(6.0))
             .items_center()
             .justify_center()
-            .cursor_pointer()
             .hover(|s| s.bg(theme().foreground.opacity(0.08)))
             .active(|s| s.bg(theme().foreground.opacity(0.14)))
             .role(AccessibilityRole::Button)
@@ -2275,15 +2387,15 @@ impl Cx {
             .map(|r| r.render(format!("table:{key}"), table.clone()));
         // As wide as the view, never narrower than the floors: past them,
         // the scroll view moves it.
-        let grid = view()
+        let frame = view()
             .grid()
             .grid_template_columns(SharedString::from(tracks))
             .w_full()
             .min_w(rems(floors.iter().sum()))
             .border_t_1()
             .border_l_1()
-            .border_color(move || theme().border)
-            .children(grid);
+            .border_color(move || theme().border);
+        let grid = self.part(frame, Part::TableGrid).children(grid);
         let table = view()
             .flex_col()
             .text_size(px(TABLE_SIZE))
@@ -2405,12 +2517,26 @@ impl Cx {
                 content,
             } => {
                 let url = SharedString::from(url.clone());
-                let outer = self.link.replace(Some(url.clone()));
+                let outer = self
+                    .link
+                    .replace(Some((url.clone(), title.clone().map(SharedString::from))));
                 let span = self.span(content, key);
                 let mut label = String::new();
                 super::document::inline_text(content, &mut label);
                 self.link.replace(outer);
                 let target = element_ref();
+                // Where it goes, shown while the pointer rests on it (an
+                // `#anchor` of the document and a path too: every
+                // destination shows; a terminal links the text to it).
+                let hint = (!is_terminal()).then(|| {
+                    let href = url.clone();
+                    let title = title.clone().map(SharedString::from);
+                    link_hint(
+                        move || Some(href.clone()),
+                        move || title.clone(),
+                        HintAt::Pointer,
+                    )
+                });
                 let el = span
                     .element_ref(&target)
                     .focusable(true)
@@ -2424,6 +2550,7 @@ impl Cx {
                     .role(AccessibilityRole::Link)
                     .label(SharedString::from(label))
                     .when_some(title.clone(), |t, title| t.hint(title))
+                    .when_some(hint, |t, hint| t.child(hint))
                     .on_press(self.link_press(url, target));
                 self.part(el, Part::Link).into_element()
             }
@@ -2524,11 +2651,18 @@ impl Cx {
             .w_full()
             .items_start()
             .children(images.iter().enumerate().map(|(i, (image, link, source))| {
-                let link = link.map(|l| SharedString::from(l.to_owned()));
-                let image = self.image(image, link, ImageFlow::Block, &format!("{key}.{i}"));
+                let link = link.map(|(url, title)| {
+                    (
+                        SharedString::from(url.to_owned()),
+                        title.map(|t| SharedString::from(t.to_owned())),
+                    )
+                });
+                let width = signal(px(0.0));
+                let image = self.image(image, link, ImageFlow::Block(width), &format!("{key}.{i}"));
                 self.source(
                     text("")
                         .w_full()
+                        .on_layout(move |frame: &Bounds<Points>| width.set(frame.size.width))
                         .when(self.selectable, |t| t.select_text())
                         .child(image),
                     source.unwrap_or_default().to_vec(),
@@ -2536,20 +2670,25 @@ impl Cx {
             }))
     }
 
-    /// Image `image`, in a link to `link` if it is in one (a press on it is
-    /// the link's), sized as `flow` says.
-    fn image(
-        &self,
-        image: &Image,
-        link: Option<SharedString>,
-        flow: ImageFlow,
-        key: &str,
-    ) -> AnyElement {
+    /// Image `image`, in a link to `link` (its URL and title) if it is in
+    /// one (a press on it is the link's, and so is its hint), sized as
+    /// `flow` says.
+    fn image(&self, image: &Image, link: Option<LinkTo>, flow: ImageFlow, key: &str) -> AnyElement {
         let scope = self.scope;
         let target = element_ref();
         let pressed = image.clone();
         let is_link = link.is_some();
-        let press_link = link.clone().map(|url| self.link_press(url, target));
+        // Where the link goes, on the image that takes its press (below
+        // it: the image's own title, a tooltip, shows above), as on a link
+        // of text; a terminal links the text it reads as instead.
+        let hint = link.clone().filter(|_| !is_terminal()).map(|(url, title)| {
+            LinkImageHint(link_hint(
+                move || Some(url.clone()),
+                move || title.clone(),
+                HintAt::Link,
+            ))
+        });
+        let press_link = link.map(|(url, _)| self.link_press(url, target));
         // In a link it is the link's; else a press reports the image.
         let press = move |e: &PressEvent| match &press_link {
             Some(press) => press(e),
@@ -2567,31 +2706,40 @@ impl Cx {
                     image: image.clone(),
                     linked: is_link,
                     flow: match flow {
-                        ImageFlow::Block => TextViewImageFlow::Block,
+                        ImageFlow::Block(_) => TextViewImageFlow::Block,
                         ImageFlow::Inline(_) => TextViewImageFlow::Inline,
                     },
                     line_height: match flow {
                         ImageFlow::Inline(line) => line,
-                        ImageFlow::Block => self.line.get(),
+                        ImageFlow::Block(_) => self.line.get(),
                     },
                 },
             );
-            if is_link && matches!(flow, ImageFlow::Block) {
+            if let ImageFlow::Block(width) = flow {
                 return view()
-                    .role(role)
-                    .focusable(true)
-                    .element_ref(&target)
-                    .label(SharedString::from(image.alt.clone()))
-                    .on_press(press)
-                    .child(el)
+                    .w(move || width.get())
+                    .items_start()
+                    .when(is_link, |v| {
+                        v.role(role)
+                            .focusable(true)
+                            .element_ref(&target)
+                            .label(SharedString::from(image.alt.clone()))
+                            .on_press(press)
+                    })
+                    .child(el.w_full().when(!is_link, |el| {
+                        el.label(SharedString::from(image.alt.clone()))
+                    }))
+                    .when_some(hint, |v, hint| v.child(hint.0))
                     .into_element();
             }
-            return el.into_element();
+            return el
+                .label(SharedString::from(image.alt.clone()))
+                .into_element();
         }
         // A terminal's block image reads as its alt text in brackets, as a
         // text browser shows one: a line of text, pressable as the image
         // (`block` leaves out a paragraph of images without alt text).
-        if is_terminal() && matches!(flow, ImageFlow::Block) {
+        if is_terminal() && matches!(flow, ImageFlow::Block(_)) {
             if image.alt.trim().is_empty() {
                 return view().into_element();
             }
@@ -2639,7 +2787,7 @@ impl Cx {
             // following (at its natural size when it asks for nothing). The
             // width is a box's around it, so the image's height follows
             // the width it ends up with, not the one it asked for.
-            ImageFlow::Block => {
+            ImageFlow::Block(available) => {
                 let ratio = match (width, height) {
                     (Some(ImageLength::Points(w)), Some(ImageLength::Points(h))) if h > px(0.0) => {
                         Some(w / h)
@@ -2648,7 +2796,8 @@ impl Cx {
                 };
                 let box_width = move || -> Length {
                     match (width, height) {
-                        (Some(w), _) => DefiniteLength::from(w).into(),
+                        (Some(ImageLength::Points(w)), _) => w.into(),
+                        (Some(ImageLength::Fraction(w)), _) => (available.get() * w.0).into(),
                         (None, Some(ImageLength::Points(h))) => {
                             (h * aspect().unwrap_or(1.0)).into()
                         }
@@ -2663,10 +2812,11 @@ impl Cx {
                     .role(role)
                     .focusable(true)
                     .element_ref(&target)
-                    .on_press(press);
+                    .on_press(press)
+                    .when_some(hint, |el, hint| el.tooltip(hint));
                 return view()
                     .w(box_width)
-                    .max_w(relative(1.0))
+                    .max_w(move || available.get())
                     .child(self.part(el, Part::Image))
                     .into_element();
             }
@@ -2688,7 +2838,8 @@ impl Cx {
             .role(role)
             .focusable(true)
             .element_ref(&target)
-            .on_press(press);
+            .on_press(press)
+            .when_some(hint, |el, hint| el.tooltip(hint));
         self.part(el, Part::Image).into_element()
     }
 }
@@ -2704,11 +2855,28 @@ fn row_kind(block: &Block) -> String {
     }
 }
 
+/// A link's URL and title.
+type LinkTo = (SharedString, Option<SharedString>);
+
+/// A link's URL and title, borrowed from its document.
+type LinkRef<'a> = (&'a str, Option<&'a str>);
+
+/// A link's hint on an image in the link: a child of the image, which
+/// takes the link's press and is the hint's anchor (an image takes no
+/// children but its tooltip, which this is, as `Tooltip` is an element's).
+struct LinkImageHint(nsh_core::element::Overlay);
+
+impl IntoTooltip for LinkImageHint {
+    fn apply_tooltip(self, node: &mut nsh_core::element::ElNode) {
+        nsh_core::element::__hint_tooltip(node, self.0.into_element());
+    }
+}
+
 /// Where an image is laid out.
 #[derive(Debug, Clone, Copy)]
 enum ImageFlow {
     /// On its own: a block.
-    Block,
+    Block(Signal<Points>),
     /// In text whose lines are this tall.
     Inline(f32),
 }
@@ -2718,13 +2886,13 @@ enum ImageFlow {
 /// with no text.
 type ImageOnly<'a> = (
     &'a Image,
-    Option<&'a str>,
+    Option<LinkRef<'a>>,
     Option<&'a [nsh_core::TextSourceSegment]>,
 );
 fn only_images(content: &[Inline]) -> Option<Vec<ImageOnly<'_>>> {
     fn walk<'a>(
         content: &'a [Inline],
-        link: Option<&'a str>,
+        link: Option<LinkRef<'a>>,
         source: Option<&'a [nsh_core::TextSourceSegment]>,
         out: &mut Vec<ImageOnly<'a>>,
     ) -> bool {
@@ -2734,7 +2902,11 @@ fn only_images(content: &[Inline]) -> Option<Vec<ImageOnly<'_>>> {
                 true
             }
             Inline::Source { content, segments } => walk(content, link, Some(segments), out),
-            Inline::Link { url, content, .. } => walk(content, Some(url), source, out),
+            Inline::Link {
+                url,
+                title,
+                content,
+            } => walk(content, Some((url.as_str(), title.as_deref())), source, out),
             _ => false,
         })
     }
@@ -3262,6 +3434,23 @@ fn ink_on(bg: Hsla) -> Hsla {
     }
 }
 
+/// A code block's annotated `content`, when it has one whose plain text is
+/// its `code` (what copying takes): other content would show one text and
+/// copy another, so it is ignored with a warning.
+fn annotated(code: &CodeBlock) -> Option<&[Inline]> {
+    if code.content.is_empty() {
+        return None;
+    }
+    let mut plain = String::new();
+    super::document::inline_text(&code.content, &mut plain);
+    if plain == code.code {
+        Some(&code.content)
+    } else {
+        log::warn!("TextView: a code block's content does not spell its code; showing the code");
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use nsh_core::geometry::{Percentage, Points};
@@ -3292,7 +3481,7 @@ mod tests {
     fn content_of_images_alone_is_shown_as_blocks() {
         let link = |content| Inline::Link {
             url: "https://x.y".into(),
-            title: None,
+            title: Some("X".into()),
             content,
         };
         let content = [image("a.png"), link(vec![image("b.png")])];
@@ -3301,7 +3490,10 @@ mod tests {
             .iter()
             .map(|(i, l, _)| (i.src.as_str(), *l))
             .collect();
-        assert_eq!(found, [("a.png", None), ("b.png", Some("https://x.y"))]);
+        assert_eq!(
+            found,
+            [("a.png", None), ("b.png", Some(("https://x.y", Some("X"))))]
+        );
         // Text, even a space, puts the images in its lines, as gpui-kit's
         // text flow does.
         assert!(only_images(&[image("a.png"), Inline::text(" "), image("b.png")]).is_none());

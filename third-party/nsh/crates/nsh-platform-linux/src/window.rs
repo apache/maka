@@ -12,8 +12,8 @@
 //!   shows empty. Dialogs and panels are transient for their parent
 //!   (`modal` makes the parent take no input).
 //! - **State**: the main window's goes in the environment, the others' as
-//!   window events; a resize is reported once it settles. GTK 4 tells no
-//!   window's position, so a window's bounds start at the origin.
+//!   window events; a resize is reported once it settles. X11 reports global
+//!   native positions; on Wayland bounds remain local and native bounds absent.
 //! - **What GTK 4 has no API for** is left as it is, silently: positions
 //!   (`defaultPosition`, `center`, the origin of `setBounds`), levels,
 //!   the taskbar, workspaces, a largest size, an aspect ratio, focusability,
@@ -25,7 +25,7 @@
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use gtk4::{self as gtk, cairo, gdk, gio, glib, prelude::*};
@@ -52,6 +52,11 @@ const FIRST_FRAME: Duration = Duration::from_millis(150);
 /// bar), and the space around the window buttons.
 const HEADER_HEIGHT: f32 = 46.0;
 const MARGIN: i32 = 6;
+/// How long an activation token waits for the window activation it came
+/// for: the app shows its window in answer to the click that brought the
+/// token, so an older one belongs to a click that showed nothing and must
+/// not bring a later, unrelated window up.
+const ACTIVATION_TOKEN_LIFETIME: Duration = Duration::from_secs(30);
 
 thread_local! {
     /// How the close press being handled was asked for: the close key's
@@ -64,6 +69,201 @@ thread_local! {
     static LAUNCHER: RefCell<Launcher> = RefCell::default();
     /// Counts the windows shown activated ([`AppWindow::shown`]).
     static SHOWN: Cell<u64> = const { Cell::new(0) };
+    /// The XDG activation token for the next window activation, and when it
+    /// came ([`give_activation_token`]).
+    static ACTIVATION_TOKEN: RefCell<Option<(String, Instant)>> = const { RefCell::new(None) };
+}
+
+/// Keeps `token`, an XDG activation token a system surface handed over with
+/// a click (the tray's panel), for the app's next window activation: a
+/// Wayland compositor brings a window to the front only with a token of the
+/// user's action, else it only marks the window as wanting attention.
+pub(crate) fn give_activation_token(token: String) {
+    if token.is_empty() {
+        return;
+    }
+    ACTIVATION_TOKEN.set(Some((token, Instant::now())));
+}
+
+/// The kept activation token, once, unless it is older than
+/// [`ACTIVATION_TOKEN_LIFETIME`] at `now`.
+pub(crate) fn take_activation_token(now: Instant) -> Option<String> {
+    let (token, given) = ACTIVATION_TOKEN.take()?;
+    (now.saturating_duration_since(given) <= ACTIVATION_TOKEN_LIFETIME).then_some(token)
+}
+
+/// Shows `window` activated, with the kept activation token if there is one
+/// (without one, on X11 or when the system gave none, GTK asks as before).
+fn present(window: &gtk::Window) {
+    if let Some(token) = take_activation_token(Instant::now()) {
+        window.set_startup_id(&token);
+    }
+    window.present();
+}
+
+// --- Running in the background ----------------------------------------------------------
+
+thread_local! {
+    /// The app runs in the background ([`run_in_background`]).
+    static BACKGROUND: Cell<bool> = const { Cell::new(false) };
+    /// In the background, the window that would be the active one: it acts
+    /// as focused (its state, `closeOnBlur`, the keys the agent types).
+    static BACKGROUND_KEY: RefCell<Option<glib::WeakRef<gtk::Window>>> =
+        const { RefCell::new(None) };
+}
+
+/// Runs the app in the background (the development host's `--background`,
+/// which `nsh test --target linux` passes) when someone may type on
+/// `display`: its windows show without taking the focus from the app the
+/// user works in, and the window the app or the test activates only acts
+/// as the active one. An X server with no keyboard but its own virtual
+/// ones (Xvfb) has nobody typing on it, so the app runs as in the
+/// foreground there; a Wayland compositor always has a user.
+pub(crate) fn run_in_background(display: &gdk::Display) {
+    if display.type_().name() == "GdkX11Display" {
+        let names: Vec<String> = display
+            .default_seat()
+            .map(|seat| seat.devices(gdk::SeatCapabilities::KEYBOARD))
+            .unwrap_or_default()
+            .iter()
+            .map(|device| device.name().to_string())
+            .collect();
+        if !has_a_users_keyboard(names.iter().map(String::as_str)) {
+            log::info!(
+                "the X server has no keyboard of a user's: the app runs as in the foreground"
+            );
+            return;
+        }
+    }
+    BACKGROUND.set(true);
+}
+
+/// Whether the X server's keyboards named `names` include one a user types
+/// on: any but its virtual ones, XTest's ("Virtual core XTEST keyboard")
+/// and Xvfb's own ("Xvfb keyboard").
+fn has_a_users_keyboard<'a>(mut names: impl Iterator<Item = &'a str>) -> bool {
+    names.any(|name| !name.contains("XTEST") && !name.starts_with("Xvfb "))
+}
+
+/// Whether the app runs in the background ([`run_in_background`]).
+pub(crate) fn in_background() -> bool {
+    BACKGROUND.get()
+}
+
+/// Whether `window` acts as the active window: GTK's active one, or in the
+/// background the shown one that would be.
+pub(crate) fn is_focused(window: &gtk::Window) -> bool {
+    window.is_active()
+        || (in_background()
+            && window.is_visible()
+            && BACKGROUND_KEY
+                .with_borrow(|k| k.as_ref().and_then(|w| w.upgrade()))
+                .as_ref()
+                == Some(window))
+}
+
+/// Shows `window` activated, as the user's action does; in the background
+/// shown without the focus, the window that would be the active one.
+fn activate(surface: &Rc<Surface>, window: &gtk::Window) {
+    if in_background() {
+        show_inactive(window);
+        became_key(surface, window);
+    } else {
+        present(window);
+    }
+}
+
+/// Shows `window` without activating it. In the background, on X11 its
+/// user time is 0 before it maps, which tells the window manager not to
+/// focus it (EWMH's `_NET_WM_USER_TIME`); a Wayland compositor decides
+/// itself whether a new window takes the focus.
+fn show_inactive(window: &gtk::Window) {
+    if in_background() && !window.is_visible() {
+        // The widget, not its native surface: `gtk::Native` has its own `realize`.
+        WidgetExt::realize(window);
+        #[cfg(feature = "dev")]
+        if let Some(surface) = window.surface() {
+            crate::xtest::no_focus_on_map(&surface);
+        }
+    }
+    window.set_visible(true);
+}
+
+/// The main window activated, as the user's action does ([`activate`]).
+pub(crate) fn activate_main(surface: &Rc<Surface>) {
+    if let Some(window) = main_window(surface) {
+        activate(surface, &window);
+    }
+}
+
+/// Window `id` activated as a press in it does, unless it acts as the
+/// active one already.
+#[cfg(feature = "dev")]
+pub(crate) fn activate_for_press(surface: &Rc<Surface>, id: NodeId) {
+    if let Some(window) = gtk_window(surface, id)
+        && !is_focused(&window)
+    {
+        activate(surface, &window);
+    }
+}
+
+/// In the background, `window` becomes the one that would be active: it
+/// and the one that was report the change after this turn, as GTK's
+/// `is-active` notifies after the window manager's answer.
+fn became_key(surface: &Rc<Surface>, window: &gtk::Window) {
+    let old = BACKGROUND_KEY
+        .replace(Some(window.downgrade()))
+        .and_then(|w| w.upgrade());
+    if old.as_ref() == Some(window) {
+        return;
+    }
+    let weak = Rc::downgrade(surface);
+    let window = window.clone();
+    glib::idle_add_local_once(move || {
+        let Some(surface) = weak.upgrade() else {
+            return;
+        };
+        if let Some(old) = old {
+            key_changed(&surface, &old);
+        }
+        key_changed(&surface, &window);
+    });
+}
+
+/// In the background, `window` hid or goes: the main window becomes the
+/// one that would be active, if it shows.
+fn lost_key(surface: &Rc<Surface>, window: &gtk::Window) {
+    let key = BACKGROUND_KEY.with_borrow(|k| k.as_ref().and_then(|w| w.upgrade()));
+    if !in_background() || key.as_ref() != Some(window) {
+        return;
+    }
+    match main_window(surface).filter(|main| main != window && main.is_visible()) {
+        Some(main) => became_key(surface, &main),
+        None => BACKGROUND_KEY.set(None),
+    }
+}
+
+/// `window` started or stopped acting as the active one in the background:
+/// what GTK's `is-active` notify does.
+fn key_changed(surface: &Rc<Surface>, window: &gtk::Window) {
+    let focused = is_focused(window);
+    if main_window(surface).as_ref() == Some(window) {
+        if focused {
+            launcher_urgent(surface, false);
+        }
+        main_state_changed(surface);
+        return;
+    }
+    let id = surface
+        .windows
+        .borrow()
+        .iter()
+        .find(|(_, w)| &w.window == window)
+        .map(|(id, _)| *id);
+    if let Some(id) = id {
+        active_changed(surface, id, focused);
+        state_changed(surface, id);
+    }
 }
 
 /// The header a window of the app's own shows.
@@ -103,6 +303,8 @@ pub(crate) struct AppWindow {
     /// Not shown yet: `Some(true)` once the commit that opened it is
     /// mounted (the next one shows it).
     pending: Option<bool>,
+    /// `focus()` came while it waited for its first frame.
+    focus_on_show: bool,
     header: Header,
     /// The window buttons at the start and the end, while the title bar is
     /// hidden.
@@ -131,6 +333,11 @@ pub(crate) struct MainWindow {
     displays_watched: bool,
     /// It lets the pointer through (an empty input region).
     no_input: bool,
+    /// Its state when GTK last had a size for it: where a hidden window
+    /// was left, as GTK drops a hidden widget's size (and on X11 the window
+    /// manager its maximized state). Forgotten when the app sets a hidden
+    /// window's mode or size, which GTK holds for its next show ([`hidden`]).
+    seen: Option<WindowState>,
 }
 
 impl Default for MainWindow {
@@ -141,6 +348,7 @@ impl Default for MainWindow {
             closing: false,
             displays_watched: false,
             no_input: false,
+            seen: None,
         }
     }
 }
@@ -205,6 +413,22 @@ fn gtk_window(surface: &Surface, id: NodeId) -> Option<gtk::Window> {
     } else {
         surface.windows.borrow().get(&id).map(|w| w.window.clone())
     }
+}
+
+/// Blocks AT activation in the direct parent of a shown modal managed by this surface.
+/// GTK's wider window-group grab scope is not covered by this guard.
+pub(crate) fn blocked_by_modal(surface: &Surface, view: &NshView) -> bool {
+    let Some(parent) = view.root().and_downcast::<gtk::Window>() else {
+        return false;
+    };
+    let Ok(windows) = surface.windows.try_borrow() else {
+        return true;
+    };
+    windows.values().any(|w| {
+        w.window.is_visible()
+            && w.window.is_modal()
+            && w.window.transient_for().as_ref() == Some(&parent)
+    })
 }
 
 /// The root node of `window`.
@@ -274,6 +498,7 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
     }
     let options = &open.options;
     let window = gtk::Window::new();
+    window.add_css_class("nsh-window");
     let main = main_window(surface);
     if let Some(app) = main.as_ref().and_then(|w| w.application()) {
         window.set_application(Some(&app));
@@ -319,6 +544,7 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
             attributes: WindowAttributes::default(),
             reported: None,
             pending: Some(false),
+            focus_on_show: false,
             header: Header::System,
             controls: None,
             tracker: Tracker::default(),
@@ -381,9 +607,21 @@ fn connect(surface: &Rc<Surface>, id: NodeId, window: &gtk::Window, view: &NshVi
     window.connect_fullscreened_notify(changed(surface));
     window.connect_visible_notify(changed(surface));
     let weak = Rc::downgrade(surface);
+    window.connect_visible_notify(move |window| {
+        if let Some(surface) = weak.upgrade()
+            && !window.is_visible()
+        {
+            lost_key(&surface, window);
+        }
+    });
+    let weak = Rc::downgrade(surface);
     window.connect_is_active_notify(move |window| {
         if let Some(surface) = weak.upgrade() {
-            active_changed(&surface, id, window.is_active());
+            // The user activated it: the one that would be active too.
+            if in_background() && window.is_active() {
+                became_key(&surface, window);
+            }
+            active_changed(&surface, id, is_focused(window));
             state_changed(&surface, id);
         }
     });
@@ -570,23 +808,24 @@ fn show_first(surface: &Rc<Surface>, id: NodeId) {
 }
 
 /// Shows window `id`, activating it when its `activate` says so.
-fn show(surface: &Surface, id: NodeId) {
-    let Some((window, activate)) = surface.windows.borrow_mut().get_mut(&id).map(|w| {
+fn show(surface: &Rc<Surface>, id: NodeId) {
+    let Some((window, activates)) = surface.windows.borrow_mut().get_mut(&id).map(|w| {
         w.pending = None;
         w.active_once = false;
-        let activate = w.attributes.activate != Some(false);
-        if activate {
+        let activates =
+            std::mem::take(&mut w.focus_on_show) || w.attributes.activate != Some(false);
+        if activates {
             SHOWN.set(SHOWN.get() + 1);
             w.shown = SHOWN.get();
         }
-        (w.window.clone(), activate)
+        (w.window.clone(), activates)
     }) else {
         return;
     };
-    if activate {
-        window.present();
+    if activates {
+        activate(surface, &window);
     } else {
-        window.set_visible(true);
+        show_inactive(&window);
     }
 }
 
@@ -994,11 +1233,16 @@ fn request(surface: &Rc<Surface>, id: NodeId, request: &WindowRequest) {
         WindowRequest::Hide => hide(surface, id),
         WindowRequest::Focus | WindowRequest::Restore => {
             if let Some(w) = surface.windows.borrow_mut().get_mut(&id) {
+                // It shows with its first frame, and takes the keyboard then.
+                if w.pending.is_some() {
+                    w.focus_on_show = true;
+                    return;
+                }
                 w.pending = None;
                 SHOWN.set(SHOWN.get() + 1);
                 w.shown = SHOWN.get();
             }
-            window.present();
+            activate(surface, &window);
         }
         // The app closes its windows by removing their roots; one asked
         // to close otherwise goes as the app closing it, policies aside.
@@ -1238,6 +1482,46 @@ fn moved_only(last: &WindowState, next: &WindowState) -> bool {
         && last.scale_factor == next.scale_factor
 }
 
+fn native_content_bounds(
+    window: &gtk::Window,
+    content: &gtk::Widget,
+) -> Option<nsh_core::desktop::NativeDesktopBounds> {
+    use x11rb::protocol::xproto::ConnectionExt;
+    thread_local! {
+        static CONNECTION: std::cell::OnceCell<Result<x11rb::rust_connection::RustConnection, x11rb::errors::ConnectError>> = const { std::cell::OnceCell::new() };
+    }
+    let surface = window.surface()?;
+    let surface = surface.downcast_ref::<gdk4_x11::X11Surface>()?;
+    let xid = u32::try_from(surface.xid()).ok()?;
+    CONNECTION.with(|connection| {
+        let connection = connection
+            .get_or_init(|| {
+                x11rb::rust_connection::RustConnection::connect(None)
+                    .map(|(connection, _)| connection)
+            })
+            .as_ref()
+            .ok()?;
+        let geometry = connection.get_geometry(xid).ok()?.reply().ok()?;
+        let origin = connection
+            .translate_coordinates(xid, geometry.root, 0, 0)
+            .ok()?
+            .reply()
+            .ok()?;
+        let local = content.compute_bounds(window)?;
+        let scale = surface.scale() as f64;
+        let mut native = nsh_core::desktop::NativeDesktopBounds::default();
+        native.x = nsh_core::geometry::ScaledPixels(
+            (origin.dst_x as f64 + local.x() as f64 * scale) as f32,
+        );
+        native.y = nsh_core::geometry::ScaledPixels(
+            (origin.dst_y as f64 + local.y() as f64 * scale) as f32,
+        );
+        native.width = nsh_core::geometry::ScaledPixels((local.width() as f64 * scale) as f32);
+        native.height = nsh_core::geometry::ScaledPixels((local.height() as f64 * scale) as f32);
+        Some(native)
+    })
+}
+
 /// The state of `window`, whose app content is `content`; `normal` keeps
 /// its bounds in the normal mode. `None` before it has a size.
 fn state_of(
@@ -1249,17 +1533,28 @@ fn state_of(
     if width <= 0 || height <= 0 {
         return None;
     }
-    let bounds = Bounds::new(
+    let mut bounds = Bounds::new(
         point(Points(0.0), Points(0.0)),
         size(Points(width as f32), Points(height as f32)),
     );
-    let content_bounds = content.compute_bounds(window).map_or(bounds, |r| {
+    let mut content_bounds = content.compute_bounds(window).map_or(bounds, |r| {
         Bounds::new(
             point(Points(r.x()), Points(r.y())),
             size(Points(r.width()), Points(r.height())),
         )
     });
     let gdk_surface = window.surface();
+    let scale = gdk_surface
+        .as_ref()
+        .map_or(1.0, |surface| surface.scale() as f64);
+    let native = native_content_bounds(window, content);
+    if let Some(native) = native {
+        let x = (f64::from(native.x.0) / scale) as f32;
+        let y = (f64::from(native.y.0) / scale) as f32;
+        bounds.origin.x = Points(x - content_bounds.origin.x.0);
+        bounds.origin.y = Points(y - content_bounds.origin.y.0);
+        content_bounds.origin = point(Points(x), Points(y));
+    }
     let minimized = gdk_surface
         .as_ref()
         .and_then(|s| s.downcast_ref::<gdk::Toplevel>().map(|t| t.state()))
@@ -1272,13 +1567,14 @@ fn state_of(
     state.mode = mode;
     state.minimized = minimized;
     state.visible = window.is_visible() && !minimized;
-    state.focused = window.is_active();
+    state.focused = is_focused(window);
     state.content_bounds = content_bounds;
+    state.native_content_bounds = native;
     state.display = gdk_surface
         .as_ref()
         .and_then(|s| s.display().monitor_at_surface(s))
         .map(|m| monitor_id(&m));
-    state.scale_factor = gdk_surface.as_ref().map_or(1.0, |s| s.scale() as f32);
+    state.scale_factor = scale as f32;
     Some(state)
 }
 
@@ -1346,14 +1642,66 @@ pub(crate) fn main_state_changed(surface: &Surface) {
     let Some(window) = main_window(surface) else {
         return;
     };
-    let mut normal = surface.main_window.borrow().normal;
-    let next = state_of(&window, surface.root.upcast_ref(), &mut normal);
-    surface.main_window.borrow_mut().normal = normal;
+    let (mut normal, seen) = {
+        let main = surface.main_window.borrow();
+        (main.normal, main.seen)
+    };
+    let sized = state_of(&window, surface.root.upcast_ref(), &mut normal);
+    let next = sized.or_else(|| hidden(&window, seen));
+    {
+        let mut main = surface.main_window.borrow_mut();
+        main.normal = normal;
+        if sized.is_some() {
+            main.seen = sized;
+        }
+    }
     let mut env = surface.environment.get();
     if next.is_some() && env.window_state != next {
         env.window_state = next;
         surface.set_environment(env);
     }
+}
+
+/// A main window hidden at launch (nsh.json `window.defaultVisible:
+/// false`): its app is laid out at the size the window opens at, as GTK
+/// sizes a window only as it shows it, and reads it hidden.
+pub(crate) fn launch_hidden(surface: &Surface) {
+    let Some(window) = main_window(surface) else {
+        return;
+    };
+    let (width, height) = window.default_size();
+    if width > 0 && height > 0 {
+        surface.assume_size(width as f32, height as f32);
+    }
+    main_state_changed(surface);
+}
+
+/// The state of a hidden main window, which GTK has no size for: where it
+/// was left (`seen`, its state when it last had a size: mode and bounds),
+/// or, not shown yet (nsh.json `window.defaultVisible: false`) or changed
+/// by the app since, as GTK holds it for its next show: in its mode, at
+/// its default size.
+fn hidden(window: &gtk::Window, seen: Option<WindowState>) -> Option<WindowState> {
+    if window.is_visible() {
+        return None;
+    }
+    if let Some(mut state) = seen {
+        state.visible = false;
+        state.focused = false;
+        return Some(state);
+    }
+    let (width, height) = window.default_size();
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    let bounds = Bounds::new(
+        point(Points(0.0), Points(0.0)),
+        size(Points(width as f32), Points(height as f32)),
+    );
+    let mode = mode_of(window.is_fullscreen(), window.is_maximized());
+    let mut state = WindowState::new(bounds, WindowPlacement::new(mode, bounds));
+    state.visible = false;
+    Some(state)
 }
 
 /// Follows the main window's state (once per window: `chrome`'s watch).
@@ -1372,6 +1720,10 @@ pub(crate) fn watch_main(surface: &Rc<Surface>, window: &gtk::Window) {
     window.connect_is_active_notify(move |window| {
         if let Some(surface) = weak.upgrade() {
             if window.is_active() {
+                // The user activated it: the one that would be active too.
+                if in_background() {
+                    became_key(&surface, window);
+                }
                 launcher_urgent(&surface, false);
             }
             main_state_changed(&surface);
@@ -1399,8 +1751,43 @@ pub(crate) fn watch_main(surface: &Rc<Surface>, window: &gtk::Window) {
             });
         }
     }
+    let weak = Rc::downgrade(surface);
+    window.connect_map(move |window| {
+        if let Some(surface) = weak.upgrade() {
+            report_once_sized(&surface, window);
+        }
+    });
     pass_pointer(surface, ROOT_ID);
     main_state_changed(surface);
+    if window.is_visible() {
+        // Watched as it first shows, maybe inside the map above.
+        report_once_sized(surface, window);
+    }
+}
+
+/// Reports the main window's state once GTK has sized it: a window shows
+/// (and may take the focus) before it has a size, which GTK drops while it
+/// is hidden, so its state reads it shown only a frame later, often at the
+/// size its app already has (no resize reports it then).
+fn report_once_sized(surface: &Rc<Surface>, window: &gtk::Window) {
+    if window.width() > 0 && window.height() > 0 {
+        main_state_changed(surface);
+        return;
+    }
+    let weak = Rc::downgrade(surface);
+    window.add_tick_callback(move |window, _| {
+        if !window.is_visible() {
+            // Hidden again: its next map reports it.
+            return glib::ControlFlow::Break;
+        }
+        if window.width() <= 0 || window.height() <= 0 {
+            return glib::ControlFlow::Continue;
+        }
+        if let Some(surface) = weak.upgrade() {
+            main_state_changed(&surface);
+        }
+        glib::ControlFlow::Break
+    });
 }
 
 /// The surface's root was resized.
@@ -1442,13 +1829,16 @@ pub(crate) fn main_request(surface: &Rc<Surface>, request: &WindowRequest) {
     match request {
         WindowRequest::Show => {
             if a.activate != Some(false) {
-                window.present();
+                activate(surface, &window);
             } else {
-                window.set_visible(true);
+                show_inactive(&window);
             }
         }
-        WindowRequest::Hide => window.set_visible(false),
-        WindowRequest::Focus | WindowRequest::Restore => window.present(),
+        WindowRequest::Hide => {
+            window.set_visible(false);
+            lost_key(surface, &window);
+        }
+        WindowRequest::Focus | WindowRequest::Restore => activate(surface, &window),
         WindowRequest::Close => {
             surface.main_window.borrow_mut().closing = true;
             crate::chrome::close(surface);
@@ -1470,6 +1860,19 @@ pub(crate) fn main_request(surface: &Rc<Surface>, request: &WindowRequest) {
         }
         WindowRequest::Center { .. } => {}
         WindowRequest::RequestAttention { .. } => launcher_urgent(surface, true),
+    }
+    let resized = matches!(
+        request,
+        WindowRequest::SetMode(_)
+            | WindowRequest::SetBounds(_)
+            | WindowRequest::SetContentSize { .. }
+            | WindowRequest::SetPlacement(_)
+    );
+    if resized && !window.is_visible() {
+        // GTK holds the mode and size for the window's next show: it reads
+        // as that, no longer where it was left.
+        surface.main_window.borrow_mut().seen = None;
+        main_state_changed(surface);
     }
 }
 
@@ -1584,6 +1987,20 @@ pub(crate) fn root_view(surface: &Surface, id: NodeId) -> Option<NshView> {
     }
 }
 
+/// The root node of the window `view` is in, unless the windows are being changed.
+pub(crate) fn try_root_id(surface: &Surface, view: &NshView) -> Option<NodeId> {
+    let windows = surface.windows.try_borrow().ok()?;
+    Some(
+        windows
+            .iter()
+            .find_map(|(&id, window)| {
+                let root = window.view.upgrade()?;
+                (root == *view || view.is_ancestor(&root)).then_some(id)
+            })
+            .unwrap_or(ROOT_ID),
+    )
+}
+
 /// The root view of the window `view` is in.
 pub(crate) fn root_of(surface: &Surface, view: &NshView) -> NshView {
     let roots: Vec<NshView> = surface
@@ -1661,12 +2078,12 @@ pub(crate) fn native_window(surface: &Surface, id: NodeId) -> Option<gtk::Window
 /// own shown activated last that still shows, else the main window.
 pub(crate) fn key_window(surface: &Surface) -> Option<gtk::Window> {
     let main = main_window(surface);
-    if main.as_ref().is_some_and(|w| w.is_active()) {
+    if main.as_ref().is_some_and(is_focused) {
         return main;
     }
     let windows = surface.windows.borrow();
     let shown = windows.values().filter(|w| w.window.is_visible());
-    if let Some(active) = shown.clone().find(|w| w.window.is_active()) {
+    if let Some(active) = shown.clone().find(|w| is_focused(&w.window)) {
         return Some(active.window.clone());
     }
     shown
@@ -1721,7 +2138,7 @@ pub(crate) fn current_state(surface: &Surface, id: NodeId) -> Option<WindowState
 
 /// Dialog root `view` was removed: its window goes, and the shown windows
 /// it owns close. Whether it had one.
-pub(crate) fn removed(surface: &Surface, view: &NshView) -> bool {
+pub(crate) fn removed(surface: &Rc<Surface>, view: &NshView) -> bool {
     let id = view.id();
     if !is_window(surface, id) {
         return false;
@@ -1734,6 +2151,7 @@ pub(crate) fn removed(surface: &Surface, view: &NshView) -> bool {
         timer.remove();
     }
     w.overlay.set_child(None::<&gtk::Widget>);
+    lost_key(surface, &w.window);
     w.window.destroy();
     true
 }
@@ -1753,10 +2171,19 @@ pub(crate) fn clear(surface: &Surface) {
         w.overlay.set_child(None::<&gtk::Widget>);
         w.window.destroy();
     }
+    // In the background the main window is the one that would be active
+    // for the next app (a development host's reload).
+    if in_background() {
+        BACKGROUND_KEY.set(main_window(surface).map(|w| w.downgrade()));
+    }
     let mut main = surface.main_window.borrow_mut();
-    let watched = main.displays_watched;
+    // The main window stays for the next app (a development host's
+    // reload), and so do its normal bounds and where it was left.
+    let (watched, normal, seen) = (main.displays_watched, main.normal, main.seen);
     *main = MainWindow {
         displays_watched: watched,
+        normal,
+        seen,
         ..MainWindow::default()
     };
 }
@@ -1927,6 +2354,70 @@ mod tests {
         WindowState::new(bounds, WindowPlacement::new(WindowMode::Normal, bounds))
     }
 
+    /// The main window's state as the surface reports it.
+    fn reported(surface: &Surface) -> WindowState {
+        surface
+            .environment
+            .get()
+            .window_state
+            .expect("the main window's state")
+    }
+
+    #[test]
+    fn an_activation_token_expires() {
+        give_activation_token("token".into());
+        let late = Instant::now() + ACTIVATION_TOKEN_LIFETIME + Duration::from_secs(1);
+        assert_eq!(take_activation_token(late), None);
+        // An expired token is dropped, not kept for a later activation.
+        assert_eq!(take_activation_token(Instant::now()), None);
+    }
+
+    #[test]
+    fn a_hidden_main_window_reads_where_it_was_left() {
+        crate::gtk_test::run(|| {
+            let surface = crate::gtk_test::surface();
+            let window = gtk::Window::new();
+            window.set_default_size(400, 300);
+            window.set_child(Some(&surface.root));
+            // Not shown yet: as GTK holds it for its first show.
+            main_state_changed(&surface);
+            let unshown = reported(&surface);
+            let opening = crate::gtk_test::frame(0.0, 0.0, 400.0, 300.0);
+            assert!(!unshown.visible);
+            assert_eq!(
+                unshown.placement,
+                WindowPlacement::new(WindowMode::Normal, opening)
+            );
+            // Shown, maximized and hidden: GTK dropped its size (and X11's
+            // window manager its maximized state), not where the user left
+            // it, which a reload keeps.
+            let mut seen = state(640.0);
+            seen.mode = WindowMode::Maximized;
+            seen.placement = WindowPlacement::new(WindowMode::Maximized, seen.bounds);
+            seen.focused = true;
+            surface.main_window.borrow_mut().seen = Some(seen);
+            main_state_changed(&surface);
+            let left = reported(&surface);
+            assert!(!left.visible && !left.focused);
+            assert_eq!(left.placement, seen.placement);
+            clear(&surface);
+            assert_eq!(surface.main_window.borrow().seen, Some(seen));
+            // The app sets its mode while it is hidden: as GTK holds it for
+            // its next show.
+            main_request(&surface, &WindowRequest::SetMode(WindowMode::Normal));
+            assert_eq!(
+                reported(&surface).placement,
+                WindowPlacement::new(WindowMode::Normal, opening)
+            );
+            main_request(&surface, &WindowRequest::SetMode(WindowMode::Maximized));
+            assert_eq!(
+                reported(&surface).placement,
+                WindowPlacement::new(WindowMode::Maximized, opening)
+            );
+            window.destroy();
+        });
+    }
+
     #[test]
     fn modes_from_the_windows_flags() {
         assert_eq!(mode_of(false, false), WindowMode::Normal);
@@ -2006,5 +2497,26 @@ mod tests {
             dict.lookup::<bool>("progress-visible").unwrap(),
             Some(false)
         );
+    }
+
+    /// An X server whose only keyboards are its virtual ones (Xvfb) has
+    /// nobody typing on it, so an app runs as in the foreground there; any
+    /// other keyboard (a real one, Xwayland's) is a user's.
+    #[test]
+    fn only_a_users_keyboard_keeps_the_app_in_the_background() {
+        assert!(!has_a_users_keyboard(std::iter::empty()));
+        assert!(!has_a_users_keyboard(
+            ["Virtual core XTEST keyboard", "Xvfb keyboard"].into_iter()
+        ));
+        for user in [
+            "AT Translated Set 2 keyboard",
+            "xwayland-keyboard:16",
+            "Wayland Keyboard",
+        ] {
+            assert!(
+                has_a_users_keyboard(["Virtual core XTEST keyboard", user].into_iter()),
+                "{user}"
+            );
+        }
     }
 }

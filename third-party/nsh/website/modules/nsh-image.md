@@ -36,6 +36,8 @@ interface PixelSize {
 
 Loads the image and resolves with its size in pixels (of the source image, not a downsampled copy; an SVG's intrinsic size in points, [on the web as the browser measures it](../docs/images-and-assets.md#svg-images)). An imported image with [pixel-density variants](../docs/images-and-assets.md#pixel-densities) loads the variant the views load on this screen and resolves with the imported file's size, whichever variant it loaded (an `<Image>` showing it reports the loaded variant's pixels in `onLoad`). The loaded bytes stay in memory, so the `<Image>` that shows it next does not download it again. The promise rejects if the image cannot be loaded.
 
+A `blob:` URL from `URL.createObjectURL` (a picked or downloaded file) resolves with the size its image's header gives (PNG, JPEG, GIF, WebP, HEIC, AVIF, TIFF, BMP), read from the bytes already in memory, and `prefetch` of one resolves at once.
+
 ```tsx
 import { Image, signal } from "nsh";
 

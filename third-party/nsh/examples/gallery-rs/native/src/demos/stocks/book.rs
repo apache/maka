@@ -128,7 +128,9 @@ fn level_row(bid: bool, slot: usize, ladder: Ladder) -> impl IntoElement {
 const RELEVEL: LayoutAnimation = LayoutAnimation {
     create: Some(LayoutTransition::new(LayoutCurve::EaseInEaseOut, 360.0)),
     update: Some(LayoutTransition {
-        curve: LayoutCurve::Spring { damping: 0.85 },
+        curve: LayoutCurve::FittedSpring {
+            damping_ratio: 0.85,
+        },
         property: LayoutProperty::Opacity,
         duration_ms: 360.0,
         delay_ms: 0.0,

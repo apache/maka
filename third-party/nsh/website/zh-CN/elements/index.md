@@ -96,6 +96,7 @@ TSX 从 `nsh/base` 导入，Rust 从 `nsh_base` crate 导入。它们负责行�
 | `<Checkbox>` | `nsh_base::checkbox()` | 带指示器的勾选 / 未勾选 / 半选控件 | [Checkbox](./checkbox.md) |
 | `<Collapsible>` | `nsh_base::collapsible()` | 内容可展开和收起的区域 | [Collapsible](./collapsible.md) |
 | `<Command>` | `nsh_base::command()` | 命令面板：在原生过滤的命令之上放一个搜索框，虚拟化列表，Cmd+K 面板的按键 | [Command](./command.md) |
+| `<EmojiPicker>` | `nsh_base::emoji_picker()` | 表情选择面板：在按分组排列的全部表情之上放一个搜索框，应用的最近使用和名称，肤色，虚拟化网格 | [EmojiPicker](./emoji-picker.md) |
 | `<DataTable>` | `nsh_base::data_table()` | 行列数量不限的表格，可选择、排序，列可调整宽度和移动 | [DataTable](./data-table.md) |
 | `<Dialog>` | `nsh_base::dialog()` | 把子元素呈现在其他一切之上 | [Dialog](./dialog.md) |
 | `<DiffView>` | `nsh_base::diff_view()` | 两段文本之间或补丁中的改动，并排或合并显示 | [DiffView](./diff-view.md) |
@@ -119,6 +120,7 @@ TSX 从 `nsh/base` 导入，Rust 从 `nsh_base` crate 导入。它们负责行�
 | `<Select>` | `nsh_base::select()` | 从一组条目中选出一个值，支持键盘、搜索和分组 | [Select](./select.md) |
 | `<Sheet>` | `nsh_base::sheet()` | 位于屏幕一侧边缘、覆盖在背景层之上的面板 | [Sheet](./sheet.md) |
 | `<Slider>` | `nsh_base::slider()` | 沿轨道选取一个值或两个值组成的范围 | [Slider](./slider.md) |
+| `<SplitView>` | `nsh_base::split_view()` | 并排显示的导航栈分栏，空间紧凑时一次显示一栏：iOS 上是 `UISplitViewController` | [SplitView](./split-view.md) |
 | `<Switch>` | `nsh_base::switch()` | 带轨道和滑块的开 / 关控件 | [Switch](./switch.md) |
 | `<Table>` 及其部件 | `nsh_base::table()`、`table_row()` 等 | 由应用写出行和单元格的表格，带有表格的角色 | [Table](./table.md) |
 | `<Tab>`、`<Tabs>` | `nsh_base::tab()`、`tabs()` | 标签列表中的一个标签页，以及这个列表 | [Tabs](./tabs.md) |
@@ -146,7 +148,7 @@ TSX 从 `nsh/base` 导入，Rust 从 `nsh_base` crate 导入。它们负责行�
 
 ### 按压与反馈
 
-按压处理在原生侧完成：由平台识别按压并应用应用设定的按压样式，应用代码只在事后收到通知。只有最内层可按压的视图会响应；在滚动视图内，按下会等待约 130 ms，让滚动有机会先开始。
+按压处理在原生侧完成：由平台识别按压并应用应用设定的按压样式，应用代码只在事后收到通知。只有最内层可按压的视图会响应，但只监听 `onLongPress` 的视图会把点击留给外层的可按压视图；在滚动视图内，按下会等待约 130 ms，让滚动有机会先开始。
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
@@ -174,6 +176,7 @@ TSX 从 `nsh/base` 导入，Rust 从 `nsh_base` crate 导入。它们负责行�
 | `activeStyle` | `.active(\|s\| ..)` | `active:` | 被按下时。 |
 | `hoverStyle` | `.hover(\|s\| ..)` | `hover:` | 指针悬停在视图上时。 |
 | `focusStyle` | `.focus(\|s\| ..)` | `focus:` | 视图获得焦点时。 |
+| `focusVisibleStyle` | `.focus_visible(\|s\| ..)` | `focus-visible:` | 视图获得焦点并显示焦点时：键盘把焦点移到了这里，或应用在按键之后移动了焦点；文本输入框获得焦点时总是显示。按压或轻点给出的焦点不显示。 |
 | `focusWithinStyle` | `.focus_within(\|s\| ..)` | `focus-within:` | 视图自身或其内部的视图获得焦点时（`Overlay` 的内容算在它所在的视图内部）。 |
 | `disabledStyle` | `.disabled_style(\|s\| ..)` | `disabled:` | `disabled` 时。 |
 | `checkedStyle` | `.checked(\|s\| ..)`、`.checked_style(style)` | `checked:` | `accessibilityState.checked` 为 `true` 时（复选框、开关、单选框；`"mixed"` 不算勾选）。 |
@@ -209,10 +212,13 @@ view()
 | `onMouseEnter` | `.on_mouse_enter(..)` | `(e: MouseEvent) => void` | 鼠标移到视图或其内部的视图上（DOM 的 `mouseenter`）。 |
 | `onMouseMove` | `.on_mouse_move(..)` | `(e: MouseEvent) => void` | 鼠标在视图（或其内部的视图）上移动，无论是否按着按键；或鼠标停在那里、没有按键按下时按下或松开了修饰键（DOM 的 `mousemove`）。 |
 | `onMouseLeave` | `.on_mouse_leave(..)` | `(e: MouseEvent) => void` | 鼠标离开视图及其内部的视图，或离开窗口；`e` 是鼠标最后所在的位置（DOM 的 `mouseleave`）。 |
+| `onMouseUp` | `.on_mouse_up(..)` | `(e: MouseEvent) => void` | 鼠标按键在视图或其内部的视图上松开（DOM 的 `mouseup`）：`button` 是松开的按键（`"left"`、`"right"`、`"middle"`、`"back"`、`"forward"`），另有 `position`、`pagePosition` 和 `modifiers`。指针下视图外围所有监听的视图由内向外都会收到。主按键松开时同时报告 `onPressUp`。视图外松开不会报告（没有指针捕获）。桌面平台（Windows、macOS、Linux、GPUI）、终端和 Web 支持；iOS 和 Android 不报告。 |
 
 与 CSS 的 `:hover` 和 DOM 的 `mouseenter` 一样，鼠标在视图上或在其内部任何内容上时，视图都算作被悬停，因此鼠标下方视图外层的视图也会收到 `onMouseEnter`（由外向内；`onMouseLeave` 由内向外）。事件在发生之后才通知应用，触摸从不触发。从鼠标下方移除的视图会收到 `onMouseLeave`，在 Linux 和 Windows 上要等到鼠标下一次移动。
 
-`MouseEvent` 像 GPUI 的 `MouseMoveEvent` 一样给出鼠标的位置：`position` 是在视图中的位置（一个 `Point`，单位为点，已去掉视图的变换），`pagePosition` 是在视图所在根视图中的位置（与触摸相同），按住的 `modifiers`（`control`、`alt`、`shift`、`platform`：Apple 平台上是 Command，其他平台是 Windows 键），以及 `pressedButton`：按下的按键（`"left"`、`"right"`、`"middle"`、`"back"` 或 `"forward"`，即 GPUI 的 `MouseButton`），没有按键时为 `null`；Rust 中为 `position`、`page_position`、`modifiers` 和 `pressed_button`。在桌面平台和 Web 上，拖动同时也是触摸（`onTouchMove`、响应者系统），它的移动带着 `pressedButton` 到达 `onMouseMove`：只跟随悬停的反馈跳过这些移动即可；iOS 和 Android 的悬停报告的是没有按键按下的指针。移动事件每帧最多一次，总是最新的那次，并且一定在随后的 `onMouseLeave` 之前到达，因此处理函数可以在每次移动时重绘：
+每个组件都接受这些事件，`nsh/base` 的组件和应用自己 crate 中的组件都一样：`<Button onMouseEnter>`、`<Switch onMouseMove>`、`<Avatar onMouseUp>`，Rust 中为 `button().on_mouse_enter(..)`。它们以同样的 `MouseEvent` 报告鼠标在组件根视图上的情况，在组件自己处理之后到达；只有应用监听时，组件才监听。
+
+`MouseEvent` 像 GPUI 的 `MouseMoveEvent` 一样给出鼠标的位置：`position` 是在视图中的位置（一个 `Point`，单位为点，已去掉视图的变换），`pagePosition` 是在视图所在根视图中的位置（与触摸相同），按住的 `modifiers`（`control`、`alt`、`shift`、`platform`：Apple 平台上是 Command，其他平台是 Windows 键），`pressedButton`：按下的按键（`"left"`、`"right"`、`"middle"`、`"back"` 或 `"forward"`，即 GPUI 的 `MouseButton`），没有按键或松开时为 `null`，以及 `button`：本次事件中变化的按键，即 `onMouseUp` 上松开的按键，移动时为 `null`；Rust 中为 `position`、`page_position`、`modifiers`、`pressed_button` 和 `button`。在桌面平台和 Web 上，拖动同时也是触摸（`onTouchMove`、响应者系统），它的移动带着 `pressedButton` 到达 `onMouseMove`：只跟随悬停的反馈跳过这些移动即可；iOS 和 Android 的悬停报告的是没有按键按下的指针。移动事件每帧最多一次，总是最新的那次，并且一定在随后的 `onMouseLeave` 之前到达，因此处理函数可以在每次移动时重绘：
 
 ```rust tabs
 // 图表上的十字线。
@@ -244,11 +250,69 @@ const at = signal<number | null>(null);
 </View>
 ```
 
+### 滚轮
+
+`onWheel` 在鼠标滚轮或触控板在视图上滚动时触发：macOS、Windows、Linux、GPUI 后端和 Web 都支持（DOM 的 `wheel`、GPUI 的 `ScrollWheelEvent`）。指针下方视图及其外层中，最近的监听者收到它。若该视图比指针下方所有滚动视图都更近，它就接管这次滚轮：系统不再滚动、缩放或捏合，因此页面里的画布可以在 Control + 滚轮时缩放、其他时候平移。若监听者的 `panActivation` 只指定了一个方向（如 `{ activeOffsetX, failOffsetY }`，Rust 为 `PanActivation::horizontal(..)`），它只接管这个方向的滚轮和 Control + 滚轮，其他方向交给外层的滚动视图，与横向滚动视图让纵向滚轮滚动页面相同：纵向页面里的时间轴接管横向滚轮，纵向滚轮照常滚动页面。监听的滚动视图，或包着滚动视图的外层视图，只是旁观：滚动视图照常滚动。一次滚动始终留在它去的地方，与滚动视图相同：接管了它的视图会收到这次滚动剩下的部分（触控板手势及其惯性、连续滚动的滚轮），即使指针离开了它；滚动视图已经开始的滚动，也不会被中途移到指针下的监听者抢走，那个监听者只是旁观。JS 无法事后取消原生滚动（主线程不等待 JS），所以是否接管由挂载的内容决定，与 `onContextMenu` 相同。
+
+| 属性 | Rust | 类型 | 说明 |
+|---|---|---|---|
+| `onWheel` | `.on_wheel(..)` | `(e: WheelEvent) => void` | 鼠标滚轮或触控板在视图或其内部的视图上滚动。 |
+
+`WheelEvent` 与 `MouseEvent` 一样带有 `position` 和 `pagePosition`，以及按住的 `modifiers`、`delta`（一个 `Point`：`y` 为正向下、朝末尾滚动，`x` 为正向右，与 DOM 的 `deltaX` / `deltaY` 相同）和 `deltaMode`：鼠标滚轮的刻度为 `"lines"`，精确设备（触控板、妙控鼠标；AppKit 的 `hasPreciseScrollingDeltas`、DOM 的 `DOM_DELTA_PIXEL`）为 `"points"`。Rust 中 `delta` 是 `WheelDelta`：`Lines(Point<f32>)` 或 `Points(Point<Points>)`，与 GPUI 的 `ScrollDelta` 相同；`delta.points(line_height)` 总是给出点数。
+
+```rust tabs
+// 画布：Control + 滚轮缩放，滚轮平移。
+let zoom = signal(1.0_f32);
+let offset = signal(Point::<Points>::default());
+
+view()
+    .size_full()
+    .on_wheel(move |e: &WheelEvent| {
+        let d = e.delta.points(px(16.0));
+        if e.modifiers.ctrl {
+            zoom.update(|z| *z *= (1.0 - d.y.0 / 200.0).clamp(0.5, 2.0));
+        } else {
+            offset.update(|o| *o = point(o.x - d.x, o.y - d.y));
+        }
+    })
+```
+
+```tsx tabs
+// 画布：Control + 滚轮缩放，滚轮平移。
+const zoom = signal(1);
+const offset = signal({ x: 0, y: 0 });
+
+<View
+  style={{ flex: 1 }}
+  onWheel={(e) => {
+    const unit = e.deltaMode === "lines" ? 16 : 1;
+    if (e.modifiers.control) zoom.update((z) => z * Math.min(2, Math.max(0.5, 1 - (e.delta.y * unit) / 200)));
+    else offset.update((o) => ({ x: o.x - e.delta.x * unit, y: o.y - e.delta.y * unit }));
+  }}
+/>
+```
+
+`onPinch` 在触控板于视图上捏合时触发，与 GPUI 的 `on_pinch` 相同：macOS、Linux、GPUI 后端和 Safari 都支持。Windows 和其他浏览器把触控板捏合报告为 Control + 滚轮，由 `onWheel` 收到，所以需要缩放的视图要同时监听两者。指针下方视图及其外层中，最近的监听者从捏合开始到结束一直收到它；若该视图比所有原生捏合的视图（`pinch` 值、`onPinchStart`）都更近，它就接管这次捏合，系统不再原生缩放。在捏合中途才开始监听的视图收到其余部分，没有开始事件。触摸屏上的手指捏合属于原生手势（`onPinchStart`，见[触摸与手势](../docs/touch-and-gestures.md)）。
+
+| 属性 | Rust | 类型 | 说明 |
+|---|---|---|---|
+| `onPinch` | `.on_pinch(..)` | `(e: PinchEvent) => void` | 触控板在视图或其内部的视图上捏合。 |
+
+`PinchEvent` 与 `MouseEvent` 一样带有 `position`、`pagePosition` 和 `modifiers`，以及 `delta`（相对上一次事件的缩放变化，0.1 即放大 10%，负数为缩小）和 `phase`：`"start"`、`"move"` 或 `"end"`，与触摸的阶段相同。Rust 中 `delta` 是 `Percentage`，`phase` 是 `PinchPhase`。
+
+```tsx
+<View
+  style={{ flex: 1 }}
+  onPinch={(e) => zoom.update((z) => z * (1 + e.delta))}
+  onWheel={(e) => e.modifiers.control && zoom.update((z) => z * (1 - (e.delta.y * (e.deltaMode === "lines" ? 16 : 1)) / 200))}
+/>
+```
+
 <a id="tooltips"></a>
 
 ### 工具提示
 
-`tooltip` 为任意元素加上提示：在桌面平台（macOS、Windows、Linux、GPUI 后端和桌面浏览器）上，指针在元素上停留半秒后显示在它上方，指针离开或按下时隐藏；在任何设备上，键盘焦点停在元素上时也会显示，焦点离开或按下 Escape 时隐藏。提示从不接收指针或按压，所以元素的行为与没有它时完全一样。
+`tooltip` 为任意元素加上提示：在桌面平台（macOS、Windows、Linux、GPUI 后端和桌面浏览器）上，指针在元素上停留半秒后显示在它上方，指针离开或按下时隐藏（指针从另一个显示过提示的元素移过来、离开那个元素不到 300 毫秒时立即显示）；在任何设备上，键盘把焦点移到元素上时也会显示，焦点离开或按下 Escape 时隐藏（点击或轻点带来的焦点把提示交给指针决定）。提示从不接收指针或按压，所以元素的行为与没有它时完全一样。
 
 | 属性 | Rust | 类型 | 说明 |
 |---|---|---|---|
@@ -308,9 +372,13 @@ import { Menu } from "nsh/desktop";
 
 `ContextMenuEvent` 包含视图中的 `position`、根视图中的 `pagePosition`（`Menu.popup` 放置菜单的位置：`Menu.popup(items, e.pagePosition)`）、`modifiers` 以及 DOM 的 `pointerType`：指针为 `"mouse"`、`"pen"` 或 `"touch"`，键盘或读屏软件为 `null`，此时位置是视图的底部起始角，菜单放在这里就会出现在视图下方；Rust 中为 `position`、`page_position`、`modifiers` 和 `pointer_type`（`Option<PointerType>`）。从指针下方的视图向外，最近的一个监听者收到事件。如果比它更近的是文本输入框，或带有编辑菜单的可选中文本（Windows、GPUI 后端、浏览器），则显示它们自己的菜单。平台在按钮按下时根据已挂载的内容做出决定，因此处理函数在事后得到通知，不需要取消任何东西。`disabled` 的视图把这次点击留给外层最近的、未停用的监听者。在触摸屏上用长按打开菜单：用同一个函数处理 `onLongPress`。
 
+每个组件也都接受 `onContextMenu`（`<Button onContextMenu>`、`button().on_context_menu(..)`），以同样的 `ContextMenuEvent` 报告组件的根视图。在那里显示自己菜单的组件（`ContextMenu` 的 trigger）保留这个事件。`DataTable` 和 `Editor` 有自己的 `onContextMenu`，报告的是行和列，或文本中的位置。
+
 ### 键盘焦点
 
-在 macOS 和 Web 上，Tab 按视图树的顺序在停靠点之间移动键盘焦点：输入框、可按压的视图，以及所有设置了 `focusable` 的视图。焦点样式（`focus:`、`.focus(..)`）为获得焦点的视图设置样式；它可按压时，按 Return 或空格会按下它。点击会按下视图但不让它获得焦点，所以焦点样式只在键盘聚焦时生效。
+在 macOS、Windows、Web 和 Android 上，Tab 按视图树的顺序在停靠点之间移动键盘焦点：输入框、可按压的视图，以及所有设置了 `focusable` 的视图。焦点样式（`focus:`、`.focus(..)`）为获得焦点的视图设置样式；它可按压时，按 Return 或空格会按下它。点击会按下视图但不让它获得焦点，所以焦点样式只在键盘聚焦时生效。在 Android 上，可按压的视图是硬件键盘的停靠点，而触摸模式下的点击只会聚焦显式设置了 `focusable` 的视图（或由 ref 聚焦的视图），所以点按钮不会让正在编辑的输入框失去焦点；在第一个和最后一个停靠点上，Tab 和 Shift+Tab 会交给嵌入它的 Android 宿主，而不是绕回。在 Android 上，应用里没有视图获得焦点时（比如启动时和点按之后），第一次按方向键会把焦点移到屏幕上的第一个停靠点，此后方向键按各自的方向移动焦点；嵌入它的 Android 宿主会保留用来移动自身焦点或滚动自身的方向键。
+
+焦点到达的视图会在外层的滚动视图和列表里滚进视野。Tab 会走遍列表的每一行，包括还没渲染的行：焦点到达时列表渲染出下一行，走过最后一行后焦点才离开列表。
 
 焦点和按压相互独立。在获得焦点时接收按键的视图（图表、滑块、用方向键移动选中项的列表）设置 `focusable`，并在获得焦点期间绑定自己的按键（`onFocus` / `onBlur` 配合 [`keymap`](../modules/nsh.md#keymap)）；点击它时，按压照样交给外层可按压的视图，比如一张点开详情页的卡片。
 
@@ -323,6 +391,8 @@ ref 的 `focus()` 像 Tab 一样把键盘焦点移到停靠点上（显示它的
 | `focusable` | `.focusable(..)` | `boolean` | 可按压的视图为 `true` | 视图是否是 Tab 的停靠点。`true` 让任何视图成为停靠点，无论它自己接收按压，还是把按压留给外层视图；`false` 把可按压的视图留给指针（关闭浮层的背景层、用方向键切换的列表行）。 |
 | `onFocus` | `.on_focus(..)` | `() => void` | | Tab（或 `focus()`）让视图获得了键盘焦点。 |
 | `onBlur` | `.on_blur(..)` | `() => void` | | 键盘焦点离开了视图。 |
+| `onKeyDown` / `onKeyUp` | `.on_key_down(..)` / `.on_key_up(..)` | `(e: KeyEvent) => void` | | 硬件按键在聚焦视图或其内部按下 / 在聚焦视图上抬起。`KeyEvent` 为 `{ key, code, modifiers, repeat, defaultPrevented }`；一个事件沿原生窗口内的已启用监听祖先各传播一次（[硬件按键](./keyboard.md#自定义视图的硬件按键)）。 |
+| `captureKeys` | `.capture_keys(..)` | `"none" \| "all" \| readonly string[]` | `"none"` | 该视图或聚焦后代在原生默认行为之前消费的按键：规范的按键序列，如 `["mod+k", "escape"]`。`defaultPrevented` 报告该决定；应用快捷键优先，原生输入框保留用于编辑的按键（[硬件按键](./keyboard.md#自定义视图的硬件按键)）。 |
 
 ```rust tabs
 view()
@@ -375,6 +445,40 @@ view().on_press(open_page).child(
 | `testID` | `.test_id(id)` | `string` | UI 测试使用的标识（在 Android 上是视图的 resource id）。 |
 | `key` | `.key(key)` | `string` | 元素在兄弟元素之间的标识。 |
 
+### 页面的标记
+
+在 Web 上，每个视图都是一个 HTML 元素，即它的属性所表明的元素，让搜索引擎和屏幕阅读器看到页面的标题、段落、链接和地标区域；布局、样式和事件仍是视图自己的。其他平台照常绘制视图。
+
+| 视图是什么 | Web 上的元素 |
+|---|---|
+| `role="header"`，`accessibilityLevel` 为 1 到 6（Rust 中为 `.role(AccessibilityRole::Header)`、`.accessibility_level(n)`） | `h1` … `h6`（没有级别时为 `h2`） |
+| 带 `href` 的 [`Link`](./link.md) | 指向 `href` 的 `a` |
+| `web={{ element }}`（Rust 中为 `.web_element(WebElement::P)`） | 它指定的元素：`"p"`、`"nav"`、`"header"`、`"footer"`、`"main"`、`"article"`、`"section"`、`"aside"`、`"ul"`、`"ol"`、`"li"`、`"strong"`、`"em"`、`"blockquote"`、`"figure"`、`"figcaption"`、`"time"`、`"address"`；优先于 `role` |
+| 其他 | `div` |
+
+链接的按压归 `Link`：普通点击触发它的 `onOpen`（配合 `openWith="app"`，应用照常导航）；爬虫跟随 `href`，按住修饰键点击或用鼠标中键点击时像浏览器链接一样打开它。
+
+```rust tabs
+use nsh_base::{LinkOpenWith, link};
+use nsh_core::{WebElement, prelude::*};
+
+link()
+    .href("/notes/q3-earnings")
+    .open_with(LinkOpenWith::App)
+    .on_open(move |_: &SharedString| routes.update(|r| r.push(Route::Note("q3-earnings".into()))))
+    .child(text("Q3 earnings").role(AccessibilityRole::Header).accessibility_level(2))
+    .child(text("Revenue grew 12%.").web_element(WebElement::P))
+```
+
+```tsx tabs
+<Link href="/notes/q3-earnings" openWith="app" onOpen={() => nav.push({ name: "note", slug: "q3-earnings" })}>
+  <Text role="header" accessibilityLevel={2}>Q3 earnings</Text>
+  <Text web={{ element: "p" }}>Revenue grew 12%.</Text>
+</Link>
+```
+
+[Web](../docs/web.md#搜索引擎) 展示了用这种方式构建的完整站点。
+
 ### 驱动动画值的手势
 
 这些属性把手势绑定到[原生动画值](../modules/nsh.md#animation)，值在 UI 线程上变化，每帧都不经过应用代码。参见[触摸与手势](../docs/touch-and-gestures.md)。
@@ -412,9 +516,13 @@ stopPropagation() }`）；`…ShouldSetResponder` 回调还会收到 `gestureSta
 | `accessible` | `.accessible(..)` | `boolean` | 视图对辅助技术而言是一个整体元素，子元素不再单独暴露。 |
 | `accessibilityLabel` | `.label(..)` | `string` | 屏幕阅读器朗读的内容。没有标签的视图会朗读其中的文本。 |
 | `accessibilityHint` | `.hint(..)` | `string` | 激活该元素会发生什么。 |
+| `accessibilityDescription` | `.accessibility_description(..)` | `string` | 名字之外对元素的说明，在名字之后朗读（对话框的说明文字）。 |
 | `role` | `.role(AccessibilityRole::Button)` | `AccessibilityRole` | 元素是什么（`"button"`、`"header"`、`"link"`、`"switch"` 等）。 |
 | `accessibilityState` | `.accessibility_state(..)` | `{ disabled?, selected?, checked?, busy?, expanded?, pressed?, current? }` | 辅助技术报告的状态（`checked` 和 `pressed` 可以是 `"mixed"`；`current` 为 `true` 或 `"page"`、`"step"`、`"location"`、`"date"`、`"time"`）。 |
 | `accessibilityLevel` | `.accessibility_level(..)` | `number` | 标题的级别（1 为最高），树节点的深度（顶层为 1）。 |
+| `accessibilityActiveDescendant` | `.accessibility_active_descendant(..)` | `ViewRef \| null` | 获得焦点的元素里当前活动的那一项：组合框高亮的选项、列表的光标行（[无障碍](../docs/accessibility.md#获得焦点的元素里的活动项)）。 |
+| `accessibilityControls` | `.accessibility_controls(..)` | `ViewRef \| null` | 内容由这个元素控制的元素：组合框的列表。 |
+| `accessibilityDescribedBy` | `.accessibility_described_by(..)` | `ViewRef \| null` | 文字用来说明这个元素的元素：输入框的错误提示行（[无障碍](../docs/accessibility.md#说明另一个元素的元素)）。 |
 | `accessibilityValue` | `.accessibility_value(..)` | `{ min?, max?, now?, text? }` | 范围类或文本类元素的值。 |
 | `accessibilityElementsHidden` | | `boolean` | 对辅助技术隐藏该视图及其子树。 |
 | `importantForAccessibility` | | `"auto" \| "yes" \| "no" \| "no-hide-descendants"` | 是否暴露该视图。 |
@@ -475,12 +583,15 @@ view()
 |---|---|---|---|
 | `focus()` / `blur()` | `focus()` / `blur()` | `ViewRef` | 让 `<Input>` 获取焦点（弹出键盘），或让可按下的视图获得键盘焦点 / 失去焦点。 |
 | `measure()` | `measure()` | `ViewRef` | [视图的位置](../docs/touch-and-gestures.md)。 |
+| `reveal({ vertical?, horizontal?, animated? })` | `reveal(options)` | `ViewRef` | [滚动视图外围的滚动视图](../docs/scrolling.md#把视图滚到可见处)，让它显示出来。 |
 | `setSelection(start, end?)` | `set_selection(start, end)` | `InputRef` | 选中 `start..end`（UTF-16 单位）；省略 `end` 时为光标。 |
+| `insertText(text)` | `insert_text(text)` | `InputRef` | 以用户编辑的方式用 `text` 替换选区，是撤销历史中的一步（Linux、Web、无头测试）。 |
 | `scrollTo({ x?, y?, animated? })` | `scroll_to(point, animated)` | `ScrollRef`、`ListRef` | 滚动到某个偏移量。 |
 | `zoomTo({ scale, x?, y?, animated? })` | `zoom_to(scale, center, animated)` | `ScrollRef`（可缩放的 `<Scroll>`） | 围绕内容中的某点缩放到 `scale`。 |
 | `scrollToOffset({ offset, animated? })` | `scroll_to_offset(offset, animated)` | `ListRef` | 沿列表方向滚动到某个偏移量。 |
 | `scrollToIndex({ index, animated?, viewPosition?, viewOffset? })` | `scroll_to_index(index, position, offset, animated)` | `ListRef` | 把某一项滚动到可见区域。 |
 | `scrollToEnd({ animated? })` | `scroll_to_end(animated)` | `ScrollRef`、`ListRef` | 滚动到内容末尾。 |
+| `measureScrollPosition()` | `measure_scroll_position()` | `ListRef` | [视口起点落在哪一行](../docs/lists.md#keeping-a-reading-position)。 |
 | `reload()`、`goBack()`、`goForward()`、`stopLoading()`、`injectJavaScript(script)`、`postMessage(data)` | `reload()`、`go_back()`、`go_forward()`、`stop_loading()`、`inject_java_script(..)`、`post_message(..)` | `WebViewRef` | 控制页面。 |
 | `seek(seconds)` | `seek(seconds)` | `VideoRef` | 跳转到某个时间点。 |
 | `command(name, args?)` | `command(name, args)` | `NativeComponentRef` | 调用已注册原生组件的命令（[`nativeComponent`](../modules/nsh.md#nativecomponent-and-nativemodule)）。 |

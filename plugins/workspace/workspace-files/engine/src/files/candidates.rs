@@ -17,12 +17,16 @@
  * under the License.
  */
 
-//! Composer path candidates through the original workspace directory capability.
+//! Composer path candidates and bounded text-file traversal through the original workspace directory capability.
 use super::*;
 use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
+use gix::bstr::io::BufReadExt;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use std::{io::Read, sync::Arc};
+use std::{
+    io::{BufReader, Read},
+    sync::Arc,
+};
 
 impl Directory {
     /// Browses direct entries for an empty query, otherwise searches descendant file paths.
@@ -42,10 +46,91 @@ impl Directory {
         cancel: &AtomicBool,
         emit: &mut impl FnMut(FileEntry) -> io::Result<()>,
     ) -> io::Result<()> {
+        let query = query.trim().to_lowercase();
+        let descend = !query.is_empty();
+        self.walk_entries(descend, true, cancel, |_dir, _rel, bytes, kind| {
+            // Display matching never becomes the identity of a non-UTF-8 path.
+            if bytes.to_str_lossy().to_lowercase().contains(&query) {
+                let path =
+                    WorkspacePath::from_bytes(bytes).map_err(|_| error("files_invalid_path"))?;
+                emit(FileEntry { path, kind })?;
+            }
+            Ok(true)
+        })
+    }
+
+    /// Visits regular UTF-8 files under the workspace while honoring ignore rules and capability boundaries.
+    pub(crate) fn visit_text_files(
+        &self,
+        max_file_bytes: u64,
+        max_files: usize,
+        cancel: &AtomicBool,
+        mut visit: impl FnMut(WorkspacePath, String, String) -> io::Result<bool>,
+    ) -> io::Result<()> {
+        let mut visited = 0_usize;
+        self.walk_entries(true, false, cancel, |directory, relative, bytes, kind| {
+            if kind != FileKind::File {
+                return Ok(true);
+            }
+            if visited >= max_files {
+                return Ok(false);
+            }
+            let Ok(display) = std::str::from_utf8(bytes).map(str::to_owned) else {
+                return Ok(true);
+            };
+            if skip_extension(&display) {
+                return Ok(true);
+            }
+            let Some(name) = relative.file_name() else {
+                return Ok(true);
+            };
+            let mut options = crate::workspace::options();
+            options.read(true);
+            let mut file = match directory.open_with(name, &options) {
+                Ok(file) => file,
+                Err(err) if disappeared(&err) => return Ok(true),
+                Err(err) => return Err(err),
+            };
+            let metadata = match file.metadata() {
+                Ok(metadata) => metadata,
+                Err(err) if disappeared(&err) => return Ok(true),
+                Err(err) => return Err(err),
+            };
+            if !metadata.is_file() || metadata.len() == 0 || metadata.len() > max_file_bytes {
+                return Ok(true);
+            }
+            let mut raw = Vec::with_capacity(metadata.len() as usize);
+            if (&mut file)
+                .take(max_file_bytes + 1)
+                .read_to_end(&mut raw)
+                .is_err()
+                || raw.len() as u64 > max_file_bytes
+                || raw.contains(&0)
+            {
+                return Ok(true);
+            }
+            let Ok(content) = String::from_utf8(raw) else {
+                return Ok(true);
+            };
+            let Ok(ws_path) = WorkspacePath::from_bytes(bytes) else {
+                return Ok(true);
+            };
+            visited += 1;
+            visit(ws_path, display, content)
+        })
+    }
+
+    fn walk_entries(
+        &self,
+        descend_directories: bool,
+        include_symlinks: bool,
+        cancel: &AtomicBool,
+        mut on_entry: impl FnMut(&Dir, &Path, &[u8], FileKind) -> io::Result<bool>,
+    ) -> io::Result<()> {
         enum Work {
             Enter(Arc<Dir>, PathBuf),
             Child(Arc<Dir>, PathBuf, Vec<u8>, FileKind),
-            Leave,
+            Leave([usize; 4]),
         }
         interrupted(cancel)?;
         self.validate_inner()?;
@@ -54,37 +139,39 @@ impl Directory {
             Arc::new(target.directory.try_clone()?),
             self.relative.clone(),
         )];
-        let mut rules = Vec::new();
+        let mut rules = [const { Vec::new() }; 4];
         for anchor in &self.anchors[..self.anchors.len() - 1] {
             let relative = anchor
                 .path
                 .strip_prefix(&self.anchors[0].path)
                 .map_err(|_| error("files_changed"))?;
-            rules.push(directory_rules(&anchor.directory, relative, cancel)?);
+            load_directory_rules(&mut rules, &anchor.directory, relative, cancel)?;
         }
-        let query = query.trim().to_lowercase();
         while let Some(work) = pending.pop() {
             interrupted(cancel)?;
             match work {
-                Work::Leave => {
-                    rules.pop();
+                Work::Leave(lengths) => {
+                    for (source, len) in rules.iter_mut().zip(lengths) {
+                        source.truncate(len);
+                    }
                 }
                 Work::Enter(directory, relative) => {
                     let entries = match directory.entries() {
                         Ok(entries) => entries,
-                        Err(error) if disappeared(&error) => continue,
-                        Err(error) => return Err(error),
+                        Err(err) if disappeared(&err) => continue,
+                        Err(err) => return Err(err),
                     };
-                    rules.push(directory_rules(&directory, &relative, cancel)?);
-                    pending.push(Work::Leave);
+                    let lengths = rules.each_ref().map(Vec::len);
+                    load_directory_rules(&mut rules, &directory, &relative, cancel)?;
+                    pending.push(Work::Leave(lengths));
                     let absolute = self.anchors[0].path.join(&relative);
                     let mut children = Vec::new();
                     for entry in entries {
                         interrupted(cancel)?;
                         let entry = match entry {
                             Ok(entry) => entry,
-                            Err(error) if disappeared(&error) => continue,
-                            Err(error) => return Err(error),
+                            Err(err) if disappeared(&err) => continue,
+                            Err(err) => return Err(err),
                         };
                         let name = entry.file_name();
                         if self.excluded_child(&absolute, &name) {
@@ -92,14 +179,14 @@ impl Directory {
                         }
                         let kind = match entry.file_type() {
                             Ok(kind) => kind,
-                            Err(error) if disappeared(&error) => continue,
-                            Err(error) => return Err(error),
+                            Err(err) if disappeared(&err) => continue,
+                            Err(err) => return Err(err),
                         };
                         let kind = if kind.is_dir() {
                             FileKind::Directory
                         } else if kind.is_file() {
                             FileKind::File
-                        } else if kind.is_symlink() {
+                        } else if include_symlinks && kind.is_symlink() {
                             FileKind::Symlink
                         } else {
                             continue;
@@ -120,23 +207,19 @@ impl Directory {
                         pending.push(Work::Child(directory.clone(), path, bytes, kind));
                     }
                 }
-                Work::Child(directory, relative, _, FileKind::Directory) if !query.is_empty() => {
+                Work::Child(directory, relative, _, FileKind::Directory) if descend_directories => {
                     let name = relative.file_name().expect("directory entry name");
                     let child = match directory.open_dir_nofollow(name) {
                         Ok(child) => child,
-                        Err(error) if disappeared(&error) => continue,
-                        Err(error) => return Err(error),
+                        Err(err) if disappeared(&err) => continue,
+                        Err(err) => return Err(err),
                     };
                     pending.push(Work::Enter(Arc::new(child), relative));
                 }
-                Work::Child(_, _, bytes, kind) => {
-                    // Display matching never becomes the identity of a non-UTF-8 path.
-                    if !bytes.to_str_lossy().to_lowercase().contains(&query) {
-                        continue;
+                Work::Child(directory, relative, bytes, kind) => {
+                    if !on_entry(&directory, &relative, &bytes, kind)? {
+                        break;
                     }
-                    let path = WorkspacePath::from_bytes(&bytes)
-                        .map_err(|_| error("files_invalid_path"))?;
-                    emit(FileEntry { path, kind })?;
                 }
             }
         }
@@ -146,17 +229,92 @@ impl Directory {
     }
 }
 
-fn directory_rules(
+fn skip_extension(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".min.js")
+        || lower.ends_with(".min.css")
+        || lower.ends_with(".map")
+        || lower.ends_with(".lock")
+        || lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".gif")
+        || lower.ends_with(".webp")
+        || lower.ends_with(".ico")
+        || lower.ends_with(".pdf")
+        || lower.ends_with(".woff")
+        || lower.ends_with(".woff2")
+        || lower.ends_with(".ttf")
+        || lower.ends_with(".wasm")
+        || lower.ends_with(".sqlite")
+        || lower.ends_with(".db")
+}
+
+fn load_directory_rules(
+    rules: &mut [Vec<Gitignore>; 4],
     directory: &Dir,
     relative: &Path,
     cancel: &AtomicBool,
-) -> io::Result<[Gitignore; 4]> {
-    Ok([
-        read_rules(directory, relative, ".rgignore", cancel)?,
-        read_rules(directory, relative, ".ignore", cancel)?,
-        read_rules(directory, relative, ".gitignore", cancel)?,
-        git_exclude(directory, relative, cancel)?,
-    ])
+) -> io::Result<()> {
+    let files = [
+        Some(".rgignore"),
+        Some(".ignore"),
+        Some(".gitignore"),
+        relative
+            .as_os_str()
+            .is_empty()
+            .then_some(".git/info/exclude"),
+    ];
+    for (source, name) in rules.iter_mut().zip(files) {
+        if let Some(name) = name
+            && let Some(matcher) = read_rules(directory, relative, Path::new(name), cancel)?
+        {
+            source.push(matcher);
+        }
+    }
+    Ok(())
+}
+
+fn read_rules(
+    directory: &Dir,
+    root: &Path,
+    name: &Path,
+    cancel: &AtomicBool,
+) -> io::Result<Option<Gitignore>> {
+    interrupted(cancel)?;
+    let current;
+    let parent = match name.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => {
+            current = match directory.open_dir_nofollow(parent) {
+                Ok(directory) => directory,
+                Err(_) => return Ok(None),
+            };
+            &current
+        }
+        _ => directory,
+    };
+    let Some(file_name) = name.file_name() else {
+        return Ok(None);
+    };
+    let mut options = crate::workspace::options();
+    options.read(true);
+    let file = match parent.open_with(file_name, &options) {
+        Ok(file) => file,
+        Err(_) => return Ok(None),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    let mut builder = GitignoreBuilder::new("");
+    BufReader::new(file.take(metadata.len())).for_byte_line(|line| {
+        interrupted(cancel)?;
+        if let Ok(text) = std::str::from_utf8(line) {
+            let _ = builder.add_line(Some(root.to_path_buf()), text);
+        }
+        Ok(true)
+    })?;
+    Ok(builder.build().ok())
 }
 
 fn disappeared(error: &io::Error) -> bool {
@@ -166,86 +324,15 @@ fn disappeared(error: &io::Error) -> bool {
     )
 }
 
-fn excluded(rules: &[[Gitignore; 4]], path: &Path, directory: bool) -> bool {
-    // Keep the same rule priority as Grep while allowing a nested negation to win.
-    for priority in 0..4 {
-        for layer in rules.iter().rev() {
-            let matched = layer[priority].matched_path_or_any_parents(path, directory);
+fn excluded(rules: &[Vec<Gitignore>; 4], path: &Path, is_dir: bool) -> bool {
+    // Source precedence wins across directories. Within a source, the nearest file wins.
+    for source in rules {
+        for rule in source.iter().rev() {
+            let matched = rule.matched(path, is_dir);
             if !matched.is_none() {
                 return matched.is_ignore();
             }
         }
     }
     false
-}
-
-fn git_exclude(directory: &Dir, relative: &Path, cancel: &AtomicBool) -> io::Result<Gitignore> {
-    interrupted(cancel)?;
-    let git = match directory.symlink_metadata(".git") {
-        Ok(metadata) if metadata.is_dir() => match directory.open_dir_nofollow(".git") {
-            Ok(directory) => directory,
-            Err(error) if disappeared(&error) => return Ok(Gitignore::empty()),
-            Err(error) => return Err(error),
-        },
-        Ok(_) => return Ok(Gitignore::empty()),
-        Err(error) if disappeared(&error) => return Ok(Gitignore::empty()),
-        Err(error) => return Err(error),
-    };
-    let info = match git.symlink_metadata("info") {
-        Ok(metadata) if metadata.is_dir() => match git.open_dir_nofollow("info") {
-            Ok(directory) => directory,
-            Err(error) if disappeared(&error) => return Ok(Gitignore::empty()),
-            Err(error) => return Err(error),
-        },
-        Ok(_) => return Ok(Gitignore::empty()),
-        Err(error) if disappeared(&error) => return Ok(Gitignore::empty()),
-        Err(error) => return Err(error),
-    };
-    read_rules(&info, relative, "exclude", cancel)
-}
-
-fn read_rules(
-    directory: &Dir,
-    relative: &Path,
-    name: &str,
-    cancel: &AtomicBool,
-) -> io::Result<Gitignore> {
-    interrupted(cancel)?;
-    match directory.symlink_metadata(name) {
-        Ok(metadata) if metadata.is_file() => {}
-        Ok(_) => return Ok(Gitignore::empty()),
-        Err(error) if disappeared(&error) => return Ok(Gitignore::empty()),
-        Err(error) => return Err(error),
-    }
-    let mut options = crate::workspace::options();
-    options.read(true);
-    let mut file = match directory.open_with(name, &options) {
-        Ok(file) => file,
-        Err(error) if disappeared(&error) => return Ok(Gitignore::empty()),
-        Err(error) => return Err(error),
-    };
-    let metadata = file.metadata()?;
-    if !metadata.is_file() {
-        return Err(error("files_unavailable"));
-    }
-    let mut bytes = Vec::new();
-    let mut buffer = [0; 8192];
-    let mut reader = (&mut file).take(metadata.len());
-    while reader.limit() != 0 {
-        interrupted(cancel)?;
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            return Err(error("files_changed"));
-        }
-        bytes.extend_from_slice(&buffer[..count]);
-    }
-    let mut builder = GitignoreBuilder::new(relative);
-    let source = relative.join(name);
-    for line in String::from_utf8_lossy(&bytes).lines() {
-        interrupted(cancel)?;
-        builder
-            .add_line(Some(source.clone()), line)
-            .map_err(io::Error::other)?;
-    }
-    builder.build().map_err(io::Error::other)
 }

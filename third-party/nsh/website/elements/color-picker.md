@@ -272,7 +272,7 @@ color and its `formatted` text.
 
 A slider's thumb is centered on the track's ends at the channel's ends. Padding on the slider of half the thumb's
 width (`h-6 justify-center px-2.5` around an `h-3` track) keeps the whole thumb inside the slider, where it takes
-presses at both ends. States the parts show: a thumb's `active:` while it is dragged and `focus:` with the keyboard
+presses at both ends. States the parts show: a thumb's `active:` while it is dragged and `focus-visible:` with the keyboard
 focus, a swatch's `selected:`, and every part's `disabled:`.
 
 ## Keyboard

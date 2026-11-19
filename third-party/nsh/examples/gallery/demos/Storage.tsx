@@ -2,7 +2,7 @@ import { signal, Text, View } from "nsh";
 import { AlertDialog, Input } from "nsh/base";
 import { Storage } from "nsh";
 import { Icon } from "../icons";
-import { Badge, Button, Caption, Card, colors, DemoPage, Figure, finish, mono, radius, Row } from "../ui";
+import { Badge, Button, Caption, Card, colors, DemoPage, Figure, finish, mono, plural, radius, Row } from "../ui";
 
 const LAUNCHES = "launches";
 const NOTE = "note";
@@ -104,7 +104,7 @@ export function StorageDemo() {
               paddingBottom: 12,
               fontSize: 15,
               color: colors.text,
-              placeholderColor: colors.faint,
+              placeholderColor: colors.muted,
               selectionColor: colors.accent,
             }}
           />
@@ -114,7 +114,7 @@ export function StorageDemo() {
             <Icon name="check" size={14} tint={colors.up} />
           </If>
           <Text style={{ flex: 1, fontSize: 12, color: saved() === "failed" ? colors.danger : saved() === "saved" ? colors.up : colors.faint }}>{hint()}</Text>
-          <Text style={{ fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>{`${note().length} chars`}</Text>
+          <Text style={{ fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>{plural(note().length, "char")}</Text>
         </View>
       </Card>
     );
@@ -132,7 +132,7 @@ export function StorageDemo() {
                   <Text style={{ numberOfLines: 1, flex: 1, fontSize: 14, color: colors.text, fontFamily: mono }}>
                     {entry().key}
                   </Text>
-                  <Text style={{ fontSize: 13, color: colors.muted, fontVariant: ["tabular-nums"] }}>{`${entry().length} chars`}</Text>
+                  <Text style={{ fontSize: 13, color: colors.muted, fontVariant: ["tabular-nums"] }}>{plural(entry().length, "char")}</Text>
                 </Row>
               )}
             </Each>

@@ -53,8 +53,8 @@ function decisionSummary(answer: SessionApprovalAnswer): string {
         scope:
           answer.decision.scope === 'once'
             ? tr('This call')
-            : answer.decision.scope === 'turn'
-              ? tr('This turn')
+            : answer.decision.scope === 'run'
+              ? tr('This run')
               : tr('This session'),
       });
     case 'client_capability':
@@ -97,7 +97,7 @@ export function SessionApprovalRequest(props: {
       <If when={capability}>
         <CapabilityRequest
           request={capability!}
-          sessionId={props.child.sessionId}
+          sessionId={props.child.execution.sessionId}
           showSessionId={false}
         />
       </If>

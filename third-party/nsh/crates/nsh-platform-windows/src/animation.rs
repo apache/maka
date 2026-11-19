@@ -77,8 +77,11 @@ impl UiAnimation {
                 if moved.is_some() {
                     crate::text_input::animated(view);
                 }
-                for &(k, value) in canvas {
-                    crate::canvas::set_arg(view, k, value);
+                // Only the area the changed slots paint is drawn again.
+                match crate::canvas::set_args(view, canvas) {
+                    nsh_core::canvas::Damage::Rect(rect) => view.changed_rect(rect),
+                    nsh_core::canvas::Damage::All => view.changed(),
+                    nsh_core::canvas::Damage::None => {}
                 }
                 if !canvas.is_empty() {
                     crate::shader::set_args(view, canvas);

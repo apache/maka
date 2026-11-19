@@ -10,6 +10,8 @@ export type SwitchSize = "small" | "regular";
 
 /** The props `switchLook` gives a `Switch`. */
 export interface SwitchLook {
+  /** Mirrors the track right to left, so the knob rests at the start there. */
+  readonly trackClass: string;
   readonly trackStyle: ViewStyle;
   readonly thumbStyle: ViewStyle;
 }
@@ -42,6 +44,10 @@ export function switchLook(on: () => boolean, size: SwitchSize = "regular"): Swi
   const t = follow(() => (on() ? 1 : 0), motion.move);
   const x = t.interpolate({ inputRange: [0, 1], outputRange: [0, knobTravel(g)] });
   return {
+    // The knob sits at the track's physical left (`left`, which keeps its
+    // side) and travels right; right to left the whole track is mirrored, so
+    // it rests at the start and springs toward the end in either direction.
+    trackClass: "rtl:-scale-x-100",
     get trackStyle(): ViewStyle {
       return {
         width: g.width,
@@ -58,6 +64,9 @@ export function switchLook(on: () => boolean, size: SwitchSize = "regular"): Swi
     },
     get thumbStyle(): ViewStyle {
       return {
+        position: "absolute",
+        left: g.inset,
+        top: g.inset,
         width: g.knob,
         height: g.knob,
         borderRadius: g.knob / 2,

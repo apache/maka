@@ -43,19 +43,17 @@ impl Foreground {
         if active.cancel.is_cancelled() {
             return Err("Prompt cancelled before admission".into());
         }
-        let result: SendResult = client.mutate("agent", "send", json!({"sessionId":session.id,"message":content.text,"attachments":content.attachments,"backend":{"kind":"model","connectionId":model.connection_id,"modelId":model.model_id,"thinkingLevel":preferences.thinking}}), Attachments::new()).await?;
-        let (target, message) = match result {
-            SendResult::Started { invocation_id, .. } => {
-                (WorkTarget::Invocation { invocation_id }, None)
-            }
-            SendResult::Queued { message_id, .. } => (
-                WorkTarget::Message {
-                    message_id: message_id.clone(),
-                },
-                Some(message_id),
-            ),
+        let result: SendResult = client.mutate("agent", "send", json!({"sessionId":session.id,"delivery":"steer","message":content.text,"attachments":content.attachments,"backend":{"kind":"model","connectionId":model.connection_id,"modelId":model.model_id,"thinkingLevel":preferences.thinking}}), Attachments::new()).await?;
+        let (started, message_id) = match result {
+            SendResult::Started {
+                run_id, message_id, ..
+            } => (Some(run_id), message_id),
+            SendResult::Queued { message_id, .. } => (None, message_id),
             SendResult::Rejected { .. } | SendResult::NotYourWorker { .. } => {
                 return Err("Host rejected Agent input".into());
+            }
+            SendResult::Posted { .. } => {
+                return Err("ACP prompts require an Agent session".into());
             }
         };
         let mut foreground = Self {
@@ -63,7 +61,7 @@ impl Foreground {
             peer,
             session,
             active,
-            target,
+            message_id: message_id.clone(),
             work: WorkObservation::Pending,
             projection: Projection::default(),
             capabilities,
@@ -75,13 +73,9 @@ impl Foreground {
         };
         let result = async {
             foreground.refresh().await?;
-            if let Some(message) = message {
-                return Ok(message);
-            }
-            let execution = foreground
-                .work
-                .execution()
-                .ok_or("Accepted invocation has no execution receipt")?;
+            let Some(run) = started else {
+                return Ok(message_id);
+            };
             foreground.user = history::read(
                 &foreground.client,
                 &foreground.session.id,
@@ -92,14 +86,15 @@ impl Foreground {
             .into_iter()
             .filter(|chunk| {
                 chunk.role == maka_agent_ports::session::history::Role::User
-                    && chunk.turn_id == execution.turn_id
+                    && chunk.message_id.as_deref() == Some(message_id.as_str())
+                    && chunk.run_id == Some(run)
             })
             .collect();
             foreground
                 .user
                 .first()
-                .map(|chunk| chunk.message_id.clone())
-                .ok_or_else(|| "Accepted invocation has no durable user message".into())
+                .and_then(|chunk| chunk.message_id.clone())
+                .ok_or_else(|| "Accepted Run has no durable user message".into())
         }
         .await;
         match result {

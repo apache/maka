@@ -17,75 +17,89 @@
  * under the License.
  */
 
-import { inputAction, platform, Text, View } from 'nsh';
-import type { ModelSettingsOwner } from './settings';
+import { inputAction } from 'nsh';
+import type { ExternalAgentSettingsOwner } from './externalAgentSettingsState';
+import { settingsModelKey, type ModelSettingsOwner } from './settings';
 import { ConnectionAdvanced, ConnectionForm } from './ConnectionForm';
+import { ExternalAgentConfirmation, ExternalAgentSection } from './ExternalAgentSettings';
 import { ProviderPicker } from './ProviderPicker';
 import { ConnectionModel } from './ConnectionModel';
 import { LoadingIndicator } from './Loading';
 import { tr } from './locale';
+import { useHost } from './host';
+import { UsageLimits } from './UsageLimits';
 import {
   SettingsBody,
   SettingsConfirm,
   SettingsDiscard,
   SettingsLede,
+  SettingsMonogram,
   SettingsProblem,
   SettingsRow,
   SettingsSearch,
   SettingsSection,
   SettingsSelect,
 } from './SettingsPage';
-import { C } from './ui';
 
-const choiceKey = (selection: { connectionId: string; modelId: string }) =>
-  JSON.stringify([selection.connectionId, selection.modelId]);
-
-export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
+export function ConnectionSettings(props: {
+  owner: ModelSettingsOwner;
+  externalAgents?: ExternalAgentSettingsOwner;
+}) {
   const owner = props.owner;
   return (
-    <If when={!owner.discardTarget()} else={<Discard owner={owner} />}>
-      <If when={!owner.confirmation()} else={<Removal owner={owner} />}>
-        <If when={owner.page() === 'connections'}>
-          <ConnectionList owner={owner} />
-        </If>
-        <If when={owner.page() === 'providers'}>
-          <ProviderPicker owner={owner} />
-        </If>
-        <If when={owner.page() === 'connection' && owner.editor()}>
-          <ConnectionForm settings={owner} />
-        </If>
-        <If when={owner.page() === 'advanced' && owner.editor()}>
-          <ConnectionAdvanced settings={owner} />
-        </If>
-        <If when={owner.page() === 'model' && owner.editor() && owner.model()}>
-          <ConnectionModel settings={owner} />
+    <If
+      when={!props.externalAgents?.confirmation()}
+      else={<ExternalAgentConfirmation owner={props.externalAgents!} />}
+    >
+      <If when={!owner.discardTarget()} else={<Discard owner={owner} />}>
+        <If when={!owner.confirmation()} else={<Removal owner={owner} />}>
+          <If when={owner.page() === 'connections'}>
+            <ConnectionList owner={owner} externalAgents={props.externalAgents} />
+          </If>
+          <If when={owner.page() === 'providers'}>
+            <ProviderPicker owner={owner} />
+          </If>
+          <If when={owner.page() === 'connection' && owner.editor()}>
+            <ConnectionForm settings={owner} />
+          </If>
+          <If when={owner.page() === 'advanced' && owner.editor()}>
+            <ConnectionAdvanced settings={owner} />
+          </If>
+          <If when={owner.page() === 'model' && owner.editor() && owner.model()}>
+            <ConnectionModel settings={owner} />
+          </If>
         </If>
       </If>
     </If>
   );
 }
 
-function ConnectionList(props: { owner: ModelSettingsOwner }) {
+function ConnectionList(props: {
+  owner: ModelSettingsOwner;
+  externalAgents?: ExternalAgentSettingsOwner;
+}) {
+  const host = useHost();
   const owner = props.owner;
   const unavailable = () => owner.busy() || !owner.pendingKnown() || owner.pending().length > 0;
   const current = () => {
     const model = owner.defaultModel();
     return model?.kind === 'ready'
-      ? choiceKey(model.choice.selection)
+      ? settingsModelKey(model.choice.selection)
       : model?.kind === 'unavailable'
-        ? choiceKey(model.target)
+        ? settingsModelKey(model.target)
         : '';
   };
   const choices = () => [
     { value: '', title: tr('None') },
     ...owner.modelChoices().map((choice) => ({
-      value: choiceKey(choice.selection),
+      value: settingsModelKey(choice.selection),
       title: choice.label,
       group: choice.connectionName,
     })),
   ];
   const empty = () =>
     !owner.loading() &&
+    !props.externalAgents?.loading() &&
     !owner.error() &&
     !owner.connections().length &&
     !owner.connectionQuery().trim();
@@ -108,7 +122,7 @@ function ConnectionList(props: { owner: ModelSettingsOwner }) {
             change={(value) => {
               const choice = owner
                 .modelChoices()
-                .find((item) => choiceKey(item.selection) === value);
+                .find((item) => settingsModelKey(item.selection) === value);
               void owner.setDefault(choice?.selection ?? null);
             }}
           />
@@ -137,7 +151,15 @@ function ConnectionList(props: { owner: ModelSettingsOwner }) {
                 status={
                   item().enabled && item().enabledModelCount === 0 ? tr('No models') : undefined
                 }
-                leading={<Monogram name={item().name} muted={!item().enabled} />}
+                leading={<SettingsMonogram name={item().name} muted={!item().enabled} />}
+                detail={
+                  <If when={item().enabled && item().usageLimits}>
+                    <UsageLimits
+                      revision={item().basis.revision}
+                      query={() => host.query('settings', 'connectionUsageLimits', item().basis)}
+                    />
+                  </If>
+                }
                 opens
                 disabled={unavailable() || !item().editable}
                 onPress={inputAction(owner.openConnection, item().basis)}
@@ -157,39 +179,11 @@ function ConnectionList(props: { owner: ModelSettingsOwner }) {
           </If>
         </SettingsSection>
       </If>
+      <If when={props.externalAgents}>
+        <ExternalAgentSection owner={props.externalAgents!} query={owner.connectionQuery()} />
+      </If>
       <Status owner={owner} retry={() => void owner.loadConnections()} />
     </SettingsBody>
-  );
-}
-
-function Monogram(props: { name: string; muted: boolean }) {
-  return (
-    <If when={platform.idiom !== 'terminal'}>
-      <View
-        style={[
-          {
-            width: 28,
-            height: 28,
-            borderRadius: 8,
-            backgroundColor: C.raised,
-            alignItems: 'center',
-            justifyContent: 'center',
-          },
-          { pointerEvents: 'none' },
-        ]}
-      >
-        <Text
-          style={{
-            fontSize: 13,
-            lineHeight: 16,
-            fontWeight: '600',
-            color: props.muted ? C.muted : C.secondary,
-          }}
-        >
-          {Array.from(props.name.trim())[0]?.toUpperCase() ?? '?'}
-        </Text>
-      </View>
-    </If>
   );
 }
 

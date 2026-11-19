@@ -332,6 +332,18 @@ impl ModuleCx {
         self.actions.push(Action::BuiltInScrollbars(source, theme));
     }
 
+    /// Runs `f` on the platform's main thread after the call, as
+    /// [`run_on_main_thread`](super::run_on_main_thread) does: `spawn` a task
+    /// that awaits the result, or drop it.
+    pub fn run_on_main_thread<R: Send + 'static>(
+        &mut self,
+        f: impl FnOnce() -> R + Send + 'static,
+    ) -> crate::main_thread::OnMainThread<R> {
+        let (task, result) = crate::main_thread::task(f);
+        self.actions.push(Action::MainThread(task));
+        result
+    }
+
     /// Unfocuses the focused input, hiding the software keyboard.
     pub fn dismiss_keyboard(&mut self) {
         self.actions.push(Action::Command(ROOT_ID, Command::Blur));
@@ -357,10 +369,21 @@ impl ModuleCx {
         self.actions.push(super::services::announce(message.into()));
     }
 
+    /// The device plays `haptic` (TS: `Haptics` of `nsh/mobile`).
+    pub fn haptic(&mut self, haptic: crate::Haptic) {
+        self.actions.push(super::services::haptic(haptic));
+    }
+
     /// Puts `text` on the system clipboard (TS: `Clipboard.writeText`).
     pub fn set_clipboard(&mut self, text: impl Into<String>) {
         self.actions
             .push(super::services::set_clipboard(text.into()));
+    }
+
+    /// Puts `item`, its text and its HTML, on the system clipboard (TS:
+    /// `Clipboard.write`).
+    pub fn set_clipboard_item(&mut self, item: super::ClipboardItem) {
+        self.actions.push(super::services::set_clipboard_item(item));
     }
 
     /// Puts the image of a `data:` URI on the system clipboard (TS:

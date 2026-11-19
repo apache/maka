@@ -6,7 +6,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -19,6 +19,7 @@ use jni::{
 };
 use nsh_core::{
     EventKind, EventPayload, MountBatch, MountItem, NodeId, PayloadValue, Points, Size,
+    canvas::render::RenderFailure,
     geometry::{DevicePixels, point, px, size},
 };
 use nsh_engine::{
@@ -40,6 +41,8 @@ pub(crate) struct Host {
     density: Density,
     trace: bool,
     engine: Mutex<Option<Engine>>,
+    /// Fences WebView completions from engines replaced on this surface.
+    web_generation: AtomicU64,
     /// The running engine's control, for answers the sink gives itself
     /// (never locked while an engine stops, unlike `engine`).
     answers: Mutex<Option<EngineControl>>,
@@ -50,6 +53,9 @@ pub(crate) struct Host {
     /// Animation items of submitted batches, by batch number, applied on the
     /// UI thread once Java has applied that batch.
     animation_queue: Mutex<VecDeque<(u64, Vec<MountItem>)>>,
+    /// Functions the app runs on the UI thread
+    /// ([`MountSink::run_on_main_thread`]), until Java's post runs them.
+    main_thread_tasks: Mutex<VecDeque<nsh_engine::MainThreadTask>>,
     seq: AtomicU64,
     ui: Mutex<UiAnimation>,
     epoch: Instant,
@@ -58,9 +64,14 @@ pub(crate) struct Host {
     granted: Mutex<Option<nsh_engine::Capabilities>>,
     /// The VM limits of loaded apps (`NshView.setLimits`).
     limits: Mutex<nsh_engine::Limits>,
+    /// Whether scroll views make their content's native views only near
+    /// their viewport (`NshView.setContentCulling`, on by default).
+    content_culling: AtomicBool,
+    /// The embedding app's runtime for apps loaded from now on.
+    runtime: Mutex<Option<tokio::runtime::Handle>>,
     /// Where loaded apps keep their data, each in a directory named by its
-    /// id ([`EngineConfig::data_dir`]): `nsh` in the files directory.
-    pub(crate) data_dir: Option<std::path::PathBuf>,
+    /// id ([`EngineConfig::support_dir`]): `nsh` in the files directory.
+    pub(crate) support_dir: Option<std::path::PathBuf>,
     /// The directory loaded apps keep their storage in, overriding their own
     /// (`NshView.setStorageDirectory`); `None`: theirs.
     storage: Mutex<Option<std::path::PathBuf>>,
@@ -68,6 +79,10 @@ pub(crate) struct Host {
     access: Mutex<Arc<nsh_engine::Access>>,
     /// The embedding app's theme overrides (`NshView.setThemeOverrides`).
     host_tokens: Mutex<Option<nsh_engine::Tokens>>,
+    /// Links the system opened the app with (`NshView.openUrl`) before an
+    /// engine started: the next one applies them before the app's code
+    /// first runs (`UrlScheme.url()`).
+    url_schemes: Mutex<Vec<EventPayload>>,
     /// Font files the embedding app registers (`NshView.registerFont`),
     /// applied to the running app and to every app loaded later.
     fonts: Mutex<Vec<Vec<u8>>>,
@@ -85,7 +100,10 @@ pub(crate) struct Host {
     /// The embedding app's channel with the apps (`nsh/host`; Java
     /// `NshView.setParams`, `send`, `handle`).
     host: nsh_engine::HostChannel,
-    /// The app's keyboard shortcuts, matched on the UI thread.
+    /// Per-surface Rust native components (`#[native_components(android)]`).
+    pub(crate) components: Mutex<crate::component::HostComponents>,
+    /// The app's keyboard shortcuts, and the keys consumed by them or by
+    /// a capture rule, matched on the UI thread.
     pub(crate) keymap: Mutex<crate::keymap::KeymapState>,
     #[cfg(feature = "dev")]
     pub(crate) dev: Mutex<Option<crate::dev::DevSession>>,
@@ -109,8 +127,17 @@ impl Host {
         self.ui.lock().is_ok_and(|ui| ui.finishing())
     }
 
-    fn control(&self) -> Option<EngineControl> {
+    pub(crate) fn control(&self) -> Option<EngineControl> {
         self.engine.lock().ok()?.as_ref().map(Engine::control)
+    }
+
+    /// The user gave the surface input with `modality` (a finger, a mouse
+    /// or a hardware key going down): told before it acts, so the focus
+    /// it moves shows or not (`focus-visible:`).
+    pub(crate) fn input_with(&self, modality: nsh_core::platform::InputModality) {
+        if let Some(control) = self.control() {
+            control.set_input_modality(modality);
+        }
     }
 
     /// Hands event `kind` of node `id` to the running app.
@@ -123,6 +150,15 @@ impl Host {
     /// The VM limits of the apps loaded from now on.
     pub(crate) fn set_limits(&self, limits: nsh_engine::Limits) {
         *self.limits.lock().expect("limits") = limits;
+    }
+
+    /// Turns content culling on or off for the running app and the apps
+    /// loaded from now on.
+    pub(crate) fn set_content_culling(&self, enabled: bool) {
+        self.content_culling.store(enabled, Ordering::Relaxed);
+        if let Some(control) = self.control() {
+            control.set_content_culling(enabled);
+        }
     }
 
     /// The embedding app's theme overrides (`None`: the app's own theme):
@@ -171,7 +207,11 @@ impl Host {
         }
         // Stop the old engine first: its batches must not reach the new app.
         *self.answers.lock().expect("answers") = None;
-        let old = self.engine.lock().expect("engine").take();
+        let (old, web_generation) = {
+            let mut engine = self.engine.lock().expect("engine");
+            let generation = self.web_generation.fetch_add(1, Ordering::Relaxed) + 1;
+            (engine.take(), generation)
+        };
         if let Some(old) = old {
             drop(old);
             // No `Delete` follows for its views: its native components
@@ -184,6 +224,10 @@ impl Host {
             .unwrap_or_else(|e| e.into_inner())
             .clear();
         self.ui.lock().expect("ui").reset();
+        self.components
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear_app_state();
         let mut cache = self.cache.lock().expect("cache options").clone();
         if cache.location == nsh_engine::CacheLocation::System {
             cache.location = match &self.system_cache_dir {
@@ -196,6 +240,7 @@ impl Host {
             app,
             viewport,
             trace: self.trace,
+            content_culling: self.content_culling.load(Ordering::Relaxed),
             network: Some(crate::net::network()),
             websocket: None,
             refuse_connections: None,
@@ -207,8 +252,9 @@ impl Host {
             header_heights: (nsh_core::Points(56.0), nsh_core::Points(56.0)),
             limits: *self.limits.lock().expect("limits"),
             ui_sets: crate::ui_sets(),
-            runtime: None,
-            data_dir: self.data_dir.clone(),
+            runtime: self.runtime.lock().expect("runtime").clone(),
+            support_dir: self.support_dir.clone(),
+            data_dir: None,
             cache,
             storage: self.storage.lock().expect("storage").as_ref().map(|dir| {
                 nsh_engine::FileStorage::open(dir) as Arc<dyn nsh_engine::StorageBackend>
@@ -222,23 +268,36 @@ impl Host {
             speech: None,
             audio: None,
             windows: None,
+            login_item: None,
         };
         let density = self.density.clone();
-        let sink = Sink(self.clone());
+        let sink = Sink(self.clone(), web_generation);
         // A test session's app: the test's storage, network and trace.
         #[cfg(feature = "dev")]
         if let Some(model) = &*self.test_model.lock().unwrap_or_else(|e| e.into_inner()) {
             model.set_up_engine(&mut config);
         }
-        // The embedding app's theme overrides are in the first frame.
+        // The embedding app's theme overrides are in the first frame, and
+        // the links that came before are the app's address when its code
+        // first runs.
         let tokens = self.host_tokens.lock().expect("tokens").clone();
+        let links = std::mem::take(&mut *self.url_schemes.lock().expect("links"));
         let fonts = self.fonts.lock().expect("fonts").clone();
+        let components_host = Arc::clone(self);
         let setup = move |control: &EngineControl| {
+            components_host
+                .components
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_control(control.clone());
             if tokens.is_some() {
                 control.set_tokens(tokens);
             }
             for font in fonts {
                 control.register_font(font);
+            }
+            for payload in links {
+                control.dispatch_event(nsh_core::ROOT_ID, EventKind::UrlScheme, payload);
             }
         };
         match Engine::start_with(
@@ -415,10 +474,10 @@ fn register_inline_images(host: &Host, batch: &MountBatch) {
 
 /// Hands commits to the UI thread: one `NshView.submit(bytes, objects, seq)`
 /// call per batch.
-struct Sink(Arc<Host>);
+struct Sink(Arc<Host>, u64);
 
 impl MountSink for Sink {
-    fn submit(&self, batch: MountBatch) {
+    fn submit(&self, mut batch: MountBatch) {
         let host = &self.0;
         #[cfg(feature = "dev")]
         if let Some(model) = &*host.test_model.lock().unwrap_or_else(|e| e.into_inner()) {
@@ -426,14 +485,15 @@ impl MountSink for Sink {
         }
         answer_clipboard_reads(host, &batch);
         register_inline_images(host, &batch);
-        let mut encoded = encode::encode(batch);
+        let seq = host.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        crate::component::extract_batch_steps(host, seq, &mut batch);
+        let mut encoded = encode::encode(batch, self.1);
         if let Some(keymap) = encoded.keymap.take() {
             host.keymap
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .set(keymap);
         }
-        let seq = host.seq.fetch_add(1, Ordering::Relaxed) + 1;
         if !encoded.animation.is_empty() {
             host.animation_queue
                 .lock()
@@ -487,6 +547,27 @@ impl MountSink for Sink {
                 env.call_method_unchecked(
                     view.as_obj(),
                     java().view_request_frame,
+                    ReturnType::Primitive(Primitive::Void),
+                    &[],
+                )
+            }
+            .map(|_| ())
+        });
+    }
+
+    fn run_on_main_thread(&self, task: nsh_engine::MainThreadTask) {
+        self.0
+            .main_thread_tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(task);
+        let view = &self.0.view;
+        with_env(|env| {
+            // SAFETY: matches the signature checked in `java::init`.
+            unsafe {
+                env.call_method_unchecked(
+                    view.as_obj(),
+                    java().view_run_main_thread_tasks,
                     ReturnType::Primitive(Primitive::Void),
                     &[],
                 )
@@ -552,6 +633,57 @@ pub(crate) unsafe fn host<'a>(handle: jlong) -> &'a Arc<Host> {
     unsafe { &*(handle as *const Arc<Host>) }
 }
 
+/// Gives the WebSocket client's TLS verifier (rustls-platform-verifier,
+/// `CertificateVerifier.java`) the app's Context, once per process, so
+/// `wss://` trusts the system's roots (and those a user or administrator
+/// installed) rather than a compiled-in set (#914).
+#[cfg(feature = "websocket")]
+fn init_tls_verifier(env: &mut JNIEnv<'_>, view: &JObject<'_>) {
+    static DONE: std::sync::Once = std::sync::Once::new();
+    DONE.call_once(|| {
+        let context = env
+            .call_method(view, "getContext", "()Landroid/content/Context;", &[])
+            .and_then(|context| context.l())
+            .and_then(|context| {
+                env.call_method(
+                    &context,
+                    "getApplicationContext",
+                    "()Landroid/content/Context;",
+                    &[],
+                )
+            })
+            .and_then(|context| context.l());
+        let context = match context {
+            Ok(context) => context,
+            Err(err) => {
+                let _ = env.exception_clear();
+                log::error!("nsh: no Context for the TLS verifier: {err}");
+                return;
+            }
+        };
+        // SAFETY: the verifier's jni 0.22 wraps this thread's attached
+        // JNIEnv and a live local reference of this native call's frame.
+        let mut unowned = unsafe { jni_verifier::EnvUnowned::from_raw(env.get_raw().cast()) };
+        let outcome = unowned
+            .with_env(|env| {
+                // SAFETY: as above; the 0.21 wrapper keeps the reference.
+                let context = unsafe {
+                    jni_verifier::objects::JObject::from_raw(env, context.as_raw().cast())
+                };
+                rustls_platform_verifier::android::init_with_env(env, context)
+            })
+            .into_outcome();
+        match outcome {
+            jni_verifier::Outcome::Ok(()) => {}
+            jni_verifier::Outcome::Err(err) => {
+                let _ = env.exception_clear();
+                log::error!("nsh: TLS verifier setup failed: {err}");
+            }
+            jni_verifier::Outcome::Panic(_) => log::error!("nsh: TLS verifier setup panicked"),
+        }
+    });
+}
+
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_create(
     mut env: JNIEnv<'_>,
@@ -559,14 +691,16 @@ extern "system" fn Java_com_longbridge_nsh_Native_create(
     view: JObject<'_>,
     density: jfloat,
     trace: jboolean,
-    data_dir: JString<'_>,
+    support_dir: JString<'_>,
     cache_dir: JString<'_>,
 ) -> jlong {
+    #[cfg(feature = "websocket")]
+    init_tls_verifier(&mut env, &view);
     let Ok(view) = env.new_global_ref(view) else {
         return 0;
     };
-    let data_dir = env
-        .get_string(&data_dir)
+    let support_dir = env
+        .get_string(&support_dir)
         .ok()
         .map(|dir| std::path::PathBuf::from(String::from(dir)));
     let cache_dir = (!cache_dir.is_null())
@@ -578,6 +712,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_create(
         density: Density::new(density),
         trace: trace != 0,
         engine: Mutex::new(None),
+        web_generation: AtomicU64::new(0),
         answers: Mutex::new(None),
         pending: Mutex::new(None),
         viewport: Mutex::new(Size::new(px(0.0), px(0.0))),
@@ -586,24 +721,36 @@ extern "system" fn Java_com_longbridge_nsh_Native_create(
             // the system's viewer reads it through the FilesProvider. The
             // dialogs have no answer here.
             file_requests: true,
+            // `OffscreenCanvas`: `CanvasRender.java` replays drawings into
+            // bitmaps with the on-screen canvas's painter.
+            canvas_render: true,
+            web_evaluate: true,
+            // wgpu on Vulkan or GLES, in builds with it, until it finds no
+            // GPU.
+            shaders: nsh_engine::shader::LINKED,
             ..Environment::default()
         }),
         animation_queue: Mutex::new(VecDeque::new()),
+        main_thread_tasks: Mutex::new(VecDeque::new()),
         seq: AtomicU64::new(0),
         ui: Mutex::new(UiAnimation::default()),
         epoch: Instant::now(),
         granted: Mutex::new(None),
         limits: Mutex::new(nsh_engine::Limits::default()),
-        data_dir,
+        content_culling: AtomicBool::new(true),
+        runtime: Mutex::new(None),
+        support_dir,
         storage: Mutex::new(None),
         access: Mutex::new(Arc::default()),
         host_tokens: Mutex::new(None),
+        url_schemes: Mutex::default(),
         fonts: Mutex::new(Vec::new()),
         inline_images: Mutex::default(),
         cache: Mutex::default(),
         system_cache_dir: cache_dir,
         image_cache: Mutex::new(None),
         host: nsh_engine::HostChannel::new(),
+        components: Mutex::new(crate::component::HostComponents::new()),
         keymap: Mutex::default(),
         #[cfg(feature = "dev")]
         dev: Mutex::new(None),
@@ -684,6 +831,20 @@ extern "system" fn Java_com_longbridge_nsh_Native_setStandaloneLimits(
     host.set_limits(nsh_engine::Limits::standalone());
 }
 
+/// Whether scroll views make the native views of their content only near
+/// their viewport (the default), or all of it (`NshView.setContentCulling`).
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_Native_setContentCulling(
+    _: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+    enabled: jboolean,
+) {
+    // SAFETY: Java passes its live handle.
+    let host = unsafe { host(handle) };
+    host.set_content_culling(enabled != 0);
+}
+
 /// The directory the storage of the apps loaded next is kept in (null: each
 /// app's own in the data directory).
 #[unsafe(no_mangle)]
@@ -742,7 +903,8 @@ extern "system" fn Java_com_longbridge_nsh_Native_setCache(
 /// What the running app's disk cache holds for `url`: its bytes (`byte[]`)
 /// when they are fresh, the conditional request headers to revalidate a
 /// stale copy with (`String[]`, names and values; empty: none), or null (a
-/// miss, or no disk cache). Called on the image threads.
+/// miss, or no disk cache). A copy that came through a redirect the app may
+/// no longer follow is dropped, and a miss. Called on the image threads.
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_imageCacheLookup<'local>(
     mut env: JNIEnv<'local>,
@@ -759,7 +921,8 @@ extern "system" fn Java_com_longbridge_nsh_Native_imageCacheLookup<'local>(
     let Ok(url) = env.get_string(&url).map(String::from) else {
         return JObject::null();
     };
-    match cache.lookup(&url) {
+    let access = host.access.lock().expect("access").clone();
+    match cache.lookup(&url, &access) {
         Lookup::Fresh(bytes) => env
             .byte_array_from_slice(&bytes)
             .map(JObject::from)
@@ -776,6 +939,23 @@ extern "system" fn Java_com_longbridge_nsh_Native_imageCacheLookup<'local>(
     }
 }
 
+/// The strings of a Java `String[]` (null: none; a null element: empty).
+fn read_strings(env: &mut JNIEnv<'_>, array: &JObjectArray<'_>) -> Vec<String> {
+    if array.is_null() {
+        return Vec::new();
+    }
+    let len = env.get_array_length(array).unwrap_or(0);
+    (0..len)
+        .map(|i| {
+            env.get_object_array_element(array, i)
+                .ok()
+                .filter(|o| !o.is_null())
+                .and_then(|o| env.get_string(&JString::from(o)).ok().map(String::from))
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
 /// `strings` as a Java `String[]`.
 fn string_array<'local>(env: &mut JNIEnv<'local>, strings: &[&str]) -> Option<JObject<'local>> {
     let array = env
@@ -790,7 +970,8 @@ fn string_array<'local>(env: &mut JNIEnv<'local>, strings: &[&str]) -> Option<JO
 
 /// Ends the download of `url` that `imageCacheLookup` started: `status` 0
 /// when the request failed, else the response's status, `headers` (names
-/// and values) and body (null without one). Stores, updates or drops the
+/// and values), body (null without one) and `redirects`, the URLs the
+/// download was redirected to (null: none). Stores, updates or drops the
 /// cached copy, and returns the cached bytes when they are what to show
 /// (a `304`; a stale copy when the request failed or the server erred), or
 /// null: the response's own body (a `2xx`), or an error. Called on the
@@ -804,6 +985,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_imageCacheComplete<'local>(
     status: jint,
     headers: JObjectArray<'local>,
     body: JByteArray<'local>,
+    redirects: JObjectArray<'local>,
 ) -> JByteArray<'local> {
     // SAFETY: Java passes its live handle.
     let host = unsafe { host(handle) };
@@ -816,18 +998,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_imageCacheComplete<'local>(
     let response = if status <= 0 {
         Err("the request failed".to_owned())
     } else {
-        let mut strings = Vec::new();
-        if !headers.is_null() {
-            let len = env.get_array_length(&headers).unwrap_or(0);
-            for i in 0..len {
-                let value = env
-                    .get_object_array_element(&headers, i)
-                    .ok()
-                    .filter(|o| !o.is_null())
-                    .and_then(|o| env.get_string(&JString::from(o)).ok().map(String::from));
-                strings.push(value.unwrap_or_default());
-            }
-        }
+        let strings = read_strings(&mut env, &headers);
         let pairs = strings
             .as_chunks::<2>()
             .0
@@ -838,15 +1009,17 @@ extern "system" fn Java_com_longbridge_nsh_Native_imageCacheComplete<'local>(
         } else {
             env.convert_byte_array(&body).unwrap_or_default()
         };
-        Ok(nsh_core::image::Fetched::new(
+        let fetched = nsh_core::image::Fetched::new(
             status as u16,
             nsh_core::image::CacheHeaders::from_pairs(pairs),
             body,
-        ))
+        );
+        Ok(fetched.redirected(read_strings(&mut env, &redirects)))
     };
     // A 2xx's bytes are the body Java has.
     let own = (200..300).contains(&status);
-    match cache.complete(&url, response) {
+    let access = host.access.lock().expect("access").clone();
+    match cache.complete(&url, &access, response) {
         Ok(bytes) if !own => env
             .byte_array_from_slice(&bytes)
             .unwrap_or_else(|_| JByteArray::default()),
@@ -934,6 +1107,30 @@ extern "system" fn Java_com_longbridge_nsh_Native_allowsWebview(
     access.allows_webview(&String::from(url)).into()
 }
 
+/// Whether the running app's web pages may capture `kind` (`"microphone"`,
+/// `"camera"`).
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_Native_allowsWebMedia(
+    mut env: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+    kind: JString<'_>,
+) -> jboolean {
+    use nsh_core::access::WebMedia;
+    // SAFETY: Java passes its live handle.
+    let host = unsafe { host(handle) };
+    let Ok(kind) = env.get_string(&kind) else {
+        return 0;
+    };
+    let media = match String::from(kind).as_str() {
+        "microphone" => WebMedia::Microphone,
+        "camera" => WebMedia::Camera,
+        _ => return 0,
+    };
+    let access = host.access.lock().expect("access").clone();
+    access.allows_web_media(media).into()
+}
+
 /// The URL a media load redirected from `base` to `location` goes on to, or
 /// null if the running app may not load it.
 #[unsafe(no_mangle)]
@@ -989,7 +1186,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_imageBytes<'local>(
 
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_destroy(
-    _: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
 ) {
@@ -1002,6 +1199,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_destroy(
     drop(host.dev.lock().expect("dev").take());
     *host.answers.lock().expect("answers") = None;
     drop(host.engine.lock().expect("engine").take());
+    crate::component::destroy_surface(&mut env, &host);
 }
 
 #[unsafe(no_mangle)]
@@ -1063,6 +1261,25 @@ extern "system" fn Java_com_longbridge_nsh_Native_load(
     #[cfg(not(feature = "js"))]
     let _ = updater;
     host.load(bundle);
+}
+
+/// Sets the runtime for apps loaded next in one `NshView`.
+///
+/// Call before loading an app or connecting a dev server. Later changes
+/// apply from the next load, including an app waiting for its first size;
+/// a running engine keeps its runtime. `None` restores NSH's shared runtime.
+/// The embedding app owns the runtime and must keep it running until its
+/// engines stop. Destroying the view does not shut the runtime down.
+///
+/// # Safety
+///
+/// `handle` must be the live native handle of a `NshView` from this linked
+/// library (its `handle` field). Call on the view's UI thread, before it is
+/// destroyed, so destruction cannot invalidate the handle during this call.
+pub unsafe fn set_runtime(handle: jlong, runtime: Option<tokio::runtime::Handle>) {
+    // SAFETY: the caller guarantees a live handle that cannot be destroyed.
+    let host = unsafe { host(handle) };
+    *host.runtime.lock().expect("runtime") = runtime;
 }
 
 /// Runs a Rust app's root in the `NshView` with native handle `handle`
@@ -1162,6 +1379,10 @@ extern "system" fn Java_com_longbridge_nsh_Native_environment(
     environment.os = nsh_engine::Os::Android;
     environment.notifications = true;
     environment.audio = true;
+    // A chooser over `ACTION_SEND` (`Share.java`).
+    environment.share = true;
+    // A Custom Tab, ended by the callback link (`AuthSession.java`).
+    environment.auth_session = true;
     environment.os_version = (v[11] as u16, 0);
     environment.idiom = match v[12] as u8 {
         1 => Idiom::Pad,
@@ -1264,6 +1485,9 @@ extern "system" fn Java_com_longbridge_nsh_Native_event(
         EventKind::AccessibilityAction => {
             EventPayload::Map(vec![("actionName", PayloadValue::Str(read_text()))])
         }
+        EventKind::EditAction => {
+            EventPayload::Map(vec![("action", PayloadValue::Str(read_text()))])
+        }
         // Insets: x / y carry top / bottom, `count` packs left and right.
         EventKind::Insets => EventPayload::Map(vec![
             ("top", PayloadValue::Number(x as f64)),
@@ -1343,6 +1567,9 @@ extern "system" fn Java_com_longbridge_nsh_Native_press(
     let Some(kind) = encode::kind_from(kind) else {
         return;
     };
+    if kind == EventKind::PressDown {
+        host.input_with(nsh_core::platform::InputModality::Pointer);
+    }
     let event = nsh_core::PressEvent {
         position: point(px(x), px(y)),
         page_position: point(px(page_x), px(page_y)),
@@ -1393,7 +1620,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_touch(
         ints(&paths),
     );
     let n = ids.len();
-    let mut c = vec![0.0; n * 4];
+    let mut c = vec![0.0; n * 8];
     let mut flags = vec![0u8; n];
     if targets.len() != n
         || path_lengths.len() != n
@@ -1417,12 +1644,28 @@ extern "system" fn Java_com_longbridge_nsh_Native_touch(
                 id: ids[i] as u32,
                 target: targets[i] as NodeId,
                 path,
-                page: point(px(c[i * 4]), px(c[i * 4 + 1])),
-                location: point(px(c[i * 4 + 2]), px(c[i * 4 + 3])),
+                page: point(px(c[i * 8]), px(c[i * 8 + 1])),
+                location: point(px(c[i * 8 + 2]), px(c[i * 8 + 3])),
                 changed: flags[i] != 0,
+                pointer_type: match c[i * 8 + 7] as u8 {
+                    1 => nsh_core::PointerType::Pen,
+                    2 => nsh_core::PointerType::Mouse,
+                    _ => nsh_core::PointerType::Touch,
+                },
+                // The lifted finger reports its last pressure: 0 as the DOM.
+                pressure: if flags[i] != 0 && phase >= 2 {
+                    0.0
+                } else {
+                    c[i * 8 + 4].clamp(0.0, 1.0)
+                },
+                tilt_x: c[i * 8 + 5],
+                tilt_y: c[i * 8 + 6],
             }
         })
         .collect();
+    if phase == 0 {
+        host.input_with(nsh_core::platform::InputModality::Pointer);
+    }
     let phase = match phase {
         0 => nsh_core::TouchPhase::Start,
         1 => nsh_core::TouchPhase::Move,
@@ -1437,6 +1680,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_touch(
                 phase,
                 timestamp: time as f64,
                 points,
+                modifiers: Default::default(),
                 activated: (activated >= 0).then_some(activated as NodeId),
             })),
         );
@@ -1481,6 +1725,64 @@ extern "system" fn Java_com_longbridge_nsh_Native_paste(
             id as NodeId,
             EventKind::Paste,
             EventPayload::Paste(Box::new(paste)),
+        );
+    }
+}
+
+/// `Native.canvasImage`'s `failure`: the image could not be drawn or
+/// encoded. `CanvasRender.java`'s `RENDER_FAILED`.
+const RENDER_FAILED: jint = 0;
+/// `Native.canvasImage`'s `failure`: the system could not make a bitmap
+/// this large. `CanvasRender.java`'s `RENDER_TOO_LARGE`.
+const RENDER_TOO_LARGE: jint = 1;
+
+/// The failure `Native.canvasImage` reports: its `failure` kind
+/// ([`RENDER_FAILED`], [`RENDER_TOO_LARGE`]; an unknown one is a plain
+/// failure) and message.
+fn render_failure(failure: jint, message: String) -> RenderFailure {
+    match failure {
+        RENDER_TOO_LARGE => RenderFailure::TooLarge(message),
+        RENDER_FAILED => RenderFailure::Failed(message),
+        _ => RenderFailure::Failed(message),
+    }
+}
+
+/// The answer to an offscreen canvas render (`CanvasRender.java`): the
+/// encoded image's bytes, or when they are null why not, `failure`
+/// ([`RENDER_FAILED`], [`RENDER_TOO_LARGE`]) and `error`. The bytes cross
+/// as a `byte[]`, never through the event map's boxed values.
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_Native_canvasImage(
+    mut env: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+    request: jint,
+    bytes: JByteArray<'_>,
+    failure: jint,
+    error: JString<'_>,
+) {
+    // SAFETY: Java passes its live handle.
+    let host = unsafe { host(handle) };
+    let result = if bytes.is_null() {
+        let error = (!error.is_null())
+            .then(|| env.get_string(&error).ok().map(String::from))
+            .flatten();
+        Err(render_failure(
+            failure,
+            error.unwrap_or_else(|| "the canvas could not be drawn".into()),
+        ))
+    } else {
+        env.convert_byte_array(&bytes)
+            .map_err(|e| format!("the image could not be read: {e}").into())
+    };
+    if let Some(control) = host.control() {
+        control.dispatch_event(
+            nsh_core::ROOT_ID,
+            EventKind::CanvasImage,
+            EventPayload::CanvasImage {
+                id: request as u32,
+                result,
+            },
         );
     }
 }
@@ -1605,8 +1907,8 @@ extern "system" fn Java_com_longbridge_nsh_Native_eventMap(
         Some(PayloadValue::Number(n))
     };
     let payload = if kind == EventKind::FileRequest {
-        // "id", "error": the answer to an `OpenPath` (`SystemUi.openPath`;
-        // the paths of the request say nothing new, an open answers none).
+        // "id", "error", and repeated "path" keys: no path separator can
+        // be mistaken for a filename character, including newlines.
         let len = if keys.is_null() {
             0
         } else {
@@ -1614,6 +1916,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_eventMap(
         };
         let mut id = None;
         let mut error = None;
+        let mut paths = Vec::new();
         for i in 0..len {
             let Ok(key) = env.get_object_array_element(&keys, i) else {
                 continue;
@@ -1627,6 +1930,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_eventMap(
             match (key.as_str(), v) {
                 ("id", PayloadValue::Number(n)) => id = Some(n as u32),
                 ("error", PayloadValue::Str(message)) => error = Some(message),
+                ("path", PayloadValue::Str(path)) => paths.push(path.into()),
                 ("error", PayloadValue::Null) => {}
                 _ => {}
             }
@@ -1636,11 +1940,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_eventMap(
         let Some(id) = id else {
             return;
         };
-        EventPayload::FileRequest {
-            id,
-            paths: Vec::new(),
-            error,
-        }
+        EventPayload::FileRequest { id, paths, error }
     } else if keys.is_null() {
         match read(&mut env, 0) {
             Some(v) => EventPayload::Value(v),
@@ -1664,6 +1964,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_eventMap(
                 "canGoBack" => "canGoBack",
                 "canGoForward" => "canGoForward",
                 "data" => "data",
+                "generation" => "generation",
                 "message" => "message",
                 "code" => "code",
                 "duration" => "duration",
@@ -1700,6 +2001,9 @@ extern "system" fn Java_com_longbridge_nsh_Native_eventMap(
                 "positionMs" => "positionMs",
                 "truncated" => "truncated",
                 "buffering" => "buffering",
+                "action" => "action",
+                "target" => "target",
+                "value" => "value",
                 _ => continue,
             };
             if let Some(v) = read(&mut env, i) {
@@ -1719,16 +2023,73 @@ extern "system" fn Java_com_longbridge_nsh_Native_eventMap(
             EventPayload::Map(fields)
         }
     };
-    if let Some(control) = host.control() {
-        control.dispatch_event(id as NodeId, kind, payload);
+    if kind == EventKind::WebEvaluation {
+        let generation = match &payload {
+            EventPayload::Map(fields) => fields.iter().find_map(|(key, value)| match value {
+                PayloadValue::Str(value) if *key == "generation" => value.parse::<u64>().ok(),
+                _ => None,
+            }),
+            _ => None,
+        };
+        // Check and capture the control under the same lock load() uses
+        // to replace it: a late callback can only reach its own engine.
+        let control = {
+            let engine = host.engine.lock().expect("engine");
+            (generation == Some(host.web_generation.load(Ordering::Relaxed)))
+                .then(|| engine.as_ref().map(Engine::control))
+                .flatten()
+        };
+        if let Some(control) = control {
+            control.dispatch_event(id as NodeId, kind, payload);
+        }
+        return;
     }
+    match host.control() {
+        Some(control) => control.dispatch_event(id as NodeId, kind, payload),
+        // A link before the app runs (the launch intent's): the engine
+        // that starts next applies it.
+        None if kind == EventKind::UrlScheme => {
+            let mut links = host.url_schemes.lock().expect("links");
+            // As many as the core keeps for a listener, the oldest dropped.
+            if links.len() == nsh_core::url_scheme::MAX_PENDING {
+                links.remove(0);
+            }
+            links.push(payload);
+        }
+        None => {}
+    }
+}
+
+/// Finishes animations, dispatches animated slots for live Rust components,
+/// and returns any remaining float outputs for Java.
+fn finish_outputs(
+    env: &mut JNIEnv<'_>,
+    host: &Host,
+    mut ui: std::sync::MutexGuard<'_, UiAnimation>,
+) -> jfloatArray {
+    finish(host, &mut ui);
+    let mut anim_updates = Vec::new();
+    let out = {
+        let comps = host.components.lock().unwrap_or_else(|e| e.into_inner());
+        ui.outputs(|id, slot, value| {
+            if comps.has_instance(id) {
+                anim_updates.push((id, slot, value));
+                true
+            } else {
+                false
+            }
+        })
+    };
+    drop(ui);
+    crate::component::apply_animated_slots(env, host, &anim_updates);
+    floats(env, &out)
 }
 
 /// Applies the animation items of batches up to `seq` (already applied by
 /// Java) and returns the bound values.
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_afterBatch(
-    env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
     seq: jlong,
@@ -1742,35 +2103,91 @@ extern "system" fn Java_com_longbridge_nsh_Native_afterBatch(
             items.extend(queue.pop_front().expect("front").1);
         }
     }
-    let mut ui = host.ui.lock().expect("ui");
-    for item in items {
-        ui.apply(item);
+    let mut anim_updates = Vec::new();
+    let (unavailable, outputs_vec) = {
+        let mut ui = host.ui.lock().expect("ui");
+        for item in items {
+            ui.apply(item);
+        }
+        finish(host, &mut ui);
+        let unavailable = ui.shaders.take_unavailable();
+        let comps = host.components.lock().unwrap_or_else(|e| e.into_inner());
+        let out = ui.outputs(|id, slot, value| {
+            if comps.has_instance(id) {
+                anim_updates.push((id, slot, value));
+                true
+            } else {
+                false
+            }
+        });
+        (unavailable, out)
+    };
+    crate::component::apply_animated_slots(&mut env, host, &anim_updates);
+    crate::component::clear_through(host, seq as u64);
+    let outputs = floats(&env, &outputs_vec);
+    // No GPU for the shader views just mounted: the app hears it
+    // (`shadersAvailable()`).
+    if unavailable && let Some(control) = host.control() {
+        control.shaders_unavailable();
     }
-    finish(host, &mut ui);
-    floats(&env, &ui.outputs())
+    outputs
+}
+
+/// Runs the next function the app asked to run on the UI thread
+/// ([`MountSink::run_on_main_thread`]). On the UI thread.
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_Native_runMainThreadTasks(
+    _env: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+) {
+    // SAFETY: Java passes its live handle.
+    let host = unsafe { host(handle) };
+    // One post per task, so a task never runs ahead of a batch posted after an earlier task.
+    let task = host
+        .main_thread_tasks
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .pop_front();
+    if let Some(task) = task {
+        task.run();
+    }
 }
 
 /// A `Choreographer` frame (nanoseconds).
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_tick(
-    env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
     _frame_nanos: jlong,
 ) -> jfloatArray {
     // SAFETY: Java passes its live handle.
     let host = unsafe { host(handle) };
-    let mut ui = host.ui.lock().expect("ui");
-    let changed = ui.tick(host.epoch.elapsed().as_secs_f64());
-    finish(host, &mut ui);
-    // A frame only shader views asked for: no bound value moved.
-    let mut out = if changed || ui.animating() {
-        ui.outputs()
-    } else {
-        vec![0.0]
+    let mut anim_updates = Vec::new();
+    let out = {
+        let mut ui = host.ui.lock().expect("ui");
+        let changed = ui.tick(host.epoch.elapsed().as_secs_f64());
+        finish(host, &mut ui);
+        // A frame only shader views asked for: no bound value moved.
+        let mut out = if changed || ui.animating() {
+            let comps = host.components.lock().unwrap_or_else(|e| e.into_inner());
+            ui.outputs(|id, slot, value| {
+                if comps.has_instance(id) {
+                    anim_updates.push((id, slot, value));
+                    true
+                } else {
+                    false
+                }
+            })
+        } else {
+            vec![0.0]
+        };
+        let shading = ui.shaders.render(host.view.as_obj());
+        out[0] = if ui.animating() || shading { 1.0 } else { 0.0 };
+        out
     };
-    let shading = ui.shaders.render(host.view.as_obj());
-    out[0] = if ui.animating() || shading { 1.0 } else { 0.0 };
+    crate::component::apply_animated_slots(&mut env, host, &anim_updates);
     floats(&env, &out)
 }
 
@@ -1947,7 +2364,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_navTransitionEnd(
 /// offset. Returns bound values when a scroll value changed, else null.
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_scroll(
-    env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
     id: jint,
@@ -1964,8 +2381,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_scroll(
     if !ui.scrolled(id as u32, x, y) {
         return std::ptr::null_mut();
     }
-    finish(host, &mut ui);
-    floats(&env, &ui.outputs())
+    finish_outputs(&mut env, host, ui)
 }
 
 /// A multiline input's text scrolled, or its text or size changed, while a
@@ -1999,7 +2415,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_inputScroll(
 /// pull value learns it. Returns bound values when one changed, else null.
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_pull(
-    env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
     id: jint,
@@ -2011,15 +2427,14 @@ extern "system" fn Java_com_longbridge_nsh_Native_pull(
     if !ui.pulled(id as u32, distance) {
         return std::ptr::null_mut();
     }
-    finish(host, &mut ui);
-    floats(&env, &ui.outputs())
+    finish_outputs(&mut env, host, ui)
 }
 
 /// A scroll view came to rest: the snapping values that follow its scroll
 /// value settle. Returns bound values when one starts moving, else null.
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_scrollEnded(
-    env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
     id: jint,
@@ -2030,8 +2445,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_scrollEnded(
     if !ui.scroll_ended(id as u32) {
         return std::ptr::null_mut();
     }
-    finish(host, &mut ui);
-    floats(&env, &ui.outputs())
+    finish_outputs(&mut env, host, ui)
 }
 
 /// A zoomable scroll view's zoom scale changed (before its offset report).
@@ -2067,7 +2481,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_hasPan(
 /// translation and velocity in points (per second).
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_pan(
-    env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
     id: jint,
@@ -2110,8 +2524,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_pan(
         (1, _) | (_, None) => {}
         (_, Some(c)) => c.dispatch_event(id as NodeId, EventKind::PanEnd, payload),
     }
-    finish(host, &mut ui);
-    floats(&env, &ui.outputs())
+    finish_outputs(&mut env, host, ui)
 }
 
 /// A pinch (`rotation` false, `amount` the scale) or two-finger rotation
@@ -2119,7 +2532,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_pan(
 /// 3 cancelled.
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_transformGesture(
-    env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
     id: jint,
@@ -2157,8 +2570,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_transformGesture(
             }
         }
     }
-    finish(host, &mut ui);
-    floats(&env, &ui.outputs())
+    finish_outputs(&mut env, host, ui)
 }
 
 /// The platform shows root `id` (a modal) at `width` x `height` dp, with
@@ -2244,7 +2656,7 @@ fn floats(env: &JNIEnv<'_>, values: &[f32]) -> jfloatArray {
     array.into_raw()
 }
 
-/// A registered native component emitted `name` (JSON data or `null`).
+/// The files picked for a pick (`Picker.java`'s answer).
 #[unsafe(no_mangle)]
 extern "system" fn Java_com_longbridge_nsh_Native_picked(
     mut env: JNIEnv<'_>,
@@ -2255,12 +2667,15 @@ extern "system" fn Java_com_longbridge_nsh_Native_picked(
     types: jni::objects::JObjectArray<'_>,
     data: jni::objects::JObjectArray<'_>,
     sizes: jni::objects::JIntArray<'_>,
+    lengths: jni::objects::JLongArray<'_>,
 ) {
     // SAFETY: Java passes its live handle.
     let host = unsafe { host(handle) };
     let count = env.get_array_length(&data).unwrap_or(0).max(0);
     let mut dims = vec![0; count as usize * 2];
     let _ = env.get_int_array_region(&sizes, 0, &mut dims);
+    let mut lens = vec![0; count as usize];
+    let _ = env.get_long_array_region(&lengths, 0, &mut lens);
     let string = |env: &mut JNIEnv<'_>, array: &jni::objects::JObjectArray<'_>, i: i32| {
         env.get_object_array_element(array, i)
             .ok()
@@ -2275,6 +2690,12 @@ extern "system" fn Java_com_longbridge_nsh_Native_picked(
         let Ok(bytes) = env.get_object_array_element(&data, i) else {
             continue;
         };
+        // No bytes: a file larger than the pick reads, its size alone.
+        if bytes.is_null() {
+            let len = u64::try_from(lens[i as usize]).unwrap_or(0);
+            files.push(nsh_core::picker::PickedFile::too_large(name, mime, len));
+            continue;
+        }
         let Ok(bytes) = env.convert_byte_array(JByteArray::from(bytes)) else {
             continue;
         };

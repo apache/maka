@@ -1,0 +1,20 @@
+# Copyright 2018-2026 the Deno authors. MIT license.
+
+[package]
+name = "deno_node_sqlite"
+version = "0.30.0"
+authors = ["the Deno authors"]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/denoland/deno"
+description = "Node sqlite compatibility for Deno"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+deno_core = "0.413.0"
+deno_error = "0.7.1"
+deno_permissions = "0.119.0"
+rusqlite = { version = "0.41.0", features = ["unlock_notify", "bundled", "session", "modern_sqlite", "limits", "backup", "fallible_uint"] }
+thiserror = "2"

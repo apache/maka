@@ -32,8 +32,8 @@ export function disclosureTriggerLook(o?: DisclosureTriggerOptions) {
     get activeStyle(): ViewStyle {
       return row.activeStyle;
     },
-    get focusStyle(): ViewStyle {
-      return row.focusStyle;
+    get focusVisibleStyle(): ViewStyle {
+      return row.focusVisibleStyle;
     },
     get disabledStyle(): ViewStyle {
       return row.disabledStyle;

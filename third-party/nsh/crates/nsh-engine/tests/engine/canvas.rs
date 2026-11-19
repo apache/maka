@@ -59,6 +59,7 @@ pub(crate) fn start(app: &str) -> (Engine, crossbeam_channel::Receiver<MountBatc
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
     })
     .unwrap();
     let bytecode =
@@ -70,6 +71,7 @@ pub(crate) fn start(app: &str) -> (Engine, crossbeam_channel::Receiver<MountBatc
         app: nsh_engine::App::Js(app),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -81,7 +83,7 @@ pub(crate) fn start(app: &str) -> (Engine, crossbeam_channel::Receiver<MountBatc
         limits: nsh_engine::Limits::default(),
         ui_sets: vec![nsh_base::registry()],
         runtime: None,
-        data_dir: None,
+        support_dir: None,
         cache: nsh_engine::CacheOptions::off(),
         storage: None,
         clock: Default::default(),
@@ -93,6 +95,8 @@ pub(crate) fn start(app: &str) -> (Engine, crossbeam_channel::Receiver<MountBatc
         speech: None,
         audio: None,
         windows: None,
+        login_item: None,
+        data_dir: None,
     };
     (
         Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap(),
@@ -389,4 +393,208 @@ fn hit_tests_and_number_forms_are_native() {
         op,
         CanvasOp::FontVariantNumeric(v) if v.0 == nsh_core::FontVariant::TABULAR_NUMS
     )));
+}
+
+const OFFSCREEN: &str = r##"import { mount, OffscreenCanvas, signal, Text } from "nsh";
+
+const shown = signal("waiting");
+setTimeout(async () => {
+  const canvas = new OffscreenCanvas(40, 20);
+  const cx = canvas.getContext("2d");
+  cx.fillStyle = "#ff0000";
+  cx.fillRect(0, 0, cx.canvas.width, cx.canvas.height);
+  const same = canvas.getContext("2d") === cx && canvas.getContext("webgl") === null;
+  const blob = await canvas.convertToBlob({ type: "image/webp", scale: 2 });
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let refused = "";
+  try {
+    await new OffscreenCanvas(9000, 10).convertToBlob({ scale: 2 });
+  } catch (e) {
+    refused = (e as { code: string }).code;
+  }
+  shown.set(`${same} ${canvas.width}x${canvas.height} ${blob instanceof Blob} ${blob.type} ${bytes.join(",")} ${refused}`);
+}, 0);
+
+mount(() => <Text>{shown()}</Text>);
+"##;
+
+#[test]
+fn an_offscreen_canvas_renders_through_the_platform() {
+    use nsh_core::{Command, EventKind, EventPayload, MountItem, ROOT_ID};
+    let environment = nsh_engine::Environment {
+        canvas_render: true,
+        ..Default::default()
+    };
+    let (engine, rx) = crate::components::start_with(OFFSCREEN, environment, None, None);
+    let control = engine.control();
+    let mut renders = Vec::new();
+    crate::components::until(&rx, |batch| {
+        for item in &batch.items {
+            if let MountItem::Command {
+                id: ROOT_ID,
+                command:
+                    Command::RenderCanvas {
+                        id,
+                        drawing,
+                        width,
+                        height,
+                        scale,
+                        ..
+                    },
+            } = item
+            {
+                renders.push((*width, *height, *scale, drawing.ops.clone()));
+                control.dispatch_event(
+                    ROOT_ID,
+                    EventKind::CanvasImage,
+                    EventPayload::CanvasImage {
+                        id: *id,
+                        result: Ok(vec![1, 2, 3]),
+                    },
+                );
+            }
+        }
+        crate::components::shows(
+            batch,
+            "true 40x20 true image/png 1,2,3 ERR_NSH_QUOTA_EXCEEDED",
+        )
+    });
+    // Only the first reached the platform: the second was over the limit.
+    assert_eq!(renders.len(), 1, "{renders:?}");
+    let (width, height, scale, ops) = &renders[0];
+    assert_eq!((*width, *height, *scale), (80, 40, 2.0));
+    assert!(
+        ops.iter().any(|op| matches!(op, CanvasOp::FillRect { .. })),
+        "{ops:?}"
+    );
+}
+
+const OFFSCREEN_REUSED: &str = r##"import { mount, OffscreenCanvas, signal, Text } from "nsh";
+
+const shown = signal("waiting");
+setTimeout(async () => {
+  const canvas = new OffscreenCanvas(40, 20);
+  const cx = canvas.getContext("2d");
+  for (let i = 0; i < 40; i++) {
+    cx.clearRect(0, 0, canvas.width, canvas.height);
+    cx.fillStyle = i % 2 ? "#ff0000" : "#0000ff";
+    cx.fillStyle = "not a color";
+    cx.beginPath();
+    cx.arc(20, 10, i, 0, 6);
+    cx.fill();
+    await canvas.convertToBlob();
+  }
+  // A clear under a transform, or inside a save, keeps what came before.
+  const kept = new OffscreenCanvas(40, 20);
+  const k = kept.getContext("2d");
+  k.fillRect(0, 0, 1, 1);
+  k.translate(1, 0);
+  k.clearRect(0, 0, 40, 20);
+  k.save();
+  k.resetTransform();
+  k.clearRect(-10, -10, 60, 40);
+  k.restore();
+  k.fillRect(0, 0, 2, 2);
+  await kept.convertToBlob();
+  shown.set("done");
+}, 0);
+
+mount(() => <Text>{shown()}</Text>);
+"##;
+
+#[test]
+fn an_offscreen_canvas_cleared_whole_starts_its_recording_anew() {
+    use nsh_core::{Command, EventKind, EventPayload, MountItem, ROOT_ID};
+    let environment = nsh_engine::Environment {
+        canvas_render: true,
+        ..Default::default()
+    };
+    let (engine, rx) = crate::components::start_with(OFFSCREEN_REUSED, environment, None, None);
+    let control = engine.control();
+    let mut renders = Vec::new();
+    crate::components::until(&rx, |batch| {
+        for item in &batch.items {
+            if let MountItem::Command {
+                id: ROOT_ID,
+                command: Command::RenderCanvas { id, drawing, .. },
+            } = item
+            {
+                renders.push(drawing.ops.clone());
+                control.dispatch_event(
+                    ROOT_ID,
+                    EventKind::CanvasImage,
+                    EventPayload::CanvasImage {
+                        id: *id,
+                        result: Ok(vec![1]),
+                    },
+                );
+            }
+        }
+        crate::components::shows(batch, "done")
+    });
+    assert_eq!(renders.len(), 41, "{renders:?}");
+    let radii = |ops: &[CanvasOp]| -> Vec<f32> {
+        ops.iter()
+            .filter_map(|op| match op {
+                CanvasOp::Path(nsh_core::canvas::PathOp::Arc { radius, .. }) => {
+                    Some(radius.get(|_| 0.0))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    // The first frame: its own operations; the clear of the empty canvas
+    // is dropped too.
+    assert_eq!(renders[0].len(), 4, "{:?}", renders[0]);
+    // Each later frame holds only the state the clear kept (the last fill
+    // style that took effect, the current path) and its own operations,
+    // however many frames came before.
+    let last = &renders[39];
+    assert_eq!(last.len(), 6, "{last:?}");
+    assert!(renders[1..40].iter().all(|ops| ops.len() == 6));
+    assert!(
+        !last.iter().any(|op| matches!(op, CanvasOp::ClearRect(_))),
+        "{last:?}"
+    );
+    assert_eq!(radii(last), [38.0_f32, 39.0]);
+    let fills: Vec<_> = last
+        .iter()
+        .filter(|op| matches!(op, CanvasOp::FillStyle(_)))
+        .collect();
+    assert_eq!(fills.len(), 2, "{last:?}");
+    // Blue from frame 38 (the invalid value after it took no effect), red
+    // from frame 39.
+    assert_ne!(fills[0], fills[1], "{last:?}");
+    // Neither the translated clear nor the one inside `save` dropped the
+    // first rectangle.
+    let kept = &renders[40];
+    let rects = kept
+        .iter()
+        .filter(|op| matches!(op, CanvasOp::FillRect(_)))
+        .count();
+    assert_eq!(rects, 2, "{kept:?}");
+}
+
+const OFFSCREEN_UNAVAILABLE: &str = r##"import { mount, OffscreenCanvas, signal, Text } from "nsh";
+
+const shown = signal("waiting");
+new OffscreenCanvas(10, 10)
+  .convertToBlob()
+  .then(() => shown.set("rendered"), (e) => shown.set(`refused ${e.code}`));
+
+mount(() => <Text>{shown()}</Text>);
+"##;
+
+#[test]
+fn an_offscreen_canvas_is_refused_where_the_platform_renders_none() {
+    let (_engine, rx) =
+        crate::components::start_with(OFFSCREEN_UNAVAILABLE, Default::default(), None, None);
+    let batches = crate::components::until(&rx, |batch| {
+        crate::components::shows(batch, "refused ERR_FEATURE_UNAVAILABLE_ON_PLATFORM")
+    });
+    assert!(
+        batches
+            .iter()
+            .any(|b| crate::components::shows(b, "refused ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"))
+    );
 }

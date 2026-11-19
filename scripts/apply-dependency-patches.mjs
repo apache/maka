@@ -20,35 +20,31 @@
 
 // Apply the exact-version dependency patches used by product bundles.
 // Release builds install the complete locked dependency tree. A types-only
-// workspace install may omit the root development tooling.
+// workspace install may omit some of the patched dependencies.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const patchesDirectory = join(repoRoot, 'patches');
 
-if (
-  !existsSync(patchesDirectory) ||
-  !readdirSync(patchesDirectory).some((entry) => entry.endsWith('.patch'))
-) {
-  process.exit(0);
+for (const patch of readdirSync(patchesDirectory)
+  .filter((name) => name.endsWith('.patch'))
+  .sort()) {
+  const [name, version] = patch.slice(0, -'.patch'.length).split('+');
+  const manifest = join(repoRoot, 'node_modules', name, 'package.json');
+  if (!existsSync(manifest)) continue;
+  const installed = JSON.parse(readFileSync(manifest, 'utf8')).version;
+  if (installed !== version)
+    throw new Error(`Patch ${patch} expects ${version}, installed ${installed}`);
+  const file = join(patchesDirectory, patch);
+  const apply = (...args) =>
+    spawnSync('git', ['apply', '--ignore-space-change', ...args, file], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+  if (apply('--reverse', '--check').status === 0) continue;
+  const result = apply();
+  if (result.status !== 0) throw result.error ?? new Error(result.stderr);
 }
-
-let patchPackageEntry;
-try {
-  patchPackageEntry = createRequire(import.meta.url).resolve('patch-package/index.js');
-} catch {
-  console.warn(
-    'patch-package is not installed; skipping patches/. Run a plain `npm ci` from the repo root before building or packaging.',
-  );
-  process.exit(0);
-}
-
-const result = spawnSync(process.execPath, [patchPackageEntry, '--error-on-fail'], {
-  cwd: repoRoot,
-  stdio: 'inherit',
-});
-process.exit(result.status ?? 1);

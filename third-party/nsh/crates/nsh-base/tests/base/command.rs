@@ -256,6 +256,42 @@ fn screen_readers_hear_the_search_field_by_its_own_label_else_the_commands() {
     assert_eq!(app.screen().count("role:option"), Ok(2));
 }
 
+/// The search field keeps the keyboard focus: it names the highlighted row
+/// as its active descendant and the listbox as what it controls, as the
+/// highlight moves.
+#[test]
+fn the_search_field_names_the_highlighted_row_as_its_active_descendant() {
+    let mut app = start(HarnessProps {
+        search_label: true,
+        ..props()
+    });
+    let field = "label:Search commands";
+    app.type_text(field, "cal").unwrap();
+    app.wait_for_gone("role:option[New File]", Duration::from_secs(5))
+        .unwrap();
+    let listbox = app.screen().id("role:listbox[Commands]").unwrap();
+    let calendar = app.screen().id("role:option[Calendar]").unwrap();
+    app.wait_until("the field naming Calendar", Duration::from_secs(5), |s| {
+        s.active_descendant(field) == Ok(Some(calendar))
+    })
+    .unwrap();
+    assert_eq!(
+        app.screen().accessibility_controls(field),
+        Ok(Some(listbox))
+    );
+    key(&mut app, "down");
+    let next = app
+        .wait_until(
+            "the field naming another row",
+            Duration::from_secs(5),
+            |s| matches!(s.active_descendant(field), Ok(Some(id)) if id != calendar),
+        )
+        .map(|_| app.screen().active_descendant(field).unwrap().unwrap());
+    let next = next.unwrap();
+    assert_eq!(app.screen().count("role:option"), Ok(2));
+    assert_ne!(next, listbox);
+}
+
 #[test]
 fn the_first_enabled_item_is_highlighted_at_first() {
     let mut app = start(HarnessProps {

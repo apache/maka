@@ -153,6 +153,19 @@ pub(super) async fn compile(
     if cancellation.is_cancelled() {
         return Err(RunError::Cancelled);
     }
+    // The frozen Responses codec has already applied the plaintext-content
+    // policy to these recipes. Keep that policy with the prepared request.
+    if matches!(
+        provider.kind,
+        maka_model::ProviderKind::OpenResponses(contract)
+            if contract.reasoning_replay
+                == maka_agent_facts::model::PlaintextReasoningReplay::PlaintextContent
+    ) {
+        prompt.body = prompt
+            .body
+            .clone()
+            .with_normalization(provider.kind.clone());
+    }
     prompt.wire = Some(PreparedWire {
         format: encoding.format(),
         codec: encoding.codec().to_owned().into(),
@@ -161,6 +174,3 @@ pub(super) async fn compile(
     });
     Ok(())
 }
-
-#[cfg(test)]
-mod production_tests;

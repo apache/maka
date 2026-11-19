@@ -60,9 +60,19 @@ impl Location {
 }
 impl Owner {
     async fn mcp_locations(&self, workspace: Option<Workspace>) -> Result<Vec<Location>, String> {
-        if let Some(workspace) = &workspace {
-            workspace::validate(&self.workspace_roots, workspace, &self.managed_worktrees).await?;
-        }
+        let project = match workspace {
+            Some(workspace) => {
+                let (path, directory, _) = workspace::open_workspace_observation(
+                    &self.workspace_roots,
+                    &workspace,
+                    &self.managed_worktrees,
+                )
+                .await?;
+                debug_assert!(Path::new(&workspace.path).is_absolute());
+                Some((Arc::new(directory), path))
+            }
+            None => None,
+        };
         let home = self.instruction_home.clone().zip(
             self.settings
                 .assistant
@@ -71,16 +81,6 @@ impl Owner {
                 .map(PathBuf::from),
         );
         tokio::task::spawn_blocking(move || {
-            let project = workspace
-                .map(|workspace| {
-                    let directory = maka_fs_tools::directory::open(
-                        Path::new(&workspace.path),
-                        &workspace.directory_identity,
-                    )
-                    .map_err(|error| error.to_string())?;
-                    Ok::<_, String>((Arc::new(directory), PathBuf::from(workspace.path)))
-                })
-                .transpose()?;
             Ok(LocationId::ALL
                 .into_iter()
                 .filter_map(|id| {
@@ -251,6 +251,7 @@ impl Owner {
                             let _ = directory.remove_file(&name);
                         }
                         result?;
+                        root.capability_source_changed();
                         Ok(McpConfigurationResult::Saved)
                     })();
                     Ok(match result {

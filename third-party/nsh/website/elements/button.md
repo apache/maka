@@ -53,8 +53,8 @@ mount(App);
 ```
 
 `Button` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In TSX its look is `class` and
-`style`, with the state variants `active:`, `hover:`, `focus:`, `selected:` and `disabled:` (or the matching
-`activeStyle`, `hoverStyle`, `focusStyle`, `selectedStyle` and `disabledStyle`). In Rust, `button()` makes one as
+`style`, with the state variants `active:`, `hover:`, `focus-visible:`, `selected:` and `disabled:` (or the matching
+`activeStyle`, `hoverStyle`, `focusVisibleStyle`, `selectedStyle` and `disabledStyle`). In Rust, `button()` makes one as
 `view()` makes a view: a setter per prop (`.disabled(..)`, `.selected(..)`), a listener per event (`.on_press(..)`),
 the typed style methods (`.px_4()`, `.bg(..)`) for its look, the state methods (`.active(..)`, `.hover(..)`,
 `.focus(..)`, `.selected_style(..)`, `.disabled_style(..)`) for its states and `.child(..)` for its content.
@@ -66,6 +66,7 @@ the typed style methods (`.px_4()`, `.bg(..)`) for its look, the state methods (
 | `disabled` | `.disabled(..)` | `boolean` | `false` | No presses and no press feedback; `disabled:` styles apply and screen readers say it is dimmed. |
 | `selected` | `.selected(..)` | `boolean` | `false` | Selected: the current item (a folder, a filter) or the trigger of an open menu. Something on or off is a `Toggle`. Screen readers say so. The app owns the value and styles it. |
 | `selectedStyle` | `.selected_style(\|s\| ..)` | `StyleProp<ViewStyle>` | none | The style while `selected` and not disabled, as `selected:` classes. |
+| `busy` | `.busy(..)` | `boolean` | `false` | Busy: its action is running, as a "Saving…" button. Screen readers say so. Presses still count; set `disabled` too to refuse them. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers say when the content is not enough, as for an icon. |
 | `role` | `.role(..)` | `AccessibilityRole` | `"button"` | What it is for screen readers when no `nsh/base` component is that control: `"link"` (it opens a URL), ... |
 | `hitSlop` | `.hit_slop(..)` | `number \| Partial<Edges>` | none | How far outside its bounds presses still count, in points: one number for every side, or the sides named. As a view's `hitSlop`. |
@@ -255,10 +256,10 @@ fn close(open: Signal<bool>) -> impl IntoElement {
 
 - A button is one element for screen readers, with the role `"button"` unless `role` says otherwise. Its label is its
   text content; give `accessibilityLabel` when the content is an icon or says too little.
-- `disabled` and `selected` are announced as the platform announces them (VoiceOver, TalkBack, UI Automation, the
+- `disabled`, `selected` and `busy` are announced as the platform announces them (VoiceOver, TalkBack, UI Automation, the
   browser's accessibility tree).
 - On macOS and the web a button is a stop of the keyboard focus: Tab reaches it, Return and Space press it, and
-  `focus:` styles show where the focus is.
+  `focus-visible:` styles show where the focus is.
 
 See [Accessibility](../docs/accessibility.md) for labels, roles and announcements in general.
 

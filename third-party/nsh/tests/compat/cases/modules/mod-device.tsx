@@ -1,10 +1,10 @@
 // A case of the API's test suite (docs/dev/compatibility.md): `nsh/device`
 // as the headless runtime reports it (iOS, a phone, 1 pixel per point, the
-// script's viewport; mobile, so `platform.desktop` is false; the app in use; the locale settings of en-US in UTC; `Intl` formats local time in the zone it names), the color scheme an app sets and
+// script's viewport; mobile, so `platform.desktop` is false; the app in use; no wake from sleep yet; the locale settings of en-US in UTC; `Intl` formats local time in the zone it names), the color scheme an app sets and
 // `openUrl`: a promise for a URL it opens (the headless runtime answers none), one rejected with a `TypeError` for
 // a URL it never opens (it never throws). Its script checks each.
 import { Text, View, signal } from "nsh";
-import { colorScheme, fontScale, lifecycle, localeSettings, openUrl, pixelRatio, platform, setColorScheme, windowSize } from "nsh";
+import { horizontalSizeClass, verticalSizeClass, colorScheme, fontScale, lifecycle, localeSettings, openUrl, pixelRatio, platform, setColorScheme, wakeCount, windowSize } from "nsh";
 
 // Whether `Intl`'s local time is in the zone it names: formatting in that zone
 // writes what local time does (in 1970, a summer and a winter), on a machine in
@@ -20,18 +20,22 @@ function App() {
   const opened = signal("not opened");
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
+      <Text>{`Platform: ${platform.name}`}</Text>
       <Text>{`OS: ${platform.os}`}</Text>
       <Text>{`Idiom: ${platform.idiom}`}</Text>
       <Text>{`Desktop: ${platform.desktop}`}</Text>
       <Text>{`Catalyst: ${platform.catalyst}`}</Text>
       <Text>{`Version: ${platform.version}`}</Text>
       <Text>{`Select: ${platform.select({ ios: "ios", android: "android", default: "other" })}`}</Text>
+      <Text>{`Select named: ${platform.select({ miniprogram: "miniprogram", ios: "ios", default: "other" })}`}</Text>
       <Text>{`Select mobile: ${platform.select({ mobile: "mobile", desktop: "desktop" })}`}</Text>
       <Text>{`Ratio: ${pixelRatio()}`}</Text>
       <Text>{`Font scale: ${fontScale()}`}</Text>
       <Text>{`Window: ${windowSize().width}x${windowSize().height}`}</Text>
+      <Text>{`Size classes: ${horizontalSizeClass()} ${verticalSizeClass()}`}</Text>
       <Text>{`Scheme: ${colorScheme()}`}</Text>
       <Text>{`Lifecycle: ${lifecycle()}`}</Text>
+      <Text>{`Wakes: ${wakeCount()}`}</Text>
       <Text>{`Time zone: ${localeSettings().timeZone}`}</Text>
       <Text>{`Intl local time: ${intlLocalTime()}`}</Text>
       <Text>{`Languages: ${localeSettings().languages.join(", ")}`}</Text>

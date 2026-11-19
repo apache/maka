@@ -119,7 +119,7 @@ parts! {
     /// The language a code block names (```` ```rust ````), at the start of
     /// its header; empty when it names none.
     code_block_language => CodeBlockLanguage,
-    /// The horizontal scroll view of a code block's code.
+    /// The horizontal scroll view of unwrapped code (`wrap: false`).
     code_block_scroll => CodeBlockScroll,
     /// The code of a code block (monospace, as written).
     code_block_code => CodeBlockCode,
@@ -163,6 +163,9 @@ parts! {
     /// The horizontal scroll view of a table's cells: they scroll when the
     /// columns cannot shrink further.
     table_scroll => TableScroll,
+    /// The grid of a table's cells, in its scroll view. It draws the
+    /// table's top and left lines, each cell its right and bottom ones.
+    table_grid => TableGrid,
     /// The header row of a table, after `tableRow`.
     table_head => TableHead,
     /// Every row of a table: a view behind its cells, for backgrounds and

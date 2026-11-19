@@ -253,24 +253,18 @@ enum Identifiers {
         values: Vec<IdentifiedText>,
         owner: Arc<dyn Send + Sync>,
     },
-    Arena {
-        store: super::arena_recipes::ArenaRecipes,
-        list: super::arena_recipes::List,
-        used: usize,
-    },
+    Backed(super::canonical_prompt::IdentifierBuilder),
 }
 impl Identifiers {
     async fn new(
         capacity: usize,
         owner: Arc<dyn Send + Sync>,
-        store: Option<&super::arena_recipes::ArenaRecipes>,
+        store: Option<&super::canonical_prompt::Store>,
     ) -> io::Result<Self> {
         Ok(match store {
-            Some(store) => Self::Arena {
-                store: store.clone(),
-                list: store.begin_list(capacity).await?,
-                used: 0,
-            },
+            Some(store) => Self::Backed(
+                super::canonical_prompt::IdentifierBuilder::new(store.clone(), capacity).await?,
+            ),
             None => Self::Resident {
                 values: Vec::with_capacity(capacity),
                 owner,
@@ -284,20 +278,18 @@ impl Identifiers {
         cancel: &CancellationToken,
     ) -> io::Result<()> {
         match self {
-            Self::Resident { values, .. } => values.push(value),
-            Self::Arena { store, list, used } => {
-                let node = store.identified(value, budget.clone(), cancel).await?;
-                store.put(*list, *used, node).await?;
-                *used += 1;
+            Self::Resident { values, .. } => {
+                values.push(value);
+                Ok(())
             }
+            Self::Backed(writer) => writer.push(value, budget, cancel).await,
         }
-        Ok(())
     }
-    fn finish(self) -> io::Result<Arc<dyn RecipeSource<IdentifiedText>>> {
-        Ok(match self {
+    fn finish(self) -> Arc<dyn RecipeSource<IdentifiedText>> {
+        match self {
             Self::Resident { values, owner } => Arc::new(Items::new(values, owner)),
-            Self::Arena { store, list, used } => store.identifiers(list.range(0..used)?),
-        })
+            Self::Backed(writer) => writer.finish(),
+        }
     }
 }
 pub(crate) async fn describe(
@@ -308,12 +300,12 @@ pub(crate) async fn describe(
 ) -> io::Result<MessageDescriptor> {
     describe_with(recipe, budget, owner, cancellation, None).await
 }
-pub(super) async fn describe_arena(
+pub(super) async fn describe_backed(
     recipe: MessageRecipe,
     budget: &Arc<dyn SourceBudget>,
     owner: Arc<dyn Send + Sync>,
     cancellation: &CancellationToken,
-    store: &super::arena_recipes::ArenaRecipes,
+    store: &super::canonical_prompt::Store,
 ) -> io::Result<MessageDescriptor> {
     describe_with(recipe, budget, owner, cancellation, Some(store)).await
 }
@@ -322,7 +314,7 @@ async fn describe_with(
     budget: &Arc<dyn SourceBudget>,
     owner: Arc<dyn Send + Sync>,
     cancellation: &CancellationToken,
-    store: Option<&super::arena_recipes::ArenaRecipes>,
+    store: Option<&super::canonical_prompt::Store>,
 ) -> io::Result<MessageDescriptor> {
     let mut measure = Measure {
         hash: Sha256::new(),
@@ -342,6 +334,7 @@ async fn describe_with(
     let mut local_tool_names = Identifiers::new(part_capacity, owner.clone(), store).await?;
     let mut settled = Identifiers::new(part_capacity, owner, store).await?;
     let mut last_is_tool_result = false;
+    let mut is_native_checkpoint = false;
     let role = match &recipe {
         MessageRecipe::System {
             content,
@@ -366,8 +359,12 @@ async fn describe_with(
             provider_options,
         } => {
             measure.marker(b"assistant");
+            let mut saw_part = false;
+            let mut all_compaction = true;
             let mut cursor = content.open(0);
             while let Some(part) = cursor.next().await? {
+                saw_part = true;
+                all_compaction &= matches!(part, AssistantRecipe::CodexCompaction { .. });
                 last_is_tool_result = matches!(part, AssistantRecipe::ToolResult(_));
                 match part {
                     AssistantRecipe::CodexCompaction { item } => {
@@ -445,6 +442,7 @@ async fn describe_with(
                 }
             }
             measure.marker(b"assistant-end");
+            is_native_checkpoint = saw_part && all_compaction;
             measure.options(provider_options).await?;
             MessageRole::Assistant
         }
@@ -480,8 +478,9 @@ async fn describe_with(
         recipe,
         role,
         last_is_tool_result,
-        local_tool_names: local_tool_names.finish()?,
-        settled_tool_call_ids: settled.finish()?,
+        is_native_checkpoint,
+        local_tool_names: local_tool_names.finish(),
+        settled_tool_call_ids: settled.finish(),
         breakdown,
         logical_identity: hex::encode(commitment).into(),
         commitment,

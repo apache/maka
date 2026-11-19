@@ -21,6 +21,7 @@ use nsh_core::{
         Arg, Exception, JsClass, JsError, JsHost, JsIn, JsKind, JsOwned, JsValue, PropError,
         Registry, TsTypes,
     },
+    host_channel::ModuleFake,
     prelude::*,
 };
 use nsh_engine::{HostCall, HostChannel, HttpBody, HttpRequest};
@@ -256,7 +257,7 @@ impl Testing {
     /// platform cannot honor rejects (`ERR_NSH_TEST_UNSUPPORTED`, naming
     /// it): `width` and `height` on iOS and Android, a `platform` the
     /// target is not (a phone's on a desktop, a desktop's on a phone, the
-    /// other phone), `host.handlers`, `url`.
+    /// other phone), `host.handlers`, `modules`, `url`.
     pub async fn open(entry: String, options: Option<OpenOptions>) -> Result<App, JsError> {
         let session = Session::current().map_err(JsError::Error)?;
         let options = options.unwrap_or_default();
@@ -266,7 +267,8 @@ impl Testing {
             .as_ref()
             .and_then(|h| h.handlers.as_ref())
             .is_some_and(|h| !h.0.is_empty());
-        let (host, record) = host_setup(options.host, &mut server);
+        let module_fakes = options.modules.as_ref().is_some_and(|m| !m.0.is_empty());
+        let (host, record) = host_setup(options.host, options.modules, &mut server);
         let manual_clock = options.clock.is_some();
         let launch = Launch {
             storage: options.storage.unwrap_or_default(),
@@ -285,6 +287,7 @@ impl Testing {
                 .map(|c| c.time.map_or_else(std::time::SystemTime::now, |t| t.0)),
             host,
             host_handlers,
+            module_fakes,
             url_scheme: options.url_scheme,
         };
         let opening = blocking(move || session.open(&entry, launch));
@@ -436,6 +439,113 @@ pub struct OpenOptions {
     /// `schemes`), as from the system. Headless runs only: with
     /// `--target` it rejects (`ERR_NSH_TEST_UNSUPPORTED`).
     pub url_scheme: Option<String>,
+    /// Stand-ins for exports of the native modules the app imports (its
+    /// crate's, `nsh/base`'s, the runtime's), by the module's specifier,
+    /// then by export (`"save"`) or member of one (`"Keychain.get"`): a
+    /// value takes the export's place (a function's stand-in returns it at
+    /// once, synchronously); a function answers each of the app's calls,
+    /// which return a promise even where the export returns at once: of
+    /// what it returns (or of what its promise resolves to), rejected with
+    /// what it throws. The app's imports get them; Rust
+    /// code calling the module directly runs the module. Headless runs
+    /// only: with `--target` it rejects (`ERR_NSH_TEST_UNSUPPORTED`).
+    pub modules: Option<ModuleFakes>,
+}
+
+/// `open`'s `modules`: by specifier, the stand-ins of its exports.
+#[derive(Debug, Default)]
+pub struct ModuleFakes(pub Vec<(String, Vec<(String, ModuleFakeOption)>)>);
+
+/// A stand-in of `open`'s `modules`.
+#[derive(Debug)]
+pub enum ModuleFakeOption {
+    /// The value in the export's place.
+    Value(JsonValue),
+    /// The function answering the app's calls, with their arguments.
+    Function(Callback<FakeArgs, JsonValue>),
+}
+
+/// The arguments of an app's call of a stand-in, as the test's function
+/// gets them: one by one.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct FakeArgs(pub Vec<JsonValue>);
+
+impl nsh_core::element::CallbackArgs for FakeArgs {
+    const ARITY: usize = 0;
+
+    fn ts_params(_types: &mut TsTypes, _names: &[&str]) -> String {
+        "...args: any[]".into()
+    }
+
+    fn into_js_args<'a>(self, host: &'a dyn JsHost) -> Result<Vec<JsOwned<'a>>, PropError> {
+        self.0
+            .into_iter()
+            .map(|value| nsh_core::element::Ret::into_js(value, host))
+            .collect()
+    }
+
+    fn classes(_out: &mut Vec<&'static nsh_core::element::ClassDef>) {}
+}
+
+impl JsValue for ModuleFakes {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        // Not `unknown | …`, which is `unknown` and leaves the arrows untyped.
+        "Record<string, Record<string, {} | null | ((...args: any[]) => unknown)>>".into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        if value.kind() != JsKind::Object {
+            return Err(value.expected("an object of modules"));
+        }
+        let mut modules = Vec::new();
+        for specifier in value.keys()? {
+            let exports = value.field(&specifier)?;
+            let exports = exports.get();
+            if exports.kind() != JsKind::Object {
+                return Err(PropError(format!(
+                    "`{specifier}`: {}",
+                    exports.expected("an object of exports").0
+                )));
+            }
+            let mut fakes = Vec::new();
+            for path in exports.keys()? {
+                let field = exports.field(&path)?;
+                let field = field.get();
+                let fake = if field.kind() == JsKind::Function {
+                    <Callback<FakeArgs, JsonValue> as Arg>::from_js(field)
+                        .map(ModuleFakeOption::Function)
+                } else {
+                    field.to_json().map(ModuleFakeOption::Value)
+                };
+                fakes.push((
+                    path.clone(),
+                    fake.map_err(|e| PropError(format!("`{specifier}`: `{path}`: {}", e.0)))?,
+                ));
+            }
+            modules.push((specifier, fakes));
+        }
+        Ok(ModuleFakes(modules))
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        // A stand-in's function stays JS's: only values go back.
+        let json = JsonValue::Object(
+            self.0
+                .iter()
+                .map(|(specifier, fakes)| {
+                    let values = fakes
+                        .iter()
+                        .filter_map(|(path, fake)| match fake {
+                            ModuleFakeOption::Value(v) => Some((path.clone(), v.clone())),
+                            ModuleFakeOption::Function(_) => None,
+                        })
+                        .collect();
+                    (specifier.clone(), JsonValue::Object(values))
+                })
+                .collect(),
+        );
+        Ok(JsOwned::new(host, host.json(&json)?))
+    }
 }
 
 /// Locale settings a test gives the user (`open`'s `localeSettings`,
@@ -625,11 +735,12 @@ pub struct HostMessage {
 type HostRecord = Arc<Mutex<Vec<(HostMessage, bool)>>>;
 
 /// The embedding app's channel `options` describe, for the app the test
-/// opens, and the record of what its handlers get. The handlers' JS
-/// functions join `server`, which answers their calls on the test file's
-/// VM.
+/// opens, with the stand-ins of `modules`, and the record of what its
+/// handlers get. The handlers' and the stand-ins' JS functions join
+/// `server`, which answers their calls on the test file's VM.
 fn host_setup(
     options: Option<HostOptions>,
+    modules: Option<ModuleFakes>,
     server: &mut Option<RouteServer>,
 ) -> (HostChannel, HostRecord) {
     let channel = HostChannel::new();
@@ -639,7 +750,8 @@ fn host_setup(
         channel.set_params(params.0);
     }
     let handlers = options.handlers.unwrap_or_default().0;
-    if handlers.is_empty() {
+    let modules = modules.unwrap_or_default().0;
+    if handlers.is_empty() && modules.is_empty() {
         return (channel, record);
     }
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -662,7 +774,7 @@ fn host_setup(
             }),
             HostHandlerOption::Function(function) => {
                 let index = functions.len();
-                functions.push((name.clone(), function));
+                functions.push((name.clone(), HostFunction::Host(function)));
                 let tx = tx.clone();
                 channel.handle(name, move |call| {
                     remember(&call);
@@ -670,6 +782,24 @@ fn host_setup(
                     let _ = tx.send((index, call));
                 });
             }
+        }
+    }
+    for (specifier, fakes) in modules {
+        for (path, fake) in fakes {
+            let fake = match fake {
+                ModuleFakeOption::Value(value) => ModuleFake::Value(value),
+                ModuleFakeOption::Function(function) => {
+                    let name = format!("{specifier}#{path}");
+                    let index = functions.len();
+                    functions.push((name.clone(), HostFunction::Module(function)));
+                    let tx = tx.clone();
+                    channel.handle_module_fake(name.clone(), move |call| {
+                        let _ = tx.send((index, call));
+                    });
+                    ModuleFake::Call(name)
+                }
+            };
+            channel.fake_module_export(specifier.clone(), path, fake);
         }
     }
     if !functions.is_empty() {
@@ -815,6 +945,10 @@ pub struct PickRequest {
     pub format: String,
     /// The file types offered (`pickFiles`); empty: any.
     pub filters: Vec<PickFilter>,
+    /// The largest file read, in bytes (`pickFiles`' `maxSize`, at most
+    /// 512 MiB); `null` for images. A larger file the handler gives answers
+    /// with its name and size only.
+    pub max_size: Option<f64>,
 }
 
 /// A group of file types a pick offers, as a test reads it.
@@ -842,6 +976,7 @@ impl From<&nsh_core::picker::Pick> for PickRequest {
                 }
                 .into(),
                 filters: Vec::new(),
+                max_size: None,
             },
             Pick::Files(request) => PickRequest {
                 kind: "files".into(),
@@ -858,7 +993,53 @@ impl From<&nsh_core::picker::Pick> for PickRequest {
                         extensions: filter.extensions.clone(),
                     })
                     .collect(),
+                max_size: Some(request.size_limit() as f64),
             },
+        }
+    }
+}
+
+/// How the user answers the share sheet (`app.onShare`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PropEnum)]
+pub enum ShareAnswerAction {
+    /// The user shares.
+    Shared,
+    /// The user closes the sheet without sharing.
+    #[default]
+    Dismissed,
+}
+
+/// How the user answers every share sheet (`app.onShare`).
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+#[prop(exact)]
+pub struct ShareAnswer {
+    /// `"shared"` or `"dismissed"`.
+    pub action: ShareAnswerAction,
+    /// The target chosen when shared (`"com.apple.UIKit.activity.Mail"`);
+    /// none: the platform names none.
+    pub target: Option<String>,
+}
+
+/// What the app shared (`Share.show`), as a test reads it.
+#[derive(Debug, Clone, PartialEq, JsObject)]
+pub struct SharedContent {
+    /// The title; `null` when none was given.
+    pub title: Option<String>,
+    /// The text; `null` when none was given.
+    pub text: Option<String>,
+    /// The link; `null` when none was given.
+    pub url: Option<String>,
+    /// The files' real paths.
+    pub files: Vec<String>,
+}
+
+impl From<&nsh_core::share::ShareSheet> for SharedContent {
+    fn from(sheet: &nsh_core::share::ShareSheet) -> Self {
+        SharedContent {
+            title: sheet.title.clone(),
+            text: sheet.text.clone(),
+            url: sheet.url.clone(),
+            files: sheet.files.clone(),
         }
     }
 }
@@ -1065,6 +1246,32 @@ impl From<nsh_core::ResolvedTextStyle> for SpanStyle {
             italic: style.italic,
             underline: style.decoration.underline,
             line_through: style.decoration.line_through,
+        }
+    }
+}
+
+/// The style of a view as the app set it (`app.viewStyle`). Colors are
+/// `#rrggbbaa`. The values are those the app set last: while an animation
+/// runs, its end value. A background the platform draws itself (a native
+/// control's) is not here; check it with a screenshot.
+#[derive(Debug, Clone, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct ViewStyle {
+    /// Its `backgroundColor`, absent when transparent.
+    #[prop(skip_none)]
+    pub background_color: Option<String>,
+    /// Its own `opacity`.
+    pub opacity: f64,
+    /// The opacity it shows with: its own times every view's around it.
+    pub effective_opacity: f64,
+}
+
+impl From<crate::screen::ViewStyle> for ViewStyle {
+    fn from(style: crate::screen::ViewStyle) -> Self {
+        ViewStyle {
+            background_color: style.background_color.map(|c| format!("#{c:08x}")),
+            opacity: f64::from(style.opacity),
+            effective_opacity: f64::from(style.effective_opacity),
         }
     }
 }
@@ -1301,6 +1508,8 @@ pub(crate) struct Launch {
     pub(crate) host: HostChannel,
     /// Whether `open`'s `host` has handlers (a headless run's only).
     pub(crate) host_handlers: bool,
+    /// Whether `open` has `modules` (a headless run's only).
+    pub(crate) module_fakes: bool,
     /// The link that launched the app (a headless run's only).
     pub(crate) url_scheme: Option<String>,
 }
@@ -1323,15 +1532,23 @@ struct RouteCall {
     reply: StubReply,
 }
 
+/// A JS function of the test that answers the app's calls.
+enum HostFunction {
+    /// Of `open`'s `host.handlers`: it gets the call's data.
+    Host(Callback<JsonValue, JsonValue>),
+    /// Of `open`'s `modules`: it gets the call's arguments.
+    Module(Callback<FakeArgs, JsonValue>),
+}
+
 /// The JS functions of an app's routes, and the requests waiting for them:
 /// answered while the app's steps run ([`serve`]).
 pub(crate) struct RouteServer {
     keys: Vec<String>,
     handlers: Vec<Callback<StubRequest, JsonValue>>,
     calls: RefCell<tokio::sync::mpsc::UnboundedReceiver<RouteCall>>,
-    /// The JS functions of `open`'s `host.handlers`, by name, and the
-    /// app's calls and posts waiting for them.
-    host_handlers: Vec<(String, Callback<JsonValue, JsonValue>)>,
+    /// The JS functions of `open`'s `host.handlers` and `modules`, by
+    /// name, and the app's calls and posts waiting for them.
+    host_handlers: Vec<(String, HostFunction)>,
     host_calls: RefCell<tokio::sync::mpsc::UnboundedReceiver<(usize, HostCall)>>,
 }
 
@@ -1352,7 +1569,16 @@ impl RouteServer {
     /// to handle, not the test's failure).
     async fn answer_host(&self, index: usize, mut call: HostCall) {
         let data = call.take_data();
-        let answer = self.host_handlers[index].1.call_async(data).await;
+        let answer = match &self.host_handlers[index].1 {
+            HostFunction::Host(function) => function.call_async(data).await,
+            HostFunction::Module(function) => {
+                let args = match data {
+                    JsonValue::Array(args) => args,
+                    other => vec![other],
+                };
+                function.call_async(FakeArgs(args)).await
+            }
+        };
         match answer {
             Ok(value) => call.resolve(value),
             Err(error) => call.reject(error.to_string()),
@@ -1725,8 +1951,9 @@ pub struct Keyboard {
 impl Keyboard {
     /// Presses `keys`, a keystroke as `nsh/keymap` names it (`"mod+k"`,
     /// `"shift+/"`, `"escape"`; `mod` is the platform's command key): the
-    /// app's shortcut of it hears it (`onKeyCommand`), else the focused
-    /// input takes it, else Escape goes back.
+    /// app's shortcut of it hears it (`onKeyCommand`), else on a desktop
+    /// the application menu's item with that shortcut is chosen, else the
+    /// focused input takes it, else Escape goes back.
     pub async fn press(this: Instance<Self>, keys: String) -> Result<(), JsError> {
         let steps = this.with(|k| k.steps.clone());
         steps.run(move |app| app.press_key(&keys)).await
@@ -1734,7 +1961,8 @@ impl Keyboard {
 
     /// Holds modifier keys down (`"mod"`, `"shift"`, `"alt"`, `"ctrl"`,
     /// `"meta"`, joined by `+`) until `up`: the presses, drags and hovers
-    /// meanwhile carry them (a Mod-click, a Shift-drag). Headless and on Linux.
+    /// meanwhile carry them (a Mod-click, a Shift-drag). Headless and on Linux;
+    /// elsewhere it rejects (`ERR_NSH_TEST_UNSUPPORTED`).
     pub async fn down(this: Instance<Self>, keys: String) -> Result<(), JsError> {
         let steps = this.with(|k| k.steps.clone());
         steps.run(move |app| app.hold_keys(&keys, true)).await
@@ -1762,7 +1990,9 @@ const CLOSED: &str = "the app is closed: the test that opened it ended";
 #[class]
 impl App {
     /// Presses what `selector` names (or the nearest view around it that
-    /// hears presses, as a tap on a button's text does).
+    /// hears presses, as a tap on a button's text does). On iOS, a header
+    /// button of `ios.headerRightItems` is pressed too, by `id:<key>` or
+    /// its label: it presses it, or opens its menu.
     pub async fn press(this: Instance<Self>, selector: String) -> Result<(), JsError> {
         step(&this, move |app| app.press(&selector)).await
     }
@@ -1822,7 +2052,8 @@ impl App {
 
     /// Drops local files (`file:` URLs, as a file manager drags them) on
     /// the middle of what `selector` names: it, or the nearest view around
-    /// it listening, hears `onFileDrop`. Desktops, headless and on Linux for now.
+    /// it listening, hears `onFileDrop`. Desktops, headless, on Linux and
+    /// on macOS for now.
     pub async fn drop_files(
         this: Instance<Self>,
         selector: String,
@@ -1844,6 +2075,21 @@ impl App {
         step(&this, move |app| app.right_click(&selector)).await
     }
 
+    /// An input method composes `text` in the input `selector` names (or
+    /// the first input in it), as a user typing pinyin or kana sees it: the
+    /// input takes the focus and `text` shows marked at the caret, in
+    /// place of what it composed, without changing its value
+    /// (`onCompositionChange`); the input is laid out with it. An empty
+    /// `text` ends the composition with nothing committed: end it so before
+    /// the next step on the input. Headless and on macOS for now.
+    pub async fn compose(
+        this: Instance<Self>,
+        selector: String,
+        text: String,
+    ) -> Result<(), JsError> {
+        step(&this, move |app| app.compose(&selector, &text)).await
+    }
+
     /// Pastes `content` into the input `selector` names (or the first input
     /// in it), as the user's paste does with it on the clipboard: the input
     /// takes the focus and hears `onPaste` (`files` are paths whose bytes
@@ -1860,7 +2106,9 @@ impl App {
 
     /// Chooses the open context menu's action labelled `label` (a
     /// submenu's: `"Share > Mail"`), as a click on it: the app hears
-    /// `onMenu`, then the menu closes.
+    /// `onMenu`, then the menu closes. On iOS it is a menu the system
+    /// shows (a `MenuButton`'s, a `ContextMenu`'s, a header button's),
+    /// chosen from as a tap does.
     pub async fn choose_menu_item(this: Instance<Self>, label: String) -> Result<(), JsError> {
         step(&this, move |app| app.choose_menu_item(&label)).await
     }
@@ -1943,11 +2191,10 @@ impl App {
             let clock_left = moved.map(|moved| timeout.saturating_sub(moved));
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             if left.is_zero() && clock_left.is_none_or(|l| l.is_zero()) {
-                let screen = on_app(&app, |a| Ok(format!("{:?}", a.texts()?)))
-                    .await
-                    .map_err(step_error)?;
+                let texts = on_app(&app, |a| a.texts()).await.map_err(step_error)?;
+                let screen = failure::screen_texts(&texts, Some(failure::SCREEN_TEXT_LIMIT));
                 return Err(JsError::Error(format!(
-                    "the condition never held in {} ms; on screen: {screen}",
+                    "the condition never held in {} ms; on screen: [{screen}]",
                     timeout.as_millis()
                 ))
                 .with_code(failure::TIMED_OUT));
@@ -2024,6 +2271,14 @@ impl App {
         self.with(|app| app.span_style(&selector).map(SpanStyle::from))
     }
 
+    /// The style of the view `selector` names: `backgroundColor` (absent
+    /// when transparent), its own `opacity` and `effectiveOpacity` (times
+    /// every view's around it); `null` when none matches. The values are
+    /// those the app set last, an animation's end value while it runs.
+    pub fn view_style(&self, selector: String) -> Result<Option<ViewStyle>, JsError> {
+        self.with(|app| app.view_style(&selector).map(|s| s.map(ViewStyle::from)))
+    }
+
     /// What the app's storage holds now.
     pub fn storage(&self) -> Result<Entries, String> {
         if let Some(storage) = &self.storage {
@@ -2036,12 +2291,20 @@ impl App {
     }
 
     /// Goes back as the user does (a header's back button, swiping a sheet
-    /// down): the innermost stack of the newest modal (else of the screen)
+    /// down; in a sheet showing a pushed page, its header's back button):
+    /// the innermost stack of the newest modal (else of the screen)
     /// pops its top screen, or asks it when it prevents going back; without
     /// one, the newest modal asks to close. Rejects (`ERR_NSH_TEST_NO_BACK`)
     /// when there is nothing to go back from.
     pub async fn back(this: Instance<Self>) -> Result<(), JsError> {
         step(&this, |app| app.back()).await
+    }
+
+    /// Goes forward in the browser's history, as its forward button does.
+    /// Only `nsh test --target web` has one; elsewhere it rejects
+    /// (`ERR_NSH_TEST_UNSUPPORTED`).
+    pub async fn forward(this: Instance<Self>) -> Result<(), JsError> {
+        step(&this, |app| app.forward()).await
     }
 
     /// Answers the dialogs the app shows from now on (`AlertDialog.show`, action
@@ -2243,11 +2506,60 @@ impl App {
         step(&this, move |app| app.open_with_url(&url)).await
     }
 
+    /// The images whose source is `url` fail to load from now on, those
+    /// loading now included: each reports the failure as on a device
+    /// (`onError`), so a test checks what the app shows instead (an
+    /// avatar's initials, a placeholder). `url` is matched whole and `*`
+    /// in it matches anything (`"https://cdn.example.com/avatars/*"`), as
+    /// `open`'s `network` routes are; a bundled image's is
+    /// `asset:/<path>`. Then waits until the app is quiet. Headless only.
+    pub async fn fail_images(this: Instance<Self>, url: String) -> Result<(), JsError> {
+        step(&this, move |app| app.fail_images(&url)).await
+    }
+
+    /// The URLs the app opens that match `url` fail to open from now on:
+    /// `openUrl` resolves `{ opened: false }`, as on a device with no app
+    /// for the URL, so a test checks what the app shows then. `url` is
+    /// matched whole and `*` in it matches anything
+    /// (`"https://example.com/*"`), as `open`'s `network` routes are. They
+    /// are still listed by `openedUrls`. Then waits until the app is
+    /// quiet. Headless only.
+    pub async fn fail_open_urls(this: Instance<Self>, url: String) -> Result<(), JsError> {
+        step(&this, move |app| app.fail_open_urls(&url)).await
+    }
+
+    /// The platform shows a share sheet from now on (`Share.available()`
+    /// resolves `true`), and the user answers every one the app shows
+    /// (`Share.show`) as `answer` says: shared, to its `target` if it names
+    /// one, or dismissed. What the app shares is listed by `shares`. Then
+    /// waits until the app is quiet. Headless only: a real platform shows
+    /// its own sheet.
+    pub async fn on_share(this: Instance<Self>, answer: ShareAnswer) -> Result<(), JsError> {
+        let outcome = match answer.action {
+            ShareAnswerAction::Shared => nsh_core::share::ShareOutcome::shared(answer.target),
+            ShareAnswerAction::Dismissed => nsh_core::share::ShareOutcome::dismissed(),
+        };
+        step(&this, move |app| app.on_share(outcome)).await
+    }
+
+    /// What the app shared (`Share.show`), in order: recorded, never
+    /// shared, and answered as `onShare` says. Headless only.
+    pub fn shares(&self) -> Result<Vec<SharedContent>, JsError> {
+        self.with(|app| Ok(app.shares()?.iter().map(SharedContent::from).collect()))
+    }
+
     /// Moves the app to `state`, as the system does when the user leaves it
     /// (`"background"`), switches to another app or window (`"inactive"`)
     /// and comes back (`"active"`); `lifecycle()` follows. Headless only.
     pub async fn set_lifecycle(this: Instance<Self>, state: Lifecycle) -> Result<(), JsError> {
         step(&this, move |app| app.set_lifecycle(state.into())).await
+    }
+
+    /// Wakes the system from sleep, as when the user opens a laptop's lid:
+    /// `wakeCount()` counts one more, and `lifecycle()` stays as it was.
+    /// Headless only.
+    pub async fn wake(this: Instance<Self>) -> Result<(), JsError> {
+        step(&this, |app| app.wake()).await
     }
 
     /// Gives the user the locale settings `settings` names
@@ -2266,6 +2578,13 @@ impl App {
     /// The text on the clipboard now, `null` when it holds none.
     pub fn clipboard(&self) -> Result<Option<String>, JsError> {
         self.with(|app| app.clipboard())
+    }
+
+    /// The item on the clipboard now, `{ text, html? }` (`Clipboard.write`;
+    /// text alone has no `html`), `null` when it holds none. Headless tests
+    /// only.
+    pub fn clipboard_item(&self) -> Result<Option<ClipboardItem>, JsError> {
+        self.with(|app| app.clipboard_item())
     }
 
     /// `f` with the app as it is now (the batches that came applied); a
@@ -2397,6 +2716,14 @@ pub struct Expectation {
     not: bool,
 }
 
+/// What a matcher shows of the value it expected: the value as
+/// [`values::show`] writes it, and a note after it (why `toBe` failed when
+/// the values are equal but not the same).
+struct Want {
+    shown: String,
+    note: &'static str,
+}
+
 #[class]
 impl Expectation {
     /// The opposite checks: `expect(texts).not.toContain("Error")`.
@@ -2448,7 +2775,13 @@ impl Expectation {
                 Some(text) => pattern.matches(host, &text)?,
                 None => false,
             };
-            Ok((holds, Some(pattern.describe())))
+            Ok((
+                holds,
+                Some(Want {
+                    shown: pattern.describe(),
+                    note: "",
+                }),
+            ))
         })
     }
 
@@ -2464,7 +2797,13 @@ impl Expectation {
                 }
                 _ => None,
             };
-            Ok((len == Some(length), Some(values::number(length))))
+            Ok((
+                len == Some(length),
+                Some(Want {
+                    shown: values::number(length),
+                    note: "",
+                }),
+            ))
         })
     }
 
@@ -2553,7 +2892,13 @@ impl Expectation {
     fn compare(&self, n: f64, what: &'static str, holds: impl Fn(f64) -> bool + 'static) -> Check {
         self.verdict(what, move |_, value| {
             let holds = value.kind() == JsKind::Number && value.as_number().is_some_and(holds);
-            Ok((holds, Some(values::number(n))))
+            Ok((
+                holds,
+                Some(Want {
+                    shown: values::number(n),
+                    note: "",
+                }),
+            ))
         })
     }
 
@@ -2566,11 +2911,18 @@ impl Expectation {
             if value.same_value(expected) {
                 return Ok((true, None));
             }
-            let mut shown = values::show(expected);
-            if values::equals(value, expected).map_err(|e| e.0)? {
-                shown.push_str(" (an equal value, not the same one: `toEqual` compares members)");
-            }
-            Ok((false, Some(shown)))
+            let note = if values::equals(value, expected).map_err(|e| e.0)? {
+                " (an equal value, not the same one: `toEqual` compares members)"
+            } else {
+                ""
+            };
+            Ok((
+                false,
+                Some(Want {
+                    shown: values::show(expected),
+                    note,
+                }),
+            ))
         })
     }
 
@@ -2584,7 +2936,13 @@ impl Expectation {
         self.verdict("to equal", move |host, value| {
             let expected = expected.get(host)?;
             let holds = values::equals(value, expected.get()).map_err(|e| e.0)?;
-            Ok((holds, Some(values::show(expected.get()))))
+            Ok((
+                holds,
+                Some(Want {
+                    shown: values::show(expected.get()),
+                    note: "",
+                }),
+            ))
         })
     }
 
@@ -2598,7 +2956,13 @@ impl Expectation {
             let subset = subset.get(host)?;
             subset_of(subset.get())?;
             let holds = values::matches_object(value, subset.get()).map_err(|e| e.0)?;
-            Ok((holds, Some(values::show(subset.get()))))
+            Ok((
+                holds,
+                Some(Want {
+                    shown: values::show(subset.get()),
+                    note: "",
+                }),
+            ))
         })
     }
 
@@ -2615,7 +2979,13 @@ impl Expectation {
                     .iter()
                     .any(|i| values::strict_equal(i.get(), item.get())),
             };
-            Ok((holds, Some(values::show(item.get()))))
+            Ok((
+                holds,
+                Some(Want {
+                    shown: values::show(item.get()),
+                    note: "",
+                }),
+            ))
         })
     }
 
@@ -2632,7 +3002,13 @@ impl Expectation {
                     break;
                 }
             }
-            Ok((holds, Some(values::show(item.get()))))
+            Ok((
+                holds,
+                Some(Want {
+                    shown: values::show(item.get()),
+                    note: "",
+                }),
+            ))
         })
     }
 
@@ -2651,7 +3027,7 @@ impl Expectation {
     fn verdict(
         &self,
         what: &'static str,
-        holds: impl FnOnce(&dyn JsHost, JsIn<'_>) -> Result<(bool, Option<String>), String> + 'static,
+        holds: impl FnOnce(&dyn JsHost, JsIn<'_>) -> Result<(bool, Option<Want>), String> + 'static,
     ) -> Check {
         let (value, not) = (self.value.clone(), self.not);
         let hint = match (&self.run, self.promise) {
@@ -2665,15 +3041,25 @@ impl Expectation {
         };
         Check::new(move |host| {
             let value = value.get(host)?;
-            let (holds, expected) = holds(host, value.get())?;
+            let (holds, wanted) = holds(host, value.get())?;
             if holds != not {
                 return Ok(());
             }
             let not = if not { "not " } else { "" };
             let shown = values::show(value.get());
-            Err(match expected {
-                Some(expected) => format!("expected {shown} {not}{what} {expected}{hint}"),
-                None => format!("expected {shown} {not}{what}{hint}"),
+            let limit = crate::failure::SCREEN_TEXT_LIMIT;
+            Err(match wanted {
+                Some(Want {
+                    shown: expected,
+                    note,
+                }) => {
+                    let (shown, expected) = values::show_pair(&shown, &expected, limit);
+                    format!("expected {shown} {not}{what} {expected}{note}{hint}")
+                }
+                None => format!(
+                    "expected {} {not}{what}{hint}",
+                    values::shorten(&shown, limit)
+                ),
             })
         })
     }
@@ -2755,14 +3141,19 @@ impl Rejection {
             }
             let not_ = if not { "not " } else { "" };
             let subject = subject(promise);
+            let limit = crate::failure::SCREEN_TEXT_LIMIT;
             let subset = values::show(subset.get());
             Err(match error {
-                Some(error) => format!(
-                    "expected {subject} {not_}to reject with a value matching {subset}; it rejected with {}",
-                    values::show(error.get())
-                ),
+                Some(error) => {
+                    let rejected = values::show(error.get());
+                    let (subset, rejected) = values::show_pair(&subset, &rejected, limit);
+                    format!(
+                        "expected {subject} {not_}to reject with a value matching {subset}; it rejected with {rejected}"
+                    )
+                }
                 None => format!(
-                    "expected {subject} {not_}to reject with a value matching {subset}; it resolved"
+                    "expected {subject} {not_}to reject with a value matching {}; it resolved",
+                    values::shorten(&subset, limit)
                 ),
             })
         }))
@@ -2820,9 +3211,12 @@ async fn resolved(this: Instance<Resolution>) -> Result<Expectation, String> {
             not,
         }),
         Err(error) => Err(format!(
-            "expected {} to resolve; it rejected with {:?}",
+            "expected {} to resolve; it rejected with {}",
             subject(promise),
-            error.message
+            values::shorten(
+                &format!("{:?}", error.message),
+                crate::failure::SCREEN_TEXT_LIMIT
+            )
         )),
     }
 }
@@ -2842,7 +3236,7 @@ fn subset_of(subset: JsIn<'_>) -> Result<(), String> {
         Some(class) if class != JsClass::Function => Ok(()),
         _ => Err(format!(
             "`toMatchObject` takes an object of the properties to match, not {}",
-            values::show(subset)
+            values::shorten(&values::show(subset), crate::failure::SCREEN_TEXT_LIMIT)
         )),
     }
 }
@@ -2897,7 +3291,7 @@ fn describe_error(error: &Exception) -> String {
     if let Some(code) = field("code") {
         text.push_str(&format!(" (code {code:?})"));
     }
-    text
+    values::shorten(&text, crate::failure::SCREEN_TEXT_LIMIT)
 }
 
 /// What `expect` checks: a value, kept as JS made it; a function (for
@@ -2965,11 +3359,12 @@ impl ErrorMatch {
     }
 
     fn describe(&self) -> String {
-        match self {
+        let text = match self {
             ErrorMatch::Message(pattern) => pattern.describe(),
             ErrorMatch::Class(class) => class.clone(),
             ErrorMatch::Error(message) => format!("an error {}", JsonValue::from(message.as_str())),
-        }
+        };
+        values::shorten(&text, crate::failure::SCREEN_TEXT_LIMIT)
     }
 }
 
@@ -3040,6 +3435,7 @@ impl Pattern {
     }
 
     /// As failure messages show it: a string quoted, a `RegExp` as it reads.
+    /// The caller bounds it, keeping the whole pattern for comparisons.
     fn describe(&self) -> String {
         match self {
             Pattern::Contains(part) => JsonValue::String(part.clone()).to_string(),
@@ -3131,6 +3527,39 @@ const fails = (f, message) => {{
                 () => expect(Promise.resolve(1)).toBe(1),
                 "expected Promise {} to be 1; `expect` was given a promise: check what it settles to with `resolves` or `rejects`",
             );
+        "#);
+    }
+
+    #[test]
+    fn a_long_value_is_cut_in_a_failure_message() {
+        run(r#"
+            const long = "x".repeat(200000);
+            let shown;
+            try { expect(long).toBe("y"); } catch (e) { shown = e.message; }
+            if (!shown || shown.length >= 6000 || !shown.includes("…"))
+                throw new Error("a long value was not cut: " + shown?.length);
+        "#);
+    }
+
+    #[test]
+    fn a_long_common_prefix_does_not_hide_the_difference() {
+        run(r#"
+            const prefix = "x".repeat(5000);
+            let shown;
+            try { expect(prefix + "A").toBe(prefix + "B"); } catch (e) { shown = e.message; }
+            if (!shown || shown.length >= 6000 || !shown.includes("A") || !shown.includes("B"))
+                throw new Error("the difference was hidden: " + shown);
+        "#);
+    }
+
+    #[test]
+    fn a_long_match_pattern_keeps_the_difference() {
+        run(r#"
+            const prefix = "x".repeat(5000);
+            let shown;
+            try { expect(prefix + "A").toMatch(prefix + "B"); } catch (e) { shown = e.message; }
+            if (!shown || shown.length >= 6000 || !shown.includes("A") || !shown.includes("B"))
+                throw new Error("the pattern's difference was hidden: " + shown);
         "#);
     }
 

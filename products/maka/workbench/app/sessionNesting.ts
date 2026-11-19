@@ -71,3 +71,38 @@ export function nestCreated(sessions: readonly Nestable[]): {
     .flatMap(({ id }) => [id, ...(children.get(id) ?? [])]);
   return { order, nested };
 }
+
+/** The desktop's ordinary list puts Bot workers under its own entry; inbox and archive keep them. */
+export function workspaceSessions<T extends Nestable>(
+  sessions: readonly T[],
+  ancestor: string | null,
+  filter: 'all' | 'archived' | 'needs_you',
+  desktop: boolean,
+): T[] {
+  if (ancestor === null) return [...sessions];
+  sessions = sessions.filter((session) => session.id !== ancestor);
+  if (!desktop || filter !== 'all') return [...sessions];
+  const parents = new Map(sessions.map((session) => [session.id, session.parentSessionId]));
+  const verdicts = new Map<string, boolean>();
+  const descends = (id: string): boolean => {
+    const path: string[] = [];
+    let at: string | null | undefined = parents.get(id);
+    let result = false;
+    while (at != null && path.length <= sessions.length) {
+      if (at === ancestor) {
+        result = true;
+        break;
+      }
+      const known = verdicts.get(at);
+      if (known !== undefined) {
+        result = known;
+        break;
+      }
+      path.push(at);
+      at = parents.get(at);
+    }
+    for (const member of path) verdicts.set(member, result);
+    return result;
+  };
+  return sessions.filter((session) => !descends(session.id));
+}

@@ -177,4 +177,5 @@ const { action } = await AlertDialog.show({
 
 - **iOS**：由 `UIAlertController` 布局操作。角色为 `"cancel"` 的操作放在 iOS 放置取消操作的位置，操作表把它单独显示在底部。在 iPad 和 Mac Catalyst 上，操作表是一个弹出框，带一个无标题的取消操作：点按外部会关闭它，`action` 为 `null`。
 - **Android**：`AlertDialog` 最多显示三个操作，按位置对应：最后一个操作是确定按钮，它前面的是否定按钮，再前面的是中性按钮。操作表是对话框中的操作列表，以点按外部或返回键代替它的取消操作（此时 `action` 为 `null`）。列表对话框显示 `title`，没有标题时显示 `description`。
+- **macOS**：`NSAlert`，是用户所在窗口上的表单。该窗口不可见时（如托盘应用隐藏的主窗口、应用被隐藏、窗口最小化或不在任何屏幕上），警告框单独显示在所有窗口最前面，在得到回答之前接收应用的输入，应用本身照常运行。Escape 选择 `"cancel"` 操作。见 [macOS](../docs/macos.md)。
 - **Windows、Linux、GPUI 和 Web**：NSH 以平台的对话框风格绘制警告框或操作表。

@@ -23,7 +23,7 @@ what is ported. A module ported from one names its source in its module doc; kee
 | `commands/` | prosemirror-commands and prosemirror-schema-list: `Command`s over a state and an optional dispatch, `chain_commands`, `base_keymap` |
 | `extensions/` | optional behavior as plugins: `history`, `keymap`, `input_rules`, `markdown` (Markdown shortcuts as you type, Markdown paste and copy, mapped by `MarkdownNames`); `starter`, the optional starter schema (paragraphs, headings, quotes, code, lists, images, the common marks) with its keymap and input rules |
 | `tables/` | prosemirror-tables: `TableMap`, `CellSelection`, `fix_tables`, the `table_editing` plugin, the table commands and Tiptap's table node specs (see "Tables") |
-| `formats/` | `DocFormat`: `JsonFormat`, `PlainTextFormat`, `MarkdownFormat` (names mapped by `MarkdownNames`; GFM task items read as `taskList` / `taskItem`, a run of them splitting a bullet list, and write as `- [x]` / `- [ ]`), the clipboard's `slice_to_text` / `slice_from_text` |
+| `formats/` | `DocFormat`: `JsonFormat`, `PlainTextFormat`, `MarkdownFormat` (names mapped by `MarkdownNames`; GFM task items read as `taskList` / `taskItem`, a run of them splitting a bullet list, and write as `- [x]` / `- [ ]`; Markdown read to 64 levels of blocks and inline content, deeper content as its text, so a paste of thousands of nested quotes cannot run the stack out), the clipboard's `slice_to_text` / `slice_from_text` |
 
 ## Documents defined by the schema
 
@@ -106,6 +106,18 @@ a task item). Its contract:
 A node view never mutates its node: an attribute change (a resized image, a toggled checkbox) is a transaction
 (`set_node_attribute`), so it is undoable, mapped, collaborated and checked like any other change.
 
+An app's TS extension renders its atoms with `addNodeView` (`js/node_views.rs`). `createRichEditor` calls it once and
+registers a `JsNodeView` for the type; the JS function cannot live in a `Send + Sync` node view, so it stays in a
+thread-local table the view indexes. Its element is a `Renderer` the editor's host renders with the function itself
+(`Renderer::__js_fn`): unlike a prop's function, it is called once per key with props reading the latest value (a
+signal behind a `Proxy`), and a value that differs is set in place, nothing is made again. Both runtimes render it
+under the owner the editor's host was made under, so a node view sees the context around the `RichEditor`. The value is the node's
+JSON and whether it is selected, never its position, and an element made again for the same node (every span of a
+block is, as text is typed before it) shares the props' state through its key (`b<block>` or `i<block>.<leaf>`), so
+its value stays equal and no JS runs. `getPos` reads a position a Rust effect keeps (JS reads no Rust signal);
+`updateAttributes` and `deleteNode` dispatch transactions. Inline views report their widths for the geometry; an
+edit before them moves them all, and `layout_rev` goes up once for all of them, in a task.
+
 ## The native view (`rich_editor/view/`)
 
 `RichEditor` (`nsh/base`) is a Rust component over an `EditorSession` (`view/session.rs`): the one live editor the
@@ -122,7 +134,10 @@ keeps its id while it is the same node, or the node at its index with its type),
 and reports `change` (the revision only: the document is read on demand, `docJson()`) and `selectionChange`.
 
 Rendering (`render.rs`): a scroll view of the content box, holding the selection's boxes, the blocks, the
-placeholder and the caret. A block is a view keyed by id whose classes and styles are its node's
+placeholder and the caret. The scroll view is `flex: 1 1 auto` in the root, so the root sizes as CSS's `height:
+auto`: without a height it is the content's height (the core lays the blocks' texts out in the same commit as the
+edit), a `max-height` shrinks the scroll view, which scrolls from then on, and a set height or flex size is filled
+as before. A block is a view keyed by id whose classes and styles are its node's
 part (`classes.nodes` / `styles.nodes` by type name, then `type[attr=value]`), node decorations' `class` and the
 `selectedNode` part. Containers hold their children's views; the children of a node whose spec's `extra.listMarker`
 is `"bullet"` or `"ordered"` (the starter's lists) carry a marker the view draws in the `listMarker` part, absolutely
@@ -143,29 +158,88 @@ restyles.
 Geometry (`geometry.rs`): maps document positions to the laid-out text's lines and back from the blocks' and texts'
 layouts, so the caret and hit tests follow the app's fonts (classes included). A position at a wrap shows at the
 upper line's end with `Affinity::Upstream`.
+The view reports `contentSizeChange({ contentSize })` (as `Input`'s `onContentSizeChange`) when the laid-out
+document's size changes, at most once per engine frame. `contentSize` is the full flow extent in points, including
+offscreen blocks and independent of the viewport's minimum height; it excludes the `content` part's padding.
+Scrolling does not report (`onScroll` does). The event stops at idle and its pending task is canceled with the view.
+Rust uses `RichEditor::on_content_size_change`, whose listener receives
+`RichEditorEvent::ContentSizeChange { content_size }`.
 
 Input (`controller.rs`): as the code `Editor`, an invisible native input at the caret (the sink) takes typed text
-and input methods. Typed text goes to plugins' `handle_text_input` (input rules), else is inserted with the stored
+and input methods. A node selection of a block atom has no caret: the sink is at the node's box, where a platform
+that scrolls a field into view as it focuses it (a browser) finds it, and scrolling the selection into view
+(`scroll_into_view`) brings the node in whole, as ProseMirror scrolls a node selection's DOM node. Typed text goes to plugins' `handle_text_input` (input rules), else is inserted with the stored
 marks (origin `Input`). While an input method composes, its text shows in the line at the caret with the block's
 typography, and the document waits; the commit is one transaction tagged with the composition's id (`composition`
-meta, which the history groups). Keys: the view binds, while focused, every keystroke a keymap could use (`keys.rs`)
+meta, which the history groups). `RichEditorEvent::CompositionChange(bool)` (Rust
+`.on_composition_change`, JS `onCompositionChange({ composing })`) reports each view's start/end transitions,
+including cancellation, after its session flag, held input and composition signal are updated. Updates within an
+active composition keep the same state and emit no further transition. Starting and canceling composition leave
+the document and transaction revision unchanged; a text commit remains a normal transaction. Observers can retain
+the view while composing and release it on the end notification. Keys: the view binds, while focused, every keystroke a keymap could use (`keys.rs`)
 and offers each as a `KeyEvent` to the selected node's view, the plugins' `handle_key_down`, the base keymap, then
 copy / cut / select all and the caret movement (graphemes, words, line ends, lines and pages by geometry, keeping the
 goal x, the document's ends). An Escape none of them takes collapses a selection to its head; with nothing selected,
 in a terminal, it blurs the editor, so the focus can leave it (Escape stays bound for the plugins' own, a
 suggestion's).
 Presses: a node view's `handle_event`, the plugins' click hooks (`handle_click_on` per ancestor, then
-`handle_click`, double and triple likewise), then a caret (Shift extends), a word, the textblock or a node selection;
-a drag extends through `create_selection_between`, and past the viewport's top or bottom it scrolls the view on a timer (the code `Editor`'s `AutoScroll` and `edge_speed`) and extends again at each step. Paste: `transform_pasted_text`, `clipboard_text_parser` (else
-`slice_from_text`), `transform_pasted`, `handle_paste`, else a replace of the selection (origin `Paste`). Files
+`handle_click`, double and triple likewise), then a caret (Shift extends), a word, the textblock or a node selection (a press inside an inline node view's box
+selects its node without Shift or Mod: `inline_view_at`, after prosemirror-view's `selectClickedLeaf`; an inline
+view's box is the frame the text engine placed it at, `TextGeo::widths`, which fixes the positions around it, the
+text between two fixed points scaled to the room it has);
+a drag extends through `create_selection_between`, and past the viewport's top or bottom it scrolls the view on a timer (the code `Editor`'s `AutoScroll` and `edge_speed`) and extends again at each step. Paste: HTML through `transform_pasted_html` and the
+`clipboard_parser` (else the schema's), read by `DomParser::parse_from_clipboard`: HTML an editor copied carries
+`data-pm-slice` and comes back as the copied slice (its open depths, its whitespace, wrapped in its context again),
+other HTML is fitted to the selection (`parse_with_context`); else text through `transform_pasted_text`,
+`clipboard_text_parser` (else `slice_from_text`); then `transform_pasted`, `handle_paste`, else a replace of the selection (origin `Paste`).
+A JS plugin's paste hooks (`RichEditorPlugin.transformPasted` / `handlePaste`; `PluginSpec::__js_hooks` hands them
+to the view) cannot run in the paste event, where JS is not running: when a plugin has one, pastes queue
+(`Rv::pastes`) and one task (`drain_pastes`) takes them in order through the same steps, awaiting each JS hook
+(`Callback::call_async`). After each await it checks the state: a document or selection changed meanwhile means the
+content was made for another place, so the paste starts over from the current state (dropped after three tries);
+Rust hooks so always see the current state. Typing never waits; a paste waits a JS turn.
+`EditorSession::paste_html` / `paste_text` (JS `pasteHTML` / `pasteText`, ProseMirror's) take the same steps
+(`parse_paste`, `paste_transaction`, shared with the view) without the JS hooks: they are what a `handlePaste` calls
+to go on with content it cleaned up, and a JS hook could only answer a turn later.
 (images with their bytes, `file:` URLs from a file manager) go to the app as `onPasteFiles` and insert nothing,
-as Tiptap's file handler leaves them to its `onPaste`. Copy:
-`clipboard_text_serializer`, else `slice_to_text`.
+as Tiptap's file handler leaves them to its `onPaste`. Files dropped on the desktops are the host's `onFileDrop`
+(a component's host takes a view's file drop events, `ComponentHostProps`): the root listens only when the app
+does, the sink belongs to that destination as any input does, and the document and selection stay. Copy
+(ProseMirror's; also a cut and the touch edit menu's Copy and Cut): the selection's slice through each plugin's
+`transform_copied`, put on the clipboard as text and HTML in one write (`set_clipboard_item`): the text by
+`clipboard_text_serializer`, else `slice_to_text`; the HTML by the schema's `DomSerializer` and
+`serialize_for_clipboard`, which records the slice's open depths and context in `data-pm-slice` as ProseMirror does,
+so ProseMirror and Tiptap editors read it back too.
 
-The bubble menu (`bubbleMenu`, a slot): an empty box over the selection's lines (`Rv::selection_box`), inside the
+Touch screens (`view/touch.rs`, after the code `Editor`'s `touch.rs`): a tap places the caret as a press does, a
+double tap (two taps within 300 ms and 24 points, or the platform's click count) selects a word and a triple tap the
+textblock; a long press selects the word under the finger, or places the caret where the finger is off every word
+(a space, past a line's end), and arms a sweep: the content claims the touches as the finger moves
+(`claim_touches(on_move)`, kept from the scroll views) and extends the selection by whole words from the pressed one.
+The range a gesture made is the touch selection; while it is the selection and the editor has the focus, a handle
+(a 32-point wide hit area holding the `selectionHandle` knob, above the start's line and below the end's) stands at
+each end and moves that end as a finger drags it, scrolling the end into view. Anything else that changes the
+selection drops it (`Rv::touch_follow`, from `take_state`). The system's edit menu opens on the sink
+(`ElementRef::open_edit_menu`, `Command::OpenEditMenu`: `UIEditMenuInteraction` on iOS, a floating `ActionMode`
+on Android) over the selection when the long press's finger lifts, after a sweep, a double tap, a handle let go and
+a tap on the selection, and at the caret after a long press on blank space or a tap on the caret. As gpui-kit's
+input, it offers Cut, Copy, Paste and Select All and leaves out what cannot apply (`touch::menu_actions`): Cut and
+Copy without a selection, Cut and Paste in a read-only editor, Select All when everything is selected. The bounds
+are the session's selection, which the view may not have rendered yet, grown by the knobs' room above and below
+while handles show, so the menu leaves them free to take a finger. Paste is the sink's own (its `onPaste`, with
+HTML and files); Cut, Copy and Select All come back as `EventKind::EditAction` and run as the keys' commands do.
+
+The bubble menu (`bubbleMenu`, a slot): an empty box over the selection's lines, or its node's box for a node
+selection (`Rv::selection_box`; a block atom has no text or caret to go by), inside the
 content box so it scrolls with the text, anchors an `overlay()` holding the app's content (`bubbleMenuPlacement`,
 `bubbleMenuOffset`); the overlay flips and stays on screen as the core's overlays do. Whether it shows is the app's:
 it passes the slot while it wants the menu.
+
+The content layer (`contentLayer`, a slot): a box over the whole content box, after everything the editor
+draws (`render.rs` `content_layer`), so what the app places in it scrolls with the text in the same frame: a
+block's handle in the margin, a marker beside a node. The box takes no press (`pointer-events: box-none`); its
+children do. The app places them in the content box's points, which `nodeRect(pos)` (a block's box) and
+`coordsAtPos(pos)` answer in.
 
 Tables (`view/table.rs`): the tree walk flattens a table (a node whose spec's `extra.tableRole` is `"table"`): its
 cells, row after row, are the table's children; rows have no view. The table's block is a grid (`grid()`): a column
@@ -282,6 +356,10 @@ JS describes.
   nothing. `pageCoordsAtPos` / `posAtPageCoords` answer the same in page (root) points, for UI an app places
   outside the editor (a block handle): the view keeps the content's page offset, measured after each layout of the
   content and as a handle drag starts, and moved by the scroll since.
+  Scrolling an ancestor or a sibling's layout can move the editor on the page with every editor-local frame
+  unchanged, so the view also measures its placement when its viewport lays out and after each page query
+  (`Rv::place`, one measurement in flight): a query after such a move answers by the new placement a frame
+  later, with no app call. Local coordinates, document and selection remain unchanged.
   A query's position outside `0..=doc.content.size` throws a `RangeError` (ProseMirror's `resolve`;
   `RichEditorSession::check_pos`), never a `null`: `null` is an answer (no node after the position, no view, no
   such parent). `run` / `can` throw a `TypeError` for a command, node or mark type the editor does not know.
@@ -297,14 +375,14 @@ JS describes.
 - **Events**: `revision` (the session's subscribers: `{ revision }` after every change, from any source), `create`, `update`, `selectionUpdate`, `transaction` (a summary), `focus`, `blur`, `paste`, `drop`,
   `delete`, `destroy`, posted to JS after the fact.
 - **Formats**: JSON (Tiptap's document JSON loads as is), Markdown (each type's form declared by its extension), HTML
-  (parse rules and `toDOM` per type, `DomParser` / `DomSerializer`), text (`renderText` per type).
+  (parse rules and `toDOM` per type, `DomParser` / `DomSerializer`; `format: "html"` reads `content` and `setContent`, `getHTML()` writes), text (`renderText` per type).
 - **JS face** (`js/extension_api.rs`): `createRichEditor({ extensions: [StarterKit.configure({ heading: { levels:
   [1, 2, 3] } }), Underline], content, editable })`. The built-in extensions are classes whose statics make them
   (`configure`, `extend`); a class itself in `extensions` is the extension with its defaults (`ExtensionEntry` reads a
   function's `name`). `RichExtension` (what they make) has `name`, `type`, `priority`, `options`, `configure` and
   `extend`. Tiptap's `Image` is `RichImage` (`Image` is the core's), `Link` is `RichLink` (`Link` is `nsh/base`'s component), `TextStyle` is `RichTextStyle` (`TextStyle` is the style type; a test of `nsh-js`'s declarations keeps exports from shadowing shared types) and `Text` is `richExtension("text")`.
   `defineExtension({ name, priority, node | mark, topNode, addOptions, addKeyboardShortcuts, addCommands,
-  addInputRules, addPasteRules, addProseMirrorPlugins, addGlobalAttributes, addStorage })` declares the app's: its
+  addInputRules, addPasteRules, addProseMirrorPlugins, addGlobalAttributes, addStorage, addNodeView })` declares the app's: its
   functions run once, in `createRichEditor` (a synchronous call, where JS runs anyway), with the extension's options,
   and return data (commands, rules and plugins as data, `RichEditorPlugin`s), which `to_extension` turns into a Rust
   `Extension`. Errors found when the schema is known (an unknown type in a binding) collect in `Diagnostics` and
@@ -326,6 +404,10 @@ commands of the built-in registry (`register_commands` of each module): `setLink
   skipped), `handleClickLink` (`handle_click`: Mod or a read-only editor opens the link through `LinkOptions::open`,
   NSH's `open_url` by default, so the embedding app's URL handler sees it first) and `handlePasteLink`
   (`handle_paste`: a URL pasted over a selection links it; `transform_pasted`: URLs in pasted text are linked).
+  Text with the built-in `link` mark shows its `href` (under its `title`) while the pointer rests on it, on the
+  desktops outside a terminal (`render.rs` `spans`: `link_hint` in the span; hover only, the span takes no press, so
+  the caret, the selection and `handleClickLink` are as without; `elements.md` "A link's hint"). A piece an app's
+  `MarkView` renders is the app's element, and its hint the app's.
   `find_links` is the detector: URLs with a protocol, host names whose top-level domain is a known one (every
   two-letter country code and a list of generic ones), e-mail addresses; trailing punctuation and unbalanced
   closing brackets stay outside, as linkify's. `is_allowed_uri` is Tiptap's expression; `should_auto_link` is
@@ -344,12 +426,17 @@ commands of the built-in registry (`register_commands` of each module): `setLink
   outside the range or with a selection). `handle_key_down` while active: Escape runs `on_key_down` and dispatches
   the exit meta; then `on_key_down`; then `capture_keys` are taken and recorded in the state (`last_key`,
   `key_count`, a meta-only transaction outside the history), which is how JS's list hears its keys without the
-  input path waiting for JS. `decorations` gives the active range the options' classes. `mention_node` /
+  input path waiting for JS. Whether the list shows is decided beforehand for the same reason, as GPUI Kit's
+  completion menu is open while it has items: `set_suggestion_open` (JS `setSuggestionOpen`) stores `open` with a
+  meta, `apply` opens it again when the query or the decoration id changes (a new suggestion), and while it is
+  `false` the captured keys are not taken (Enter reaches the keymap and the plugins after it). An unchanged state
+  dispatches nothing, so an app saying it on every `transaction` does not loop. `decorations` gives the active range the options' classes. `mention_node` /
   `insert_mention` are Tiptap's Mention (the text `char + (label ?? id)`, a space after it, a space already there
   taken in).
 
 The JS face (`js/extensions.rs`): `link`, `characterCount`, `suggestion` (plugin specs of the kinds `Link`,
-`CharacterCount`, `Suggestion` with typed option objects), `withMention`, the command helpers, and the session's
+`CharacterCount`, `Suggestion` with typed option objects), `withMention`, the command helpers
+(`setSuggestionOpen` among them), and the session's
 `suggestion(key)`, `characters(mode)`, `words()` and `characterLimit`.
 
 ## Tables (`tables/`)

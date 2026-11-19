@@ -132,7 +132,7 @@ fn captured_public_fact_or_absence_never_uses_todays_fallback() {
 
 #[test]
 fn explicit_catalog_association_keeps_wire_identity_account_facts_and_captured_defaults() {
-    use maka_agent_facts::configuration::{ApiProtocol, CatalogModelReference};
+    use maka_agent_facts::configuration::{ApiProtocol, CatalogModelReference, ModelOverride};
     let mut snapshot = Snapshot::bundled().unwrap();
     let reference = CatalogModelReference {
         provider: "catalog-provider".into(),
@@ -175,9 +175,24 @@ fn explicit_catalog_association_keeps_wire_identity_account_facts_and_captured_d
         }),
         ..Default::default()
     };
-    let effective = snapshot.resolve("openai-compatible", reported.clone(), Some(&reference));
+    let association = ModelOverride {
+        catalog_model: Some(reference.clone()),
+        ..Default::default()
+    };
+    let effective = snapshot.resolve("openai-compatible", reported.clone(), Some(&association));
     assert_eq!(effective.id, "custom-alias");
     assert_eq!(effective.context_window, Some(4096));
+    assert_eq!(effective.input_limit, Some(4096));
+    let larger_window = ModelOverride {
+        context_window: Some(7168),
+        ..association.clone()
+    };
+    assert_eq!(
+        snapshot
+            .resolve("openai-compatible", reported.clone(), Some(&larger_window))
+            .input_limit,
+        Some(6144),
+    );
     assert_eq!(effective.max_output_tokens, Some(2048));
     assert_eq!(effective.capabilities.unwrap().vision, Some(false));
     assert_eq!(effective.capabilities.unwrap().function_calling, Some(true));
@@ -214,17 +229,24 @@ fn explicit_catalog_association_keeps_wire_identity_account_facts_and_captured_d
         .max_output_tokens = Some(1024);
     assert_eq!(
         snapshot
-            .resolve("openai-compatible", reported.clone(), Some(&reference))
+            .resolve("openai-compatible", reported.clone(), Some(&association))
             .max_output_tokens,
         Some(1024)
     );
-    let missing = CatalogModelReference {
-        provider: reference.provider,
-        model_id: "removed-model".into(),
+    let missing = ModelOverride {
+        catalog_model: Some(CatalogModelReference {
+            provider: reference.provider,
+            model_id: "removed-model".into(),
+        }),
+        ..Default::default()
+    };
+    let route_only = ModelInfo {
+        input_limit: Some(4096),
+        ..reported.clone()
     };
     assert_eq!(
         snapshot.resolve("openai-compatible", reported.clone(), Some(&missing)),
-        reported
+        route_only
     );
     assert_eq!(
         captured.resolve("openai-compatible", reported.clone(), Some(&missing)),
@@ -236,12 +258,12 @@ fn explicit_catalog_association_keeps_wire_identity_account_facts_and_captured_d
     );
     assert_eq!(
         snapshot.resolve("openai-compatible", reported.clone(), None),
-        reported
+        route_only
     );
     let absent = Snapshot::for_model("openai-compatible", "custom-alias", None).unwrap();
     assert_eq!(
         absent.resolve("openai-compatible", reported.clone(), Some(&missing)),
-        reported
+        route_only
     );
 }
 

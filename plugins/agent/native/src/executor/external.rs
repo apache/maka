@@ -18,102 +18,167 @@
  */
 
 use super::*;
-use futures_util::future::Shared;
+use catalog::Catalog;
 use maka_agent_api::executor::{ExternalConfiguration, NativeCommand, NativeRuntime};
+use maka_agent_ports::executor::RootSettlementOwner;
 use maka_agent_ports::executor::{Outcome, Request};
-use maka_capabilities::storage::Store;
-use maka_host_runtime::storage::Storage;
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
 
 mod agy;
+mod agy_acp;
+#[cfg(unix)]
+pub mod agy_front;
 mod attachments;
+pub(super) mod catalog;
 mod claude;
 mod codex;
 mod discovery;
 mod history;
 mod journal;
 mod mcp;
+mod replay;
 mod runtime;
 mod steering;
 mod tools;
-pub(crate) use tools::HostTools;
+const PRESENTATION_VERSION: u32 = 3;
+const AGY_ACP_VERSION: u32 = 5;
+pub(crate) use history::Inputs;
+pub(crate) use tools::{HostEffects, HostTools};
 
-struct CatalogSnapshot {
-    cwd: String,
-    selected: Option<NativeRuntime>,
-    started: Instant,
-    result: Shared<BoxFuture<'static, Result<Value, Error>>>,
+/// Observation addresses from the original runtime acknowledgement. None is a
+/// permission to submit another prompt or reconstruct a lost process owner.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "runtime", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum NativeTask {
+    Codex {
+        thread: String,
+        turn: String,
+    },
+    Claude {
+        session: String,
+        transcript: PathBuf,
+        offset: u64,
+        prompt: String,
+        images: usize,
+    },
+    ClaudePty {
+        session: String,
+    },
+    ClaudeStream {
+        session: String,
+        input: String,
+    },
+    AntigravityAcp {
+        session: String,
+        prompt_id: u64,
+    },
 }
 
-impl CatalogSnapshot {
-    fn reusable(&self) -> bool {
-        let Some(result) = self.result.peek() else {
-            return true;
-        };
-        let Ok(catalog) = result else {
-            return false;
-        };
-        let rows = match self.selected {
-            Some(_) => std::slice::from_ref(catalog),
-            None => catalog
-                .as_array()
-                .expect("unscoped native catalog is an array"),
-        };
-        self.started.elapsed() < Duration::from_secs(30)
-            && !rows.iter().any(|row| {
-                ["installation", "models"].iter().any(|field| {
-                    row.get(field)
-                        .and_then(|value| value.get("kind"))
-                        .and_then(Value::as_str)
-                        == Some("error")
-                })
-            })
-    }
-}
-enum Catalog {
-    Empty,
-    Cached(CatalogSnapshot),
-    Failed(Error),
-}
-impl Catalog {
-    fn failure(&self) -> Result<(), Error> {
-        match self {
-            Self::Failed(error) => Err(error.clone()),
-            _ => Ok(()),
-        }
-    }
-    fn invalidate(&mut self) {
-        if !matches!(self, Self::Failed(_)) {
-            *self = Self::Empty;
-        }
-    }
-    fn admit(
-        &self,
-        resources: &Arc<maka_capabilities::call::Resources>,
-    ) -> Result<maka_capabilities::call::Ticket, Error> {
-        self.failure()?;
-        resources.reserve().map_err(|_| Error::Retired)
-    }
-    fn observe(&mut self, result: &Result<Value, Error>) {
-        if let Err(error @ (Error::Unknown | Error::CleanupUnconfirmed)) = result
-            && !matches!(self, Self::Failed(Error::CleanupUnconfirmed))
-        {
-            *self = Self::Failed(error.clone());
-        }
+impl NativeTask {
+    pub(super) fn is_pty(&self) -> bool {
+        matches!(self, Self::Claude { .. } | Self::ClaudePty { .. })
     }
 }
 
-pub(super) struct External {
+/// Native's original task owner durably records this before accepting outputs.
+/// A failed acknowledgement is not permission to replay native submission.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct NativeBinding {
+    /// Version of this adapter-owned descriptor, not a claimed native server version.
+    pub adapter_version: u32,
+    pub command_basis: String,
+    pub resource: maka_process::isolated::Descriptor,
+    pub snapshot: Option<maka_process::isolated::SnapshotProof>,
+    pub task: NativeTask,
+}
+
+impl NativeBinding {
+    pub(super) fn supported(&self) -> bool {
+        matches!(
+            self.adapter_version,
+            2 | PRESENTATION_VERSION | AGY_ACP_VERSION
+        )
+    }
+}
+
+pub(crate) trait TaskBinding: Send + Sync {
+    fn observation_retired(&self) -> CancellationToken;
+    fn owner_stop(&self) -> CancellationToken;
+    fn admitted_steering_batches(&self) -> BoxFuture<'_, Result<u64, Error>>;
+    fn stop_requested(&self) -> BoxFuture<'_, Result<bool, Error>>;
+    fn closed(&self, outcome: Outcome) -> BoxFuture<'_, Result<(), Error>>;
+    /// Original Root resources only, not quiescence of every private descendant.
+    /// Success means the source owns the proof and any pending SQL ACK, not that the fact is durable.
+    fn cleanup(&self, cleanup: OperationCleanup) -> BoxFuture<'_, Result<(), Error>>;
+    fn bound(&self, binding: NativeBinding) -> BoxFuture<'_, Result<(), Error>>;
+}
+
+#[expect(
+    clippy::large_enum_variant,
+    reason = "An original task observation transfers its terminal outcome or blocker as one owned value"
+)]
+pub(crate) enum NativeTaskObservation {
+    Known {
+        outcome: Outcome,
+    },
+    Blocked {
+        reason: maka_agent_facts::durable::BlockerKind,
+        diagnostic: String,
+    },
+}
+
+fn interrupted() -> Outcome {
+    Outcome::Cancelled {
+        reason: Some("External agent exited before finishing".into()),
+    }
+}
+
+async fn await_closed_task(
+    resource: &maka_process::isolated::Descriptor,
+    cancellation: &CancellationToken,
+    retired: &CancellationToken,
+) -> Result<maka_process::isolated::ClosedEvidence, Error> {
+    use maka_process::isolated::{self, EvidenceInterest, EvidenceWatch};
+
+    let unavailable = |error: isolated::Error| Error::Provider(error.to_string());
+    if let Some(evidence) = isolated::closed_evidence(resource)
+        .await
+        .map_err(unavailable)?
+    {
+        return Ok(evidence);
+    }
+    let mut watch = EvidenceWatch::open(resource, EvidenceInterest::Cleanup)
+        .await
+        .map_err(unavailable)?;
+    let observed = tokio::select! {
+        biased;
+        () = cancellation.cancelled() => Err(Error::ObservationRetired),
+        () = retired.cancelled() => Err(Error::ObservationRetired),
+        result = watch.wait() => result.map_err(unavailable),
+    };
+    watch.close().await.map_err(unavailable)?;
+    observed?;
+    isolated::closed_evidence(resource)
+        .await
+        .map_err(unavailable)?
+        .ok_or(Error::Unknown)
+}
+
+pub(crate) struct External {
+    #[cfg(unix)]
+    agy_fronts: agy_front::Fronts,
     commands: BTreeMap<NativeRuntime, NativeCommand>,
-    storage: Storage,
-    queries: Arc<maka_capabilities::call::Resources>,
+    queries: Arc<maka_plugin_core::work::resources::Resources>,
     catalog: tokio::sync::Mutex<Catalog>,
+    catalog_changes: tokio::sync::watch::Sender<()>,
     stop: CancellationToken,
     endpoints: tokio::sync::Mutex<BTreeMap<(String, NativeRuntime), Arc<mcp::Endpoint>>>,
     root: Arc<RootStore>,
+    sessions: maka_host_runtime::storage::Storage,
     package: String,
     activation: String,
     pub basis: String,
@@ -122,6 +187,7 @@ impl External {
     pub fn capture(
         context: &NativeContext,
         configuration: &ExternalConfiguration,
+        declaration: &Binding,
     ) -> Result<Arc<Self>, String> {
         let persistence = context
             .persistence()
@@ -140,35 +206,50 @@ impl External {
             runtime::validate_command(runtime, &command)?;
             commands.insert(runtime, command);
         }
+        let root = persistence
+            .store()
+            .owned_root()
+            .map_err(|error| error.to_string())?;
+        // Own-export evidence follows the actual logical owner, not its live
+        // activation. It includes the declaration, configuration and imports.
+        let basis = hex::encode(Sha256::digest(
+            serde_json::to_vec(&(
+                "maka.native-external-basis.v1",
+                root.root_id(),
+                &persistence.source().state_domain,
+                persistence.source().deployment,
+                context.activation().instance(),
+                context.package(),
+                declaration.execution_basis(),
+                &commands,
+            ))
+            .map_err(|e| e.to_string())?,
+        ));
         let prefix = hex::encode(Sha256::digest(
             serde_json::to_vec(&(
+                &persistence.source().state_domain,
                 persistence.source().deployment,
                 context.activation().instance(),
             ))
-            .map_err(|e| e.to_string())?,
+            .map_err(|error| error.to_string())?,
         ));
-        let storage = Storage::new(
+        let sessions = maka_host_runtime::storage::Storage::new(
             persistence.store().clone(),
             format!("{prefix}/"),
-            maka_capabilities::storage::Namespace::new(
+            maka_plugin_core::storage::Namespace::new(
                 "maka.agent.external",
                 maka_plugin_core::scope::Scope::Profile,
             )
-            .map_err(|e| e.to_string())?,
+            .map_err(|error| error.to_string())?,
         );
-        let basis = hex::encode(Sha256::digest(
-            serde_json::to_vec(&(
-                context.activation().epoch(),
-                &commands,
-                storage.execution_basis(),
-            ))
-            .map_err(|e| e.to_string())?,
-        ));
         Ok(Arc::new(Self {
+            #[cfg(unix)]
+            agy_fronts: Default::default(),
             commands,
-            storage,
+            sessions,
             queries: Arc::default(),
-            catalog: tokio::sync::Mutex::new(Catalog::Empty),
+            catalog: tokio::sync::Mutex::new(Catalog::default()),
+            catalog_changes: tokio::sync::watch::channel(()).0,
             stop: CancellationToken::new(),
             endpoints: tokio::sync::Mutex::new(BTreeMap::new()),
             root: persistence.store().clone(),
@@ -177,28 +258,162 @@ impl External {
             basis,
         }))
     }
+    pub(crate) fn source_identity(&self) -> maka_agent_facts::executor::Binding {
+        maka_agent_facts::executor::Binding {
+            executor_id: "external"
+                .to_owned()
+                .try_into()
+                .expect("external executor identity"),
+            package_id: self.package.clone(),
+            entry_id: "external".into(),
+            activation: self.activation.clone(),
+        }
+    }
     pub fn admit(
         self: &Arc<Self>,
         request: Request,
         host_tools: Option<HostTools>,
+        binding: Arc<dyn TaskBinding>,
+        inputs: Arc<dyn Inputs>,
+        isolated: maka_process::isolated::TaskOwner,
     ) -> Result<Admitted, Error> {
         self.require_runtime(request.settings.runtime.as_deref())?;
         Ok(Admitted {
-            identity: maka_agent_facts::executor::Binding {
-                executor_id: "external"
-                    .to_owned()
-                    .try_into()
-                    .expect("external executor identity"),
-                package_id: self.package.clone(),
-                entry_id: "external".into(),
-                activation: self.activation.clone(),
-            },
+            identity: self.source_identity(),
             execution: Box::new(Call {
                 owner: self.clone(),
                 request,
                 host_tools,
+                binding,
+                inputs,
+                isolated,
             }),
         })
+    }
+    /// A resource address locates original evidence, not permission to restart
+    /// its CLI. OS closure alone cannot establish native business completion.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "read-only replay verifies the original cursor and Root-owned prefix before publication"
+    )]
+    pub async fn observe_task(
+        &self,
+        request: &Request,
+        binding: &NativeBinding,
+        descriptor: maka_agent_facts::durable::ContentRef,
+        after_index: u64,
+        expected_prefix: Option<[u8; 32]>,
+        output: Arc<dyn OutputSink>,
+        lifecycle: Arc<dyn TaskBinding>,
+        cancellation: CancellationToken,
+    ) -> Result<NativeTaskObservation, Error> {
+        if cancellation.is_cancelled() || lifecycle.observation_retired().is_cancelled() {
+            return Err(Error::ObservationRetired);
+        }
+        let blocked = |diagnostic: String| NativeTaskObservation::Blocked {
+            reason: maka_agent_facts::durable::BlockerKind::ExternalTaskUnobservable {
+                descriptor: descriptor.clone(),
+            },
+            diagnostic,
+        };
+        let runtime = match &binding.task {
+            NativeTask::Codex { .. } => NativeRuntime::Codex,
+            NativeTask::AntigravityAcp { .. } => NativeRuntime::Antigravity,
+            NativeTask::Claude { .. }
+            | NativeTask::ClaudePty { .. }
+            | NativeTask::ClaudeStream { .. } => NativeRuntime::Claude,
+        };
+        if !binding.supported()
+            || request
+                .settings
+                .runtime
+                .as_deref()
+                .and_then(|runtime| runtime.parse::<NativeRuntime>().ok())
+                != Some(runtime)
+        {
+            return Ok(blocked(
+                "Original native binding protocol or runtime does not match this task".into(),
+            ));
+        }
+        let retired = lifecycle.observation_retired();
+        // The original helper owns these bytes. Recovery does not use the
+        // current executable, configuration or credentials to observe them.
+        let evidence = match await_closed_task(&binding.resource, &cancellation, &retired).await {
+            Ok(evidence) => evidence,
+            Err(error @ Error::ObservationRetired) => return Err(error),
+            Err(error) => return Ok(blocked(error.to_string())),
+        };
+        let pipe_receipt = matches!(
+            evidence.receipt,
+            maka_process::isolated::TaskReceipt::Task {
+                terminal_size: None,
+                ..
+            }
+        );
+        if evidence.snapshot != binding.snapshot || pipe_receipt != !binding.task.is_pty() {
+            return Ok(blocked(
+                "Original resource snapshot or transport receipt differs from the recorded binding"
+                    .into(),
+            ));
+        }
+        lifecycle.cleanup(OperationCleanup::Confirmed).await?;
+        let outcome = if binding.task.is_pty() {
+            // The child controls the PTY transcript. Retain only the output already
+            // accepted by Maka, and use the owner receipt to end the interrupted run.
+            interrupted()
+        } else {
+            let admitted_steering_batches = lifecycle.admitted_steering_batches().await?;
+            let mut input =
+                replay::Stream::new(evidence.stdin, cancellation.clone(), retired.clone());
+            let mut stream = replay::Stream::new(evidence.stdout, cancellation, retired);
+            let count = replay::Count::new(after_index);
+            match replay::parse(
+                request,
+                binding,
+                admitted_steering_batches,
+                &mut input,
+                &mut stream,
+                &count,
+            )
+            .await
+            {
+                Ok(outcome)
+                    if count.total() >= after_index
+                        && (expected_prefix == Some(count.prefix())
+                            || after_index == 0 && expected_prefix.is_none()) =>
+                {
+                    input.rewind().await?;
+                    stream.rewind().await?;
+                    let suffix = replay::Suffix::new(after_index, output.as_ref());
+                    let replayed = replay::parse(
+                        request,
+                        binding,
+                        admitted_steering_batches,
+                        &mut input,
+                        &mut stream,
+                        &suffix,
+                    )
+                    .await?;
+                    if !replay::same_outcome(&outcome, &replayed) {
+                        return Ok(blocked(
+                            "Original protocol changed during read-only replay".into(),
+                        ));
+                    }
+                    outcome
+                }
+                Err(error @ (Error::Cancelled | Error::ObservationRetired)) => return Err(error),
+                Err(error) => {
+                    tracing::debug!(%error, "Closed native task has no recoverable completion");
+                    interrupted()
+                }
+                Ok(_) => {
+                    tracing::warn!("Closed native task output differs from the accepted history");
+                    interrupted()
+                }
+            }
+        };
+        lifecycle.closed(outcome.clone()).await?;
+        Ok(NativeTaskObservation::Known { outcome })
     }
     pub(super) fn require_runtime(&self, runtime: Option<&str>) -> Result<NativeRuntime, Error> {
         let runtime = runtime
@@ -226,7 +441,7 @@ impl External {
             .get("kind")
             .and_then(Value::as_str)
             .ok_or_else(|| Error::Invalid("Missing external query kind".into()))?;
-        if !matches!(kind, "status" | "catalog" | "models") {
+        if !matches!(kind, "status" | "models" | "usage_limits") {
             return Err(Error::Invalid("Unsupported external query kind".into()));
         }
         let selected = request
@@ -236,59 +451,10 @@ impl External {
         if selected.is_none() && kind == "models" {
             return Err(Error::Invalid("Models require a runtime selection".into()));
         }
-        if kind == "catalog" {
-            let (discovery, catalog_runtime) = {
-                let mut cached = self.catalog.lock().await;
-                cached.failure()?;
-                if let Catalog::Cached(entry) = &*cached
-                    && entry.cwd == cwd
-                    && (entry.selected == selected
-                        || (entry.selected.is_none() && entry.result.peek().is_some()))
-                    && entry.reusable()
-                {
-                    (entry.result.clone(), entry.selected)
-                } else {
-                    let owner = self.clone();
-                    let work_cwd = cwd.clone();
-                    let discovery = async move {
-                        owner
-                            .discover(
-                                work_cwd,
-                                "catalog".into(),
-                                selected,
-                                owner.stop.child_token(),
-                            )
-                            .await
-                    }
-                    .boxed()
-                    .shared();
-                    let retained = discovery.clone();
-                    tokio::spawn(async move {
-                        let _ = retained.await;
-                    });
-                    *cached = Catalog::Cached(CatalogSnapshot {
-                        cwd,
-                        selected,
-                        started: Instant::now(),
-                        result: discovery.clone(),
-                    });
-                    (discovery, selected)
-                }
-            };
-            return tokio::select! { biased;
-                () = cancellation.cancelled() => Err(Error::Cancelled),
-                () = self.stop.cancelled() => Err(Error::Retired),
-                result = discovery => {
-                    let value = result?;
-                    if catalog_runtime.is_none() && let Some(runtime) = selected {
-                        value.as_array().expect("unscoped native catalog is an array")
-                            .iter().find(|row| row["runtime"].as_str() == Some(runtime.as_str()))
-                            .cloned().ok_or_else(|| Error::Invalid("Native runtime missing from catalog".into()))
-                    } else {
-                        Ok(value)
-                    }
-                },
-            };
+        if kind == "usage_limits" && !selected.is_some_and(NativeRuntime::reports_usage_limits) {
+            return Err(Error::Invalid(
+                "Usage limits require a supported runtime".into(),
+            ));
         }
         if kind == "status" {
             self.catalog.lock().await.invalidate();
@@ -296,6 +462,73 @@ impl External {
         self.discover(cwd, kind.to_owned(), selected, cancellation)
             .await
     }
+    pub(super) fn catalog_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.catalog_changes.subscribe()
+    }
+
+    pub(super) async fn catalog(
+        self: &Arc<Self>,
+        cwd: String,
+        selected: Option<NativeRuntime>,
+        read: catalog::Read,
+        cancellation: CancellationToken,
+    ) -> Result<(Vec<Value>, bool), Error> {
+        let mut changes = self.catalog_changes();
+        let mut cache = self.catalog.lock().await;
+        cache.failure()?;
+        if cancellation.is_cancelled() || self.stop.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let (generation, work) = cache.prepare(
+            &cwd,
+            self.commands
+                .keys()
+                .copied()
+                .filter(|runtime| selected.is_none_or(|selected| selected == *runtime)),
+            read != catalog::Read::Snapshot,
+        );
+        for runtime in work {
+            let owner = self.clone();
+            let cwd = cwd.clone();
+            tokio::spawn(async move {
+                let result = owner
+                    .discover(
+                        cwd,
+                        "catalog".into(),
+                        Some(runtime),
+                        owner.stop.child_token(),
+                    )
+                    .await;
+                owner
+                    .catalog
+                    .lock()
+                    .await
+                    .publish(generation, runtime, result);
+                owner.catalog_changes.send_modify(|_| {});
+            });
+        }
+        loop {
+            changes.borrow_and_update();
+            cache.failure()?;
+            if !cache.is_current(generation) {
+                return Err(Error::Invalid(
+                    "Native catalog workspace changed; retry the read".into(),
+                ));
+            }
+            let snapshot = cache.snapshot(selected);
+            if read != catalog::Read::Resolve || !snapshot.0.is_empty() || !snapshot.1 {
+                return Ok(snapshot);
+            }
+            drop(cache);
+            tokio::select! { biased;
+                () = cancellation.cancelled() => return Err(Error::Cancelled),
+                () = self.stop.cancelled() => return Err(Error::Retired),
+                result = changes.changed() => result.map_err(|_| Error::Retired)?,
+            }
+            cache = self.catalog.lock().await;
+        }
+    }
+
     async fn discover(
         self: &Arc<Self>,
         cwd: String,
@@ -332,24 +565,46 @@ impl External {
             }
         }
     }
-    async fn bridge(
+    async fn ensure_endpoint(
         &self,
-        request: &Request,
-        tools: tools::Tools,
-    ) -> Result<Arc<mcp::Bridge>, Error> {
-        let runtime = self.require_runtime(request.settings.runtime.as_deref())?;
+        conversation: &str,
+        session: &str,
+        runtime: NativeRuntime,
+    ) -> Result<Arc<mcp::Endpoint>, Error> {
         let mut endpoints = self.endpoints.lock().await;
         if self.stop.is_cancelled() {
             return Err(Error::Retired);
         }
-        let key = (request.conversation_key.clone(), runtime);
+        let key = (conversation.to_owned(), runtime);
         if !endpoints.contains_key(&key) {
-            let endpoint =
-                mcp::Endpoint::open(request.invocation.session_id.clone(), tools.definitions())
-                    .await?;
+            let endpoint = mcp::Endpoint::open(session.to_owned()).await?;
             endpoints.insert(key.clone(), endpoint);
         }
-        endpoints[&key].bind(tools)
+        let endpoint = endpoints[&key].clone();
+        if endpoint.session_id != session || self.stop.is_cancelled() {
+            return Err(Error::Retired);
+        }
+        endpoint.local_addr().await?;
+        Ok(endpoint)
+    }
+    async fn bridge(
+        &self,
+        request: &Request,
+        tools: tools::Tools,
+        directory: PathBuf,
+    ) -> Result<Arc<mcp::Bridge>, Error> {
+        let runtime = self.require_runtime(request.settings.runtime.as_deref())?;
+        let endpoint = self
+            .ensure_endpoint(
+                &request.conversation_key,
+                &request.execution.session_id,
+                runtime,
+            )
+            .await?;
+        tokio::fs::create_dir_all(&directory)
+            .await
+            .map_err(|e| Error::Provider(e.to_string()))?;
+        endpoint.bind(tools, directory)
     }
     pub async fn remove_sessions(&self, sessions: &[String]) -> Result<(), String> {
         let selected = self
@@ -394,243 +649,312 @@ impl External {
             .map(|(key, endpoint)| (key.clone(), endpoint.clone()))
             .collect();
         let endpoints = self.finish_endpoints(selected).await;
+        #[cfg(unix)]
+        let fronts = self.agy_fronts.finish().await;
         let queries = self.queries.finish().await.map_err(|e| e.to_string());
-        let storage = self.storage.finish().await;
+        let sessions = self.sessions.finish().await;
+        #[cfg(unix)]
+        fronts?;
         queries?;
-        storage?;
-        endpoints
+        endpoints?;
+        sessions
     }
 }
 struct Call {
     owner: Arc<External>,
     request: Request,
     host_tools: Option<HostTools>,
+    binding: Arc<dyn TaskBinding>,
+    inputs: Arc<dyn Inputs>,
+    isolated: maka_process::isolated::TaskOwner,
+}
+#[derive(Default)]
+struct CallResources {
+    pipes: std::sync::OnceLock<Arc<maka_plugin_core::work::resources::Resources>>,
+    bridge: std::sync::OnceLock<Arc<mcp::Bridge>>,
+    rejection: std::sync::Mutex<Option<Arc<PrelaunchRejection>>>,
+}
+struct PrelaunchRejection {
+    seal: maka_process::isolated::NoLaunchSeal,
+    message: String,
+    binding: Arc<dyn TaskBinding>,
+    recording: tokio::sync::Mutex<()>,
+}
+impl PrelaunchRejection {
+    async fn settle_cleanup(&self) -> Result<(), Error> {
+        let _recording = self.recording.lock().await;
+        self.seal
+            .record()
+            .await
+            .map_err(|error| Error::Persistence(error.to_string()))?;
+        self.binding.cleanup(OperationCleanup::Confirmed).await?;
+        Ok(())
+    }
+    async fn record(&self) -> Result<Outcome, Error> {
+        self.settle_cleanup().await?;
+        let outcome = Outcome::Failed {
+            message: self.message.clone(),
+            code: Some("native_input_rejected".into()),
+            recoverable: false,
+        };
+        self.binding.closed(outcome.clone()).await?;
+        Ok(outcome)
+    }
+}
+impl maka_agent_ports::executor::RootSettlementOwner for CallResources {
+    fn original_root_cleanup(&self) -> OperationCleanup {
+        if self.pipes.get().is_none_or(|resources| resources.is_idle())
+            && self.bridge.get().is_none_or(|bridge| bridge.drained())
+            && self
+                .rejection
+                .lock()
+                .expect("original rejection custody")
+                .is_none()
+        {
+            OperationCleanup::Confirmed
+        } else {
+            OperationCleanup::Unconfirmed
+        }
+    }
+    fn original_root_cleanup_signal(self: Arc<Self>) -> BoxFuture<'static, ()> {
+        Box::pin(async move {
+            let rejection = self
+                .rejection
+                .lock()
+                .expect("original rejection custody")
+                .clone();
+            let rejection = async {
+                if let Some(rejection) = rejection {
+                    match rejection.settle_cleanup().await {
+                        Ok(()) => {
+                            self.rejection
+                                .lock()
+                                .expect("original rejection custody")
+                                .take();
+                        }
+                        Err(error) => {
+                            tracing::error!(%error, "Original no-launch rejection remains unsettled");
+                            std::future::pending::<()>().await;
+                        }
+                    }
+                }
+            };
+            let pipes = async {
+                if let Some(resources) = self.pipes.get()
+                    && let Err(error) = resources.settle().await
+                {
+                    tracing::error!(%error, "Original pipe resource settlement remains unconfirmed");
+                    std::future::pending::<()>().await;
+                }
+            };
+            let bridge = async {
+                if let Some(bridge) = self.bridge.get() {
+                    let _business = bridge.close().await;
+                    bridge.clone().original_root_cleanup_signal().await;
+                }
+            };
+            tokio::join!(rejection, pipes, bridge);
+        })
+    }
 }
 impl executor::Execution for Call {
     fn execute(
         self: Box<Self>,
-        execution: Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
+        execution: Arc<dyn maka_plugin_core::work::WorkCustody>,
         output: Arc<dyn OutputSink>,
         cancellation: CancellationToken,
     ) -> BoxFuture<'static, Settlement> {
         Box::pin(async move {
-            let result = self.run(execution, output, cancellation).await;
-            Settlement::new(result, self.owner)
+            let resources = Arc::new(CallResources::default());
+            let mut bridge = None;
+            let result = self
+                .run(execution, output, cancellation, &mut bridge, &resources)
+                .await;
+            if let Some(bridge) = bridge {
+                let _ = resources.bridge.set(bridge.clone());
+                let pending = resources
+                    .pipes
+                    .get()
+                    .is_some_and(|pipes| pipes.has_pending());
+                if !pending {
+                    let _business = bridge.close().await;
+                }
+            }
+            let cleanup = resources.original_root_cleanup();
+            Settlement::new(result, cleanup, resources)
         })
     }
 }
 impl Call {
     async fn run(
-        &self,
-        execution: Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
+        self: Box<Self>,
+        execution: Arc<dyn maka_plugin_core::work::WorkCustody>,
         output: Arc<dyn OutputSink>,
         cancellation: CancellationToken,
+        root_bridge: &mut Option<Arc<mcp::Bridge>>,
+        root_resources: &Arc<CallResources>,
     ) -> Result<Outcome, Error> {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
+        let Self {
+            owner,
+            request,
+            host_tools,
+            binding,
+            inputs,
+            isolated,
+        } = *self;
+        if cancellation.is_cancelled() || binding.observation_retired().is_cancelled() {
+            return Err(Error::ObservationRetired);
         }
-        let store = self
-            .owner
+        owner
             .root
-            .session_for_execution(execution.as_ref(), &self.request.invocation)
+            .session_for_work(execution.as_ref(), &request.execution.session_id)
             .map_err(|e| Error::Persistence(e.to_string()))?;
+        let cwd = request.cwd.as_str();
+        let material_root = isolated.inputs();
+        let runtime = owner.require_runtime(request.settings.runtime.as_deref())?;
+        let config = &owner.commands[&runtime];
         let host_tools = tools::Tools::bind(
-            self.host_tools.clone().unwrap_or_default(),
-            Arc::new(store.clone()),
-            &self.request,
+            host_tools.clone(),
+            &request,
             execution.clone(),
-            &self.owner,
+            &owner,
             cancellation.clone(),
         )
         .await?;
-        let mut materials = attachments::prepare(
-            &store,
-            &self.request.invocation.session_id,
-            &self.request.content,
+        let (artifacts, scope) = inputs.artifacts();
+        if scope.session != request.execution.session_id {
+            return Err(Error::Invalid(
+                "External artifact scope belongs to another session".into(),
+            ));
+        }
+        let mut materials = match attachments::prepare(
+            &artifacts,
+            &scope,
+            &request.content,
+            request.language,
             &cancellation,
+            &material_root,
         )
-        .await?;
-        let mut journal = journal::Journal::load(&self.owner.storage, &self.request).await?;
-        if let Some(mut context) =
-            history::context(&store, &self.request, journal.last_delivered_run()).await?
+        .await
         {
-            context.push_str("\n\n--- Current user message ---\n");
-            context.push_str(&materials.message);
-            materials.message = context;
-        }
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        let mut steering =
-            steering::Steering::new(store.clone(), &self.request, cancellation.clone())?;
-        let lease = self
-            .owner
-            .root
-            .fork_execution(execution.as_ref(), &self.request.invocation)
-            .map_err(|e| Error::Persistence(e.to_string()))?;
-        let bridge = match self.owner.bridge(&self.request, host_tools).await {
-            Ok(bridge) => bridge,
-            Err(error) => {
-                lease.finish();
-                return Err(error);
+            Ok(materials) => materials,
+            Err(attachments::PreparationError::Source(error)) => return Err(error),
+            Err(attachments::PreparationError::Unsupported(message)) => {
+                let original = Arc::new(PrelaunchRejection {
+                    seal: isolated.into_no_launch_seal(),
+                    message,
+                    binding,
+                    recording: tokio::sync::Mutex::new(()),
+                });
+                *root_resources
+                    .rejection
+                    .lock()
+                    .expect("original rejection custody") = Some(original.clone());
+                let result = original.record().await;
+                if result.is_ok() {
+                    root_resources
+                        .rejection
+                        .lock()
+                        .expect("original rejection custody")
+                        .take();
+                }
+                return result;
             }
         };
-        if let Err(error) = journal
-            .start(&self.owner.storage, &self.request.invocation.invocation_id)
+        let command_basis = runtime::command_basis(config, cwd)?;
+        let mut journal = journal::ProtocolSession::load(
+            owner.sessions.clone(),
+            &request,
+            binding.clone(),
+            command_basis,
+            &isolated,
+            cancellation.clone(),
+        )
+        .await?;
+        let _ = root_resources
+            .pipes
+            .set(journal.observation().resources.clone());
+        let history_path = material_root.join(maka_agent_authority::executor::HISTORY_FILE);
+        let mut options = tokio::fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut history = options
+            .open(&history_path)
             .await
+            .map_err(|e| Error::Provider(format!("Canonical history file creation failed: {e}")))?;
+        inputs
+            .write_history(request.task_id, journal.last_delivered_run(), &mut history)
+            .await?;
+        tokio::io::AsyncWriteExt::flush(&mut history)
+            .await
+            .map_err(|e| Error::Provider(format!("Canonical history file flush failed: {e}")))?;
+        if history
+            .metadata()
+            .await
+            .map_err(|error| Error::Provider(error.to_string()))?
+            .len()
+            != 0
         {
-            lease.finish();
-            let result = bridge.close().await.and(Err(error));
-            bridge.settled(&result);
-            return result;
+            let history_path = history_path.to_str().ok_or_else(|| {
+                Error::Invalid("Private canonical history path must be UTF-8".into())
+            })?;
+            materials.message = format!(
+                "Read the prior conversation context from this file before answering: {}\n\n--- Current user message ---\n{}",
+                serde_json::to_string(history_path).expect("history path is JSON"),
+                materials.message
+            );
         }
-        let runtime = self
-            .owner
-            .require_runtime(self.request.settings.runtime.as_deref())?;
-        let request = serde_json::json!({
-            "kind":"execute", "runtime":self.request.settings.runtime, "cwd":self.request.cwd,
+        if cancellation.is_cancelled() || binding.observation_retired().is_cancelled() {
+            return Err(Error::ObservationRetired);
+        }
+        let mut steering = steering::Steering::new(
+            artifacts,
+            scope,
+            request.language,
+            cancellation.clone(),
+            inputs.clone(),
+            request.task_id,
+            material_root.clone(),
+        );
+        let bridge = owner
+            .bridge(&request, host_tools, material_root.join("mcp"))
+            .await?;
+        *root_bridge = Some(bridge.clone());
+        let native_request = serde_json::json!({
+            "kind":"execute", "runtime":request.settings.runtime, "cwd":cwd,
             "message":materials.message,
             "images":materials.images,
             "tools":bridge.definitions(),
         });
-        let mut request = request.as_object().expect("worker request").clone();
+        let mut native_request = native_request.as_object().expect("worker request").clone();
         for (key, value) in [
-            ("model", self.request.settings.model.as_deref()),
+            ("model", request.settings.model.as_deref()),
             (
                 "effort",
-                self.request
-                    .settings
-                    .thinking_level
-                    .as_ref()
-                    .map(|e| e.as_str()),
+                request.settings.thinking_level.as_ref().map(|e| e.as_str()),
             ),
-            ("instructions", self.request.instructions.as_deref()),
+            ("instructions", request.instructions.as_deref()),
             ("resume", journal.native_session()),
         ] {
             if let Some(value) = value {
-                request.insert(key.into(), value.into());
+                native_request.insert(key.into(), value.into());
             }
         }
-        // From this point cancellation/drop must not remove paths that the native
-        // agent may still be reading. Only confirmed worker settlement releases them.
-        let directory = materials.handoff();
-        let result = runtime::execute(
+        // Root settlement does not prove that escaping private writers are gone.
+        // Retain this one task's inputs for private-resource GC, never for reuse.
+        let _ = materials.handoff();
+        runtime::execute(
             runtime,
-            &self.owner.commands[&runtime],
-            &self.request.cwd,
-            request.into(),
-            &self.owner.storage,
+            &owner,
+            cwd,
+            native_request.into(),
             &mut journal,
             output,
             bridge,
-            cancellation,
             &mut steering,
+            isolated,
         )
-        .await;
-        if !matches!(result, Err(Error::CleanupUnconfirmed)) {
-            lease.finish();
-            steering.cleanup().await?;
-            if let Some(directory) = directory {
-                tokio::fs::remove_dir_all(directory).await.map_err(|e| {
-                    Error::Provider(format!("External agent attachment cleanup failed: {e}"))
-                })?;
-            }
-        }
-        if matches!(&result, Ok(Outcome::Completed { .. })) {
-            journal
-                .delivered(&self.owner.storage, &self.request.invocation.run_id)
-                .await?;
-        }
-        result
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::sync::{Mutex, oneshot};
-
-    #[tokio::test]
-    async fn evicted_catalog_probe_still_quarantines_metadata_and_drains_overlapping_status() {
-        let cached = CatalogSnapshot {
-            cwd: "workspace".into(),
-            selected: None,
-            started: Instant::now(),
-            result: futures_util::future::pending::<Result<Value, Error>>()
-                .boxed()
-                .shared(),
-        };
-        let catalog = Arc::new(Mutex::new(Catalog::Cached(cached)));
-        let resources = Arc::new(maka_capabilities::call::Resources::default());
-        async fn probe(
-            catalog: Arc<Mutex<Catalog>>,
-            resources: Arc<maka_capabilities::call::Resources>,
-            entered: oneshot::Sender<()>,
-            release: oneshot::Receiver<Result<Value, Error>>,
-        ) -> Result<Value, Error> {
-            let mut ticket = catalog.lock().await.admit(&resources)?;
-            ticket.start();
-            entered.send(()).unwrap();
-            let result = release.await.unwrap();
-            catalog.lock().await.observe(&result);
-            ticket.complete(if matches!(result, Err(Error::CleanupUnconfirmed)) {
-                Err("probe cleanup unconfirmed".into())
-            } else {
-                Ok(())
-            });
-            result
-        }
-        let (catalog_entered, entered) = oneshot::channel();
-        let (release_catalog, result) = oneshot::channel();
-        let original = tokio::spawn(probe(
-            catalog.clone(),
-            resources.clone(),
-            catalog_entered,
-            result,
-        ));
-        entered.await.unwrap();
-        catalog.lock().await.invalidate();
-        assert!(matches!(*catalog.lock().await, Catalog::Empty));
-        let (status_entered, entered) = oneshot::channel();
-        let (release_status, result) = oneshot::channel();
-        let status = tokio::spawn(probe(
-            catalog.clone(),
-            resources.clone(),
-            status_entered,
-            result,
-        ));
-        entered.await.unwrap();
-        release_catalog
-            .send(Err(Error::CleanupUnconfirmed))
-            .unwrap();
-        assert!(matches!(
-            original.await.unwrap(),
-            Err(Error::CleanupUnconfirmed)
-        ));
-        catalog.lock().await.invalidate();
-        assert!(matches!(
-            catalog.lock().await.admit(&resources),
-            Err(Error::CleanupUnconfirmed)
-        ));
-        assert!(
-            resources.has_pending(),
-            "the admitted status probe must remain owned after its sibling fails"
-        );
-        release_status.send(Ok(serde_json::json!([]))).unwrap();
-        status.await.unwrap().unwrap();
-        assert!(!resources.has_pending());
-        assert!(
-            resources.reserve().is_ok(),
-            "Resources alone do not quarantine discovery"
-        );
-        catalog.lock().await.invalidate();
-        assert!(
-            matches!(
-                catalog.lock().await.admit(&resources),
-                Err(Error::CleanupUnconfirmed)
-            ),
-            "clean status completion/refresh cannot erase the original fatal result"
-        );
-        assert!(resources.finish().await.is_err());
+        .await
     }
 }

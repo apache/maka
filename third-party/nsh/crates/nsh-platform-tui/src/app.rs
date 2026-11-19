@@ -25,6 +25,7 @@ use ratatui_core::{
 use crate::{
     Appearance, CellSize, CellTextEngine, ComponentFactory, Handled, Input,
     input::Pointer,
+    key_event::{self, Phase},
     mount::Mounter,
     render::{self, Hit},
     surface::{Message, Runtime, Sink, Surface},
@@ -117,6 +118,10 @@ pub struct TerminalCapabilities {
     /// keyboard protocol. Without it, Ctrl stands in for Cmd in the app's
     /// shortcuts on macOS.
     pub command_key: bool,
+    /// The terminal takes OSC 8 hyperlinks: the text inside a `Link` is
+    /// drawn as a hyperlink to its `href`. Without it, as on the Linux
+    /// console, which shows the sequence, links are plain text.
+    pub hyperlinks: bool,
 }
 
 /// The colors a terminal shows.
@@ -143,6 +148,7 @@ impl Default for TerminalCapabilities {
             background_color: None,
             foreground_color: None,
             command_key: false,
+            hyperlinks: true,
         }
     }
 }
@@ -164,7 +170,9 @@ pub struct AppOptions {
     pub limits: Limits,
     /// Image and response cache policy.
     pub cache: nsh_engine::CacheOptions,
-    /// Persistent app data directory.
+    /// The app's data directory, used as it is
+    /// ([`nsh_engine::EngineConfig::data_dir`]); `None`: the one under its
+    /// id in the system's directory for apps' data.
     pub data_dir: Option<PathBuf>,
     /// Registries available to app code.
     pub ui_sets: Vec<nsh_core::element::Registry>,
@@ -195,9 +203,9 @@ impl Default for AppOptions {
             wake: None,
             limits: Limits::default(),
             cache: nsh_engine::CacheOptions::default(),
-            data_dir: None,
             ui_sets: vec![nsh_base::registry()],
             host: HostChannel::default(),
+            data_dir: None,
             storage: None,
             assets: None,
             clipboard: None,
@@ -471,7 +479,7 @@ impl AppView {
         self.keyboard.sync = Some((sender, self.surface.wake.clone()));
         let engine = Engine::start(config, move || CellTextEngine::new(cells), sink)?;
         self.images
-            .set_resources(assets, access, engine.image_cache());
+            .set_resources(assets, access, engine.media_files(), engine.image_cache());
         #[cfg(feature = "dev")]
         if let Some(test) = &self.test {
             test.model.engine_started(engine.control());
@@ -512,7 +520,8 @@ impl AppView {
             local.control().set_perf_monitor(Some(perf.engine.clone()));
         }
         let disk = local.image_cache();
-        self.images.set_resources(assets, access, disk);
+        self.images
+            .set_resources(assets, access, local.media_files(), disk);
         self.surface.local_deadline = local.pump();
         self.surface.laid_out = viewport;
         self.surface.runtime = Some(Runtime::Local(Box::new(local)));
@@ -1131,6 +1140,20 @@ impl AppView {
         if self.input_paused && !matches!(input, Input::Focus(_)) {
             return Handled::Ignored;
         }
+        // What the user gives input with, before it acts: the focus it
+        // moves shows or not (`focus-visible:`).
+        let modality = match &input {
+            Input::Mouse(mouse) if matches!(mouse.kind, crate::MouseKind::Down(_)) => {
+                Some(nsh_core::platform::InputModality::Pointer)
+            }
+            Input::Key { release: false, .. } | Input::KeyRepeat { .. } => {
+                Some(nsh_core::platform::InputModality::Keyboard)
+            }
+            _ => None,
+        };
+        if let (Some(modality), Some(engine)) = (modality, self.surface.control()) {
+            engine.set_input_modality(modality);
+        }
         // Ctrl+C is never the diagnostics panel's: it copies or quits.
         #[cfg(feature = "dev")]
         let interrupt = matches!(&input, Input::Key { key, modifiers, .. }
@@ -1226,6 +1249,17 @@ impl AppView {
                 if matches!(mouse.kind, crate::MouseKind::Down(crate::MouseButton::Left)) {
                     self.surface.wake.notify();
                 }
+                self.pointer.mouse_up(
+                    mouse,
+                    &crate::input::PointerContext {
+                        area: self.area,
+                        cells: self.options.cells,
+                        hits: &self.hits,
+                        geometry: &self.geometry,
+                        tree: &mut self.tree,
+                        control: &control,
+                    },
+                );
                 let handled = if matches!(
                     mouse.kind,
                     crate::MouseKind::Down(crate::MouseButton::Right)
@@ -1277,14 +1311,18 @@ impl AppView {
                 key,
                 modifiers,
                 release,
-            } => {
-                if release {
-                    Handled::Ignored
+            } => self.handle_key(
+                &key,
+                modifiers,
+                Some(if release {
+                    Phase::Up
                 } else {
-                    self.handle_key(&key, modifiers, false)
-                }
+                    Phase::Down { repeat: false }
+                }),
+            ),
+            Input::KeyRepeat { key, modifiers } => {
+                self.handle_key(&key, modifiers, Some(Phase::Down { repeat: true }))
             }
-            Input::KeyRepeat { key, modifiers } => self.handle_key(&key, modifiers, true),
             Input::Paste(text) => {
                 let Some(id) = self.editing_field() else {
                     return Handled::Ignored;
@@ -1480,7 +1518,7 @@ impl AppView {
             shift,
             ..Default::default()
         };
-        self.handle_key(key, modifiers, false);
+        self.handle_key(key, modifiers, None);
     }
 
     /// A shortcut of the application menu's items, after the app's own
@@ -1566,29 +1604,64 @@ impl AppView {
         true
     }
 
-    fn handle_key(&mut self, key: &str, modifiers: crate::Modifiers, repeat: bool) -> Handled {
+    /// `phase` is the terminal's transition, or `None` for a key an
+    /// application menu's item stands for: that runs what the key does
+    /// without reporting a transition no key made.
+    fn handle_key(
+        &mut self,
+        key: &str,
+        modifiers: crate::Modifiers,
+        phase: Option<Phase>,
+    ) -> Handled {
         if !self.focused {
             return Handled::Ignored;
         }
-        let Some(stroke) = crate::key_scheme::keystroke(key, modifiers) else {
-            return Handled::Ignored;
-        };
+        let stroke = crate::key_scheme::keystroke(key, modifiers);
         let Some(control) = self.surface.control() else {
             // No app to ask: Ctrl+C still quits.
-            if let Some(crate::key_scheme::Action::Quit) = crate::key_scheme::terminal(stroke) {
+            if stroke.is_some_and(|stroke| {
+                matches!(
+                    crate::key_scheme::terminal(stroke),
+                    Some(crate::key_scheme::Action::Quit)
+                )
+            }) {
                 self.tree.exit = true;
                 return Handled::Yes;
             }
             return Handled::Ignored;
         };
+        // A release is no command: the views that listen hear it, and
+        // nothing acts on it.
+        if let Some(Phase::Up) = phase {
+            let Some((id, captured)) = self.raw_target(stroke.as_ref()) else {
+                return Handled::Ignored;
+            };
+            Self::notify_key(
+                id,
+                key,
+                modifiers,
+                stroke.as_ref(),
+                Phase::Up,
+                captured,
+                &control,
+            );
+            return if captured {
+                Handled::Yes
+            } else {
+                Handled::Ignored
+            };
+        }
+        let repeat = matches!(phase, Some(Phase::Down { repeat: true }));
         if self.minibuffer.is_open()
+            && let Some(stroke) = stroke
             && let Some(crate::search::Outcome::Consumed) =
                 self.search(|minibuffer, scene| minibuffer.key(key, stroke, scene))
         {
             return Handled::Yes;
         }
         // F10 gives the menu bar the keys (the open bar takes the next).
-        if stroke.key == nsh_core::keymap::Key::F(10)
+        if let Some(stroke) = stroke
+            && stroke.key == nsh_core::keymap::Key::F(10)
             && stroke.modifiers == nsh_core::keymap::Modifiers::default()
             && let Some(outcome) = self.tree.menus.toggle_bar()
         {
@@ -1599,12 +1672,61 @@ impl AppView {
         self.catch_up_with_focus();
         let command_key = self.options.capabilities.command_key;
         let selecting = self.selection.is_active();
-        let mut handled =
-            if self
-                .keyboard
-                .shortcut(&self.tree, stroke, repeat, command_key, &control)
-                || self.menu_shortcut(stroke, repeat, false)
-                || self.handle_field_key(key, stroke, &control)
+        // The app's shortcuts and its menus' come first.
+        let field_selected = self
+            .editing_field()
+            .and_then(|id| self.tree.get(id)?.field.as_ref())
+            .is_some_and(|f| f.model.has_selection());
+        if let Some(stroke) = stroke
+            && ((self.editing_field().is_some()
+                && !field_selected
+                && self.selection.key_while_editing(
+                    key,
+                    modifiers,
+                    &self.tree,
+                    &self.geometry,
+                    self.clipboard.as_ref(),
+                ))
+                || self
+                    .keyboard
+                    .shortcut(&self.tree, stroke, repeat, command_key, &control)
+                || self.menu_shortcut(stroke, repeat, false))
+        {
+            self.surface.wake.notify();
+            return Handled::Yes;
+        }
+        // The focused view and its ancestors hear the key before the
+        // terminal's defaults do; a capture of theirs takes it from them.
+        if let Some(phase) = phase
+            && let Some((id, captured)) = self.raw_target(stroke.as_ref())
+        {
+            Self::notify_key(
+                id,
+                key,
+                modifiers,
+                stroke.as_ref(),
+                phase,
+                captured,
+                &control,
+            );
+            if captured {
+                return Handled::Yes;
+            }
+        }
+        if let Some(stroke) = stroke
+            && self.keyboard.has_focused_control(&self.tree)
+            && nsh_core::input::presses_focused_control(stroke.key, stroke.modifiers)
+        {
+            return self.keyboard.action(
+                crate::key_scheme::Action::Activate,
+                &mut self.tree,
+                &self.geometry,
+                &control,
+                modifiers,
+            );
+        }
+        let mut handled = if let Some(stroke) = stroke
+            && (self.handle_field_key(key, stroke, &control)
                 || self.selection.key(
                     key,
                     modifiers,
@@ -1615,23 +1737,26 @@ impl AppView {
                 || crate::key_scheme::arrow(stroke).is_some_and(|arrow| {
                     self.keyboard
                         .shortcut(&self.tree, arrow, repeat, command_key, &control)
-                })
-            {
-                Handled::Yes
-            } else if let Some(crate::key_scheme::Action::Search(forward)) =
+                })) {
+            Handled::Yes
+        } else if let Some(stroke) = stroke
+            && let Some(crate::key_scheme::Action::Search(forward)) =
                 crate::key_scheme::terminal(stroke)
-            {
-                self.search(|minibuffer, scene| minibuffer.start(forward, scene));
-                Handled::Yes
-            } else if let Some(action) = crate::key_scheme::terminal(stroke)
+        {
+            self.search(|minibuffer, scene| minibuffer.start(forward, scene));
+            Handled::Yes
+        } else if let Some(stroke) = stroke
+            && let Some(action) = crate::key_scheme::terminal(stroke)
                 .filter(|a| !matches!(a, crate::key_scheme::Action::Quit))
-            {
-                self.keyboard
-                    .action(action, &mut self.tree, &self.geometry, &control, modifiers)
-            } else {
-                Handled::Ignored
-            };
-        if handled == Handled::Ignored {
+        {
+            self.keyboard
+                .action(action, &mut self.tree, &self.geometry, &control, modifiers)
+        } else {
+            Handled::Ignored
+        };
+        if handled == Handled::Ignored
+            && let Some(stroke) = stroke
+        {
             if self
                 .keyboard
                 .fallback_shortcut(&self.tree, stroke, repeat, command_key, &control)
@@ -1662,6 +1787,43 @@ impl AppView {
             self.surface.wake.notify();
         }
         handled
+    }
+
+    /// Where a raw transition goes — the focused view — and whether the
+    /// mounted capture rules of its enabled ancestry take it, read now.
+    /// `None` when no view has the keyboard focus, when none of them and no
+    /// ancestor hears raw keys or captures them, or when a native control
+    /// owns the keys: a capture rule around a text field or the Minibuffer
+    /// must not intercept what is typed into them.
+    fn raw_target(
+        &self,
+        stroke: Option<&nsh_core::keymap::Keystroke>,
+    ) -> Option<(nsh_core::NodeId, bool)> {
+        if self.minibuffer.is_open() || self.editing_field().is_some() {
+            return None;
+        }
+        let id = key_event::target(&self.tree, self.keyboard.focused)?;
+        if !key_event::listens(&self.tree, id) {
+            return None;
+        }
+        Some((id, key_event::captures(&self.tree, id, stroke)))
+    }
+
+    /// Reports a key transition to `id`, which the engine bubbles to its
+    /// ancestors within its window, carrying the capture decision made for
+    /// this transition.
+    fn notify_key(
+        id: nsh_core::NodeId,
+        key: &str,
+        modifiers: crate::Modifiers,
+        stroke: Option<&nsh_core::keymap::Keystroke>,
+        phase: Phase,
+        captured: bool,
+        control: &nsh_engine::EngineControl,
+    ) {
+        let mut event = key_event::event(key, modifiers, stroke, phase);
+        event.default_prevented = captured;
+        control.dispatch_event(id, phase.kind(), nsh_core::EventPayload::Key(event));
     }
 
     fn apply_batch(&mut self, batch: nsh_core::MountBatch) {
@@ -2188,6 +2350,7 @@ impl AppView {
                 Message::SixelEncoded { id, key, sixel } => {
                     let _ = self.images.on_sixel_encoded(id, key, sixel);
                 }
+                Message::Run(task) => task.run(),
                 #[cfg(feature = "dev")]
                 Message::Reload => {
                     if let Some(mut dev) = self.dev.take() {
@@ -2440,6 +2603,13 @@ impl AppView {
             perf.pending.draw = drawing.elapsed();
             perf.draw(area, buffer);
         }
+        let painted = if self.options.capabilities.hyperlinks {
+            &self.tree.links
+        } else {
+            &crate::link::Painted::new()
+        };
+        let links = crate::link::finish(buffer, painted, &self.output.links.borrow());
+        *self.output.links.borrow_mut() = links;
         #[cfg(feature = "dev")]
         {
             let requests: Vec<_> = self

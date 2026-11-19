@@ -30,6 +30,9 @@ pub enum CellAbort {
     Cancelled,
     #[error("cell executor failed: {0}")]
     Internal(String),
+    /// The interpreter's physical teardown is unknown, not a nested tool failure.
+    #[error("VM cleanup unconfirmed: {0}")]
+    VmCleanupUnconfirmed(String),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]

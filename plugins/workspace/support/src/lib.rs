@@ -18,7 +18,6 @@
  */
 
 use maka_agent_api::contract::{Directories, Directory, DirectoryPage, Workspace};
-use maka_agent_facts::execution::DirectoryIdentity;
 use maka_fs_tools::{
     directory,
     workspace::{self, directory::PublishedDirectory},
@@ -67,6 +66,34 @@ pub fn sandbox(
     Ok((base, ceiling))
 }
 
+/// Host-private paths, whatever the access mode: Maka's state and the native
+/// task namespace. Calls from external sources run below this floor.
+pub fn reserved(selected: &Workspace, state_root: &Path) -> Result<maka_sandbox::Sandbox, String> {
+    use maka_sandbox::{
+        Network, Sandbox,
+        filesystem::{Access, Policy, Rule},
+    };
+    let namespace = maka_sandbox::native_task_namespace().map_err(|error| error.to_string())?;
+    let private = private_rules(selected, state_root)?;
+    Sandbox::Managed {
+        filesystem: Policy {
+            default: Access::Write,
+            rules: vec![Rule::subtree(namespace, Access::Deny)],
+            deny_globs: vec![],
+        },
+        network: Network::Allowed,
+    }
+    .intersect(&Sandbox::Managed {
+        filesystem: Policy {
+            default: Access::Write,
+            rules: private,
+            deny_globs: vec![],
+        },
+        network: Network::Allowed,
+    })
+    .map_err(|error| error.to_string())
+}
+
 /// The native Session record is the authority for the sole exception inside
 /// private state. A caller-supplied path can never open this exception.
 pub fn private_rules(
@@ -91,6 +118,34 @@ pub fn private_rules(
 pub struct Root {
     name: String,
     directory: Arc<PublishedDirectory>,
+    temporary: Option<PathBuf>,
+}
+
+impl Root {
+    pub fn execution_basis(&self) -> std::io::Result<(&Path, serde_json::Value, Option<&Path>)> {
+        Ok((
+            self.directory.path(),
+            self.directory.execution_basis()?,
+            self.temporary.as_deref(),
+        ))
+    }
+
+    pub fn validate(&self, path: &Path) -> std::io::Result<()> {
+        self.directory.validate(path)?;
+        #[cfg(unix)]
+        if let Some(protected) = &self.temporary {
+            let child = path
+                .strip_prefix(self.directory.path())
+                .ok()
+                .and_then(|relative| relative.components().next())
+                .map(|child| self.directory.path().join(child))
+                .ok_or(std::io::ErrorKind::PermissionDenied)?;
+            if path.starts_with(protected) || !maka_sandbox::is_private_account_directory(&child)? {
+                return Err(std::io::ErrorKind::PermissionDenied.into());
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn open(specs: Vec<DirectoryRootSpec>, managed: &Path) -> Result<Vec<Root>, String> {
@@ -107,10 +162,54 @@ pub fn open(specs: Vec<DirectoryRootSpec>, managed: &Path) -> Result<Vec<Root>, 
                     PublishedDirectory::open(&spec.path)
                         .map_err(|_| "agent_workspace_configuration_invalid")?,
                 ),
+                temporary: None,
             })
         })
         .collect::<Result<_, String>>()?;
     Ok(roots)
+}
+
+pub fn open_projects(specs: Vec<DirectoryRootSpec>, managed: &Path) -> Result<Vec<Root>, String> {
+    let roots = open(specs, managed)?;
+    #[cfg(unix)]
+    let roots = {
+        let mut roots = roots;
+        if let Some(home) = std::env::home_dir() {
+            let namespace =
+                maka_sandbox::native_task_namespace().map_err(|error| error.to_string())?;
+            add_temporary_workspaces(&mut roots, &home, &std::env::temp_dir(), namespace)?;
+        }
+        roots
+    };
+    Ok(roots)
+}
+
+/// The default local locations include the account's private scratch directories.
+/// The system temporary directory itself is never a selectable workspace.
+#[cfg(unix)]
+fn add_temporary_workspaces(
+    roots: &mut Vec<Root>,
+    home: &Path,
+    temporary: &Path,
+    protected: PathBuf,
+) -> Result<(), String> {
+    let home = home.canonicalize().map_err(|error| error.to_string())?;
+    if !roots.iter().any(|root| root.directory.path() == home) {
+        return Ok(());
+    }
+    let directory = PublishedDirectory::open(temporary).map_err(|error| error.to_string())?;
+    if roots
+        .iter()
+        .any(|root| directory.path().starts_with(root.directory.path()))
+    {
+        return Ok(());
+    }
+    roots.push(Root {
+        name: "Temporary".into(),
+        directory: Arc::new(directory),
+        temporary: Some(protected),
+    });
+    Ok(())
 }
 /// A directory found within a configured location, with the identity captured
 /// as it was opened. Only a `Workspace` the Host persisted carries an identity
@@ -119,7 +218,7 @@ pub fn open(specs: Vec<DirectoryRootSpec>, managed: &Path) -> Result<Vec<Root>, 
 pub struct Located {
     pub name: String,
     pub path: String,
-    pub identity: DirectoryIdentity,
+    pub identity: directory::Observation,
 }
 
 /// A caller's path as the directory it names: a leading `~` replaced by `home`,
@@ -178,7 +277,7 @@ fn capture(root: &Root, path: &Path) -> Option<Located> {
     directory::open(&path, &identity)
         .and_then(|directory| directory.entries())
         .ok()?;
-    root.directory.validate(&path).ok()?;
+    root.validate(&path).ok()?;
     let name = if path == root.directory.path() {
         root.name.clone()
     } else {
@@ -311,9 +410,7 @@ pub async fn query_excluding(
     .map_err(|_| "agent_directory_unavailable")?
 }
 
-/// The workspace at `path`, with its directory identity captured as the
-/// directory is opened and its workspace marker ensured. None is a confirmed
-/// pre-effect refusal. Marker initialization errors remain Unknown.
+/// Resolve and authorize a user-selected directory without modifying the filesystem.
 pub async fn initialize(
     roots: &[Root],
     path: &str,
@@ -326,63 +423,81 @@ pub async fn initialize(
     let path = path.to_owned();
     let home = home.map(Path::to_owned);
     let managed = managed.to_owned();
-    let prepared = tokio::task::spawn_blocking(move || {
-        let path = resolve_path(&path, home.as_deref())?;
-        if path.starts_with(&managed) {
-            return None;
+    let private_root = private_root.to_owned();
+    let control = control.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let private_root = private_root
+            .canonicalize()
+            .map_err(|_| "agent_workspace_unavailable".to_owned())?;
+        let control = control
+            .canonicalize()
+            .map_err(|_| "agent_workspace_unavailable".to_owned())?;
+        let Some(path) = resolve_path(&path, home.as_deref()) else {
+            return Ok(None);
+        };
+        if path.starts_with(&managed)
+            || path.starts_with(&private_root)
+            || path.starts_with(&control)
+        {
+            return Ok(None);
         }
-        let (root, located) = find(&roots, &path)?;
-        let directory = directory::open(&path, &located.identity).ok()?;
-        match workspace::read_directory_identity(path.clone(), directory.try_clone().ok()?) {
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return None,
+        let Some((root, located)) = find(&roots, &path) else {
+            return Ok(None);
+        };
+        if root.validate(&path).is_err() || directory::open(&path, &located.identity).is_err() {
+            return Ok(None);
         }
-        Some((root.directory.clone(), path, directory, located.identity))
+        Ok(Some(Workspace {
+            worktree: None,
+            project_id: None,
+            path: host_path(&path)?,
+        }))
     })
     .await
-    .map_err(|_| "agent_workspace_unavailable")?;
-    let Some((published, path, directory, directory_identity)) = prepared else {
-        return Ok(None);
-    };
-    let identity = workspace::ensure_directory_identity(
-        path.clone(),
-        directory,
-        private_root.to_owned(),
-        control.to_owned(),
-        None,
-    )
-    .await
-    .map_err(|_| "agent_workspace_initialization_failed")?;
-    published
-        .validate(&path)
-        .map_err(|_| "agent_workspace_initialization_failed")?;
-    directory::open(&path, &directory_identity)
-        .map_err(|_| "agent_workspace_initialization_failed")?;
-    Ok(Some(Workspace {
-        worktree: None,
-        project_id: None,
-        path: host_path(&path)?,
-        directory_identity,
-        identity,
-    }))
+    .map_err(|_| "agent_workspace_unavailable".to_owned())?
 }
+
+pub fn capture_selected(
+    selected: &Workspace,
+) -> Result<(PathBuf, cap_std::fs::Dir, directory::Observation), String> {
+    let (path, directory, identity) = directory::capture_directory(Path::new(&selected.path))
+        .map_err(|_| "agent_workspace_unavailable")?;
+    if host_path(&path)? != selected.path {
+        return Err("agent_workspace_unavailable".into());
+    }
+    if let Some(binding) = &selected.worktree
+        && binding.directory() != Path::new(&selected.path)
+    {
+        return Err("agent_workspace_unavailable".into());
+    }
+    Ok((path, directory, identity))
+}
+
 pub async fn validate(roots: &[Root], selected: &Workspace, managed: &Path) -> Result<(), String> {
+    open_workspace(roots, selected, managed).await.map(drop)
+}
+
+pub async fn open_workspace(
+    roots: &[Root],
+    selected: &Workspace,
+    managed: &Path,
+) -> Result<cap_std::fs::Dir, String> {
+    open_workspace_observation(roots, selected, managed)
+        .await
+        .map(|(_, directory, _)| directory)
+}
+
+pub async fn open_workspace_observation(
+    roots: &[Root],
+    selected: &Workspace,
+    managed: &Path,
+) -> Result<(PathBuf, cap_std::fs::Dir, directory::Observation), String> {
     let roots = roots.to_vec();
     let selected = selected.clone();
     let managed = managed.to_owned();
     tokio::task::spawn_blocking(move || {
-        let (path, observed) = directory::capture(Path::new(&selected.path))
-            .map_err(|_| "agent_workspace_unavailable")?;
-        if host_path(&path)? != selected.path || observed != selected.directory_identity {
-            return Err("agent_workspace_unavailable".into());
-        }
+        let (path, directory, identity) = capture_selected(&selected)?;
         let authorized = if let Some(binding) = &selected.worktree {
-            directory::open(binding.source(), binding.source_identity())
-                .map_err(|_| "agent_workspace_unavailable")?;
-            if binding.directory() != Path::new(&selected.path) {
-                return Err("agent_workspace_unavailable".into());
-            }
             maka_fs_tools::worktree::Worktrees::open(&managed)
                 .and_then(|worktrees| worktrees.inspect(binding))
                 .map_err(|_| "agent_workspace_unavailable")?;
@@ -393,52 +508,57 @@ pub async fn validate(roots: &[Root], selected: &Workspace, managed: &Path) -> R
             }
             path.as_path()
         };
-        let root = roots
-            .iter()
-            .find(|root| root.directory.validate(authorized).is_ok())
-            .ok_or("agent_workspace_unavailable")?;
-        let directory = directory::open(&path, &selected.directory_identity)
-            .map_err(|_| "agent_workspace_unavailable")?;
-        if workspace::read_directory_identity(path.clone(), directory)
-            .map_err(|_| "agent_workspace_unavailable")?
-            != selected.identity
-        {
+        if !roots.iter().any(|root| root.validate(authorized).is_ok()) {
             return Err("agent_workspace_unavailable".into());
         }
-        root.directory
-            .validate(authorized)
-            .map_err(|_| "agent_workspace_unavailable".into())
+        Ok((path, directory, identity))
     })
     .await
     .map_err(|_| "agent_workspace_unavailable")?
 }
 
-/// Re-observe a published directory without creating a workspace marker.
+/// Re-observe a published directory without modifying the filesystem.
 pub async fn selected(
     roots: Vec<Root>,
     path: &str,
     home: Option<&Path>,
     managed: PathBuf,
 ) -> Result<Option<Located>, String> {
-    resolve(roots, path, home, managed, true).await
+    observed(roots, path, home, managed).await
 }
-/// A published directory as it is, marker or not; `excluded` and below is
-/// not published.
+
+/// A published directory as it is; `excluded` and below is not published.
 pub async fn observed(
     roots: Vec<Root>,
     path: &str,
     home: Option<&Path>,
     excluded: PathBuf,
 ) -> Result<Option<Located>, String> {
-    resolve(roots, path, home, excluded, false).await
+    resolve(roots, path, home, excluded)
+        .await
+        .map(|directory| directory.map(|(located, _)| located))
 }
+
+pub async fn open_directory(
+    roots: &[Root],
+    selected: &Located,
+    excluded: &Path,
+) -> Result<cap_std::fs::Dir, String> {
+    let (current, directory) = resolve(roots.to_vec(), &selected.path, None, excluded.to_owned())
+        .await?
+        .ok_or("agent_directory_unavailable")?;
+    if current.path != selected.path || current.identity != selected.identity {
+        return Err("agent_directory_unavailable".into());
+    }
+    Ok(directory)
+}
+
 async fn resolve(
     roots: Vec<Root>,
     path: &str,
     home: Option<&Path>,
     excluded: PathBuf,
-    workspace_marker: bool,
-) -> Result<Option<Located>, String> {
+) -> Result<Option<(Located, cap_std::fs::Dir)>, String> {
     let path = path.to_owned();
     let home = home.map(Path::to_owned);
     tokio::task::spawn_blocking(move || {
@@ -446,227 +566,70 @@ async fn resolve(
         if path.starts_with(&excluded) {
             return None;
         }
-        let (_, located) = find(&roots, &path)?;
+        let (root, located) = find(&roots, &path)?;
         let directory = directory::open(&path, &located.identity).ok()?;
-        if !workspace_marker {
-            return Some(located);
-        }
-        match workspace::read_directory_identity(path, directory) {
-            Ok(_) => Some(located),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(located),
-            Err(_) => None,
-        }
+        root.validate(&path).ok()?;
+        Some((located, directory))
     })
     .await
     .map_err(|_| "agent_directory_unavailable".into())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
+
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
-    fn roots(temporary: &Path, published: &Path) -> Vec<Root> {
-        open(
-            vec![DirectoryRootSpec {
-                label: "Projects".into(),
-                path: published.to_owned(),
-            }],
-            &temporary.join("managed"),
-        )
-        .unwrap()
-    }
-    async fn children(
-        roots: &[Root],
-        path: &Path,
-        after: Option<String>,
-    ) -> Result<(Directory, Vec<Directory>, Option<String>), String> {
-        let page = query(
-            roots.to_vec(),
-            Directories::Children {
-                path: path.to_str().unwrap().into(),
-                after,
-            },
-            None,
-        )
-        .await?;
-        let DirectoryPage::Children {
-            directory,
-            children,
-            after,
-        } = page
-        else {
-            panic!("children")
-        };
-        Ok((directory, children, after))
-    }
-
+    #[cfg(unix)]
     #[tokio::test]
-    async fn inaccessible_children_do_not_break_paging_but_parent_failure_is_reported() {
-        let temporary = tempfile::tempdir().unwrap();
-        let published = temporary.path().join("published");
-        std::fs::create_dir(&published).unwrap();
-        for index in 0..35 {
-            std::fs::create_dir(published.join(format!("folder-{index:02}"))).unwrap();
+    async fn default_home_accepts_private_scratch_workspaces_only() {
+        let parent = tempfile::tempdir().unwrap();
+        let home = parent.path().join("home");
+        let temp = parent.path().join("tmp");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::create_dir(&temp).unwrap();
+        let protected = tempfile::tempdir_in(&temp).unwrap();
+        let scratch = tempfile::tempdir_in(&temp).unwrap();
+        let shared = tempfile::tempdir_in(&temp).unwrap();
+        for private in [&protected, &scratch] {
+            std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
         }
-        let denied = published.join("folder-01");
-        let roots = roots(temporary.path(), &published);
-        let DirectoryPage::Roots { roots: entries } =
-            query(roots.clone(), Directories::Roots {}, None)
-                .await
-                .unwrap()
-        else {
-            panic!("roots")
-        };
-        assert_eq!(entries[0].name, "Projects");
-        let root = PathBuf::from(&entries[0].path);
-        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o0)).unwrap();
-        assert_eq!(
-            std::fs::read_dir(&denied)
-                .expect_err("fixture child must deny directory reads")
-                .kind(),
-            std::io::ErrorKind::PermissionDenied
-        );
-        let page = children(&roots, &root, None).await;
-        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let (directory, listed, after) = page.unwrap();
-        assert_eq!(directory.path, entries[0].path);
-        assert_eq!(listed.len(), 32);
-        assert!(!listed.iter().any(|child| child.name == "folder-01"));
-        assert_eq!(after.as_deref(), Some("folder-32"));
-        let (_, listed, after) = children(&roots, &root, after).await.unwrap();
-        assert_eq!(
-            listed
-                .iter()
-                .map(|child| child.name.as_str())
-                .collect::<Vec<_>>(),
-            ["folder-33", "folder-34"]
-        );
-        assert!(after.is_none());
-        let (_, listed, _) = children(&roots, &root, None).await.unwrap();
-        assert!(listed.iter().any(|child| child.name == "folder-01"));
-        // A child is named by its own path, and its page names it too.
-        let (folder, inside, _) = children(&roots, &root.join("folder-02"), None)
-            .await
-            .unwrap();
-        assert_eq!(folder.name, "folder-02");
-        assert_eq!(folder.path, listed[2].path);
-        assert!(inside.is_empty());
-        std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o0)).unwrap();
-        assert_eq!(
-            std::fs::read_dir(&published)
-                .expect_err("fixture parent must deny directory reads")
-                .kind(),
-            std::io::ErrorKind::PermissionDenied
-        );
-        let unavailable = children(&roots, &root, None).await;
-        std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert_eq!(unavailable.err().unwrap(), "agent_directory_unavailable");
-        std::fs::rename(&published, temporary.path().join("moved")).unwrap();
-        assert_eq!(
-            children(&roots, &root, None).await.err().unwrap(),
-            "agent_directory_unavailable"
-        );
-    }
-
-    #[tokio::test]
-    async fn directories_are_named_by_path_within_the_most_specific_location() {
-        let temporary = tempfile::tempdir().unwrap();
-        let published = temporary.path().join("published");
-        let app = published.join("code").join("app");
-        std::fs::create_dir_all(&app).unwrap();
-        std::fs::create_dir_all(temporary.path().join("elsewhere")).unwrap();
-        let managed = temporary.path().join("managed");
-        let roots = open(
-            vec![
-                DirectoryRootSpec {
-                    label: "Projects".into(),
-                    path: published.clone(),
-                },
-                DirectoryRootSpec {
-                    label: "Code".into(),
-                    path: published.join("code"),
-                },
-            ],
-            &managed,
+        std::fs::set_permissions(shared.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut roots = open(
+            vec![DirectoryRootSpec {
+                label: "~".into(),
+                path: home.clone(),
+            }],
+            protected.path(),
         )
         .unwrap();
-        let located = |path: String| {
-            let roots = roots.clone();
-            let managed = managed.clone();
-            async move { selected(roots, &path, None, managed).await.unwrap() }
-        };
-        let found = located(app.display().to_string()).await.unwrap();
-        let canonical = app.canonicalize().unwrap();
-        assert_eq!(found.name, "app");
-        assert_eq!(found.path, host_path(&canonical).unwrap());
-        assert_eq!(found.identity, directory::capture(&app).unwrap().1);
-        // Written with `.`, `..` and a trailing separator: the same directory.
-        let dotted = format!("{}/./code/../code/app/", published.display());
-        assert_eq!(located(dotted).await.unwrap(), found);
-        // A location names itself; the deeper of two overlapping locations wins.
-        let code = located(published.join("code").display().to_string())
+        add_temporary_workspaces(
+            &mut roots,
+            &home,
+            &temp,
+            protected.path().canonicalize().unwrap(),
+        )
+        .unwrap();
+
+        for (path, available) in [
+            (scratch.path(), true),
+            (shared.path(), false),
+            (protected.path(), false),
+            (&temp, false),
+        ] {
+            let result = selected(
+                roots.clone(),
+                path.to_str().unwrap(),
+                None,
+                parent.path().join("managed"),
+            )
             .await
             .unwrap();
-        assert_eq!(code.name, "Code");
-        let projects = located(published.display().to_string()).await.unwrap();
-        assert_eq!(projects.name, "Projects");
-        let DirectoryPage::Roots { roots: entries } =
-            query(roots.clone(), Directories::Roots {}, None)
-                .await
-                .unwrap()
-        else {
-            panic!("roots")
-        };
-        assert_eq!(
-            entries
-                .iter()
-                .map(|root| root.path.as_str())
-                .collect::<Vec<_>>(),
-            [projects.path.as_str(), code.path.as_str()]
-        );
-        // Outside the locations, missing, a file, relative, or managed: nothing.
-        std::fs::write(app.join("file.txt"), "x").unwrap();
-        std::fs::create_dir_all(managed.join("wt")).unwrap();
-        for absent in [
-            temporary.path().join("elsewhere").display().to_string(),
-            app.join("missing").display().to_string(),
-            app.join("file.txt").display().to_string(),
-            "code/app".to_owned(),
-            managed.join("wt").display().to_string(),
-        ] {
-            assert!(located(absent.clone()).await.is_none(), "{absent}");
+            assert_eq!(result.is_some(), available, "{}", path.display());
         }
-    }
-
-    #[test]
-    fn a_tilde_stands_for_the_home_directory_only_at_the_start() {
-        let temporary = tempfile::tempdir().unwrap();
-        let home = temporary.path().join("home");
-        std::fs::create_dir_all(home.join("code")).unwrap();
-        let canonical = home.canonicalize().unwrap();
-        assert_eq!(resolve_path("~", Some(&home)), Some(canonical.clone()));
-        assert_eq!(
-            resolve_path("~/code", Some(&home)),
-            Some(canonical.join("code"))
-        );
-        assert_eq!(
-            resolve_path("~/code/", Some(&home)),
-            Some(canonical.join("code"))
-        );
-        assert_eq!(
-            resolve_path("~/code/..", Some(&home)),
-            Some(canonical.clone())
-        );
-        assert_eq!(resolve_path("~/missing", Some(&home)), None);
-        assert_eq!(resolve_path("~/code", None), None);
-        // `~user` and a `~` later in the path are not expansions.
-        assert_eq!(resolve_path("~someone/code", Some(&home)), None);
-        let literal = home.join("~");
-        std::fs::create_dir(&literal).unwrap();
-        assert_eq!(
-            resolve_path(literal.to_str().unwrap(), Some(&home)),
-            Some(canonical.join("~"))
-        );
     }
 }

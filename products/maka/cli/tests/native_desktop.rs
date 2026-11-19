@@ -41,6 +41,10 @@ mod desktop_new_session;
 #[path = "../../terminal-shell/tests/real_host/support.rs"]
 mod support;
 
+#[cfg(target_os = "macos")]
+#[path = "desktop_new_session.rs"]
+mod owned_root;
+
 fn main() -> std::process::ExitCode {
     let mut list = false;
     let mut exact = false;
@@ -73,10 +77,15 @@ fn main() -> std::process::ExitCode {
         }
     }
     #[cfg(any(target_os = "macos", windows))]
-    let cases: Vec<_> = desktop_new_session::CASES
+    let mut cases: Vec<_> = desktop_new_session::CASES
         .iter()
         .map(|name| (format!("terminal::desktop_new_session::{name}"), *name))
         .collect();
+    #[cfg(target_os = "macos")]
+    cases.push((
+        "terminal::desktop_new_session::owned_root::new_conversation_creates_and_selects_a_session_in_the_same_workspace".into(),
+        "owned_root",
+    ));
     #[cfg(not(any(target_os = "macos", windows)))]
     let cases: Vec<(String, &str)> = Vec::new();
     let matches = |name: &str, filter: &str| {
@@ -106,7 +115,13 @@ fn main() -> std::process::ExitCode {
     let count = selected.len();
     for (name, case) in selected {
         #[cfg(any(target_os = "macos", windows))]
-        let run = || desktop_new_session::run(case);
+        let run = || {
+            #[cfg(target_os = "macos")]
+            if case == "owned_root" {
+                return owned_root::new_conversation_creates_and_selects_a_session_in_the_same_workspace();
+            }
+            desktop_new_session::run(case);
+        };
         #[cfg(not(any(target_os = "macos", windows)))]
         let run = || panic!("native UI case {case} requires macOS or Windows");
         print!("test {name} ... ");

@@ -1,6 +1,6 @@
 import { type JSX, platform, signal, Text, View } from "nsh";
 import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger, Radio, RadioGroup, Switch } from "nsh/base";
-import { Badge, Button, Card, colors, controlSize, DemoPage, finish, Icon, insetSurface, listRow, mono, RadioRing, ROW_BLEED, RowLabel, Segmented, switchLook, DisclosureChevron, disclosurePanel, disclosureTriggerLook } from "../ui";
+import { Badge, Button, Card, colors, controlSize, DemoPage, finish, Icon, insetSurface, listRow, RadioRing, ROW_BLEED, RowLabel, Segmented, switchLook, DisclosureChevron, disclosurePanel, disclosureTriggerLook, LastEvent } from "../ui";
 
 // `nsh/base`'s `Accordion` owns which triggers report what, the headings,
 // the expanded state screen readers hear and the panels' reveal; the app
@@ -81,7 +81,7 @@ export function AccordionDemo() {
     const open = signal<string[]>(["shipping"]);
     const question = () => FAQ.find((q) => q.value === open()[0])?.question;
     return (
-      <Card icon="collapsible" title="FAQ" subtitle="One answer at a time; gift wrapping opens later" right={<Badge label={open().length ? "1 open" : "All closed"} tone={open().length ? "accent" : "neutral"} />}>
+      <Card icon="collapsible" title="FAQ" subtitle="One open at a time; gift wrap comes later" right={<Badge label={open().length ? "1 open" : "All closed"} tone={open().length ? "accent" : "neutral"} />}>
         <Accordion
           value={open()}
           onChange={({ value }) => {
@@ -103,7 +103,7 @@ export function AccordionDemo() {
                       borderRadius: 7,
                       alignItems: "center",
                       justifyContent: "center",
-                      backgroundColor: open().includes(q.value) ? colors.accentFill : colors.inset,
+                      backgroundColor: open().includes(q.value) ? colors.accentFill : colors.raised,
                       boxShadow: open().includes(q.value) ? finish.light.boxShadow : finish.chip.boxShadow,
                     }}
                     class="transition-colors duration-200 motion-reduce:transition-none"
@@ -152,6 +152,7 @@ export function AccordionDemo() {
             last.set(`${props.label}: ${checked ? "on" : "off"}`);
           }}
           {...listRow({ first: true, style: { flexDirection: "row-reverse" } })}
+          trackClass={look.trackClass}
           trackStyle={look.trackStyle}
           thumbStyle={look.thumbStyle}
         >
@@ -183,7 +184,7 @@ export function AccordionDemo() {
       <Card
         icon="collapsible"
         title="Settings"
-        subtitle="Several sections open together, controls inside, one nested"
+        subtitle="Several open at once, one nested"
         right={
           <Button
             label={open().length === SECTIONS.length ? "Collapse all" : "Expand all"}
@@ -209,7 +210,7 @@ export function AccordionDemo() {
             <Heading title="Privacy" detail={`Profile visible to ${visibility().toLowerCase()}`} />
             <AccordionPanel reveal accessibilityLabel="Privacy">
               <Body start={ROW_BLEED}>
-                <RadioGroup>
+                <RadioGroup accessibilityLabel="Profile visibility">
                   <Choice label="Everyone" detail="Anyone with the app can find you" />
                   <Choice label="Contacts" detail="Only people in your address book" />
                   <Choice label="Nobody" detail="Hidden from search and suggestions" />
@@ -284,7 +285,7 @@ export function AccordionDemo() {
   function Last() {
     return (
       <Card icon="system" title="Last event">
-        <Text style={{ fontSize: 13, color: colors.text, fontFamily: mono }}>{last()}</Text>
+        <LastEvent value={last()} hint="Open an item" />
       </Card>
     );
   }

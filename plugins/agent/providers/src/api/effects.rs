@@ -42,7 +42,7 @@ pub(super) async fn verify(
     request: Verification,
     context: Context,
 ) -> Result<(), Error> {
-    let configuration = Configuration::read(&request.connection)?;
+    let configuration = Configuration::read(&request.connection.configuration)?;
     let route = route::resolve(
         &Selection {
             provider: provider.id,
@@ -94,7 +94,7 @@ pub(super) async fn verify(
         &context,
         http::Request {
             url: format!("{base}/{path}"),
-            method: http::Method::Post,
+            method: maka_plugin_core::http::Method::Post,
             headers: headers.into_iter().collect(),
             body: serde_json::to_vec(&body)
                 .map_err(|_| Error::Invalid("invalid verification body".into()))?

@@ -88,7 +88,7 @@ function PluginError(props: { reason: unknown; retry(): void }) {
   return (
     <View style={{ gap: 8, padding: 8 }}>
       <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
-        {renderText(errorText(props.reason))}
+        {renderText(errorText(props.reason, 'Could not load this panel.'))}
       </Text>
       <Button
         accessibilityLabel={tr('Retry')}

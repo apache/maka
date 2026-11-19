@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 mod inventory;
 mod login;
 mod provider;
+mod usage;
 pub use inventory::decode_model_inventory;
 use provider::configuration;
 

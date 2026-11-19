@@ -17,10 +17,11 @@ use nsh_core::{
     NodeId,
     geometry::{Bounds, Point, Points, Size, point},
 };
-use nsh_testing::agent::{Key, Native};
-use objc2::msg_send;
+use nsh_testing::agent::{Key, Native, SystemName};
+use objc2::{Message, msg_send, rc::Retained};
 use objc2_core_foundation::CGRect;
-use objc2_ui_kit::{UIView, UIWindow};
+use objc2_foundation::NSObjectProtocol;
+use objc2_ui_kit::{UILabel, UIView, UIWindow};
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -44,6 +45,9 @@ const MOVE_STEP: f64 = 40.0;
 /// How long a finger rests before it lifts at the end of a scroll, so the
 /// scroll view keeps no velocity (no fling after it).
 const REST: Duration = Duration::from_millis(120);
+/// How far a resting finger trembles along its way, in points: the
+/// scroll view moves with it, and so measures it at rest.
+const TREMBLE: f64 = 0.25;
 
 thread_local! {
     /// The views agents act on, by key (main thread).
@@ -100,14 +104,42 @@ impl IosNative {
             let t = 1.0 - (1.0 - f64::from(i) / f64::from(n)).powi(3);
             self.finger(from.0 + dx * t, from.1 + dy * t, Phase::Move);
         }
-        // A resting finger still reports where it is, every frame: the
-        // scroll view sees it stop, so it lifts without a fling.
+        // A resting finger reports where it is every frame, trembling a
+        // fraction of a point back and forth along its way, as a real one
+        // does. A scroll view takes its speed from the moves that change
+        // its offset, and reports at the same spot change nothing: it
+        // would keep the swipe's speed and fling past the end of the
+        // scroll on lifting. Each tremble moves it, at almost no speed, so
+        // it lifts at rest.
+        let length = dx.hypot(dy).max(1.0);
+        let (tx, ty) = (dx / length * TREMBLE, dy / length * TREMBLE);
+        // It rests at `to` last.
         let resting = std::time::Instant::now();
-        while resting.elapsed() < rest {
+        let mut back = true;
+        while resting.elapsed() < rest || !back {
             std::thread::sleep(FRAME);
-            self.finger(to.0, to.1, Phase::Move);
+            let (x, y) = if back { (to.0 - tx, to.1 - ty) } else { to };
+            self.finger(x, y, Phase::Move);
+            back = !back;
         }
         self.finger(to.0, to.1, Phase::Up);
+    }
+
+    /// Waits for the system menus to go after a tap that `done` them.
+    fn menu_closed(&self, done: &str) -> Result<(), String> {
+        let since = Instant::now();
+        while self
+            .on_main(|_, window| !system_menus(window).is_empty())
+            .unwrap_or(false)
+        {
+            if since.elapsed() > SYSTEM_MOVES {
+                return Err(format!(
+                    "the menu stays open after it was {done} (a disabled item?)"
+                ));
+            }
+            std::thread::sleep(FRAME * 4);
+        }
+        Ok(())
     }
 
     fn tap(&self, x: f64, y: f64, hold: Duration) {
@@ -119,6 +151,175 @@ impl IosNative {
         // input focuses it, as a finger's does.
         self.on_main(move |_, window| synth::focus_input_at(window, x, y));
     }
+}
+
+/// How long a menu takes to open a submenu or to close, or a screen to
+/// finish its push or pop, at most.
+const SYSTEM_MOVES: Duration = Duration::from_secs(2);
+
+/// The middle of `view` in `window`'s points.
+fn middle(view: &UIView, window: &UIWindow) -> (f64, f64) {
+    let r = view.convertRect_toView(view.bounds(), Some(window));
+    (
+        r.origin.x + r.size.width / 2.0,
+        r.origin.y + r.size.height / 2.0,
+    )
+}
+
+/// The windows of `window`'s scene, the menus' included (UIKit may show a
+/// menu in a window of its own), in drawing order.
+fn scene_windows(window: &UIWindow) -> Vec<Retained<UIWindow>> {
+    let Some(scene) = window.windowScene() else {
+        return vec![window.retain()];
+    };
+    // SAFETY: UIWindowScene's `windows`, an array of its windows.
+    let windows: Retained<objc2_foundation::NSArray<UIWindow>> =
+        unsafe { msg_send![&scene, windows] };
+    let mut windows = windows.to_vec();
+    windows.retain(|w| !w.isHidden());
+    windows.sort_by(|a, b| a.windowLevel().total_cmp(&b.windowLevel()));
+    windows
+}
+
+/// The menus the system shows over `window` (a menu button's, a context
+/// menu's, a bar button's): UIKit's context menu container views, which it
+/// draws them in.
+fn system_menus(window: &UIWindow) -> Vec<Retained<UIView>> {
+    fn walk(view: &UIView, out: &mut Vec<Retained<UIView>>) {
+        if view.isHidden() || view.alpha() < 0.01 {
+            return;
+        }
+        if crate::navigation::class_named(view, "ContextMenuContainerView") {
+            out.push(view.retain());
+            return;
+        }
+        for sub in view.subviews().iter() {
+            walk(&sub, out);
+        }
+    }
+    let mut out = Vec::new();
+    for w in scene_windows(window) {
+        walk(&w, &mut out);
+    }
+    out
+}
+
+/// The labels showing in `view`'s subtree, in drawing order.
+fn labels(view: &UIView, out: &mut Vec<Retained<UILabel>>) {
+    if view.isHidden() || view.alpha() < 0.01 {
+        return;
+    }
+    if let Some(label) = view.downcast_ref::<UILabel>() {
+        if label
+            .text()
+            .is_some_and(|t| !t.to_string().trim().is_empty())
+        {
+            out.push(label.retain());
+        }
+        return;
+    }
+    for sub in view.subviews().iter() {
+        labels(&sub, out);
+    }
+}
+
+/// What the open system menus show, in drawing order.
+fn menu_labels(window: &UIWindow) -> Vec<Retained<UILabel>> {
+    let mut out = Vec::new();
+    for menu in system_menus(window) {
+        labels(&menu, &mut out);
+    }
+    out
+}
+
+/// Where the open system menu's item titled `title` is (the front one so
+/// titled), or what the menu shows instead.
+fn menu_item_point(window: &UIWindow, title: &str) -> Result<(f64, f64), Vec<String>> {
+    let shown = menu_labels(window);
+    let text = |l: &UILabel| l.text().map(|t| t.to_string()).unwrap_or_default();
+    match shown.iter().rev().find(|l| text(l).trim() == title) {
+        Some(label) => Ok(middle(label, window)),
+        None => {
+            let mut titles: Vec<String> = shown.iter().map(|l| text(l).trim().to_owned()).collect();
+            titles.dedup();
+            Err(titles)
+        }
+    }
+}
+
+/// A point in `window` away from the open menus' items, where a tap closes
+/// them: the window's corner farthest from them.
+fn outside_menus(window: &UIWindow) -> (f64, f64) {
+    let size = window.bounds().size;
+    let shown = menu_labels(window);
+    let points: Vec<(f64, f64)> = shown.iter().map(|l| middle(l, window)).collect();
+    // Below the status bar and above the home indicator.
+    let corners = [
+        (12.0, 80.0),
+        (size.width - 12.0, 80.0),
+        (12.0, size.height - 40.0),
+        (size.width - 12.0, size.height - 40.0),
+    ];
+    let nearest = |c: &(f64, f64)| {
+        points
+            .iter()
+            .map(|p| (p.0 - c.0).hypot(p.1 - c.1))
+            .fold(f64::INFINITY, f64::min)
+    };
+    corners
+        .into_iter()
+        .max_by(|a, b| nearest(a).total_cmp(&nearest(b)))
+        .unwrap_or((12.0, 80.0))
+}
+
+/// A control UIKit draws over the app's content (a `MenuButton`'s
+/// `UIButton`): in the view the test id names (`testID` is a view's
+/// accessibility identifier), or labelled so itself.
+fn system_button(
+    window: &UIWindow,
+    name: &crate::navigation::BarName<'_>,
+) -> Option<Retained<UIView>> {
+    use crate::navigation::BarName;
+    fn shows(view: &UIView) -> bool {
+        !view.isHidden() && view.alpha() > 0.01
+    }
+    fn control(view: &UIView) -> Option<Retained<UIView>> {
+        if !shows(view) {
+            return None;
+        }
+        if view.isKindOfClass(<objc2_ui_kit::UIControl as objc2::ClassType>::class()) {
+            return Some(view.retain());
+        }
+        view.subviews().iter().find_map(|v| control(&v))
+    }
+    fn walk(view: &UIView, name: &BarName<'_>) -> Option<Retained<UIView>> {
+        if !shows(view) {
+            return None;
+        }
+        // SAFETY: UIView's `accessibilityIdentifier` and
+        // `accessibilityLabel` getters, optional strings.
+        let (id, label): (
+            Option<Retained<objc2_foundation::NSString>>,
+            Option<Retained<objc2_foundation::NSString>>,
+        ) = unsafe {
+            (
+                msg_send![view, accessibilityIdentifier],
+                msg_send![view, accessibilityLabel],
+            )
+        };
+        let found = match name {
+            BarName::Id(want) => id
+                .is_some_and(|id| id.to_string() == *want)
+                .then(|| view.subviews().iter().find_map(|v| control(&v)))
+                .flatten(),
+            BarName::Label(want) => (view
+                .isKindOfClass(<objc2_ui_kit::UIControl as objc2::ClassType>::class())
+                && label.is_some_and(|l| l.to_string().trim() == *want))
+            .then(|| view.retain()),
+        };
+        found.or_else(|| view.subviews().iter().find_map(|v| walk(&v, name)))
+    }
+    walk(window, name)
 }
 
 /// `rect` of `view` in `window`'s points, if the view shows.
@@ -149,6 +350,13 @@ impl Native for IosNative {
             bounds_in(&text, rect, window)
         })
         .flatten()
+    }
+
+    fn scroll_room(&self, id: NodeId, horizontal: bool) -> Option<(Points, Points)> {
+        self.on_main(move |view, _| view.with_mounter(|m| m.scroll_room(id, horizontal)))
+            .flatten()
+            .flatten()
+            .map(|(start, end)| (Points(start as f32), Points(end as f32)))
     }
 
     fn viewport(&self) -> Size<Points> {
@@ -290,10 +498,26 @@ impl Native for IosNative {
             Swipe((f64, f64), (f64, f64)),
             Escaped,
         }
+        // A push or pop still animating leaves its back button showing,
+        // and a sheet takes no swipe until it ends: as a user waits.
+        let since = Instant::now();
+        while since.elapsed() < SYSTEM_MOVES
+            && self
+                .on_main(|_, window| crate::navigation::navigation_transitioning(window))
+                .unwrap_or(false)
+        {
+            std::thread::sleep(FRAME * 2);
+        }
         let gesture = self
             .on_main(|view, window| {
                 let size = window.bounds().size;
                 if let Some(sheet) = crate::navigation::presented_sheet(window) {
+                    // A screen pushed in the sheet goes with its header's
+                    // back button; the sheet's first one with a swipe down.
+                    if let Some(button) = crate::navigation::back_button(&sheet) {
+                        let (x, y) = middle(&button, window);
+                        return Ok(Gesture::Tap(x, y));
+                    }
                     let top = sheet
                         .convertRect_toView(sheet.bounds(), Some(window))
                         .origin
@@ -314,11 +538,8 @@ impl Native for IosNative {
                 }
                 let button = crate::navigation::back_button(window)
                     .ok_or("the screen shows no back button to go back with")?;
-                let r = button.convertRect_toView(button.bounds(), Some(window));
-                Ok(Gesture::Tap(
-                    r.origin.x + r.size.width / 2.0,
-                    r.origin.y + r.size.height / 2.0,
-                ))
+                let (x, y) = middle(&button, window);
+                Ok(Gesture::Tap(x, y))
             })
             .unwrap_or_else(|| Err("the window is gone".to_owned()))?;
         match gesture {
@@ -327,6 +548,66 @@ impl Native for IosNative {
             Gesture::Escaped => {}
         }
         Ok(())
+    }
+
+    fn system_control(&self, name: SystemName<'_>) -> Option<Bounds<Points>> {
+        use crate::navigation::BarName;
+        let name = match name {
+            SystemName::TestId(id) => BarName::Id(id),
+            SystemName::Label(label) => BarName::Label(label),
+            _ => return None,
+        };
+        self.on_main(move |_, window| {
+            let button = crate::navigation::bar_button(window, &name)
+                .or_else(|| system_button(window, &name))?;
+            bounds_in(&button, button.bounds(), window)
+        })
+        .flatten()
+    }
+
+    fn system_menu_open(&self) -> bool {
+        self.on_main(|_, window| !system_menus(window).is_empty())
+            .unwrap_or(false)
+    }
+
+    fn choose_menu_item(&self, path: &[String]) -> Result<(), String> {
+        for (i, title) in path.iter().enumerate() {
+            let title = title.clone();
+            // A submenu's items show once it opens.
+            let since = Instant::now();
+            let (x, y) = loop {
+                let found = self
+                    .on_main({
+                        let title = title.clone();
+                        move |_, window| menu_item_point(window, &title)
+                    })
+                    .ok_or("the window is gone")?;
+                match found {
+                    Ok(at) => break at,
+                    Err(_) if since.elapsed() < SYSTEM_MOVES => std::thread::sleep(FRAME * 4),
+                    Err(shown) => {
+                        return Err(format!(
+                            "the menu has no item {title:?}; it shows: {}",
+                            shown.join(", ")
+                        ));
+                    }
+                }
+            };
+            if i > 0 {
+                // Let the submenu settle where it opens before the tap.
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            self.tap(x, y, TAP);
+        }
+        self.menu_closed("chosen")
+    }
+
+    fn close_menu(&self) -> Result<(), String> {
+        let (x, y) = self
+            .on_main(|_, window| outside_menus(window))
+            .ok_or("the window is gone")?;
+        self.tap(x, y, TAP);
+        self.menu_closed("closed")
     }
 
     fn answer_dialog(&self, button: Option<&str>) -> Result<(), String> {

@@ -18,16 +18,60 @@
  */
 
 use super::*;
-use maka_event_log::message_admissions::{PendingExecution, PendingMessageAdmission};
-impl MessageBasis {
+use futures_util::{StreamExt, stream::FuturesUnordered};
+use maka_agent_facts::durable::{FactId, UnixMillis};
+use maka_agent_state::queue::{MessageResolution, QueueCommand, QueueEdit, RequestId};
+use tokio::time::Instant;
+
+#[derive(Default)]
+struct ScriptChecks {
+    running: BTreeSet<String>,
+    jobs: FuturesUnordered<BoxFuture<'static, scripts::Check>>,
+    completed: Option<scripts::Check>,
+}
+
+impl ScriptChecks {
+    fn start(
+        &mut self,
+        owner: &Arc<Owner>,
+        id: String,
+        revision: u64,
+        source: String,
+        approval: BackgroundGrant,
+    ) {
+        self.running.insert(id.clone());
+        let check_owner = owner.clone();
+        let job = owner
+            .producers
+            .spawn(async move { check_owner.check_automation(approval, source).await });
+        self.jobs.push(Box::pin(async move {
+            let result = match job.await {
+                Ok(result) => result,
+                Err(error) => Err(reason(error)),
+            };
+            scripts::Check {
+                id,
+                revision,
+                result,
+            }
+        }));
+    }
+}
+impl CapturedRun {
     pub(in crate::owner) fn validate_background_target(
         &self,
         session: &SessionRecord<ResolvedConfiguration>,
+        discovery_profile: Option<DiscoveryWorkerTools>,
     ) -> Result<(), String> {
         if let Some(boundary) = &self.background
             && (session.archived
                 || session.configuration.workspace != boundary.workspace
-                || session.configuration.permissions != boundary.permissions
+                || session.configuration.permissions
+                    != if discovery_profile == Some(DiscoveryWorkerTools::ReadOnly) {
+                        super::super::discovery::permissions()
+                    } else {
+                        boundary.permissions.clone()
+                    }
                 || session.configuration.binding != boundary.binding
                 || session.configuration.boundary_revision
                     != if session.id == boundary.session_id {
@@ -42,20 +86,36 @@ impl MessageBasis {
     }
 }
 impl Owner {
+    fn require_discovery_approval(&self, plan: &mut Plan, at: i64) {
+        *plan = pause_plan(plan, at, None);
+        if let (
+            Some(Approval::Discovery { tools, .. }),
+            ScheduledEffect::Discovery { selected_tools, .. },
+        ) = (plan.authorization.take(), &mut plan.task.effect)
+        {
+            // Preserve a preset's last choices for review without retaining its execution grant.
+            selected_tools.get_or_insert_with(|| self.discovery_tool_groups(&tools.names));
+        }
+        plan.task.next_fire_at = None;
+        plan.task.last_error = Some("scheduler_authorization_changed".into());
+    }
+
     pub(in crate::owner) async fn validate_background(
         &self,
-        basis: &MessageBasis,
+        basis: &CapturedRun,
     ) -> Result<(), String> {
         let Some(boundary) = &basis.background else {
             return Ok(());
         };
         if !match &basis.background_kind {
-            BackgroundKind::Schedule => self.settings.scheduled_tasks,
+            BackgroundKind::Schedule { .. } => self.settings.scheduled_tasks,
             BackgroundKind::Goal(_) => self.settings.goals,
+            BackgroundKind::Interactive => false,
         } {
             return Err(match &basis.background_kind {
-                BackgroundKind::Schedule => "scheduler_disabled",
+                BackgroundKind::Schedule { .. } => "scheduler_disabled",
                 BackgroundKind::Goal(_) => "goal_disabled",
+                BackgroundKind::Interactive => "background_kind_invalid",
             }
             .into());
         }
@@ -74,180 +134,381 @@ impl Owner {
         }
         Ok(())
     }
-    pub(super) async fn approve_schedule(&self, plan: &Plan) -> Result<Approval, String> {
+    pub(super) async fn approve_schedule(
+        &self,
+        plan: &Plan,
+        sandbox_ceiling: Option<&maka_sandbox::Sandbox>,
+    ) -> Result<Approval, String> {
         let (target, model, thinking) = match &plan.task.effect {
-            ScheduledEffect::Reminder => return Ok(Approval::Reminder),
             ScheduledEffect::Session {
                 target,
                 model,
                 thinking_level,
+                ..
+            }
+            | ScheduledEffect::Discovery {
+                target,
+                model,
+                thinking_level,
+                ..
             }
             | ScheduledEffect::AgentRun {
                 target,
                 model,
                 thinking_level,
             } => (target, model, thinking_level),
+            ScheduledEffect::ExecutorSession { target, selection } => {
+                let approval = ExecutorApproval {
+                    language: self.native_language,
+                    target: target.clone(),
+                    selection: selection.clone(),
+                    sandbox_ceiling: sandbox_ceiling.cloned(),
+                };
+                self.prepare_scheduled_background(
+                    &BackgroundGrant::Executor(approval.clone()),
+                    &plan.task.id,
+                )
+                .await?;
+                return Ok(Approval::Execution {
+                    approval: BackgroundGrant::Executor(approval),
+                });
+            }
         };
-        Ok(Approval::Execution {
-            basis: Box::new(
-                self.approve_background(target, model.clone(), *thinking, BackgroundKind::Schedule)
-                    .await?,
+        if matches!(plan.task.effect, ScheduledEffect::Discovery { .. }) {
+            if !self.settings.bot || !self.bot.is(&target.session_id) {
+                return Err("discovery_requires_bot".into());
+            }
+        }
+        let basis = self
+            .approve_background(
+                target,
+                model.clone(),
+                *thinking,
+                BackgroundKind::Schedule {
+                    task_id: plan.task.id.clone(),
+                },
+                sandbox_ceiling,
+            )
+            .await?;
+        let discovery_tools = match &plan.task.effect {
+            ScheduledEffect::Discovery { worker_tools, .. } => Some(
+                self.discovery_tool_grant(
+                    &basis,
+                    target,
+                    *worker_tools,
+                    plan.task.effect.selected_discovery_tools(),
+                )
+                .await?,
             ),
+            _ => None,
+        };
+        let approval = super::super::notifications::BackgroundApproval {
+            target: target.clone(),
+            model: model.clone(),
+            accepted_model: basis.model.clone().ok_or("scheduler_model_unavailable")?,
+            thinking_level: *thinking,
+            language: basis.language,
+            sandbox_ceiling: basis.background_sandbox_ceiling,
+        };
+        Ok(if let Some(tools) = discovery_tools {
+            Approval::Discovery {
+                approval,
+                tools,
+                authority: DiscoveryAuthority::User {
+                    generation: uuid::Uuid::new_v4(),
+                },
+            }
+        } else {
+            Approval::Execution {
+                approval: BackgroundGrant::Model(approval),
+            }
         })
     }
+
     pub(in crate::owner) async fn approve_background(
         &self,
         target: &ScheduledTarget,
         model: ModelSelection,
         thinking: Option<ThinkingLevel>,
         kind: BackgroundKind,
-    ) -> Result<MessageBasis, String> {
-        let runs = self.runs.lock().await;
-        if runs.closing {
+        sandbox_ceiling: Option<&maka_sandbox::Sandbox>,
+    ) -> Result<CapturedRun, String> {
+        self.capture_background_backend(
+            target,
+            BackendPreference::model(model, thinking),
+            kind,
+            sandbox_ceiling,
+        )
+        .await
+    }
+    async fn capture_background_backend(
+        &self,
+        target: &ScheduledTarget,
+        backend: BackendPreference,
+        kind: BackgroundKind,
+        sandbox_ceiling: Option<&maka_sandbox::Sandbox>,
+    ) -> Result<CapturedRun, String> {
+        if self.runs.state().await.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
         let id = &target.session_id;
         let session = self.mutable_session(id).await?;
-        if session.configuration.workspace != target.workspace
+        if session.archived
+            || session.configuration.workspace != target.workspace
             || session.configuration.permissions != target.permissions
             || session.configuration.boundary_revision != target.boundary_revision
             || session.configuration.binding != target.binding
         {
             return Err("scheduler_authorization_changed".into());
         }
-        if session.archived {
-            return Err("agent_session_configuration_changed".into());
-        }
-        workspace::validate(
-            &self.workspace_roots,
-            &session.configuration.workspace,
-            &self.managed_worktrees,
-        )
-        .await?;
-        let (source, _) = crate::model::Source::select(
-            self.configuration.clone(),
-            self.catalog.clone(),
-            self.credentials.clone(),
-            model,
-            thinking,
-            id.clone(),
-            self.revision.clone(),
-        )
-        .await
-        .map_err(public_error)?;
-        let snapshot = self
-            .configuration
-            .runtime_policy()
-            .await
-            .map_err(|_| "agent_preferences_unavailable")?;
-        let language = self.resolve_language(&snapshot);
-        drop(runs);
-        let selected_catalog = self
-            .mcp_projects
-            .capture(&session.configuration.workspace)
-            .await?;
-        let runs = self.runs.lock().await;
-        if runs.closing || self.stop.is_cancelled() {
-            return Err("agent_closed".into());
-        }
+        let native = self
+            .services
+            .request(
+                maka_capabilities::call::Identity::Native,
+                self.stop.child_token(),
+            )
+            .map_err(reason)?;
+        let native = match sandbox_ceiling {
+            Some(ceiling) => native.with_sandbox_floor(ceiling)?,
+            None => native,
+        };
+        let captured = self
+            .capture_current_run(id, Some(backend), String::new(), native.scope())
+            .await;
+        let cleanup = native.finish().await;
+        let mut basis = crate::owner::send::finish_capture(captured, cleanup)?;
         let current = self.mutable_session(id).await?;
-        if current.configuration != session.configuration || current.archived {
+        if current.archived || current.configuration != session.configuration {
             return Err("scheduler_authorization_changed".into());
         }
-
-        let selected_catalog = self.mcp_projects.with_client(id, selected_catalog)?;
-        Ok(MessageBasis {
-            mcp_revision: selected_catalog.revision.clone(),
-            client_mcp: selected_catalog.client_mcp,
-            mcp_catalog: Some(selected_catalog.clone()),
-            language,
-            compaction_prompt: Some(self.effective_compaction_prompt(
-                session.configuration.compaction_prompt.as_deref(),
-                &snapshot,
-                language,
-            )),
-            collaboration_mode: CollaborationMode::Agent,
-            background_kind: kind,
-            tool_discovery: self.settings.tool_discovery,
-            allowed_tools: self.admitted_tools(&target.session_id, &session.configuration.tools),
-            background: Some(target.clone()),
-            internal_tools: selected_catalog.definitions.clone(),
-            internal_bindings: selected_catalog.bindings.clone(),
-            behavior: self.bot_behavior(
-                &target.session_id,
-                self.capture_behavior(Some(&session.configuration.workspace), &snapshot, language)
-                    .await?,
-                &snapshot,
-                language,
-                self.admitted_tools(&target.session_id, &session.configuration.tools)
-                    .as_deref(),
-            ),
-            model: Some(source.accepted),
-            executor: None,
-            workspace: session.configuration.workspace,
-            binding: session.configuration.binding,
-            fingerprint: String::new(),
-            tools: self.tool_basis.clone(),
-        })
+        basis.background = Some(target.clone());
+        basis.background_sandbox_ceiling = sandbox_ceiling.cloned();
+        basis.background_kind = kind;
+        basis.collaboration_mode = CollaborationMode::Agent;
+        Ok(basis)
+    }
+    pub(in crate::owner) async fn prepare_approved_background(
+        &self,
+        approval: &super::super::notifications::BackgroundApproval,
+        kind: BackgroundKind,
+    ) -> Result<CapturedRun, String> {
+        let mut basis = self
+            .approve_background(
+                &approval.target,
+                approval.model.clone(),
+                approval.thinking_level,
+                kind,
+                approval.sandbox_ceiling.as_ref(),
+            )
+            .await?;
+        let current = basis.model.as_ref().ok_or("scheduler_model_unavailable")?;
+        if !approval.accepted_model.same_execution_route(current) {
+            return Err("background_model_route_changed".into());
+        }
+        basis.model = Some(approval.accepted_model.clone());
+        super::super::capture_budget::check_approval(&basis, approval)?;
+        Ok(basis)
+    }
+    pub(super) async fn prepare_scheduled_background(
+        &self,
+        approval: &BackgroundGrant,
+        task_id: &str,
+    ) -> Result<CapturedRun, String> {
+        let kind = BackgroundKind::Schedule {
+            task_id: task_id.into(),
+        };
+        self.prepare_background(approval, kind).await
+    }
+    pub(in crate::owner) async fn prepare_background(
+        &self,
+        approval: &BackgroundGrant,
+        kind: BackgroundKind,
+    ) -> Result<CapturedRun, String> {
+        match approval {
+            BackgroundGrant::Model(approval) => {
+                self.prepare_approved_background(approval, kind).await
+            }
+            BackgroundGrant::Executor(approval) => {
+                if approval.selection.executor != "external" {
+                    return Err("scheduler_executor_unavailable".into());
+                }
+                let backend = BackendPreference::Executor {
+                    selection: approval.selection.clone(),
+                };
+                self.capture_background_backend(
+                    &approval.target,
+                    backend,
+                    kind,
+                    approval.sandbox_ceiling.as_ref(),
+                )
+                .await
+            }
+        }
     }
     pub(in crate::owner) fn start_schedules(self: &Arc<Self>) {
-        if !self.settings.scheduled_tasks {
+        if !self.settings.scheduled_tasks && self.scheduler.investigation.read().unwrap().is_none()
+        {
             return;
         }
         let owner = self.clone();
         self.producers.spawn(async move {
+            let mut changes = owner.store.subscribe_changes();
+            let mut run_changes = match owner.durable.subscribe() {
+                Ok(changes) => changes,
+                Err(error) => { eprintln!("Scheduled tasks: {error}"); return; }
+            };
             let mut recover = true;
             let mut previous_error = None;
-            let mut last_tick = now();
+            let mut planned_wake: Option<i64> = None;
+            let mut retries = BTreeMap::new();
+            let mut storage_retry = None;
+            let mut scripts = ScriptChecks::default();
             loop {
                 if owner.stop.is_cancelled() {
                     return;
                 }
-                let at = now();
-                recover |= at.saturating_sub(last_tick) > 60_000;
-                last_tick = at;
+                changes.borrow_and_update();
+                run_changes.borrow_and_update();
+                let at = now() as i64;
+                recover |= planned_wake.is_some_and(|due| at.saturating_sub(due) > 60_000);
                 let Some(producer) = owner.producer().await else {
                     return;
                 };
-                let delay = match owner.tick_schedules(recover).await {
-                    Ok(delay) => {
-                        recover = false;
-                        previous_error = None;
-                        delay
-                    }
-                    Err(error) => {
-                        if previous_error.as_ref() != Some(&error) {
-                            eprintln!("Scheduled tasks: {error}");
+                if storage_retry.is_none_or(|retry: Retry| retry.ready(Instant::now())) {
+                    let error = match owner.tick_schedules(recover, &mut retries, &mut scripts).await {
+                        Ok((next, error)) => {
+                            planned_wake = next;
+                            recover = false;
+                            storage_retry = None;
+                            error
                         }
-                        previous_error = Some(error);
-                        Duration::from_secs(5)
-                    }
+                        Err(error) => {
+                            storage_retry = Some(Retry::after_failure(storage_retry, Instant::now()));
+                            Some(error)
+                        }
+                    };
+                    if let Some(error) = &error
+                        && previous_error.as_ref() != Some(error) { eprintln!("Scheduled tasks: {error}"); }
+                    previous_error = error;
+                }
+                let retry_at = if let Some(retry) = storage_retry {
+                    Some(retry.at)
+                } else {
+                    retries.values().map(|retry| retry.retry.at).min()
                 };
                 drop(producer);
                 tokio::select! {
                     () = owner.stop.cancelled() => return,
                     () = owner.scheduler.wake.notified() => {},
-                    () = tokio::time::sleep(delay) => {},
+                    checked = scripts.jobs.next(), if !scripts.jobs.is_empty() && scripts.completed.is_none() => {
+                        scripts.completed = checked;
+                    },
+                    changed = changes.changed() => if changed.is_err() { return; },
+                    changed = run_changes.changed() => if changed.is_err() { return; },
+                    () = async {
+                        if let Some(at) = planned_wake.filter(|_| storage_retry.is_none()) {
+                            tokio::time::sleep(Duration::from_millis((at as u64).saturating_sub(now()))).await;
+                        } else { std::future::pending::<()>().await; }
+                    } => {},
+                    () = async {
+                        if let Some(at) = retry_at {
+                            tokio::time::sleep_until(at).await;
+                        } else { std::future::pending::<()>().await; }
+                    } => {},
                 }
             }
         });
     }
-    async fn tick_schedules(self: &Arc<Self>, recover: bool) -> Result<Duration, String> {
+    async fn tick_schedules(
+        self: &Arc<Self>,
+        recover: bool,
+        retries: &mut BTreeMap<String, FireRetry>,
+        scripts: &mut ScriptChecks,
+    ) -> Result<(Option<i64>, Option<String>), String> {
         let _gate = self.scheduler.gate.lock().await;
-        let mut catalog = self.scheduler.load().await?;
-        let mut delay = 30_000_i64;
+        let loaded_at = now() as i64;
+        let mut catalog = self.scheduler.load_ready(loaded_at).await?;
         let mut dispatch_error = None;
+        if let Some(checked) = &scripts.completed {
+            if let Some(saved) = catalog.plans.get(&checked.id)
+                && saved.revision == checked.revision
+            {
+                let mut plan = saved.plan.clone();
+                plan.record_condition(loaded_at, checked.result.clone())
+                    .map_err(reason)?;
+                self.scheduler
+                    .commit(&mut catalog, &checked.id, Some(plan), None)
+                    .await?;
+            }
+            scripts.running.remove(&checked.id);
+            scripts.completed = None;
+        }
         for id in catalog.plans.keys().cloned().collect::<Vec<_>>() {
             if self.stop.is_cancelled() {
                 break;
             }
-            let mut plan = catalog.plans[&id].plan.clone();
+            let saved = &catalog.plans[&id];
+            let plan = &saved.plan;
+            if !self.settings.scheduled_tasks
+                && !plan
+                    .pending
+                    .as_ref()
+                    .is_some_and(|f| matches!(f.effect, ScheduledEffect::Discovery { .. }))
+            {
+                continue;
+            }
+            let retry = plan
+                .pending
+                .as_ref()
+                .and_then(|fire| retries.get(&id).and_then(|retry| retry.for_fire(&fire.id)));
+            if retry.is_some_and(|retry| !retry.ready(Instant::now())) {
+                continue;
+            }
+            if self.settings.scheduled_tasks
+                && plan.task.status == Status::Active
+                && plan.pending.is_none()
+                && let TaskSchedule::Script { source, .. } = &plan.task.schedule
+                && let Some(Approval::Execution { approval }) = &plan.authorization
+                && plan.task.expires_at.is_none_or(|at| at > loaded_at)
+                && plan.task.next_fire_at.is_some_and(|at| at <= loaded_at)
+            {
+                if !scripts.running.contains(&id) {
+                    scripts.start(self, id, saved.revision, source.clone(), approval.clone());
+                }
+                continue;
+            }
+            let mut plan = plan.clone();
             let before = serde_json::to_value(&plan).map_err(reason)?;
             let at = now() as i64;
-            if recover {
+            if plan.task.status == Status::Active
+                && let Some(
+                    approval @ Approval::Discovery {
+                        approval: grant, ..
+                    },
+                ) = &plan.authorization
+            {
+                let source_changed = match self.session(&grant.target.session_id).await {
+                    Ok(source) => {
+                        super::super::discovery::check_target(&source, &grant.target).is_err()
+                    }
+                    Err(error) if error == "agent_session_unavailable" => true,
+                    Err(error) => return Err(error),
+                };
+                let followup_changed = match approval.followup_grant() {
+                    Some(followup) => !self.scheduler.followup_is_current(followup).await?,
+                    None => false,
+                };
+                if source_changed
+                    || followup_changed
+                    || matches!(plan.task.schedule, TaskSchedule::Script { .. })
+                {
+                    self.require_discovery_approval(&mut plan, at);
+                }
+            }
+            if recover && self.settings.scheduled_tasks {
                 plan.recover(at).map_err(reason)?;
             }
-            if plan.authorization.is_some() {
+            if self.settings.scheduled_tasks && plan.authorization.is_some() {
                 plan.claim(at).map_err(reason)?;
             }
             if serde_json::to_value(&plan).map_err(reason)? != before {
@@ -255,196 +516,303 @@ impl Owner {
                     .commit(&mut catalog, &id, Some(plan.clone()), None)
                     .await?;
             }
-            if let Some(fire) = plan.pending.clone() {
-                // A reminder remains durable until the user acknowledges it.
-                // No paint attempt or socket write is described as delivery.
-                if !matches!(fire.effect, ScheduledEffect::Reminder) {
-                    match self.dispatch_scheduled(&fire).await {
-                        Ok(Some(run)) => {
-                            plan.settle(run).map_err(reason)?;
-                            self.scheduler
-                                .commit(&mut catalog, &id, Some(plan.clone()), None)
-                                .await?;
-                        }
-                        Ok(None) => delay = delay.min(1000),
-                        Err(error) => {
-                            // Keep this original fire for reconciliation without
-                            // preventing independent tasks from making progress.
-                            dispatch_error.get_or_insert(error);
-                        }
+            let Some(fire) = plan.pending.as_ref() else {
+                continue;
+            };
+            let expired = plan.task.expires_at.is_some_and(|expires| at >= expires);
+            match self.dispatch_scheduled(fire, &plan, expired).await {
+                Ok(Some(run)) => {
+                    // This receipt also handles a restart between releasing the slot and saving the plan.
+                    if matches!(fire.effect, ScheduledEffect::Discovery { .. })
+                        && run.outcome == Outcome::Blocked
+                        && matches!(
+                            run.message.as_str(),
+                            super::super::discovery::MODEL_ROUTE_CHANGED
+                                | super::super::discovery::APPROVED_MODEL_UNAVAILABLE
+                                | "agent_authentication_required"
+                                | "agent_workspace_unavailable"
+                        )
+                    {
+                        self.require_discovery_approval(&mut plan, run.at);
                     }
+                    let needs_approval = plan.task.last_error.as_deref()
+                        == Some("scheduler_authorization_changed")
+                        && plan.authorization.is_none();
+                    plan.settle(run).map_err(reason)?;
+                    if needs_approval {
+                        plan.task.next_fire_at = None;
+                        plan.task.last_error = Some("scheduler_authorization_changed".into());
+                    }
+                    self.scheduler
+                        .commit(&mut catalog, &id, Some(plan), None)
+                        .await?;
+                    retries.remove(&id);
                 }
-            } else if plan.task.status == Status::Active
-                && let Some(next) = plan.task.next_fire_at
-            {
-                delay = delay.min(next.saturating_sub(at).max(100));
+                Ok(None) => {
+                    retries.remove(&id);
+                }
+                Err(error) => {
+                    retries.insert(
+                        id,
+                        FireRetry {
+                            fire_id: fire.id.clone(),
+                            retry: Retry::after_failure(retry, Instant::now()),
+                        },
+                    );
+                    dispatch_error.get_or_insert(error);
+                }
             }
         }
-        if let Some(error) = dispatch_error {
-            return Err(error);
-        }
-        Ok(Duration::from_millis(delay as u64))
+        retries.retain(|id, _| catalog.ready.pending.contains(id));
+        Ok((catalog.ready.next_after(loaded_at), dispatch_error))
     }
     async fn dispatch_scheduled(
         self: &Arc<Self>,
         fire: &maka_scheduler::plan::Fire<ScheduledEffect, Approval>,
+        plan: &Plan,
+        expired: bool,
     ) -> Result<Option<Run>, String> {
-        let Some(Approval::Execution { basis }) = &fire.authorization else {
+        let active = plan.task.status == Status::Active;
+        if matches!(fire.effect, ScheduledEffect::Discovery { .. }) {
+            return self
+                .dispatch_discovery(
+                    fire,
+                    active && !expired,
+                    &plan.timezone,
+                    plan.task.runs.first(),
+                )
+                .await;
+        }
+        let Some(Approval::Execution { approval }) = &fire.authorization else {
             return Ok(Some(settlement(
                 fire,
                 Outcome::Blocked,
-                "Background approval unavailable",
+                "Automation execution configuration is unavailable",
                 None,
                 None,
             )));
         };
-        let (source_session, new_session) = match &fire.effect {
-            ScheduledEffect::Session { target, .. } => (&target.session_id, false),
-            ScheduledEffect::AgentRun { target, .. } => (&target.session_id, true),
-            ScheduledEffect::Reminder => unreachable!(),
-        };
+        let source_session = &fire.effect.target().session_id;
+        let new_session = matches!(fire.effect, ScheduledEffect::AgentRun { .. });
+        let steer = matches!(
+            fire.effect,
+            ScheduledEffect::Session {
+                delivery: AutomationDelivery::Steering,
+                ..
+            }
+        );
         let identity = hex::encode(Sha256::digest(fire.id.as_bytes()));
         let session_id = if new_session {
             format!("{}{}", self.prefix, &identity[..32])
         } else {
             source_session.clone()
         };
-        let mut basis = (**basis).clone();
-        basis.fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(fire).map_err(reason)?));
+        let message_id = format!("m_{identity}");
+        let queue = self.durable.queue();
+        let blocked = |reason| {
+            settlement(
+                fire,
+                Outcome::Blocked,
+                reason,
+                Some(session_id.clone()),
+                None,
+            )
+        };
+        match queue
+            .resolve_message(session_id.clone(), message_id.clone())
+            .await
+            .map_err(reason)?
+        {
+            MessageResolution::Delivered { run, shared: false } => {
+                return Ok(Some(settlement(
+                    fire,
+                    Outcome::Ok,
+                    "Message admitted",
+                    Some(session_id),
+                    Some(run),
+                )));
+            }
+            MessageResolution::Delivered { run, shared: true } => {
+                return Ok(Some(settlement(
+                    fire,
+                    Outcome::Ok,
+                    "Message delivered as steering",
+                    Some(session_id),
+                    Some(run),
+                )));
+            }
+            MessageResolution::Pending if expired => {
+                let _ordered = self.runs.ordered(&session_id).await;
+                let current = queue.read(session_id.clone()).await.map_err(reason)?;
+                let request = RequestId(identity.clone());
+                if current
+                    .entries
+                    .iter()
+                    .any(|entry| entry.request.id == request)
+                {
+                    queue
+                        .execute(
+                            session_id.clone(),
+                            QueueCommand {
+                                id: FactId::try_from(Uuid::new_v4()).map_err(reason)?,
+                                at: UnixMillis(now() as i64),
+                                expected_revision: current.revision,
+                                edit: QueueEdit::Retract { request },
+                            },
+                            vec![],
+                        )
+                        .await
+                        .map_err(reason)?;
+                    return Ok(Some(blocked("Automation expired before delivery")));
+                }
+                // Delivery may have won the race. Reconcile the actual outcome.
+                return Ok(None);
+            }
+            MessageResolution::Pending => return Ok(None),
+            MessageResolution::Cancelled => {
+                return Ok(Some(settlement(
+                    fire,
+                    Outcome::Blocked,
+                    "Message cancelled",
+                    Some(session_id),
+                    None,
+                )));
+            }
+            MessageResolution::Missing if expired => {
+                return Ok(Some(blocked("Automation expired before delivery")));
+            }
+            MessageResolution::Missing => {}
+        }
+        let mut basis = match self
+            .prepare_scheduled_background(approval, &fire.task_id)
+            .await
+        {
+            Ok(basis) => basis,
+            Err(error)
+                if matches!(
+                    error.as_str(),
+                    "scheduler_authorization_changed"
+                        | "background_model_route_changed"
+                        | "scheduler_disabled"
+                        | "scheduler_executor_unavailable"
+                        | "agent_executor_unavailable"
+                        | "agent_executor_runtime_required"
+                        | "agent_session_unavailable"
+                ) =>
+            {
+                return Ok(Some(settlement(fire, Outcome::Blocked, &error, None, None)));
+            }
+            Err(error) => return Err(error),
+        };
+        self.validate_background(&basis).await?;
+        if new_session
+            && self
+                .store
+                .get_session::<StoredSessionConfiguration>(&session_id)
+                .await
+                .map_err(reason)?
+                .is_none()
+        {
+            let authority = self.session(source_session).await?;
+            let workspace = authority
+                .workspace_binding
+                .as_ref()
+                .ok_or("scheduler_authorization_changed")?
+                .reference();
+            let fingerprint =
+                hex::encode(Sha256::digest(serde_json::to_vec(fire).map_err(reason)?));
+            self.store
+                .create_session(
+                    &session_id,
+                    &fingerprint,
+                    &StoredSessionConfiguration {
+                        incognito: self.session(source_session).await?.configuration.incognito,
+                        parent_session_id: Some(source_session.clone()),
+                        backend: None,
+                        compaction_prompt: None,
+                        applied_preset: None,
+                        collaboration_mode: CollaborationMode::Agent,
+                        tools: basis.allowed_tools.clone(),
+                        title: fire.title.clone(),
+                        title_is_manual: true,
+                        pinned: false,
+                        labels: vec![],
+                        workspace,
+                        permissions: approval.target().permissions.clone(),
+                        boundary_revision: 0,
+                    },
+                    fire.scheduled_at as u64,
+                )
+                .await
+                .map_err(reason)?;
+        }
+        // Catalog ownership is recaptured for the actual target Session, never restored
+        // by deserializing the approval or a previous live preparation.
+        if new_session {
+            let current = self.mutable_session(&session_id).await?;
+            let native = self
+                .services
+                .request(
+                    maka_capabilities::call::Identity::Native,
+                    self.stop.child_token(),
+                )
+                .map_err(reason)?;
+            let native = match &basis.background_sandbox_ceiling {
+                Some(ceiling) => native.with_sandbox_floor(ceiling)?,
+                None => native,
+            };
+            let captured = async {
+                let floor = self
+                    .capture_sandbox(&current.configuration, native.scope().sandbox_floor())
+                    .await?;
+                self.mcp_projects.capture(&basis.workspace, &floor).await
+            }
+            .await;
+            native.finish().await?;
+            let selected = captured?;
+            let selected = self.mcp_projects.with_client(&session_id, selected)?;
+            basis.mcp_revision = selected.revision.clone();
+            basis.client_mcp = selected.client_mcp;
+            basis.mcp_catalog = Some(selected.clone());
+            basis.internal_tools = selected.definitions.clone();
+            basis.internal_bindings = selected.bindings.clone();
+        }
         let message: MessageInput = fire.intent.body().to_string().into();
-        let delivered = RootSourceMessage {
+        let source = RootSourceMessage {
             message: DeliveredMessage {
-                origin: None,
-                message_id: format!("m_{identity}"),
+                origin: Some(MessageOrigin::Automation {
+                    automation_id: fire.task_id.clone(),
+                    title: fire.title.clone(),
+                }),
+                message_id,
                 submitted_content_digest: message.content_digest().map_err(reason)?,
                 content: message.clone(),
             },
             unprepared_content: message,
-            submitted_placement: Placement::CurrentTurn,
-            disposition: MessageDisposition::TurnStarted,
+            submitted_placement: if steer {
+                Placement::CurrentTurn
+            } else {
+                Placement::NextTurn
+            },
+            disposition: if steer {
+                MessageDisposition::TurnStarted
+            } else {
+                MessageDisposition::Followup
+            },
             submitted_intent: None,
         };
-        let mut admission = PendingMessageAdmission {
-            execution: PendingExecution {
-                owner: self.prefix.clone(),
-                basis: serde_json::to_value(&basis).map_err(reason)?,
-            },
-            invocation: Invocation {
-                session_id: session_id.clone(),
-                turn_id: format!("t_{identity}"),
-                run_id: format!("r_{identity}"),
-                invocation_id: format!("i_{identity}"),
-            },
-            steering_invocation: None,
-            source: delivered,
-            required_tools: Default::default(),
-            admitted_at: fire.scheduled_at as u64,
-        };
-        // Before preparing a new session, observe the original message. A revoked
-        // approval cannot change the known result of an already admitted fire.
-        let accepted = match self.store.session(&session_id).await {
-            Ok(session) => {
-                if let Some(original) = session
-                    .message_admission(&session_id, &admission.source.message.message_id)
-                    .await
-                    .map_err(reason)?
-                {
-                    admission = original;
-                    true
-                } else {
-                    session
-                        .root_message(&session_id, &admission.source.message.message_id)
-                        .await
-                        .map_err(reason)?
-                        .is_some()
-                        || session
-                            .message_cancelled(&session_id, &admission.source.message.message_id)
-                            .await
-                            .map_err(reason)?
-                }
-            }
-            Err(maka_event_log::StoreError::SessionNotFound) => false,
-            Err(error) => return Err(reason(error)),
-        };
-        if !accepted {
-            if let Err(error) = self.validate_background(&basis).await {
-                if matches!(
-                    error.as_str(),
-                    "scheduler_authorization_changed"
-                        | "scheduler_disabled"
-                        | "agent_session_unavailable"
-                ) {
-                    return Ok(Some(settlement(fire, Outcome::Blocked, &error, None, None)));
-                }
-                return Err(error);
-            }
-            if new_session {
-                let boundary = basis
-                    .background
-                    .as_ref()
-                    .ok_or("scheduler_approval_invalid")?;
-                if self
-                    .store
-                    .get_session::<StoredSessionConfiguration>(&session_id)
-                    .await
-                    .map_err(reason)?
-                    .is_none()
-                {
-                    let authority = self.session(&boundary.session_id).await?;
-                    if authority.configuration.binding != boundary.binding {
-                        return Err("scheduler_authorization_changed".into());
-                    }
-                    // Preserve the approved binding identity, including after two
-                    // historical locations converge to the same selection.
-                    let workspace = authority
-                        .workspace_binding
-                        .as_ref()
-                        .ok_or("scheduler_authorization_changed")?
-                        .reference();
-                    self.store
-                        .create_session(
-                            &session_id,
-                            &basis.fingerprint,
-                            &StoredSessionConfiguration {
-                                parent_session_id: Some(source_session.clone()),
-                                backend: None,
-                                compaction_prompt: None,
-                                collaboration_mode: CollaborationMode::Agent,
-                                tools: basis.allowed_tools.clone(),
-                                title: fire.title.clone(),
-                                title_is_manual: true,
-                                pinned: false,
-                                labels: vec![],
-                                workspace,
-                                permissions: boundary.permissions.clone(),
-                                boundary_revision: 0,
-                            },
-                            fire.scheduled_at as u64,
-                        )
-                        .await
-                        .map_err(reason)?;
-                }
-            }
-        }
-        match self.admit_notification(&admission).await {
-            Ok(true) => Ok(Some(settlement(
-                fire,
-                Outcome::Ok,
-                "Message admitted",
-                Some(session_id),
-                Some(admission.invocation.run_id),
-            ))),
-            Ok(false) => Ok(None),
-            Err(error)
-                if matches!(
-                    error.as_str(),
-                    "scheduler_authorization_changed" | "scheduler_disabled"
-                ) =>
-            {
-                Ok(Some(settlement(fire, Outcome::Blocked, &error, None, None)))
-            }
-            Err(error) => Err(error),
-        }
+        self.enqueue_background(
+            &session_id,
+            source,
+            &basis,
+            &identity,
+            Default::default(),
+            maka_agent_state::queue::Placement::Followup,
+            steer,
+        )
+        .await?;
+        // A queued fire is not yet a Run. The next pass reads the atomic queue consume.
+        Ok(None)
     }
 }
 fn settlement(
@@ -452,7 +820,7 @@ fn settlement(
     outcome: Outcome,
     message: &str,
     session_id: Option<String>,
-    run_id: Option<String>,
+    run_id: Option<maka_agent_facts::durable::RunId>,
 ) -> Run {
     Run {
         id: fire.id.clone(),
@@ -461,5 +829,61 @@ fn settlement(
         message: message.to_owned(),
         session_id,
         run_id,
+    }
+}
+
+struct FireRetry {
+    fire_id: String,
+    retry: Retry,
+}
+
+impl FireRetry {
+    fn for_fire(&self, id: &str) -> Option<Retry> {
+        (self.fire_id == id).then_some(self.retry)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Retry {
+    at: Instant,
+    delay: Duration,
+}
+
+impl Retry {
+    fn ready(self, now: Instant) -> bool {
+        self.at <= now
+    }
+
+    fn after_failure(previous: Option<Self>, now: Instant) -> Self {
+        let delay = previous.map_or(Duration::from_secs(1), |retry| {
+            (retry.delay * 2).min(Duration::from_secs(30))
+        });
+        Self {
+            at: now + delay,
+            delay,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn early_wakes_leave_only_the_failed_fire_waiting() {
+        let now = Instant::now();
+        let failure = FireRetry {
+            fire_id: "failed".into(),
+            retry: Retry::after_failure(None, now),
+        };
+        for elapsed in [0, 250, 999, 1_000] {
+            let at = now + Duration::from_millis(elapsed);
+            let may_dispatch = |id| failure.for_fire(id).is_none_or(|retry| retry.ready(at));
+            assert!(may_dispatch("independent"));
+            assert_eq!(may_dispatch("failed"), elapsed == 1_000);
+        }
+        let retry = Retry::after_failure(Some(failure.retry), failure.retry.at);
+        assert!(!retry.ready(now + Duration::from_millis(2_999)));
+        assert!(retry.ready(now + Duration::from_secs(3)));
     }
 }

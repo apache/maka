@@ -268,3 +268,57 @@ async fn same_named_skills_select_whole_directories_and_fall_back_after_removal(
         fs::remove_dir_all(path).unwrap();
     }
 }
+
+#[tokio::test]
+async fn skill_with_unknown_frontmatter_loads_without_issues() {
+    let temporary = tempfile::tempdir().unwrap();
+    let project = temporary.path();
+    skill(
+        &project.join(".agents/skills/review"),
+        "review",
+        "disable-model-invocation: true\r\nextension: {modes: [review, audit]}\r\n",
+        "Review the change.",
+    );
+    let owner = owner();
+    let project_files = view(&owner, project).await;
+    let snapshot = scan(
+        &sources(Some(&project_files), None),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let catalog = Catalog {
+        discovery: &snapshot,
+        preferences: &Preferences::Available(BTreeMap::new()),
+        host: &HostCapabilities::default(),
+    };
+    let loaded = catalog.load("review").unwrap();
+    assert_eq!(loaded.instructions, "Review the change.");
+    assert!(loaded.skill.document.issues.is_empty());
+}
+
+#[tokio::test]
+async fn bundled_generative_ui_skill_is_discoverable_and_loadable() {
+    let snapshot = maka_skills::scan_with_bundled(&[], &CancellationToken::new())
+        .await
+        .unwrap();
+    let preferences = Preferences::Available(BTreeMap::new());
+    let host = HostCapabilities::default();
+    let catalog = Catalog {
+        discovery: &snapshot,
+        preferences: &preferences,
+        host: &host,
+    };
+    let loaded = catalog.load("maka-generative-ui").unwrap();
+    assert_eq!(
+        loaded.skill.location.reference,
+        "bundled:maka-generative-ui"
+    );
+    assert!(
+        loaded.skill.document.issues.is_empty(),
+        "{:?}",
+        loaded.skill.document.issues
+    );
+    assert!(loaded.instructions.contains("```spec"));
+    assert!(loaded.instructions.contains("CLIENT-ONLY BOUNDARY"));
+}

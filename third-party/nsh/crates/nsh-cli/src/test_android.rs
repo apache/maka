@@ -132,7 +132,9 @@ fn start(
         "app-{}",
         NEXT_APP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
-    host.adb(&[
+    let config = crate::package::read_config(entry).map_err(|e| format!("{e:#}"))?;
+    let env = crate::run::android_app_env(&config);
+    let mut start = vec![
         "shell",
         "am",
         "start",
@@ -145,7 +147,9 @@ fn start(
         "--es",
         "dataDir",
         &data,
-    ])?;
+    ];
+    start.extend(env.iter().map(String::as_str));
+    host.adb(&start)?;
     let deadline = Instant::now() + CONNECT;
     while !host.server.has_tester() {
         if Instant::now() >= deadline {

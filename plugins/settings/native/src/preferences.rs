@@ -18,8 +18,8 @@
  */
 
 use maka_agent_facts::configuration::policy::EnabledPolicy;
-use maka_agent_facts::configuration::policy::Personalization;
 use maka_agent_facts::configuration::policy::RuntimePolicyMutationResult;
+use maka_agent_facts::configuration::policy::{Personalization, ProfileAvatar};
 use maka_agent_facts::execution::SandboxMode;
 use maka_agent_facts::language::{Language, LanguagePreference};
 use schemars::JsonSchema;
@@ -43,7 +43,9 @@ pub struct Preferences {
     pub default_compaction_prompt: String,
     pub revision: u64,
     pub display_name: String,
+    pub avatar: Option<ProfileAvatar>,
     pub workspace_instructions: bool,
+    pub memory: maka_agent_facts::configuration::policy::MemoryPolicy,
     pub default_sandbox_mode: SandboxMode,
     pub shell: maka_agent_facts::configuration::policy::ShellPolicy,
 }
@@ -75,6 +77,10 @@ pub enum Mutation {
     },
     Personalization {
         display_name: String,
+        avatar: Option<ProfileAvatar>,
+    },
+    Memory {
+        value: maka_agent_facts::configuration::policy::MemoryPolicy,
     },
     WorkspaceInstructions {
         enabled: bool,
@@ -134,7 +140,9 @@ pub(crate) async fn read(
             .into(),
         revision: snapshot.revision,
         display_name: snapshot.policy.personalization.display_name,
+        avatar: snapshot.policy.personalization.avatar,
         workspace_instructions: snapshot.policy.workspace_instructions.enabled,
+        memory: snapshot.policy.memory,
         default_sandbox_mode: snapshot.policy.chat_defaults.sandbox_mode,
         shell: snapshot.policy.shell,
     })
@@ -184,11 +192,21 @@ pub(crate) async fn update(
                 )
                 .await
         }
-        Mutation::Personalization { display_name } => {
+        Mutation::Personalization {
+            display_name,
+            avatar,
+        } => {
             store
-                .set_personalization(input.expected_revision, Personalization { display_name })
+                .set_personalization(
+                    input.expected_revision,
+                    Personalization {
+                        display_name,
+                        avatar,
+                    },
+                )
                 .await
         }
+        Mutation::Memory { value } => store.set_memory(input.expected_revision, value).await,
         Mutation::WorkspaceInstructions { enabled } => {
             store
                 .set_workspace_instructions(input.expected_revision, EnabledPolicy { enabled })

@@ -17,7 +17,7 @@
   under the License.
 -->
 
-# Maka npm launcher
+# `@maka-agent/cli`
 
 [简体中文](README.zh-CN.md)
 
@@ -27,34 +27,30 @@
 npm install --global @maka-agent/cli@rust-preview
 ```
 
-The launcher selects the matching native executable and forwards arguments, standard I/O and exit status. Exact-version optional dependencies carry the CLI, which includes `maka terminal-shell`, and the desktop shell. On macOS the desktop shell is inside `Maka.app`; other platforms carry `maka-desktop-shell`. The preview targets macOS arm64, Linux x64 with glibc, and Windows x64. WSL uses the Linux executable with a matching Windows helper for Computer Use.
+`@maka-agent/cli` is a thin platform launcher: it resolves an exact-version optional native dependency (`darwin-arm64`, `linux-x64-gnu`, or `win32-x64`) and forwards arguments, stdio, and exit codes to the Rust `maka` executable (plus `Maka.app` on macOS or `maka-desktop-shell` on Linux/Windows). WSL uses the Linux binary alongside a matching Windows helper for Computer Use.
 
-The `latest` tags remain empty placeholders, including the separate `maka-agent` package. They contain no CLI, runtime, dependencies or install scripts. The placeholder source lives in [placeholder](placeholder/README.md); preview artifacts must stay on `rust-preview`.
+The `latest` tags remain empty placeholders, including the separate `maka-agent` package. They contain no CLI, runtime, dependencies or install scripts. Placeholder source lives in [`placeholder/`](placeholder/README.md); preview builds publish exclusively under `rust-preview`.
 
-Run `maka` to open the NSH terminal workbench. It discovers or starts the Host at `~/.maka/application/host`; use `--root HOST_ROOT` to select another Host and `--session SESSION_ID` to open an existing conversation. `maka --help` lists automation commands. See [the product guide](../../products/maka/bundle/README.md) for composition and installation commands.
+## Usage
 
-Launch the desktop with `maka desktop --root HOST_ROOT`. This required path selects the business Host: a missing Root gets the standard read-only Host, and an existing Root reopens its saved deployment. The launcher keeps its verified Host client until the shell exits, then detaches: the Host finishes the work it accepted and stops once no client is left. See [desktop-shell](../../products/maka/desktop-shell/README.md) for the desktop's layout and lifecycle.
+- `maka` / `maka terminal-shell` — Open the NSH terminal workbench against `~/.maka/application/host` (override with `--root <path>` or `--session <id>`).
+- `maka desktop --root <path>` — Open the native desktop window against the given State Root; closing the window detaches while accepted Host runs finish in the background.
+- `maka --help` — List Host daemon (`host`), deployment (`application`), `code`, `checkpoint`, `inspect`, `sandbox`, and `acp` subcommands.
 
-Launch the NSH terminal workbench with `maka terminal-shell`. It discovers or starts the Host at `~/.maka/application/host`; use `--root HOST_ROOT` for another Root or `--session SESSION_ID` for an existing conversation. `maka terminal-shell --help` lists its options. See [terminal-shell](../../products/maka/terminal-shell/README.md) for source builds.
+See [products/maka](../../products/maka/README.md) for shell architecture and [products/maka/bundle](../../products/maka/bundle/README.md) for deployment composition.
 
-## Build and publish
+## Building and publishing previews
 
-Create a source candidate from a committed revision with `just source <version>`. Build each native target from that same archive:
+Export a verified source archive from a committed Git revision (`just source <version>`), build all three platform packages from that exact tarball, then stage, verify, and publish:
 
 ```sh
 just package <source.tar.gz> <target> <build-id> native-preview
-```
 
-Collect all three native packages and receipts, plus the source archive and SHA-512 sidecar. Then run:
-
-```sh
 just release-prepare native-preview
 just release-check native-preview
 just publish native-preview
 ```
 
-`release-check` installs and exercises the prepared artifacts offline; run it on each target platform. Publication uploads native components before the launcher and verifies the channel tags. Retry the same artifacts after interruption. Use one publisher per channel because npm tags have no conditional update operation.
+`release-check` installs and smoke-tests the staged tarballs offline on each target OS. Native platform packages upload before the launcher, and interrupted runs retry the same staged artifacts under a single publisher.
 
-The [publication workflow](../../.github/workflows/npm-publication.yml) can build and verify with `publish=false`. Unofficial publishing runs in `M4n5ter/maka-agent` on `feat/runtime-host-rust`, requires explicit `publish=true`, and uses its dedicated `npm-rust-preview` environment. It does not publish from the ASF repository.
-
-See [native build tooling](../../scripts/rust/README.md) for dependencies, V8 caching and notices, and [source releases](../../.github/ASF_SOURCE_RELEASE.md) for archive verification and signing.
+Unofficial `rust-preview` npm publishing runs only from `M4n5ter/maka-agent` (`npm-rust-preview` environment, explicit `publish=true`), never from the `apache/maka` repository. See [scripts/rust](../../scripts/rust/README.md) for V8 prebuilts and license notices, and [.github/ASF_SOURCE_RELEASE.md](../../.github/ASF_SOURCE_RELEASE.md) for ASF source release verification.

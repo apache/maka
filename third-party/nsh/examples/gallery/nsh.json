@@ -64,6 +64,7 @@
       ]
     },
     "picker": true,
+    "share": true,
     "speech": true,
     "notifications": true,
     "audio": true,
@@ -74,6 +75,8 @@
         "panel",
         "popup"
       ]
-    }
+    },
+    "application": true,
+    "homeDir": true
   }
 }

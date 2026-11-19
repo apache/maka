@@ -4,8 +4,10 @@
 //! with it; a ref's `on_focus_in` / `on_focus_out` hear the focus come into
 //! an element and leave it, a `Popover`'s content counting as inside the
 //! view that holds the popover, and the focus in a popover that closes
-//! goes back to its trigger. A press on a field that listens to presses
-//! focuses it first.
+//! goes back to its trigger; the app's `focus()` on the content in
+//! `on_open` moves the focus into it. A popover's content follows its
+//! trigger in the Tab order. A press on a field that listens to
+//! presses focuses it first.
 
 use std::{
     collections::HashMap,
@@ -163,18 +165,18 @@ fn a_popovers_content_is_within_the_view_holding_the_popover() {
     app.app.wait_for("Within: in").unwrap();
     app.app.press("id:trigger").unwrap();
     app.app.wait_for("Inside").unwrap();
-    // Back from the trigger, around to the last stop: the popup's view,
-    // shown in the root view but inside the area.
-    app.app.press_key("shift+tab").unwrap();
+    // From the trigger into the popup's view, which follows it (shown in
+    // the root view but inside the area), and back: no leaving.
     app.app.press_key("tab").unwrap();
     app.app.press_key("shift+tab").unwrap();
+    app.app.press_key("tab").unwrap();
     assert!(app.app.shows("Within: in"), "no leaving while in the popup");
-    // From the popup around to the trigger, then to the stop after it:
-    // now it leaves.
-    app.app.press_key("tab").unwrap();
-    assert!(app.app.shows("Within: in"));
+    // From the popup to the stop after the popover: now it leaves, and
+    // back into the popup it comes in again.
     app.app.press_key("tab").unwrap();
     app.app.wait_for("Within: in out").unwrap();
+    app.app.press_key("shift+tab").unwrap();
+    app.app.wait_for("Within: in out in").unwrap();
 }
 
 /// A popover whose trigger and content log the focus they take.
@@ -214,14 +216,128 @@ fn escape_in_a_popover_gives_the_focus_back_to_its_trigger() {
     app.app.wait_for("focus trigger").unwrap();
     app.app.press("id:trigger").unwrap();
     app.app.wait_for("Inside").unwrap();
-    // Back from the trigger, around to the popup's view (the last stop).
-    app.app.press_key("shift+tab").unwrap();
+    // From the trigger into the popup's view, which follows it.
+    app.app.press_key("tab").unwrap();
     app.app.wait_for("focus trigger inside").unwrap();
     // Escape closes it, and the focus, gone with its view, comes back to
     // the trigger, so Tab goes on from there.
     app.app.press_key("escape").unwrap();
     app.app.wait_for("focus trigger inside trigger").unwrap();
     assert!(!app.app.shows("Inside"));
+}
+
+/// A popover whose panel the app focuses in `on_open`, as a non-modal
+/// dialog takes the focus when it opens.
+#[component]
+fn PopoverOpenFocus() -> impl IntoElement {
+    let log = signal(String::from("focus"));
+    let note = move |what: &'static str| log.update(|log| log.push_str(what));
+    let panel = element_ref();
+    view()
+        .child(text(move || log.get()))
+        .child(
+            popover()
+                .on_open(move || panel.focus())
+                .trigger(
+                    view()
+                        .test_id("trigger")
+                        .focusable(true)
+                        .w(px(100.0))
+                        .h(px(30.0))
+                        .on_focus(move |_: &()| note(" trigger"))
+                        .child(text("Details")),
+                )
+                .child(
+                    view()
+                        .element_ref(&panel)
+                        .focusable(true)
+                        .h(px(30.0))
+                        .on_focus(move |_: &()| note(" panel"))
+                        .child(text("Panel")),
+                ),
+        )
+        .child(view().test_id("after").focusable(true).h(px(30.0)))
+}
+
+#[test]
+fn focusing_the_content_in_on_open_moves_the_focus_into_a_popover() {
+    let mut app = start(Root::new::<PopoverOpenFocus>(|| ()));
+    app.app.press_key("tab").unwrap();
+    app.app.wait_for("focus trigger").unwrap();
+    // Opened from the keyboard: `on_open` comes once the content is
+    // there, so its ref focuses the panel.
+    app.app.press_key("enter").unwrap();
+    app.app.wait_for("focus trigger panel").unwrap();
+    // Escape closes it and the focus goes back to the trigger.
+    app.app.press_key("escape").unwrap();
+    app.app.wait_for("focus trigger panel trigger").unwrap();
+    assert!(!app.app.shows("Panel"));
+    // Opened by a press, the same.
+    app.app.press("id:trigger").unwrap();
+    app.app
+        .wait_for("focus trigger panel trigger panel")
+        .unwrap();
+}
+
+/// A stop, a popover with two stops in its panel that the app focuses in
+/// `on_open`, and a stop after it, all logging the focus they take.
+#[component]
+fn PopoverTabOrder() -> impl IntoElement {
+    let log = signal(String::from("focus"));
+    let note = move |what: &'static str| log.update(|log| log.push_str(what));
+    let first = element_ref();
+    let stop = move |id: &'static str| {
+        view()
+            .test_id(id)
+            .focusable(true)
+            .w(px(100.0))
+            .h(px(30.0))
+            .on_focus(move |_: &()| note(id))
+    };
+    view()
+        .child(text(move || log.get()))
+        .child(stop(" before"))
+        .child(
+            popover()
+                .on_open(move || first.focus())
+                .trigger(stop(" trigger").child(text("Details")))
+                .child(
+                    view()
+                        .child(stop(" one").element_ref(&first).child(text("One")))
+                        .child(stop(" two")),
+                ),
+        )
+        .child(stop(" after"))
+}
+
+#[test]
+fn a_popovers_content_follows_its_trigger_in_the_tab_order() {
+    let mut app = start(Root::new::<PopoverTabOrder>(|| ()));
+    app.app.press_key("tab").unwrap();
+    app.app.press_key("tab").unwrap();
+    app.app.wait_for("focus before trigger").unwrap();
+    app.app.press_key("enter").unwrap();
+    app.app.wait_for("focus before trigger one").unwrap();
+    // Back from the panel's first stop: the trigger, not the stop after
+    // the popover the panel's view comes after in the root view.
+    app.app.press_key("shift+tab").unwrap();
+    app.app
+        .wait_for("focus before trigger one trigger")
+        .unwrap();
+    assert!(app.app.shows("One"), "the popover stays open");
+    // On through the panel, then past its last stop to what follows the
+    // popover, not around to the first stop.
+    app.app.press_key("tab").unwrap();
+    app.app.press_key("tab").unwrap();
+    app.app.press_key("tab").unwrap();
+    app.app
+        .wait_for("focus before trigger one trigger one two after")
+        .unwrap();
+    // And back into the panel from there.
+    app.app.press_key("shift+tab").unwrap();
+    app.app
+        .wait_for("focus before trigger one trigger one two after two")
+        .unwrap();
 }
 
 /// A field that listens to presses, as a combobox's does, and a log of

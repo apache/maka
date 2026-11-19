@@ -59,6 +59,7 @@ pub enum Input {
         custom: bool,
         output: ToolOutput,
     },
+    HostedItems(Vec<Value>),
     ProviderResult {
         replay: Option<Replay>,
         action: Value,
@@ -106,6 +107,7 @@ pub enum Tool {
 pub enum SearchKind {
     Search,
     Preview,
+    Deepseek,
 }
 
 impl Content {
@@ -154,7 +156,12 @@ impl Tool {
                 json!({"type":"custom", "name":name, "description":description, "format":format})
             }
             Self::WebSearch { kind, args } => {
-                let mut value = json!({"type": match kind { SearchKind::Search => "web_search", SearchKind::Preview => "web_search_preview" }});
+                let tool_type = match kind {
+                    SearchKind::Search => "web_search",
+                    SearchKind::Preview => "web_search_preview",
+                    SearchKind::Deepseek => "deepseek_web_search",
+                };
+                let mut value = json!({"type": tool_type});
                 let args = args.as_object().ok_or_else(|| {
                     Error::Invalid("provider tool arguments must be an object".into())
                 })?;
@@ -242,7 +249,7 @@ fn encode_items(input: &[Input], reasoning: ReasoningMode, options: &Value) -> R
             },
             Input::ToolCall { id, name, input, provider_executed, metadata } => {
                 if *provider_executed {
-                    if options["store"] != false && let Some(metadata) = metadata && !metadata.id.is_empty() {
+                    if !reasoning.is_plaintext() && options["store"] != false && let Some(metadata) = metadata && !metadata.id.is_empty() {
                         items.push(json!({"type":"item_reference", "id":metadata.id}));
                     }
                     continue;
@@ -261,8 +268,20 @@ fn encode_items(input: &[Input], reasoning: ReasoningMode, options: &Value) -> R
                 });
             }
             Input::ToolOutput { id, custom, output } => items.push(json!({"type": if *custom && reasoning == ReasoningMode::Encrypted { "custom_tool_call_output" } else { "function_call_output" }, "call_id":id, "output":output.encode()})),
+            Input::HostedItems(accepted) => {
+                if options["store"] == false || reasoning.is_plaintext() {
+                    items.extend(accepted.iter().cloned());
+                } else {
+                    // The original call already contributed its item reference.
+                    let referenced_call = accepted.first().is_some_and(|call| call["id"].is_string());
+                    items.extend(accepted.iter().skip(usize::from(referenced_call)).map(|receipt| match receipt["id"].as_str() {
+                        Some(id) => json!({"type":"item_reference","id":id}),
+                        None => receipt.clone(),
+                    }));
+                }
+            }
             Input::ProviderResult { replay, action } => {
-                if reasoning == ReasoningMode::Encrypted && options["store"] == false && let Some(replay) = replay {
+                if (reasoning.is_plaintext() || options["store"] == false) && let Some(replay) = replay {
                     items.push(replay.provider(action)?);
                 }
             }
@@ -326,6 +345,20 @@ impl Request<'_> {
         {
             include.push(json!("reasoning.encrypted_content"));
         }
+        if self.reasoning == ReasoningMode::Encrypted
+            && self.tools.iter().any(|tool| {
+                matches!(
+                    tool,
+                    Tool::WebSearch {
+                        kind: SearchKind::Search,
+                        ..
+                    }
+                )
+            })
+            && !include.contains(&json!("web_search_call.action.sources"))
+        {
+            include.push(json!("web_search_call.action.sources"));
+        }
         if !include.is_empty() {
             object.insert("include".into(), Value::Array(include));
         }
@@ -345,5 +378,52 @@ impl Request<'_> {
             );
         }
         Ok(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openai_search_requests_sources_and_preserves_explicit_includes() {
+        let tools = [Tool::WebSearch {
+            kind: SearchKind::Search,
+            args: json!({}),
+        }];
+        let field = "web_search_call.action.sources";
+        for include in [json!([]), json!([field])] {
+            let opts = json!({"openai":{"include": include,"store":false}});
+            let request = Request {
+                model: "example",
+                input: &[],
+                tools: &tools,
+                tool_choice: ToolChoice::Auto,
+                reasoning: ReasoningMode::Encrypted,
+                options: &opts,
+                max_output_tokens: None,
+            };
+            let body = request.encode().unwrap();
+            let fields = body["include"].as_array().unwrap();
+            assert_eq!(
+                fields.iter().filter(|v| v.as_str() == Some(field)).count(),
+                1
+            );
+            assert!(fields.contains(&json!("reasoning.encrypted_content")));
+        }
+        let opts = json!({});
+        let mut request = Request {
+            model: "example",
+            input: &[],
+            tools: &tools,
+            tool_choice: ToolChoice::Auto,
+            reasoning: ReasoningMode::PlaintextContent,
+            options: &opts,
+            max_output_tokens: None,
+        };
+        assert!(request.encode().unwrap().get("include").is_none());
+        request.reasoning = ReasoningMode::Encrypted;
+        request.tools = &[];
+        assert!(request.encode().unwrap().get("include").is_none());
     }
 }

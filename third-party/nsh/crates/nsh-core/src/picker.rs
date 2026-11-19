@@ -18,8 +18,10 @@
 //! `UIDocumentPickerViewController`, Android's `ACTION_OPEN_DOCUMENT`, the
 //! open dialog on the desktops, `<input type=file>` on the web) and answers
 //! with the same event, each file's bytes as they are and its name kept. A
-//! file larger than [`MAX_PICKED_FILE_BYTES`] is left out rather than read
-//! into memory.
+//! file larger than the request reads ([`FilePickRequest::size_limit`]: the
+//! app's [`FilePickRequest::max_size`], at most [`MAX_PICKED_FILE_BYTES`])
+//! is not read into memory: it answers with its name and size only
+//! ([`PickedStatus::TooLarge`]), so the app can tell the user.
 //!
 //! An embedding app can show a picker of its own instead: a
 //! [`PickerBackend`] given to the core
@@ -39,8 +41,9 @@ use crate::{
 /// platform says.
 pub const MAX_PICKED: u32 = 100;
 
-/// A file picked with [`FilePickRequest`] larger than this many bytes is left
-/// out (and logged): its bytes would all have to fit in memory.
+/// A file picked with [`FilePickRequest`] larger than this many bytes is not
+/// read, whatever the request says ([`PickedStatus::TooLarge`]): its bytes
+/// would all have to fit in memory.
 pub const MAX_PICKED_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// The JPEG quality NSH encodes with when the app gives none.
@@ -180,6 +183,10 @@ pub struct FilePickRequest {
     /// is what the picker offers, not a promise: a system's picker may let
     /// other files through.
     pub filters: Vec<FileFilter>,
+    /// The largest file read, in bytes: a larger one answers with its name
+    /// and size only ([`PickedStatus::TooLarge`]). `None`:
+    /// [`MAX_PICKED_FILE_BYTES`], which also caps a larger one.
+    pub max_size: Option<u64>,
 }
 
 impl Default for FilePickRequest {
@@ -195,7 +202,22 @@ impl FilePickRequest {
         Self {
             limit: PickRequest::new(multiple, limit).limit,
             filters: Vec::new(),
+            max_size: None,
         }
+    }
+
+    /// Reads files of at most `bytes` bytes; a larger one answers with its
+    /// name and size only ([`PickedStatus::TooLarge`]).
+    pub fn max_size(mut self, bytes: u64) -> Self {
+        self.max_size = Some(bytes);
+        self
+    }
+
+    /// The largest file read, in bytes: [`Self::max_size`], at most
+    /// [`MAX_PICKED_FILE_BYTES`].
+    pub fn size_limit(&self) -> u64 {
+        self.max_size
+            .map_or(MAX_PICKED_FILE_BYTES, |max| max.min(MAX_PICKED_FILE_BYTES))
     }
 
     /// Offers the file types of `filter`, after those given before.
@@ -256,6 +278,25 @@ pub struct PickedFile {
     /// When it was last changed (`File.lastModified`); `None`: when the
     /// app gets it.
     pub last_modified: Option<SystemTime>,
+    /// Its size in bytes: its bytes' length, or for a file not read, the
+    /// size its system gave (a pick of files fills it in,
+    /// [`finish_files`]).
+    pub len: u64,
+    /// Whether its bytes were read.
+    pub status: PickedStatus,
+}
+
+/// Whether a picked file's bytes were read ([`PickedFile::status`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum PickedStatus {
+    /// Its bytes are [`PickedFile::data`].
+    #[default]
+    Read,
+    /// It is larger than the pick reads
+    /// ([`FilePickRequest::size_limit`]): its bytes were not read, and only
+    /// its name, type and size ([`PickedFile::len`]) answer.
+    TooLarge,
 }
 
 impl std::fmt::Debug for PickedFile {
@@ -265,6 +306,8 @@ impl std::fmt::Debug for PickedFile {
             .field("mime", &self.mime)
             .field("bytes", &self.data.len())
             .field("size", &self.size)
+            .field("len", &self.len)
+            .field("status", &self.status)
             .finish()
     }
 }
@@ -281,6 +324,19 @@ impl PickedFile {
         };
         file.fill_in();
         file
+    }
+
+    /// The file `name` of `len` bytes, too large to read
+    /// ([`PickedStatus::TooLarge`]): no bytes, its type what its name says
+    /// when `mime` is empty ([`finish_files`]).
+    pub fn too_large(name: impl Into<String>, mime: impl Into<String>, len: u64) -> Self {
+        Self {
+            name: name.into(),
+            mime: mime.into(),
+            len,
+            status: PickedStatus::TooLarge,
+            ..Self::default()
+        }
     }
 
     /// Completes what the platform left out: the size from the bytes, the
@@ -414,10 +470,25 @@ pub fn finish(request: &PickRequest, mut files: Vec<PickedFile>) -> Vec<PickedFi
 
 /// Puts `files` of a pick of files in the form the app gets: at most
 /// `request.limit`, their names without folders and as the user knows them,
-/// each with a type ([`mime_for_file`]).
+/// each with a type ([`mime_for_file`]) and its size; one read whose bytes
+/// are more than the request reads ([`FilePickRequest::size_limit`]: a
+/// platform that could not tell its size before) keeps only its name and
+/// size ([`PickedStatus::TooLarge`]).
 pub fn finish_files(request: &FilePickRequest, mut files: Vec<PickedFile>) -> Vec<PickedFile> {
     files.truncate(request.limit.max(1) as usize);
+    let limit = request.size_limit();
     for file in &mut files {
+        if file.status == PickedStatus::Read {
+            file.len = file.data.len() as u64;
+            if file.len > limit {
+                log::warn!(
+                    "the picked {} is not read: larger than {limit} bytes",
+                    file.name
+                );
+                file.status = PickedStatus::TooLarge;
+                file.data = ImageData::default();
+            }
+        }
         if let Some(name) = file.name.rsplit(['/', '\\']).next() {
             file.name = name.to_owned();
         }
@@ -510,14 +581,16 @@ pub fn read_files(paths: &[std::path::PathBuf], request: &PickRequest) -> Vec<Pi
 }
 
 /// The files at `paths` for a pick of files, read as they are, at most the
-/// request's limit; those that cannot be read and those larger than
-/// [`MAX_PICKED_FILE_BYTES`] are left out and logged.
+/// request's limit; those that cannot be read are left out and logged, and
+/// those larger than the request reads ([`FilePickRequest::size_limit`])
+/// are not read: they answer with their names and sizes
+/// ([`PickedStatus::TooLarge`]).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_picked_files(
     paths: &[std::path::PathBuf],
     request: &FilePickRequest,
 ) -> Vec<PickedFile> {
-    read_paths(paths, request, MAX_PICKED_FILE_BYTES)
+    read_paths(paths, request, request.size_limit())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -533,18 +606,21 @@ fn read_paths(
             let metadata = std::fs::metadata(path)
                 .inspect_err(|e| log::warn!("cannot read the picked {}: {e}", path.display()))
                 .ok()?;
+            let name = path.file_name()?.to_string_lossy().into_owned();
             if metadata.len() > max_bytes {
                 log::warn!(
-                    "the picked {} is left out: larger than {max_bytes} bytes",
+                    "the picked {} is not read: larger than {max_bytes} bytes",
                     path.display()
                 );
-                return None;
+                let mut file = PickedFile::too_large(name, "", metadata.len());
+                file.last_modified = metadata.modified().ok();
+                return Some(file);
             }
             let bytes = std::fs::read(path)
                 .inspect_err(|e| log::warn!("cannot read the picked {}: {e}", path.display()))
                 .ok()?;
             Some(PickedFile {
-                name: path.file_name()?.to_string_lossy().into_owned(),
+                name,
                 data: ImageData::new(bytes),
                 last_modified: metadata.modified().ok(),
                 ..PickedFile::default()
@@ -684,17 +760,135 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         let got: Vec<_> = files
             .iter()
-            .map(|f| (f.name.as_str(), f.mime.as_str(), f.data.len()))
+            .map(|f| {
+                (
+                    f.name.as_str(),
+                    f.mime.as_str(),
+                    f.data.len(),
+                    f.len,
+                    f.status,
+                )
+            })
+            .collect();
+        // The file past the limit answers with its name and size, unread.
+        assert_eq!(
+            got,
+            [
+                ("shot.dat", "image/png", 12, 12, PickedStatus::Read),
+                ("report.pdf", "application/pdf", 8, 8, PickedStatus::Read),
+                (
+                    "big.bin",
+                    "application/octet-stream",
+                    0,
+                    32,
+                    PickedStatus::TooLarge
+                ),
+            ]
+        );
+        assert!(files[0].last_modified.is_some());
+        assert!(files[2].last_modified.is_some());
+        assert_eq!(one.len(), 1);
+    }
+
+    /// A directory of its own for test `name`, removed when dropped.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("nsh-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn files_past_the_apps_limit_answer_with_their_name_and_size_only() {
+        let dir = TempDir::new("picked-limit");
+        let small = dir.0.join("notes.txt");
+        let video = dir.0.join("clip.mp4");
+        std::fs::write(&small, b"hello").unwrap();
+        std::fs::write(&video, [0; 64]).unwrap();
+        let request = FilePickRequest::new(true, 0).max_size(16);
+        assert_eq!(request.size_limit(), 16);
+        let files = read_picked_files(&[small, video], &request);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].status, PickedStatus::Read);
+        assert_eq!((files[0].data.len(), files[0].len), (5, 5));
+        let video = &files[1];
+        assert_eq!(video.status, PickedStatus::TooLarge);
+        assert_eq!(video.name, "clip.mp4");
+        assert_eq!(video.mime, "video/mp4", "the type its name says");
+        assert_eq!((video.data.len(), video.len), (0, 64));
+        // A limit past NSH's own is NSH's.
+        let request = FilePickRequest::default().max_size(u64::MAX);
+        assert_eq!(request.size_limit(), MAX_PICKED_FILE_BYTES);
+    }
+
+    #[test]
+    fn files_past_nshs_limit_answer_with_their_name_and_size_only() {
+        let dir = TempDir::new("picked-huge");
+        // A sparse file: its size without its bytes on disk.
+        let path = dir.0.join("huge.bin");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_PICKED_FILE_BYTES + 1).unwrap();
+        drop(file);
+        let request = FilePickRequest::default();
+        assert_eq!(request.size_limit(), MAX_PICKED_FILE_BYTES);
+        let files = read_picked_files(&[path], &request);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].status, PickedStatus::TooLarge);
+        assert_eq!(files[0].name, "huge.bin");
+        assert_eq!(files[0].len, MAX_PICKED_FILE_BYTES + 1);
+        assert!(files[0].data.is_empty());
+    }
+
+    #[test]
+    fn files_read_past_the_limit_keep_only_their_name_and_size() {
+        // What a platform that could not tell the size first read, or a
+        // picker backend gave.
+        let request = FilePickRequest::new(true, 0).max_size(4);
+        let file = |name: &str, bytes: &[u8]| PickedFile {
+            name: name.into(),
+            data: ImageData::new(bytes.to_vec()),
+            ..PickedFile::default()
+        };
+        let unread = PickedFile::too_large("film.mov", "", 1 << 40);
+        let files = finish_files(
+            &request,
+            vec![file("a.txt", b"abcd"), file("b.txt", b"abcde"), unread],
+        );
+        let got: Vec<_> = files
+            .iter()
+            .map(|f| {
+                (
+                    f.name.as_str(),
+                    f.mime.as_str(),
+                    f.data.len(),
+                    f.len,
+                    f.status,
+                )
+            })
             .collect();
         assert_eq!(
             got,
             [
-                ("shot.dat", "image/png", 12),
-                ("report.pdf", "application/pdf", 8),
+                ("a.txt", "text/plain", 4, 4, PickedStatus::Read),
+                ("b.txt", "text/plain", 0, 5, PickedStatus::TooLarge),
+                (
+                    "film.mov",
+                    "video/quicktime",
+                    0,
+                    1 << 40,
+                    PickedStatus::TooLarge
+                ),
             ]
         );
-        assert!(files[0].last_modified.is_some());
-        assert_eq!(one.len(), 1);
     }
 
     #[test]

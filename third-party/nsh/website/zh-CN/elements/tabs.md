@@ -106,6 +106,7 @@ mount(App);
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 不响应按压，也没有按压反馈；`disabled:` 样式生效，屏幕阅读器会报告它不可用。 |
 | `selectedStyle` | `.selected_style(\|s\| ..)` | `StyleProp<ViewStyle>` | 无 | 选中且未禁用时标签页自身的样式，与 `selected:` 类相同。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 屏幕阅读器读出的文字：子元素没有说明这个标签页名称的文字时（例如只有图标）设置。 |
+| `accessibilityDescription` | `.accessibility_description(..)` | `string` | 无 | 名称之外的说明，屏幕阅读器在名称之后读出：名称里看不出、但这个标签页能做的事（例如按 Delete 关闭）。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 应用的标签、图标或徽标，屏幕阅读器会读出。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 标签页自身：包住标签的那块表面。 |
 | `activeStyle`、`hoverStyle`、`focusStyle`、`disabledStyle` | `.active(\|s\| ..)`、`.hover(..)`、`.focus(..)`、`.disabled_style(..)` | `StyleProp<ViewStyle>` | 无 | 标签页按下、悬停、获得焦点或禁用时的样式，与对应的 `<state>:` 类相同。 |
@@ -116,6 +117,7 @@ mount(App);
 |---|---|---|---|---|
 | `indicatorClass` | `.indicator_class(..)` | `string` | 无 | 选中标签页上指示器的 Tailwind 类：它的外观，以及它在列表交叉方向上的位置（一行里的下划线用 `bottom-0 h-0.5`，胶囊用 `inset-y-1`）。沿列表方向，它覆盖选中的标签页，并在这个方向上留出自己的外边距。设置了 `indicatorClass` 或 `indicatorStyle`，列表就有指示器。 |
 | `indicatorStyle` | `.indicator_style(\|s\| ..)` | `StyleProp<ViewStyle>` | 无 | 指示器的样式，叠加在 `indicatorClass` 之上。 |
+| `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 这个列表的名字（「分区」「视图」），屏幕阅读器进入列表时会读出。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 列表中的标签页，以及应用放在它们之间的其他内容。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 列表的布局和外观：默认是一列，`flex-row` 排成一行。 |
 
@@ -186,8 +188,8 @@ mount(App);
 
 ## 无障碍
 
-- 标签页对屏幕阅读器而言是一个元素，角色是 `"tab"`，带有它的选中状态。它的标签是子元素的文字，或 `accessibilityLabel`。
-- `Tabs` 的角色是 `"tablist"`：屏幕阅读器把其中的标签页当作一组播报，每个标签页仍然是独立的元素。
+- 标签页对屏幕阅读器而言是一个元素，角色是 `"tab"`，带有它的选中状态。它的标签是子元素的文字，或 `accessibilityLabel`。它的 `accessibilityDescription` 在名称之后读出，所以名称可以只是标签页的标题：把标签页除了被选中之外还能做的事写在这里（例如可关闭的标签页按 Delete 关闭）。
+- `Tabs` 的角色是 `"tablist"`：屏幕阅读器把其中的标签页当作一组播报，每个标签页仍然是独立的元素。它的 `accessibilityLabel` 是这个列表的名字；列表旁没有文字说明这些标签页切换的是什么时，都应给一个。
 - `disabled` 按平台的方式报告（VoiceOver、TalkBack、UI Automation、浏览器的无障碍树）。
 - 在 macOS 和 Web 上，整个列表是键盘焦点的一站，方向键在它的标签页之间移动（见下文）。
 - 指示器对屏幕阅读器隐藏，也不接收焦点：列表里的元素只有标签页。
@@ -209,7 +211,7 @@ mount(App);
 | Home、End | 把焦点移到第一个或最后一个标签页。 |
 | Space、Return | 按下拥有焦点的标签页。 |
 
-方向键跳过禁用的标签页，焦点移到的标签页报告 `onPress`，应用随焦点移动选中它：显示的部分跟随焦点。无论列表的布局如何（布局由应用的类决定），两组方向键都会移动焦点。在从右到左的布局里，这一行从右边开始，Left 和 Right 互换：Left 移到下一个标签页，Right 移到上一个；Up、Down、Home 和 End 不变。`focus:` 样式显示焦点所在。不在 `Tabs` 里的 `Tab` 是独立的一站。
+方向键跳过禁用的标签页，焦点移到的标签页报告 `onPress`，应用随焦点移动选中它：显示的部分跟随焦点。无论列表的布局如何（布局由应用的类决定），两组方向键都会移动焦点。在从右到左的布局里，这一行从右边开始，Left 和 Right 互换：Left 移到下一个标签页，Right 移到上一个；Up、Down、Home 和 End 不变。`focus-visible:` 样式显示焦点所在。不在 `Tabs` 里的 `Tab` 是独立的一站。
 
 <a id="platform-notes"></a>
 

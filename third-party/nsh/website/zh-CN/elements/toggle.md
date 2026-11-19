@@ -188,7 +188,7 @@ mount(App);
 | Home、End | 把焦点移到第一个或最后一个开关按钮。 |
 | Space、Return | 按下获得焦点的开关按钮。 |
 
-方向键跳过禁用的开关按钮，且不按下任何东西：开关按钮只在被按压时改变。两组方向键都能移动，不论这一组的布局如何，布局是应用的类。在从右到左的布局里，Left 和 Right 互换：Left 移到下一个开关按钮，Right 移到上一个；Up、Down、Home 和 End 不变。`focus:` 样式显示焦点在哪里。`ToggleGroup` 之外的 `Toggle` 自己占一站。
+方向键跳过禁用的开关按钮，且不按下任何东西：开关按钮只在被按压时改变。两组方向键都能移动，不论这一组的布局如何，布局是应用的类。在从右到左的布局里，Left 和 Right 互换：Left 移到下一个开关按钮，Right 移到上一个；Up、Down、Home 和 End 不变。`focus-visible:` 样式显示焦点在哪里。`ToggleGroup` 之外的 `Toggle` 自己占一站。
 
 ## 平台说明
 

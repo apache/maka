@@ -69,6 +69,11 @@ impl Owner {
                     return Ok(McpTrustResult::Changed);
                 }
                 owner.mcp_projects.trust(&proposal).await?;
+                owner
+                    .store
+                    .owned_root()
+                    .map_err(|_| "agent_root_unavailable")?
+                    .capability_source_changed();
                 Ok(McpTrustResult::Trusted)
             })
         })

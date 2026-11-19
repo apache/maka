@@ -22,8 +22,11 @@
 /// Public wire types and generated contracts. 公开协议类型与生成契约。
 use maka_agent_api::contract;
 pub mod checkpoints;
+pub use service::history::snapshot_page as checkpoint_history_page;
 mod diagnostics;
 pub mod executor;
+#[cfg(unix)]
+pub use executor::external::agy_front::{FRONT_HELPER, serve_front};
 mod mcp;
 mod model;
 mod owner;
@@ -38,13 +41,41 @@ use std::sync::Arc;
 pub fn provide(
     registry: &mut NativeRegistry,
     catalog: Arc<maka_providers::catalog::Catalog>,
+    state: maka_agent_state::Store,
+    helper: std::path::PathBuf,
+) -> Result<(), String> {
+    provide_inner(registry, catalog, state, helper, None)
+}
+
+/// Supply the live embedding-side rate reader, sampled at the original request boundary.
+pub fn provide_with_pricing(
+    registry: &mut NativeRegistry,
+    catalog: Arc<maka_providers::catalog::Catalog>,
+    state: maka_agent_state::Store,
+    helper: std::path::PathBuf,
+    pricing: Arc<dyn maka_agent_engine::pricing::Pricing>,
+) -> Result<(), String> {
+    provide_inner(registry, catalog, state, helper, Some(pricing))
+}
+
+fn provide_inner(
+    registry: &mut NativeRegistry,
+    catalog: Arc<maka_providers::catalog::Catalog>,
+    state: maka_agent_state::Store,
+    helper: std::path::PathBuf,
+    pricing: Option<Arc<dyn maka_agent_engine::pricing::Pricing>>,
 ) -> Result<(), String> {
     registry.insert(
         maka_agent_api::IMPLEMENTATION.into(),
         Arc::new(move |context, configuration| {
             let catalog = catalog.clone();
+            let state = state.clone();
+            let helper = helper.clone();
+            let pricing = pricing.clone();
             Box::pin(async move {
-                match owner::Owner::open(context, configuration, catalog).await {
+                match owner::Owner::open(context, configuration, catalog, state, helper, pricing)
+                    .await
+                {
                     Ok(owner) => {
                         let service = Arc::new(service::Agent(owner));
                         NativeActivation {
@@ -59,10 +90,7 @@ pub fn provide(
                             owner: service,
                         }
                     }
-                    Err(error) => NativeActivation {
-                        exports: Err(error),
-                        owner: Arc::new(()),
-                    },
+                    Err(error) => error.activation(),
                 }
             })
         }),

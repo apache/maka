@@ -98,3 +98,24 @@ describe('selectShowcases', () => {
     expect(paginateAll(many, 0).apps.map((a) => a.id)[0]).toBe('a0');
   });
 });
+
+describe('loadDirectory', () => {
+  test('reads directory entries, most stars first, and tolerates a missing folder', async () => {
+    const { loadDirectory } = await import('../src/lib/directory');
+    const root = await mkdtemp(join(tmpdir(), 'nsh-directory-'));
+    try {
+      expect(await loadDirectory(root)).toEqual([]);
+      for (const [id, stars] of [['forms', 3], ['auth', 9], ['icons', null]] as const) {
+        await mkdir(join(root, 'directory', id), { recursive: true });
+        await writeFile(join(root, 'directory', id, 'manifest.json'), JSON.stringify({ id, name: id, author: 'A', description: 'D', category: 'library', source: `https://github.com/a/${id}`, publishedAt: '2026-11-09T00:00:00Z', stars }));
+      }
+      await writeFile(join(root, 'directory', 'README.md'), '# Directory');
+      const entries = await loadDirectory(root);
+      expect(entries.map((e) => e.id)).toEqual(['auth', 'forms', 'icons']);
+      expect(entries[2].stars).toBeNull();
+      expect(entries[0].platforms).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true });
+    }
+  });
+});

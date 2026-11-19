@@ -19,15 +19,15 @@
 
 use crate::{connections, contract::*};
 use futures_util::future::BoxFuture;
+use maka_agent_facts::configuration::{
+    ConfigurationRejection, ConnectionCredentialKind, CredentialIdentityBasis, CredentialLocator,
+    CredentialMutationResult, SetCredentialInput, UsageAccessKey,
+};
 use maka_agent_facts::oauth::Failure;
 use maka_agent_facts::oauth::LoginStart;
 use maka_agent_facts::oauth::Phase;
 use maka_agent_facts::oauth::Target;
 use maka_agent_facts::provider::AuthenticationInput;
-use maka_agent_ports::model::Connect;
-use maka_agent_ports::model::Error;
-use maka_agent_ports::model::Socket;
-use maka_agent_ports::model::Transport;
 use maka_agent_ports::provider;
 use maka_agent_ports::provider::authentication::Authenticate;
 use maka_config::{
@@ -42,34 +42,85 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// API-key authentication only validates and wraps local input. Its Context does
-/// not acquire network authority merely to satisfy the provider interface.
-struct NoNetwork;
-impl Transport for NoNetwork {
-    fn identity(&self) -> u64 {
-        0
-    }
-    fn request(
-        &self,
-        _: maka_capabilities::http::Request,
-        _: tokio_util::sync::CancellationToken,
-    ) -> BoxFuture<'_, Result<maka_capabilities::http::Response, Error>> {
-        Box::pin(async {
-            Err(Error::Adapter(
-                "settings_authentication_network_unavailable".into(),
-            ))
-        })
-    }
-    fn connect(&self, _: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, Error>> {
-        Box::pin(async {
-            Err(Error::Adapter(
-                "settings_authentication_network_unavailable".into(),
-            ))
-        })
-    }
-}
 fn rejected(reason: CredentialRejection) -> Result<Value, String> {
     connections::encode(CredentialSaveResult::Rejected { reason })
+}
+
+pub(crate) async fn save_usage(
+    store: &ConfigurationStore,
+    snapshot: Arc<maka_providers::catalog::Snapshot>,
+    input: Value,
+    context: Context,
+) -> Result<Value, String> {
+    context.operation().ok_or("settings_mutation_required")?;
+    let invalid = || {
+        connections::encode(CredentialMutationResult::Rejected {
+            reason: ConfigurationRejection::InvalidInput,
+        })
+    };
+    let Ok(request) = serde_json::from_value::<SaveCredential>(input) else {
+        return invalid();
+    };
+    let definition = connections::definition(&request.expected.provider, snapshot)?;
+    let requires_team = match definition.descriptor().usage_authentication {
+        Some(provider::UsageAuthentication::AccessKey) => false,
+        Some(provider::UsageAuthentication::TeamAccessKey) => true,
+        _ => return invalid(),
+    };
+    let locator = CredentialLocator::Connection {
+        connection_id: request.expected.connection_id.clone(),
+        kind: ConnectionCredentialKind::Usage,
+    };
+    if request
+        .expected_credential
+        .as_ref()
+        .is_some_and(|expected| expected.locator != locator)
+    {
+        return invalid();
+    }
+    let Some(resource) = context.attachments().get("secret") else {
+        return invalid();
+    };
+    let bytes = resource.bytes();
+    if !(1..=4096).contains(&bytes) {
+        return invalid();
+    }
+    let secret = resource
+        .read(0..bytes)
+        .map_err(|_| "settings_secret_unavailable")?;
+    let Ok(secret) = String::from_utf8(secret) else {
+        return invalid();
+    };
+    if secret.len() != bytes
+        || !UsageAccessKey::parse(&secret).is_ok_and(|key| key.team_id.is_some() == requires_team)
+    {
+        return invalid();
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "settings_clock_unavailable")?
+        .as_secs();
+    match store
+        .set_credential(
+            SetCredentialInput {
+                locator,
+                expected: request
+                    .expected_credential
+                    .map(|basis| CredentialIdentityBasis {
+                        credential_id: basis.credential_id,
+                        revision: basis.revision,
+                    }),
+                expected_connection: Some(request.expected),
+                secret,
+            },
+            now,
+        )
+        .await
+    {
+        Ok(result) => connections::encode(result),
+        Err(maka_config::ConfigError::Invalid(_)) => invalid(),
+        Err(_) => Err("settings_effect_unknown".into()),
+    }
 }
 pub(crate) async fn save(
     store: &Arc<ConfigurationStore>,
@@ -243,7 +294,7 @@ async fn enroll(
                 .map_err(|_| "settings_network_unavailable")?;
         maka_model::provider_transport(&policy).map_err(|_| "settings_network_unavailable")?
     } else {
-        Arc::new(NoNetwork) as Arc<dyn Transport>
+        provider::no_network_transport()
     };
     let provider_context = provider::Context {
         transport,
@@ -342,6 +393,3 @@ async fn authenticate(
         LoginCompletion::SlugTaken => rejected(CredentialRejection::SlugTaken),
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -124,7 +124,9 @@ fn enter_in_a_list_item_splits_it() {
 #[test]
 fn two_enters_at_the_end_of_a_list_end_it() {
     let mut app = focused(blocks(vec![list("bulletList", &["a", "b"])]));
-    keys(&mut app, &["ctrl+end", "enter"]);
+    keys(&mut app, &["ctrl+end"]);
+    see(&mut app, &sel(9));
+    keys(&mut app, &["enter"]);
     expect(
         &mut app,
         r#"doc(bulletList(listItem(paragraph("a")), listItem(paragraph("b")), listItem(paragraph)), paragraph)"#,

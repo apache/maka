@@ -22,7 +22,7 @@ import { join } from 'node:path';
 
 export const licenseName = (name) =>
   (/^(?:licen[cs]e|unlicense|copying|copyright|notice|credits)(?:$|[-_.])/i.test(name) ||
-    /[-_]licen[cs]e(?:$|\.)/i.test(name)) &&
+    /[-_.]licen[cs]e(?:$|\.)/i.test(name)) &&
   !/\.(?:rs|py|h|cc|c|json|toml|sh|js)$/i.test(name);
 
 export async function licenseFiles(directory, licenseDirectory = false) {

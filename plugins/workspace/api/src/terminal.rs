@@ -17,9 +17,9 @@
  * under the License.
  */
 
-use maka_agent_facts::terminal::TerminalSize;
-use maka_agent_facts::terminal::input::InputAction;
 use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
+use maka_plugin_core::terminal::TerminalSize;
+use maka_plugin_core::terminal::input::InputAction;
 pub use maka_presentation::shell::ResourceUpdate;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -189,7 +189,7 @@ fn method<I: JsonSchema, O: JsonSchema>(mode: MethodMode) -> Method {
         resources: BTreeMap::new(),
     }
 }
-pub use maka_agent_facts::terminal::display::Part as DisplayPart;
+use maka_plugin_core::terminal::display::Part;
 
 pub fn contract() -> Contract {
     Contract {
@@ -213,7 +213,7 @@ pub fn contract() -> Contract {
                 ),
                 (
                     "readDisplay".into(),
-                    method::<Target, DisplayPart>(MethodMode::Subscription),
+                    method::<Target, Part>(MethodMode::Subscription),
                 ),
                 (
                     "readOutput".into(),

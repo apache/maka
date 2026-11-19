@@ -116,7 +116,9 @@ pub(crate) fn live() -> Live {
 const RELAYOUT: LayoutAnimation = LayoutAnimation {
     create: Some(LayoutTransition::new(LayoutCurve::EaseInEaseOut, 380.0)),
     update: Some(LayoutTransition {
-        curve: LayoutCurve::Spring { damping: 0.84 },
+        curve: LayoutCurve::FittedSpring {
+            damping_ratio: 0.84,
+        },
         property: LayoutProperty::Opacity,
         duration_ms: 380.0,
         delay_ms: 0.0,
@@ -779,13 +781,12 @@ fn StockRow(props: StockRowProps, cx: Scope<StockRowEvent>) -> impl IntoElement 
         .role(AccessibilityRole::Button)
         .label(name)
         .when(props.wide, |v| {
-            v.cursor_pointer()
-                .accessibility_state(move || AccessibilityState {
-                    selected: active.get(),
-                    ..AccessibilityState::default()
-                })
-                .style_when(active, |s| s.bg(fill))
-                .hover(|s| s.bg(move || if active.get() { fill } else { colors::SURFACE }))
+            v.accessibility_state(move || AccessibilityState {
+                selected: active.get(),
+                ..AccessibilityState::default()
+            })
+            .style_when(active, |s| s.bg(fill))
+            .hover(|s| s.bg(move || if active.get() { fill } else { colors::SURFACE }))
         })
         .child(when(active, || {
             view()

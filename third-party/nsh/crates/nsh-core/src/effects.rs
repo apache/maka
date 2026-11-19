@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use crate::{
+    color::Hsla,
     geometry::{DefiniteLength, Percentage, Points, REM_SIZE, Radians, Size, deg},
     style::{BorderStyle, Color},
 };
@@ -140,7 +141,7 @@ pub struct ColorStop {
     pub position: Option<DefiniteLength>,
 }
 
-/// A gradient image (`backgroundImage`).
+/// A gradient image (`backgroundImage`, `maskImage`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Gradient {
     /// Geometry.
@@ -149,6 +150,39 @@ pub struct Gradient {
     pub stops: Vec<ColorStop>,
     /// Repeats past the last stop.
     pub repeating: bool,
+}
+
+/// A stop at no position of its own: spread evenly between its neighbors.
+impl From<Hsla> for ColorStop {
+    fn from(color: Hsla) -> Self {
+        ColorStop {
+            color: color.into(),
+            position: None,
+        }
+    }
+}
+
+/// A stop at a fraction of the gradient line (`percentage(0.2)`) or a
+/// length from its start (`px(12.0)`).
+impl<P: Into<DefiniteLength>> From<(Hsla, P)> for ColorStop {
+    fn from((color, position): (Hsla, P)) -> Self {
+        ColorStop {
+            color: color.into(),
+            position: Some(position.into()),
+        }
+    }
+}
+
+impl<T: Into<ColorStop>, const N: usize> crate::element::IntoReactive<Vec<ColorStop>> for [T; N] {
+    fn into_reactive(self) -> crate::element::Reactive<Vec<ColorStop>> {
+        crate::element::Reactive::Static(self.into_iter().map(Into::into).collect())
+    }
+}
+
+impl<T: Into<ColorStop>> crate::element::IntoReactive<Vec<ColorStop>> for Vec<T> {
+    fn into_reactive(self) -> crate::element::Reactive<Vec<ColorStop>> {
+        crate::element::Reactive::Static(self.into_iter().map(Into::into).collect())
+    }
 }
 
 impl Gradient {
@@ -929,8 +963,10 @@ impl TransitionProps {
     pub const SHADOW: u8 = 8;
     /// Corner radii and border widths.
     pub const SHAPE: u8 = 16;
+    /// A single foreground blur filter, including transitions to/from none.
+    pub const FILTER: u8 = 32;
     /// Everything that can transition.
-    pub const ALL: u8 = 0x1f;
+    pub const ALL: u8 = 0x3f;
 
     /// True if `group` is included.
     #[inline]
@@ -941,6 +977,7 @@ impl TransitionProps {
 
 /// `transition*`: style changes animate natively instead of jumping.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct Transition {
     /// Properties that animate.
     pub properties: TransitionProps,
@@ -948,13 +985,43 @@ pub struct Transition {
     pub duration: f32,
     /// Milliseconds before it starts.
     pub delay: f32,
-    /// Cubic Bézier `x1, y1, x2, y2`.
+    /// Cubic Bézier `x1, y1, x2, y2` (a `y` outside 0..1 overshoots).
     pub easing: [f32; 4],
+    /// A spring's physics it runs on instead of `easing`
+    /// (`transitionTimingFunction: "spring(stiffness, damping, mass)"`),
+    /// released at rest: it times itself, lasting until it settles
+    /// ([`Spring::settle_ms`](crate::element::Spring::settle_ms)), so
+    /// `duration` is not used, nor the spring's `velocity` and
+    /// `frame_rate`. A change that arrives mid-way starts again from what
+    /// is on screen, at rest.
+    pub spring: Option<crate::element::Spring>,
+}
+
+impl Default for Transition {
+    /// CSS's initial values: every property, no time, `ease`.
+    fn default() -> Self {
+        Self {
+            properties: TransitionProps(TransitionProps::ALL),
+            duration: 0.0,
+            delay: 0.0,
+            easing: Self::EASE,
+            spring: None,
+        }
+    }
 }
 
 impl Transition {
     /// CSS's default curve (`ease`).
     pub const EASE: [f32; 4] = [0.25, 0.1, 0.25, 1.0];
+
+    /// How long it runs once started, in milliseconds: the duration, or
+    /// the time its spring takes to settle (its delay not included).
+    pub fn run_ms(&self) -> f32 {
+        match self.spring {
+            Some(spring) => spring.settle_ms(),
+            None => self.duration.max(0.0),
+        }
+    }
 }
 
 /// A built-in keyframe animation (Tailwind's `animate-*`).

@@ -138,7 +138,7 @@ jobs:
       # 构建线上应用所用的 nsh，例如 v0.5.0（仓库变量）；为空时用最新版
       NSH_VERSION: ${{ vars.NSH_VERSION }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install nsh
         run: |
@@ -201,8 +201,8 @@ export async function checkForUpdates() {
       await downloadPackage();
       // iOS 和 Android：无需提示，包在下次冷启动时运行。
       packageReady.set(canRestart);
-      return;
     }
+    // `shell`: the code is current, only the installed app is behind; offer it quietly.
     appUpdate.set(await checkForUpdate());
   } catch (error) {
     console.warn("update check failed:", error); // 下次检查时再试
@@ -327,7 +327,9 @@ const shell = shellInfo(); // { version, build, nshVersion, packages }：已安�
 
 ### 下次启动时包没有运行
 
-启动器会在终端或平台日志中记录原因（Apple 平台上是“控制台”或统一日志，Android 上是 `adb logcat`）：
+启动器会在终端或平台日志中记录原因：macOS 和 iOS 上是统一日志，以应用的 id 为子系统（“控制台”应用，或
+`log stream --predicate 'subsystem == "com.example.notes"'`；参见[打包应用的日志](./dev-server-and-debugging.md#a-packaged-apps-logs)），
+Android 上是 `adb logcat`。下面前三行是警告，每个平台都会记录；最后一行是 info 日志，在 Android 上记录：
 
 ```text
 updates: downloaded package refused: …

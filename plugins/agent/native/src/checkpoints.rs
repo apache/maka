@@ -42,10 +42,19 @@ pub struct Capture {
     pub workspace: Option<maka_event_log::checkpoints::WorkspaceCapture>,
 }
 
+struct CreateRequestFile;
+impl maka_event_log::connection::Query for CreateRequestFile {
+    type Output = std::fs::File;
+
+    fn execute(self, _: &rusqlite::Connection) -> Result<Self::Output, StoreError> {
+        Ok(maka_event_log::root_store::create_request_file()?)
+    }
+}
+
 impl CheckpointPublisher {
     /// Called by trusted native assembly, never with model-authored scope.
     pub fn new(store: Arc<RootStore>, scope: Scope) -> Self {
-        let prefix = maka_host_runtime::storage::instance_prefix(
+        let prefix = maka_agent_authority::session_namespace(
             &scope.state_domain,
             scope.deployment,
             &scope.namespace,
@@ -66,30 +75,25 @@ impl CheckpointPublisher {
             .await
     }
 
+    pub(crate) async fn request_file(&self, session: &str) -> Result<std::fs::File, StoreError> {
+        self.repository(session).await?;
+        self.store.data_writer()?.query(CreateRequestFile).await
+    }
+
     pub(crate) fn request(
         &self,
         capture: &Capture,
         operation: &RecoveryRef,
+        history: &maka_event_log::checkpoints::HistorySnapshot,
     ) -> Result<PublicationRequest, StoreError> {
-        operation
-            .validate()
-            .map_err(|error| StoreError::InvalidTransition(error.to_string()))?;
-        if operation.source.state_domain != self.scope.state_domain
-            || operation.source.deployment != self.scope.deployment
-            || operation.namespace != self.scope.namespace
-            || operation.export != maka_agent_api::EXPORT
-            || operation.method != "publishCheckpoint"
-        {
-            return Err(StoreError::InvalidTransition(
-                "checkpoint operation belongs to another authority".into(),
-            ));
-        }
+        self.validate_operation(capture, operation)?;
         use sha2::Digest;
         Ok(PublicationRequest {
             operation: operation.operation,
             fingerprint: hex::encode(sha2::Sha256::digest(serde_json::to_vec(operation)?)),
             expected_revision: capture.expected_checkpoint_revision,
             confirmed_subtree_digest: capture.confirmed_subtree_digest.clone(),
+            history: history.clone(),
             workspace: capture.workspace.clone(),
         })
     }
@@ -102,7 +106,7 @@ impl CheckpointPublisher {
         if !crate::owner::owns_session(&self.prefix, &capture.session_id) {
             return Err(StoreError::SessionNotFound);
         }
-        self.request(capture, operation).map(|_| ())
+        self.validate_operation(capture, operation)
     }
 
     pub(crate) fn load_request(
@@ -132,28 +136,65 @@ impl CheckpointPublisher {
         })
     }
 
+    fn validate_operation(
+        &self,
+        capture: &Capture,
+        operation: &RecoveryRef,
+    ) -> Result<(), StoreError> {
+        operation
+            .validate()
+            .map_err(|error| StoreError::InvalidTransition(error.to_string()))?;
+        if operation.source.state_domain != self.scope.state_domain
+            || operation.source.deployment != self.scope.deployment
+            || operation.namespace != self.scope.namespace
+            || operation.export != maka_agent_api::EXPORT
+            || operation.method != "publishCheckpoint"
+            || !crate::owner::owns_session(&self.prefix, &capture.session_id)
+        {
+            return Err(StoreError::InvalidTransition(
+                "checkpoint operation belongs to another authority".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn publish(
         &self,
         capture: Capture,
         operation: &RecoveryRef,
+        material: maka_agent_state::session_history::snapshot::ExportedSnapshot,
+        fence: Option<&maka_event_log::root_store::WorkspaceFence>,
     ) -> Result<Publication, StoreError> {
-        let request = self.request(&capture, operation)?;
-        self.repository(&capture.session_id)
+        self.validate_request(&capture, operation)?;
+        let request = self.request(&capture, operation, &material.history)?;
+        let repository = self.repository(&capture.session_id).await?;
+        let request = repository
+            .original_request(request.clone())
             .await?
-            .publish(request)
-            .await
+            .unwrap_or(request);
+        match fence {
+            Some(fence) => {
+                repository
+                    .publish_fenced(request, material.file, fence)
+                    .await
+            }
+            None => repository.publish(request, material.file).await,
+        }
     }
 
     pub async fn receipt(
         &self,
         capture: Capture,
         operation: &RecoveryRef,
+        history: &maka_event_log::checkpoints::HistorySnapshot,
     ) -> Result<Option<Publication>, StoreError> {
-        let request = self.request(&capture, operation)?;
-        self.repository(&capture.session_id)
-            .await?
-            .receipt(request)
-            .await
+        self.validate_request(&capture, operation)?;
+        let request = self.request(&capture, operation, history)?;
+        let repository = self.repository(&capture.session_id).await?;
+        match repository.original_request(request).await? {
+            Some(original) => repository.receipt(original).await,
+            None => Ok(None),
+        }
     }
 
     pub async fn read_head(&self, session: &str) -> Result<Option<Head>, StoreError> {
@@ -169,91 +210,5 @@ impl CheckpointPublisher {
             .await?
             .checkout_exact(revision)
             .await
-    }
-}
-
-#[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-    use maka_plugin_core::{
-        composition::InstanceId,
-        contract::Transport,
-        deployment::DeploymentRef,
-        operation::{RecoveryContract, RecoveryProtocol},
-    };
-    use uuid::Uuid;
-
-    #[tokio::test]
-    async fn trusted_publisher_uses_original_operation_and_enforces_ownership() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = Arc::new(
-            maka_event_log::root::RootOwner::create(
-                &directory.path().join("root"),
-                &maka_event_log::root::RootNamespaces {
-                    ownership: directory.path().join("owners"),
-                    control: directory.path().join("control"),
-                },
-            )
-            .unwrap(),
-        );
-        let store = Arc::new(RootStore::open(root).await.unwrap());
-        let scope = Scope {
-            state_domain: "a".repeat(64),
-            deployment: Uuid::from_u128(1),
-            namespace: InstanceId(vec![Uuid::from_u128(2)]),
-        };
-        let publisher = CheckpointPublisher::new(store.clone(), scope.clone());
-        let id = format!("{}{}", publisher.prefix, "1".repeat(32));
-        store
-            .create_session(&id, "create", &serde_json::json!({}), 1)
-            .await
-            .unwrap();
-        let input = Capture {
-            session_id: id.clone(),
-            expected_checkpoint_revision: None,
-            confirmed_subtree_digest: store.preview_bundle(&id).await.unwrap().subtree_digest,
-            workspace: None,
-        };
-        let operation = RecoveryRef {
-            source: DeploymentRef {
-                state_domain: scope.state_domain,
-                deployment: scope.deployment,
-                revision: 1,
-            },
-            namespace: scope.namespace,
-            export: maka_agent_api::EXPORT.into(),
-            method: "publishCheckpoint".into(),
-            operation: Uuid::from_u128(3),
-            fingerprint: format!("sha256-{}", "b".repeat(64)),
-            contract: RecoveryContract {
-                name: "agent".into(),
-                version: 1,
-                transport: Transport::Local,
-                digest: format!("sha256-{}", "c".repeat(64)),
-            },
-            recovery: RecoveryProtocol::JournalV1,
-        };
-        let value = publisher.publish(input.clone(), &operation).await.unwrap();
-        assert!(matches!(
-            value.state,
-            maka_event_log::checkpoints::PublicationState::Published { .. }
-        ));
-        assert_eq!(
-            publisher.publish(input.clone(), &operation).await.unwrap(),
-            value
-        );
-        assert_eq!(
-            publisher.receipt(input.clone(), &operation).await.unwrap(),
-            Some(value)
-        );
-        let mut foreign = operation.clone();
-        foreign.namespace.0.push(Uuid::from_u128(4));
-        assert!(publisher.publish(input.clone(), &foreign).await.is_err());
-        let mut conflicting = operation;
-        conflicting.fingerprint = format!("sha256-{}", "d".repeat(64));
-        assert!(publisher.publish(input, &conflicting).await.is_err());
-        assert!(publisher.read_head("unowned").await.is_err());
-        drop(publisher);
-        Arc::try_unwrap(store).ok().unwrap().close().await.unwrap();
     }
 }

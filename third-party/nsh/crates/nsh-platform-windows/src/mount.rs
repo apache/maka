@@ -5,8 +5,10 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use nsh_core::{Command, LayoutAnimation, MountItem, NodeId, ROOT_ID, ViewKind};
-use rustc_hash::FxHashMap;
+use nsh_core::{
+    Command, LayoutAnimation, MountItem, NodeId, ROOT_ID, ViewKind, desktop::DesktopCommand,
+};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{surface::Surface, view::NshView};
 
@@ -44,6 +46,8 @@ pub(crate) struct Mounter {
     pub(crate) views: Rc<Views>,
     /// The root view.
     pub(crate) root: NshView,
+    /// Rejected OS-window roots stay detached instead of becoming terminal dialogs.
+    terminal_windows: FxHashSet<NodeId>,
     /// Animates the frame changes, insertions and removals of the rest of
     /// the batch.
     pub(crate) layout_animation: Option<LayoutAnimation>,
@@ -58,6 +62,7 @@ impl Mounter {
         Mounter {
             views,
             root,
+            terminal_windows: FxHashSet::default(),
             layout_animation: None,
             rtl: false,
         }
@@ -78,6 +83,7 @@ impl Mounter {
         // with the views that mounted it.
         root.state_mut().shader = None;
         self.views.insert(ROOT_ID, root);
+        self.terminal_windows.clear();
         self.layout_animation = None;
     }
 
@@ -106,6 +112,8 @@ impl Mounter {
                 | MountItem::Remove { .. }
                 | MountItem::Delete { .. }
                 | MountItem::ViewProps { .. }
+                | MountItem::Frame { .. }
+                | MountItem::ViewStyle { .. }
         ) {
             crate::selectable_view::tree_changed();
         }
@@ -129,6 +137,7 @@ impl Mounter {
                     crate::input::track_states(surface, view, *states);
                 }
             }
+            MountItem::Insert { child, .. } if self.terminal_windows.contains(child) => {}
             MountItem::Insert {
                 parent,
                 child,
@@ -163,6 +172,7 @@ impl Mounter {
                 if let Some(view) = &self.get(*id) {
                     crate::input::removing(surface, view);
                     crate::text_input::removing(surface, view);
+                    crate::input::removed(surface, view);
                     crate::navigation::removing(surface, view);
                     // A removal animation detaches the view when it ends.
                     if !crate::transition::removing(surface, view, self.layout_animation.as_ref()) {
@@ -171,10 +181,12 @@ impl Mounter {
                 }
             }
             MountItem::Delete { id } => {
+                self.terminal_windows.remove(id);
                 crate::file_drop::deleted(surface, *id);
                 if let Some(view) = self.views.remove(*id) {
                     crate::input::removing(surface, &view);
                     crate::text_input::removing(surface, &view);
+                    crate::input::removed(surface, &view);
                     crate::navigation::removing(surface, &view);
                     crate::native::deleted(surface, &view);
                     crate::shader::deleted(surface, &view);
@@ -389,6 +401,7 @@ impl Mounter {
                     crate::navigation::screen_config(surface, view, config);
                 }
             }
+            MountItem::ModalConfig { id, .. } if self.terminal_windows.contains(id) => {}
             MountItem::ModalConfig { id, config } => {
                 if let Some(view) = &self.get(*id) {
                     crate::navigation::modal_config(surface, view, config);
@@ -407,6 +420,30 @@ impl Mounter {
             MountItem::ComponentProps { id, props } => {
                 if let Some(view) = &self.get(*id) {
                     crate::native::component_props(surface, view, props);
+                }
+            }
+            // Pixel terminals use desktop layout, not OS shell integration.
+            MountItem::Command {
+                id,
+                command: Command::Desktop(command),
+            } if surface.terminal_active.get().is_some() => {
+                if *id == ROOT_ID {
+                    match command.as_ref() {
+                        DesktopCommand::SetMenuLabels(labels) => {
+                            surface.chrome.labels.replace((**labels).clone());
+                        }
+                        DesktopCommand::SetQuitOnRequest(quit) => {
+                            crate::chrome::set_quit_on_request(surface, *quit);
+                        }
+                        DesktopCommand::Quit => surface.terminal_quit.set(true),
+                        _ => {}
+                    }
+                }
+                if *id != ROOT_ID && matches!(command.as_ref(), DesktopCommand::OpenWindow(_)) {
+                    self.terminal_windows.insert(*id);
+                    if let Some(view) = self.get(*id) {
+                        crate::navigation::release(surface, &view);
+                    }
                 }
             }
             MountItem::Command { id, command } => self.command(surface, *id, command),
@@ -437,6 +474,9 @@ impl Mounter {
             ViewKind::HeaderItem => return crate::navigation::header_item_removed(surface, view),
             _ => {}
         }
+        // A view that leaves has no keyboard focus to keep (its listeners
+        // hear no more keys).
+        crate::keyboard::forget(surface, view);
         let parent = view.parent_view();
         view.unparent();
         if let Some(parent) = parent
@@ -450,19 +490,29 @@ impl Mounter {
         let view = self.views.get(id);
         let view = view.as_ref();
         match command {
-            Command::Focus => {
-                if let Some(view) = view {
-                    crate::text_input::focus_view(surface, view);
+            // A field edits; a focusable custom view takes the keyboard
+            // focus as Tab gives it.
+            Command::Focus => match view {
+                Some(view) if view.kind() == ViewKind::Input => crate::text_input::focus(view),
+                Some(view) if view.id() != ROOT_ID => {
+                    crate::keyboard::focus_control(surface, view);
                 }
-            }
+                _ => {}
+            },
             Command::Blur => match view {
                 Some(view) if view.kind() == ViewKind::Input => crate::text_input::blur(view),
+                Some(view) if view.id() != ROOT_ID && crate::keyboard::blur(surface, view) => {}
                 _ => crate::text_input::blur_all(surface),
             },
             Command::SetSelection { start, end } => {
                 if let Some(view) = view {
                     crate::text_input::set_selection(view, *start, *end);
                 }
+            }
+            // Not carried out on this platform yet: the app's paste is lost,
+            // so say so.
+            Command::InsertText(_) => {
+                log::warn!("insertText is not supported on Windows yet; nothing inserted")
             }
             Command::ScrollTo { y, .. } if view.is_some_and(|v| v.kind() == ViewKind::Input) => {
                 crate::text_input::scroll_to(view.expect("an input"), *y);
@@ -493,6 +543,7 @@ impl Mounter {
             | Command::InjectJavaScript(_)
             | Command::PostMessage(_)
             | Command::Load(_)
+            | Command::WebViewRequest(_)
             | Command::Seek(_)
             | Command::Native { .. } => {
                 if let Some(view) = view {
@@ -520,7 +571,9 @@ enum Redraw {
 
 /// What `item` may change on screen once applied. Insertions and removals
 /// draw their parents again themselves ([`NshView::insert_before`],
-/// [`NshView::unparent`]); a new view is drawn when it is inserted.
+/// [`NshView::unparent`]), and so does a shader's layer, only when it
+/// changes what is drawn before its next frame ([`crate::shader::set`]); a
+/// new view is drawn when it is inserted.
 fn redrawn(item: &MountItem) -> Redraw {
     match item {
         MountItem::Create { .. }
@@ -538,6 +591,7 @@ fn redrawn(item: &MountItem) -> Redraw {
         | MountItem::ComponentPropSlots { .. }
         | MountItem::TreeOrder(_)
         | MountItem::ProjectStates { .. }
+        | MountItem::Shader { .. }
         | MountItem::NavShader { .. } => Redraw::Nothing,
         MountItem::Frame { id, .. }
         | MountItem::ViewStyle { id, .. }
@@ -551,7 +605,6 @@ fn redrawn(item: &MountItem) -> Redraw {
         | MountItem::ScrollBehavior { id, .. }
         | MountItem::Refreshing { id, .. }
         | MountItem::Canvas { id, .. }
-        | MountItem::Shader { id, .. }
         | MountItem::ShaderInput { id }
         | MountItem::ShaderTransition { id, .. }
         | MountItem::ViewProps { id, .. }

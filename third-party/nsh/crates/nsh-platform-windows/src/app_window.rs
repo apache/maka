@@ -82,8 +82,9 @@ pub(crate) struct AppWindow {
     /// What shows it, see-through where the app draws nothing (transparent
     /// windows, system backdrops, click-through windows).
     composition: Option<Rc<Composition>>,
-    /// The composition of its web views while it has some (each holds
-    /// it): the see-through one, else one over its swap chain.
+    /// The composition of its web views and composed components while it
+    /// has some (each holds it): the see-through one, else one over its
+    /// swap chain.
     web: RefCell<Weak<Composition>>,
     /// The hosted items and the composed items (web views) its last frame
     /// drew.
@@ -103,6 +104,8 @@ pub(crate) struct AppWindow {
     opened: Cell<bool>,
     /// The mode it takes once shown.
     opening_mode: Cell<Option<WindowMode>>,
+    /// `focus()` came while it waited for its first frame.
+    focus_on_show: Cell<bool>,
     /// A policy hid it, reported as `Closed`: it waits for the app to
     /// remove its root.
     closed: Cell<bool>,
@@ -164,8 +167,10 @@ pub(crate) fn hwnd_showing(surface: &Surface, view: &NshView) -> HWND {
     }
 }
 
-/// The composition the web views of the window showing dialog root `id`
-/// are in, and its native window: made with the first of them.
+/// The composition the web views and composed components of the window
+/// showing dialog root `id` are in, and its native window: made with the
+/// first of them.
+#[cfg_attr(not(feature = "webview"), allow(dead_code))]
 pub(crate) fn compose(
     surface: &Surface,
     id: NodeId,
@@ -228,6 +233,12 @@ pub(crate) fn command(
                 release_owner(&window);
                 // SAFETY: a plain call on the window, alive while listed.
                 let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
+            }
+            // It shows with its first frame, and takes the keyboard then.
+            WindowRequest::Focus if !window.opened.get() => {
+                window.closed.set(false);
+                hold_owner(&window);
+                window.focus_on_show.set(true);
             }
             WindowRequest::Show | WindowRequest::Focus => {
                 window.closed.set(false);
@@ -305,11 +316,12 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
         reported: Cell::new(None),
         opened: Cell::new(false),
         opening_mode: Cell::new(None),
+        focus_on_show: Cell::new(false),
         closed: Cell::new(false),
         state: Cell::new(None),
     });
     let weak = Rc::downgrade(&window);
-    view.set_invalidate(Rc::new(move |_| {
+    view.set_invalidate(Rc::new(move |_, _| {
         if let Some(window) = weak.upgrade() {
             invalidate(&window);
         }
@@ -414,6 +426,9 @@ fn first_show(surface: &Rc<Surface>, window: &AppWindow) {
     surface.drain();
     paint(surface, window);
     crate::window::show(window.hwnd);
+    if window.focus_on_show.take() {
+        crate::shell::request(window.hwnd, &WindowRequest::Focus);
+    }
     if let Some(mode) = window.opening_mode.take() {
         crate::window_state::set_mode(window.hwnd, mode);
     }
@@ -478,6 +493,15 @@ pub(crate) fn background(surface: &Surface, id: NodeId) -> Color {
         Color(0x0a0a_0aff)
     } else {
         Color(0xffff_ffff)
+    }
+}
+
+/// Fills the redirection surface of window `hwnd` (root `id`) with its
+/// background, unless it is see-through.
+fn fill_background(surface: &Surface, id: NodeId, hwnd: HWND) {
+    let color = background(surface, id);
+    if color.0 & 0xff != 0 {
+        crate::window::fill(hwnd, color);
     }
 }
 
@@ -619,8 +643,10 @@ pub(crate) fn escape(surface: &Surface, event: &KeyEvent) -> bool {
 /// popup of its own) or nowhere of the system's (a menu of its own).
 fn blur(surface: &Surface, window: &AppWindow) {
     let hwnd = window.hwnd;
-    // SAFETY: plain queries.
-    let (visible, mut active) = unsafe { (IsWindowVisible(hwnd).as_bool(), GetForegroundWindow()) };
+    // SAFETY: a plain query.
+    let visible = unsafe { IsWindowVisible(hwnd).as_bool() };
+    // In a background app: the window that would have the keyboard.
+    let mut active = crate::window::foreground();
     if !visible || window.closed.get() {
         return;
     }
@@ -750,7 +776,12 @@ pub(crate) fn handle(
         }
         WM_ERASEBKGND => Some(Some(LRESULT(1))),
         WM_SIZE => {
+            // The frame's material follows the zoom state.
+            crate::shell::zoom_changed(hwnd);
             if let Some(window) = &window {
+                // What DWM shows past the last frame meanwhile, as the main
+                // window's.
+                fill_background(surface, id, hwnd);
                 resized(surface, window);
                 // Drawn now, so that it never shows stretched or stale
                 // pixels while it is resized.
@@ -793,6 +824,8 @@ pub(crate) fn handle(
             }
             Some(Some(LRESULT(0)))
         }
+        // The window's own handling: its mouse leave tracking.
+        WM_TIMER if wparam.0 == crate::chrome::RECHECK_TIMER => None,
         WM_TIMER => {
             if let Some(window) = &window {
                 match wparam.0 {
@@ -857,6 +890,9 @@ pub(crate) fn close_all(surface: &Surface) {
 
 fn destroy(surface: &Surface, window: &AppWindow) {
     release_owner(window);
+    // Its views keep their trees, but the window that showed them is gone:
+    // no view of it holds the keyboard focus any more.
+    crate::keyboard::forget_window(surface, window.id);
     window.view.clear_invalidate();
     // What it hosts does not go with its native window: web views close,
     // components' windows go back to the main window, hidden.

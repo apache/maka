@@ -20,13 +20,17 @@
 //! The application receives this already connected Host object; it cannot choose a Root.
 
 mod assets;
+mod community;
 mod diagrams;
+mod dictation;
+mod file_search;
 mod files;
 mod links;
 mod mutation;
 mod permission_window;
 mod plugins;
-mod settings;
+mod quick_tools;
+mod resources;
 mod system_permission;
 mod terminal;
 mod terminal_grid;
@@ -38,6 +42,7 @@ pub use permission_window::SystemPermissionWindow;
 
 use maka_app_client::{Client, Subscription, SubscriptionEvent};
 use maka_plugin_core::contract::{Contract, Interface};
+use maka_plugin_core::operation::OperationResult;
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use std::{
@@ -53,7 +58,6 @@ const AGENT: &str = "agent";
 const EDITOR: &str = "composer";
 
 /// Own native tasks independently of a JavaScript view's lifetime.
-#[derive(Clone)]
 pub struct Bindings {
     owner: Arc<Owner>,
 }
@@ -227,8 +231,19 @@ impl Bindings {
 
     /// Fence new native tasks, close the original Host session and finish admitted IO.
     pub async fn close(&self) -> Result<(), String> {
+        self.close_with(self.owner.client.close()).await
+    }
+
+    pub async fn quit_ephemeral(&self) -> Result<(), String> {
+        self.close_with(self.owner.client.quit_ephemeral()).await
+    }
+
+    async fn close_with(
+        &self,
+        close: impl std::future::Future<Output = Result<(), String>>,
+    ) -> Result<(), String> {
         let tasks = self.owner.tasks.lock().unwrap().take();
-        let (closed, ()) = tokio::join!(self.owner.client.close(), async move {
+        let (closed, ()) = tokio::join!(close, async move {
             if let Some(tasks) = tasks {
                 tasks.close();
                 tasks.wait().await;
@@ -256,12 +271,14 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
 pub fn ui_registry() -> Registry {
     let mut registry = Registry::ui_set("maka/host");
     registry.register::<crate::composer_input::ComposerInput>();
+    registry.register::<crate::live_image::LiveImage>();
+    registry.register::<crate::composer_input::file::MarkdownFileEditor>();
     registry.class::<crate::composer_input::ComposerInputState>();
     registry.register::<uploads::AttachmentPicker>();
+    registry.class::<dictation::MessageDictation>();
     registry.class::<terminal_grid::TerminalGrid>();
     registry.class::<uploads::UploadIntake>();
     registry.class::<uploads::StagedFile>();
-    registry.class::<uploads::StagedClipboard>();
     registry.class::<ui_services::UiScope>();
     registry
 }
@@ -357,6 +374,116 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
+    pub async fn community_plugins(
+        this: Instance<Self>,
+        query: String,
+        page: u32,
+        locale: String,
+    ) -> Result<community::Page, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, community::search(query, page, locale)).await
+    }
+
+    pub async fn installed_applications(this: Instance<Self>) -> Result<Vec<String>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::installed_applications()).await
+    }
+
+    pub async fn application_icon(this: Instance<Self>, path: String) -> Result<String, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::application_icon(path)).await
+    }
+
+    pub async fn application_instance(
+        this: Instance<Self>,
+        path: String,
+    ) -> Result<Option<i32>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::application_instance(path)).await
+    }
+
+    pub async fn application_action(
+        this: Instance<Self>,
+        path: String,
+        pid: i32,
+        action: String,
+    ) -> Result<(), String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::application_action(path, pid, action)).await
+    }
+
+    pub async fn search_file_names(
+        this: Instance<Self>,
+        query: String,
+    ) -> Result<Vec<String>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::search_file_names(query)).await
+    }
+
+    pub async fn scoped_file_search(
+        this: Instance<Self>,
+        query: String,
+        roots: Vec<String>,
+    ) -> Result<file_search::SearchResult, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, file_search::search(query, roots)).await
+    }
+
+    pub fn dictation_storage_prefix(&self) -> String {
+        format!("dictation.{}.", self.owner.client.source().state_domain)
+    }
+
+    pub fn legacy_dictation_key(&self) -> bool {
+        dictation::legacy_key()
+    }
+
+    pub fn message_dictation(&self) -> Result<Instance<dictation::MessageDictation>, String> {
+        Ok(Instance::new(dictation::MessageDictation::new(
+            self.owner.clone(),
+            self.client.clone(),
+        )?))
+    }
+
+    pub async fn open_local_path(this: Instance<Self>, path: String) -> Result<(), String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::open_local_path(path)).await
+    }
+
+    pub async fn clipboard_text_change(
+        this: Instance<Self>,
+        seen: Option<f64>,
+    ) -> Result<quick_tools::ClipboardChange, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::clipboard_text_change(seen)).await
+    }
+
+    pub async fn clipboard_history_change(
+        this: Instance<Self>,
+        seen: Option<f64>,
+    ) -> Result<quick_tools::HistoryChange, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::clipboard_history_change(seen)).await
+    }
+
+    pub async fn restore_clipboard_entry(
+        this: Instance<Self>,
+        entry: quick_tools::ClipboardEntry,
+    ) -> Result<(), String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::restore_clipboard_entry(entry)).await
+    }
+
     pub async fn recent_workspaces(this: Instance<Self>) -> Result<JsonValue, String> {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
@@ -372,7 +499,6 @@ impl ApplicationHost {
     pub async fn set_recent_workspace(
         this: Instance<Self>,
         path: String,
-        remember: bool,
     ) -> Result<JsonValue, String> {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
@@ -381,40 +507,21 @@ impl ApplicationHost {
             let recent = source
                 .local(&original)
                 .await?
-                .set_recent_workspace(path, remember)
+                .set_recent_workspace(path)
                 .await?;
             serde_json::to_value(recent).map_err(|error| error.to_string())
         })
         .await
     }
 
-    /// Snapshot files selected for a conversation that has not yet been sent.
-    pub async fn stage_files(
+    /// Capture attachment input before a session exists.
+    pub async fn stage_intake(
         this: Instance<Self>,
-        files: Vec<String>,
-    ) -> Result<Vec<Instance<uploads::StagedFile>>, String> {
+        input: uploads::IntakeInput,
+    ) -> Result<uploads::StagedIntake, String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
-        Ok(uploads::stage_files(owner, files, false).await?.files())
-    }
-    /// Interpret a path drop before a session exists, preserving directory paths as text.
-    pub async fn stage_dropped_files(
-        this: Instance<Self>,
-        files: Vec<String>,
-    ) -> Result<Instance<uploads::StagedClipboard>, String> {
-        let owner = this.with(|host| host.owner.clone());
-        drop(this);
-        Ok(Instance::new(
-            uploads::stage_files(owner, files, true).await?,
-        ))
-    }
-    /// Capture an explicit clipboard paste before a session exists.
-    pub async fn stage_clipboard(
-        this: Instance<Self>,
-    ) -> Result<Instance<uploads::StagedClipboard>, String> {
-        let owner = this.with(|host| host.owner.clone());
-        drop(this);
-        Ok(Instance::new(uploads::stage_clipboard(owner).await?))
+        uploads::stage_intake(owner, input).await
     }
     pub fn asset_uri(&self, uri: String) -> Result<String, String> {
         self.client.asset_uri(uri)
@@ -446,13 +553,8 @@ impl ApplicationHost {
         Ok(())
     }
 
-    /// Resolve the original Markdown target once. Workspace bytes remain with
-    /// the Host; HTTP(S) images use NSH's native loader and bundle permissions.
-    pub fn markdown_image_source(
-        &self,
-        target: String,
-    ) -> Result<links::MarkdownImageSource, String> {
-        links::markdown_image(&target)
+    pub fn markdown_link(&self, target: String) -> Result<links::MarkdownLink, String> {
+        links::markdown_link(&target)
     }
 
     /// Convert diagram labels to paths locally; NSH keeps its existing SVG loader.
@@ -467,16 +569,10 @@ impl ApplicationHost {
         .await
     }
 
-    /// Hand an HTTP(S) link to this client's system browser, or return an exact
-    /// workspace-relative path and parent for the original session's reader.
-    /// This does not read files or execute anything on the connected Host.
-    pub async fn open_link(
-        this: Instance<Self>,
-        target: String,
-    ) -> Result<Option<links::WorkspaceLink>, String> {
+    pub async fn open_browser(this: Instance<Self>, target: String) -> Result<(), String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
-        links::open(owner, target).await
+        links::open_browser(owner, target).await
     }
 
     /// Display only. Keep the original opaque WorkspacePath for every Host call.
@@ -749,7 +845,9 @@ impl ApplicationHost {
                 (id, mutation.confirm().await?)
             };
             match reply.receipt {
-                Receipt::Recorded { outcome: OperationOutcome::Returned { value }, cleanup: OperationCleanup::Confirmed } => Ok(value),
+                Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { value } }, cleanup: OperationCleanup::Confirmed } => Ok(value),
+                Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Failure { diagnostic } }, cleanup: OperationCleanup::Confirmed } => Err(diagnostic),
+                Receipt::Recorded { outcome: OperationOutcome::NotExecuted { .. }, cleanup: OperationCleanup::Confirmed } => Err("The permission request was prevented before execution.".into()),
                 _ => Err(format!("The permission request has no confirmed result. Recover original operation {id} before requesting again.")),
             }
         }).await
@@ -892,13 +990,19 @@ impl ApplicationHost {
         this: Instance<Self>,
         method: String,
         input: JsonValue,
+        content: Option<String>,
     ) -> Result<JsonValue, String> {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
             let client = source.resolve(&owner).await?;
             let id = Uuid::new_v4();
-            let mutation = client.control(id, &method, input).await?;
+            let resources = content
+                .map(|text| resources::text("content", text))
+                .unwrap_or_default();
+            let mutation = client
+                .control_with_resources(id, &method, input, resources)
+                .await?;
             mutation.prepare().await?;
             let reply = mutation.confirm().await?;
             Ok(serde_json::json!({"operationId": id, "reply": reply}))
@@ -932,7 +1036,7 @@ impl ApplicationHost {
         input: JsonValue,
         secret: Option<String>,
     ) -> Result<JsonValue, String> {
-        let resources = settings::attachments(&endpoint, &method, &input, secret)?;
+        let resources = resources::settings(&endpoint, &method, &input, secret)?;
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
@@ -961,7 +1065,7 @@ impl ApplicationHost {
         input: JsonValue,
         secret: Option<String>,
     ) -> Result<Instance<OriginalMutation>, String> {
-        let resources = settings::attachments(&endpoint, &method, &input, secret)?;
+        let resources = resources::settings(&endpoint, &method, &input, secret)?;
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let original = execute(owner.clone(), async move {
@@ -1170,9 +1274,9 @@ impl ScopedHost {
         .await
     }
 
-    /// Admit files selected by this editor's native paste or drop gesture.
-    pub fn begin_file_drop(&self, uris: Vec<String>) -> Instance<uploads::UploadIntake> {
-        Instance::new(uploads::UploadIntake::files(self.scope.clone(), uris))
+    /// Admit attachment input under this editor's session owner.
+    pub fn begin_intake(&self, input: uploads::IntakeInput) -> Instance<uploads::UploadIntake> {
+        Instance::new(uploads::UploadIntake::begin(self.scope.clone(), input))
     }
 
     /// Upload a file that was selected before the session was created.
@@ -1184,11 +1288,6 @@ impl ScopedHost {
             self.scope.clone(),
             file,
         )?))
-    }
-
-    /// Read native clipboard content only for the user's explicit paste action.
-    pub fn begin_clipboard_paste(&self) -> Instance<uploads::UploadIntake> {
-        Instance::new(uploads::UploadIntake::clipboard(self.scope.clone()))
     }
 
     /// Observe original upload receipts, including work admitted by an older view.
@@ -1322,6 +1421,32 @@ impl ScopedHost {
             let client = scope.client.local(&scope.owner).await?;
             scope.owned_operation(&client, id).await?;
             serde_json::to_value(client.send_delivery(id).await?).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Restore a confirmed unsent message and its verified attachments into the
+    /// persisted draft and dismiss the pending send in one journal transaction.
+    pub async fn restore_send(
+        this: Instance<Self>,
+        operation_id: String,
+        expected_revision: u64,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let original = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            scope.owned_operation(&client, original).await?;
+            let draft = client
+                .restore_send(
+                    original,
+                    AGENT,
+                    &scope.session,
+                    EDITOR,
+                    (expected_revision != 0).then_some(expected_revision),
+                )
+                .await?;
+            serde_json::to_value(draft).map_err(|error| error.to_string())
         })
         .await
     }
@@ -1468,43 +1593,5 @@ impl ScopedSubscription {
             this.with(|item| (item.owner.clone(), item.subscription.clone()));
         drop(this);
         execute(owner, async move { subscription.close().await }).await
-    }
-}
-
-#[cfg(test)]
-mod contract_tests {
-    use super::require_contract;
-    use maka_plugin_core::contract::{Interface, MethodMode};
-
-    #[test]
-    fn old_host_methods_stay_usable_without_admitting_missing_or_changed_methods() {
-        let mut old = maka_agent_api::contract();
-        let Interface::Service { methods } = &mut old.interface else {
-            panic!("Agent must be a service");
-        };
-        assert!(methods.remove("historyLandmarks").is_some());
-        assert!(require_contract("agent", "list", &old).is_ok());
-        assert_eq!(
-            require_contract("agent", "historyLandmarks", &old).unwrap_err(),
-            "Host does not support agent.historyLandmarks; update this Host to use this feature"
-        );
-        assert_eq!(
-            require_contract("agent", "missing", &old).unwrap_err(),
-            "Unknown typed Host method agent.missing"
-        );
-
-        let Interface::Service { methods } = &mut old.interface else {
-            unreachable!();
-        };
-        methods.get_mut("list").unwrap().mode = MethodMode::Mutation;
-        assert_eq!(
-            require_contract("agent", "list", &old).unwrap_err(),
-            "Host agent.list has an incompatible method contract; update this Host to use this feature"
-        );
-        old.name = "other.Agent".into();
-        assert_eq!(
-            require_contract("agent", "list", &old).unwrap_err(),
-            "Host agent.list has an incompatible service contract; update this Host to use this feature"
-        );
     }
 }

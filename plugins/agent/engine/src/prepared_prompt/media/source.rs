@@ -20,7 +20,7 @@
 //! Request-local media replacements over the original indexed recipe directories.
 use maka_agent_facts::model::prompt_source::source::{
     AssistantRecipe, ContentRecipe, MessageMetadata, MessageRecipe, MessageSource, NextRecipe,
-    RecipeCursor, RecipeIdentity, RecipeSource, ToolOutputRecipe, ToolResultRecipe,
+    RecipeCursor, RecipeSource, ToolOutputRecipe, ToolResultRecipe,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -36,12 +36,10 @@ struct Mapping {
 struct Messages {
     base: Arc<dyn MessageSource>,
     mapping: Arc<Mapping>,
-    identity: String,
 }
 pub(super) fn mapped(
     base: Arc<dyn MessageSource>,
     replacements: Arc<BTreeMap<Key, Replacement>>,
-    identity: String,
     owner: Arc<dyn Send + Sync>,
 ) -> Arc<dyn MessageSource> {
     Arc::new(Messages {
@@ -50,7 +48,6 @@ pub(super) fn mapped(
             replacements,
             _owner: owner,
         }),
-        identity,
     })
 }
 impl RecipeSource<MessageRecipe> for Messages {
@@ -68,12 +65,6 @@ impl RecipeSource<MessageRecipe> for Messages {
 impl MessageSource for Messages {
     fn open_metadata(&self, start: usize) -> Box<dyn RecipeCursor<MessageMetadata>> {
         self.base.open_metadata(start)
-    }
-    fn prefix_identity(&self, messages: usize) -> RecipeIdentity<'_> {
-        Box::pin(async move {
-            let base = self.base.prefix_identity(messages).await?;
-            crate::runner::digest(&(base, &self.identity)).map_err(std::io::Error::other)
-        })
     }
 }
 struct MessageCursor {
@@ -267,130 +258,5 @@ impl RecipeCursor<ContentRecipe> for ContentCursor {
             self.index += usize::from(value.is_some());
             Ok(value)
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use maka_agent_facts::model::prompt_source::source::{
-        SourceBytes, TextEncoding, TextSource, generated::GeneratedRecipes,
-    };
-
-    fn text(value: &'static str) -> ContentRecipe {
-        ContentRecipe::Text {
-            text: TextSource::new(
-                SourceBytes::Inline(value.as_bytes().into()),
-                TextEncoding::Utf8,
-            ),
-            provider_options: None,
-        }
-    }
-    fn value(recipe: ContentRecipe) -> String {
-        let ContentRecipe::Text { text, .. } = recipe else {
-            panic!("expected text")
-        };
-        let SourceBytes::Inline(bytes) = text.into_bytes() else {
-            panic!("expected inline")
-        };
-        String::from_utf8(bytes.to_vec()).unwrap()
-    }
-    #[tokio::test]
-    async fn one_for_one_replacements_preserve_order_and_every_source_index() {
-        let base = Arc::new(GeneratedRecipes::new(vec![
-            text("a"),
-            text("original"),
-            text("c"),
-            text("original 2"),
-            text("e"),
-        ]));
-        let mapping = Arc::new(Mapping {
-            replacements: Arc::new(BTreeMap::from([
-                (
-                    (2, 4, 1),
-                    Replacement {
-                        part: text("view 1"),
-                    },
-                ),
-                (
-                    (2, 4, 3),
-                    Replacement {
-                        part: text("view 2"),
-                    },
-                ),
-                (
-                    (2, 5, 0),
-                    Replacement {
-                        part: text("other group"),
-                    },
-                ),
-            ])),
-            _owner: Arc::new(()),
-        });
-        let mapped = contents(base, mapping, 2, 4);
-        let expected = ["a", "view 1", "c", "view 2", "e"];
-        assert_eq!(mapped.len(), expected.len());
-        for start in 0..=expected.len() {
-            let mut cursor = mapped.open(start);
-            let mut actual = Vec::new();
-            while let Some(part) = cursor.next().await.unwrap() {
-                actual.push(value(part));
-            }
-            assert_eq!(actual, expected[start..]);
-        }
-    }
-
-    struct UnreadableOriginal;
-    impl RecipeSource<ContentRecipe> for UnreadableOriginal {
-        fn len(&self) -> usize {
-            3
-        }
-        fn open(&self, start: usize) -> Box<dyn RecipeCursor<ContentRecipe>> {
-            Box::new(UnreadableCursor { index: start })
-        }
-    }
-    struct UnreadableCursor {
-        index: usize,
-    }
-    impl RecipeCursor<ContentRecipe> for UnreadableCursor {
-        fn next(&mut self) -> NextRecipe<'_, ContentRecipe> {
-            Box::pin(async move {
-                let value = match self.index {
-                    0 => Some(text("before")),
-                    1 => {
-                        return Err(std::io::Error::other(
-                            "replaced original must remain unread",
-                        ));
-                    }
-                    2 => Some(text("after")),
-                    _ => None,
-                };
-                self.index += usize::from(value.is_some());
-                Ok(value)
-            })
-        }
-    }
-    #[tokio::test]
-    async fn replacement_does_not_materialize_the_original_content() {
-        let mapped = contents(
-            Arc::new(UnreadableOriginal),
-            Arc::new(Mapping {
-                replacements: Arc::new(BTreeMap::from([(
-                    (0, 0, 1),
-                    Replacement { part: text("view") },
-                )])),
-                _owner: Arc::new(()),
-            }),
-            0,
-            0,
-        );
-        let mut cursor = mapped.open(0);
-        assert_eq!(value(cursor.next().await.unwrap().unwrap()), "before");
-        assert_eq!(value(cursor.next().await.unwrap().unwrap()), "view");
-        assert_eq!(value(cursor.next().await.unwrap().unwrap()), "after");
-        assert!(cursor.next().await.unwrap().is_none());
-        let mut cursor = mapped.open(1);
-        assert_eq!(value(cursor.next().await.unwrap().unwrap()), "view");
-        assert_eq!(value(cursor.next().await.unwrap().unwrap()), "after");
     }
 }

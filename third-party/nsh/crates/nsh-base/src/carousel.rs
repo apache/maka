@@ -42,7 +42,7 @@ use std::{
 
 use nsh_core::{
     AccessibilityState,
-    element::{LayoutCurve, LayoutTransition, OrderWatch, Style, watch_order},
+    element::{LayoutTransition, OrderWatch, Spring, Style, watch_order},
     geometry::Axis,
     prelude::*,
 };
@@ -65,16 +65,12 @@ const RECENTER_MS: u64 = 600;
 const STILL_SHIFT: f32 = 1.0e6;
 const STILL_PERIOD: f32 = 1.0e7;
 
-/// How long the pagination indicator takes to travel to another item, in
-/// milliseconds: as `Tabs`' indicator, the time `gpui-component`'s
-/// `spring_move` (a 280 ms response, a damping ratio of 0.85) takes to come
-/// within a thousandth of its end.
-const INDICATOR_MS: f32 = 362.0;
-
 /// The pagination indicator's travel to another item: `gpui-component`'s
-/// `spring_move`, as `Tabs`' indicator.
-const INDICATOR: LayoutTransition =
-    LayoutTransition::new(LayoutCurve::Spring { damping: 0.85 }, INDICATOR_MS);
+/// `spring_move` (a 280 ms response, a damping ratio of 0.85), as `Tabs`'
+/// indicator.
+fn indicator_motion() -> LayoutTransition {
+    LayoutTransition::spring(Spring::new(280.0).damping_ratio(0.85))
+}
 
 /// How many scrolls replaced before they arrived are remembered: a rest a
 /// platform reported for one is on its way for a frame or two only (see
@@ -1186,7 +1182,7 @@ pub struct CarouselControlProps {
 /// A button that moves to the previous slide, in the [`Carousel`];
 /// disabled on the first unless the carousel loops. Its look and place are
 /// the app's: `class` and `style` (beside the content, or `absolute` over
-/// its edge), `hover:`, `active:`, `focus:` and `disabled:`; its children
+/// its edge), `hover:`, `active:`, `focus-visible:` and `disabled:`; its children
 /// are the icon.
 #[component]
 pub fn CarouselPrevious(props: CarouselControlProps, _cx: Scope<NoEvent>) -> impl IntoElement {
@@ -1310,7 +1306,7 @@ pub fn CarouselPagination(props: CarouselPaginationProps, _cx: Scope<NoEvent>) -
                 .accessibility_elements_hidden(true)
                 .follow(move || current.get())
                 .style_when(move || current.get().is_none(), |s| s.hidden())
-                .follow_transition(move || (!reduce_motion()).then_some(INDICATOR))
+                .follow_transition(move || (!reduce_motion()).then_some(indicator_motion()))
                 .app_class(class)
                 .inline_style(style)
         }))
@@ -1338,7 +1334,7 @@ pub struct CarouselPaginationItemProps {
 /// styles apply, and `group-selected:` classes under `group` in its
 /// `class`). A change of slide updates the two items it concerns only. Its
 /// look is the app's: `class`, `style`, `selectedStyle`, `hover:`,
-/// `active:`, `focus:`; its children are the dot or the thumbnail.
+/// `active:`, `focus-visible:`; its children are the dot or the thumbnail.
 #[component]
 pub fn CarouselPaginationItem(
     props: CarouselPaginationItemProps,

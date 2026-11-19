@@ -4,8 +4,8 @@
 //! answer what the app asks (`open(..., { network })`) and record it
 //! (`app.requests()`), as nsh-js' fetch does for QuickJS. The realm builds
 //! its requests and responses with the browser's own classes
-//! (`testing.js`); only the request's parts cross, and the engine's events
-//! come back to its listener.
+//! (`web/browser/fetch.js`); only the request's parts cross, and the
+//! engine's events come back to its listener.
 use std::cell::{Cell, RefCell};
 
 use nsh_core::{
@@ -21,7 +21,7 @@ pub(super) struct Fetches {
     next: Cell<u32>,
     /// What JS asked since the engine last took it, in order.
     queue: RefCell<Vec<(u32, FetchOp)>>,
-    /// `testing.js`' receiver of the engine's events.
+    /// `fetch.js`' receiver of the engine's events.
     listener: RefCell<Option<Value>>,
 }
 

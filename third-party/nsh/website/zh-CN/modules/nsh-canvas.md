@@ -10,7 +10,7 @@ demo: mod-canvas
 `Canvas` 提供与 HTML Canvas 2D 风格一致的绘图上下文。你的 `draw` 函数**记录**绘图操作，平台随后以屏幕分辨率在原生侧回放（iOS 上是 Core Graphics，Android 上是 `android.graphics.Canvas`）。绘图中的数字和颜色可以是[动画值](./nsh.md#animation)：它们做动画时，平台会自行重绘，无需再次运行 `draw`。
 
 ```ts
-import { Canvas, CanvasGradient, CanvasRenderingContext2D, Path2D } from "nsh";
+import { Canvas, CanvasGradient, CanvasRenderingContext2D, OffscreenCanvas, Path2D } from "nsh";
 ```
 
 教程见[画布](../docs/canvas.md)，属性见 [`<Canvas>`](../elements/canvas.md)。
@@ -236,6 +236,8 @@ drawImage(image: string | ImageAsset, ...args: CanvasNumber[]): void;
 - `drawImage(image, dx, dy, dw, dh)`：缩放到矩形内。
 - `drawImage(image, sx, sy, sw, sh, dx, dy, dw, dh)`：绘制图片的一部分（源区域以图片像素计）。
 
+图片的原始尺寸（单位为点）是它的像素数除以文件名声明的密度，与 `Image` 相同：300 像素宽的 `logo@3x.png` 绘制为 100 点宽，没有 `@2x` / `@3x` 的文件每个像素一个点，在任何屏幕上都一样。只给出源区域时，按源区域的像素除以同一密度绘制；导入的资源按导入时的尺寸绘制。
+
 ## Path2D
 
 ```ts
@@ -257,6 +259,36 @@ cx.fillStyle = "#ef4444";
 cx.fill(heart);
 cx.restore();
 ```
+
+## OffscreenCanvas
+
+```ts
+class OffscreenCanvas {
+  constructor(width: number, height: number);
+  readonly width: number;
+  readonly height: number;
+  getContext(contextId: "2d"): CanvasRenderingContext2D;
+  convertToBlob(options?: { type?: string; scale?: number }): Promise<Blob>;
+}
+```
+
+一块有自己尺寸、不在屏幕上显示的画布，用来生成应用要保存、分享或放进剪贴板的图片：完整尺寸的整张图、图表、分享卡片。用它的 2D 上下文绘制（与 `<Canvas draw>` 拿到的 `CanvasRenderingContext2D` 相同，包括 `measureText`），再调用 `convertToBlob()`：平台以原生方式渲染绘制内容，与同样尺寸的 `<Canvas>` 在屏幕上绘制的一致，得到一个 PNG `Blob`。`scale` 设定每点的像素数（默认为屏幕的倍率）；动画值按初始值 0 绘制。
+
+```ts
+const canvas = new OffscreenCanvas(1200, 800);
+const cx = canvas.getContext("2d");
+cx.fillStyle = "#0f172a";
+cx.font = "600 24px sans-serif";
+cx.fillText("orders → customers", 40, 60);
+const png = await canvas.convertToBlob({ scale: 2 });
+url.set(URL.createObjectURL(png)); // <Image src={url()} />, or its bytes: await png.arrayBuffer()
+```
+
+一块画布可以生成多张图片：在没有设置变换和裁剪时整块清除它（`cx.clearRect(0, 0, canvas.width, canvas.height)`），绘制会重新开始，上下文的状态（样式、字体、当前路径）保持不变，每张图片只渲染清除之后绘制的内容。
+
+图片单边最多 16384 像素、总共最多 6400 万像素，一个应用同时最多渲染 16 张；超出任一限制时 `convertToBlob` 以 `ERR_NSH_QUOTA_EXCEEDED` 拒绝。平台 30 秒内没有完成的渲染以 `ETIMEDOUT` 拒绝。iOS、Android、macOS、Windows、Linux、GPUI 后端和 Web 都渲染离屏画布，画法与各自屏上的画布相同；其他平台上（包括 `nsh test` 的 headless 运行），`convertToBlob` 以 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` 拒绝（`nsh test --target` 在它指定的平台上渲染）。
+
+在 Web 上，图片还要在浏览器的画布上限之内（iOS 和 iPadOS 上的 Safari 总共 16,777,216 像素，即 4096 × 4096）；更大的图片以 `ERR_NSH_QUOTA_EXCEEDED` 拒绝。绘制中的图片来自页面的同源地址或允许 CORS 的服务器；其他图片会被跳过并给出警告，与各平台跳过加载失败的图片一样。
 
 ## 不支持的功能
 

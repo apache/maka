@@ -33,9 +33,7 @@ pub struct LoadOperation {
 pub enum LoadState {
     Preparing,
     Ready {
-        session_ids: Vec<String>,
-        through: u64,
-        transfer_digest: String,
+        history: HistorySnapshot,
         workspace: Option<WorkspaceSnapshot>,
     },
     Unavailable,

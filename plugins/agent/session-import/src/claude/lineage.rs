@@ -108,7 +108,10 @@ impl Index {
         self
     }
     pub fn keep(&self, row: &Row<'_>, line: u64) -> bool {
-        row.uuid.as_ref().is_none_or(|id| {
+        self.keep_id(row.uuid.as_deref(), line)
+    }
+    pub(super) fn keep_id(&self, id: Option<&str>, line: u64) -> bool {
+        id.is_none_or(|id| {
             self.nodes.get(id).is_some_and(|node| node.line == line) && !self.dropped.contains(id)
         })
     }

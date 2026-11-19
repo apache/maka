@@ -21,11 +21,11 @@
 //! create, edit or reactivate them through the namespaced data API.
 
 use crate::{ConfigError, ConfigurationStore, Result, TransactionMode};
-pub use maka_capabilities::authorization::Boundary;
 use maka_capabilities::authorization::Grant;
 use maka_capabilities::authorization::Id;
 use maka_capabilities::authorization::Request;
-use maka_capabilities::storage::Namespace;
+use maka_plugin_core::authorization::Boundary;
+use maka_plugin_core::storage::Namespace;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -89,7 +89,7 @@ impl ConfigurationStore {
                     Approval::Conflict
                 });
             }
-            boundary.validate(&request)
+            maka_capabilities::authorization::validate_boundary(&boundary, &request)
                 .map_err(|error| ConfigError::Invalid(error.to_string()))?;
             let id = Id(Uuid::new_v4());
             let document = Document {
@@ -157,9 +157,7 @@ fn decode((id, json, revoked): (String, String, i64)) -> Result<Record> {
         .request
         .validate()
         .map_err(|error| ConfigError::Invalid(error.to_string()))?;
-    document
-        .boundary
-        .validate(&document.request)
+    maka_capabilities::authorization::validate_boundary(&document.boundary, &document.request)
         .map_err(|error| ConfigError::Invalid(error.to_string()))?;
     Ok(Record {
         grant: Grant {

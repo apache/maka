@@ -122,6 +122,18 @@ pub fn translations_json(translations: &Translations) -> String {
 }
 
 #[cfg(feature = "build")]
+/// The locales an app ships: those `locales` lists (`nsh.json`), or, where
+/// it is `None`, the translations' languages. A package declares them to
+/// the system (`CFBundleLocalizations`), so system UI (menus, the edit
+/// menu) shows in the language the app does.
+pub fn app_locales(translations: &Translations, locales: Option<&[String]>) -> Vec<String> {
+    match locales {
+        Some(locales) => locales.to_vec(),
+        None => translations.keys().cloned().collect(),
+    }
+}
+
+#[cfg(feature = "build")]
 /// What the bundle hands the runtime (`nsh:rt`'s `i18n`):
 /// `{"translations": {...}, "languages": {...}}`, the data of the languages
 /// `locales` lists (`nsh.json`), or, where it is `None`, of the
@@ -132,10 +144,7 @@ pub fn bundle_json(
     locales: Option<&[String]>,
     mut warn: impl FnMut(String),
 ) -> Option<String> {
-    let wanted: Vec<String> = match locales {
-        Some(locales) => locales.to_vec(),
-        None => translations.keys().cloned().collect(),
-    };
+    let wanted = app_locales(translations, locales);
     let mut languages = serde_json::Map::new();
     for locale in &wanted {
         let language = language_of(locale);

@@ -3,6 +3,8 @@
 //! ([`decode_animation_op`], as `nsh/animated` encodes them) and JSON
 //! ([`to_json`]).
 
+use std::cell::Cell;
+
 use nsh_core::{
     Color, Command, EventKind, LayoutAnimation, NodeId, Op, Prop, Style, StyleDecl, StyleError,
     StylePatch, StyleValue, TransformKind, TransformProperty,
@@ -14,7 +16,24 @@ use nsh_core::{
     },
 };
 use rquickjs::{Array, Ctx, Exception, Object, Type, Value};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
+
+use crate::dom::{MAX_ARRAY_ITEMS, MAX_DEPTH};
+
+/// The length of the app's array `array`, read once and taken from `budget`
+/// ([`crate::dom::take_len`]: more than is left throws a `RangeError`).
+/// Arrays are never measured with `Array::len`: it asserts an integer
+/// length, and the length of an array of 2^31 items or more is a float, so
+/// the panic, in a call from QuickJS that cannot unwind, aborts the process.
+fn take_len(array: &Array<'_>, budget: &mut u32) -> rquickjs::Result<u32> {
+    let cx = array.ctx().as_raw().as_ptr();
+    crate::dom::take_len(cx, array.as_value().as_raw(), budget).ok_or(rquickjs::Error::Exception)
+}
+
+/// [`take_len`] without a budget: any length an array can have.
+fn length(array: &Array<'_>) -> rquickjs::Result<u32> {
+    take_len(array, &mut { u32::MAX })
+}
 
 /// Reports each distinct problem once, so a bad style in a list does not
 /// flood the log.
@@ -61,6 +80,9 @@ struct Reader<'a, 'js> {
     cx: &'a Ctx<'js>,
     buf: &'a Array<'js>,
     pos: usize,
+    /// The items left to read of the app's arrays in this operation
+    /// (ranges, a composite's children, all of them together).
+    budget: u32,
 }
 
 impl<'js> Reader<'_, 'js> {
@@ -95,7 +117,10 @@ impl<'js> Reader<'_, 'js> {
                 "nsh/animated: expected an array",
             ));
         };
-        items.iter::<f64>().map(|v| v.map(|v| v as f32)).collect()
+        let len = take_len(items, &mut self.budget)?;
+        (0..len as usize)
+            .map(|i| items.get::<f64>(i).map(|v| v as f32))
+            .collect()
     }
 
     /// A math operand: a number or an animated value.
@@ -130,7 +155,12 @@ pub(crate) fn decode_animation_op<'js>(
     cx: &Ctx<'js>,
     buf: &Array<'js>,
 ) -> rquickjs::Result<AnimationOp> {
-    decode_animation(&mut Reader { cx, buf, pos: 0 })
+    decode_animation(&mut Reader {
+        cx,
+        buf,
+        pos: 0,
+        budget: MAX_ARRAY_ITEMS,
+    })
 }
 
 /// The command `name` with argument `arg` sends to a node's view (`None`:
@@ -148,6 +178,7 @@ pub(crate) fn decode_command<'js>(
         "stopLoading" => Command::StopLoading,
         "injectJavaScript" => Command::InjectJavaScript(string(&arg)?),
         "postMessage" => Command::PostMessage(string(&arg)?),
+        "insertText" => Command::InsertText(string(&arg)?),
         "sendInput" => match web_input(&arg) {
             Some(input) => Command::SendInput(input),
             None => return Ok(None),
@@ -207,9 +238,22 @@ pub(crate) fn decode_command<'js>(
                 .and_then(|o| o.get::<_, Option<bool>>("animated").ok().flatten())
                 .unwrap_or(true),
         },
+        "reveal" => Command::Reveal(
+            decode_host(arg.clone(), &mut { MAX_ARRAY_ITEMS }, |input| {
+                <nsh_core::RevealOptions as HostValue>::decode(input, &mut HostCx::default())
+            })?
+            .ok_or_else(|| {
+                    Exception::throw_type(
+                        arg.ctx(),
+                        "reveal: vertical and horizontal must be \"start\", \"center\", \"end\" or \"nearest\"",
+                    )
+                })?,
+        ),
         "layoutAnimation" => Command::LayoutAnimation(
-            <LayoutAnimation as HostValue>::decode(&Js(arg), &mut HostCx::default())
-                .unwrap_or_default(),
+            decode_host(arg, &mut { MAX_ARRAY_ITEMS }, |input| {
+                <LayoutAnimation as HostValue>::decode(input, &mut HostCx::default())
+            })?
+            .unwrap_or_default(),
         ),
         "zoomTo" => {
             let field = |key: &str| {
@@ -325,73 +369,188 @@ fn field_f32(obj: &Object<'_>, key: &str) -> rquickjs::Result<Option<f32>> {
 /// An image source as `<Image>`'s `src` reads it: a string or an imported
 /// image. `None` for anything else, an empty string among them (no image).
 pub(crate) fn image_source(value: Value<'_>) -> Option<nsh_core::ImageSource> {
-    <nsh_core::ImageSource as HostValue>::decode(&Js(value), &mut HostCx::default())
+    decode_host_logged(value, |input| {
+        <nsh_core::ImageSource as HostValue>::decode(input, &mut HostCx::default())
+    })
+}
+
+/// What the core's host decoders read of one value of the app's: the items
+/// of its arrays, lists of lists counted together, from a budget. An array
+/// over what is left reads as empty, and its `RangeError` is taken at once
+/// and kept (`refused`): the decoder goes on reading the value, which may
+/// run the app's getters, and a `catch` in one would take an exception left
+/// pending. The decoder's caller throws it again ([`Reads::checked`]) or
+/// logs it ([`Reads::logged`]).
+struct Reads<'js> {
+    left: Cell<u32>,
+    refused: std::cell::RefCell<Option<Value<'js>>>,
+}
+
+impl<'js> Reads<'js> {
+    fn new() -> Self {
+        Self::within(MAX_ARRAY_ITEMS)
+    }
+
+    /// Reads within `left` items.
+    fn within(left: u32) -> Self {
+        Reads {
+            left: Cell::new(left),
+            refused: std::cell::RefCell::new(None),
+        }
+    }
+
+    /// The length of `array` to read, taken from what is left: 0 once an
+    /// array was over it.
+    fn take(&self, array: &Array<'js>) -> u32 {
+        if self.refused.borrow().is_some() {
+            return 0;
+        }
+        let mut left = self.left.get();
+        match take_len(array, &mut left) {
+            Ok(len) => {
+                self.left.set(left);
+                len
+            }
+            Err(_) => {
+                *self.refused.borrow_mut() = Some(array.ctx().catch());
+                0
+            }
+        }
+    }
+
+    /// The `RangeError` of an array over the budget, thrown again, if one
+    /// was.
+    fn checked(&self) -> rquickjs::Result<()> {
+        match self.refused.borrow_mut().take() {
+            Some(error) => Err(error.ctx().clone().throw(error)),
+            None => Ok(()),
+        }
+    }
+
+    /// For decoders that cannot throw: the `RangeError` of an array over
+    /// the budget, if one was, logged (the array read as empty).
+    fn logged(&self) {
+        if let Some(error) = self.refused.borrow_mut().take() {
+            let message = match error.as_exception() {
+                Some(e) => e.message().unwrap_or_default(),
+                None => format!("{error:?}"),
+            };
+            log::warn!(target: "js", "{message}");
+        }
+    }
+}
+
+/// Decodes `value` with host decoder `decode`, its arrays' items taken from
+/// `budget` ([`Reads`]): the `RangeError` when one was over it.
+fn decode_host<'js, T>(
+    value: Value<'js>,
+    budget: &mut u32,
+    decode: impl FnOnce(&Js<'_, 'js>) -> T,
+) -> rquickjs::Result<T> {
+    let reads = Reads::within(*budget);
+    let decoded = decode(&Js::new(value, &reads));
+    *budget = reads.left.get();
+    reads.checked().map(|()| decoded)
+}
+
+/// [`decode_host`] for callers that cannot throw, with a budget of
+/// [`MAX_ARRAY_ITEMS`]: an array over it reads as empty, and is logged.
+fn decode_host_logged<'js, T>(value: Value<'js>, decode: impl FnOnce(&Js<'_, 'js>) -> T) -> T {
+    let reads = Reads::new();
+    let decoded = decode(&Js::new(value, &reads));
+    reads.logged();
+    decoded
 }
 
 /// A QuickJS value as host props read it.
-struct Js<'js>(Value<'js>);
+struct Js<'r, 'js> {
+    value: Value<'js>,
+    reads: &'r Reads<'js>,
+}
 
-/// A QuickJS array, read by index.
-struct JsList<'js>(Array<'js>);
-
-impl<'js> HostList for JsList<'js> {
-    type Item = Js<'js>;
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    #[inline]
-    fn item(&self, index: usize) -> Option<Js<'js>> {
-        self.0.get::<Value>(index).ok().map(Js)
+impl<'r, 'js> Js<'r, 'js> {
+    fn new(value: Value<'js>, reads: &'r Reads<'js>) -> Self {
+        Js { value, reads }
     }
 }
 
-impl<'js> HostInput for Js<'js> {
+/// A QuickJS array, read by index up to the length it had when taken.
+struct JsList<'r, 'js> {
+    array: Array<'js>,
+    len: u32,
+    reads: &'r Reads<'js>,
+}
+
+impl<'r, 'js> HostList for JsList<'r, 'js> {
+    type Item = Js<'r, 'js>;
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    #[inline]
+    fn item(&self, index: usize) -> Option<Js<'r, 'js>> {
+        if index >= self.len as usize {
+            return None;
+        }
+        self.array
+            .get::<Value>(index)
+            .ok()
+            .map(|value| Js::new(value, self.reads))
+    }
+}
+
+impl<'r, 'js> HostInput for Js<'r, 'js> {
     #[inline]
     fn is_nullish(&self) -> bool {
-        self.0.is_null() || self.0.is_undefined()
+        self.value.is_null() || self.value.is_undefined()
     }
 
     #[inline]
     fn is_object(&self) -> bool {
-        self.0.is_object()
+        self.value.is_object()
     }
 
     #[inline]
     fn as_bool(&self) -> Option<bool> {
-        self.0.as_bool()
+        self.value.as_bool()
     }
 
     #[inline]
     fn as_number(&self) -> Option<f64> {
-        self.0.as_number()
+        self.value.as_number()
     }
 
     #[inline]
     fn as_string(&self) -> Option<String> {
-        self.0.as_string().and_then(|s| s.to_string().ok())
+        self.value.as_string().and_then(|s| s.to_string().ok())
     }
 
     fn field(&self, key: &str) -> Option<Self> {
-        let value: Value = self.0.as_object()?.get(key).ok()?;
-        (!value.is_undefined()).then_some(Js(value))
+        let value: Value = self.value.as_object()?.get(key).ok()?;
+        (!value.is_undefined()).then_some(Js::new(value, self.reads))
     }
 
-    type List = JsList<'js>;
+    type List = JsList<'r, 'js>;
 
     #[inline]
-    fn as_list(&self) -> Option<JsList<'js>> {
-        self.0.as_array().cloned().map(JsList)
+    fn as_list(&self) -> Option<JsList<'r, 'js>> {
+        let array = self.value.as_array()?.clone();
+        let len = self.reads.take(&array);
+        Some(JsList {
+            array,
+            len,
+            reads: self.reads,
+        })
     }
 
     fn entries(&self) -> Vec<(String, Self)> {
-        match self.0.as_object() {
+        match self.value.as_object() {
             Some(o) => o
                 .props::<String, Value>()
                 .filter_map(|e| e.ok())
-                .map(|(k, v)| (k, Js(v)))
+                .map(|(k, v)| (k, Js::new(v, self.reads)))
                 .collect(),
             None => Vec::new(),
         }
@@ -399,11 +558,11 @@ impl<'js> HostInput for Js<'js> {
 
     #[inline]
     fn truthy(&self) -> bool {
-        truthy(&self.0)
+        truthy(&self.value)
     }
 
     fn node(&self) -> Option<NodeId> {
-        crate::dom::node_id(self.0.ctx().as_raw().as_ptr(), self.0.as_raw())
+        crate::dom::node_id(self.value.ctx().as_raw().as_ptr(), self.value.as_raw())
     }
 }
 
@@ -438,17 +597,29 @@ pub(crate) fn decode_prop<'js>(
         }));
     }
     if name == "style" {
-        let mut entries = Vec::new();
-        style_entries(&value, &mut entries)?;
-        let (style, patch) = decode_style(entries, warnings)?;
+        let (style, patch) = style_declarations(&value, warnings)?;
         return Ok(Some(Op::SetStyle { id, style, patch }));
     }
     let mut cx = tag.map_or_else(HostCx::default, HostCx::for_element);
-    let input = Js(value);
-    let decoded = <Prop as HostProps>::decode(name, &input, &mut cx);
+    let reads = Reads::new();
+    let input = Js::new(value, &reads);
+    // `captureKeys` holds keystrokes: `mod` is Command where the platform
+    // follows Apple's conventions, which this runtime knows from its
+    // environment even though it decodes outside the engine's ambient one.
+    let decoded = if name == "captureKeys" {
+        let ctx = input.value.ctx();
+        let raw = ctx.as_raw().as_ptr();
+        // SAFETY: the app's state, for this call into JS.
+        let os = unsafe { &(*crate::state::state(raw)).dom }.os();
+        let apple = nsh_core::keymap::apple_keys(os, crate::env::current(raw).apple_keyboard);
+        Some(nsh_core::js::host::decode_capture_keys(&input, &mut cx, apple).map(Prop::KeyCapture))
+    } else {
+        <Prop as HostProps>::decode(name, &input, &mut cx)
+    };
     for message in cx.warnings {
         warnings.warn(message);
     }
+    reads.checked()?;
     match decoded {
         Some(prop) => Ok(prop.map(|prop| Op::SetProp { id, prop })),
         None => {
@@ -456,7 +627,7 @@ pub(crate) fn decode_prop<'js>(
                 return Ok(Some(Op::Listen {
                     id,
                     event,
-                    enabled: input.0.as_bool().unwrap_or(false),
+                    enabled: input.value.as_bool().unwrap_or(false),
                 }));
             }
             warnings.warn(format!("unsupported prop `{name}`"));
@@ -471,37 +642,100 @@ pub(crate) fn style_patch<'js>(
     value: &Value<'js>,
     warnings: &mut Warnings,
 ) -> rquickjs::Result<StylePatch> {
-    let mut entries = Vec::new();
-    style_entries(value, &mut entries)?;
-    Ok(decode_style(entries, warnings)?.1)
+    Ok(style_declarations(value, warnings)?.1)
+}
+
+/// Style `value` decoded, the items of all its arrays (nested styles,
+/// shadows, transforms, ...) read within one budget of
+/// [`MAX_ARRAY_ITEMS`]: more throws a `RangeError`.
+fn style_declarations<'js>(
+    value: &Value<'js>,
+    warnings: &mut Warnings,
+) -> rquickjs::Result<(Box<Style>, StylePatch)> {
+    let mut budget = MAX_ARRAY_ITEMS;
+    let mut entries = StyleEntries::default();
+    style_entries(value, &mut entries, 0, &mut budget)?;
+    decode_style(entries.list, warnings, &mut budget)
+}
+
+/// A style's properties in the order they were first set, the last value
+/// of each.
+#[derive(Default)]
+struct StyleEntries<'js> {
+    list: Vec<(String, Value<'js>)>,
+    /// Where each key is in `list`, once it holds more keys than a scan of
+    /// it finds quickly: a scan per key would make a style of n keys n²
+    /// comparisons, in a native loop the time budget cannot interrupt.
+    index: Option<FxHashMap<String, usize>>,
+}
+
+impl<'js> StyleEntries<'js> {
+    /// Keys a style is set with at most before it is indexed.
+    const SCANNED: usize = 32;
+
+    fn set(&mut self, key: String, value: Value<'js>) {
+        let at = match &self.index {
+            Some(index) => index.get(&key).copied(),
+            None => self.list.iter().position(|(k, _)| *k == key),
+        };
+        match at {
+            Some(at) => self.list[at].1 = value,
+            None => {
+                if let Some(index) = &mut self.index {
+                    index.insert(key.clone(), self.list.len());
+                }
+                self.list.push((key, value));
+                if self.index.is_none() && self.list.len() > Self::SCANNED {
+                    let index = self
+                        .list
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (k, _))| (k.clone(), i));
+                    self.index = Some(index.collect());
+                }
+            }
+        }
+    }
 }
 
 /// The properties of a style: an object, or (React Native style) an array
 /// of styles, possibly nested, merged left to right; falsy entries are
-/// skipped. A property set by a later style replaces it whole.
+/// skipped. A property set by a later style replaces it whole. The arrays
+/// are read natively, where neither the time budget nor the interpreter's
+/// stack limit applies: their items are taken from `budget`, and styles
+/// nested more than [`MAX_DEPTH`] deep throw (one holding itself would
+/// recurse until the engine thread's stack overflows).
 fn style_entries<'js>(
     value: &Value<'js>,
-    out: &mut Vec<(String, Value<'js>)>,
+    out: &mut StyleEntries<'js>,
+    depth: u32,
+    budget: &mut u32,
 ) -> rquickjs::Result<()> {
     if let Some(items) = value.as_array() {
-        for item in items.iter::<Value>() {
-            style_entries(&item?, out)?;
+        if depth > MAX_DEPTH {
+            return Err(Exception::throw_type(
+                value.ctx(),
+                "nsh: styles nested too deeply",
+            ));
+        }
+        let len = take_len(items, budget)?;
+        for i in 0..len as usize {
+            style_entries(&items.get::<Value>(i)?, out, depth + 1, budget)?;
         }
     } else if let Some(obj) = value.as_object() {
         for prop in obj.props::<String, Value>() {
             let (key, value) = prop?;
-            match out.iter_mut().find(|(k, _)| *k == key) {
-                Some(entry) => entry.1 = value,
-                None => out.push((key, value)),
-            }
+            out.set(key, value);
         }
     }
     Ok(())
 }
 
+/// Style `entries` decoded, the items of their arrays taken from `budget`.
 fn decode_style<'js>(
     entries: Vec<(String, Value<'js>)>,
     warnings: &mut Warnings,
+    budget: &mut u32,
 ) -> rquickjs::Result<(Box<Style>, StylePatch)> {
     let mut style = Box::<Style>::default();
     let mut patch = StylePatch::default();
@@ -515,7 +749,8 @@ fn decode_style<'js>(
             && let Some(layers) = value.as_array()
         {
             // The structured form: the same layers as the string's.
-            match shadow_list(&key, layers) {
+            let len = take_len(layers, budget)?;
+            match shadow_list(&key, layers, len) {
                 Ok(css) => {
                     if let Err(e) = patch.set(&mut style, &key, StyleValue::Str(&css)) {
                         warnings.warn(format!("style `{key}`: {e:?}"));
@@ -530,17 +765,20 @@ fn decode_style<'js>(
         {
             // The list of steps, which CSS's string cannot hold with
             // animated values.
-            decode_transform_list(items, &mut style, &mut patch, warnings)?;
+            let len = take_len(items, budget)?;
+            decode_transform_list(items, len, &mut style, &mut patch, warnings)?;
             continue;
         }
         if let Some((property, axes)) = transform_property(&key) {
             // `[x, y]`, or an animated value: the bridge's forms, which CSS's
             // string cannot hold.
             let steps = match value.as_array() {
-                Some(items) => match transform_axes(&key, items, axes, warnings)? {
-                    Some(steps) => Some(steps),
-                    None => continue,
-                },
+                Some(items) => {
+                    match transform_axes(&key, items, take_len(items, budget)?, axes, warnings)? {
+                        Some(steps) => Some(steps),
+                        None => continue,
+                    }
+                }
                 None => animated_value(&value)
                     .map(|node| vec![(axes[0], axes[0].identity(), Some(node))]),
             };
@@ -560,8 +798,8 @@ fn decode_style<'js>(
         {
             // Arrays of names / coordinates: the string form.
             let mut words = Vec::new();
-            for item in items.iter::<Value>() {
-                let item = item?;
+            for i in 0..take_len(items, budget)? as usize {
+                let item = items.get::<Value>(i)?;
                 if let Some(n) = item.as_number() {
                     words.push(format!("{n}px"));
                 } else if let Some(s) = item.as_string() {
@@ -616,11 +854,11 @@ fn decode_style<'js>(
 /// the CSS the string form takes, so both forms mean the same (a layer
 /// without a color is the text color). A field of the wrong kind drops the
 /// whole value.
-fn shadow_list(key: &str, layers: &rquickjs::Array<'_>) -> Result<String, String> {
+fn shadow_list(key: &str, layers: &rquickjs::Array<'_>, len: u32) -> Result<String, String> {
     let boxed = key == "boxShadow";
     let mut out = Vec::new();
-    for layer in layers.iter::<Value>() {
-        let layer = layer.map_err(|e| e.to_string())?;
+    for i in 0..len as usize {
+        let layer = layers.get::<Value>(i).map_err(|e| e.to_string())?;
         let object = layer
             .as_object()
             .ok_or_else(|| "a layer is an object".to_owned())?;
@@ -699,18 +937,19 @@ fn transform_property(key: &str) -> Option<(TransformProperty, [TransformKind; 2
 fn transform_axes(
     key: &str,
     items: &rquickjs::Array<'_>,
+    len: u32,
     axes: [TransformKind; 2],
     warnings: &mut Warnings,
 ) -> rquickjs::Result<Option<TransformSteps>> {
     let translate = key == "translate";
-    let len = items.len();
+    let len = len as usize;
     if key == "rotate" || !(1..=2).contains(&len) {
         warnings.warn(format!("style `{key}` takes one value, or `[x, y]`"));
         return Ok(None);
     }
     let mut steps = Vec::with_capacity(len);
-    for (i, item) in items.iter::<Value>().enumerate() {
-        let item = item?;
+    for i in 0..len {
+        let item = items.get::<Value>(i)?;
         let kind = match (translate, i, len) {
             (true, 0, _) => TransformKind::TranslateX,
             (true, _, _) => TransformKind::TranslateY,
@@ -758,13 +997,14 @@ type TransformSteps = Vec<(TransformKind, f32, Option<nsh_core::animation::NodeI
 /// whose amounts may be animated values, in `transform`'s place.
 fn decode_transform_list(
     items: &rquickjs::Array<'_>,
+    len: u32,
     style: &mut Style,
     patch: &mut StylePatch,
     warnings: &mut Warnings,
 ) -> rquickjs::Result<()> {
     let mut steps = Vec::new();
-    for item in items.iter::<Object>() {
-        for entry in item?.props::<String, Value>() {
+    for i in 0..len as usize {
+        for entry in items.get::<Object>(i)?.props::<String, Value>() {
             let (key, value) = entry?;
             let Some(kind) = TransformKind::parse(&key) else {
                 warnings.warn(format!("unsupported transform `{key}`"));
@@ -853,14 +1093,17 @@ fn decode_animation(r: &mut Reader<'_, '_>) -> rquickjs::Result<AnimationOp> {
                 output,
                 extrapolate_left,
                 extrapolate_right,
-                easing: nsh_core::js::animation::easing(&Js(easing)).unwrap_or(Easing::Linear),
+                easing: decode_host(easing, &mut r.budget, |input| {
+                    nsh_core::js::animation::easing(input)
+                })?
+                .unwrap_or(Easing::Linear),
             }
         }
         ANIMATION_DIFF_CLAMP => AnimationOp::CreateDiffClamp {
             node,
             input: r.int()? as nsh_core::animation::NodeId,
-            min: r.number()?,
-            max: r.number()?,
+            min: r.operand()?,
+            max: r.operand()?,
             snap: r.value()?.as_bool().unwrap_or(false),
         },
         ANIMATION_START_COMPOSITE => {
@@ -900,7 +1143,7 @@ fn decode_animation(r: &mut Reader<'_, '_>) -> rquickjs::Result<AnimationOp> {
         ANIMATION_START => {
             let animation = r.int()? as nsh_core::animation::AnimationId;
             let config = r.value()?;
-            let driver = decode_driver(r.cx, &config)?;
+            let driver = decode_driver(r.cx, &config, &mut r.budget)?;
             AnimationOp::Start {
                 node,
                 animation,
@@ -928,13 +1171,14 @@ fn decode_animation(r: &mut Reader<'_, '_>) -> rquickjs::Result<AnimationOp> {
     })
 }
 
-fn decode_output(r: &Reader<'_, '_>, outputs: &Value<'_>) -> rquickjs::Result<Output> {
+fn decode_output(r: &mut Reader<'_, '_>, outputs: &Value<'_>) -> rquickjs::Result<Output> {
     let Some(items) = outputs.as_array() else {
         return Err(Exception::throw_type(
             r.cx,
             "interpolate: outputRange must be an array",
         ));
     };
+    let len = take_len(items, &mut r.budget)? as usize;
     let first_is_string = items
         .get::<Value>(0)
         .map(|v| v.is_string())
@@ -945,9 +1189,9 @@ fn decode_output(r: &Reader<'_, '_>, outputs: &Value<'_>) -> rquickjs::Result<Ou
             .is_ok_and(|s| s.ends_with("deg") || s.ends_with("rad"));
     if angles {
         // `"45deg"` / `"0.5rad"`: rotations, in degrees.
-        let mut degrees = Vec::with_capacity(items.len());
-        for item in items.iter::<String>() {
-            let item = item?;
+        let mut degrees = Vec::with_capacity(len);
+        for i in 0..len {
+            let item = items.get::<String>(i)?;
             let value = match (item.strip_suffix("deg"), item.strip_suffix("rad")) {
                 (Some(d), _) => d.trim().parse::<f32>().ok(),
                 (_, Some(r)) => r.trim().parse::<f32>().ok().map(f32::to_degrees),
@@ -960,9 +1204,9 @@ fn decode_output(r: &Reader<'_, '_>, outputs: &Value<'_>) -> rquickjs::Result<Ou
         return Ok(Output::Numbers(degrees));
     }
     if first_is_string {
-        let mut colors = Vec::with_capacity(items.len());
-        for item in items.iter::<String>() {
-            let color = Color::parse(&item?).ok_or_else(|| {
+        let mut colors = Vec::with_capacity(len);
+        for i in 0..len {
+            let color = Color::parse(&items.get::<String>(i)?).ok_or_else(|| {
                 Exception::throw_type(r.cx, "interpolate: invalid color in outputRange")
             })?;
             colors.push(color.0);
@@ -970,9 +1214,8 @@ fn decode_output(r: &Reader<'_, '_>, outputs: &Value<'_>) -> rquickjs::Result<Ou
         Ok(Output::Colors(colors))
     } else {
         Ok(Output::Numbers(
-            items
-                .iter::<f64>()
-                .map(|v| v.map(|v| v as f32))
+            (0..len)
+                .map(|i| items.get::<f64>(i).map(|v| v as f32))
                 .collect::<rquickjs::Result<_>>()?,
         ))
     }
@@ -980,15 +1223,17 @@ fn decode_output(r: &Reader<'_, '_>, outputs: &Value<'_>) -> rquickjs::Result<Ou
 
 /// A driver config (`{ type, to, ... }`), as `Animated` passes them.
 pub(crate) fn driver<'js>(cx: &Ctx<'js>, config: &Value<'js>) -> rquickjs::Result<Driver> {
-    decode_driver(cx, config)
+    decode_driver(cx, config, &mut { MAX_ARRAY_ITEMS })
 }
 
 /// An `Easing` value (`linear` when it is none).
 pub(crate) fn easing(value: Value<'_>) -> Easing {
-    nsh_core::js::animation::easing(&Js(value)).unwrap_or(Easing::Linear)
+    decode_host_logged(value, |input| nsh_core::js::animation::easing(input))
+        .unwrap_or(Easing::Linear)
 }
 
-fn decode_driver(cx: &Ctx<'_>, config: &Value<'_>) -> rquickjs::Result<Driver> {
+/// The items of its arrays (`easing`) are taken from `budget`.
+fn decode_driver(cx: &Ctx<'_>, config: &Value<'_>, budget: &mut u32) -> rquickjs::Result<Driver> {
     let Some(c) = config.as_object() else {
         return Err(Exception::throw_type(
             cx,
@@ -1001,8 +1246,10 @@ fn decode_driver(cx: &Ctx<'_>, config: &Value<'_>) -> rquickjs::Result<Driver> {
         "timing" => Driver::Timing {
             to: num("to")?.unwrap_or(0.0),
             duration_ms: num("duration")?.unwrap_or(300.0),
-            easing: nsh_core::js::animation::easing(&Js(c.get::<_, Value>("easing")?))
-                .unwrap_or(Easing::EaseInOut),
+            easing: decode_host(c.get::<_, Value>("easing")?, budget, |input| {
+                nsh_core::js::animation::easing(input)
+            })?
+            .unwrap_or(Easing::EaseInOut),
             delay_ms: num("delay")?.unwrap_or(0.0),
             frame_rate: num("frameRate")?,
         },
@@ -1017,8 +1264,10 @@ fn decode_driver(cx: &Ctx<'_>, config: &Value<'_>) -> rquickjs::Result<Driver> {
         "decay" => Driver::Decay {
             velocity: num("velocity")?,
             deceleration: num("deceleration")?.unwrap_or(0.998),
-            clamp: match c.get::<_, Option<Vec<f64>>>("clamp")? {
-                Some(bounds) if bounds.len() == 2 => Some((bounds[0] as f32, bounds[1] as f32)),
+            clamp: match c.get::<_, Option<Array>>("clamp")? {
+                Some(bounds) if length(&bounds)? == 2 => {
+                    Some((bounds.get::<f64>(0)? as f32, bounds.get::<f64>(1)? as f32))
+                }
                 Some(_) => {
                     return Err(Exception::throw_type(
                         cx,
@@ -1043,7 +1292,9 @@ fn decode_driver(cx: &Ctx<'_>, config: &Value<'_>) -> rquickjs::Result<Driver> {
 /// by `MotionChannel::ALL` (`None` for those it does not move).
 pub(crate) fn motion_start(value: Value<'_>) -> [Option<f32>; 9] {
     let mut starts = [None; 9];
-    if let Some(spec) = nsh_core::js::animation::motion_spec(&Js(value)) {
+    if let Some(spec) =
+        decode_host_logged(value, |input| nsh_core::js::animation::motion_spec(input))
+    {
         for (channel, start) in spec.start_values() {
             starts[channel.index()] = Some(start);
         }
@@ -1051,9 +1302,28 @@ pub(crate) fn motion_start(value: Value<'_>) -> [Option<f32>; 9] {
     starts
 }
 
+/// The children of composite `o` (array field `key`), decoded. Their count
+/// is taken from the operation's budget: composites share their children
+/// (`sequence(new Array(1000).fill(s))`, nested), so a tree read natively
+/// can hold far more runs than any array has items.
+fn composite_children(
+    r: &mut Reader<'_, '_>,
+    o: &Object<'_>,
+    key: &str,
+    depth: u32,
+) -> rquickjs::Result<Vec<nsh_core::animation::Composite>> {
+    let list: Array = o.get(key)?;
+    let len = take_len(&list, &mut r.budget)?;
+    let mut children = Vec::with_capacity(len as usize);
+    for i in 0..len as usize {
+        children.push(decode_composite(r, &list.get::<Value>(i)?, depth + 1)?);
+    }
+    Ok(children)
+}
+
 /// A composite animation: `{ type, ... }` with `node` on the runs.
 fn decode_composite(
-    r: &Reader<'_, '_>,
+    r: &mut Reader<'_, '_>,
     spec: &Value<'_>,
     depth: u32,
 ) -> rquickjs::Result<nsh_core::animation::Composite> {
@@ -1061,17 +1331,11 @@ fn decode_composite(
     let Some(o) = spec.as_object().filter(|_| depth < 64) else {
         return Err(Exception::throw_type(r.cx, "animation: invalid composite"));
     };
-    let children = |key: &str| -> rquickjs::Result<Vec<Composite>> {
-        let list: rquickjs::Array = o.get(key)?;
-        list.iter::<Value>()
-            .map(|c| decode_composite(r, &c?, depth + 1))
-            .collect()
-    };
     let kind: String = o.get("type")?;
     Ok(match kind.as_str() {
-        "sequence" => Composite::Sequence(children("children")?),
+        "sequence" => Composite::Sequence(composite_children(r, o, "children", depth)?),
         "parallel" => Composite::Parallel {
-            children: children("children")?,
+            children: composite_children(r, o, "children", depth)?,
             stop_together: o.get::<_, Option<bool>>("stopTogether")?.unwrap_or(true),
         },
         "delay" => Composite::Delay(o.get::<_, Option<f64>>("ms")?.unwrap_or(0.0) as f32),
@@ -1088,18 +1352,25 @@ fn decode_composite(
             reset: o.get::<_, Option<bool>>("reset")?.unwrap_or(true),
         },
         // `Animated.keyframes`: the tree is made natively from the config.
-        "keyframes" => nsh_core::js::animation::keyframes_composite(
-            &Js(spec.clone()),
-            o.get::<_, f64>("node")? as nsh_core::animation::NodeId,
-        ),
+        "keyframes" => {
+            let node = o.get::<_, f64>("node")? as nsh_core::animation::NodeId;
+            decode_host(spec.clone(), &mut r.budget, |input| {
+                nsh_core::js::animation::keyframes_composite(input, node)
+            })?
+        }
         // A motion's `play`: its channels' nodes (by `MotionChannel::ALL`) and
         // the motion; `reduced` lands it at its end without moving.
         "motion" => {
-            let nodes: Vec<f64> = o.get("nodes")?;
-            let nodes: [nsh_core::animation::NodeId; 9] =
-                std::array::from_fn(|i| nodes.get(i).copied().unwrap_or(0.0) as _);
-            let motion = nsh_core::js::animation::motion_spec(&Js(o.get("motion")?))
-                .ok_or_else(|| Exception::throw_type(r.cx, "motion: unknown motion"))?;
+            let list: Array = o.get("nodes")?;
+            let mut nodes = [0 as nsh_core::animation::NodeId; 9];
+            let len = take_len(&list, &mut r.budget)? as usize;
+            for (i, node) in nodes.iter_mut().enumerate().take(len) {
+                *node = list.get::<f64>(i)? as _;
+            }
+            let motion = decode_host(o.get("motion")?, &mut r.budget, |input| {
+                nsh_core::js::animation::motion_spec(input)
+            })?
+            .ok_or_else(|| Exception::throw_type(r.cx, "motion: unknown motion"))?;
             motion.composite(
                 &nodes,
                 o.get::<_, Option<bool>>("reduced")?.unwrap_or(false),
@@ -1107,7 +1378,7 @@ fn decode_composite(
         }
         _ => Composite::Run {
             node: o.get::<_, f64>("node")? as nsh_core::animation::NodeId,
-            driver: decode_driver(r.cx, spec)?,
+            driver: decode_driver(r.cx, spec, &mut r.budget)?,
         },
     })
 }
@@ -1162,13 +1433,16 @@ fn json<'js>(
         ),
         Type::Array => {
             let array = value.as_array().expect("array");
-            let mut out = Vec::with_capacity(array.len());
-            for item in array.iter::<Value>() {
-                *entries += 1;
-                if *entries > JSON_ENTRIES {
-                    return Err(too_big(value.ctx()));
-                }
-                out.push(json(&item?, depth + 1, entries)?);
+            // Checked before anything is allocated or read: a sparse array
+            // is as long as it says.
+            let len = length(array)? as usize;
+            if len > JSON_ENTRIES - *entries {
+                return Err(too_big(value.ctx()));
+            }
+            *entries += len;
+            let mut out = Vec::with_capacity(len);
+            for i in 0..len {
+                out.push(json(&array.get::<Value>(i)?, depth + 1, entries)?);
             }
             J::Array(out)
         }
@@ -1215,11 +1489,17 @@ mod decode_bench {
                      25, '#ff0000', 19, null, 21, 0, i, 4, 4); } out",
                 )
                 .unwrap();
+            let reads = super::Reads::new();
+            let len = super::length(&list).unwrap();
             let mut best = std::time::Duration::MAX;
             for _ in 0..200 {
                 let t = std::time::Instant::now();
-                let drawing =
-                    nsh_core::js::canvas::decode(&super::JsList(list.clone()), 0, list.len()).unwrap();
+                let records = super::JsList {
+                    array: list.clone(),
+                    len,
+                    reads: &reads,
+                };
+                let drawing = nsh_core::js::canvas::decode(&records, 0, len as usize).unwrap();
                 std::hint::black_box(drawing);
                 best = best.min(t.elapsed());
             }
@@ -1233,15 +1513,19 @@ mod tests {
     use nsh_core::{
         LayoutCurve, LayoutProperty, LayoutTransition, PropertyValue, StyleKey,
         animation::{Curve, EaseMode},
+        element::Spring,
     };
     use rquickjs::{Context, Runtime};
 
     use super::*;
 
-    fn with_value<R>(source: &str, f: impl FnOnce(Js<'_>) -> R) -> R {
+    fn with_value<R>(source: &str, f: impl FnOnce(Js<'_, '_>) -> R) -> R {
         let rt = Runtime::new().unwrap();
         let cx = Context::full(&rt).unwrap();
-        cx.with(|cx| f(Js(cx.eval(format!("({source})")).unwrap())))
+        cx.with(|cx| {
+            let reads = Reads::new();
+            f(Js::new(cx.eval(format!("({source})")).unwrap(), &reads))
+        })
     }
 
     fn layout(source: &str) -> LayoutAnimation {
@@ -1253,9 +1537,9 @@ mod tests {
     /// The declarations a style applies over class styles.
     fn style(source: &str) -> StylePatch {
         with_value(source, |v| {
-            let mut entries = Vec::new();
-            style_entries(&v.0, &mut entries).unwrap();
-            decode_style(entries, &mut Warnings::default()).unwrap().1
+            style_declarations(&v.value, &mut Warnings::default())
+                .unwrap()
+                .1
         })
     }
 
@@ -1320,7 +1604,7 @@ mod tests {
                     9,
                     Some(nsh_core::Tag::Text),
                     "textSource",
-                    value.0,
+                    value.value,
                     &mut Warnings::default(),
                 )
                 .unwrap()
@@ -1412,6 +1696,97 @@ mod tests {
     }
 
     #[test]
+    fn styles_of_many_keys_merge_as_styles_of_few_do() {
+        // Past `StyleEntries::SCANNED` keys the entries are indexed: a later
+        // style still replaces a key where it was first set, and keys set
+        // after the index is made are found too. (The `x` keys are no style
+        // property: they only add keys.)
+        let unknown: String = (0..40).map(|i| format!("x{i}: 1, ")).collect();
+        assert_eq!(
+            style(&format!(
+                "[{{ {unknown}opacity: 0.2, padding: 1 }}, {{ opacity: 0.5 }}, \
+                 {{ padding: 3, borderWidth: 2 }}, {{ borderWidth: 4 }}]"
+            )),
+            style("{ opacity: 0.5, padding: 3, borderWidth: 4 }")
+        );
+    }
+
+    #[test]
+    fn indexed_style_keys_keep_their_places() {
+        // Keys set before the index was made, and after: each stays where it
+        // was first set and takes its last value.
+        let rt = Runtime::new().unwrap();
+        let cx = Context::full(&rt).unwrap();
+        cx.with(|cx| {
+            let n = StyleEntries::SCANNED + 8;
+            let mut entries = StyleEntries::default();
+            for i in 0..n {
+                entries.set(format!("k{i}"), Value::new_int(cx.clone(), i as i32));
+            }
+            for i in [0, StyleEntries::SCANNED, n - 1] {
+                entries.set(format!("k{i}"), Value::new_int(cx.clone(), -(i as i32)));
+            }
+            entries.set("late".into(), Value::new_int(cx.clone(), 7));
+            entries.set("late".into(), Value::new_int(cx.clone(), 8));
+            let got: Vec<(String, i32)> = entries
+                .list
+                .iter()
+                .map(|(k, v)| (k.clone(), v.as_int().unwrap()))
+                .collect();
+            let mut want: Vec<(String, i32)> = (0..n)
+                .map(|i| {
+                    let replaced = [0, StyleEntries::SCANNED, n - 1].contains(&i);
+                    (
+                        format!("k{i}"),
+                        if replaced { -(i as i32) } else { i as i32 },
+                    )
+                })
+                .collect();
+            want.push(("late".into(), 8));
+            assert!(
+                entries.index.is_some(),
+                "indexed past {}",
+                StyleEntries::SCANNED
+            );
+            assert_eq!(got, want);
+        });
+    }
+
+    #[test]
+    fn a_refused_list_throws_its_error_after_getters_that_catch() {
+        // An array over the budget, then a getter catching an error of its
+        // own: the decoder's caller still throws the array's RangeError.
+        let rt = Runtime::new().unwrap();
+        let cx = Context::full(&rt).unwrap();
+        cx.with(|cx| {
+            let value: Value = cx
+                .eval(
+                    "({ list: new Array(2 ** 32 - 1), get after() { \
+                     try { throw new Error('caught'); } catch (e) {} return 1; } })",
+                )
+                .unwrap();
+            let read = decode_host(value, &mut { MAX_ARRAY_ITEMS }, |input| {
+                let len = input
+                    .field("list")
+                    .and_then(|l| l.as_list())
+                    .map(|l| l.len());
+                (len, input.field("after").and_then(|a| a.as_number()))
+            });
+            assert!(matches!(read, Err(rquickjs::Error::Exception)), "{read:?}");
+            let thrown = cx.catch();
+            let error = thrown.as_exception().expect("an error");
+            assert!(
+                error
+                    .message()
+                    .unwrap_or_default()
+                    .contains("cannot be read"),
+                "{:?}",
+                error.message()
+            );
+        });
+    }
+
+    #[test]
     fn easings_decode_by_name_curve_and_bezier() {
         let easing = |s: &str| with_value(s, |v| nsh_core::js::animation::easing(&v));
         assert_eq!(easing("'easeOut'"), Some(Easing::EaseOut));
@@ -1451,7 +1826,7 @@ mod tests {
         );
         assert_eq!(
             a.update.map(|u| u.curve),
-            Some(LayoutCurve::Spring { damping: 0.7 })
+            Some(LayoutCurve::FittedSpring { damping_ratio: 0.7 })
         );
         assert_eq!(a.delete, None);
         // Damping is held to 0.01..1; without a duration, 300 ms.
@@ -1459,7 +1834,7 @@ mod tests {
         assert_eq!(
             b.update,
             Some(LayoutTransition {
-                curve: LayoutCurve::Spring { damping: 1.0 },
+                curve: LayoutCurve::FittedSpring { damping_ratio: 1.0 },
                 property: LayoutProperty::Opacity,
                 duration_ms: 300.0,
                 delay_ms: 0.0,
@@ -1469,5 +1844,91 @@ mod tests {
         let tables = nsh_core::js::animation::tables();
         let spring = tables["presets"]["spring"].to_string();
         assert_eq!(layout(&spring), LayoutAnimation::SPRING);
+        // A cubic Bézier: its control points, each `x` held to 0..1;
+        // without them (or with too few), it eases in and out.
+        let c = layout("{ update: { type: 'bezier', bezier: [0.2, 0, 1.4, 1.2] } }");
+        assert_eq!(
+            c.update.map(|u| u.curve),
+            Some(LayoutCurve::Bezier([0.2, 0.0, 1.0, 1.2]))
+        );
+        let d = layout("{ update: { type: 'bezier', bezier: [0.2, 0] } }");
+        assert_eq!(d.update.map(|u| u.curve), Some(LayoutCurve::EaseInEaseOut));
+    }
+
+    /// A `spring` phase with `stiffness`, `damping` or `mass` moves on its
+    /// physics and lasts until it settles, whatever its `duration`; the
+    /// members it leaves out are `Animated.spring`'s defaults.
+    #[test]
+    fn layout_springs_decode_by_their_physics() {
+        let a = layout(
+            "{ duration: 200, update: { type: 'spring', stiffness: 620, damping: 36, mass: 1, springDamping: 0.3, delay: 10 } }",
+        );
+        let spring = Spring {
+            stiffness: 620.0,
+            damping: 36.0,
+            ..Spring::default()
+        };
+        assert_eq!(
+            a.update,
+            Some(LayoutTransition {
+                delay_ms: 10.0,
+                ..LayoutTransition::spring(spring)
+            })
+        );
+        // ζ = 36 / (2 √620) ≈ 0.72: it settles in about 380 ms.
+        let settle = a.update.unwrap().run_ms();
+        assert!((350.0..420.0).contains(&settle), "{settle}");
+        let b = layout("{ update: { type: 'spring', stiffness: 300 } }");
+        assert_eq!(
+            b.update.map(|u| u.curve),
+            Some(LayoutCurve::Spring(Spring {
+                stiffness: 300.0,
+                ..Spring::default()
+            }))
+        );
+        // Only a `spring` takes them.
+        let c = layout("{ update: { type: 'linear', stiffness: 300 } }");
+        assert_eq!(c.update.map(|u| u.curve), Some(LayoutCurve::Linear));
+    }
+
+    /// `ViewRef.animateLayout(transition)`: a layout animation sent to the
+    /// node, `transition` its `update`; without one, easing in and out.
+    #[test]
+    fn animate_layout_is_a_layout_animation_of_the_node() {
+        let rt = Runtime::new().unwrap();
+        let cx = Context::full(&rt).unwrap();
+        cx.with(|cx| {
+            let arg = cx
+                .eval("({ update: { type: 'bezier', bezier: [0.3, 0, 0, 1], duration: 200 } })")
+                .unwrap();
+            let Some(Command::LayoutAnimation(a)) = decode_command("layoutAnimation", arg).unwrap()
+            else {
+                panic!("not a layout animation");
+            };
+            assert_eq!(
+                a.update,
+                Some(LayoutTransition {
+                    curve: LayoutCurve::Bezier([0.3, 0.0, 0.0, 1.0]),
+                    property: LayoutProperty::Opacity,
+                    duration_ms: 200.0,
+                    delay_ms: 0.0,
+                })
+            );
+            assert_eq!((a.create, a.delete), (None, None));
+            // A physical spring, as `configureNext`'s phases take it.
+            let arg = cx
+                .eval("({ update: { type: 'spring', stiffness: 620, damping: 36, mass: 1 } })")
+                .unwrap();
+            let Some(Command::LayoutAnimation(b)) = decode_command("layoutAnimation", arg).unwrap()
+            else {
+                panic!("not a layout animation");
+            };
+            let spring = Spring {
+                stiffness: 620.0,
+                damping: 36.0,
+                ..Spring::default()
+            };
+            assert_eq!(b.update, Some(LayoutTransition::spring(spring)));
+        });
     }
 }

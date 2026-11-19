@@ -112,6 +112,10 @@ struct DevUi {
     latest: Option<(u64, u64, Bundle)>,
     status: Option<gtk::Label>,
     error: Option<gtk::Widget>,
+    /// The window waits for the app's options to show: it shows when the
+    /// first app comes, unless they say it starts hidden, or an error does
+    /// ([`app_came`], [`show_error`]).
+    held: bool,
 }
 
 /// Connects `view` to the dev server at `url` (`ws://host:port/ws`).
@@ -127,6 +131,7 @@ pub(crate) fn start(view: &Rc<AppView>, url: String) {
         latest: None,
         status: None,
         error: None,
+        held: true,
     }));
     SESSIONS.with(|s| s.borrow_mut().insert(key, ui.clone()));
     show_status(&ui, &format!("Connecting to {url}…"));
@@ -256,7 +261,9 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             };
             let Some(view) = view else { return };
             hide_error(ui);
-            view.load(App::Rust(root));
+            let app = App::Rust(root);
+            app_came(ui, &view, &app);
+            view.load(app);
         }
         DevEvent::Building => show_status(ui, "Building…"),
         DevEvent::BuildFailed(message) => {
@@ -326,7 +333,9 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             log::info!("loading build {version}");
             hide_error(ui);
             view.set_limits(limits);
-            view.load(App::Js(bundle));
+            let app = App::Js(bundle);
+            app_came(ui, &view, &app);
+            view.load(app);
         }
         DevEvent::Patch {
             session,
@@ -485,15 +494,53 @@ fn hide_status(ui: &RefCell<DevUi>) {
     }
 }
 
+/// `app` came: the window, held until its options came, shows unless they
+/// say it starts hidden (nsh.json `window.defaultVisible: false`), as the
+/// app's package shows it.
+fn app_came(ui: &RefCell<DevUi>, view: &AppView, app: &App) {
+    if !std::mem::take(&mut ui.borrow_mut().held) {
+        return;
+    }
+    if app
+        .main_window()
+        .is_none_or(nsh_core::desktop::MainWindowOptions::visible_at_launch)
+    {
+        present(view);
+    } else {
+        log::info!("the main window starts hidden (nsh.json window.defaultVisible: false)");
+        crate::window::launch_hidden(view.surface());
+    }
+}
+
+/// Shows the window `view` is in.
+fn present(view: &AppView) {
+    crate::window::activate_main(view.surface());
+}
+
+/// Whether the window `view` is in is shown (minimized or not).
+fn shown(view: &AppView) -> bool {
+    view.widget()
+        .root()
+        .and_downcast::<gtk::Window>()
+        .is_some_and(|window| window.is_visible())
+}
+
 /// Shows `title` and `message` over the whole app; a click dismisses it
 /// (unless it selected text to copy), its Copy button copies them. `prose` wraps the message to the
 /// view; otherwise its lines are kept (code frames, stack traces) and it
-/// scrolls sideways.
+/// scrolls sideways. A hidden window shows with it.
 fn show_error(ui: &Rc<RefCell<DevUi>>, title: &str, message: &str, prose: bool) {
     hide_error(ui);
     let Some(view) = ui.borrow().view.upgrade() else {
         return;
     };
+    // A hidden window, held for the app or hidden by it (one hidden since
+    // launch whose startup failed: a tray app before its icon came), shows
+    // the error, so it is seen.
+    let held = std::mem::take(&mut ui.borrow_mut().held);
+    if held || !shown(&view) {
+        present(&view);
+    }
     let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
     content.set_margin_top(20);
     content.set_margin_bottom(24);

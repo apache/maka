@@ -17,6 +17,9 @@
  * under the License.
  */
 export const goalMessages = {
+  'Could not load the goal.': ['Could not load the goal.', '无法读取目标。', '無法讀取目標。'],
+  'Could not start the goal.': ['Could not start the goal.', '无法启动目标。', '無法啟動目標。'],
+  'Could not update the goal.': ['Could not update the goal.', '无法更新目标。', '無法更新目標。'],
   'Pursuing Goal: {objective}': [
     'Pursuing Goal: {objective}',
     '继续目标：{objective}',
@@ -102,4 +105,5 @@ export const goalMessages = {
     '請為此對話啟用目標工具，再開始目標。',
   ],
   'Close Goal': ['Close Goal', '关闭目标面板', '關閉目標面板'],
+  'Dismiss Goal': ['Dismiss Goal', '关闭目标状态', '關閉目標狀態'],
 } as const;

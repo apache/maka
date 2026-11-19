@@ -62,6 +62,10 @@ export interface StateStyleProps<S = ViewStyle> {
   /** While it or an element inside it has focus (`focus-within:`); the
    * content of an `Overlay` counts as inside the element it is in. */
   focusWithinStyle?: StyleProp<S>;
+  /** While it has focus and shows it (`focus-visible:`): the keyboard
+   * moved the focus there, or it is an input that edits. A press or a
+   * tap that focuses it shows `focusStyle` alone. */
+  focusVisibleStyle?: StyleProp<S>;
   /** While `disabled` (`disabled:`). */
   disabledStyle?: StyleProp<S>;
   /** While `accessibilityState.selected` is `true` (`selected:`): a
@@ -90,7 +94,7 @@ export interface IOSProps extends IOSHostProps {}
 export interface DesktopProps extends DesktopHostProps {}
 
 /** Web-only props of every element (`web={{…}}`). */
-export interface WebProps {}
+export interface WebProps extends WebHostProps {}
 
 /** Android-only props of every element (`android={{…}}`). */
 export interface AndroidProps extends AndroidHostProps {}
@@ -192,8 +196,10 @@ export interface OverlayProps extends CommonProps, OverlayHostProps {
 
 /** What JS sets on a Rust component's host itself: the app's classes
  * (appended to the component's own), its inline and state styles, its test id, keyboard focus eligibility, its
- * tooltip, layout events and the ref (`ref.command(name, args)`). */
-export type ComponentHostProps = { [K in "class" | "classList" | "style" | "activeStyle" | "hoverStyle" | "focusStyle" | "focusWithinStyle" | "disabledStyle" | "testID" | "focusable" | "tooltip" | "onLayout" | "ref"]?: ViewProps[K] };
+ * tooltip, layout events, desktop file drops on it, the mouse over it, a context menu
+ * asked for over it and the ref
+ * (`ref.command(name, args)`). */
+export type ComponentHostProps = { [K in "class" | "classList" | "style" | "activeStyle" | "hoverStyle" | "focusStyle" | "focusWithinStyle" | "focusVisibleStyle" | "disabledStyle" | "testID" | "focusable" | "tooltip" | "onLayout" | "onFileDragEnter" | "onFileDragLeave" | "onFileDrop" | "onMouseEnter" | "onMouseMove" | "onMouseLeave" | "onMouseUp" | "onContextMenu" | "ref"]?: ViewProps[K] };
 
 /** An operating system (`platform.os`). */
 export type OS = "ios" | "android" | "macos" | "windows" | "linux" | "web";
@@ -270,13 +276,13 @@ pub(crate) const REFS: &[(&str, Option<&str>, &str, &[&str])] = &[
         "ViewRef",
         None,
         "A native node: what `ref` receives, and what an element is. Its methods send commands to its\nview, in order with the changes before them.",
-        &["focus", "blur", "measure"],
+        &["focus", "blur", "measure", "reveal", "animateLayout"],
     ),
     (
         "InputRef",
         Some("ViewRef"),
         "An `<Input>`'s ref.",
-        &["setSelection"],
+        &["setSelection", "insertText"],
     ),
     (
         "ScrollRef",
@@ -288,7 +294,13 @@ pub(crate) const REFS: &[(&str, Option<&str>, &str, &[&str])] = &[
         "ListRef",
         Some("ViewRef"),
         "A `List`'s ref.",
-        &["scrollTo", "scrollToOffset", "scrollToIndex", "scrollToEnd"],
+        &[
+            "scrollTo",
+            "scrollToOffset",
+            "scrollToIndex",
+            "scrollToEnd",
+            "measureScrollPosition",
+        ],
     ),
     (
         "WebViewRef",
@@ -300,6 +312,7 @@ pub(crate) const REFS: &[(&str, Option<&str>, &str, &[&str])] = &[
             "goForward",
             "stopLoading",
             "injectJavaScript",
+            "evaluate",
             "postMessage",
             "sendInput",
             "load",
@@ -1102,6 +1115,68 @@ declare const text: "export default ignored";
         assert!(all.contains("export interface IOSProps extends IOSHostProps {}"));
         assert!(all.contains("export interface MacOSProps extends MacOSHostProps {}"));
         assert!(all.contains("export interface DesktopProps extends DesktopHostProps {}"));
+    }
+
+    /// A component's props leave out the host props it declares itself:
+    /// one of another payload (`DataTable`'s `onContextMenu`) would not
+    /// type-check, which apps' `skipLibCheck` hides.
+    #[test]
+    fn component_props_omit_the_host_props_they_declare() {
+        let files = bodies(&[nsh_base::registry().into()]);
+        let all: String = files.iter().map(|(_, body)| body.as_str()).collect();
+        let keys = nsh_core::element::HOST_PROPS
+            .iter()
+            .chain(&["ref"])
+            .map(|n| format!("\"{n}\""))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            all.contains(&format!(
+                "export type ComponentHostProps = {{ [K in {keys}]?"
+            )),
+            "ComponentHostProps lists other keys than HOST_PROPS"
+        );
+        let mut checked = 0;
+        let mut redeclared = Vec::new();
+        for (at, _) in all.match_indices("export interface ") {
+            let decl = &all[at..];
+            let open = decl.find('{').unwrap();
+            let head = &decl[..open];
+            let Some(extends) = head.split(" extends ").nth(1) else {
+                continue;
+            };
+            if !extends.contains("ComponentHostProps") {
+                continue;
+            }
+            checked += 1;
+            let omitted: Vec<&str> = match extends.strip_prefix("Omit<ComponentHostProps, ") {
+                Some(rest) => rest[..rest.find('>').unwrap()]
+                    .split(" | ")
+                    .map(|n| n.trim_matches('"'))
+                    .collect(),
+                None => Vec::new(),
+            };
+            let body = &decl[open..decl.find("\n}").unwrap()];
+            for line in body.lines() {
+                let Some(member) = line.strip_prefix("  ") else {
+                    continue;
+                };
+                let name: String = member.chars().take_while(|c| is_ident(*c)).collect();
+                if nsh_core::element::HOST_PROPS.contains(&name.as_str())
+                    && !omitted.contains(&name.as_str())
+                {
+                    redeclared.push(format!("{}: {name}", head.trim()));
+                }
+            }
+        }
+        assert!(checked > 30, "found {checked} components' props");
+        assert!(
+            redeclared.is_empty(),
+            "host props redeclared: {redeclared:?}"
+        );
+        assert!(all.contains(
+            "export interface DataTableProps<T = any> extends Omit<ComponentHostProps, \"ref\" | \"onContextMenu\">"
+        ));
     }
 
     /// No module exports a name TypeScript declares itself (`Pick`): an

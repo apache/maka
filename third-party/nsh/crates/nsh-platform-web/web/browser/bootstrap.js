@@ -117,6 +117,7 @@
 			post(name, data) {
 				nameOf(name);
 				if (initial[0]) invoke(432, [name, data]);
+				else if (environment.host()) platform.post(name, data);
 			}
 		};
 		dom.rootProp("onHost", (value) => {
@@ -2246,6 +2247,7 @@
 		"keyExtractor",
 		"stickyHeaderIndices",
 		"initialScrollIndex",
+		"initialScrollAtEnd",
 		"onViewableItemsChange",
 		"viewabilityConfig",
 		"refreshing",
@@ -2271,6 +2273,7 @@
 	]);
 	function createLists(invoke, values, reactive, dom, live, wake) {
 		const lists = /* @__PURE__ */ new Map(), rt = dom.rt;
+		const itemAt = (source, index) => Array.isArray(source) ? source[index] : source.at(index);
 		const slot = (value) => typeof value === "function" && !values.signals.has(value) && !values.memos.has(value) ? reactive.untracked(() => value({})) : value;
 		const remove = (parent, entry) => {
 			invoke(306, [parent, entry.node]);
@@ -2307,22 +2310,36 @@
 			state.items = reactive.computed((previous) => {
 				const next = props.each ?? [], old = previous ?? [];
 				if (old.length && old !== next) {
-					let start = 0, end = old.length, nextEnd = next.length;
-					while (start < end && start < nextEnd && old[start] === next[start]) start++;
-					while (end > start && nextEnd > start && old[end - 1] === next[nextEnd - 1]) {
-						end--;
-						nextEnd--;
+					let start, removed, inserted;
+					if (Array.isArray(old) && Array.isArray(next)) {
+						let end = old.length, nextEnd = next.length;
+						start = 0;
+						while (start < end && start < nextEnd && old[start] === next[start]) start++;
+						while (end > start && nextEnd > start && old[end - 1] === next[nextEnd - 1]) {
+							end--;
+							nextEnd--;
+						}
+						removed = end - start;
+						inserted = nextEnd - start;
+					} else {
+						const span = next.spliceFrom?.(old) ?? [
+							0,
+							old.length,
+							next.length
+						];
+						if (!Array.isArray(span) || span.length !== 3 || !span.every((n) => Number.isInteger(n) && n >= 0 && n <= 4294967295) || span[0] + span[1] > old.length || old.length - span[1] + span[2] !== next.length) throw new RangeError("Invalid indexed list splice");
+						[start, removed, inserted] = span;
 					}
-					if (end !== start || nextEnd !== start) {
+					if (removed || inserted) {
 						splices.push([
 							start,
-							end - start,
-							nextEnd - start
+							removed,
+							inserted
 						]);
 						reactive.untracked(() => {
 							for (const cell of state.cells.values()) {
 								const i = cell.index();
-								if (i >= end) cell.index.set(i + nextEnd - end);
+								if (i >= start + removed) cell.index.set(i + inserted - removed);
 							}
 						});
 					}
@@ -2396,7 +2413,7 @@
 					state.reported = state.latest;
 					const each = props.each ?? [], viewableItems = [], changed = [];
 					const token = (index, isViewable) => {
-						const item = each[index];
+						const item = itemAt(each, index);
 						return {
 							item,
 							key: typeof props.keyExtractor === "function" ? props.keyExtractor(item, index) : String(item?.key ?? item?.id ?? index),
@@ -2424,7 +2441,12 @@
 				if (delay > 0) state.timer = setTimeout(report, delay);
 				else report();
 			});
-			if (typeof props.initialScrollIndex === "number") invoke(314, [
+			if (props.initialScrollAtEnd) invoke(314, [
+				id,
+				"scrollToEnd",
+				{ animated: false }
+			]);
+			else if (typeof props.initialScrollIndex === "number") invoke(314, [
 				id,
 				"scrollToIndex",
 				{
@@ -2454,7 +2476,7 @@
 								let previous;
 								const item = reactive.computed(() => {
 									const i = index(), items = state.items();
-									if (i < items.length) previous = items[i];
+									if (i < items.length) previous = itemAt(items, i);
 									return previous;
 								});
 								const cell = rt.element("cell");
@@ -2519,6 +2541,8 @@
 	const MAX_GENERATION = 4095;
 	const EXCEPTION = 4294967295;
 	const COLLECT_MS = 100;
+	const COLLECT_COST_RATIO = 20;
+	const NUMBER_KEY_GENERATIONS = 2 ** 21;
 	const { setTimeout: collectLater, clearTimeout: cancelCollect } = globalThis;
 	const pageNow = globalThis.performance.now.bind(globalThis.performance);
 	var Values = class {
@@ -2554,6 +2578,7 @@
 			this.weakened = false;
 			this.collectTimer = 0;
 			this.lastCollect = 0;
+			this.lastCollectCost = 0;
 		}
 		put(value) {
 			if (this.closed) throw new Error("the app was disposed");
@@ -2619,16 +2644,22 @@
 			this.weakened = false;
 			for (const slot of this.slots) if (slot?.refs > 0 && slot.weak) slot.value = slot.weak.deref();
 		}
+		collectDelay(now) {
+			return Math.max(0, this.lastCollect + Math.max(COLLECT_MS, COLLECT_COST_RATIO * this.lastCollectCost) - now);
+		}
 		schedule(trace) {
 			this.trace ??= trace;
 			if (this.collectTimer) return;
-			const wait = Math.max(0, this.lastCollect + COLLECT_MS - pageNow());
+			const wait = this.collectDelay(pageNow());
 			this.collectTimer = collectLater(() => {
 				this.collectTimer = 0;
 				if (this.closed) return;
 				if (this.depth > 0) return this.schedule(trace);
 				this.collect(trace);
 			}, wait);
+		}
+		accessorKey(owner, generation) {
+			return generation < NUMBER_KEY_GENERATIONS ? generation * 4294967296 + owner : `${owner}:${generation}`;
 		}
 		collect(trace) {
 			this.lastCollect = pageNow();
@@ -2639,7 +2670,7 @@
 				trace();
 				const mirrors = /* @__PURE__ */ new WeakMap(), counts = /* @__PURE__ */ new Map();
 				for (const [kind, owner, generation, id] of this.edges) {
-					const peer = (kind === 0 ? this.classPeers.get(owner) : kind === 2 ? this.nodes.get(owner) : this.accessors.get(`${owner}:${generation}`))?.deref();
+					const peer = (kind === 0 ? this.classPeers.get(owner) : kind === 2 ? this.nodes.get(owner) : this.accessors.get(this.accessorKey(owner, generation)))?.deref();
 					if (!peer) continue;
 					const slot = this.slot(id);
 					if (slot.refs === Infinity || slot.weak && slot.value === void 0) continue;
@@ -2664,6 +2695,7 @@
 				this.edges = null;
 			} finally {
 				this.depth--;
+				this.lastCollectCost = pageNow() - this.lastCollect;
 			}
 		}
 		reconcile() {
@@ -2929,6 +2961,7 @@
 							type: this.get(c),
 							lastModified: Number.isNaN(number) ? Date.now() : number
 						}));
+						case 51: return this.put(new Blob([this.get(a)], { type: this.get(b) }));
 						case 43: return this.put(String(this.get(a)));
 						case 45: return Number(this.hasError);
 						case 46:
@@ -3026,13 +3059,13 @@
 		};
 		const guarded = (fn) => (...args) => protect(() => fn(...args));
 		const finalizers = new FinalizationRegistry((handle) => {
-			values?.accessors.delete(`${handle[0]}:${handle[1]}`);
+			values?.accessors.delete(values.accessorKey(handle[0], handle[1]));
 			if (live()) call(114, handle);
 		});
 		const accessor = (handle) => {
 			const read = () => call(101, handle);
 			finalizers.register(read, handle);
-			values?.accessors.set(`${handle[0]}:${handle[1]}`, new WeakRef(read));
+			values?.accessors.set(values.accessorKey(handle[0], handle[1]), new WeakRef(read));
 			values?.reconcile();
 			return read;
 		};
@@ -3309,8 +3342,17 @@
 			refresh() {
 				if (live()) apply(invoke(200, []));
 			},
-			measure(node) {
-				return call(315, [], node, [], true, false);
+			/** `ref.measure()`, or with `"scrollPosition"` a list's `ref.measureScrollPosition()`. */
+			measure(node, what) {
+				return call(315, [], node, what ? [what] : [], true, false);
+			},
+			/** Runtime op `op` on `receiver` and `args` answered by a reply: its promise, which rejects for what the op refuses. */
+			request(op, receiver, args) {
+				try {
+					return call(op, [], receiver, args, true);
+				} catch (error) {
+					return Promise.reject(error);
+				}
 			},
 			reply(id, ok, value) {
 				const waiter = pending.get(id);
@@ -3342,7 +3384,7 @@
 	]);
 	function createDom(invoke, values, reactive, live, wake) {
 		const handlers = /* @__PURE__ */ new WeakMap(), owners = /* @__PURE__ */ new WeakMap(), heldProps = /* @__PURE__ */ new WeakMap();
-		let touches, measure, hot, platform;
+		let touches, measure, hot, platform, base;
 		const prototype = Object.create(null);
 		for (const name of [
 			"focus",
@@ -3351,12 +3393,14 @@
 			"zoomTo",
 			"scrollToIndex",
 			"scrollToEnd",
+			"reveal",
 			"reload",
 			"goBack",
 			"goForward",
 			"stopLoading",
 			"injectJavaScript",
 			"postMessage",
+			"insertText",
 			"sendInput",
 			"load",
 			"seek"
@@ -3368,6 +3412,14 @@
 				name,
 				argument
 			]);
+		};
+		prototype.evaluate = async function(script, options) {
+			if (typeof script !== "string") throw new TypeError("evaluate expects a script string");
+			if (options !== void 0 && (options === null || typeof options !== "object")) throw new TypeError("evaluate's options must be an object");
+			if (!values.nodeIds.has(this)) throw new TypeError("nsh: not a node");
+			const error = /* @__PURE__ */ new Error("web views evaluate no scripts here");
+			error.code = "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM";
+			throw error;
 		};
 		prototype.setSelection = function(start, end = start) {
 			return call(314, [
@@ -3398,6 +3450,9 @@
 		};
 		prototype.measure = function() {
 			return measure(this);
+		};
+		prototype.measureScrollPosition = function() {
+			return measure(this, "scrollPosition");
 		};
 		const finalizers = new FinalizationRegistry((id) => {
 			if (live()) {
@@ -3464,6 +3519,7 @@
 				]);
 				return;
 			}
+			if (name === "selectionMenu") return;
 			if (PLATFORM_PROPS.has(name)) {
 				platformProps(node, name, value);
 				return;
@@ -3614,6 +3670,9 @@
 			setHot(value) {
 				hot = value;
 			},
+			setBase(value) {
+				base = value;
+			},
 			rootProp: (name, value) => prop(root, name, value),
 			listen(node, name, value) {
 				let events = handlers.get(node);
@@ -3638,7 +3697,15 @@
 				each,
 				merge,
 				spread,
-				metaUrl: (path) => new URL(path, document.baseURI).href,
+				metaUrl: (path) => new URL(path, base ?? document.baseURI).href,
+				assetUrl: (uri, base) => {
+					if (base == null) return uri;
+					if (!uri.startsWith("asset:/")) throw new TypeError("imported asset must use a canonical asset:/ URI");
+					const url = new URL(base);
+					if (!url.pathname.startsWith("/")) throw new TypeError("module asset directory must be a hierarchical URL");
+					url.pathname = `${url.pathname.replace(/\/$/, "")}/${uri.slice(7).split("/").map(encodeURIComponent).join("/")}`;
+					return url.href;
+				},
 				ref
 			},
 			mount(App, props) {
@@ -3679,19 +3746,22 @@
 //#region ../nsh-platform-web/web/browser/components.js
 	function createComponents(invoke, values, reactive, dom) {
 		const states = /* @__PURE__ */ new WeakMap();
-		const hostProps = [
-			"class",
-			"classList",
-			"style",
-			"activeStyle",
-			"hoverStyle",
-			"focusStyle",
-			"focusWithinStyle",
-			"disabledStyle",
-			"testID",
-			"onLayout"
-		];
 		const handler = (name) => "on" + name[0].toUpperCase() + name.slice(1);
+		const propsOf = (read) => new Proxy({}, {
+			get(_, key) {
+				const value = read();
+				const field = value == null ? void 0 : value[key];
+				return typeof field === "function" ? field.bind(value) : field;
+			},
+			has(_, key) {
+				const value = read();
+				return value != null && key in Object(value);
+			},
+			getPrototypeOf() {
+				const value = read();
+				return value == null ? null : Object.getPrototypeOf(Object(value));
+			}
+		});
 		const make = (spec, call) => function(props = {}) {
 			const rt = dom.rt;
 			const node = rt.element("view");
@@ -3756,7 +3826,7 @@
 					prop.name,
 					value
 				]));
-				for (const name of hostProps) update(name, (value) => rt.prop(node, name, value));
+				for (const name of spec.hostProps) update(name, (value) => rt.prop(node, name, value));
 				if (failed) throw failed;
 			});
 			if (typeof props.ref === "function") {
@@ -3791,18 +3861,21 @@
 			children(id, wanted) {
 				state(id)?.lazy.set(wanted);
 			},
-			render(id, prop, key, value) {
+			render(id, prop, key, value, func) {
 				const current = state(id);
 				if (!current) return;
+				const held = typeof func === "function" ? current.renders.get(prop)?.get(key) : void 0;
+				if (held?.value) return held.value.set(value);
 				reactive.runWithOwner(current.owner, () => reactive.protect(() => {
 					this.unrender(id, prop, key);
-					const render = current.props[prop];
+					const render = typeof func === "function" ? func : current.props[prop];
 					if (typeof render !== "function") return;
 					return reactive.root((dispose) => {
+						const signal = typeof func === "function" ? reactive.signal(value) : void 0;
 						const holder = dom.rt.element("view");
 						dom.rt.prop(holder, "componentRender", `${prop}\x1f${key}`);
 						try {
-							dom.rt.insert(holder, render(value));
+							dom.rt.insert(holder, reactive.untracked(() => render(signal ? propsOf(signal) : value)));
 							dom.rt.append(current.node, holder);
 						} catch (error) {
 							dispose();
@@ -3812,7 +3885,8 @@
 						if (!entries) current.renders.set(prop, entries = /* @__PURE__ */ new Map());
 						entries.set(key, {
 							holder,
-							dispose
+							dispose,
+							value: signal
 						});
 					});
 				}));
@@ -3924,7 +3998,7 @@
 			}
 		};
 		const point = (p) => {
-			const { identifier, target, pageX, pageY, locationX, locationY, timestamp } = p;
+			const { identifier, target, pageX, pageY, locationX, locationY, timestamp, pointerType, pressure, tiltX, tiltY } = p;
 			return {
 				identifier,
 				target,
@@ -3932,7 +4006,11 @@
 				pageY,
 				locationX,
 				locationY,
-				timestamp
+				timestamp,
+				pointerType,
+				pressure,
+				tiltX,
+				tiltY
 			};
 		};
 		const dispatch = (touch) => reactive.batch(() => reactive.untracked(() => {
@@ -4072,7 +4150,7 @@
 
 //#endregion
 //#region ../nsh-platform-web/web/browser/canvas.js
-	function createCanvas(invoke, reactive, dom, live, wake) {
+	function createCanvas(invoke, reactive, dom, live, wake, request = () => Promise.reject(/* @__PURE__ */ new Error("offscreen canvases are not available here"))) {
 		const recordings = /* @__PURE__ */ new WeakMap(), retained = /* @__PURE__ */ new WeakMap();
 		const call = (op, args) => {
 			if (!live()) throw new Error("the app was disposed");
@@ -4100,7 +4178,72 @@
 		};
 		const record = (object, code, args) => {
 			const r = data(object);
-			if (!r.closed) r.out.push(code, ...args.map((v) => snapshot(v)));
+			if (r.closed) return;
+			const values = args.map((v) => snapshot(v));
+			r.out.push(code, ...values);
+			if (r.reuse) track(r, code, values);
+		};
+		const IDENTITY = [
+			1,
+			0,
+			0,
+			1,
+			0,
+			0
+		];
+		const same = (values, expected) => values.length === expected.length && values.every((v, i) => v === expected[i]);
+		const animated = (v) => Array.isArray(v) ? v.some(animated) : v !== null && typeof v === "object";
+		const reuse = (width, height) => ({
+			width,
+			height,
+			identity: true,
+			clipped: false,
+			saved: [],
+			path: [],
+			pathExact: true,
+			properties: /* @__PURE__ */ new Map()
+		});
+		const track = (r, code, values) => {
+			const t = r.reuse;
+			if (code === 0) t.saved.push([t.identity, t.clipped]);
+			else if (code === 1) {
+				const s = t.saved.pop();
+				if (s) [t.identity, t.clipped] = s;
+			} else if (code === 2) t.identity &&= same(values, [0, 0]);
+			else if (code === 3) t.identity &&= same(values, [1, 1]);
+			else if (code === 4) t.identity &&= same(values, [0]);
+			else if (code === 5) t.identity &&= same(values, IDENTITY);
+			else if (code === 6) t.identity = same(values, IDENTITY);
+			else if (code === 20) t.clipped = true;
+			else if (code === 7) {
+				t.path = [];
+				t.pathExact = true;
+			} else if (code >= 8 && code <= 17) {
+				t.path.push(code, ...values);
+				t.pathExact &&= t.identity;
+			} else if (code >= 24 && code <= 39 || code === 43) {
+				let h = t.properties.get(code);
+				if (!h) t.properties.set(code, h = []);
+				h.push([code, ...values]);
+			} else if (code === 23) {
+				const [x, y, w, h] = values;
+				if (!values.every((n) => typeof n === "number" && Number.isFinite(n))) return;
+				if (!(Math.min(x, x + w) <= 0 && Math.min(y, y + h) <= 0 && Math.max(x, x + w) >= t.width && Math.max(y, y + h) >= t.height) || !t.identity || t.clipped || t.saved.length || t.path.length && !t.pathExact) return;
+				const candidates = [...t.properties.values()].flat();
+				const effective = candidates.length ? call(605, [candidates]) : [];
+				let i = 0;
+				const kept = [];
+				for (const [property, history] of [...t.properties]) {
+					let last = null;
+					for (const op of history) if (effective[i++]) last = op;
+					if (last) {
+						t.properties.set(property, [last]);
+						kept.push(...last);
+					} else t.properties.delete(property);
+				}
+				if (animated(kept) || animated(t.path)) return;
+				r.out = [...kept, ...t.path];
+			}
 		};
 		const make = (prototype, kind, size) => {
 			const object = Object.create(prototype);
@@ -4376,11 +4519,65 @@
 			});
 			return node;
 		}
+		const offscreens = /* @__PURE__ */ new WeakMap();
+		const offscreen = (object) => {
+			const o = offscreens.get(object);
+			if (!o) throw new TypeError("Illegal invocation");
+			return o;
+		};
+		const dimension = (value, name) => {
+			const n = Number(value);
+			if (!Number.isFinite(n) || n < 0) throw new TypeError(`OffscreenCanvas: ${name} must be a finite number not below 0`);
+			return Math.trunc(n);
+		};
+		class OffscreenCanvas {
+			constructor(width, height) {
+				offscreens.set(this, {
+					width: dimension(width, "width"),
+					height: dimension(height, "height"),
+					context: null
+				});
+			}
+			get width() {
+				return offscreens.get(this)?.width;
+			}
+			get height() {
+				return offscreens.get(this)?.height;
+			}
+			getContext(kind) {
+				const o = offscreen(this);
+				if (String(kind) !== "2d") return null;
+				if (!o.context) {
+					o.context = make(CanvasRenderingContext2D.prototype, "context", {
+						width: o.width,
+						height: o.height
+					});
+					data(o.context).reuse = reuse(o.width, o.height);
+				}
+				return o.context;
+			}
+			convertToBlob(options) {
+				try {
+					const o = offscreen(this);
+					const type = options?.type === void 0 ? "" : String(options.type);
+					const scale = options?.scale === void 0 ? null : Number(options.scale);
+					return request(604, o.context ? data(o.context).out : [], [
+						o.width,
+						o.height,
+						type,
+						scale
+					]);
+				} catch (error) {
+					return Promise.reject(error);
+				}
+			}
+		}
 		return {
 			Canvas,
 			Path2D,
 			CanvasRenderingContext2D,
-			CanvasGradient
+			CanvasGradient,
+			OffscreenCanvas
 		};
 	}
 
@@ -4479,7 +4676,11 @@
 					min,
 					max,
 					!!options?.snap
-				], [this]);
+				], [
+					this,
+					min,
+					max
+				].filter((v) => nodes.has(v)));
 			},
 			add(b) {
 				return math("add", this, b);
@@ -4845,7 +5046,7 @@
 //#endregion
 //#region ../nsh-platform-web/web/browser/navigation.js
 	function createNavigation(reactive, dom, environment, animation) {
-		const { signal, computed, untracked, split, batch } = reactive;
+		const { signal, computed, effect, untracked, split, batch } = reactive;
 		const rt = dom.rt, pages = /* @__PURE__ */ new WeakSet(), popped = /* @__PURE__ */ new WeakMap();
 		const except = (props, keys) => split(props, keys)[1];
 		function createNavStack(routes) {
@@ -4952,7 +5153,20 @@
 		}
 		function NavStack(props) {
 			const node = rt.element("stack");
-			rt.spread(node, except(props, ["state", "children"]));
+			rt.spread(node, except(props, [
+				"state",
+				"children",
+				"onChange"
+			]));
+			let started = false;
+			effect(() => {
+				const routes = props.state.routes();
+				if (!started) {
+					started = true;
+					return;
+				}
+				untracked(() => props.onChange?.({ routes }));
+			});
 			const entries = props.state.__nshEntries;
 			const rows = rt.each(entries, (read, index) => {
 				const entry = untracked(read);
@@ -5077,7 +5291,8 @@
 			e.id,
 			e.when,
 			e.repeat,
-			e.passThrough
+			e.passThrough,
+			e.forFocus
 		]), !!platform.appleKeyboard]);
 		dom.rootProp("onKeyCommand", (id) => {
 			const entry = entries.find((entry) => entry.id === id);
@@ -5097,7 +5312,7 @@
 					pairs = [[String(first), handler]];
 				}
 				if (options != null && typeof options !== "object") throw new TypeError("keymap.bind: options must be an object");
-				const when = options?.when, repeat = !!options?.repeat, passThrough = !!options?.passThrough;
+				const when = options?.when, repeat = !!options?.repeat, passThrough = !!options?.passThrough, forFocus = !!options?.forFocus;
 				if (when !== void 0 && when !== "always" && when !== "notEditing") throw new TypeError("keymap.bind: when must be always or notEditing");
 				const added = pairs.map(([text, handler]) => {
 					if (typeof handler !== "function") throw new TypeError(`keymap.bind: the handler of ${JSON.stringify(text)} is not a function`);
@@ -5108,7 +5323,8 @@
 						id: next++,
 						when,
 						repeat,
-						passThrough
+						passThrough,
+						forFocus
 					};
 				});
 				const updated = [...entries, ...added];
@@ -5140,6 +5356,22 @@
 		const keys = Object.keys(a);
 		return keys.length === Object.keys(b).length && keys.every((key) => same(a[key], b[key], depth - 1));
 	}
+	/** `appInfo()`'s object from the build's JSON, its fields typed as
+	* nsh-js's `AppInfo` reads them. */
+	function readAppInfo(json) {
+		let info = {};
+		try {
+			info = JSON.parse(json) ?? {};
+		} catch {}
+		const text = (value) => typeof value === "string" ? value : null;
+		return {
+			id: text(info.id),
+			name: text(info.name),
+			version: text(info.version),
+			build: Number.isFinite(info.build) ? info.build : null,
+			development: info.development === true
+		};
+	}
 	function createEnvironment(reactive, invoke, dom) {
 		const fields = Object.fromEntries(Object.entries({
 			window: {
@@ -5169,6 +5401,10 @@
 			screenReader: false,
 			host: false,
 			lifecycle: "active",
+			shaders: true,
+			wakeCount: 0,
+			horizontalSizeClass: "compact",
+			verticalSizeClass: "compact",
 			localeSettings: {
 				languages: ["en-US"],
 				timeZone: "UTC",
@@ -5181,13 +5417,22 @@
 		const tokens = reactive.signal(0);
 		const insets = reactive.context(() => fields.safeArea());
 		const platform = {
+			name: "web",
 			os: "web",
 			version: "0.0",
 			idiom: "desktop",
 			desktop: true,
 			catalyst: false,
 			select(spec) {
-				return "web" in spec ? spec.web : this.desktop ? spec.desktop ?? spec.default : spec.mobile ?? spec.default;
+				if (!spec || typeof spec !== "object") return void 0;
+				const keys = this.name !== this.os ? [this.name, this.os] : [this.os];
+				keys.push(this.desktop ? "desktop" : "mobile");
+				if (this.os !== "web") keys.push("native");
+				keys.push("default");
+				for (const key of keys) {
+					const value = spec[key];
+					if (value !== void 0) return value;
+				}
 			}
 		};
 		let appearance = "system", systemScheme = "light";
@@ -5202,6 +5447,8 @@
 			fields.colorScheme.set(scheme === "system" ? systemScheme : scheme);
 		};
 		const device = {
+			horizontalSizeClass: () => fields.horizontalSizeClass(),
+			verticalSizeClass: () => fields.verticalSizeClass(),
 			windowSize: () => fields.window(),
 			colorScheme: () => fields.colorScheme(),
 			setColorScheme,
@@ -5211,16 +5458,21 @@
 			localeSettings: () => fields.localeSettings(),
 			lifecycle: () => fields.lifecycle(),
 			platform,
-			fpsEnabled: () => false
+			shadersAvailable: () => fields.shaders(),
+			wakeCount: () => fields.wakeCount(),
+			fpsEnabled: () => false,
+			perfStats: () => null
 		};
 		const accessibility = {
 			reduceMotion: () => fields.reduceMotion(),
 			screenReaderEnabled: () => fields.screenReader()
 		};
+		let appInfo = readAppInfo("{}");
 		return {
 			api: {
 				...device,
 				...accessibility,
+				appInfo: () => appInfo,
 				safeArea: () => fields.safeArea(),
 				safeAreaInsets: () => insets(),
 				keyboardFrame: () => fields.keyboard(),
@@ -5269,7 +5521,7 @@
 					fields.locale.set(tag);
 				});
 			},
-			setup(tailwind, theme, scheme, statusBar) {
+			setup(tailwind, theme, scheme, statusBar, app) {
 				if (typeof tailwind === "string") dom.rootProp("tailwindTheme", tailwind);
 				if (typeof theme === "string") {
 					dom.rootProp("uiTheme", theme);
@@ -5282,6 +5534,7 @@
 					"system"
 				].includes(scheme)) setColorScheme(scheme);
 				if (typeof statusBar === "string") invoke(405, [statusBar]);
+				if (typeof app === "string") appInfo = readAppInfo(app);
 			}
 		};
 	}
@@ -5357,20 +5610,6 @@
 
 //#endregion
 //#region ../nsh-platform-web/web/browser/testing.js
-	const REDIRECTS = /* @__PURE__ */ new Set([
-		301,
-		302,
-		303,
-		307,
-		308
-	]);
-	const NULL_BODY = /* @__PURE__ */ new Set([
-		101,
-		103,
-		204,
-		205,
-		304
-	]);
 	const define = (target, name, value) => Object.defineProperty(target, name, {
 		value,
 		writable: true,
@@ -5453,151 +5692,6 @@
 		});
 		define(target, "cancelAnimationFrame", function cancelAnimationFrame(id) {
 			if (typeof id === "number") call(1006, [id]);
-		});
-	}
-	function installFetch(target, call, active, wake, network) {
-		const { Request, Response, ReadableStream, TypeError: RealmTypeError } = target;
-		const nativeFetch = target.fetch;
-		const failure = (message) => new RealmTypeError(`Network request failed: ${message}`);
-		const inflight = /* @__PURE__ */ new Map();
-		const finish = (id) => {
-			const entry = inflight.get(id);
-			if (!entry) return void 0;
-			inflight.delete(id);
-			entry.signal.removeEventListener("abort", entry.abort);
-			return entry;
-		};
-		const head = (id, entry, [status, statusText, url, redirected, headers]) => {
-			if (entry.redirectError && REDIRECTS.has(status)) {
-				finish(id);
-				call(1009, [id]);
-				entry.reject(failure("the response was a redirect and redirect is \"error\""));
-				return;
-			}
-			let body = null;
-			if (!entry.nullBody && !NULL_BODY.has(status)) body = new ReadableStream({
-				start(controller) {
-					entry.controller = controller;
-				},
-				cancel() {
-					if (finish(id)) call(1009, [id]);
-				}
-			});
-			let response;
-			try {
-				response = new Response(body, {
-					status,
-					statusText,
-					headers
-				});
-			} catch (error) {
-				finish(id);
-				call(1009, [id]);
-				entry.reject(error);
-				return;
-			}
-			Object.defineProperties(response, {
-				url: {
-					value: url,
-					configurable: true
-				},
-				redirected: {
-					value: redirected,
-					configurable: true
-				},
-				type: {
-					value: "basic",
-					configurable: true
-				}
-			});
-			entry.resolve(response);
-			entry.resolve = entry.reject = null;
-		};
-		call(1007, [(id, kind, ...data) => {
-			const entry = inflight.get(id);
-			if (!entry || !active()) return;
-			try {
-				switch (kind) {
-					case 0:
-						if (entry.resolve) head(id, entry, data);
-						break;
-					case 1:
-						entry.controller?.enqueue(data[0]);
-						break;
-					case 2:
-						finish(id);
-						if (entry.reject) entry.reject(failure("the response ended before its head"));
-						else entry.controller?.close();
-						break;
-					case 3: {
-						finish(id);
-						const error = failure(data[0]);
-						if (entry.reject) entry.reject(error);
-						else entry.controller?.error(error);
-						break;
-					}
-					case 4: {
-						finish(id);
-						const error = Object.assign(failure(data[0]), {
-							code: "ERR_ACCESS_DENIED",
-							permission: "network",
-							resource: data[1]
-						});
-						if (entry.reject) entry.reject(error);
-						else entry.controller?.error(error);
-						break;
-					}
-				}
-			} finally {
-				wake();
-			}
-		}]);
-		const schemeOf = (input) => {
-			try {
-				return new URL(input instanceof Request ? input.url : String(input), target.location?.href).protocol;
-			} catch {
-				return "";
-			}
-		};
-		define(target, "fetch", async function fetch(input, init) {
-			const protocol = schemeOf(input);
-			if (protocol !== "asset:" && !(network && (protocol === "http:" || protocol === "https:"))) return nativeFetch.call(target, input, init);
-			const request = new Request(input, init);
-			const { signal } = request;
-			if (signal.aborted) throw signal.reason;
-			const body = request.body ? new Uint8Array(await request.arrayBuffer()) : void 0;
-			if (signal.aborted) throw signal.reason;
-			const headers = [...request.headers];
-			if (!request.headers.has("accept")) headers.push(["accept", "*/*"]);
-			const url = request.url.split("#")[0];
-			return new Promise((resolve, reject) => {
-				const id = call(1008, [
-					request.method,
-					url,
-					headers,
-					body,
-					request.redirect === "follow"
-				]);
-				const entry = {
-					resolve,
-					reject,
-					signal,
-					controller: null,
-					nullBody: request.method === "HEAD",
-					redirectError: request.redirect === "error",
-					abort() {
-						if (!finish(id)) return;
-						call(1009, [id]);
-						const reason = signal.reason;
-						if (entry.reject) entry.reject(reason);
-						else entry.controller?.error(reason);
-						wake();
-					}
-				};
-				inflight.set(id, entry);
-				signal.addEventListener("abort", entry.abort);
-				wake();
-			});
 		});
 	}
 	const WEBSOCKET_SCHEMES = {
@@ -5705,21 +5799,196 @@
 		define(target, "WebSocket", WebSocket);
 	}
 	/**
-	* Puts the engine's clock and network in `target`'s place (the app realm's
+	* Puts the engine's clock and sockets in `target`'s place (the app realm's
 	* global object) where the session needs them: the clock when the
-	* engine's is manual, `fetch` for the app's files always, and for HTTP with
-	* `WebSocket` when `network` (a test session). `call` is the host's
-	* operation call; callbacks end with `wake` (a pump).
+	* engine's is manual, `WebSocket` when `network` (a test session). `call`
+	* is the host's operation call; callbacks end with `wake` (a pump).
 	*/
 	function installTesting(target, call, { active = () => true, wake = () => {}, network = false } = {}) {
 		const clock = call(1e3, []) === true;
 		if (clock) installClock(target, call, active, wake);
-		installFetch(target, call, active, wake, network);
 		if (network) installWebSocket(target, call, active, wake);
 		return {
 			clock,
 			network
 		};
+	}
+
+//#endregion
+//#region ../nsh-platform-web/web/browser/fetch.js
+	const REDIRECTS = /* @__PURE__ */ new Set([
+		301,
+		302,
+		303,
+		307,
+		308
+	]);
+	const NULL_BODY = /* @__PURE__ */ new Set([
+		101,
+		103,
+		204,
+		205,
+		304
+	]);
+	/**
+	* Puts the engine's network in the place of `target`'s `fetch` (the app
+	* realm's global object) for the requests that need it: the app's files
+	* always, HTTP when `network` (a test session). `call` is the host's
+	* operation call; callbacks end with `wake` (a pump).
+	*/
+	function installFetch(target, call, { active = () => true, wake = () => {}, network = false, base = null } = {}) {
+		const { Request, Response, ReadableStream, TypeError: RealmTypeError } = target;
+		const nativeFetch = target.fetch;
+		const failure = (message) => new RealmTypeError(`Network request failed: ${message}`);
+		const inflight = /* @__PURE__ */ new Map();
+		const finish = (id) => {
+			const entry = inflight.get(id);
+			if (!entry) return void 0;
+			inflight.delete(id);
+			entry.signal.removeEventListener("abort", entry.abort);
+			return entry;
+		};
+		const head = (id, entry, [status, statusText, url, redirected, headers]) => {
+			if (entry.redirectError && REDIRECTS.has(status)) {
+				finish(id);
+				call(1009, [id]);
+				entry.reject(failure("the response was a redirect and redirect is \"error\""));
+				return;
+			}
+			let body = null;
+			if (!entry.nullBody && !NULL_BODY.has(status)) body = new ReadableStream({
+				start(controller) {
+					entry.controller = controller;
+				},
+				cancel() {
+					if (finish(id)) call(1009, [id]);
+				}
+			});
+			let response;
+			try {
+				response = new Response(body, {
+					status,
+					statusText,
+					headers
+				});
+			} catch (error) {
+				finish(id);
+				call(1009, [id]);
+				entry.reject(error);
+				return;
+			}
+			Object.defineProperties(response, {
+				url: {
+					value: url,
+					configurable: true
+				},
+				redirected: {
+					value: redirected,
+					configurable: true
+				},
+				type: {
+					value: "basic",
+					configurable: true
+				}
+			});
+			entry.resolve(response);
+			entry.resolve = entry.reject = null;
+		};
+		call(1007, [(id, kind, ...data) => {
+			const entry = inflight.get(id);
+			if (!entry || !active()) return;
+			try {
+				switch (kind) {
+					case 0:
+						if (entry.resolve) head(id, entry, data);
+						break;
+					case 1:
+						entry.controller?.enqueue(data[0]);
+						break;
+					case 2:
+						finish(id);
+						if (entry.reject) entry.reject(failure("the response ended before its head"));
+						else entry.controller?.close();
+						break;
+					case 3: {
+						finish(id);
+						const error = failure(data[0]);
+						if (entry.reject) entry.reject(error);
+						else entry.controller?.error(error);
+						break;
+					}
+					case 4: {
+						finish(id);
+						const error = Object.assign(failure(data[0]), {
+							code: "ERR_ACCESS_DENIED",
+							permission: "network",
+							resource: data[1]
+						});
+						if (entry.reject) entry.reject(error);
+						else entry.controller?.error(error);
+						break;
+					}
+				}
+			} finally {
+				wake();
+			}
+		}]);
+		const schemeOf = (input) => {
+			try {
+				return new URL(input instanceof Request ? input.url : String(input), target.location?.href).protocol;
+			} catch {
+				return "";
+			}
+		};
+		async function fetch(input, init) {
+			if (base && (typeof input === "string" || input instanceof URL)) try {
+				input = new URL(String(input), base).href;
+			} catch {}
+			const protocol = schemeOf(input);
+			if (protocol !== "asset:" && !(network && (protocol === "http:" || protocol === "https:"))) return nativeFetch.call(target, input, init);
+			const request = new Request(input, init);
+			const { signal } = request;
+			if (signal.aborted) throw signal.reason;
+			const body = request.body ? new Uint8Array(await request.arrayBuffer()) : void 0;
+			if (signal.aborted) throw signal.reason;
+			const headers = [...request.headers];
+			if (!request.headers.has("accept")) headers.push(["accept", "*/*"]);
+			const url = request.url.split("#")[0];
+			return new Promise((resolve, reject) => {
+				const id = call(1008, [
+					request.method,
+					url,
+					headers,
+					body,
+					request.redirect === "follow"
+				]);
+				const entry = {
+					resolve,
+					reject,
+					signal,
+					controller: null,
+					nullBody: request.method === "HEAD",
+					redirectError: request.redirect === "error",
+					abort() {
+						if (!finish(id)) return;
+						call(1009, [id]);
+						const reason = signal.reason;
+						if (entry.reject) entry.reject(reason);
+						else entry.controller?.error(reason);
+						wake();
+					}
+				};
+				inflight.set(id, entry);
+				signal.addEventListener("abort", entry.abort);
+				wake();
+			});
+		}
+		Object.defineProperty(target, "fetch", {
+			value: fetch,
+			writable: true,
+			configurable: true,
+			enumerable: false
+		});
 	}
 
 //#endregion
@@ -6007,10 +6276,40 @@
 	}
 
 //#endregion
+//#region ../nsh-platform-web/web/browser/address.js
+/** `nsh_core::url_scheme::MAX_URL_LEN`, in UTF-8 bytes. */
+	const MAX_ADDRESS_BYTES = 16384;
+	/** What `nsh_core::url_scheme::check_address` refuses: Rust's
+	* `char::is_whitespace` (White_Space) and `char::is_control` (Cc). */
+	const NOT_IN_AN_ADDRESS = /[\p{White_Space}\p{Cc}]/u;
+	/**
+	* Makes `urlScheme`'s `setUrl` (`nsh`'s `UrlScheme`) the page's. `page`:
+	* `base()`, what the app's relative addresses resolve against (the site's
+	* base: `player.addressBase`); `origin`, the page's. `url()` reads the core's
+	* address as it is, which has the page's from before the app's code runs.
+	* The options (`{ history }`) go to the core as they are, which checks them.
+	*/
+	function configureAddress(urlScheme, page) {
+		const { setUrl } = urlScheme;
+		urlScheme.setUrl = (to, ...options) => {
+			if (typeof to !== "string" || NOT_IN_AN_ADDRESS.test(to) || new TextEncoder().encode(to).length > MAX_ADDRESS_BYTES) return setUrl(to, ...options);
+			let resolved;
+			try {
+				resolved = new URL(to, page.base());
+			} catch {
+				throw new TypeError(`UrlScheme.setUrl: not a URL: ${to}`);
+			}
+			if (resolved.origin !== page.origin) throw new TypeError(`UrlScheme.setUrl: ${resolved.href} is not of the page's origin`);
+			setUrl(resolved.href, ...options);
+		};
+	}
+
+//#endregion
 //#region ../nsh-platform-web/web/browser/scope.js
 	var scope_exports = /* @__PURE__ */ __exportAll({
 		Values: () => Values,
 		configureAPIs: () => configureAPIs,
+		configureAddress: () => configureAddress,
 		createAnimation: () => createAnimation,
 		createCanvas: () => createCanvas,
 		createComponents: () => createComponents,
@@ -6027,9 +6326,10 @@
 		createReactive: () => createReactive,
 		createResource: () => createResource,
 		createStandard: () => createStandard,
+		installFetch: () => installFetch,
 		installTesting: () => installTesting
 	});
-	function configureAPIs(nsh, modules, dom, active, env) {
+	function configureAPIs(nsh, modules, dom, active, env, page = {}) {
 		nsh.nextTick = (callback, ...args) => {
 			if (typeof callback !== "function") throw new TypeError("nextTick: callback must be a function");
 			queueMicrotask(() => {
@@ -6048,7 +6348,9 @@
 			parent: null,
 			state: () => null,
 			titleBar: env.titleBar,
-			set() {},
+			set(attributes) {
+				if (typeof attributes?.title === "string") page.setWindowTitle?.(attributes.title);
+			},
 			show() {},
 			hide() {},
 			focus() {},

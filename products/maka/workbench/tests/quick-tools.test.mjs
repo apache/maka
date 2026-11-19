@@ -19,407 +19,236 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { build } from 'esbuild';
-import { fileURLToPath } from 'node:url';
-const root = fileURLToPath(new URL('../../../../', import.meta.url));
-const built = await build({
-  stdin: {
-    contents: `
-    export { default as applicationsPlugin } from './plugins/application/quick-tools/tools/applications/index.ts';
-    export * from './plugins/application/quick-tools/shared/input-history.ts';
-    export * from './plugins/application/quick-tools/shared/assistant-layout.ts';
-    export * from './plugins/application/quick-tools/shared/i18n.ts';
-    export * from './plugins/application/quick-tools/shared/search.ts';
-    export * from './plugins/application/quick-tools/tools/links/template.ts';
-  `,
-    resolveDir: root,
-  },
-  bundle: true,
-  write: false,
-  platform: 'node',
-  format: 'esm',
-});
-const tools = await import(
-  `data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString('base64')}`
-);
+import { historyAtSelection } from '../app/quick-input-history.ts';
+import {
+  remember,
+  DEFAULT_LIMIT,
+} from '../../../../plugins/application/clipboard-history/history.ts';
+import {
+  draftProblem,
+  expandLink,
+  librarySearchTerms,
+  websiteUrl,
+  parseLibrary,
+} from '../../../../plugins/application/quick-library/library.ts';
+import { symbols } from '../../../../plugins/application/symbols/symbols.ts';
+import { afterKeyword, search } from '../../../../plugins/shared/quick-search.ts';
+import { MAX_USAGE, parseUsage, ranked, recommended, recordUse } from '../app/quick-results.ts';
+import {
+  choose,
+  entryMatch,
+  normalAlias,
+  parseChoices,
+  recordable,
+} from '../app/quick-commands.ts';
 
-test('history restores the unfinished draft after traversing recent input', () => {
-  const entries = ['first', 'second'];
-  const newest = tools.recallInput(entries, -1, '', 'unfinished', 1);
-  assert.deepEqual(newest, { index: 0, draft: 'unfinished', text: 'second' });
-  const oldest = tools.recallInput(entries, newest.index, newest.draft, newest.text, 1);
-  assert.equal(oldest.text, 'first');
-  const next = tools.recallInput(entries, oldest.index, oldest.draft, oldest.text, -1);
-  assert.equal(
-    tools.recallInput(entries, next.index, next.draft, next.text, -1).text,
-    'unfinished',
-  );
-});
-test('history completion stays a suffix and does not suggest for empty or multiline input', () => {
-  assert.equal(tools.completeInput(['Search old', 'Search newest'], 'search'), 'Search newest');
-  assert.equal(tools.completeInput(['anything'], ''), undefined);
-  assert.equal(tools.completeInput(['a\nb more'], 'a\nb'), undefined);
-  const list = Array.from({ length: 60 }, (_, i) => String(i));
-  assert.equal(tools.rememberInput(list, '0').length, 50);
-  assert.equal(tools.rememberInput(list, '0').at(-1), '0');
-});
-test('Quicklink parameters encode values without changing URL authority or literal paths', () => {
-  assert.equal(
-    tools.expandTemplate('https://example.com/{词}?q={query}', { 词: '中文/路径', query: 'a&b' }),
-    'https://example.com/%E4%B8%AD%E6%96%87%2F%E8%B7%AF%E5%BE%84?q=a%26b',
-  );
-  assert.equal(tools.expandTemplate('/tmp/{query}', {}), '/tmp/{query}');
-  assert.throws(() => tools.validateTemplate('https://{host}/search'));
-  assert.throws(() => tools.validateTemplate('javascript:alert(1)'));
-  assert.throws(() => tools.expandTemplate('https://example.com/?q={query}', {}));
-});
-test('Quicklinks accept bare websites, local files, app links and named Raycast arguments', () => {
-  assert.equal(tools.expandTemplate('  github.com  ', {}), 'https://github.com');
-  assert.equal(tools.expandTemplate('localhost:3000/docs', {}), 'https://localhost:3000/docs');
-  assert.equal(
-    tools.expandTemplate('slack://channel?team=T&id=C', {}),
-    'slack://channel?team=T&id=C',
-  );
-  assert.equal(tools.expandTemplate('file:///tmp/my%20folder', {}), '/tmp/my folder');
-  assert.equal(tools.expandTemplate('~/Documents/{query}', {}), '~/Documents/{query}');
-  assert.equal(
-    tools.expandTemplate('example.com/search?q={argument name="Search"}', { Search: 'a&b' }),
-    'https://example.com/search?q=a%26b',
-  );
-  for (const input of [
-    'just some words',
-    'javascript://x',
-    '{protocol}://host',
-    'https://{host}/',
-    'https:///x{host}',
-  ])
-    assert.throws(() => tools.validateTemplate(input), input);
-});
-test('authored copy follows locale and preserves supplied user text', () => {
-  tools.setQuickLocale('en');
-  assert.equal(tools.qt('正在加载…'), 'Loading…');
-  assert.equal(tools.qt('请填写${0}', '我的名字'), 'Enter 我的名字');
-  tools.setQuickLocale('zh-CN');
-  assert.equal(tools.qt('正在加载…'), '正在加载…');
+const names = (item) => [item];
+const find = (items, query) =>
+  ranked(
+    search(items, query, [], names, true).map(({ item, match }) => ({ key: item, match, item })),
+    {},
+  ).map(({ item }) => item);
+
+test('better matches come first', () => {
+  const items = ['Screen Sharing', 'Bitmap', 'Road map', 'Map Editor', 'Maps'];
+  assert.deepEqual(find(items, 'map'), ['Map Editor', 'Maps', 'Road map', 'Bitmap']);
+  assert.deepEqual(find(items, 'zzz'), []);
 });
 
-const segmenter = new Intl.Segmenter('zh-CN', { granularity: 'word' });
-const segment = (text) =>
-  [...segmenter.segment(text)].filter((part) => part.isWordLike).map((part) => part.segment);
-test('search preserves aliases, Chinese intent, fuzzy names and recent-only defaults', () => {
-  const rows = [
-    { id: 'notes', name: '笔记', kind: 'tool', keywords: '记录 memo notes' },
-    { id: 'code', name: 'Visual Studio Code', kind: 'application' },
-    { id: 'app', name: 'Unused app', kind: 'application' },
-  ];
-  const prefs = { code: { alias: '编辑', uses: 2 } };
+test('one letter only matches the start of a word', () => {
+  assert.deepEqual(find(['Bitmap', 'Road map'], 'm'), ['Road map']);
+});
+
+test('a keyword lists everything, and text after it searches only that tool', () => {
+  const offered = (query) => search(['alpha', 'beta'], query, ['cb'], names).map((f) => f.item);
+  assert.deepEqual(offered('cb'), ['alpha', 'beta']);
+  assert.deepEqual(offered('cb be'), ['beta']);
+  assert.deepEqual(offered('beta'), []);
+});
+
+test('among equal matches the most used comes first', () => {
+  const at = 1_000_000;
+  let usage = recordUse({}, 'b', at);
+  usage = recordUse(usage, 'b', at + 1);
+  usage = recordUse(usage, 'c', at + 2);
+  const candidates = ['a', 'c', 'b'].map((key) => ({ key, match: 1 }));
   assert.deepEqual(
-    tools.searchEntries(rows, '', prefs, segment).map((row) => row.id),
-    ['code', 'notes'],
+    ranked(candidates, usage).map(({ key }) => key),
+    ['b', 'c', 'a'],
   );
-  for (const query of ['编辑', 'vsc'])
-    assert.equal(tools.searchEntries(rows, query, prefs, segment)[0].id, 'code');
-  for (const query of ['记一下', 'memo'])
-    assert.equal(tools.searchEntries(rows, query, prefs, segment)[0].id, 'notes');
-  assert.deepEqual(tools.searchEntries(rows, 'no match', prefs, segment), []);
-});
-
-test('legacy import preserves originals and native edits and is idempotent', async () => {
-  const fs = await import('node:fs/promises');
-  const { tmpdir } = await import('node:os');
-  const { join } = await import('node:path');
-  const { importLegacy } = await import('../../../../scripts/quick-tools/import-legacy.mjs');
-  const dir = await fs.mkdtemp(join(tmpdir(), 'maka-quick-import-'));
-  try {
-    const source = join(dir, 'old'),
-      target = join(dir, 'native');
-    await fs.mkdir(join(source, 'plugins'), { recursive: true });
-    await fs.mkdir(target);
-    const config = {
-      version: 2,
-      enabled: true,
-      shortcut: 'Alt+Space',
-      disabled: ['maka.clipboard'],
-      preferences: { 'maka.links/link:x': { alias: 'old', hotkey: 'Command+1' } },
-    };
-    await fs.writeFile(join(source, 'plugins/host.json'), JSON.stringify(config));
-    await fs.writeFile(
-      join(source, 'plugins/maka.links.json'),
-      JSON.stringify([
-        { id: 'x', name: 'old' },
-        { id: 'y', name: 'retained' },
-      ]),
-    );
-    await fs.writeFile(
-      join(target, 'maka.links.json'),
-      JSON.stringify([{ id: 'x', name: 'native' }]),
-    );
-    assert.equal((await importLegacy(source, target)).applied, false);
-    assert.equal(JSON.parse(await fs.readFile(join(target, 'maka.links.json'))).length, 1);
-    await importLegacy(source, target, { apply: true });
-    assert.deepEqual(JSON.parse(await fs.readFile(join(target, 'maka.links.json'))), [
-      { id: 'y', name: 'retained' },
-      { id: 'x', name: 'native' },
-    ]);
-    assert.equal(
-      JSON.parse(await fs.readFile(join(target, 'shortcuts.json')))['maka.links:link:x'],
-      'Command+1',
-    );
-    assert.deepEqual(JSON.parse(await fs.readFile(join(source, 'plugins/host.json'))), config);
-    assert.equal((await importLegacy(source, target, { apply: true })).files, 0);
-  } finally {
-    await fs.rm(dir, { recursive: true, force: true });
-  }
-});
-
-const runtimeBuild = await build({
-  stdin: {
-    contents: `export { Packages } from './plugins/application/quick-tools/runtime/packages';
-      export { WebPlugins } from './plugins/application/quick-tools/runtime/web';`,
-    resolveDir: root,
-  },
-  bundle: true,
-  write: false,
-  platform: 'node',
-  format: 'esm',
-  plugins: [
-    {
-      name: 'native-host-fixture',
-      setup(build) {
-        build.onResolve({ filter: /^nsh$/ }, () => ({ path: 'nsh', namespace: 'fixture' }));
-        build.onResolve({ filter: /^\.\/storage$/ }, () => ({
-          path: 'storage',
-          namespace: 'fixture',
-        }));
-        build.onLoad({ filter: /.*/, namespace: 'fixture' }, ({ path }) => ({
-          contents:
-            path === 'nsh'
-              ? `export const host={call:async(name,{code})=>{if(name!=='quickTools.plugin.validate')throw Error(name);new Function(code);return true;}};`
-              : `const data=new Map();export async function read(key,fallback){return structuredClone(data.get(key)??fallback);}export async function write(key,value){await new Promise(resolve=>setTimeout(resolve,1));data.set(key,structuredClone(value));}`,
-        }));
-      },
-    },
-  ],
-});
-const runtime = await import(
-  `data:text/javascript;base64,${Buffer.from(runtimeBuild.outputFiles[0].text).toString('base64')}`
-);
-
-test('package updates reject stale previews, serialize independent installs, and retain rollback', async () => {
-  const packages = new runtime.Packages();
-  await packages.start();
-  const bundle = (id, version) => ({
-    format: 1,
-    manifest: {
-      apiVersion: 1,
-      id,
-      name: id,
-      version,
-      description: 'test',
-      permissions: [],
-      commands: [],
-    },
-    code: 'module.exports.default=()=>({});',
-  });
-  const first = await packages.preview(bundle('test.first', '1'));
-  const second = await packages.preview(bundle('test.second', '1'));
-  await Promise.all([packages.commit(first.token), packages.commit(second.token)]);
-  assert.equal(packages.records.length, 2);
-  const update = await packages.preview(bundle('test.first', '2'));
-  const stale = await packages.preview(bundle('test.first', '3'));
-  await packages.commit(update.token);
-  await assert.rejects(packages.commit(stale.token));
-  assert.equal((await packages.rollback('test.first')).manifest.version, '1');
-  await packages.remove('test.first');
   assert.deepEqual(
-    packages.records.map((record) => record.bundle.manifest.id),
-    ['test.second'],
-  );
-  await assert.rejects(packages.preview(bundle('preferences', '1')));
-  // Host records stored beside plugin data must not be claimable by a plugin ID.
-  await assert.rejects(packages.preview(bundle('undelivered', '1')));
-  await assert.rejects(packages.preview(bundle('launcher-shortcut', '1')));
-});
-
-test('a full package registry rejects new installs and still restarts', async () => {
-  const bundle = (id, version) => ({
-    format: 1,
-    manifest: {
-      apiVersion: 1,
-      id,
-      name: id,
-      version,
-      description: 'test',
-      permissions: [],
-      commands: [],
-    },
-    code: 'module.exports.default=()=>({});',
-  });
-  const packages = new runtime.Packages();
-  await packages.start();
-  for (let i = packages.records.length; i < 64; i++)
-    await packages.commit((await packages.preview(bundle(`test.fill-${i}`, '1'))).token);
-  assert.equal(packages.records.length, 64);
-  await assert.rejects(
-    packages.commit((await packages.preview(bundle('test.overflow', '1'))).token),
-  );
-  // Updating an installed package is not a new install.
-  await packages.commit((await packages.preview(bundle('test.fill-63', '2'))).token);
-  const restarted = new runtime.Packages();
-  await restarted.start();
-  assert.equal(restarted.records.length, 64);
-});
-
-test('web adapters cannot silently change their declared access or domain', async () => {
-  let runs = 0;
-  const web = new runtime.WebPlugins(async () => ({
-    call: async (name) => {
-      if (name === 'site_run') runs++;
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              ok: true,
-              results: [
-                { site: 'example', name: 'search', access: 'write', domain: 'example.com' },
-              ],
-            }),
-          },
-        ],
-      };
-    },
-    close: async () => {},
-  }));
-  const manifest = {
-    permissions: ['web.run'],
-    id: 'test.web',
-    web: {
-      commands: [
-        { id: 'search', site: 'example', command: 'search', domain: 'example.com', access: 'read' },
+    ranked(
+      [
+        { key: 'b', match: 2 },
+        { key: 'a', match: 0 },
       ],
-    },
-  };
-  await assert.rejects(
-    web.run(manifest, { command: 'search', args: {} }, () => true),
-    /access\/domain changed/,
+      usage,
+    ).map(({ key }) => key),
+    ['a', 'b'],
   );
-  assert.equal(runs, 0);
 });
 
-test('legacy external packages retain previous versions and reject tampering before writes', async () => {
-  const fs = await import('node:fs/promises');
-  const { tmpdir } = await import('node:os');
-  const { join } = await import('node:path');
-  const { createHash } = await import('node:crypto');
-  const { importLegacy } = await import('../../../../scripts/quick-tools/import-legacy.mjs');
-  const directory = await fs.mkdtemp(join(tmpdir(), 'maka-quick-packages-'));
-  try {
-    const source = join(directory, 'old'),
-      target = join(directory, 'native');
-    await fs.mkdir(join(source, 'plugins'), { recursive: true });
-    await fs.writeFile(
-      join(source, 'plugins/host.json'),
-      JSON.stringify({
-        version: 2,
-        enabled: true,
-        shortcut: 'Alt+Space',
-        disabled: [],
-        preferences: {},
-      }),
+test('only used, rememberable results are recommended', () => {
+  const usage = recordUse({}, 'used', 1);
+  const candidates = [
+    { key: 'unused', remembered: true },
+    { key: 'used', remembered: true },
+  ];
+  assert.deepEqual(
+    recommended(candidates, usage).map(({ key }) => key),
+    ['used'],
+  );
+  assert.deepEqual(recommended([{ key: 'used', remembered: false }], usage), []);
+});
+
+test('usage stays bounded by forgetting the least recent', () => {
+  let usage = {};
+  for (let at = 0; at <= MAX_USAGE; at += 1) usage = recordUse(usage, `key-${at}`, at);
+  assert.equal(Object.keys(usage).length, MAX_USAGE);
+  assert.equal(usage['key-0'], undefined);
+  assert.deepEqual(parseUsage(JSON.stringify(usage)), usage);
+  assert.deepEqual(parseUsage(null), {});
+  assert.throws(() => parseUsage('[]'));
+});
+
+test('a keyword must stand alone, so ordinary questions are not captured', () => {
+  assert.equal(afterKeyword('cb hello', ['cb']), 'hello');
+  assert.equal(afterKeyword('CB', ['cb']), '');
+  assert.equal(afterKeyword('cbs news', ['cb']), null);
+  assert.equal(afterKeyword('文件 报告', ['f', '文件']), '报告');
+});
+
+test('symbols are found through their terms', () => {
+  assert.deepEqual(
+    search(symbols, 'sym rocket', ['sym'], ([, terms]) => [terms]).map(
+      ({ item: [character] }) => character,
+    ),
+    ['🚀'],
+  );
+});
+
+test('a template link receives the typed text encoded', () => {
+  assert.equal(
+    expandLink('https://example.com/search?q={query}', 'a&b c'),
+    'https://example.com/search?q=a%26b%20c',
+  );
+});
+
+test('top-level search finds a saved link by domain or display name', () => {
+  const link = { id: 'google', kind: 'link', name: '谷歌', value: 'https://www.google.com/maps' };
+  for (const query of ['google', 'google.com', '谷歌', 'link google']) {
+    const scoped = afterKeyword(query, ['link']) !== null;
+    const matches = search(
+      [link],
+      query,
+      ['link'],
+      (item) => librarySearchTerms(item, scoped),
+      true,
     );
-    const artifact = async (version) => {
-      const manifest = {
-        apiVersion: 1,
-        id: 'test.imported',
-        name: 'Imported',
-        version,
-        description: '',
-        permissions: [],
-        commands: [],
-      };
-      const bundle = { format: 1, manifest, code: 'module.exports.default=()=>({});' };
-      const digest = createHash('sha256').update(JSON.stringify(bundle)).digest('hex');
-      const location = join(source, 'extensions/packages/test.imported', digest);
-      await fs.mkdir(location, { recursive: true });
-      await fs.writeFile(join(location, 'manifest.json'), JSON.stringify(manifest));
-      await fs.writeFile(join(location, 'index.cjs'), bundle.code);
-      return { manifest, digest };
-    };
-    const previous = await artifact('1'),
-      current = await artifact('2');
-    await fs.writeFile(
-      join(source, 'extensions/registry.json'),
-      JSON.stringify({ version: 1, records: [{ ...current, enabled: false, previous }] }),
+    assert.deepEqual(
+      matches.map(({ item }) => item.id),
+      ['google'],
     );
-    await importLegacy(source, target, { apply: true });
-    const imported = JSON.parse(await fs.readFile(join(target, 'extensions.json'), 'utf8'))
-      .records[0];
-    assert.equal(imported.bundle.manifest.version, '2');
-    assert.equal(imported.previous.bundle.manifest.version, '1');
-    assert.equal(
-      JSON.parse(await fs.readFile(join(target, 'preferences.json'), 'utf8'))['test.imported']
-        .enabled,
-      false,
-    );
-    await fs.writeFile(
-      join(source, 'extensions/packages/test.imported', current.digest, 'index.cjs'),
-      'tampered',
-    );
-    await assert.rejects(
-      importLegacy(source, join(directory, 'untouched'), { apply: true }),
-      /integrity/,
-    );
-    await assert.rejects(fs.stat(join(directory, 'untouched')), { code: 'ENOENT' });
-  } finally {
-    await fs.rm(directory, { recursive: true, force: true });
   }
 });
 
-test('quick assistant shows messages oldest first with replies below prompts and no process rows', () => {
-  assert.deepEqual(
-    tools.quickAssistantOrder([
-      { key: 'u1', kind: 'row', turn: 'a', role: 'user' },
-      { key: 'internal', kind: 'row', turn: 'a', role: 'assistant' },
-      { key: 'p1', kind: 'process', turn: 'a' },
-      { key: 'b1', kind: 'bot', turn: 'a' },
-      { key: 'u2', kind: 'row', turn: 'b', role: 'user' },
-      { key: 'b2', kind: 'bot', turn: 'b' },
-    ]),
-    ['u1', 'b1', 'u2', 'b2'],
+test('website shorthand opens over HTTPS and preserves search placeholders', () => {
+  assert.equal(websiteUrl(' example.com '), 'https://example.com');
+  assert.equal(websiteUrl('localhost:3000/path'), 'https://localhost:3000/path');
+  assert.equal(websiteUrl('http://example.com'), 'http://example.com');
+  assert.equal(
+    expandLink(websiteUrl('www.example.com/search?q={query}'), 'a b'),
+    'https://www.example.com/search?q=a%20b',
   );
-  assert.deepEqual(
-    tools.quickAssistantOrder([
-      { key: 'old', kind: 'bot', turn: 'a' },
-      { key: 'working', kind: 'botWorking' },
-    ]),
-    ['old', 'working'],
-  );
+  for (const invalid of ['', '/path', 'ftp://example.com', 'https://', 'two words'])
+    assert.equal(websiteUrl(invalid), null);
 });
 
-test('application results bind lifecycle actions to the selected running instance', async () => {
-  const app = { id: '/Applications/Test.app', target: '/Applications/Test.app', name: 'Test' };
-  const idle = { id: '/Applications/Idle.app', target: '/Applications/Idle.app', name: 'Idle' };
-  const calls = [];
-  const plugin = await tools.applicationsPlugin({
-    changed() {},
-    async call(name, input) {
-      if (name === 'applications.list') return [app, idle];
-      if (name === 'applications.running') return { [app.target]: 42 };
-      calls.push({ name, input });
-    },
-  });
-  try {
-    const [running, closed] = await plugin.search('');
-    assert.equal(running.actions[0].id, 'open');
-    assert.deepEqual(closed.actions.map(a => a.id), ['open', 'copyPath', 'reveal']);
-    const force = running.actions.find(a => a.id === 'forceQuit');
-    assert.ok(force.confirm.includes('Test'));
-    await plugin.run(force.id, force.data);
-    assert.deepEqual(calls[0], {
-      name: 'applications.manage', input: { target: app.target, pid: 42, action: 'forceQuit' },
-    });
-  } finally {
-    plugin.dispose();
-  }
+test('a library entry is validated before it is saved', () => {
+  const draft = { id: null, kind: 'snippet', name: 'Sign-off', value: 'Regards' };
+  assert.equal(draftProblem(draft), null);
+  assert.equal(draftProblem({ ...draft, name: '  ' }), 'Enter a name');
+  assert.equal(draftProblem({ ...draft, value: ' ' }), 'Enter some content');
+  const link = { ...draft, kind: 'link' };
+  assert.equal(
+    draftProblem({ ...link, value: 'javascript:alert(1)' }),
+    'Enter a valid website address',
+  );
+  assert.equal(
+    draftProblem({ ...link, searchEngine: true, value: 'https://example.com/' }),
+    'Include {query} in the search URL',
+  );
+  assert.equal(
+    draftProblem({ ...link, searchEngine: true, value: 'https://example.com/{query}' }),
+    null,
+  );
+  assert.equal(draftProblem({ ...link, value: 'https://example.com/{query}' }), null);
+});
+
+test('damaged library data is an error rather than an empty library', () => {
+  assert.deepEqual(parseLibrary(null), []);
+  assert.throws(() => parseLibrary('{}'));
+  assert.throws(() => parseLibrary('not json'));
+});
+
+test('clipboard history preserves format, deduplicates file groups and respects its limit', () => {
+  const entry = (change, format, data, paths = []) => ({ change, format, data, paths });
+  const pdf = entry(1, 'com.adobe.pdf', 'YQ==');
+  const image = entry(2, 'public.png', pdf.data);
+  const files = entry(3, 'public.file-url', '', ['/tmp/one.pdf', '/tmp/two.png']);
+  const again = { ...files, change: 5 };
+  assert.deepEqual(remember([files, image, pdf], again, DEFAULT_LIMIT), [again, image, pdf]);
+  let history = [];
+  for (let i = 0; i < 55; i++)
+    history = remember(history, entry(i, 'public.utf8-plain-text', String(i)), DEFAULT_LIMIT);
+  assert.equal(history.length, DEFAULT_LIMIT);
+  assert.equal(history[0].data, '54');
+});
+
+test('a command keeps its shortcut and alias until both are cleared', () => {
+  let choices = choose({}, 'shot', { shortcut: 'cmd+shift+2' });
+  choices = choose(choices, 'shot', { alias: 'ss' });
+  assert.deepEqual(choices, { shot: { shortcut: 'cmd+shift+2', alias: 'ss' } });
+  choices = choose(choices, 'shot', { shortcut: null });
+  assert.deepEqual(choices, { shot: { alias: 'ss' } });
+  assert.deepEqual(choose(choices, 'shot', { alias: '' }), {});
+  assert.deepEqual(parseChoices(JSON.stringify(choices)), choices);
+  assert.deepEqual(parseChoices(null), {});
+  assert.throws(() => parseChoices('[]'));
+  assert.throws(() => parseChoices('{"shot":{"alias":1}}'));
+});
+
+test('exact keywords and custom aliases outrank an exact result, while prefixes stay searches', () => {
+  const keywords = ['note', 'notes', '笔记'];
+  assert.equal(entryMatch('note', 'memo', keywords), -1);
+  assert.equal(entryMatch('笔记', 'memo', keywords), -1);
+  assert.equal(entryMatch(' MEMO ', 'memo', keywords), -2);
+  assert.equal(entryMatch('not', 'memo', keywords), null);
+  assert.equal(entryMatch('notebook', 'memo', keywords), null);
+  assert.equal(normalAlias(' My Alias '), 'myalias');
+});
+
+test('a recorded shortcut needs a modifier that does not type text', () => {
+  const keys = new Set(recordable(true));
+  for (const taken of ['cmd+shift+s', 'ctrl+alt+space', 'alt+1', 'f5', 'cmd+ctrl+alt+shift+f12'])
+    assert.ok(keys.has(taken), taken);
+  for (const typed of ['s', 'shift+s', 'space', 'enter']) assert.ok(!keys.has(typed), typed);
+  // The platform keeps these, and binding one throws.
+  for (const kept of ['cmd+q', 'cmd+h', 'cmd+alt+h', 'cmd+m', 'cmd+ctrl+f'])
+    assert.ok(!keys.has(kept), kept);
+  assert.ok(!new Set(recordable(false)).has('alt+f4'));
+  assert.ok(new Set(recordable(false)).has('cmd+q'));
+});
+
+test('Up enters search history only at the first result and Down restores the draft', () => {
+  const history = ['older', 'newer'];
+  const idle = { index: -1, draft: '', text: '' };
+  for (const i of [2, 1]) assert.equal(historyAtSelection(history, i, idle, 'draft', -1), null);
+  const first = historyAtSelection(history, 0, idle, 'draft', -1);
+  assert.equal(first.text, 'newer');
+  assert.equal(historyAtSelection(history, 0, first, first.text, -1).text, 'older');
+  const back = historyAtSelection(history, 0, first, first.text, 1);
+  assert.equal(back.text, 'draft');
+  assert.equal(historyAtSelection(history, 0, back, back.text, 1), null);
+  assert.equal(historyAtSelection([], 0, idle, 'draft', -1), null);
 });

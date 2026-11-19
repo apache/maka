@@ -9,7 +9,11 @@
 use std::sync::{Arc, Mutex};
 
 use nsh_base::collapsible;
-use nsh_core::{LayoutCurve, MountItem, NodeId, Size, element::Root, prelude::*};
+use nsh_core::{
+    LayoutCurve, MountItem, NodeId, Size,
+    element::{Root, Spring},
+    prelude::*,
+};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
@@ -19,6 +23,8 @@ struct HarnessProps {
     /// A board of fixed height after it, whose row the trigger's press
     /// grows too (live data landing in the same commit).
     board: bool,
+    /// The reveal's spring: the default's without one.
+    spring: Option<Spring>,
 }
 
 /// A 20-point trigger over a 30-point content, in a region; a view after
@@ -34,6 +40,7 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
                 collapsible()
                     .open(open)
                     .reveal(props.reveal)
+                    .reveal_spring(props.spring)
                     .content(view().test_id("details").h(px(30.0)).child(text("Details")))
                     .child(
                         view()
@@ -69,14 +76,21 @@ struct App {
 }
 
 fn start(reveal: bool, reduce_motion: bool) -> App {
-    start_with(reveal, reduce_motion, false)
+    start_with(
+        HarnessProps {
+            reveal,
+            board: false,
+            spring: None,
+        },
+        reduce_motion,
+    )
 }
 
-fn start_with(reveal: bool, reduce_motion: bool, board: bool) -> App {
+fn start_with(props: HarnessProps, reduce_motion: bool) -> App {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
         clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
-        ..EngineConfig::new(Root::new::<Harness>(move || HarnessProps { reveal, board }))
+        ..EngineConfig::new(Root::new::<Harness>(move || props.clone()))
     };
     config.environment.reduce_motion = reduce_motion;
     let mut app = Headless::start(config).expect("the engine starts");
@@ -145,13 +159,19 @@ fn frame(items: &[MountItem], id: NodeId) -> Option<(f32, f32)> {
     })
 }
 
-/// Whether `items` animate the commit's frames with the reveal's spring.
+/// Whether `items` animate the commit's frames with the reveal's default
+/// spring.
 fn reveals(items: &[MountItem]) -> bool {
+    reveals_on(items, Spring::new(180.0))
+}
+
+/// Whether `items` animate the commit's frames with `spring`.
+fn reveals_on(items: &[MountItem], spring: Spring) -> bool {
     items.iter().any(|i| {
         matches!(i, MountItem::LayoutAnimation(a)
             if a.create.is_none()
                 && a.delete.is_none()
-                && a.update.is_some_and(|u| u.curve == LayoutCurve::Spring { damping: 1.0 }))
+                && a.update.is_some_and(|u| u.curve == LayoutCurve::Spring(spring)))
     })
 }
 
@@ -281,7 +301,14 @@ fn a_reveal_keeps_the_content_until_the_region_has_closed() {
 
 #[test]
 fn a_reveal_animates_only_the_frames_it_moves() {
-    let mut app = start_with(true, false, true);
+    let mut app = start_with(
+        HarnessProps {
+            reveal: true,
+            board: true,
+            spring: None,
+        },
+        false,
+    );
     let first = app.items();
     let (after, board, row) = (
         app.id(&first, "after"),
@@ -306,6 +333,68 @@ fn a_reveal_animates_only_the_frames_it_moves() {
             "{step}: a row of the board changed in the same commit, at once: {batches:#?}"
         );
     }
+}
+
+#[test]
+fn a_reveal_moves_on_the_apps_spring() {
+    // Underdamped (a ratio of about 0.72): it settles in about 384 ms,
+    // where the default settles in about 265.
+    let spring = Spring {
+        stiffness: 620.0,
+        damping: 36.0,
+        ..Spring::default()
+    };
+    let mut app = start_with(
+        HarnessProps {
+            reveal: true,
+            board: false,
+            spring: Some(spring),
+        },
+        false,
+    );
+    let first = app.items();
+    let opened = app.toggle();
+    assert!(reveals_on(&opened, spring), "opens on it: {opened:#?}");
+    assert!(!reveals(&opened), "not on the default");
+    let closed = app.toggle();
+    assert!(reveals_on(&closed, spring), "closes on it");
+    let inserts: Vec<MountItem> = first.iter().chain(&opened).cloned().collect();
+    let details = app.id(&inserts, "details");
+    app.seen.lock().unwrap().clear();
+    app.app
+        .run_for(std::time::Duration::from_millis(300))
+        .unwrap();
+    assert!(
+        !detaches(&app.items(), &inserts, details),
+        "kept while its spring has not settled"
+    );
+    app.seen.lock().unwrap().clear();
+    app.app
+        .run_for(std::time::Duration::from_millis(100))
+        .unwrap();
+    assert!(detaches(&app.items(), &inserts, details), "out once it has");
+}
+
+#[test]
+fn with_reduced_motion_the_apps_spring_does_not_move() {
+    let mut app = start_with(
+        HarnessProps {
+            reveal: true,
+            board: false,
+            spring: Some(Spring {
+                stiffness: 620.0,
+                damping: 36.0,
+                ..Spring::default()
+            }),
+        },
+        true,
+    );
+    let opened = app.toggle();
+    assert!(app.app.shows("Details"));
+    assert!(!any_layout_animation(&opened), "no motion");
+    let closed = app.toggle();
+    assert!(!app.app.shows("Details"), "out at once");
+    assert!(!any_layout_animation(&closed), "no motion");
 }
 
 #[test]

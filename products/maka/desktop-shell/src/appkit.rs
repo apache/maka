@@ -17,9 +17,8 @@
  * under the License.
  */
 
-//! The AppKit workbench follows the Root's admitted Host. Closing destroys the
-//! UI, while Open creates a fresh UI on the retained connection. Utility windows
-//! belong to that connection and close with its workbench or before replacement.
+//! The AppKit workbench follows the Root's admitted Host. Utility windows
+//! belong to that connection and close before a replacement client is loaded.
 
 mod permissions;
 
@@ -31,13 +30,13 @@ use maka_workbench::{
     bindings::SystemPermissionWindow,
     reload::{Request, UiReload},
 };
-use nsh_engine::{EngineConfig, JsonValue};
+use nsh_engine::JsonValue;
 use nsh_platform_macos::{
-    AppOptions, StatusMenuOptions, quit_app, run_resident_app_with_config, with_running_view,
+    AppOptions, objc2::MainThreadMarker, quit_app, run_app_with_config, with_running_view,
 };
 use std::{
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -73,11 +72,28 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
     let frame_autosave_name = Some(format!("{TITLE} {}", directory.display()));
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
-    let (quick, quick_requests) =
-        crate::quick_tools::panel::Control::new(runtime.handle(), directory.clone());
-    quick.clone().run(quick_requests);
-    // Retain the recipe, not a UI: every Open gets a fresh channel and VM.
-    let configuration = Arc::new(Mutex::new(first.config.clone()));
+    let config = shell.attach(first.config.clone());
+    // Keyboard-only navigation also works when the pointer is outside the panel.
+    let events = shell.events.clone();
+    let flags_changed =
+        block2::RcBlock::new(move |event: std::ptr::NonNull<objc2_app_kit::NSEvent>| {
+            // SAFETY: AppKit supplies a live event for the duration of this callback.
+            let flags = unsafe { event.as_ref() }.modifierFlags();
+            if let Some(host) = events.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                let _ = host.send(
+                    "quickLauncher.commandChanged",
+                    JsonValue::Bool(command_only(flags)),
+                );
+            }
+            event.as_ptr()
+        });
+    // SAFETY: the monitor returns each event unchanged and is removed after the event loop.
+    let monitor = unsafe {
+        objc2_app_kit::NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+            objc2_app_kit::NSEventMask::FlagsChanged,
+            &flags_changed,
+        )
+    };
     carry_out(requests, &runtime);
     let windows = permission_requests(&first);
     refuse_reloads(
@@ -90,63 +106,32 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
         runtime.handle(),
     );
     let (quit, quitting) = watch::channel(false);
-    let following = runtime.spawn(follow(
-        first,
-        root,
-        shell.clone(),
-        quick.clone(),
-        configuration.clone(),
-        windows,
-        quitting,
-    ));
-    let closing_shell = shell.clone();
-    let released_shell = shell.clone();
-    let mut status_menu = StatusMenuOptions::default();
-    status_menu.title = TITLE.into();
-    status_menu.open_label = "Open Maka".into();
-    status_menu.quit_label = "Quit".into();
-    run_resident_app_with_config(
-        AppOptions {
-            app_id: APP_ID.into(),
-            title: TITLE.into(),
-            size: SIZE,
-            min_size: Some((MIN_SIZE.0 as i32, MIN_SIZE.1 as i32)),
-            frame_autosave_name,
-            ..Default::default()
-        },
-        status_menu,
-        move || {
-            let config = configuration.lock().unwrap().clone();
-            attach(&shell, &quick, config)
-        },
-        move |is_active| {
-            active.send_replace(is_active);
-        },
-        move || {
-            permissions::close_all();
-            released_shell.release();
-        },
-        move || closing_shell.prepare_close(),
+    let following = runtime.spawn(follow(first, root, shell, windows, quitting));
+    let options = AppOptions {
+        app_id: APP_ID.into(),
+        title: TITLE.into(),
+        size: SIZE,
+        min_size: Some((MIN_SIZE.0 as i32, MIN_SIZE.1 as i32)),
+        frame_autosave_name,
+        ..Default::default()
+    };
+    crate::screenshot::register(
+        &options.components,
+        MainThreadMarker::new().expect("the desktop shell runs on AppKit's main thread"),
     );
+    run_app_with_config(config, options, move |is_active| {
+        active.send_replace(is_active);
+    });
+    if let Some(monitor) = monitor {
+        unsafe { objc2_app_kit::NSEvent::removeMonitor(&monitor) };
+    }
     permissions::close_all();
-    crate::quick_tools::panel::close_all();
     quit.send_replace(true);
     runtime
         .block_on(following)
         .map_err(|error| error.to_string())?;
     runtime.shutdown_background();
     Ok(())
-}
-
-fn attach(
-    shell: &Shell,
-    quick: &crate::quick_tools::panel::Control,
-    mut config: EngineConfig,
-) -> EngineConfig {
-    config.host = nsh_engine::HostChannel::new();
-    let mut config = shell.attach(config);
-    quick.attach(&mut config);
-    config
 }
 
 fn permission_requests(connection: &Connection) -> mpsc::UnboundedReceiver<SystemPermissionWindow> {
@@ -159,8 +144,6 @@ async fn follow(
     current: Connection,
     root: Root,
     shell: Shell,
-    quick: crate::quick_tools::panel::Control,
-    shared: Arc<Mutex<EngineConfig>>,
     mut windows: mpsc::UnboundedReceiver<SystemPermissionWindow>,
     mut quit: watch::Receiver<bool>,
 ) {
@@ -201,12 +184,9 @@ async fn follow(
         // Main-thread barrier: no old engine or drag source survives into the
         // next connection. Quitting can end the standalone runner first.
         let (closed, closing) = tokio::sync::oneshot::channel();
-        let releasing = shell.clone();
         with_running_view(move |view| {
             permissions::close_all();
-            crate::quick_tools::panel::close_all();
             view.stop();
-            releasing.release();
             let _ = closed.send(());
         });
         tokio::select! {
@@ -238,7 +218,18 @@ async fn follow(
             // Finish an admitted attempt even when quitting; then detach it.
             match root.connect(tokio::runtime::Handle::current()).await {
                 Ok(connection) => break connection,
-                Err(error) => eprintln!("maka-desktop-shell: reconnecting: {error}"),
+                Err(error) => {
+                    eprintln!("maka-desktop-shell: reconnecting: {error}");
+                    // The tray left with the engine: a hidden window is the
+                    // only way back while no Host answers.
+                    with_running_view(|view| {
+                        if let Some(window) = view.view().window()
+                            && !window.isVisible()
+                        {
+                            window.makeKeyAndOrderFront(None);
+                        }
+                    });
+                }
             }
             if *quit.borrow() {
                 break 'connected;
@@ -263,41 +254,25 @@ async fn follow(
             .expect("the admitted workbench owns its UI reload channel")
             .take_requests();
         refuse_reloads(reloading, &tokio::runtime::Handle::current());
-        configuration = config;
-        *shared.lock().unwrap() = configuration.clone();
-        let shell = shell.clone();
-        let quick = quick.clone();
+        configuration = shell.attach(config);
         let config = configuration.clone();
-        with_running_view(move |view| view.load_with_config(attach(&shell, &quick, config)));
+        with_running_view(move |view| view.load_with_config(config));
     }
     if let Some(bindings) = bindings {
-        host::detach(bindings, &endpoint, epoch).await;
+        host::quit(bindings).await;
     }
 }
 
 fn carry_out(requests: Requests, runtime: &Runtime) {
     let Requests {
         mut exits,
-        mut close_ready,
         mut folders,
         mut text_sizes,
         mut notices,
     } = requests;
     runtime.spawn(async move {
-        while exits.recv().await.is_some() {
+        if exits.recv().await.is_some() {
             quit_app();
-        }
-    });
-    runtime.spawn(async move {
-        while let Some(request) = close_ready.recv().await {
-            with_running_view(move |view| {
-                if !request.is_current() {
-                    return;
-                }
-                if let Some(window) = view.view().window() {
-                    window.performClose(None);
-                }
-            });
         }
     });
     runtime.spawn(async move {
@@ -337,4 +312,10 @@ fn refuse_reloads(
             }
         }
     });
+}
+
+pub(crate) fn command_only(flags: objc2_app_kit::NSEventModifierFlags) -> bool {
+    use objc2_app_kit::NSEventModifierFlags as Flags;
+    flags.contains(Flags::Command)
+        && !flags.intersects(Flags::Shift | Flags::Control | Flags::Option)
 }

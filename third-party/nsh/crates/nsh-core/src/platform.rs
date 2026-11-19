@@ -3,6 +3,7 @@
 //! data both Rust components and JS read, with or without a JS runtime.
 
 pub mod clipboard;
+pub mod web_evaluation;
 
 use crate::geometry::{Edges, Points, Size};
 
@@ -10,6 +11,35 @@ use crate::geometry::{Edges, Points, Size};
 /// Android backends register themselves (`TabBarComponent.java`'s `NAME` keeps
 /// the same name).
 pub const TAB_BAR_COMPONENT: &str = "nsh/tab-bar";
+
+/// The native component of `nsh/mobile`'s `SegmentedControl`, which the iOS
+/// backend registers itself (`UISegmentedControl`).
+pub const SEGMENTED_CONTROL_COMPONENT: &str = "nsh/segmented-control";
+
+/// The native component of `nsh/mobile`'s `Switch`, which the iOS backend
+/// (`UISwitch`) and the Android backend register themselves
+/// (`SwitchComponent.java`'s `NAME` keeps the same name).
+pub const SWITCH_COMPONENT: &str = "nsh/switch";
+
+/// The native component of `nsh/mobile`'s `DateTimePicker`, which the iOS
+/// backend (`UIDatePicker`) and the Android backend register themselves
+/// (`DateTimePickerComponent.java`'s `NAME` keeps the same name).
+pub const DATE_TIME_PICKER_COMPONENT: &str = "nsh/date-time-picker";
+
+/// The native component of `nsh/base`'s `MenuButton`, which the iOS backend
+/// registers itself (a `UIButton` showing its `UIMenu` as its primary
+/// action).
+pub const MENU_BUTTON_COMPONENT: &str = "nsh/menu-button";
+
+/// The native component of `nsh/base`'s `ContextMenu` given `items`, which
+/// the iOS backend registers itself (a `UIContextMenuInteraction` on the
+/// view around the trigger, the trigger lifted as its preview).
+pub const CONTEXT_MENU_COMPONENT: &str = "nsh/context-menu";
+
+/// The native component of `nsh/base`'s `SplitView`, which the iOS backend
+/// makes itself (a `UISplitViewController` whose columns are the
+/// navigation controllers of the stacks the view places before it).
+pub const SPLIT_VIEW_COMPONENT: &str = "nsh/split-view";
 
 /// Whether native component `name` is NSH's own: names under `nsh/` are, and
 /// an embedding app's registration of one is refused, so it can never
@@ -50,6 +80,18 @@ impl Appearance {
             Appearance::Dark => ColorScheme::Dark,
         }
     }
+}
+
+/// What the user last gave a surface input with
+/// (`EngineControl::set_input_modality`): the core shows the keyboard focus
+/// (`focus-visible:`) by it, as browsers decide CSS's `:focus-visible`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputModality {
+    /// A key press (not a modifier alone): Tab, an arrow, a shortcut,
+    /// typing, from a hardware keyboard.
+    Keyboard,
+    /// A mouse button, a pen or a finger going down.
+    Pointer,
 }
 
 /// The operating system (`platform.os`).
@@ -191,11 +233,44 @@ impl Lifecycle {
     }
 }
 
+/// The space available along one axis of a surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizeClass {
+    /// Less room for content.
+    Compact,
+    /// Room for an expanded layout.
+    Regular,
+}
+
+impl SizeClass {
+    /// Classify a length in points: below 600 is compact, 600 and above regular.
+    /// This is the fallback where the platform supplies no native size class.
+    pub(crate) fn from_length(length: Points) -> Self {
+        if length < Points(600.0) {
+            Self::Compact
+        } else {
+            Self::Regular
+        }
+    }
+
+    /// The TypeScript value of this class.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Regular => "regular",
+        }
+    }
+}
+
 /// What the platform knows about the surface.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Environment {
     /// Size of the surface in points.
     pub window: Size<Points>,
+    /// Native horizontal size class (UIKit); `None` derives it from window width.
+    pub horizontal_size_class: Option<SizeClass>,
+    /// Native vertical size class (UIKit); `None` derives it from window height.
+    pub vertical_size_class: Option<SizeClass>,
     /// Insets not covered by system UI (notch, home indicator, title bar).
     pub safe_area: Edges<Points>,
     /// The title bar's area while the app hides it (desktops,
@@ -226,14 +301,25 @@ pub struct Environment {
     pub pixel_ratio: f32,
     /// A screen reader runs (VoiceOver, TalkBack).
     pub screen_reader: bool,
+    /// The platform's screen readers follow the active descendant a
+    /// focused view names (`accessibilityActiveDescendant`): they read the
+    /// element named as it changes while the focus stays. `nsh-base`'s
+    /// lists then name their highlighted row and tell screen readers
+    /// nothing more; without it, they announce the row or move the screen
+    /// reader's focus to it.
+    pub reads_active_descendants: bool,
     /// The operating system.
     pub os: Os,
-    /// The backend supplies native keyboard-focus paths and matches scoped
-    /// key bindings against them. This is a host capability, not a JS signal.
+    /// The backend matches key bindings against native focus paths.
     pub native_focus_scopes: bool,
-    /// The backend matches fallback key bindings after native input handling.
-    /// This is a host capability, not a JS signal.
+    /// The backend matches fallback bindings after native input handling.
     pub fallback_key_bindings: bool,
+    /// The platform's name where it is not the OS's: a platform built
+    /// outside NSH, on NSH's engine (`docs/dev/platforms.md`), names itself
+    /// here (`Some("miniprogram")`) and reports the OS it runs on in
+    /// [`Environment::os`]. Lower case, none of [`Os`]'s names. `None` on
+    /// NSH's own platforms ([`Environment::platform_name`]).
+    pub platform: Option<&'static str>,
     /// The OS version: major and minor (iOS, desktops), Android's API level
     /// and 0.
     pub os_version: (u16, u16),
@@ -261,14 +347,35 @@ pub struct Environment {
     /// focus, or in the background. For an embedded surface, the embedding
     /// app's.
     pub lifecycle: Lifecycle,
+    /// How many times the system woke from sleep while the surface ran
+    /// (TS: `wakeCount()`): the platform adds one on each wake (macOS,
+    /// Windows, Linux), so what read it runs again then. A sleep may leave
+    /// the app's state as it was (a laptop's lid closed and opened with the
+    /// app in front), while its network connections and timers did not
+    /// live through it.
+    pub wake_count: u32,
     /// The platform picks a color from the screen
     /// ([`crate::Command::PickScreenColor`]); without it, a pick answers
     /// no color at once.
     pub screen_color: bool,
-    /// The platform shows the system's open and save dialogs and opens,
-    /// reveals and trashes local paths ([`crate::Command::FileRequest`],
-    /// the desktops); without it, those requests answer at once with an
-    /// error.
+    /// The platform renders canvas drawings offscreen into images
+    /// ([`crate::Command::RenderCanvas`], `OffscreenCanvas`); without it,
+    /// a render fails at once with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
+    pub canvas_render: bool,
+    /// The platform shows the system's share sheet
+    /// ([`crate::Command::Share`], `Share.show`); without it, a share fails
+    /// at once with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
+    pub share: bool,
+    /// The platform shows web sign-in sessions
+    /// ([`crate::Command::AuthSession`]: iOS's
+    /// `ASWebAuthenticationSession`, Android's Custom Tabs); without it,
+    /// a session opens the system browser and waits for a link of a scheme
+    /// the app claims ([`crate::auth_session`]).
+    pub auth_session: bool,
+    /// The platform handles file requests ([`crate::Command::FileRequest`]).
+    /// Desktops implement the full set; mobile platforms answer the open
+    /// dialog and reject operations they do not support. Without it, all
+    /// file requests answer at once with an error.
     pub file_requests: bool,
     /// The platform recognizes speech ([`crate::Command::Speech`],
     /// [`crate::speech`]); without it, a session ends at once
@@ -282,6 +389,22 @@ pub struct Environment {
     /// [`crate::audio`]); without it, sounds and players fail at once
     /// (`unavailable`) unless the core has a [`crate::audio::AudioBackend`].
     pub audio: bool,
+    /// The platform shows the system's tab bar on iOS and Android
+    /// (`nsh/mobile`'s `TabBar`: it registers [`TAB_BAR_COMPONENT`]). On by
+    /// default, as NSH's own iOS and Android backends do; a platform built
+    /// outside NSH that runs on those OSes without one turns it off, and
+    /// `TabBar` then takes no room and `nsh/mobile`'s `isAvailable` is false,
+    /// so the app shows its tabs with `nsh/base`'s `Tabs`. Read only on iOS
+    /// and Android.
+    pub tab_bar: bool,
+    /// Whether the platform puts images on the system clipboard and reads
+    /// them back (`Clipboard.readImage`, `writeImage`, `hasImage`). `None`
+    /// (the default): as NSH's own backends on [`Self::os`], every OS but
+    /// Android, whose backend holds text only. A platform built outside
+    /// NSH says what it does with `Some`: without images its image calls
+    /// reject with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` and `hasImage` is
+    /// false.
+    pub clipboard_images: Option<bool>,
     /// The size of one Cell of a grid surface (a terminal, whose content is
     /// whole character Cells), in points; `None` on every other surface.
     /// With it the core lays out with its terminal algorithm, ratatui's
@@ -293,9 +416,52 @@ pub struct Environment {
     /// ([`crate::Command::SendInput`], macOS); without it, the command
     /// does nothing.
     pub web_input: bool,
+    /// The platform answers awaitable WebView evaluations
+    /// ([`crate::Command::Evaluate`]); false rejects as unavailable.
+    pub web_evaluate: bool,
+    /// The platform shows web views (TS: `WebView.available()`). `true` by
+    /// default; a platform that knows from the start that it shows none
+    /// (built without a web engine, the system's failed to load) sets
+    /// `false`, and every web view then reports `onError` with `code`
+    /// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. A web engine that fails only
+    /// when a web view starts reports that error itself.
+    pub web_views: bool,
+    /// The platform carries out a web view's requests
+    /// ([`crate::Command::WebViewRequest`]: a pending download's
+    /// destination or cancellation; the desktops); without it, they answer
+    /// at once with an error and no web view downloads behind the app's
+    /// back.
+    pub webview_requests: bool,
+    /// The platform draws shader views (`Shader`, `ShaderEffect`,
+    /// `ShaderTransition`, the screen's; TS: `shadersAvailable()`). `true`
+    /// by default. A platform built without a renderer sets `false` from
+    /// the start; one that finds no GPU when the first shader mounts
+    /// reports it then (`nsh_engine::EngineControl::shaders_unavailable`),
+    /// so it can turn `false` while the app runs, never back. A grid
+    /// surface ([`Environment::cell`]) draws none.
+    pub shaders: bool,
 }
 
 impl Environment {
+    /// Native horizontal size class, or the window width at the 600pt breakpoint.
+    pub fn horizontal_size_class(&self) -> SizeClass {
+        self.horizontal_size_class
+            .unwrap_or_else(|| SizeClass::from_length(self.window.width))
+    }
+
+    /// Native vertical size class, or the window height at the 600pt breakpoint.
+    pub fn vertical_size_class(&self) -> SizeClass {
+        self.vertical_size_class
+            .unwrap_or_else(|| SizeClass::from_length(self.window.height))
+    }
+
+    /// The platform's name (TS: `platform.name`): [`Environment::platform`]
+    /// on a platform built outside NSH (`"miniprogram"`), else the OS's
+    /// (`"ios"`, `"web"`, ...).
+    pub fn platform_name(&self) -> &'static str {
+        self.platform.unwrap_or(self.os.name())
+    }
+
     /// Desktop behavior applies: a desktop OS, a browser in the desktop
     /// idiom or a terminal ([`Idiom::desktop_on`]: `desktop={{…}}` props,
     /// `platform.select({ desktop })`, `platform.desktop`, `platform.idiom`
@@ -314,6 +480,8 @@ impl Default for Environment {
     fn default() -> Self {
         Self {
             window: Size::default(),
+            horizontal_size_class: None,
+            vertical_size_class: None,
             safe_area: Edges::default(),
             title_bar: Edges::default(),
             window_state: None,
@@ -325,9 +493,11 @@ impl Default for Environment {
             reduce_motion: false,
             pixel_ratio: 1.0,
             screen_reader: false,
+            reads_active_descendants: false,
             os: Os::default(),
             native_focus_scopes: false,
             fallback_key_bindings: false,
+            platform: None,
             os_version: (0, 0),
             idiom: Idiom::Phone,
             apple_keyboard: false,
@@ -336,13 +506,23 @@ impl Default for Environment {
             locale_settings: LocaleSettings::EN_US,
             host: false,
             lifecycle: Lifecycle::Active,
+            wake_count: 0,
             screen_color: false,
+            canvas_render: false,
+            share: false,
+            auth_session: false,
             file_requests: false,
             speech: false,
             notifications: false,
             audio: false,
+            tab_bar: true,
+            clipboard_images: None,
             cell: None,
             web_input: false,
+            web_evaluate: false,
+            web_views: true,
+            webview_requests: false,
+            shaders: true,
         }
     }
 }
@@ -706,6 +886,36 @@ impl std::fmt::Debug for TimeZone {
 impl std::fmt::Display for TimeZone {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// What the performance monitor measured over the last second
+/// ([`crate::element::perf_stats`]; TS `perfStats()`), read once a second
+/// while it measures. More of what the monitor measures can join it.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Default, crate::element::JsObject)]
+pub struct PerfStats {
+    /// Frames shown per second: display refreshes in which the app changed
+    /// something. An idle app reads low, which is not slowness.
+    pub fps: f32,
+    /// The rate the display refreshes at (Hz), once the monitor saw it
+    /// refresh.
+    pub refresh_rate: Option<f32>,
+    /// The share of recent frames that took longer than one refresh, from 0
+    /// to 1 (`0.05` is 5%), as TS's `dropped` reads it.
+    pub dropped: crate::geometry::Percentage,
+}
+
+impl PerfStats {
+    /// Stats of `fps` frames a second, the rest unknown: the engine's way
+    /// to make them (the type is non-exhaustive). Apps read them
+    /// ([`crate::element::perf_stats`]) and never make one.
+    #[doc(hidden)]
+    pub fn new(fps: f32) -> PerfStats {
+        PerfStats {
+            fps,
+            ..PerfStats::default()
+        }
     }
 }
 
@@ -1269,6 +1479,80 @@ pub fn content_type(path: &str) -> &'static str {
     }
 }
 
+/// The MIME type of a local file by its name's extension, `""` when the
+/// name says none (a directory, no extension, one this table lacks), as the
+/// DOM's `File.type`. File drags and drops report it beside each URL
+/// (`FileDragEvent::mime_types`): it reads the name only, never the file,
+/// so it costs nothing while a drag hovers and is the same on every
+/// platform. `uri` is a `file:` URL or a path.
+#[doc(hidden)]
+pub fn file_mime_type(uri: &str) -> &'static str {
+    let path = uri.split(['?', '#']).next().unwrap_or_default();
+    let name = path.rsplit('/').next().unwrap_or_default();
+    let Some((stem, ext)) = name.rsplit_once('.') else {
+        return "";
+    };
+    if stem.is_empty() {
+        // A dotfile (`.env`): a name, not an extension.
+        return "";
+    }
+    match ext.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" | "jpe" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        "ico" => "image/x-icon",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "wav" => "audio/wav",
+        "ogg" | "oga" | "opus" => "audio/ogg",
+        "flac" => "audio/flac",
+        "aif" | "aiff" => "audio/aiff",
+        "caf" => "audio/x-caf",
+        "txt" | "text" | "log" => "text/plain",
+        "md" | "markdown" => "text/markdown",
+        "csv" => "text/csv",
+        "tsv" => "text/tab-separated-values",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" | "mjs" => "text/javascript",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "yaml" | "yml" => "application/yaml",
+        "pdf" => "application/pdf",
+        "rtf" => "application/rtf",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "zip" => "application/zip",
+        "gz" | "tgz" => "application/gzip",
+        "tar" => "application/x-tar",
+        "7z" => "application/x-7z-compressed",
+        "rar" => "application/vnd.rar",
+        "wasm" => "application/wasm",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        _ => "",
+    }
+}
+
 /// What happens to a request, in order: (for a streamed body) any number
 /// of `BodyWanted`; then `Head`, `Data`… and `End` — or `Failed` at any
 /// point.
@@ -1306,9 +1590,36 @@ pub enum FetchOp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn size_class_fallback_uses_points_and_native_traits_win() {
+        use super::{Environment, SizeClass};
+        use crate::geometry::size_pt;
+        for (dimension, expected) in [
+            (0.0, SizeClass::Compact),
+            (599.5, SizeClass::Compact),
+            (600.0, SizeClass::Regular),
+            (1200.0, SizeClass::Regular),
+        ] {
+            let env = Environment {
+                window: size_pt(dimension, dimension),
+                ..Default::default()
+            };
+            assert_eq!(env.horizontal_size_class(), expected);
+            assert_eq!(env.vertical_size_class(), expected);
+        }
+        let env = Environment {
+            window: size_pt(900.0, 300.0),
+            horizontal_size_class: Some(SizeClass::Compact),
+            vertical_size_class: Some(SizeClass::Regular),
+            ..Default::default()
+        };
+        assert_eq!(env.horizontal_size_class(), SizeClass::Compact);
+        assert_eq!(env.vertical_size_class(), SizeClass::Regular);
+    }
+
     use super::{
         Environment, HostEnvironment, HourCycle, Idiom, Languages, Locale, LocaleSettings,
-        MeasurementSystem, Os, TemperatureUnit, TimeZone, Weekday, content_type,
+        MeasurementSystem, Os, TemperatureUnit, TimeZone, Weekday, content_type, file_mime_type,
     };
 
     #[test]
@@ -1631,6 +1942,28 @@ mod tests {
                 "application/octet-stream",
                 "{unknown}"
             );
+        }
+    }
+
+    #[test]
+    fn file_mime_types_come_from_the_name_alone() {
+        assert_eq!(file_mime_type("file:///tmp/a%20b.PNG"), "image/png");
+        assert_eq!(file_mime_type("file:///tmp/%E4%B8%AD.jpeg"), "image/jpeg");
+        assert_eq!(file_mime_type("/Users/me/Report.pdf"), "application/pdf");
+        assert_eq!(
+            file_mime_type("file:///tmp/notes.md?x=1#y"),
+            "text/markdown"
+        );
+        assert_eq!(file_mime_type("C:/Users/me/Clip.mov"), "video/quicktime");
+        // A directory, no extension, a dotfile, an extension the table lacks.
+        for none in [
+            "file:///tmp/photos.d/",
+            "file:///tmp/README",
+            "file:///tmp/.env",
+            "file:///tmp/a.unknownext",
+            "",
+        ] {
+            assert_eq!(file_mime_type(none), "", "{none}");
         }
     }
 }

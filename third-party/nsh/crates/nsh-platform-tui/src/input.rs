@@ -85,16 +85,23 @@ pub struct MouseInput {
 pub enum Input {
     /// Mouse input.
     Mouse(MouseInput),
-    /// A key name as in NSH's keymap (`Enter`, `Escape`, or a character).
+    /// A key as the terminal names it: a character, or the key's name
+    /// (`Enter`, `Escape`, `ArrowLeft`, `F5`; the keymap's `Left` and the
+    /// DOM's `ArrowLeft` both name the same key). `release` is true when
+    /// the source reported the key coming up: only the kitty keyboard
+    /// protocol, or crossterm's Windows console input, reports that.
     Key {
         /// Key name.
         key: String,
         /// Held modifiers.
         modifiers: Modifiers,
-        /// True for a release when the terminal reports it.
+        /// True for a release when the source reports it: the kitty keyboard
+        /// protocol, or crossterm's Windows console input.
         release: bool,
     },
-    /// A repeated key press identified by the terminal protocol.
+    /// An auto-repeat the terminal reported (the kitty keyboard protocol):
+    /// a press the key's being held repeated. A terminal without the
+    /// protocol sends its repeats as presses of their own.
     KeyRepeat {
         /// Key name, as for `Key`.
         key: String,
@@ -175,6 +182,8 @@ struct Drag {
     velocity: nsh_core::input::VelocityTracker,
     activated: Option<NodeId>,
     scroll_start: Points,
+    /// The modifier keys held when the button went down.
+    modifiers: Modifiers,
 }
 
 impl Drag {
@@ -188,6 +197,7 @@ impl Drag {
             EventPayload::Touch(Box::new(nsh_core::TouchEvent {
                 phase,
                 timestamp: self.started.elapsed().as_secs_f64() * 1000.0,
+                modifiers: self.modifiers,
                 activated: self.activated,
                 points: vec![nsh_core::TouchPoint {
                     id: 0,
@@ -200,6 +210,10 @@ impl Drag {
                     page: self.page,
                     location: self.page - self.origin,
                     changed: true,
+                    pointer_type: nsh_core::PointerType::Mouse,
+                    pressure: nsh_core::TouchPoint::default_pressure(phase, true),
+                    tilt_x: 0.0,
+                    tilt_y: 0.0,
                 }],
             })),
         );
@@ -267,6 +281,7 @@ impl Pointer {
             velocity: Default::default(),
             activated: None,
             scroll_start: Points::ZERO,
+            modifiers: mouse.modifiers,
         };
         touch.report(cx.control, nsh_core::TouchPhase::Start);
         touch.report(cx.control, nsh_core::TouchPhase::Cancel);
@@ -301,6 +316,55 @@ impl Pointer {
             Handled::Ignored
         } else {
             Handled::Yes
+        }
+    }
+
+    /// A button released: every view around the one under the pointer that
+    /// listens to `onMouseUp` hears it, inside out, as on the desktops.
+    /// Nothing is consumed: the release goes on to whatever it ends.
+    pub(crate) fn mouse_up(&self, mouse: MouseInput, cx: &PointerContext<'_>) {
+        let MouseKind::Up(button) = mouse.kind else {
+            return;
+        };
+        let position = Position::new(mouse.column, mouse.row);
+        if !cx.area.contains(position) {
+            return;
+        }
+        let scope = crate::navigation::focus_scope(cx.tree);
+        let Some(hit) = cx.hits.iter().rev().find(|hit| {
+            hit.area.contains(position) && crate::keyboard::contains(cx.tree, scope, hit.node)
+        }) else {
+            return;
+        };
+        let button = match button {
+            MouseButton::Left => nsh_core::MouseButton::Left,
+            MouseButton::Right => nsh_core::MouseButton::Right,
+            MouseButton::Middle => nsh_core::MouseButton::Middle,
+        };
+        let page = page_point(mouse, cx.area, cx.cells);
+        let mut node = Some(hit.node);
+        while let Some(id) = node {
+            let Some(view) = cx.tree.get(id) else {
+                break;
+            };
+            if view.events.contains(EventKind::MouseUp) {
+                let origin = cx
+                    .geometry
+                    .iter()
+                    .find(|g| g.id == id)
+                    .map_or_else(Point::default, |g| g.frame.origin);
+                cx.control.dispatch_event(
+                    id,
+                    EventKind::MouseUp,
+                    EventPayload::Mouse(nsh_core::MouseEvent::released(
+                        page - origin,
+                        page,
+                        mouse.modifiers,
+                        button,
+                    )),
+                );
+            }
+            node = if id == scope { None } else { view.parent };
         }
     }
 
@@ -345,6 +409,9 @@ impl Pointer {
         let changed = !changes.is_empty();
         for (id, active, event) in changes {
             let payload = self.mouse_event(id, cx);
+            // A removed view hears no leave, as a removed DOM element: a JS
+            // cycle may keep it alive after its component is gone.
+            let heard = active || crate::keyboard::contains(cx.tree, nsh_core::ROOT_ID, id);
             if let Some(view) = cx.tree.get_mut(id) {
                 let bit = nsh_core::tailwind::state::HOVERED;
                 if active {
@@ -355,7 +422,7 @@ impl Pointer {
                 if view.tracked & bit != 0 {
                     cx.control.set_states(id, view.states);
                 }
-                if view.events.contains(event) {
+                if heard && view.events.contains(event) {
                     cx.control.dispatch_event(id, event, payload);
                 }
             }
@@ -682,6 +749,7 @@ impl Pointer {
                             velocity: Default::default(),
                             activated: None,
                             scroll_start: Points::ZERO,
+                            modifiers: mouse.modifiers,
                         };
                         drag.velocity.add(0.0, page);
                         drag.report(control, nsh_core::TouchPhase::Start);

@@ -23,9 +23,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-rmcp = { version = "=3.8.0", default-features = false, features = ["client", "transport-child-process"] }
-base64 = "0.23.1"
-sha2.workspace = true
 maka-event-log.workspace = true
 maka-host-runtime.workspace = true
 maka-workbench.workspace = true
@@ -38,42 +35,20 @@ uuid.workspace = true
 [build-dependencies]
 embed-resource = "3.0"
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 nsh-platform-linux.workspace = true
-ksni = "0.3.3"
-image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(windows)'.dependencies]
 nsh-platform-windows.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos.workspace = true
-objc2 = "0.6"
-objc2-foundation = "0.3.2"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = [
-  "std",
-  "block2",
-  "NSApplication",
-  "NSButton",
-  "NSControl",
-  "NSDraggingItem",
-  "NSDraggingSession",
-  "NSEvent",
-  "NSGraphics",
-  "NSOpenPanel",
-  "NSPanel",
-  "NSResponder",
-  "NSRunningApplication",
-  "NSSavePanel",
-  "NSScreen",
-  "NSView",
-  "NSWindow",
-  "NSWorkspace",
-] }
-block2 = "0.6.2"
-raw-window-handle = "0.6"
-
-[dev-dependencies]
-tempfile.workspace = true
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-zbus = { version = "5", default-features = false, features = ["tokio"] }
+block2 = { version = "0.6.2", default-features = false, features = ["std"] }
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "objc2"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "NSApplication", "NSAttributedString", "block2", "NSBezierPath", "NSBitmapImageRep", "NSColor", "NSColorSpace", "NSActionCell", "NSCell", "NSControl", "NSCursor", "NSDraggingItem", "NSDraggingSession", "NSEvent", "NSFont", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageCell", "NSImageRep", "NSImageView", "NSPanel", "NSPasteboard", "NSOpenPanel", "NSResponder", "NSSavePanel", "NSScreen", "NSStringDrawing", "NSText", "NSTextField", "NSTrackingArea", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFCGTypes"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGDirectDisplay", "CGError", "CGImage", "CGRemoteOperation", "CGWindow"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSArray", "NSBundle", "NSData", "NSDate", "NSDateFormatter", "NSDictionary", "NSError", "NSFormatter", "NSGeometry", "NSPathUtilities", "NSString", "NSURL", "NSUserDefaults", "NSValue"] }
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "libc", "objc2-core-foundation", "objc2-core-graphics", "SCScreenshotManager", "SCShareableContent", "SCStream"] }

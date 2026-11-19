@@ -17,14 +17,19 @@
  * under the License.
  */
 
+use crate::durable::ExecutionIdentity;
+
 use super::{DurableToolProjection, ImageOutput, ToolOutput, durable::freeze};
 use crate::{
     artifact::{Artifact, ArtifactKind, ArtifactSource, content_digest},
     attachment::StorageRef,
-    event::{Invocation, ProjectionArtifactWrite},
+    event::ProjectionArtifactWrite,
 };
 use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::BTreeSet,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 /// Effect output awaiting T2 normalization. This is intentionally not serializable:
 /// pending image bytes must become an immutable Session ref before delivery.
@@ -32,6 +37,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct ToolSuccess {
     value: ToolSuccessValue,
     pub(crate) is_error: bool,
+    loaded_tools: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -44,6 +50,7 @@ enum ToolSuccessValue {
     Image {
         bytes: Vec<u8>,
         mime_type: String,
+        detail: Option<super::ImageDetail>,
     },
     Content {
         output: ToolOutput,
@@ -62,7 +69,9 @@ pub enum ToolContent {
     },
 }
 
-pub(crate) struct NormalizedToolSuccess {
+pub struct NormalizedToolSuccess {
+    pub is_error: bool,
+    pub loaded_tools: BTreeSet<String>,
     pub output: ToolOutput,
     pub projection: DurableToolProjection,
     pub artifacts: Vec<ProjectionArtifactWrite>,
@@ -73,6 +82,7 @@ impl From<ToolSuccessValue> for ToolSuccess {
         Self {
             value,
             is_error: false,
+            loaded_tools: BTreeSet::new(),
         }
     }
 }
@@ -97,22 +107,36 @@ impl ToolSuccess {
         ToolSuccessValue::Projected { output, projection }.into()
     }
 
+    pub fn with_loaded_tools(mut self, names: BTreeSet<String>) -> Self {
+        self.loaded_tools = names;
+        self
+    }
+
     pub fn reporting_error(self, is_error: bool) -> Self {
         Self { is_error, ..self }
     }
 
     /// The executor owns authorization and image-header/dimension validation.
     /// Core normalizes the MIME before accepting pending media.
-    pub fn image(bytes: Vec<u8>, mime_type: String) -> Result<Self, &'static str> {
+    pub fn image(
+        bytes: Vec<u8>,
+        mime_type: String,
+        detail: Option<super::ImageDetail>,
+    ) -> Result<Self, &'static str> {
         let mime_type = normalize_mime(&mime_type).ok_or("unsafe tool image MIME")?;
-        Ok(ToolSuccessValue::Image { bytes, mime_type }.into())
+        Ok(ToolSuccessValue::Image {
+            bytes,
+            mime_type,
+            detail,
+        }
+        .into())
     }
 
-    pub(crate) fn normalize(
+    pub fn into_durable(
         self,
         id: &str,
         time: SystemTime,
-        invocation: &Invocation,
+        execution: &ExecutionIdentity,
     ) -> Result<NormalizedToolSuccess, &'static str> {
         let (output, pending_image) = match self.value {
             ToolSuccessValue::Content { output, parts } => {
@@ -136,7 +160,7 @@ impl ToolSuccess {
                                 &result,
                                 &format!("{id}:{index}"),
                                 time,
-                                invocation,
+                                execution,
                             ) else {
                                 valid = false;
                                 break;
@@ -170,11 +194,13 @@ impl ToolSuccess {
                 } else {
                     DurableToolProjection::Content { parts: projection }
                 };
-                if !valid || projection.validate(&invocation.session_id).is_err() {
+                if !valid || projection.validate(&execution.session_id).is_err() {
                     projection = DurableToolProjection::Failure;
                     artifacts.clear();
                 }
                 return Ok(NormalizedToolSuccess {
+                    is_error: self.is_error,
+                    loaded_tools: self.loaded_tools,
                     output,
                     projection,
                     artifacts,
@@ -182,27 +208,37 @@ impl ToolSuccess {
             }
             ToolSuccessValue::Output(output) => (output, None),
             ToolSuccessValue::Projected { output, projection } => {
-                let projection = if projection.validate(&invocation.session_id).is_ok() {
+                let projection = if projection.validate(&execution.session_id).is_ok() {
                     projection
                 } else {
                     DurableToolProjection::Failure
                 };
                 return Ok(NormalizedToolSuccess {
+                    is_error: self.is_error,
+                    loaded_tools: self.loaded_tools,
                     output,
                     projection,
                     artifacts: Vec::new(),
                 });
             }
-            ToolSuccessValue::Image { bytes, mime_type } => {
-                let (image, artifact) = image_artifact(bytes, &mime_type, id, 0, time, invocation)?;
+            ToolSuccessValue::Image {
+                bytes,
+                mime_type,
+                detail,
+            } => {
+                let (mut image, artifact) =
+                    image_artifact(bytes, &mime_type, id, 0, time, execution)?;
+                image.detail = detail;
                 (ToolOutput::Image(image), Some(artifact))
             }
         };
-        let (projection, mut artifacts) = freeze(&output, id, time, invocation);
+        let (projection, mut artifacts) = freeze(&output, id, time, execution);
         if let Some(image) = pending_image {
             artifacts.push(image);
         }
         Ok(NormalizedToolSuccess {
+            is_error: self.is_error,
+            loaded_tools: self.loaded_tools,
             output,
             projection,
             artifacts,
@@ -227,11 +263,10 @@ pub(super) fn image_artifact(
     event_id: &str,
     part: usize,
     time: SystemTime,
-    invocation: &Invocation,
+    execution: &ExecutionIdentity,
 ) -> Result<(ImageOutput, ProjectionArtifactWrite), &'static str> {
     let mime_type = normalize_mime(mime).ok_or("unsafe tool image MIME")?;
-    let (reference, artifact) =
-        media_artifact(bytes, &mime_type, event_id, part, time, invocation)?;
+    let (reference, artifact) = media_artifact(bytes, &mime_type, event_id, part, time, execution)?;
     Ok((
         ImageOutput {
             detail: None,
@@ -248,21 +283,21 @@ pub(super) fn media_artifact(
     event_id: &str,
     part: usize,
     time: SystemTime,
-    invocation: &Invocation,
+    execution: &ExecutionIdentity,
 ) -> Result<(StorageRef, ProjectionArtifactWrite), &'static str> {
     let id = format!(
         "tool-projection-{}",
         &content_digest(format!("{event_id}\0{part}").as_bytes())[7..39]
     );
     let reference = StorageRef::SessionFile {
-        session_id: invocation.session_id.clone(),
+        session_id: execution.session_id.clone(),
         relative_path: id.clone(),
     };
     let image = mime.starts_with("image/");
     let artifact = Artifact {
         id,
-        session_id: invocation.session_id.clone(),
-        turn_id: invocation.turn_id.clone(),
+        session_id: execution.session_id.clone(),
+        turn_id: execution.turn_id.clone(),
         created_at: u64::try_from(
             time.duration_since(UNIX_EPOCH)
                 .map_err(|_| "invalid media capture time")?

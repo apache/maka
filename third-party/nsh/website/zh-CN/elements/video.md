@@ -127,9 +127,12 @@ const ratio = signal(16 / 9);
 
 ## 能力声明
 
-应用声明了[能力](../docs/sandbox-and-capabilities.md)时，视频源从 `network` 允许的主机加载；指向其他主机的视频源显示为空视图，并触发 `onError`，其 `code` 为 `"ERR_ACCESS_DENIED"`。
+应用声明了[能力](../docs/sandbox-and-capabilities.md)时，视频源从 `network` 允许的主机加载；指向其他主机的视频源显示为空视图，并触发 `onError`，其 `code` 为 `"ERR_ACCESS_DENIED"`。本地文件（绝对路径或
+`file:` URL）只有在 `fs.read` 包含它时才能在桌面上播放，在移动端和 Web 上不会播放；相对路径只在 Web 上作为页面的路径播放。
 
 ## 平台说明
 
 - iOS 在 `AVPlayerLayer` 中绘制视频，设置 `controls` 时使用系统播放器视图；AVFoundation 在第一次创建视频时才加载。
+- 在 iOS 上，`audioSession="playback"` 或 `"mixWithOthers"` 允许视频在后台继续播放，应用的 `Info.plist` 还需包含
+  `UIBackgroundModes: ["audio"]`（打包应用可通过 `nsh.json` 的 `ios.infoPlist` 设置）。切回 `"default"` 后恢复系统的自动后台播放策略。
 - Android 用 MediaPlayer 在 TextureView 上播放，`controls` 使用 MediaController。

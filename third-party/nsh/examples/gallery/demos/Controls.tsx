@@ -1,9 +1,11 @@
 import { type AnimatedValue, cleanup, computed, createAnimatedValue, createMotion, effect, type JSX, LayoutAnimation, Scroll, signal, Text, token, View } from "nsh";
 import { Button as BaseButton, Checkbox, Collapsible, Combobox, type DateMatcher, DatePicker, type DateRangePreset, NumberInput, OtpInput, type OtpInputRef, Progress, Radio, RadioGroup, Select, Slider, Switch, Tab, Tabs } from "nsh/base";
 import { reduceMotion } from "nsh";
-import { platform, windowSize } from "nsh";
+import { isAvailable as mobile, Switch as SystemSwitch } from "nsh/mobile";
+import { keymap, platform, windowSize } from "nsh";
+import { DateTimePicker, isAvailable } from "nsh/mobile";
 import { Icon, type IconName } from "../icons";
-import { alpha, backdrop, Badge, Button, CalendarItem, calendarLook, Chevron, Caption, Card, checkboxLook, CheckboxMark, type CheckboxMarkKind, ChoiceLight, choiceTileLook, choiceWell, clearButtonLook, colors, comboboxLook, ComboToggle, controlSize, DemoPage, finish, focusRing, follow, hovered, IconTile, insetSurface, labelColumn, ListboxEmpty, ListboxHeader, listboxPopup, listboxSearch, listRow, MARK_WEIGHT, mono, motion, numberInputClasses, numberInputSteps, numberInputText, optionClass, OptionRow, otpCellLook, otpCells, Picker, plainRow, RadioRing, radius, RowDivider, RowLabel, Segmented, sliderFill, sliderLook, switchLook, TAB_ICON_ROOM, tabsLook, TabTitle, terminal, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, timeFieldClass, TimeSegment, tints, type Tone, toneColor, toneTint, underlineTabsLook, DisclosureChevron, disclosureTriggerLook, progressLook, progressSweep } from "../ui";
+import { alpha, backdrop, Badge, plural, Button, CalendarItem, Kbd, calendarLook, Chevron, Caption, Card, chart, checkboxLook, DateTrigger, CheckboxMark, density, type CheckboxMarkKind, ChoiceLight, choiceTileLook, choiceWell, clearButtonLook, colors, comboboxLook, ComboToggle, controlSize, DemoPage, finish, focusRing, follow, hovered, IconTile, insetSurface, labelColumn, ListboxEmpty, ListboxHeader, listboxPopup, listboxPopupStarting, listboxSearch, listRow, MARK_WEIGHT, mono, motion, numberInputClasses, numberInputSteps, numberInputText, optionClass, OptionRow, otpCellLook, otpCells, Picker, plainRow, RadioRing, radius, RowDivider, RowLabel, Segmented, sliderFill, solidTint, sliderLook, switchLook, TAB_ICON_ROOM, tabsLook, TabTitle, terminal, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, timeFieldClass, TimeSegment, tints, type Tone, toneColor, toneTint, underlineTabsLook, DisclosureChevron, disclosureTriggerLook, progressLook, progressSweep, LastEvent } from "../ui";
 import { play as sound } from "../../nsh-gallery-ui/sound";
 
 // `nsh/base`'s controls own presses, keys, the disabled state and what
@@ -23,14 +25,23 @@ import { play as sound } from "../../nsh-gallery-ui/sound";
 const size = controlSize;
 const pointer = platform.desktop;
 
-/** A row of values or of a field (`plainRow`): no presses, a hairline above all but the first. */
-const row = (first: boolean) => plainRow({ first });
+/** A row of values or of a field (`plainRow`): no presses, a hairline above all but the first; a `wide` control (a combobox) goes under its label on a touch screen. */
+const row = (first: boolean, wide = false) => plainRow({ first, wide });
 
 const pressed = { opacity: 0.7 };
-const dimmed = { opacity: 0.4 };
+const dimmed = { opacity: 0.5 };
 
 /** A layer over the whole of its parent, its content centered: layers that cross over in place. */
 const centered = { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, alignItems: "center", justifyContent: "center" } as const;
+
+/**
+ * The top of a control `height` tall in a choice tile's corner, centered on the line `center` points below the tile's
+ * padding edge (the tile's own padding is 14 on top: `choiceTileLook`), so it sits level with the icon or title it
+ * goes with; the terminal keeps `cells`.
+ */
+const cornerTop = (center: number, height: number, cells: number) => (terminal ? cells : Math.round(center - height / 2));
+/** A small box's or ring's size, as `checkboxLook({ scale: 0.8 })` and `RadioRing scale={0.8}` draw it. */
+const smallChoice = Math.round(size.control * 0.8);
 
 type Mark = CheckboxMarkKind;
 
@@ -124,8 +135,10 @@ function Dot(props: { color: string; size?: number }) {
   );
 }
 
-/** A person's initials on their tone's tint, edged in it. */
-function Avatar(props: { name: string; tone: Tone; size?: number; ring?: boolean }) {
+/** A person's initials on their tone's tint, edged in it; the tint is opaque
+ * on `on`, the color of what the face sits on (default the card), so faces
+ * that overlap hide each other, and a `ring` (in a stack) is that color too. */
+function Avatar(props: { name: string; tone: Tone; size?: number; ring?: boolean; on?: string }) {
   const d = props.size ?? 22;
   return (
     <View
@@ -135,10 +148,10 @@ function Avatar(props: { name: string; tone: Tone; size?: number; ring?: boolean
         borderRadius: d / 2,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: props.tone === "neutral" ? colors.inset : toneTint(props.tone),
+        backgroundColor: solidTint(props.tone, props.on ?? colors.surface),
         borderWidth: props.ring ? 2 : 1,
-        // In a stack, a ring of the card's color parts the faces.
-        borderColor: props.ring ? colors.surface : alpha(props.tone === "neutral" ? colors.text : toneColor(props.tone), 0.25),
+        // In a stack, a ring of the color under the faces parts them.
+        borderColor: props.ring ? (props.on ?? colors.surface) : alpha(props.tone === "neutral" ? colors.text : toneColor(props.tone), 0.25),
       }}
     >
       <Text style={{ fontSize: Math.round(d * 0.42), fontWeight: "600", color: props.tone === "neutral" ? colors.muted : toneColor(props.tone) }}>{initials(props.name)}</Text>
@@ -178,10 +191,10 @@ function Chip(props: { label: string; lead: JSX.Element; remove: string; onRemov
       <BaseButton
         accessibilityLabel={props.remove}
         onPress={props.onRemove}
-        class="items-center justify-center rounded-full enabled:hover:bg-accent active:bg-track"
+        class="items-center justify-center rounded-full enabled:hover:bg-foreground/8 active:bg-track"
         // Nearly the chip's height under a finger; a terminal's is its mark, as text.
         style={terminal ? undefined : { width: pointer ? h - 8 : h - 4, height: pointer ? h - 8 : h - 4 }}
-        focusStyle={focusRing()}
+        focusVisibleStyle={focusRing()}
       >
         <If when={terminal} else={<Icon name="close" size={pointer ? 10 : 12} tint={colors.muted} />}>
           <Text style={{ color: colors.muted }}>×</Text>
@@ -527,10 +540,10 @@ const NEW_TONES: Tone[] = ["accent", "info", "up", "warn", "down"];
 const NEW_LABEL = "new:";
 
 const COMMANDS: { value: string; title: string; group: string; icon: IconName; keys?: string; disabled?: boolean }[] = [
-  { value: "new-file", title: "New file", group: "Suggestions", icon: "document", keys: "⌘N" },
-  { value: "search", title: "Search everywhere", group: "Suggestions", icon: "search", keys: "⇧⌘F" },
-  { value: "sidebar", title: "Toggle sidebar", group: "View", icon: "sidebar", keys: "⌘B" },
-  { value: "terminal", title: "Toggle terminal", group: "View", icon: "terminal", keys: "⌃`" },
+  { value: "new-file", title: "New file", group: "Suggestions", icon: "document", keys: keymap.label("mod+n") },
+  { value: "search", title: "Search everywhere", group: "Suggestions", icon: "search", keys: keymap.label("mod+shift+f") },
+  { value: "sidebar", title: "Toggle sidebar", group: "View", icon: "sidebar", keys: keymap.label("mod+b") },
+  { value: "terminal", title: "Toggle terminal", group: "View", icon: "terminal", keys: keymap.label("ctrl+`") },
   { value: "zoom", title: "Reset zoom", group: "View", icon: "search", disabled: true },
   { value: "dark", title: "Use the dark theme", group: "Appearance", icon: "moon" },
   { value: "light", title: "Use the light theme", group: "Appearance", icon: "sun" },
@@ -613,6 +626,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
           }}
           // The track at the trailing edge, after the label; the icon leads.
           {...listRow({ first: props.first, disabled: () => props.disabled, style: { flexDirection: "row-reverse" } })}
+          trackClass={look.trackClass}
           trackStyle={look.trackStyle}
           thumbStyle={look.thumbStyle}
         >
@@ -628,7 +642,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     }
     const off = "Turn on notifications first";
     return (
-      <Card icon="controls" title="Switch" subtitle="A settings page: two groups, two settings that need another on">
+      <Card icon="controls" title="Switch" subtitle="Two groups; two settings need another on">
         <View>
           <Group first title="Alerts" />
           <Setting
@@ -663,6 +677,57 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     );
   }
 
+  /**
+   * `nsh/mobile`'s `Switch`, the system's own: a `UISwitch` on iOS and
+   * Material 3's switch on Android, on in the theme's `primary`, beside the
+   * row's label. The desktops and the web have no such control: the
+   * gallery's drawn switch stands in there.
+   */
+  function SystemSettings() {
+    const wifi = signal(true);
+    const ask = signal(true);
+    const bluetooth = signal(false);
+    function Row(props: { label: string; detail: string; on: boolean; set: (on: boolean) => void; disabled?: boolean; first?: boolean }) {
+      const flip = (on: boolean) => {
+        props.set(on);
+        last.set(`${props.label}: ${on ? "on" : "off"}`);
+      };
+      if (!mobile) {
+        const look = switchLook(() => props.on, size.switch);
+        return (
+          <Switch
+            checked={props.on}
+            disabled={props.disabled}
+            onChange={({ checked }) => flip(checked)}
+            {...listRow({ first: props.first, disabled: () => props.disabled, style: { flexDirection: "row-reverse" } })}
+            trackClass={look.trackClass}
+            trackStyle={look.trackStyle}
+            thumbStyle={look.thumbStyle}
+          >
+            <RowDivider show={!props.first} />
+            <RowLabel label={props.label} detail={props.detail} />
+          </Switch>
+        );
+      }
+      return (
+        <View style={row(!!props.first)}>
+          <RowLabel label={props.label} detail={props.detail} />
+          <SystemSwitch testID={`system-switch-${props.label}`} accessibilityLabel={props.label} checked={props.on} disabled={props.disabled} onChange={({ checked }) => flip(checked)} />
+        </View>
+      );
+    }
+    return (
+      <Card icon="system" title="The system's switch" subtitle={mobile ? "UIKit's and Material's switch, in the theme's color" : "Desktops draw the switch: nsh/base's Switch"}>
+        <View>
+          <Row first label="Wi-Fi" detail={wifi() ? "Connected" : "Off"} on={wifi()} set={(on) => wifi.set(on)} />
+          <Row label="Ask to join networks" detail={wifi() ? "Known networks join on their own" : "Turn on Wi-Fi first"} on={ask()} disabled={!wifi()} set={(on) => ask.set(on)} />
+          <Row label="Bluetooth" detail={bluetooth() ? "On" : "Off"} on={bluetooth()} set={(on) => bluetooth.set(on)} />
+        </View>
+        <Caption label={`Wi-Fi ${wifi() ? "on" : "off"} · Bluetooth ${bluetooth() ? "on" : "off"}`} />
+      </Card>
+    );
+  }
+
   function Quick() {
     const on = signal<string[]>(["Sounds", "Night Shift"]);
     const has = (name: string) => on().includes(name);
@@ -685,7 +750,9 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
             last.set(`${props.name}: ${checked ? "on" : "off"}`);
           }}
           {...choiceTileLook(() => has(props.name), { disabled: () => held(props.name), style: { width: "48%", flex: undefined, gap: 2 } })}
-          trackStyle={{ ...look.trackStyle, position: "absolute", top: 12, right: 12 }}
+          trackClass={look.trackClass}
+          // Level with the icon's circle (32 high under the tile's 14 of padding).
+          trackStyle={{ ...look.trackStyle, position: "absolute", top: cornerTop(14 + 16, look.trackStyle.height as number, 12), end: 12 }}
           thumbStyle={look.thumbStyle}
         >
           <View style={{ width: 32, height: 32, marginBottom: 8, borderRadius: 16, alignItems: "center", justifyContent: "center", borderWidth: 1, ...choiceWell(), transform: [{ scale: pop }] }}>
@@ -703,7 +770,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       );
     }
     return (
-      <Card title="Quick settings" subtitle="Tiles: the icon lights up with the switch; Focus silences the sounds">
+      <Card title="Quick settings" subtitle="The icon lights up with the switch">
         <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", rowGap: 8 }}>
           <QuickTile name="Focus" icon="moon" detail="Until tomorrow" />
           <QuickTile name="Night Shift" icon="sun" detail="Until 7:00" />
@@ -721,7 +788,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     const all = () => shown().length === KINDS.length;
     const mark = (): Mark => (all() ? "check" : shown().length > 0 ? "dash" : null);
     return (
-      <Card icon="controls" title="Checkbox" subtitle="A filter: “Select all” shows a partial selection" right={<Badge label={`${shown().length} of ${KINDS.length}`} />}>
+      <Card icon="controls" title="Checkbox" subtitle="“Select all” shows a partial selection" right={<Badge label={`${shown().length} of ${KINDS.length}`} />}>
         <View>
           <Checkbox
             checked={all()}
@@ -800,7 +867,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       );
     }
     return (
-      <Card title="Checklist" subtitle="Round boxes: a task done fades back, and the bar fills" right={<Badge label={`${done().length} of ${TASKS.length}`} tone={left() === 0 ? "up" : "neutral"} />}>
+      <Card title="Checklist" subtitle="A task done fades back; the bar fills" right={<Badge label={`${done().length} of ${TASKS.length}`} tone={left() === 0 ? "up" : "neutral"} />}>
         <View>
           <Each of={TASKS}>{(task, i) => <Task task={task()} first={i() === 0} />}</Each>
         </View>
@@ -819,7 +886,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       saved.set(false);
     };
     return (
-      <Card title="Consent" subtitle="Choices with a description each; the necessary one cannot be turned off">
+      <Card title="Consent" subtitle="A description each; the necessary one stays on">
         <View>
           <Each of={COOKIES}>
             {(c, i) => (
@@ -835,9 +902,9 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
                 // The box at the first line of the label, not its middle.
                 {...listRow({ first: i() === 0, disabled: () => c().required, style: { alignItems: "flex-start" } })}
                 // The necessary one reads as on rather than unavailable.
-                disabledStyle={{ opacity: 0.6 }}
+                disabledStyle={{ opacity: 0.5 }}
                 indicatorClass={checkboxLook().indicatorClass}
-                indicatorStyle={{ ...checkboxLook().indicatorStyle, marginTop: 2 }}
+                indicatorStyle={{ ...checkboxLook({ disabled: c().required }).indicatorStyle, marginTop: 2 }}
                 indicator={<CheckboxMark mark={c().required || has(c().name) ? "check" : null} />}
               >
                 <RowDivider show={i() !== 0} />
@@ -881,7 +948,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     const on = signal<string[]>(["Push"]);
     const has = (name: string) => on().includes(name);
     return (
-      <Card title="Choice cards" subtitle="The whole card is the checkbox: its edge and fill follow the value">
+      <Card title="Choice cards" subtitle="The whole card is the checkbox">
         <View style={{ flexDirection: "row", gap: 8 }}>
           <Each of={CHANNELS}>
             {(c) => (
@@ -897,7 +964,8 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
                 {...choiceTileLook(() => has(c().name), { disabled: () => c().disabled })}
                 // The box in the card's corner.
                 indicatorClass={checkboxLook().indicatorClass}
-                indicatorStyle={{ ...checkboxLook({ scale: 0.8 }).indicatorStyle, position: "absolute", top: 10, right: 10 }}
+                // Level with the 18-point icon.
+                indicatorStyle={{ ...checkboxLook({ scale: 0.8, disabled: c().disabled }).indicatorStyle, position: "absolute", top: cornerTop(14 + 9, smallChoice, 10), right: 12 }}
                 indicator={<CheckboxMark mark={has(c().name) ? "check" : null} scale={0.8} />}
               >
                 <Icon name={c().icon} size={18} tint={has(c().name) ? colors.accent : colors.muted} />
@@ -929,9 +997,9 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
           class="group"
           style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 4 }}
           activeStyle={pressed}
-          focusStyle={focusRing(2)}
+          focusVisibleStyle={focusRing(2)}
           disabledStyle={dimmed}
-          {...checkboxLook({ scale: props.scale })}
+          {...checkboxLook({ scale: props.scale, disabled: () => !!props.disabled })}
           indicator={<CheckboxMark mark={props.mark} scale={props.scale} />}
         >
           <Text style={{ fontSize: size.label, color: colors.text }}>{props.label}</Text>
@@ -940,7 +1008,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     }
     const line = { flexDirection: "row" as const, flexWrap: "wrap" as const, alignItems: "center" as const, columnGap: 20, rowGap: 6 };
     return (
-      <Card title="Sizes and states" subtitle="Three sizes; disabled while unchecked, checked and indeterminate">
+      <Card title="Sizes and states" subtitle="Three sizes; disabled in every state">
         <View style={line}>
           <Each of={SIZES}>
             {(z) => (
@@ -972,7 +1040,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     const chosen = () => PLANS.find((p) => p.name === plan())!;
     return (
       <Card icon="controls" title="Radio" subtitle="A plan picker: one of a small set, all in view">
-        <RadioGroup>
+        <RadioGroup accessibilityLabel="Plan">
           <Each of={PLANS}>
             {(p, i) => (
               <Radio
@@ -984,10 +1052,13 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
                   last.set(`Plan: ${p().name}`);
                 }}
                 class="group"
-                {...listRow({ first: i() === 0, disabled: () => p().disabled })}
+                // The ring at the first line of the label, as the consent rows' boxes are.
+                {...listRow({ first: i() === 0, disabled: () => p().disabled, style: { alignItems: "flex-start" } })}
               >
                 <RowDivider show={i() !== 0} />
-                <RadioRing on={plan() === p().name} />
+                <View style={{ marginTop: 2 }}>
+                  <RadioRing on={plan() === p().name} disabled={p().disabled} />
+                </View>
                 <RowLabel label={p().name} detail={p().detail} />
                 <Text style={{ fontSize: size.label, color: plan() === p().name ? colors.text : colors.muted, fontVariant: ["tabular-nums"] }}>{p().price}</Text>
               </Radio>
@@ -1009,8 +1080,8 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
   function Delivery() {
     const speed = signal("Standard");
     return (
-      <Card title="Choice cards" subtitle="Delivery: the whole card is the radio, the ring in its corner">
-        <RadioGroup style={{ flexDirection: "row", gap: 8 }}>
+      <Card title="Choice cards" subtitle="The whole card is the radio">
+        <RadioGroup accessibilityLabel="Delivery" style={{ flexDirection: "row", gap: 8 }}>
           <Each of={SPEEDS}>
             {(d) => (
               <Radio
@@ -1024,12 +1095,14 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
                 class="group"
                 {...choiceTileLook(() => speed() === d().name, { disabled: () => d().disabled })}
               >
-                <View style={{ position: "absolute", top: 10, right: 10 }}>
-                  <RadioRing on={speed() === d().name} scale={0.8} />
+                {/* Level with the title's line. */}
+                <View style={{ position: "absolute", top: cornerTop(14 + Math.round(size.label * 0.65), smallChoice, 10), right: 12 }}>
+                  <RadioRing on={speed() === d().name} scale={0.8} disabled={d().disabled} />
                 </View>
                 <Text style={{ marginRight: 20, fontSize: size.label, fontWeight: "600", color: colors.text }}>{d().name}</Text>
                 <Text style={{ fontSize: size.detail, color: colors.muted }}>{d().detail}</Text>
-                <Text style={{ marginTop: 8, fontSize: size.label, color: speed() === d().name ? colors.accent : colors.text, fontVariant: ["tabular-nums"] }}>{d().price}</Text>
+                {/* At the tile's foot, so the prices line up across tiles whatever the details' lines. */}
+                <Text style={{ marginTop: "auto", paddingTop: 8, fontSize: size.label, color: speed() === d().name ? colors.accent : colors.text, fontVariant: ["tabular-nums"] }}>{d().price}</Text>
               </Radio>
             )}
           </Each>
@@ -1043,8 +1116,8 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     const chosen = () => TEXT_SIZES.find((t) => t.name === choice())!;
     const preview = settleOn(choice);
     return (
-      <Card title="Sizes" subtitle="Rings in three sizes, one locked; the preview follows the choice">
-        <RadioGroup style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 20, rowGap: 6 }}>
+      <Card title="Sizes" subtitle="Three sizes, one locked; the preview follows">
+        <RadioGroup accessibilityLabel="Text size" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 20, rowGap: 6 }}>
           <Each of={TEXT_SIZES}>
             {(t) => (
               <Radio
@@ -1058,10 +1131,10 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
                 class="group"
                 style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 4 }}
                 activeStyle={pressed}
-                focusStyle={focusRing(2)}
+                focusVisibleStyle={focusRing(2)}
                 disabledStyle={dimmed}
               >
-                <RadioRing on={choice() === t().name} scale={t().scale} />
+                <RadioRing on={choice() === t().name} scale={t().scale} disabled={t().disabled} />
                 <Text style={{ fontSize: size.label, color: colors.text }}>{t().name}</Text>
               </Radio>
             )}
@@ -1121,9 +1194,19 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
         <View style={settle(rows)}>
           <Each of={shown().rows}>
             {(r, i) => (
+              // The overview's figures lead, their names quieter; other sections lead with the name.
               <View style={plainRow({ first: i() === 0, dense: true })}>
-                <Text style={{ flex: 1, fontSize: size.label, color: colors.text }}>{r()[0]}</Text>
-                <Text style={{ fontSize: size.label, color: colors.muted, fontVariant: ["tabular-nums"] }}>{r()[1]}</Text>
+                <Text style={{ flex: 1, fontSize: size.label, color: shown().name === "Overview" ? colors.muted : colors.text }}>{r()[0]}</Text>
+                <Text
+                  style={{
+                    fontSize: size.label,
+                    fontWeight: shown().name === "Overview" ? "500" : "400",
+                    color: shown().name === "Overview" ? colors.text : colors.muted,
+                    fontVariant: ["tabular-nums"],
+                  }}
+                >
+                  {r()[1]}
+                </Text>
               </View>
             )}
           </Each>
@@ -1146,11 +1229,12 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       return widths.length > 0 && widths.reduce((sum, w) => sum + w + TAB_ICON_ROOM + 18, 2 * (PROJECT.length - 1)) <= sized.room();
     };
     return (
-      <Card title="Underlined" subtitle="Tabs as wide as their labels: the line travels and stretches to the next">
+      <Card title="Underlined" subtitle="As wide as their labels; the line travels">
         {/* The strip scrolls when the labels do not fit; the hairline under it is outside the scroll view, so the
             strip's clipping never cuts it, and the underline (at the strip's bottom) covers it. */}
         <View onLayout={({ bounds }) => sized.room.set(bounds.size.width)} style={{ marginHorizontal: -8 }}>
-          <View style={look.rule} />
+          {/* The hairline runs from one edge of the card to the other, so its ends never hang in the padding. */}
+          <View style={terminal ? look.rule : { ...look.rule, left: 8 - density.pad, right: 8 - density.pad }} />
           <Scroll horizontal scrollbar={false} style={{ flexGrow: 0 }}>
             {/* The underline: the list's indicator at its bottom, as wide as the selected tab, which travels and
                 stretches to the next one natively. */}
@@ -1209,7 +1293,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       <Card icon="controls" title="Select" subtitle="A choice from a list: the app owns the value">
         <View>
           <View style={row(true)}>
-            <RowLabel label="Sort by" detail={pointer ? "Press a letter to jump to an order" : "Five orders in a sheet"} />
+            <RowLabel label="Sort by" detail={pointer ? "A letter jumps to an order" : "Five orders in a sheet"} />
             <Select
               items={SORTS}
               value={sort()}
@@ -1224,6 +1308,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
               align="end"
               // Wider than the trigger with a pointer: the titles whole.
               popupStyle={listboxPopup()}
+              popupStartingStyle={listboxPopupStarting()}
               backdropStyle={backdrop()}
               itemClass={optionClass}
               trigger={<Picker title={titleOf(SORTS, sort())} open={sortOpen()} />}
@@ -1231,7 +1316,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
             />
           </View>
           <View style={row(false)}>
-            <RowLabel label="Font" detail="Search, sections, one not installed" />
+            <RowLabel label="Font" detail="Searched, in sections" />
             <Select
               items={FONTS}
               value={font()}
@@ -1250,6 +1335,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
               margin={8}
               align="end"
               popupStyle={listboxPopup({ minWidth: 260 })}
+              popupStartingStyle={listboxPopupStarting()}
               backdropStyle={backdrop()}
               itemClass={optionClass}
               cleanable
@@ -1276,6 +1362,9 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     align: "end" as const,
     get popupStyle() {
       return listboxPopup({ minWidth });
+    },
+    get popupStartingStyle() {
+      return listboxPopupStarting();
     },
     get backdropStyle() {
       return backdrop();
@@ -1317,7 +1406,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     const detail = (f: (typeof DOWNLOADS)[number]) =>
       sort() === "size" ? `${f.kind} · ${ago(f.days)}` : sort() === "kind" ? `${fileSize(f.mb)} · ${ago(f.days)}` : `${f.kind} · ${fileSize(f.mb)}`;
     return (
-      <Card title="In a list header" subtitle="A quiet sort menu over the rows it orders: they move to their new places">
+      <Card title="In a list header" subtitle="A sort menu over the rows it orders">
         <View style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingBottom: size.padding, borderBottomWidth: 1, borderColor: colors.line }}>
           <Text style={{ flex: 1, fontSize: 11, fontWeight: "600", letterSpacing: 0.6, color: colors.faint }}>{`DOWNLOADS · ${DOWNLOADS.length}`}</Text>
           <Select
@@ -1346,7 +1435,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
                 }}
                 hoverStyle={open() ? undefined : hovered()}
                 activeStyle={pressed}
-                focusStyle={focusRing()}
+                focusVisibleStyle={focusRing()}
               >
                 <Text style={{ fontSize: size.detail, color: colors.muted }}>Sort by</Text>
                 <Text style={{ fontSize: size.detail, fontWeight: "500", color: colors.text }}>{sortTitle()}</Text>
@@ -1364,7 +1453,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
             onPress={() => set(sort(), !down())}
             class="items-center justify-center rounded-md enabled:hover:bg-accent active:bg-track"
             style={{ width: pointer ? 26 : 34, height: pointer ? 26 : 34 }}
-            focusStyle={focusRing()}
+            focusVisibleStyle={focusRing()}
           >
             <View class="transition-transform duration-200 motion-reduce:transition-none" style={{ transform: [{ rotate: down() ? "0deg" : "180deg" }] }}>
               <Icon name="arrow-down" size={pointer ? 14 : 16} tint={colors.muted} />
@@ -1406,7 +1495,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       );
     }
     return (
-      <Card title="Shipping" subtitle="Countries by region with their flags and codes; search narrows them">
+      <Card title="Shipping" subtitle="Countries by region with flags; search narrows">
         <View style={row(true)}>
           <RowLabel label="Country" detail="Where your order goes" />
           <Select
@@ -1461,7 +1550,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       last.set(`Issue filed: ${titleOf(STATUS_ITEMS, status())}, ${titleOf(TEAMS, team())}`);
     };
     return (
-      <Card title="Status and validation" subtitle="Statuses with their colors, a required team, a locked priority">
+      <Card title="Status and validation" subtitle="Colored statuses, a required team, a locked one">
         <View>
           <View style={row(true)}>
             <RowLabel label="Status" detail="Its dot follows the choice" />
@@ -1506,7 +1595,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
           </View>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: size.gap, marginTop: size.padding }}>
-          <Button label="File issue" size={size.switch} flex={pointer ? undefined : 1} onPress={file} />
+          <Button label="File issue" size="regular" flex={pointer ? undefined : 1} onPress={file} />
           <If when={filed() > 0}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6, transform: [{ scale: pop }] }}>
               <Icon name="check" size={size.check} tint={toneColor("up")} weight={MARK_WEIGHT} />
@@ -1531,8 +1620,8 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     return (
       <Card icon="controls" title="Combobox" subtitle="Several values from a list: the app owns them">
         <View>
-          <View style={row(true)}>
-            <RowLabel label="Topics" detail="Several at once, with search; the list stays open" />
+          <View style={row(true, true)}>
+            <RowLabel label="Topics" detail="Several, with search" />
             <Combobox
               items={TOPICS}
               multiple
@@ -1544,7 +1633,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
               onConfirm={({ value }) => last.set(`Topics confirmed: ${value.length}`)}
               onOpenChange={opened((open) => topicsOpen.set(open))}
               accessibilityLabel="Topics"
-              {...comboboxLook(() => topicsOpen())}
+              {...comboboxLook(() => topicsOpen(), { filled: () => topics().length > 0 })}
               placeholder={topics().length ? topicsTitle() : "Add topics"}
               triggerButton={<ComboToggle id="topics-toggle" open={topicsOpen()} />}
               empty={<ListboxEmpty label="No topic matches" />}
@@ -1552,6 +1641,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
               margin={8}
               align="end"
               popupStyle={listboxPopup()}
+              popupStartingStyle={listboxPopupStarting()}
               backdropStyle={backdrop()}
               itemClass={optionClass}
               cleanable
@@ -1563,8 +1653,8 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
               renderGroup={(group) => <ListboxHeader group={group} />}
             />
           </View>
-          <View style={row(false)}>
-            <RowLabel label="Reviewer" detail="One person: a choice replaces the last" />
+          <View style={row(false, true)}>
+            <RowLabel label="Reviewer" detail="One person at a time" />
             <Combobox
               items={REVIEWERS}
               value={reviewer()}
@@ -1578,6 +1668,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
               margin={8}
               align="end"
               popupStyle={listboxPopup()}
+              popupStartingStyle={listboxPopupStarting()}
               backdropStyle={backdrop()}
               itemClass={optionClass}
               {...comboboxLook(() => reviewerOpen())}
@@ -1608,9 +1699,9 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       last.set(`Assignees: ${next.map((v) => person(v).title).join(", ") || "nobody"}`);
     };
     return (
-      <Card title="Assignees" subtitle="People with their faces, up to four; each pops in as a chip" right={<Badge label={`${people().length} of ${MAX_PEOPLE}`} tone={full() ? "warn" : "neutral"} />}>
-        <View style={row(true)}>
-          <RowLabel label="Assignees" detail={full() ? "A task takes four people at most" : "Who works on the task"} />
+      <Card title="Assignees" subtitle="Up to four people, each a chip" right={<Badge label={`${people().length} of ${MAX_PEOPLE}`} tone={full() ? "warn" : "neutral"} />}>
+        <View style={row(true, true)}>
+          <RowLabel label="Assignees" detail={full() ? "Four people at most" : "Who works on the task"} />
           <Combobox
             items={items()}
             multiple
@@ -1618,15 +1709,15 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
             onChange={({ value }) => set(value)}
             onOpenChange={opened((o) => open.set(o))}
             accessibilityLabel="Assignees"
-            {...comboboxLook(() => open())}
+            {...comboboxLook(() => open(), { filled: () => people().length > 0 })}
             placeholder={people().length ? `${people().length} ${people().length === 1 ? "person" : "people"}` : "Assign"}
             triggerButton={<ComboToggle id="assignees-toggle" open={open()} />}
             prefix={
               <>
-              {/* The faces overlap, each ringed in the card's color; a terminal's initials stand a Cell apart, then a gap. */}
+              {/* The faces overlap, each ringed in the field's color; a terminal's initials stand a Cell apart, then a gap. */}
               <If when={people().length}>
                 <View style={{ flexDirection: "row", marginRight: terminal ? TERMINAL_GAP : 6 }}>
-                  <Each of={people().slice(0, 3)}>{(v, i) => <View style={{ marginLeft: i() ? (terminal ? TERMINAL_COLUMN : -6) : 0 }}><Avatar name={person(v()).title} tone={person(v()).tone} size={pointer ? 20 : 24} ring /></View>}</Each>
+                  <Each of={people().slice(0, 3)}>{(v, i) => <View style={{ marginLeft: i() ? (terminal ? TERMINAL_COLUMN : -6) : 0 }}><Avatar name={person(v()).title} tone={person(v()).tone} size={pointer ? 20 : 24} ring on={colors.field} /></View>}</Each>
                 </View>
               </If>
               </>
@@ -1638,7 +1729,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
             renderItem={(item) => (
               <OptionRow
                 item={item}
-                lead={<Avatar name={item.title} tone={person(item.value).tone} size={pointer ? 24 : 30} />}
+                lead={<Avatar name={item.title} tone={person(item.value).tone} size={pointer ? 24 : 30} on={colors.raised} />}
                 detail={person(item.value).role}
               />
             )}
@@ -1649,7 +1740,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
             {(v) => (
               <Chip
                 label={person(v()).title}
-                lead={<Avatar name={person(v()).title} tone={person(v()).tone} size={pointer ? 18 : 24} />}
+                lead={<Avatar name={person(v()).title} tone={person(v()).tone} size={pointer ? 18 : 24} on={colors.raised} />}
                 remove={`Remove ${person(v()).title}`}
                 onRemove={() => set(people().filter((p) => p !== v()))}
               />
@@ -1680,8 +1771,8 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       last.set(`Labels: ${next.map((v) => label(v)?.title ?? v).join(", ") || "none"}`);
     };
     return (
-      <Card title="Labels" subtitle="Type a label that does not exist yet and Return creates it">
-        <View style={row(true)}>
+      <Card title="Labels" subtitle="Type a new label and Return creates it">
+        <View style={row(true, true)}>
           <RowLabel label="Labels" detail="Search them, or create one" />
           <Combobox
             items={items()}
@@ -1744,7 +1835,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     const command = (value: string) => COMMANDS.find((c) => c.value === value)!;
     const t = settleOn(ran);
     return (
-      <Card title="Command list" subtitle="Grouped actions with their icons and shortcuts; running one keeps no value">
+      <Card title="Command list" subtitle="Grouped actions with icons and shortcuts">
         <Combobox
           items={COMMAND_ITEMS}
           // A command runs; it is not a value the list keeps.
@@ -1758,7 +1849,17 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
           accessibilityLabel="Command"
           {...comboboxLook(() => open())}
           placeholder={"Search commands…"}
-          triggerButton={<ComboToggle id="command-toggle" open={open()} />}
+          // A search field has no chevron: with a pointer the shortcut's key is what a press opens the list on, the
+          // field's last part; a touch screen keeps the toggle.
+          triggerButton={
+            pointer && !terminal ? (
+              <View testID="command-toggle">
+                <Kbd label={keymap.label("mod+k")} style={{ marginLeft: 6, marginRight: 2 }} />
+              </View>
+            ) : (
+              <ComboToggle id="command-toggle" open={open()} />
+            )
+          }
           prefix={
             <>
               {/* A terminal shows no icons: the placeholder says what the field does. */}
@@ -1768,8 +1869,8 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
             </>
           }
           suffix={
-            <If when={pointer}>
-              <Text style={{ ...(terminal ? { marginRight: TERMINAL_COLUMN } : { marginHorizontal: 4 }), paddingHorizontal: 5, borderRadius: 4, borderWidth: 1, borderColor: colors.line, fontSize: 11, color: colors.muted }}>⌘K</Text>
+            <If when={pointer && terminal}>
+              <Text style={{ marginRight: TERMINAL_COLUMN, color: colors.muted }}>{keymap.label("mod+k")}</Text>
             </If>
           }
           empty={<ListboxEmpty label="No command matches" />}
@@ -1829,10 +1930,10 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       return r && r[0] && r[1] ? `${monthDay(r[0])} – ${monthDay(r[1])}` : "Pick dates";
     };
     return (
-      <Card icon="controls" title="DatePicker" subtitle="A date, a range or a date and time: the app owns the value">
+      <Card icon="controls" title="DatePicker" subtitle="A date, a range, or a date and time">
         <View>
           <View style={row(true)}>
-            <RowLabel label="Due date" detail="Weekdays only; clear it to have none" />
+            <RowLabel label="Due date" detail="Weekdays; clearable" />
             <DatePicker
               value={due()}
               onChange={({ value }) => {
@@ -1847,6 +1948,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
               margin={8}
               align="end"
               popupStyle={listboxPopup()}
+              popupStartingStyle={listboxPopupStarting()}
               backdropStyle={backdrop()}
               calendarStyle={calendar}
               headerStyle={header}
@@ -1855,11 +1957,11 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
               cleanable
               clearButtonAccessibilityLabel="Clear the due date"
               {...clearButtonLook({ over: true })}
-              trigger={<Picker title={due() ? shortDate(due()!) : "No due date"} open={dueOpen()} placeholder={!due()} clearable={due() !== null} />}
+              trigger={<DateTrigger title={due() ? shortDate(due()!) : "No due date"} open={dueOpen()} placeholder={!due()} clearable={due() !== null} />}
             />
           </View>
           <View style={row(false)}>
-            <RowLabel label="Trip" detail={twoMonths() ? "Two months; a press starts the range, the next ends it" : "A press starts the range, the next ends it"} />
+            <RowLabel label="Trip" detail={twoMonths() ? "A range over two months" : "A range: press its two ends"} />
             <DatePicker
               range
               value={trip()}
@@ -1876,21 +1978,22 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
               margin={8}
               align="end"
               popupStyle={listboxPopup()}
+              popupStartingStyle={listboxPopupStarting()}
               backdropStyle={backdrop()}
               contentStyle={content}
               presetsStyle={calendarLook.presets}
               presetStyle={calendarLook.preset}
-              presetClass="enabled:hover:bg-accent active:opacity-70"
+              presetClass={calendarLook.presetClass}
               calendarStyle={calendar}
               headerStyle={header}
               bodyStyle={terminal ? undefined : { gap: monthGap }}
               itemClass={calendarItemClass}
               renderItem={(item) => <CalendarItem item={item} months={twoMonths() ? 2 : 1} />}
-              trigger={<Picker title={tripTitle()} open={tripOpen()} placeholder={!trip()} />}
+              trigger={<DateTrigger title={tripTitle()} open={tripOpen()} placeholder={!trip()} />}
             />
           </View>
           <View style={row(false)}>
-            <RowLabel label="Meeting" detail={pointer ? "A day, then its time; the day again closes" : "A tap picks the day; open it again for the time"} />
+            <RowLabel label="Meeting" detail="A day, then its time" />
             <DatePicker
               value={meeting()}
               onChange={({ value }) => {
@@ -1907,6 +2010,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
               margin={8}
               align="end"
               popupStyle={listboxPopup()}
+              popupStartingStyle={listboxPopupStarting()}
               backdropStyle={backdrop()}
               calendarStyle={calendar}
               headerStyle={header}
@@ -1917,9 +2021,9 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
               timeAccessibilityLabel="Meeting time"
               timeFieldClass={timeFieldClass}
               segmentClass={segmentClass}
-              separatorStyle={{ color: colors.faint, fontSize: size.label }}
+              separatorStyle={calendarLook.separator}
               renderSegment={(segment) => <TimeSegment label={segment.label} />}
-              trigger={<Picker title={meeting() ? shortDate(meeting()!) : "Not scheduled"} open={meetingOpen()} placeholder={!meeting()} />}
+              trigger={<DateTrigger title={meeting() ? shortDate(meeting()!) : "Not scheduled"} open={meetingOpen()} placeholder={!meeting()} />}
             />
           </View>
         </View>
@@ -1934,6 +2038,9 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     align,
     get popupStyle() {
       return listboxPopup();
+    },
+    get popupStartingStyle() {
+      return listboxPopupStarting();
     },
     get backdropStyle() {
       return backdrop();
@@ -1979,19 +2086,19 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       return sum;
     };
     const total = () => (nights() ? lodging() + CLEANING : 0);
-    /** One end of the stay in the trigger: a small heading over the day. */
+    /** One end of the stay in the trigger: a small muted heading over the day, the day in the text color or a muted prompt. */
     function End(props: { label: string; value: string | null }) {
       return (
         <View style={{ flex: 1, justifyContent: "center", gap: 1, paddingHorizontal: 12 }}>
-          <Text style={{ fontSize: 10, fontWeight: "600", letterSpacing: 0.6, color: colors.faint }}>{props.label.toUpperCase()}</Text>
-          <Text style={{ numberOfLines: 1, fontSize: size.label, color: props.value ? colors.text : colors.faint }}>{props.value ? dayTitle(props.value) : "Add a date"}</Text>
+          <Text style={{ fontSize: 10, fontWeight: "600", letterSpacing: 0.6, color: colors.muted }}>{props.label.toUpperCase()}</Text>
+          <Text style={{ numberOfLines: 1, fontSize: size.label, color: props.value ? colors.text : colors.muted }}>{props.value ? dayTitle(props.value) : "Add a date"}</Text>
         </View>
       );
     }
     return (
       <Card
         title="Booking"
-        subtitle="Check-in and check-out: the nights and the price follow; past and sold-out nights cannot be picked"
+        subtitle="Nights and price follow the dates"
         right={<Badge label={nights() ? `${nights()} ${nights() === 1 ? "night" : "nights"}` : "No dates"} tone={nights() ? "accent" : "neutral"} />}
       >
         <DatePicker
@@ -2028,8 +2135,14 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
               }}
               hoverStyle={{ borderColor: colors.faint }}
               activeStyle={pressed}
-              focusStyle={focusRing()}
+              focusVisibleStyle={focusRing()}
             >
+              {/* A date picker's trigger leads with the calendar, as `DateTrigger` does. */}
+              <If when={!terminal}>
+                <View style={{ justifyContent: "center", paddingLeft: 12, marginRight: -4 }}>
+                  <Icon name="calendar" size={pointer ? 16 : 18} tint={colors.muted} />
+                </View>
+              </If>
               <End label="Check-in" value={stay()?.[0] ?? null} />
               <View style={{ width: 1, marginVertical: 8, backgroundColor: colors.line }} />
               <End label="Check-out" value={stay()?.[1] ?? null} />
@@ -2047,13 +2160,77 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
         <View style={{ alignItems: pointer ? "flex-end" : "stretch" }}>
           <Button
             label="Reserve"
-            size={size.switch}
+            size="regular"
             disabled={!nights()}
             onPress={() => {
               const c = complete()!;
               last.set(`Reserved: ${c[0]} → ${c[1]}, ${money(total())}`);
             }}
           />
+        </View>
+      </Card>
+    );
+  }
+
+  /**
+   * A reminder set with the system's own picker (`nsh/mobile`'s
+   * `DateTimePicker`, on phones): its first day and time, the time it
+   * repeats at and the day it ends, each in the system's look; the summary
+   * follows them.
+   */
+  function Reminder() {
+    const today = new Date();
+    const starts = signal(`${iso(addDays(today, 1))}T08:00`);
+    const at = signal("09:30");
+    const until = signal(iso(addDays(today, 30)));
+    const t = settleOn(() => `${starts()} ${at()} ${until()}`);
+    const days = () => daysBetween(starts().slice(0, 10), until()) + 1;
+    return (
+      <Card title="Reminder" subtitle="The system's picker: a day, a time, or both" right={<View style={settle(t)}><Badge label={days() > 0 ? `${days()} days` : "Ends before it starts"} tone={days() > 0 ? "neutral" : "warn"} /></View>}>
+        <View>
+          <View style={row(true)}>
+            <RowLabel label="Starts" detail="The first reminder" />
+            <DateTimePicker
+              testID="reminder-starts"
+              accessibilityLabel="Starts"
+              mode="dateTime"
+              value={starts()}
+              min={`${iso(today)}T00:00`}
+              minuteInterval={15}
+              onChange={({ value }) => {
+                starts.set(value);
+                last.set(`Starts: ${value}`);
+              }}
+            />
+          </View>
+          <View style={row(false)}>
+            <RowLabel label="Every day at" detail="Five-minute steps" />
+            <DateTimePicker
+              testID="reminder-at"
+              accessibilityLabel="Every day at"
+              mode="time"
+              value={at()}
+              minuteInterval={5}
+              onChange={({ value }) => {
+                at.set(value);
+                last.set(`Every day at: ${value}`);
+              }}
+            />
+          </View>
+          <View style={row(false)}>
+            <RowLabel label="Until" detail="No later than a year" />
+            <DateTimePicker
+              testID="reminder-until"
+              accessibilityLabel="Until"
+              value={until()}
+              min={starts().slice(0, 10)}
+              max={iso(addDays(today, 365))}
+              onChange={({ value }) => {
+                until.set(value);
+                last.set(`Until: ${value}`);
+              }}
+            />
+          </View>
         </View>
       </Card>
     );
@@ -2081,7 +2258,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     };
     const t = settleOn(due);
     return (
-      <Card title="Deadline" subtitle="Quick presets beside the calendar; past days cannot be picked">
+      <Card title="Deadline" subtitle="Presets beside the calendar; no past days">
         <View>
           <View style={row(true)}>
             <View style={{ flex: 1, gap: 4, alignItems: "flex-start" }}>
@@ -2105,15 +2282,15 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
               contentStyle={content}
               presetsStyle={calendarLook.presets}
               presetStyle={calendarLook.preset}
-              presetClass="enabled:hover:bg-accent active:opacity-70"
+              presetClass={calendarLook.presetClass}
               renderItem={(item) => <CalendarItem item={item} />}
               {...clearProps("Clear the deadline")}
-              trigger={<Picker title={due() ? dayTitle(due()!) : "None"} open={open()} placeholder={!due()} clearable={due() !== null} />}
+              trigger={<DateTrigger title={due() ? dayTitle(due()!) : "None"} open={open()} placeholder={!due()} clearable={due() !== null} />}
             />
           </View>
           <View style={row(false)}>
             <RowLabel label="Sprint start" detail="Locked once the sprint began" />
-            <DatePicker value={iso(addDays(today, -9))} disabled accessibilityLabel="Sprint start" trigger={<Picker title={dayTitle(iso(addDays(today, -9)))} open={false} disabled />} />
+            <DatePicker value={iso(addDays(today, -9))} disabled accessibilityLabel="Sprint start" trigger={<DateTrigger title={dayTitle(iso(addDays(today, -9)))} open={false} disabled />} />
           </View>
         </View>
       </Card>
@@ -2149,7 +2326,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       transitionDuration: reduceMotion() ? 0 : 150,
     });
     return (
-      <Card title="Time slots" subtitle="A weekday, then one of its open times; booked ones are struck through" right={<Badge label={`${free()} open`} />}>
+      <Card title="Time slots" subtitle="A weekday, then an open time" right={<Badge label={`${free()} open`} />}>
         <View style={row(true)}>
           <RowLabel label="Day" detail="From tomorrow, on weekdays" />
           <DatePicker
@@ -2165,11 +2342,11 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
             disabledMatcher={closed}
             {...calendarProps()}
             renderItem={(item) => <CalendarItem item={item} />}
-            trigger={<Picker title={day() ? dayTitle(day()!) : "Pick a day"} open={open()} placeholder={!day()} />}
+            trigger={<DateTrigger title={day() ? dayTitle(day()!) : "Pick a day"} open={open()} placeholder={!day()} />}
           />
         </View>
         <View style={settle(t)}>
-          <RadioGroup style={{ flexDirection: "row", flexWrap: "wrap", gap: terminal ? TERMINAL_GAP : 6, justifyContent: pointer ? "flex-start" : "space-between" }}>
+          <RadioGroup accessibilityLabel="Appointment time" style={{ flexDirection: "row", flexWrap: "wrap", gap: terminal ? TERMINAL_GAP : 6, justifyContent: pointer ? "flex-start" : "space-between" }}>
             <Each of={SLOTS}>
               {(s, i) => (
                 <Radio
@@ -2183,8 +2360,8 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
                   style={chip(slot() === s())}
                   activeStyle={{ transform: [{ scale: 0.95 }] }}
                   hoverStyle={slot() === s() ? undefined : { borderColor: colors.faint }}
-                  focusStyle={focusRing()}
-                  disabledStyle={{ opacity: 0.4 }}
+                  focusVisibleStyle={focusRing()}
+                  disabledStyle={{ opacity: 0.5 }}
                 >
                   <Text
                     style={{
@@ -2205,7 +2382,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
         <View style={{ alignItems: pointer ? "flex-end" : "stretch" }}>
           <Button
             label={slot() && day() ? `Book ${dayTitle(day()!)} at ${slot()}` : "Pick a time"}
-            size={size.switch}
+            size="regular"
             disabled={!slot() || !day()}
             onPress={() => last.set(`Booked: ${dayTitle(day()!)} at ${slot()}`)}
           />
@@ -2215,7 +2392,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
   }
 
   /** The always-visible row that flips a section: the app's trigger, which tells screen readers whether it is expanded. */
-  function Summary(props: { label: string; detail?: string; open: boolean; set: (open: boolean) => void; first?: boolean }) {
+  function Summary(props: { label: string; detail?: string; open: boolean; set: (open: boolean) => void; first?: boolean; accordion?: boolean }) {
     return (
       <View
         role="button"
@@ -2229,8 +2406,9 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       >
         <RowDivider show={!props.first} />
         <RowLabel label={props.label} detail={props.detail} />
-        {/* A lane as wide as the chevron's stroke, so the chevron ends where the values below it end. */}
-        <DisclosureChevron open={props.open} />
+        {/* A lane as wide as the chevron's stroke, so the chevron ends where the values below it end;
+            an accordion's turns over as the Accordion demo's does. */}
+        <DisclosureChevron open={props.open} accordion={props.accordion} />
       </View>
     );
   }
@@ -2274,7 +2452,8 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
                     last.set(`Keep originals: ${on ? "on" : "off"}`);
                   }}
                   {...listRow({ start: size.gap, style: { flexDirection: "row-reverse" } })}
-                  trackStyle={look.trackStyle}
+                  trackClass={look.trackClass}
+          trackStyle={look.trackStyle}
                   thumbStyle={look.thumbStyle}
                 >
                   <RowDivider show />
@@ -2309,7 +2488,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
             </View>
           }
         >
-          <Summary first={props.first} label={props.q} detail="" open={open() === props.q} set={(next) => open.set(next ? props.q : null)} />
+          <Summary first={props.first} accordion label={props.q} detail="" open={open() === props.q} set={(next) => open.set(next ? props.q : null)} />
         </Collapsible>
       );
     }
@@ -2462,7 +2641,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       );
     }
     return (
-      <Card title="Several files" subtitle="Each at its own pace; a check pops in as each is sent" right={<Badge label={`${sent().filter((v) => v >= 100).length} of ${FILES.length}`} tone={all() ? "up" : "neutral"} />}>
+      <Card title="Several files" subtitle="Each at its own pace, checked when sent" right={<Badge label={`${sent().filter((v) => v >= 100).length} of ${FILES.length}`} tone={all() ? "up" : "neutral"} />}>
         <View>
           <Each of={FILES}>{(f, i) => <File name={f().name} size={f().size} icon={f().icon} value={sent()[i()]} first={i() === 0} />}</Each>
         </View>
@@ -2513,7 +2692,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       );
     }
     return (
-      <Card title="Steps" subtitle="A setup in four steps: the bar fills to the step you are on" right={<Badge label={step() >= STEPS.length ? "Done" : `Step ${step() + 1} of ${STEPS.length}`} tone={step() >= STEPS.length ? "up" : "neutral"} />}>
+      <Card title="Steps" subtitle="The bar fills to the step you are on" right={<Badge label={step() >= STEPS.length ? "Done" : `Step ${step() + 1} of ${STEPS.length}`} tone={step() >= STEPS.length ? "up" : "neutral"} />}>
         {/* The bar runs from the first dot's middle to the last's; each label is centered under its dot
             (a terminal's first and last start and end at theirs, off the card's border). */}
         <View style={{ height: DOT + 24, marginHorizontal: 24 }}>
@@ -2575,7 +2754,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     /** A meter's tone by its value: low battery red, a full disk amber. */
     const tone = (i: number, v: number): Tone | undefined => (i === 0 && v < 20 ? "danger" : i === 1 && v > 85 ? "warn" : undefined);
     return (
-      <Card title="Sizes and tones" subtitle="Thin, regular and thick bars; a tone where the value calls for one">
+      <Card title="Sizes and tones" subtitle="Thin, regular and thick; a tone when it matters">
         <View style={{ gap: size.gap + 4 }}>
           <Each of={METERS}>
             {(m, i) => (
@@ -2672,7 +2851,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
                         minHeight: 2,
                         borderTopLeftRadius: 2,
                         borderTopRightRadius: 2,
-                        backgroundColor: inRange(i(), price()) ? colors.accentFill : colors.track,
+                        backgroundColor: inRange(i(), price()) ? chart.s1 : alpha(colors.text, 0.1),
                       }}
                     />
                   )}
@@ -2709,6 +2888,21 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     );
   }
 
+  /**
+   * A band's well lit from 0 dB, its middle, to its value, so a flat band shows no gain and a cut runs down: the
+   * slider's own run, which starts at −12, stays clear.
+   */
+  const bandWell = (db: number) => {
+    const at = ((db + 12) / 24) * 100;
+    const [lo, hi] = [Math.min(50, at), Math.max(50, at)];
+    const [well, lit] = [colors.track, colors.accentFill];
+    return {
+      ...sliderLook({ vertical: true }).indicatorStyle,
+      backgroundImage: db === 0 ? "none" : `linear-gradient(0deg, ${well} ${lo}%, ${lit} ${lo}%, ${lit} ${hi}%, ${well} ${hi}%)`,
+    };
+  };
+  const clearRun = { backgroundColor: "transparent", backgroundImage: "none", borderWidth: 0 } as const;
+
   function Equalizer() {
     const bands = BANDS.map(() => signal(0));
     const preset = signal<"Flat" | "Bass" | "Vocal">("Flat");
@@ -2718,7 +2912,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       last.set(`Equalizer: ${name}`);
     };
     return (
-      <Card title="Vertical" subtitle="An equalizer: five bands from −12 to +12 dB, and presets" right={<Segmented options={EQ_PRESETS} value={preset()} onChange={apply} size="small" />}>
+      <Card title="Vertical" subtitle="Five bands from −12 to +12 dB" right={<Segmented options={EQ_PRESETS} value={preset()} onChange={apply} size="small" />}>
         {/* A terminal's controls are one row each: a band a row, its name, its slider across, its value. */}
         <If when={terminal}>
           <View style={{ gap: 4 }}>
@@ -2758,8 +2952,9 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
                 accessibilityLabel={`${name} band`}
                 onChange={({ value }) => bands[i].set(value as number)}
                 onChangeEnd={({ value }) => last.set(`${name}: ${value} dB`)}
-                rangeStyle={sliderFill(0, (bands[i]() + 12) / 24, true)}
+                rangeStyle={clearRun}
                 {...sliderLook({ vertical: true })}
+                indicatorStyle={bandWell(bands[i]())}
               />
               <Text style={{ fontSize: size.detail, color: colors.muted }}>{name}</Text>
             </View>
@@ -2861,7 +3056,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
           <Button
             label={locked() ? "Unlock seats" : "Lock seats"}
             variant="secondary"
-            size={size.switch}
+            size="regular"
             flex={pointer ? undefined : 1}
             onPress={() => {
               locked.set(!locked());
@@ -2918,7 +3113,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       );
     }
     return (
-      <Card title="Cart" subtitle="Quantities held to the stock; each subtotal and the total roll to their new values" right={<Badge label={`${qty().reduce<number>((a, b) => a + (b ?? 0), 0)} items`} />}>
+      <Card title="Cart" subtitle="Held to the stock; totals roll to new values" right={<Badge label={plural(qty().reduce<number>((a, b) => a + (b ?? 0), 0), "item")} />}>
         <View>
           <Each of={CART}>{(_, i) => <Line i={i()} first={i() === 0} />}</Each>
         </View>
@@ -2961,7 +3156,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     /** The buttons at the well's end, the increment over the decrement (new glyphs for each input). */
     const right = () => steps("pair", pointer ? "w-6" : "w-9", pointer ? 14 : 16);
     return (
-      <Card title="Units and limits" subtitle="A percentage, a currency with its code, a temperature in half degrees, a read-only rate">
+      <Card title="Units and limits" subtitle="A percentage, a currency, half degrees, a rate">
         <View>
           <Amount
             first
@@ -3041,7 +3236,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
               readonly
               accessibilityLabel="Interest rate"
               class={frame}
-              inputStyle={{ ...field(), textAlign: "right", ...spaced({ paddingRight: 2 }), color: colors.muted }}
+              inputStyle={{ ...field(), textAlign: "right", ...spaced({ paddingRight: 2 }) }}
               suffix={<Affix label="%" end />}
               {...right()}
             />
@@ -3084,7 +3279,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     cleanup(() => shake.stop());
     const tone = (): Tone | undefined => (verdict() === "Verified" ? "up" : verdict() ? "danger" : undefined);
     return (
-      <Card icon="controls" title="One-time code" subtitle={terminal ? "Six digits: type or paste them; a wrong code marks the cells" : "Six digits: type or paste them; a wrong code shakes"}>
+      <Card icon="controls" title="One-time code" subtitle={terminal ? "Six digits, typed or pasted; a wrong one marks" : "Six digits, typed or pasted; a wrong one shakes"}>
         <View style={{ alignItems: "center", gap: size.gap, paddingVertical: size.padding }}>
           <View style={shake.style}>
             <OtpInput
@@ -3216,7 +3411,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
       );
     }
     return (
-      <Card title="Sign in" subtitle={terminal ? "Send a code, then wait to resend it; a wrong one empties the cells, three lock them" : "Send a code, then wait to resend it; a wrong one shakes, three lock the cells"}>
+      <Card title="Sign in" subtitle={terminal ? "Send, wait to resend; three wrong codes lock it" : "Send, wait to resend; three wrong codes lock it"}>
         <View style={{ alignItems: "center", gap: size.gap, paddingVertical: size.padding }}>
           <View style={shake.style}>
             <OtpInput
@@ -3295,7 +3490,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     const done = () => (step() === "confirm" ? 1 : step() === "set" ? 2 : 0);
     const pinCells = pointer ? "w-11 h-11 text-xl" : "w-13 h-13 text-2xl";
     return (
-      <Card title="PIN" subtitle={terminal ? "Four masked digits, entered twice: a mismatch starts over" : "Four masked digits, entered twice: a mismatch shakes and starts over"} right={<Badge label={step() === "set" ? "Set" : `Step ${done() + 1} of 2`} tone={step() === "set" ? "up" : "neutral"} />}>
+      <Card title="PIN" subtitle={terminal ? "Entered twice; a mismatch starts over" : "Entered twice; a mismatch shakes"} right={<Badge label={step() === "set" ? "Set" : `Step ${done() + 1} of 2`} tone={step() === "set" ? "up" : "neutral"} />}>
         <View style={{ alignItems: "center", gap: size.gap, paddingVertical: size.padding }}>
           {/* The steps' bars; a terminal shows the step in the badge alone. */}
           <View style={{ flexDirection: "row", gap: 6, display: terminal ? "none" : "flex" }}>
@@ -3306,7 +3501,8 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
                     width: 28,
                     height: 4,
                     borderRadius: 2,
-                    backgroundColor: done() > i() ? colors.accent : colors.track,
+                    // Done steps filled; the one being entered half lit.
+                    backgroundColor: done() > i() ? colors.accent : done() === i() && step() !== "set" ? alpha(colors.accent, 0.4) : alpha(colors.text, 0.1),
                     transitionProperty: "background-color",
                     transitionDuration: reduceMotion() ? 0 : 200,
                   }}
@@ -3376,19 +3572,20 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
   function Last() {
     return (
       <Card icon="system" title="Last event">
-        <Text style={{ fontSize: 13, color: colors.text, fontFamily: mono }}>{last()}</Text>
+        <LastEvent value={last()} hint="Change a control" />
       </Card>
     );
   }
 
   const cards: Record<Control, (() => JSX.Element)[]> = {
-    Switch: [Settings, Quick],
+    Switch: [Settings, SystemSettings, Quick],
     Checkbox: [Filter, Checklist, Consent, Channels, BoxStates],
     Radio: [Plans, Delivery, Reading],
     Tabs: [Sections, Project],
     Select: [Choices, Downloads, Shipping, Issue],
     Combobox: [Tags, People, Labels, Commands],
-    DatePicker: [Dates, Booking, Deadline, Slots],
+    // The system's picker is on phones only: elsewhere the drawn ones stand alone.
+    DatePicker: [Dates, ...(isAvailable ? [Reminder] : []), Booking, Deadline, Slots],
     Collapsible: [Disclosure, Faq],
     Progress: [Transfers, Uploads, Steps, Meters],
     Slider: [Levels, Equalizer],

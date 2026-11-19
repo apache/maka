@@ -160,7 +160,7 @@ fn split_contracts(files: &mut BTreeMap<String, PathBuf>) {
         let end = members
             .get(at + 1)
             .map(|(_, offset)| *offset)
-            .unwrap_or_else(|| source.rfind("} satisfies").expect("contract object ending"));
+            .unwrap_or_else(|| source.rfind("\n};").expect("contract object ending"));
         let entry = source[*start..end].trim();
         let body = entry
             .strip_prefix(&format!("{name}: "))
@@ -199,6 +199,7 @@ fn main() {
     let mut source = String::from("const BUNDLED: &[Bundled] = &[\n");
     for (id, relative, resources) in [
         ("maka-cua", "platform/computer-use/skills/maka-cua", &[][..]),
+        ("maka-generative-ui", "skills/maka-generative-ui", &[][..]),
         (
             "maka-plugin-authoring",
             "skills/maka-plugin-authoring",

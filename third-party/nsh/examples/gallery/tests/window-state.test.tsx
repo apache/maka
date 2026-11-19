@@ -17,6 +17,8 @@ test("state() reports a window, and its requests change it", async () => {
   await app.waitFor("text:/^Notes: .* size=360x240 /");
   await app.press("Maximize notes");
   await app.waitFor("text:/^Notes: mode=maximized /");
+  // What shows of it: the work area, without a frame hanging over its edges.
+  await app.waitFor("Notes on display: fills");
   // An intent, not a toggle: normal again.
   await app.press("Normal notes");
   await app.waitFor("text:/^Notes: mode=normal /");
@@ -24,6 +26,15 @@ test("state() reports a window, and its requests change it", async () => {
   await app.waitFor("text:/^Notes: mode=normal minimized=true visible=false /");
   await app.press("Restore notes");
   await app.waitFor("text:/^Notes: mode=normal minimized=false visible=true /");
+});
+
+test("a window opens at the defaultPosition the app gives it", async () => {
+  const app = await open(FIXTURE, OPTIONS);
+  await app.press("Open notes");
+  await app.waitFor("text:/^Notes: mode=normal /");
+  // A normal window, without a parent or a display: the kind whose default once won over the app's position on
+  // macOS. GTK places windows itself.
+  await app.waitFor("text:/^Notes placed: (as asked|by the system)$/");
 });
 
 test("set() changes what the platform reports: sizeToContent fits the window to its content", async () => {
@@ -48,6 +59,16 @@ test("a panel opens without taking the focus; a popup closes when the focus leav
   await app.press("Focus main");
   await app.waitFor("Popup log: blur");
   await app.waitFor("Windows: main,notes,panel");
+});
+
+test("focus() as a panel opens gives it the focus a panel otherwise leaves", async () => {
+  const app = await open(FIXTURE, OPTIONS);
+  // `Window.open(..).focus()`, as the docs show: the focus is asked for
+  // before the panel's first frame. Read from the panel's own state:
+  // `focusedWindow()` stayed on the main window on Windows, also in the
+  // cases above.
+  await app.press("Open palette");
+  await app.waitFor("text:/^Palette: mode=normal minimized=false visible=true focused=true /");
 });
 
 test("a dialog closes on Escape", async () => {

@@ -107,6 +107,24 @@ pub struct ComboboxProps {
     /// The inline style of the popup or sheet, over its classes.
     #[prop(default)]
     pub popup_style: Prop<Style>,
+    /// Desktops: classes the popup has in its first frame, which its
+    /// `transition` classes animate from (Tailwind's `starting:`, CSS's
+    /// `@starting-style`): its entrance. A state's classes apply over
+    /// `popupClass` and `popupStyle`, as a state's styles do. A sheet
+    /// comes in with its own motion.
+    pub popup_starting_class: Prop<Option<SharedString>>,
+    /// Desktops: the inline style of the popup in its first frame, over
+    /// `popupStyle`.
+    #[prop(default)]
+    pub popup_starting_style: Prop<Style>,
+    /// Desktops: classes the popup has while it goes: it stays, taking no
+    /// presses, until the transitions it has then ran (`onClose` after),
+    /// so they run its exit.
+    pub popup_ending_class: Prop<Option<SharedString>>,
+    /// Desktops: the inline style of the popup while it goes, over
+    /// `popupStyle`.
+    #[prop(default)]
+    pub popup_ending_style: Prop<Style>,
     /// Touch screens: the classes of the backdrop behind the sheet
     /// (pressing it closes the list).
     pub backdrop_class: Prop<Option<SharedString>>,
@@ -139,6 +157,10 @@ pub struct ComboboxProps {
     /// too (`color`, `fontSize`, `placeholderColor`).
     #[prop(default)]
     pub input_style: Prop<InputPartStyle>,
+    /// The id UI tests find the input by (TS `inputTestID`, as `testID`
+    /// names the combobox's own view).
+    #[prop(rename = "inputTestID")]
+    pub input_test_id: Prop<Option<SharedString>>,
     /// The classes of the footer, below the rows.
     pub footer_class: Prop<Option<SharedString>>,
     /// The inline style of the footer, over its classes.
@@ -414,6 +436,7 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
     });
     lb.bind_keys(move || open.get(), choose.clone());
     listbox::bind_typeahead(
+        When::Always,
         move || open.get() && !lb.searchable.get(),
         Rc::new(move |c| lb.type_ahead(c)),
     );
@@ -479,16 +502,16 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
                 return;
             }
             cx.emit(ComboboxEvent::Close);
-            // Back to the input, unless a press outside or Tab took the
-            // keyboard somewhere else.
+        }),
+        // Back to the input, unless a press outside, Tab or the app's
+        // `onChange` took the keyboard somewhere else.
+        back: Rc::new(move |popup| {
             let by = closed_by.replace(None);
-            if is_desktop()
-                && !matches!(
-                    by,
-                    Some(OpenChangeReason::PressOutside | OpenChangeReason::Focus)
-                )
-            {
-                field.focus();
+            if !matches!(
+                by,
+                Some(OpenChangeReason::PressOutside | OpenChangeReason::Focus)
+            ) {
+                field.focus_back(popup);
             }
         }),
     };
@@ -500,6 +523,10 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
             margin: props.margin,
             popup_class: props.popup_class,
             popup_style: props.popup_style,
+            popup_starting_class: props.popup_starting_class,
+            popup_starting_style: props.popup_starting_style,
+            popup_ending_class: props.popup_ending_class,
+            popup_ending_style: props.popup_ending_style,
             backdrop_class: props.backdrop_class,
             backdrop_style: props.backdrop_style,
         },
@@ -561,6 +588,11 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
         .disabled(props.disabled)
         .role(AccessibilityRole::Combobox)
         .optional_label(props.accessibility_label)
+        // The input keeps the keyboard focus while the list is open: the
+        // highlighted row is its active descendant.
+        .accessibility_active_descendant(move || if open.get() { lb.active_row() } else { None })
+        .accessibility_controls(move || open.get().then_some(lb.listbox))
+        .when_some(props.input_test_id.get_untracked(), |f, id| f.test_id(&id))
         .accessibility_state(move || AccessibilityState {
             expanded: Some(open.get()),
             has_popup: true,

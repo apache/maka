@@ -23,7 +23,7 @@
 
 use super::{PtyCommand, stream};
 use crate::group::Group;
-use maka_agent_facts::terminal::TerminalSize;
+use maka_plugin_core::terminal::TerminalSize;
 use rustix::{
     fd::OwnedFd,
     fs::{Mode, OFlags},
@@ -47,6 +47,7 @@ pub use stream::PtyIo;
 /// belongs to that Session. Arbitrarily escaped groups are not an OS sandbox.
 pub struct PtyChild {
     group: Group,
+    foreground: Vec<Pid>,
     master: Arc<AsyncFd<OwnedFd>>,
     proxy: Option<maka_network::proxy::Proxy>,
     #[cfg(target_os = "linux")]
@@ -128,7 +129,10 @@ pub async fn spawn(
                 Ok(())
             });
         }
-        let child = command.spawn()?;
+        let child = {
+            plan.isolate_stdio(&mut command)?;
+            command.spawn()?
+        };
         Ok((child, master, changed))
     })();
     let (child, master, changed) = match spawned {
@@ -142,6 +146,7 @@ pub async fn spawn(
     Ok((
         PtyChild {
             group: Group::new(child, changed),
+            foreground: Vec::new(),
             master: master.clone(),
             proxy: plan.take_proxy(),
             #[cfg(target_os = "linux")]
@@ -152,6 +157,9 @@ pub async fn spawn(
 }
 
 impl PtyChild {
+    pub(crate) async fn root_exited(&mut self) -> io::Result<()> {
+        self.group.root_exited().await
+    }
     pub async fn resize(&mut self, size: TerminalSize) -> io::Result<()> {
         stream::resize(self.master.get_ref(), size)
     }
@@ -169,6 +177,18 @@ impl PtyChild {
         Ok(())
     }
 
+    /// Interrupt the original task session, not its external observation relay.
+    pub fn interrupt_group(&mut self) -> io::Result<bool> {
+        if self.group.reaped() {
+            return Ok(false);
+        }
+        match rustix::process::kill_process_group(self.group.pid(), Signal::INT) {
+            Ok(()) => Ok(true),
+            Err(rustix::io::Errno::SRCH) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub fn id(&self) -> u32 {
         self.group.pid().as_raw_nonzero().get() as u32
     }
@@ -176,11 +196,22 @@ impl PtyChild {
     /// Keep the root unreaped while terminating its owned group and the
     /// terminal's current foreground job. Output drain is still a separate fence.
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
-        if !self.group.reaped() {
+        let terminated = if !self.group.reaped() {
             self.group.root_exited().await?;
-            self.terminate()?;
-        }
+            self.terminate()
+        } else {
+            Ok(false)
+        };
         let status = self.group.wait().await?;
+        if let Err(error) = terminated
+            && error.raw_os_error() != Some(libc::EPERM)
+        {
+            return Err(error);
+        }
+        while let Some(group) = self.foreground.last().copied() {
+            crate::group::wait_group_closed(group).await?;
+            self.foreground.pop();
+        }
         #[cfg(target_os = "linux")]
         self.mount_cleanup.finish().await?;
         Ok(status)
@@ -205,6 +236,9 @@ impl PtyChild {
         {
             // Only use the foreground snapshot while the terminal still belongs
             // to our session. This is not an atomic group-identity guarantee.
+            if !self.foreground.contains(&group) {
+                self.foreground.push(group);
+            }
             foreground_result = signal(group);
         }
         // A privileged foreground job may reject our signal; that must not
@@ -226,7 +260,7 @@ impl Drop for PtyChild {
 fn signal(group: Pid) -> io::Result<bool> {
     match rustix::process::kill_process_group(group, Signal::KILL) {
         Ok(()) => Ok(true),
-        Err(rustix::io::Errno::SRCH) => Ok(false),
+        Err(rustix::io::Errno::SRCH | rustix::io::Errno::PERM) => Ok(false),
         Err(error) => Err(error.into()),
     }
 }

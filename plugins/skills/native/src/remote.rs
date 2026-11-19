@@ -18,8 +18,8 @@
  */
 
 //! Temporary source snapshots. No repository cache or second skill library is retained.
-use maka_agent_facts::shell_run::PipeStream;
 use maka_capabilities::call::Scope;
+use maka_plugin_core::shell_run::PipeStream;
 use maka_skills_api::contract::{DiscoveredSource, SourceSkill, SourceSnapshot};
 use std::path::{Component, Path, PathBuf};
 

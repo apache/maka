@@ -28,11 +28,17 @@ use maka_model::{ModelRequest, prompt::Message};
 use maka_plugin_core::operation::RecoveryRef;
 use maka_session_recap::recap::{self, Recaps};
 
+#[derive(Clone, Copy)]
+enum Purpose {
+    Recap,
+    Memory { attempt: u32 },
+}
 struct Backend {
+    purpose: Purpose,
     owner: Arc<Owner>,
     session: String,
     generation: Option<(RecoveryRef, OperationDispatchScope, ModelSelection)>,
-    original_resources: Arc<maka_capabilities::call::Resources>,
+    original_resources: Arc<maka_plugin_core::work::resources::Resources>,
 }
 impl Owner {
     async fn check_recap(&self, scope: &Scope, session: &str) -> Result<(), ToolError> {
@@ -49,6 +55,7 @@ impl Owner {
         generation: Option<(RecoveryRef, OperationDispatchScope, ModelSelection)>,
     ) -> Recaps {
         let backend = Arc::new(Backend {
+            purpose: Purpose::Recap,
             owner: self.clone(),
             session,
             generation,
@@ -134,36 +141,16 @@ impl recap::History for Backend {
                 return Err(failed("Recap session mismatch"));
             }
             self.owner.check_recap(&scope, &self.session).await?;
-            let high_water = self
-                .owner
-                .scoped_store(&scope, &self.session)
-                .await
-                .map_err(failed)?
-                .committed_sequence()
-                .await
-                .map_err(persistence)?;
-            let through = input.through.unwrap_or(high_water);
-            if through > high_water {
-                return Err(failed("Recap history fence invalid"));
-            }
-            let page = self
-                .owner
-                .scoped_store(&scope, &self.session)
-                .await
-                .map_err(failed)?
-                .history_text(
-                    &self.session,
-                    through,
-                    input.position,
-                    false,
-                    maka_event_log::transcript::HistoryLimits {
-                        max_bytes: 8192,
-                        max_chunks: Some(8),
-                        max_json_bytes: 96 * 1024,
-                    },
-                )
-                .await
-                .map_err(persistence)?;
+            let page = crate::service::history::read_page(
+                &self.owner,
+                &scope,
+                history::Read {
+                    include_thinking: false,
+                    ..input
+                },
+            )
+            .await
+            .map_err(failed)?;
             self.owner.check_recap(&scope, &self.session).await?;
             Ok(page)
         })
@@ -179,13 +166,16 @@ impl recap::Models for Backend {
             let (reference, dispatch, model) = self
                 .generation
                 .clone()
-                .ok_or_else(|| failed("Recap generation not admitted"))?;
+                .ok_or_else(|| failed("Auxiliary generation not admitted"))?;
             let owner = self.owner.clone();
             let runs = owner.runs.lock().await;
             if runs.closing {
                 return Err(failed("Agent owner closing"));
             }
-            self.owner.check_recap(&scope, &self.session).await?;
+            self.owner
+                .check_auxiliary_purpose(self.purpose, &scope, &self.session)
+                .await?;
+            let purpose = self.purpose;
             let mut call_ticket = scope.resources.reserve().map_err(failed)?;
             // Recaps owns a child Scope. Propagate physical cleanup to the
             // original Host mutation as well as that child and native retirement.
@@ -193,20 +183,58 @@ impl recap::Models for Backend {
             let mut owner_ticket = owner.auxiliary.resources.reserve().map_err(failed)?;
             let session = self.session.clone();
             let captured = owner.clone();
-            let worker = owner.workers.spawn(async move {
+            let (reply, result) = tokio::sync::oneshot::channel();
+            owner.workers.spawn(async move {
                 call_ticket.start();
                 original_ticket.start();
                 owner_ticket.start();
-                let result = std::panic::AssertUnwindSafe(
-                    captured.recap_model(scope, session, reference, dispatch, model, input),
-                )
-                .catch_unwind()
-                .await
-                .unwrap_or_else(|_| {
-                    Err(ToolError::CleanupUnconfirmed(
-                        "Recap worker disappeared".into(),
+                let result =
+                    std::panic::AssertUnwindSafe(captured.operation_model(
+                        scope, session, reference, dispatch, model, input, purpose,
                     ))
-                });
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(auxiliary::Error::Tool(ToolError::CleanupUnconfirmed(
+                            "Auxiliary worker disappeared".into(),
+                        )))
+                    });
+                let result = match result {
+                    Err(auxiliary::Error::Cleanup(error)) => {
+                        let message = error.to_string();
+                        let _ = reply.send(Err(ToolError::CleanupUnconfirmed(message.clone())));
+                        match error.wait_physical().await {
+                            Ok(auxiliary::PhysicalSettlement::Acknowledged) => {
+                                call_ticket.complete(Ok(()));
+                                original_ticket.complete(Ok(()));
+                                owner_ticket.complete(Ok(()));
+                            }
+                            Ok(auxiliary::PhysicalSettlement::MetadataFailure(failure)) => {
+                                let diagnostic = failure.to_string();
+                                call_ticket.unconfirmed(diagnostic.clone(), failure.clone());
+                                original_ticket.unconfirmed(diagnostic.clone(), failure.clone());
+                                owner_ticket.unconfirmed(diagnostic, failure);
+                            }
+                            Err(_) => {
+                                let error = Arc::new(error);
+                                call_ticket.unconfirmed(message.clone(), error.clone());
+                                original_ticket.unconfirmed(message.clone(), error.clone());
+                                owner_ticket.unconfirmed(message, error);
+                            }
+                        }
+                        return;
+                    }
+                    Err(auxiliary::Error::Metadata(failure)) => {
+                        let diagnostic = failure.to_string();
+                        call_ticket.unconfirmed(diagnostic.clone(), failure.clone());
+                        original_ticket.unconfirmed(diagnostic.clone(), failure.clone());
+                        owner_ticket.unconfirmed(diagnostic, failure.clone());
+                        let _ =
+                            reply.send(Err(ToolError::from(auxiliary::Error::Metadata(failure))));
+                        return;
+                    }
+                    result => result.map_err(ToolError::from),
+                };
                 let cleanup = match &result {
                     Err(ToolError::CleanupUnconfirmed(error)) => Err(error.clone()),
                     _ => Ok(()),
@@ -214,18 +242,22 @@ impl recap::Models for Backend {
                 call_ticket.complete(cleanup.clone());
                 original_ticket.complete(cleanup.clone());
                 owner_ticket.complete(cleanup);
-                result
+                let _ = reply.send(result);
             });
             drop(runs);
-            // Timeout drops only this observer; the original worker retains both cleanup tickets.
-            worker
+            // Dropping the reply observer does not stop the original worker or its cleanup tickets.
+            result
                 .await
                 .map_err(|e| ToolError::CleanupUnconfirmed(e.to_string()))?
         })
     }
 }
 impl Owner {
-    async fn recap_model(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "auxiliary request retains original scope, operation identity, model and purpose"
+    )]
+    async fn operation_model(
         &self,
         scope: Scope,
         session: String,
@@ -233,12 +265,13 @@ impl Owner {
         dispatch: OperationDispatchScope,
         model: ModelSelection,
         input: llm::Generate,
-    ) -> Result<ModelGeneration, ToolError> {
+        purpose: Purpose,
+    ) -> Result<ModelGeneration, auxiliary::Error> {
         let cancellation = scope.cancellation.child_token();
         let _cancel = cancellation.clone().drop_guard();
         let operation = async {
             input.validate().map_err(failed)?;
-            let (source, _) = crate::model::Source::select(
+            let source = crate::model::Source::select(
                 self.configuration.clone(),
                 self.catalog.clone(),
                 self.credentials.clone(),
@@ -249,13 +282,19 @@ impl Owner {
             )
             .await
             .map_err(failed)?;
+            let source = match &self.pricing {
+                Some(pricing) => source.with_pricing(Arc::clone(pricing)),
+                None => source,
+            };
             let prepared = source.capture_auxiliary().await.map_err(failed)?;
-            let quote = self
-                .configuration
-                .quote_model(prepared.provider_id, source.accepted.binding.model.clone())
-                .await
-                .map_err(persistence)?;
-            self.check_recap(&scope, &session).await?;
+            let quote = source.quote(&prepared).await.map_err(persistence)?;
+            self.check_auxiliary_purpose(purpose, &scope, &session)
+                .await?;
+            let admission = auxiliary::IdleLease(Some(
+                self.auxiliary_lease(&scope, &session)
+                    .await
+                    .map_err(ToolError::from)?,
+            ));
             let mut prompt = Vec::new();
             if let Some(content) = input.system {
                 prompt.push(Message::System {
@@ -264,7 +303,10 @@ impl Owner {
                 });
             }
             prompt.push(Message::user(input.prompt));
-            let requested = input.max_output_tokens.unwrap_or(1024).min(1024);
+            let requested = input.max_output_tokens.unwrap_or(1024).min(match purpose {
+                Purpose::Recap => 1024,
+                Purpose::Memory { .. } => 8192,
+            });
             self.auxiliary
                 .generate(
                     ModelRequest {
@@ -285,26 +327,19 @@ impl Owner {
                     &self.store,
                     auxiliary::Admission::Operation {
                         reference: Box::new(reference),
+                        attempt: match purpose {
+                            Purpose::Recap => None,
+                            Purpose::Memory { attempt } => std::num::NonZeroU32::new(attempt),
+                        },
                         scope: Box::new(dispatch),
-                        execution: scope
-                            .identity
-                            .agent()
-                            .filter(|invocation| invocation.session_id == session)
-                            .and_then(|invocation| {
-                                scope.execution().map(|execution| {
-                                    auxiliary::Execution::Invocation(
-                                        execution.clone(),
-                                        invocation.clone(),
-                                    )
-                                })
-                            }),
+                        execution: auxiliary::Execution::Prepared(admission),
                         binding: source.accepted.binding.clone(),
+                        purpose: maka_agent_facts::context::ModelPurpose::Main,
                         session_id: session,
                     },
                     quote,
                 )
                 .await
-                .map_err(ToolError::from)
         };
         tokio::pin!(operation);
         let result = tokio::select! {
@@ -313,13 +348,93 @@ impl Owner {
             result = &mut operation => result,
         };
         match result {
-            Err(error @ (ToolError::Persistence(_) | ToolError::CleanupUnconfirmed(_))) => {
+            Err(error @ (auxiliary::Error::Cleanup(_) | auxiliary::Error::Metadata(_))) => {
                 Err(error)
             }
-            _ if cancellation.is_cancelled() => Err(ToolError::OutcomeUnknown(
-                "Recap generation cancelled; read its original receipt".into(),
-            )),
+            Err(
+                error @ auxiliary::Error::Tool(
+                    ToolError::Persistence(_) | ToolError::CleanupUnconfirmed(_),
+                ),
+            ) => Err(error),
+            _ if cancellation.is_cancelled() => {
+                Err(auxiliary::Error::Tool(ToolError::OutcomeUnknown(
+                    "Auxiliary generation cancelled; read its original receipt".into(),
+                )))
+            }
             result => result,
         }
+    }
+}
+
+impl Owner {
+    async fn check_auxiliary_purpose(
+        &self,
+        purpose: Purpose,
+        scope: &Scope,
+        session: &str,
+    ) -> Result<(), ToolError> {
+        match purpose {
+            Purpose::Recap => self.check_recap(scope, session).await,
+            Purpose::Memory { .. } => {
+                if self.stop.is_cancelled() || scope.cancellation.is_cancelled() {
+                    return Err(failed("memory resolution cancelled"));
+                }
+                let session = self.scoped_session(scope, session).await.map_err(failed)?;
+                if session.configuration.incognito {
+                    return Err(failed("memory resolution cannot use an incognito session"));
+                }
+                Ok(())
+            }
+        }
+    }
+    pub(super) async fn memory_judgments(
+        self: &Arc<Self>,
+        parent: &Scope,
+        resolution: MemoryResolution,
+        reference: RecoveryRef,
+        dispatch: OperationDispatchScope,
+        prompt: String,
+        attempt: u32,
+    ) -> Result<maka_agent_state::memory::resolution::Decisions, String> {
+        use maka_session_recap::recap::Models;
+        let owned = maka_capabilities::call::Owned::new(parent.child().map_err(|e| e.to_string())?);
+        let scope = owned.scope();
+        let backend = Backend {
+            purpose: Purpose::Memory { attempt },
+            owner: self.clone(),
+            session: resolution.session_id,
+            generation: Some((reference, dispatch, resolution.model)),
+            original_resources: parent.resources.clone(),
+        };
+        let policy = self
+            .configuration
+            .runtime_policy()
+            .await
+            .map_err(|e| e.to_string())?;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(45),
+            backend.generate(
+                scope.clone(),
+                llm::Generate {
+                    language: self.resolve_language(&policy),
+                    prompt,
+                    system: Some(include_str!("memory/resolution-prompt.md").into()),
+                    max_output_tokens: Some(8192),
+                },
+            ),
+        )
+        .await;
+        scope.cancellation.cancel();
+        owned.finish().await.map_err(|e| e.to_string())?;
+        let generation = result
+            .map_err(|_| "memory semantic resolution timed out")?
+            .map_err(|e| e.to_string())?;
+        if generation.finish_reason != maka_agent_facts::model::ModelFinishReason::Stop
+            || generation.text.len() > 65536
+        {
+            return Err("memory semantic resolution incomplete".into());
+        }
+        serde_json::from_str(&generation.text)
+            .map_err(|e| format!("invalid memory semantic response: {e}"))
     }
 }

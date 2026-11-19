@@ -20,10 +20,9 @@
 //! Journaled tool execution and Code Mode.
 mod cell;
 mod code_executor;
-pub use code_executor::CodeExecutor;
-mod dispatch;
-mod executions;
-pub use dispatch::{
-    CallContinuation, PendingCall, PreparedCall, PublishedCall, RequestTools, RunTools, StepTools,
+pub use cell::{
+    CellAdmission, CellChange, CellContent, CellFuture, CellObservation, CellPersistence,
+    CodeCells, ObservedCell,
 };
+pub use code_executor::CodeExecutor;
 pub use maka_tool_catalog::*;

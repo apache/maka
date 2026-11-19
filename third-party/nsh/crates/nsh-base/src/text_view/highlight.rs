@@ -40,12 +40,12 @@ mod syntect_highlighter {
 
     use nsh_core::{prelude::*, time::Instant};
     use syntect::{
-        parsing::{ParseState, ScopeStack, SyntaxReference},
+        parsing::{ScopeStack, SyntaxReference},
         util::LinesWithEndings,
     };
 
     use crate::{
-        syntax::{Token, find_syntax, loaded, plain, scope_token, syntaxes},
+        syntax::{Parse, Token, find_syntax, loaded, plain, scope_token, syntaxes},
         text_view::CodeBlock,
     };
 
@@ -190,7 +190,7 @@ mod syntect_highlighter {
         tokens: Tokens,
         /// Where the last line starts, and the parser there: a block that
         /// grew past it is parsed on from it.
-        resume: Option<(usize, ParseState, ScopeStack)>,
+        resume: Option<(usize, Parse)>,
     }
 
     impl Cache {
@@ -221,13 +221,12 @@ mod syntect_highlighter {
                 .iter()
                 .filter(|e| e.syntax == syntax.name)
                 .filter_map(|e| {
-                    let (at, state, scopes) = e.resume.as_ref()?;
-                    code.starts_with(&e.code[..*at])
-                        .then_some((e, *at, state, scopes))
+                    let (at, parse) = e.resume.as_ref()?;
+                    code.starts_with(&e.code[..*at]).then_some((e, *at, parse))
                 })
                 .max_by_key(|(_, at, ..)| *at);
             match grown {
-                Some((entry, at, state, scopes)) => {
+                Some((entry, at, parse)) => {
                     let mut tokens: Tokens = entry
                         .tokens
                         .iter()
@@ -241,8 +240,7 @@ mod syntect_highlighter {
                         syntax,
                         code: code.to_owned(),
                         from: at,
-                        state: state.clone(),
-                        scopes: scopes.clone(),
+                        parse: parse.clone(),
                         tokens,
                         resume: None,
                         took: 0.0,
@@ -252,8 +250,7 @@ mod syntect_highlighter {
                     syntax,
                     code: code.to_owned(),
                     from: 0,
-                    state: ParseState::new(syntax),
-                    scopes: ScopeStack::new(),
+                    parse: Parse::new(syntax),
                     tokens: Tokens::new(),
                     resume: None,
                     took: 0.0,
@@ -294,10 +291,9 @@ mod syntect_highlighter {
         syntax: &'static SyntaxReference,
         code: String,
         from: usize,
-        state: ParseState,
-        scopes: ScopeStack,
+        parse: Parse,
         tokens: Tokens,
-        resume: Option<(usize, ParseState, ScopeStack)>,
+        resume: Option<(usize, Parse)>,
         /// Nanoseconds it took.
         took: f64,
     }
@@ -310,20 +306,21 @@ mod syntect_highlighter {
             let mut lines = LinesWithEndings::from(&self.code[self.from..]).peekable();
             while let Some(line) = lines.next() {
                 if lines.peek().is_none() {
-                    self.resume = Some((offset, self.state.clone(), self.scopes.clone()));
+                    self.resume = Some((offset, self.parse.clone()));
                 }
                 // A line syntect cannot parse keeps the scopes it started
                 // with; the next line starts over from them.
-                if let Ok(operations) = self.state.parse_line(line, set) {
+                let Parse { state, scopes } = &mut self.parse;
+                if let Ok(operations) = state.parse_line(line, set) {
                     let mut cursor = 0;
                     for (index, operation) in operations {
                         let range = offset + cursor..offset + index;
-                        push(&mut self.tokens, range, &self.code, &self.scopes);
-                        let _ = self.scopes.apply(&operation);
+                        push(&mut self.tokens, range, &self.code, scopes);
+                        let _ = scopes.apply(&operation);
                         cursor = index;
                     }
                     let range = offset + cursor..offset + line.len();
-                    push(&mut self.tokens, range, &self.code, &self.scopes);
+                    push(&mut self.tokens, range, &self.code, scopes);
                 }
                 offset += line.len();
             }

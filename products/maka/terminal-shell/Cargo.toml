@@ -47,6 +47,7 @@ nsh-terminal.workspace = true
 nsh-platform-macos = { workspace = true, features = ["terminal"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+maka-sandbox.workspace = true
 nsh-platform-windows = { workspace = true, features = ["terminal"] }
 
 [dev-dependencies]

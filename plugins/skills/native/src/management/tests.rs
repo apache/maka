@@ -17,469 +17,175 @@
  * under the License.
  */
 
-use super::*;
-use crate::tests::{scope, write};
+use super::{Stage, open_source, rename};
+use crate::{remote, sources};
+use cap_std::fs::Dir;
+use maka_sandbox::filesystem::{Access, Policy};
+use maka_skills::LocationId;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+use tokio_util::sync::CancellationToken;
 
-fn git(path: &Path, args: &[&str]) {
-    let output = std::process::Command::new("git")
-        .current_dir(path)
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+fn directory(path: &Path) -> Dir {
+    Dir::open_ambient_dir(path, cap_std::ambient_authority()).unwrap()
 }
 
-fn stage(home: &Path) -> Stage {
-    let policy = Arc::new(
-        Policy {
-            default: Access::Read,
-            rules: vec![],
-            deny_globs: vec![],
-        }
-        .compile()
-        .unwrap(),
-    );
-    let sources = sources::home(home.to_str().unwrap(), policy).unwrap();
-    let source = sources
-        .iter()
+fn home(path: &Path) -> sources::CapturedSource {
+    fs::create_dir_all(path).unwrap();
+    let path = fs::canonicalize(path).unwrap();
+    let policy = Arc::new(Policy::uniform(Access::Read).compile().unwrap());
+    sources::home(path.to_str().unwrap(), policy)
+        .unwrap()
+        .into_iter()
         .find(|source| source.location == Some(LocationId::UserMaka))
-        .unwrap();
-    Stage::new(source, "guide").unwrap()
+        .unwrap()
 }
 
-fn previous_skill(stage: &Stage) {
-    stage.parent.create_dir("skills/guide").unwrap();
-    stage
-        .parent
-        .write("skills/guide/content.txt", "previous")
-        .unwrap();
+fn skill(path: &Path, name: &str, body: &str, resource: &str, bytes: &[u8]) {
+    fs::create_dir_all(path.join("resources/nested")).unwrap();
+    fs::create_dir_all(path.join(".git")).unwrap();
+    fs::write(
+        path.join("SKILL.md"),
+        format!(
+            "---\nname: {name}\ndescription: Native filesystem boundary regression.\n---\n{body}\n"
+        ),
+    )
+    .unwrap();
+    fs::write(path.join("resources/nested").join(resource), bytes).unwrap();
+    fs::write(path.join(".git/ignored"), b"not a skill resource").unwrap();
 }
 
-#[test]
-fn failed_publication_restores_previous_skill_before_discarding_stage() {
-    let temporary = tempfile::tempdir().unwrap();
-    let mut stage = stage(temporary.path());
-    previous_skill(&stage);
-    let prepared = temporary.path().join(".maka").join(&stage.name);
-
-    // Missing prepared bytes make publication fail after the old skill is moved.
-    stage.publish(true).unwrap_err();
-    drop(stage);
-
-    assert_eq!(
-        std::fs::read_to_string(temporary.path().join(".maka/skills/guide/content.txt")).unwrap(),
-        "previous"
-    );
-    assert!(!prepared.exists());
-}
-
-#[test]
-fn failed_rollback_retains_previous_skill_without_replacing_concurrent_target() {
-    let temporary = tempfile::tempdir().unwrap();
-    let mut stage = stage(temporary.path());
-    previous_skill(&stage);
-    let prepared = temporary.path().join(".maka").join(&stage.name);
-
-    let error = stage
-        .publish_using(true, |root, from, to| {
-            rename(root, from, to)?;
-            if from == "skills/guide" {
-                root.create_dir("skills/guide")
-                    .map_err(|error| error.to_string())?;
-                root.write("skills/guide/content.txt", "concurrent")
-                    .map_err(|error| error.to_string())?;
-            }
-            Ok(())
-        })
-        .unwrap_err();
-    drop(stage);
-
-    assert!(error.contains("restoring previous skill failed"));
-    assert_eq!(
-        std::fs::read_to_string(prepared.join("old/content.txt")).unwrap(),
-        "previous"
-    );
-    assert_eq!(
-        std::fs::read_to_string(temporary.path().join(".maka/skills/guide/content.txt")).unwrap(),
-        "concurrent"
-    );
-}
-
-#[test]
-fn rename_error_after_moving_previous_skill_preserves_both_recovery_directories() {
-    let temporary = tempfile::tempdir().unwrap();
-    let mut stage = stage(temporary.path());
-    previous_skill(&stage);
-    {
-        let directory = stage.parent.open_dir_nofollow(&stage.name).unwrap();
-        child(&directory, "next")
+fn no_stages(home: &Path) {
+    assert!(fs::read_dir(home.join(".maka")).unwrap().all(|entry| {
+        !entry
             .unwrap()
-            .write("content.txt", "prepared")
-            .unwrap();
-    }
-    let prepared = temporary.path().join(".maka").join(&stage.name);
-
-    let error = stage
-        .publish_using(true, |root, from, to| {
-            rename(root, from, to)?;
-            Err("directory sync failed after rename".into())
-        })
-        .unwrap_err();
-    drop(stage);
-
-    assert!(error.contains("prepared directories retained"));
-    assert_eq!(
-        std::fs::read_to_string(prepared.join("old/content.txt")).unwrap(),
-        "previous"
-    );
-    assert_eq!(
-        std::fs::read_to_string(prepared.join("next/content.txt")).unwrap(),
-        "prepared"
-    );
-    assert!(!temporary.path().join(".maka/skills/guide").exists());
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".skills-")
+    }));
 }
 
 #[test]
-fn rollback_error_after_restoring_previous_skill_retains_stage() {
+fn source_selection_stays_inside_repository_and_outside_private_data() {
     let temporary = tempfile::tempdir().unwrap();
-    let mut stage = stage(temporary.path());
-    previous_skill(&stage);
-    let prepared = temporary.path().join(".maka").join(&stage.name);
-
-    let error = stage
-        .publish_using(true, |root, from, to| {
-            rename(root, from, to)?;
-            if from.ends_with("/old") {
-                return Err("directory sync failed after restoring previous skill".into());
-            }
-            Ok(())
-        })
-        .unwrap_err();
-    drop(stage);
-
-    assert!(error.contains("restoring previous skill failed"));
+    let repo = temporary.path().join("repo");
+    fs::create_dir_all(repo.join("private")).unwrap();
+    let repo = fs::canonicalize(repo).unwrap();
+    let private = fs::canonicalize(repo.join("private")).unwrap();
+    let target = home(&repo.join("home"));
+    let selected = repo.join("nested/selected");
+    skill(
+        &selected,
+        "selected-skill",
+        "selected body",
+        "original.bin",
+        &[0, 17, 255],
+    );
+    fs::create_dir_all(temporary.path().join("outside")).unwrap();
+    let root = directory(&repo);
+    let relative = PathBuf::from("nested").join("selected");
+    let opened = open_source(&root, &repo, relative.to_str().unwrap(), &private, &target).unwrap();
+    let text = remote::read_manifest(&opened).unwrap();
+    let parsed = maka_skills::parse(&text).unwrap();
+    assert_eq!(parsed.manifest.name, "selected-skill");
+    assert_eq!(parsed.body.trim(), "selected body");
     assert_eq!(
-        std::fs::read_to_string(temporary.path().join(".maka/skills/guide/content.txt")).unwrap(),
-        "previous"
+        opened.read("resources/nested/original.bin").unwrap(),
+        [0, 17, 255]
     );
-    assert!(prepared.is_dir());
-    assert!(!prepared.join("old").exists());
-}
-
-#[tokio::test]
-async fn git_snapshot_install_and_whole_directory_update_use_physical_locations() {
-    use maka_event_log::{RootStore, root::RootNamespaces};
-    let temporary = tempfile::tempdir().unwrap();
-    let base = temporary.path();
-    let home = base.join("home");
-    let projects = base.join("projects");
-    let repository = base.join("repository");
-    for path in [&home, &projects, &repository] {
-        std::fs::create_dir(path).unwrap();
-    }
-    git(&repository, &["init", "--initial-branch=trunk"]);
-    git(&repository, &["config", "user.name", "Skill test"]);
-    git(
-        &repository,
-        &["config", "user.email", "skills@example.invalid"],
-    );
-    write(&repository, "rust-guide", "first instructions");
-    write(&repository, "second-guide", "second instructions");
-    std::fs::write(
-        repository.join("rust-guide/obsolete.txt"),
-        "removed upstream",
-    )
-    .unwrap();
-    std::fs::write(repository.join("rust-guide/run.sh"), "first script").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(
-            repository.join("rust-guide/run.sh"),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
-    }
-    for index in 0..180 {
-        let example = repository
-            .join("rust-guide/examples")
-            .join(index.to_string());
-        std::fs::create_dir_all(&example).unwrap();
-        std::fs::write(example.join("input.rs"), "fn main() {}\n").unwrap();
-    }
-    std::fs::write(repository.join(".gitattributes"), "*.rs text eol=lf\n").unwrap();
-    git(&repository, &["add", "."]);
-    git(&repository, &["commit", "-m", "first"]);
-    let root = Arc::new(
-        RootOwner::create(
-            &base.join("private"),
-            &RootNamespaces {
-                ownership: base.join("owners"),
-                control: base.join("control"),
-            },
-        )
-        .unwrap(),
-    );
-    let store = Arc::new(RootStore::open(root.clone()).await.unwrap());
-    let mut library = Library::open(
-        Configuration {
-            home: Some(home.to_str().unwrap().into()),
-            project_roots: vec![maka_host_runtime::DirectoryRootSpec {
-                label: "Projects".into(),
-                path: projects.clone(),
-            }],
-            bundled: false,
-            manage: true,
-            preferences: false,
-            sources: vec![],
-        },
-        root.canonical_path().to_owned(),
-        preferences::Store::new(store.clone(), "test".into()),
-    )
-    .unwrap();
-    library.managed = Some(Managed::open(root, store.clone()));
-    let workspace = sources::tests::workspace(&projects.join("selected")).await;
-    let call = scope();
-    let library = library
-        .for_workspace(Some(workspace.clone()), &call)
-        .await
-        .unwrap();
-    let discovered = library
-        .discover_source(
-            DiscoverSource {
-                workspace: Some(workspace.clone()),
-                source: url::Url::from_directory_path(&repository)
-                    .unwrap()
-                    .to_string(),
-            },
-            &call,
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        discovered
-            .skills
-            .iter()
-            .map(|skill| skill.name.as_str())
-            .collect::<Vec<_>>(),
-        ["rust-guide", "second-guide"]
-    );
-    std::fs::remove_file(repository.join("rust-guide/obsolete.txt")).unwrap();
-    std::fs::write(repository.join("rust-guide/run.sh"), "latest script").unwrap();
-    write(&repository, "rust-guide", "latest instructions");
-    git(&repository, &["add", "."]);
-    git(&repository, &["commit", "-m", "second"]);
-    write(
-        &projects,
-        "selected",
-        "a skill authored at the project root",
-    );
-    let overlapping = library
-        .install(
-            Install {
-                workspace: Some(workspace.clone()),
-                location: LocationId::ProjectMaka,
-                source: SourceSnapshot::Directory {
-                    path: workspace.path.clone(),
-                },
-                skills: vec![String::new()],
-            },
-            &call,
-        )
-        .await
-        .unwrap();
-    assert!(
-        matches!(&overlapping.results[0], InstallOutcome::Rejected { reason, .. } if reason.contains("inside its source directory"))
-    );
-    for location in LocationId::ALL {
-        let result = library
-            .install(
-                Install {
-                    workspace: Some(workspace.clone()),
-                    location,
-                    source: discovered.source.clone(),
-                    skills: discovered
-                        .skills
-                        .iter()
-                        .map(|skill| skill.directory.clone())
-                        .collect(),
-                },
-                &call,
-            )
-            .await
-            .unwrap();
+    assert!(open_source(&root, &repo, "../outside", &private, &target).is_err());
+    assert!(open_source(&root, &repo, selected.to_str().unwrap(), &private, &target).is_err());
+    #[cfg(windows)]
+    for path in ["C:relative", "\\rooted", "..\\outside"] {
         assert!(
-            result
-                .results
-                .iter()
-                .all(|result| matches!(result, InstallOutcome::Installed { .. })),
-            "{}",
-            serde_json::to_string(&result).unwrap()
+            open_source(&root, &repo, path, &private, &target).is_err(),
+            "{path}"
         );
     }
-    let path = Path::new(&workspace.path).join(".maka/skills/rust-guide");
-    assert_eq!(
-        std::fs::read_to_string(path.join("run.sh")).unwrap(),
-        "first script",
-        "installation pins the discovered revision"
-    );
-    assert_eq!(
-        std::fs::read_to_string(path.join("examples/179/input.rs")).unwrap(),
-        "fn main() {}\n"
-    );
-    std::fs::write(path.join("run.sh"), "local edits").unwrap();
-    std::fs::write(path.join("local-only.txt"), "local addition").unwrap();
-    let snapshot = library.snapshot(&call).await.unwrap();
-    let (selected, _, _) = snapshot
-        .entries
-        .iter()
-        .find(|(entry, _, _)| entry.name == "rust-guide" && entry.shadowed_by.is_none())
-        .unwrap();
-    assert_eq!(selected.location, Some(LocationId::ProjectMaka));
-    assert!(selected.installation.is_some());
-    let reference = selected.reference.clone();
-    assert!(matches!(
-        library
-            .manage_skill(
-                ManageSkill {
-                    workspace: Some(workspace.clone()),
-                    reference: reference.clone()
-                },
-                true,
-                &call
-            )
-            .await
-            .unwrap(),
-        ChangeResult::Applied { .. }
-    ));
-    assert_eq!(
-        std::fs::read_to_string(path.join("run.sh")).unwrap(),
-        "latest script"
-    );
-    assert!(!path.join("obsolete.txt").exists());
-    assert!(!path.join("local-only.txt").exists());
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(
-            std::fs::metadata(path.join("run.sh"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o755
-        );
-    }
-    assert!(matches!(
-        library
-            .manage_skill(
-                ManageSkill {
-                    workspace: Some(workspace.clone()),
-                    reference
-                },
-                false,
-                &call
-            )
-            .await
-            .unwrap(),
-        ChangeResult::Applied { .. }
-    ));
-    let snapshot = library.snapshot(&call).await.unwrap();
-    let (selected, _, text) = snapshot
-        .entries
-        .iter()
-        .find(|(entry, _, _)| entry.name == "rust-guide" && entry.shadowed_by.is_none())
-        .unwrap();
-    assert_eq!(selected.location, Some(LocationId::ProjectAgents));
-    assert_eq!(text, "first instructions");
-    assert_eq!(
-        library
-            .managed
-            .as_ref()
-            .unwrap()
-            .registrations
-            .list()
-            .await
-            .unwrap()
-            .len(),
-        7
-    );
-    write(
-        &home.join(".agents/skills"),
-        "external",
-        "manually installed",
-    );
-    let external = "user:agents:external".to_owned();
-    let snapshot = library.snapshot(&call).await.unwrap();
+    let private_error = open_source(&root, &repo, "private", &private, &target).unwrap_err();
+    assert!(private_error.contains("overlaps private Host data"));
+    let own_source_error = open_source(&root, &repo, "home", &private, &target).unwrap_err();
+    assert!(own_source_error.contains("cannot be installed inside its source"));
     assert!(
-        snapshot
-            .entries
-            .iter()
-            .find(|(entry, _, _)| entry.reference == external)
-            .unwrap()
-            .0
-            .installation
-            .is_none()
+        selected.join("SKILL.md").is_file(),
+        "rejected selection cannot move source files"
     );
-    assert!(matches!(
-        library
-            .manage_skill(
-                ManageSkill {
-                    workspace: None,
-                    reference: external.clone()
-                },
-                true,
-                &call
-            )
-            .await
-            .unwrap(),
-        ChangeResult::Rejected { .. }
-    ));
-    assert!(matches!(
-        library
-            .manage_skill(
-                ManageSkill {
-                    workspace: None,
-                    reference: external
-                },
-                false,
-                &call
-            )
-            .await
-            .unwrap(),
-        ChangeResult::Applied { .. }
-    ));
-    assert!(!home.join(".agents/skills/external").exists());
-    assert!(home.join(".agents/skills/second-guide/SKILL.md").exists());
-    #[cfg(unix)]
-    {
-        write(base, "linked-skill", "unsafe resource");
-        std::os::unix::fs::symlink("/etc/passwd", base.join("linked-skill/escape")).unwrap();
-        let result = library
-            .install(
-                Install {
-                    workspace: None,
-                    location: LocationId::UserAgents,
-                    source: SourceSnapshot::Directory {
-                        path: base.join("linked-skill").to_str().unwrap().into(),
-                    },
-                    skills: vec![String::new()],
-                },
-                &call,
-            )
-            .await
-            .unwrap();
-        assert!(matches!(
-            &result.results[0],
-            InstallOutcome::Rejected { .. }
-        ));
-        assert!(!home.join(".agents/skills/linked-skill").exists());
-        assert!(home.join(".agents/skills/second-guide/SKILL.md").exists());
-    }
-    call.finish().await.unwrap();
-    store.shutdown().await.unwrap();
+}
+
+#[test]
+fn staged_publication_closes_handles_and_restores_previous_skill_on_failure() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home_path = temporary.path().join("home");
+    let target = home(&home_path);
+    let v1 = temporary.path().join("v1");
+    let v2 = temporary.path().join("v2");
+    skill(
+        &v1,
+        "native-skill",
+        "first version",
+        "old.bin",
+        &[0, 1, 255],
+    );
+    skill(&v2, "native-skill", "second version", "new.bin", &[3, 4, 0]);
+    let source1 = directory(&v1);
+    let source2 = directory(&v2);
+    let cancellation = CancellationToken::new();
+    let installed = home_path.join(".maka/skills/native-skill");
+    let mut initial = Stage::new(&target, "native-skill").unwrap();
+    initial.prepare(&source1, &cancellation).unwrap();
+    initial.publish(false).unwrap();
+    initial.cleanup().unwrap();
+    assert_eq!(
+        fs::read(installed.join("SKILL.md")).unwrap(),
+        fs::read(v1.join("SKILL.md")).unwrap()
+    );
+    assert_eq!(
+        fs::read(installed.join("resources/nested/old.bin")).unwrap(),
+        [0, 1, 255]
+    );
+    assert!(!installed.join(".git").exists());
+    no_stages(&home_path);
+
+    let mut replacement = Stage::new(&target, "native-skill").unwrap();
+    replacement.prepare(&source2, &cancellation).unwrap();
+    let error = replacement
+        .publish_using(true, |root, from, to| {
+            if from.ends_with("/next") {
+                Err("injected publication failure".into())
+            } else {
+                rename(root, from, to)
+            }
+        })
+        .unwrap_err();
+    assert_eq!(error, "injected publication failure");
+    assert_eq!(
+        fs::read(installed.join("SKILL.md")).unwrap(),
+        fs::read(v1.join("SKILL.md")).unwrap()
+    );
+    assert_eq!(
+        fs::read(installed.join("resources/nested/old.bin")).unwrap(),
+        [0, 1, 255]
+    );
+    assert!(!installed.join("resources/nested/new.bin").exists());
+    replacement.cleanup().unwrap();
+    no_stages(&home_path);
+
+    let mut final_stage = Stage::new(&target, "native-skill").unwrap();
+    final_stage.prepare(&source2, &cancellation).unwrap();
+    final_stage.publish(true).unwrap();
+    final_stage.cleanup().unwrap();
+    assert_eq!(
+        fs::read(installed.join("SKILL.md")).unwrap(),
+        fs::read(v2.join("SKILL.md")).unwrap()
+    );
+    assert_eq!(
+        fs::read(installed.join("resources/nested/new.bin")).unwrap(),
+        [3, 4, 0]
+    );
+    assert!(!installed.join("resources/nested/old.bin").exists());
+    assert!(!installed.join(".git").exists());
+    no_stages(&home_path);
 }

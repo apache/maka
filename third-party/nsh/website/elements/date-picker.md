@@ -88,7 +88,7 @@ function App() {
       presetClass="rounded-md px-2 py-1.5 text-sm hover:bg-accent"
       headerClass="flex-row items-center justify-between"
       rowClass="flex-row justify-between"
-      itemClass="h-8 min-w-8 items-center justify-center rounded-md text-sm focus:ring-2 focus:ring-ring selected:bg-primary selected:text-primary-foreground disabled:opacity-50"
+      itemClass="h-8 min-w-8 items-center justify-center rounded-md text-sm focus-visible:ring-2 focus-visible:ring-ring selected:bg-primary selected:text-primary-foreground disabled:opacity-50"
       timeClass="mt-2 gap-3"
       timeLabel={<Text class="text-sm">Time</Text>}
       timeAccessibilityLabel="Due time"
@@ -152,6 +152,25 @@ field (`timeFieldClass`, `timeFieldStyle`, `timeAccessibilityLabel`) at its end:
 spread apart (`flex-row items-center justify-between`, as `gpui-component`'s). The field's segments are a
 [TimeField](./time-field.md)'s (`segmentClass`, `separatorClass`, `renderSegment`).
 
+## Entrance and exit
+
+On the desktops the popup comes and goes with your transitions, as a [Popover](./popover.md#entrance-and-exit)'s:
+`popupStartingClass` is its look in its first frame, and the `transition-*` classes of `popupClass` carry it to its own
+look; `popupEndingClass` is its look once closed, which it keeps, taking no presses, while those transitions run, and
+`onClose` follows. The keyboard focus is back on the trigger as it closes, unless the choice's `onChange` focused
+another view (the next field of a form), which keeps it. Opened again on its way out, it returns to its look from where
+it is. `popupStartingStyle` and `popupEndingStyle` do the same with inline styles. When the user asks for less motion it
+appears and goes at once; the sheet of touch screens slides in and out on its own.
+
+```tsx
+<DatePicker
+  popupClass="rounded-lg bg-popover p-3 shadow-md transition-all duration-150 ease-out"
+  popupStartingClass="opacity-0 -translate-y-1"
+  popupEndingClass="opacity-0"
+  trigger={<DateTrigger />}
+/>
+```
+
 ## Props
 
 | Prop | Rust | Type | Default | Description |
@@ -172,6 +191,8 @@ spread apart (`flex-row items-center justify-between`, as `gpui-component`'s). T
 | `previousAccessibilityLabel`, `nextAccessibilityLabel` | as `Calendar`'s | `string` | none | What screen readers say for the calendar's Previous and Next. |
 | `placement`, `align`, `offset`, `margin` | `.placement(..)`, ... | as `Select`'s | `"bottom"`, `"start"`, 0, 0 | Desktops: where the popup goes against the trigger. |
 | `popupClass`, `popupStyle` | `.popup_class(..)`, `.popup_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The popup (desktops) or the sheet (touch screens). |
+| `popupStartingClass`, `popupStartingStyle` | `.popup_starting_class(..)`, `.popup_starting_style(..)` | `string`, `StyleProp<ViewStyle>` | none | Desktops: the popup's look in its first frame, over its own: its transitions run from it. |
+| `popupEndingClass`, `popupEndingStyle` | `.popup_ending_class(..)`, `.popup_ending_style(..)` | `string`, `StyleProp<ViewStyle>` | none | Desktops: the popup's look once closed, over its own: it stays while its transitions run. |
 | `backdropClass`, `backdropStyle` | `.backdrop_class(..)`, `.backdrop_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The backdrop behind the sheet. |
 | `contentClass`, `contentStyle` | `.content_class(..)`, `.content_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The popup's content: the presets beside the calendar and the time. |
 | `presetsClass`, `presetsStyle` | `.presets_class(..)`, `.presets_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The presets' column. |

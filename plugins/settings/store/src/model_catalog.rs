@@ -19,8 +19,6 @@
 
 use crate::Result;
 mod entry;
-mod limits;
-pub(crate) use limits::validate_overrides;
 use maka_agent_facts::configuration::ConnectionCatalogEntry;
 use maka_agent_facts::configuration::ModelCatalogEntry;
 use maka_agent_facts::configuration::ModelInfo;

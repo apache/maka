@@ -17,26 +17,64 @@
  * under the License.
  */
 
-import { displayText, tr } from './locale';
-import { computed, effect, inputAction, platform, Scroll, signal, Text, View } from 'nsh';
+import { tr } from './locale';
+import { formatDuration } from './duration';
+import {
+  cleanup,
+  computed,
+  effect,
+  inputAction,
+  platform,
+  reduceMotion,
+  Scroll,
+  signal,
+  Text,
+  View,
+  type ViewRef,
+} from 'nsh';
+import { Button } from 'nsh/base';
 import type { HistoryTool } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Row } from './history';
+import type { MessageSenders } from './messageSenders';
 import type { ImagePreview } from './ImageThumbnail';
 import { ToolImage, ToolImageStrip, toolImages } from './ToolImage';
-import { createToolSource, OriginalToolSource, type ToolSourceRef } from './ToolSource';
-import { cardFamily, processFamily, toolArguments, toolResult, type ToolFamily } from './toolCards';
+import {
+  createToolSource,
+  OriginalToolSource,
+  type ToolSourceRef,
+  type ToolSource,
+} from './ToolSource';
+import {
+  cardFamily,
+  processFamily,
+  providerSearchKey,
+  processResourceRef,
+  toolArguments,
+  toolResult,
+  type ToolProjection,
+} from './toolCards';
+import {
+  activityFailure,
+  activityIcon,
+  activityPresentation,
+  activityProjection,
+  activityTitle,
+} from './toolActivityPresentation';
 import { ToolReader } from './ToolReader';
+import { ProviderSearchCard } from './ProviderSearchCard';
 import {
   C,
   captionTextStyle,
   controlStyle,
+  controlFocusStyle,
+  controlHoverStyle,
   Disclosure,
   disclosureContentInset,
   disclosureTitleStyle,
   IconButton,
   textTooltip,
 } from './ui';
-import { LoadingIndicator } from './Loading';
+import { LoadingIndicator, ShimmerText } from './Loading';
 import { toolActivitySummary, type ToolActivity } from './toolActivity';
 import { Icon } from './Icon';
 import { viewRuntimeContext } from './plugins/viewContext';
@@ -44,11 +82,22 @@ import { PluginView } from './plugins/PluginView';
 import { useHost } from './host';
 
 const detailsGap = 8;
-// The 32-point copy button in the card's first row is concentric with its corner.
-const cardPadding = { top: 4, right: 4, bottom: 12, left: disclosureContentInset(0) };
+/**
+ * The desktop card spans its row as the row's hover fill and trailing actions
+ * do, past the icon lane on both sides, so the two line up. Its text keeps the
+ * text lane.
+ */
+const cardOutset = 8;
+const cardPadding = {
+  top: 12,
+  right: 12 + cardOutset,
+  bottom: 12,
+  left: disclosureContentInset(0) + cardOutset,
+};
 const cardStyle = () => ({
   backgroundColor: C.card,
   borderRadius: 12,
+  marginHorizontal: -cardOutset,
   paddingTop: cardPadding.top,
   paddingRight: cardPadding.right,
   paddingBottom: cardPadding.bottom,
@@ -111,17 +160,6 @@ function Status(props: { label: string; kind?: StatusKind }) {
   );
 }
 
-const familyIcon = (family: ToolFamily) =>
-  processFamily(family)
-    ? 'terminal'
-    : family === 'read' || family === 'fetch'
-      ? 'file'
-      : family === 'write' || family === 'edit' || family === 'patch'
-        ? 'edit'
-        : family === 'glob' || family === 'grep' || family === 'webSearch'
-          ? 'search'
-          : 'activity';
-
 function reference(tool: HistoryTool, field: 'arguments' | 'result'): ToolSourceRef | null {
   const position = (field === 'arguments' ? tool.call : tool.result)?.position;
   return position
@@ -133,13 +171,7 @@ function reference(tool: HistoryTool, field: 'arguments' | 'result'): ToolSource
         presentation: tool.call ? tool.call.presentation : undefined,
         callPosition: tool.call?.position ?? null,
         resultPosition: tool.result?.position ?? null,
-        key: JSON.stringify([
-          field,
-          tool.toolUseId,
-          position.sourceSequence,
-          position.itemIndex,
-          tool.call?.presentation ?? null,
-        ]),
+        key: JSON.stringify([field, tool.toolUseId, position, tool.call?.presentation ?? null]),
       }
     : null;
 }
@@ -210,16 +242,11 @@ function Outcome(props: { reference: ToolSourceRef; sessionId: string; through: 
           />
         }
       >
-        <If
-          when={processFamily(cardFamily(props.reference.presentation))}
-          else={<Status label={tr('Completed')} kind="success" />}
-        >
-          <ProcessOutcome
-            reference={props.reference}
-            sessionId={props.sessionId}
-            through={props.through}
-          />
-        </If>
+        <ProcessOutcome
+          reference={props.reference}
+          sessionId={props.sessionId}
+          through={props.through}
+        />
       </If>
     </If>
   );
@@ -232,67 +259,191 @@ function Field(props: {
   original(): boolean;
   userScroll(): void;
   tool(): HistoryTool;
+  source?: ToolSource;
+  writeResult?: ToolSource;
+  senders?: MessageSenders;
   /** Called once a complete result is read, with whether its view shows a process's command. */
   showsCommand?(shown: boolean): void;
+  previewTerminal?(ref: string, restoreFocus: () => boolean): void;
 }) {
   const host = useHost();
   const plugins = viewRuntimeContext()!;
-  const source = createToolSource(host, props.reference, props.sessionId, props.through);
+  const source =
+    props.source ?? createToolSource(host, props.reference, props.sessionId, props.through);
   const family = cardFamily(source.original.presentation);
   const renderer = () => plugins.renderer(source.original.presentation);
+  const presentation = activityPresentation(source.original.presentation);
   const value = computed(() => (source.format() === 'json' ? source.json() : source.content()));
-  const projection = computed(() =>
-    props.reference.field === 'arguments'
-      ? toolArguments(family, value())
-      : toolResult(family, value()),
-  );
+  const terminalRef = () =>
+    props.previewTerminal &&
+    props.reference.field === 'result' &&
+    props.reference.position.kind === 'live' &&
+    family === 'execute' &&
+    source.complete() &&
+    !source.error()
+      ? processResourceRef(value())
+      : null;
+  let terminalLink: ViewRef | undefined;
+  cleanup(() => {
+    terminalLink = undefined;
+  });
+  const projection = computed<ToolProjection | null>(() => {
+    if (!source.complete() || source.error()) return null;
+    const result = props.tool().result;
+    if (props.reference.field === 'result' && result?.isError && (presentation || family)) {
+      const failure = activityFailure(value());
+      if (failure) return failure;
+    }
+    if (presentation) {
+      const projected = activityProjection(presentation, props.reference.field, value(), {
+        returned: result?.settlement === 'returned' && !result.isError,
+        sessionTitle: (id) => props.senders?.session(id)?.title,
+      });
+      if (projected) return projected;
+    }
+    if (props.reference.field !== 'arguments') return toolResult(family, value());
+    const target = props.tool().call?.externalTarget;
+    switch (target?.kind) {
+      case 'command':
+        return {
+          kind: 'sections',
+          sections: [
+            { label: tr('Requested command'), text: target.command, style: 'code' },
+            ...(target.cwd ? [{ label: tr('Working directory'), text: target.cwd }] : []),
+          ],
+        };
+      case 'file':
+        return {
+          kind: 'sections',
+          sections: [{ label: tr('File'), text: target.path, style: 'code' }],
+        };
+      case 'search':
+        return { kind: 'sections', sections: [{ label: tr('Search query'), text: target.query }] };
+      default:
+        const argument = toolArguments(family, value());
+        if (
+          argument?.kind === 'change' &&
+          argument.value.phase === 'requested' &&
+          argument.value.operation === 'write' &&
+          props.writeResult?.complete()
+        ) {
+          const write = toolResult('write', props.writeResult.json());
+          if (
+            write?.kind === 'change' &&
+            write.value.phase === 'recorded' &&
+            write.value.operation === 'write' &&
+            write.value.previous !== null
+          )
+            return { kind: 'change', value: { ...argument.value, previous: write.value.previous } };
+        }
+        return argument;
+    }
+  });
   effect(() => {
     if (props.showsCommand && (source.complete() || source.error()))
       props.showsCommand(!renderer() && !source.error() && projection()?.kind === 'process');
   });
   return (
     <If
-      when={!props.original() && !!renderer() && source.complete() && !source.error()}
-      else={
-        <If
-          when={!props.original() && projection() !== null}
-          else={
-            <OriginalToolSource
-              source={source}
-              label={
-                props.reference.field === 'arguments'
-                  ? tr('Original arguments')
-                  : tr('Original result')
-              }
-            />
-          }
-        >
-          <View selectable>
-            <ToolReader value={projection()!} source={source} userScroll={props.userScroll} />
-          </View>
-        </If>
+      when={
+        props.original() ||
+        (source.complete() &&
+          (!props.writeResult || props.writeResult.complete() || !!props.writeResult.error())) ||
+        source.error() ||
+        !(family || presentation || renderer())
       }
+      else={<LoadingIndicator label={tr('Reading details…')} color={C.muted} />}
     >
-      <Each of={renderer() ? [renderer()!] : []} key={(item) => item.key}>
-        {(item) => (
-          <PluginView
-            runtime={plugins}
-            contribution={item()}
-            sessionId={() => props.sessionId}
-            tool={() => ({
-              field: props.reference.field,
-              value: value(),
-              sessionId: props.sessionId,
-              through: props.through,
-              tool: props.tool(),
-              userScroll: props.userScroll,
-            })}
-          />
-        )}
-      </Each>
+      <If when={terminalRef()}>
+        <Button
+          ref={(node) => {
+            terminalLink = node;
+          }}
+          onPress={() => {
+            const ref = terminalRef();
+            if (!ref) return;
+            props.previewTerminal?.(ref, () => {
+              if (!terminalLink) return false;
+              terminalLink.focus();
+              return true;
+            });
+          }}
+          style={{
+            ...controlStyle,
+            alignSelf: 'flex-start',
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 6,
+          }}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
+        >
+          <Icon name="terminal" size={14} color={C.muted} />
+          <Text style={{ ...captionTextStyle, color: C.text }}>{tr('View terminal')}</Text>
+        </Button>
+      </If>
+      <If
+        when={!props.original() && !!renderer() && source.complete() && !source.error()}
+        else={
+          <If
+            when={!props.original() && projection() !== null}
+            else={
+              <OriginalToolSource
+                source={source}
+                label={
+                  props.reference.field === 'arguments'
+                    ? tr('Original arguments')
+                    : !props.original() && props.tool().call?.origin === 'executor'
+                      ? tr('Output')
+                      : tr('Original result')
+                }
+              />
+            }
+          >
+            <View selectable>
+              <ToolReader value={projection()!} source={source} userScroll={props.userScroll} />
+            </View>
+          </If>
+        }
+      >
+        <Each of={renderer() ? [renderer()!] : []} key={(item) => item.key}>
+          {(item) => (
+            <PluginView
+              runtime={plugins}
+              contribution={item()}
+              sessionId={() => props.sessionId}
+              tool={() => ({
+                field: props.reference.field,
+                value: value(),
+                sessionId: props.sessionId,
+                through: props.through,
+                tool: props.tool(),
+                userScroll: props.userScroll,
+              })}
+            />
+          )}
+        </Each>
+      </If>
     </If>
   );
 }
+
+function WriteFields(
+  props: Omit<Parameters<typeof Field>[0], 'reference' | 'source' | 'writeResult'> & {
+    argumentsRef: ToolSourceRef;
+    resultRef: ToolSourceRef;
+  },
+) {
+  const result = createToolSource(useHost(), props.resultRef, props.sessionId, props.through);
+  return (
+    <>
+      <Field {...props} reference={props.resultRef} source={result} />
+      <Field {...props} reference={props.argumentsRef} writeResult={result} />
+    </>
+  );
+}
+
+const useToolShimmer = () => platform.idiom !== 'terminal' && !reduceMotion();
 
 /** A tool whose call is still streaming in has no record to open yet. */
 export function LiveToolRow(props: { activity(): ToolActivity }) {
@@ -300,7 +451,7 @@ export function LiveToolRow(props: { activity(): ToolActivity }) {
     props.activity().phase === 'preparing' ? tr('Preparing tool') : tr('Running tool');
   const title = () => {
     const value = props.activity();
-    return value.title ? displayText(value.title) : value.name;
+    return value.source === 'native' && !value.title ? phase() : activityTitle(value);
   };
   return (
     <Disclosure
@@ -310,16 +461,18 @@ export function LiveToolRow(props: { activity(): ToolActivity }) {
       foldable={false}
       terminalInset={controlStyle.paddingHorizontal}
       onPress={() => {}}
-      trailing={<Status label={phase()} kind={props.activity().phase} />}
+      trailing={
+        <If when={!useToolShimmer()}>
+          <Status label={phase()} kind={props.activity().phase} />
+        </If>
+      }
     >
-      <Text
-        style={[
-          { ...disclosureTitleStyle, color: C.secondary },
-          { numberOfLines: 1, textOverflow: 'ellipsis' },
-        ]}
+      <If
+        when={useToolShimmer()}
+        else={<Text style={{ ...disclosureTitleStyle, color: C.secondary }}>{title()}</Text>}
       >
-        {title()}
-      </Text>
+        <ShimmerText text={title()} style={disclosureTitleStyle} />
+      </If>
     </Disclosure>
   );
 }
@@ -335,53 +488,71 @@ export function ToolCard(props: {
   maxHeight(): number;
   reading?(): void;
   expand(action: { sessionId: string; key: string; value: boolean }): void;
+  openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   showOriginal(action: { sessionId: string; key: string; value: boolean }): void;
+  inspect?(key: string): void;
   previewImage(image: ImagePreview): void;
+  previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   userScroll(): void;
+  senders?: MessageSenders;
 }) {
   const tool = (): HistoryTool | null => props.row().tool ?? null;
   const family = () => cardFamily(tool()?.call?.presentation);
-  const title = () => {
-    const supplied = tool()?.call?.title;
-    if (supplied) return displayText(supplied);
-    switch (family()) {
-      case 'read':
-        return tr('Read file');
-      case 'write':
-        return tr('Write file');
-      case 'edit':
-        return tr('Edit file');
-      case 'patch':
-        return tr('Patch file');
-      case 'glob':
-        return tr('Find files');
-      case 'grep':
-        return tr('Search files');
-      case 'execute':
-        return tr('Run command');
-      case 'processRead':
-        return tr('Read process output');
-      case 'stdin':
-        return tr('Send process input');
-      case 'stop':
-        return tr('Stop process');
-      case 'fetch':
-        return tr('Read web page');
-      case 'webSearch':
-        return tr('Search the web');
+  const externalTarget = () => tool()?.call?.externalTarget;
+  const icon = () => {
+    switch (externalTarget()?.kind) {
+      case 'command':
+        return 'terminal';
+      case 'file':
+        return 'file';
+      case 'search':
+        return 'search';
       default:
-        return tool()?.call?.name ?? tr('Tool');
+        return activityIcon(tool()?.call?.presentation);
     }
+  };
+  const title = () => {
+    const call = tool()?.call;
+    if (call?.presentation === providerSearchKey && props.expanded()) return tr('Search the web');
+    return progress() === 'preparing' && !call?.presentation && !call?.title
+      ? tr('Preparing tool')
+      : activityTitle(call);
   };
   // Open at the recorded output; the complete original arguments remain below,
   // except a process's command once its recorded result shows it. Until that
   // result is read, a successful settlement is taken to show it.
   const resultShowsCommand = signal<boolean | null>(null);
+  const plugins = viewRuntimeContext();
+  const presentation = () => activityPresentation(tool()?.call?.presentation);
+  const progress = () => {
+    const phase = props.progress?.();
+    return phase === 'preparing' && tool()?.call?.dispatched ? 'running' : phase;
+  };
+  const progressLabel = () =>
+    progress() === 'preparing' ? tr('Preparing tool') : tr('Running tool');
   const references = () =>
-    tool()
+    tool() && !searchFields().length
       ? (['result', 'arguments'] as const).flatMap((field) => {
           const value = reference(tool()!, field);
           const result = tool()!.result;
+          const descriptor = presentation();
+          if (
+            !props.original() &&
+            descriptor &&
+            !plugins?.renderer(value?.presentation) &&
+            field === 'result' &&
+            result?.image &&
+            !result.isError
+          )
+            return [];
+          if (
+            !props.original() &&
+            descriptor &&
+            !descriptor[field] &&
+            !plugins?.renderer(value?.presentation) &&
+            (field === 'arguments' || !result?.isError)
+          )
+            return [];
           if (
             field === 'arguments' &&
             !props.original() &&
@@ -393,6 +564,30 @@ export function ToolCard(props: {
         })
       : [];
   const result = () => (tool() ? reference(tool()!, 'result') : null);
+  const searchFields = computed(() => {
+    const value = tool();
+    if (value?.call?.presentation !== providerSearchKey) return [];
+    const args = reference(value, 'arguments')!;
+    const output = reference(value, 'result');
+    return [{ args, output, key: JSON.stringify([args.key, output?.key]) }];
+  });
+  const writeFields = computed(() => {
+    const call = tool();
+    if (
+      family() !== 'write' ||
+      !call?.result ||
+      call.result.isError ||
+      plugins?.renderer(call.call?.presentation)
+    )
+      return [];
+    const argumentsRef = reference(call, 'arguments');
+    const resultRef = reference(call, 'result');
+    return argumentsRef && resultRef ? [{ argumentsRef, resultRef }] : [];
+  });
+  const readDetails = () => {
+    props.userScroll();
+    props.reading?.();
+  };
   const images = () => toolImages(tool());
   const imageThrough = () => props.row().metadataThrough ?? props.through();
   const fallbackState = (): { label: string; kind: StatusKind } => {
@@ -403,6 +598,7 @@ export function ToolCard(props: {
         return { label: tr('Rejected'), kind: 'rejected' };
       if (value.result.isError || value.result.settlement === 'failed')
         return { label: tr('Error'), kind: 'error' };
+      if (value.call?.origin === 'executor') return { label: tr('Completed'), kind: 'success' };
       return { label: tr('Recorded'), kind: 'recorded' };
     }
     // History references describe their fence, never current execution liveness.
@@ -412,14 +608,27 @@ export function ToolCard(props: {
         : { label: tr('Input recorded'), kind: 'pending' }
       : { label: tr('Not completed'), kind: 'pending' };
   };
+  const resultDetails = () => {
+    const details = tool()?.result?.details;
+    const exit = details?.exitCode;
+    const time = details?.durationMs;
+    return [
+      exit == null ? '' : tr('Exit {code}', { code: String(exit) }),
+      time == null ? '' : formatDuration(time, true),
+    ]
+      .filter(Boolean)
+      .join(' · ');
+  };
   return (
     <View style={{ width: '100%', minWidth: 0, gap: detailsGap }}>
       <Disclosure
-        label={tr('Toggle tool {name}', {
-          name: tool()?.call?.name ?? tr('Tool details'),
-        })}
+        label={
+          platform.idiom !== 'terminal' && progress() != null
+            ? `${tr('Toggle tool {name}', { name: title() })} · ${progressLabel()}`
+            : tr('Toggle tool {name}', { name: title() })
+        }
         tooltip={title()}
-        icon={familyIcon(family())}
+        icon={icon()}
         open={props.expanded()}
         terminalInset={controlStyle.paddingHorizontal}
         onPress={inputAction(props.expand, {
@@ -435,6 +644,13 @@ export function ToolCard(props: {
                 through={imageThrough}
                 images={images}
                 preview={props.previewImage}
+              />
+            </If>
+            <If when={props.expanded() && props.inspect !== undefined}>
+              <IconButton
+                label={tr('Inspect in execution process')}
+                icon="children"
+                onPress={inputAction((key: string) => props.inspect?.(key), props.ownerKey())}
               />
             </If>
             <If when={props.expanded()}>
@@ -455,11 +671,11 @@ export function ToolCard(props: {
               />
             </If>
             <If
-              when={props.progress?.() != null}
+              when={progress() != null}
               else={
                 <If
                   when={
-                    family() &&
+                    processFamily(family()) &&
                     result() &&
                     tool()?.result?.settlement === 'returned' &&
                     !tool()?.result?.isError
@@ -478,33 +694,46 @@ export function ToolCard(props: {
                 </If>
               }
             >
-              <Status
-                label={
-                  props.progress?.() === 'preparing' ? tr('Preparing tool') : tr('Running tool')
-                }
-                kind={props.progress?.() ?? 'running'}
-              />
+              <If when={!useToolShimmer()}>
+                <Status label={progressLabel()} kind={progress() ?? 'running'} />
+              </If>
             </If>
           </View>
         }
       >
-        <Text
-          style={[
-            { ...disclosureTitleStyle, color: C.secondary },
-            { numberOfLines: 1, textOverflow: 'ellipsis' },
-          ]}
+        <View
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1 }}
         >
-          {title()}
-        </Text>
+          <If
+            when={progress() != null && useToolShimmer()}
+            else={
+              <Text
+                style={[
+                  {
+                    ...captionTextStyle,
+                    minWidth: 0,
+                    flexShrink: 1,
+                    color: props.expanded() ? C.text : C.secondary,
+                  },
+                  { numberOfLines: 1, textOverflow: 'ellipsis' },
+                ]}
+              >
+                {title()}
+              </Text>
+            }
+          >
+            <ShimmerText text={title()} style={captionTextStyle} />
+          </If>
+          <If when={platform.idiom !== 'terminal'}>
+            <Icon name={props.expanded() ? 'down' : 'right'} size={12} color={C.muted} />
+          </If>
+        </View>
       </Disclosure>
       <If when={props.expanded()}>
         <View style={platform.idiom === 'terminal' ? { paddingLeft: 16 } : cardStyle()}>
           <Scroll
             accessibilityLabel={tr('Tool details')}
-            onScrollIntent={() => {
-              props.userScroll();
-              props.reading?.();
-            }}
+            onScrollIntent={readDetails}
             style={{
               minHeight: 16,
               minWidth: 0,
@@ -518,6 +747,9 @@ export function ToolCard(props: {
             }}
             contentStyle={{ gap: 16 }}
           >
+            <If when={resultDetails() !== ''}>
+              <Text style={{ ...captionTextStyle, color: C.secondary }}>{resultDetails()}</Text>
+            </If>
             <Each of={images()} key={(value) => value.key}>
               {(value) => (
                 <ToolImage
@@ -529,26 +761,65 @@ export function ToolCard(props: {
                 />
               )}
             </Each>
-            <Each of={references()} key={(value) => value.key}>
-              {(value) => (
-                <Field
-                  reference={value()}
+            <Each of={searchFields()} key={(fields) => fields.key}>
+              {(fields) => (
+                <ProviderSearchCard
+                  args={fields().args}
+                  output={fields().output}
                   sessionId={props.sessionId}
                   through={props.row().metadataThrough ?? props.through()}
                   original={props.original}
-                  userScroll={props.userScroll}
-                  tool={() => tool()!}
-                  showsCommand={
-                    value().field === 'result'
-                      ? (shown) => resultShowsCommand.set(shown)
-                      : undefined
-                  }
+                  openLink={props.openLink}
+                  isError={!!tool()?.result?.isError}
                 />
               )}
             </Each>
-            <If when={!references().length}>
-              <Text style={[{ color: C.muted }, { userSelect: 'text' }]}>
-                {props.row().text || tr('Original tool source is unavailable in this history row.')}
+            <If
+              when={writeFields().length > 0}
+              else={
+                <Each of={references()} key={(value) => value.key}>
+                  {(value) => (
+                    <Field
+                      reference={value()}
+                      sessionId={props.sessionId}
+                      through={props.row().metadataThrough ?? props.through()}
+                      original={props.original}
+                      userScroll={readDetails}
+                      tool={() => tool()!}
+                      senders={props.senders}
+                      previewTerminal={props.previewTerminal}
+                      showsCommand={
+                        value().field === 'result'
+                          ? (shown) => resultShowsCommand.set(shown)
+                          : undefined
+                      }
+                    />
+                  )}
+                </Each>
+              }
+            >
+              <Each of={writeFields()} key={(fields) => fields.resultRef.key}>
+                {(fields) => (
+                  <WriteFields
+                    argumentsRef={fields().argumentsRef}
+                    resultRef={fields().resultRef}
+                    sessionId={props.sessionId}
+                    through={props.row().metadataThrough ?? props.through()}
+                    original={props.original}
+                    userScroll={readDetails}
+                    tool={() => tool()!}
+                  />
+                )}
+              </Each>
+            </If>
+            <If when={!searchFields().length && !references().length && images().length === 0}>
+              <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}>
+                {presentation()
+                  ? result()
+                    ? tr('No additional details')
+                    : tr('Waiting for tool result')
+                  : props.row().text ||
+                    tr('Original tool source is unavailable in this history row.')}
               </Text>
             </If>
           </Scroll>

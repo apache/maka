@@ -171,8 +171,8 @@ pub struct PaginationProps {
     /// `renderItem`.
     pub next_accessibility_label: Prop<Option<SharedString>>,
     /// The classes of each item: `selected:` on the current page,
-    /// `disabled:` while it takes no press, `focus:` with the keyboard on
-    /// it.
+    /// `disabled:` while it takes no press, `focus-visible:` with the
+    /// keyboard on it.
     pub item_class: Prop<Option<SharedString>>,
     /// The inline style of each item, over its classes: its text styles
     /// too, which its content inherits.

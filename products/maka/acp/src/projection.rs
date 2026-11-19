@@ -20,8 +20,8 @@
 //! ACP presentation of public observations and durable transcript rows.
 use crate::presentation::{MessageKind, Meta, Text, ToolCard, ToolStatus, Update};
 use maka_agent_api::contract::{ContentKind, HistoryChunk, PreviewField, PreviewPage};
-use maka_agent_ports::session::history::HistoryField;
-use maka_agent_ports::session::history::Role;
+use maka_agent_facts::durable::{ModelAttemptId, RunId, StepId};
+use maka_agent_ports::session::history::{HistoryField, ModelPartIdentity, Role, RowPosition};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
@@ -34,23 +34,67 @@ struct Message {
     canonical: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum MessageIdentity {
+    Message { turn: String, id: String },
+    ModelPart(ModelPartIdentity),
+    Row(RowPosition),
+}
+impl MessageIdentity {
+    fn live(turn: &str, id: &str) -> Self {
+        Self::Message {
+            turn: turn.into(),
+            id: id.into(),
+        }
+    }
+    fn history(chunk: &HistoryChunk) -> Self {
+        match (&chunk.position, &chunk.turn_id, &chunk.message_id) {
+            (RowPosition::Live { .. }, _, _) if let Some(part) = &chunk.model_part => {
+                Self::ModelPart(part.clone())
+            }
+            (RowPosition::Live { .. }, Some(turn), Some(id))
+                if matches!(chunk.role, Role::User | Role::Assistant | Role::Failure) =>
+            {
+                Self::Message {
+                    turn: turn.clone(),
+                    id: id.clone(),
+                }
+            }
+            _ => Self::Row(chunk.position.clone()),
+        }
+    }
+    fn presentation_id(&self, kind: MessageKind) -> Result<String, crate::Error> {
+        let id = match self {
+            Self::Message { id, .. } => id.clone(),
+            Self::ModelPart(part) => format!("model-part:{}:{}", part.attempt_id, part.ordinal),
+            Self::Row(position) => format!("history-row:{}", serde_json::to_string(position)?),
+        };
+        Ok(if kind == MessageKind::Thinking {
+            format!("thinking:{id}")
+        } else {
+            id
+        })
+    }
+}
+
 #[derive(Default)]
 pub struct Projection {
-    streams: HashMap<(String, String, MessageKind), Message>,
+    streams: HashMap<(MessageIdentity, MessageKind), Message>,
     tools: HashMap<String, Tool>,
-    pending_models:
-        HashMap<String, HashSet<(maka_agent_ports::session::history::RowPosition, MessageKind)>>,
+    pending_models: HashMap<
+        (StepId, ModelAttemptId),
+        HashSet<(maka_agent_ports::session::history::RowPosition, MessageKind)>,
+    >,
     preview_epoch: Option<String>,
-    preview_attempt: Option<(String, String)>,
-    preview_seed: HashMap<(String, String, MessageKind), String>,
-    committed_parts: HashSet<(String, String, String)>,
-    closed_steps: HashSet<(String, String)>,
+    preview_attempt: Option<(RunId, StepId, ModelAttemptId)>,
+    preview_seed: HashMap<(ModelPartIdentity, MessageKind), String>,
+    committed_parts: HashSet<ModelPartIdentity>,
+    closed_steps: HashSet<(RunId, StepId, ModelAttemptId)>,
     assembly: Option<CanonicalAssembly>,
 }
 
 struct CanonicalAssembly {
-    turn_id: String,
-    message_id: String,
+    identity: MessageIdentity,
     position: maka_agent_ports::session::history::RowPosition,
     field: HistoryField,
     text: String,
@@ -58,7 +102,7 @@ struct CanonicalAssembly {
 }
 
 struct Tool {
-    turn: String,
+    turn: Option<String>,
     card: ToolCard,
     published: Option<ToolCard>,
     authoritative: bool,
@@ -67,10 +111,25 @@ struct Tool {
 
 impl Projection {
     pub fn chunk(&mut self, chunk: &HistoryChunk) -> Result<Vec<Update>, crate::Error> {
+        let identity = MessageIdentity::history(chunk);
         if chunk.offset == 0 {
-            self.preview_seed
-                .retain(|(turn, id, _), _| turn != &chunk.turn_id || id != &chunk.message_id);
-            let mut meta = message_meta(&chunk.turn_id, &chunk.message_id);
+            if let MessageIdentity::ModelPart(part) = &identity {
+                self.preview_seed.retain(|(seed, _), _| seed != part);
+            }
+            let mut meta = Meta::from_iter([("maka".into(), json!({}))]);
+            if matches!(&identity, MessageIdentity::Row(_)) {
+                meta["maka"]["historyPosition"] = serde_json::to_value(&chunk.position)?;
+                meta["maka"]["historyOrder"] = serde_json::to_value(&chunk.order)?;
+            }
+            if let Some(turn) = &chunk.turn_id {
+                meta["maka"]["turnId"] = json!(turn);
+            }
+            if let Some(id) = &chunk.message_id {
+                meta["maka"]["hostMessageId"] = json!(id);
+            }
+            if let Some(run) = chunk.run_id {
+                meta["maka"]["runId"] = serde_json::to_value(run)?;
+            }
             if let Some(model) = &chunk.model {
                 meta["maka"]["model"] = serde_json::to_value(model)?;
             }
@@ -81,9 +140,8 @@ impl Projection {
                 meta["maka"]["attachments"] = serde_json::to_value(&chunk.attachments)?;
             }
             self.assembly = Some(CanonicalAssembly {
-                turn_id: chunk.turn_id.clone(),
-                message_id: chunk.message_id.clone(),
-                position: chunk.position,
+                identity: identity.clone(),
+                position: chunk.position.clone(),
                 field: chunk.field,
                 text: String::new(),
                 meta,
@@ -111,6 +169,9 @@ impl Projection {
         }
         let CanonicalAssembly { text, mut meta, .. } =
             self.assembly.take().expect("complete field");
+        if chunk.tool.is_some() {
+            return self.tool_chunk(chunk, &text);
+        }
         let kind = match (chunk.role, chunk.field) {
             (Role::User, _) => MessageKind::User,
             (Role::Assistant, HistoryField::Thinking) => MessageKind::Thinking,
@@ -120,13 +181,14 @@ impl Projection {
                 MessageKind::Text
             }
             (Role::ToolCall | Role::ToolResult, _) => return self.tool_chunk(chunk, &text),
+            (Role::System | Role::Context | Role::Tool, _) => {
+                meta["maka"]["role"] = serde_json::to_value(chunk.role)?;
+                MessageKind::Text
+            }
             (Role::Compaction, _) => return Ok(vec![]),
         };
-        let updates = self.replace_text(&chunk.turn_id, &chunk.message_id, kind, &text, meta);
-        if let Some(message) =
-            self.streams
-                .get_mut(&(chunk.turn_id.clone(), chunk.message_id.clone(), kind))
-        {
+        let updates = self.replace_text(identity.clone(), kind, &text, meta)?;
+        if let Some(message) = self.streams.get_mut(&(identity, kind)) {
             if !message.canonical
                 && matches!(
                     chunk.model,
@@ -135,26 +197,32 @@ impl Projection {
                 && let Some(part) = &chunk.model_part
             {
                 self.pending_models
-                    .entry(part.step_id.clone())
+                    .entry((part.step_id, part.attempt_id))
                     .or_default()
-                    .insert((chunk.position, kind));
+                    .insert((chunk.position.clone(), kind));
             }
             message.canonical = true;
         }
         Ok(updates)
     }
-    pub fn commit_preview(&mut self, invocation: &str, step: &str, message: Option<&str>) {
-        if let Some(message) = message {
-            self.committed_parts
-                .insert((invocation.into(), step.into(), message.into()));
-            self.preview_seed.retain(|(_, id, _), _| id != message);
+    pub fn commit_preview(
+        &mut self,
+        run: RunId,
+        step: StepId,
+        attempt: ModelAttemptId,
+        ordinal: Option<u64>,
+    ) {
+        if let Some(ordinal) = ordinal {
+            let part = ModelPartIdentity {
+                step_id: step,
+                attempt_id: attempt,
+                ordinal,
+            };
+            self.preview_seed.retain(|(seed, _), _| seed != &part);
+            self.committed_parts.insert(part);
         } else {
-            self.closed_steps.insert((invocation.into(), step.into()));
-            if self
-                .preview_attempt
-                .as_ref()
-                .is_some_and(|(i, s)| i == invocation && s == step)
-            {
+            self.closed_steps.insert((run, step, attempt));
+            if self.preview_attempt == Some((run, step, attempt)) {
                 self.preview_seed.clear();
             }
         }
@@ -163,9 +231,10 @@ impl Projection {
     pub fn preview(&mut self, page: &PreviewPage) -> Result<Vec<Update>, crate::Error> {
         let PreviewPage::Cut {
             host_epoch,
-            invocation_id,
+            run_id,
             turn_id,
             step_id,
+            attempt_id,
             parts,
             ..
         } = page
@@ -184,44 +253,49 @@ impl Projection {
             self.preview_seed.clear();
         }
         self.preview_epoch = Some(host_epoch.clone());
-        let attempt = (invocation_id.clone(), step_id.clone());
+        let attempt = (*run_id, *step_id, *attempt_id);
         if self.preview_attempt.as_ref() != Some(&attempt) {
             self.preview_seed.clear();
             self.committed_parts
-                .retain(|(i, s, _)| i == invocation_id && s == step_id);
+                .retain(|part| part.step_id == *step_id && part.attempt_id == *attempt_id);
             self.closed_steps
-                .retain(|(i, s)| i == invocation_id && s == step_id);
-            self.preview_attempt = Some(attempt.clone());
+                .retain(|(r, s, a)| r == run_id && s == step_id && a == attempt_id);
+            self.preview_attempt = Some(attempt);
         }
         if self.closed_steps.contains(&attempt) {
             return Ok(vec![]);
         }
         let mut updates = Vec::new();
         for part in parts {
-            if self.assembly.as_ref().is_some_and(|assembly| {
-                &assembly.turn_id == turn_id && assembly.message_id == part.message_id
-            }) || self.committed_parts.contains(&(
-                invocation_id.clone(),
-                step_id.clone(),
-                part.message_id.clone(),
-            )) {
-                continue;
-            }
-            let PreviewField::Text { text_kind } = &part.field else {
+            let PreviewField::Text { text_kind, .. } = &part.field else {
                 continue;
             };
+            let address = ModelPartIdentity {
+                step_id: *step_id,
+                attempt_id: *attempt_id,
+                ordinal: part
+                    .ordinal
+                    .ok_or("Model text preview has no part ordinal")?,
+            };
+            let identity = MessageIdentity::ModelPart(address.clone());
+            if self
+                .assembly
+                .as_ref()
+                .is_some_and(|assembly| assembly.identity == identity)
+                || self.committed_parts.contains(&address)
+            {
+                continue;
+            }
             let kind = match text_kind {
                 ContentKind::Text => MessageKind::Text,
                 ContentKind::Thinking => MessageKind::Thinking,
             };
-            let key = (turn_id.clone(), part.message_id.clone(), kind);
-            if self
-                .streams
-                .get(&key)
-                .is_some_and(|message| message.canonical)
-            {
+            let previous = self.streams.get(&(identity.clone(), kind));
+            if previous.is_some_and(|message| message.canonical) {
                 continue;
             }
+            let key = (address, kind);
+            let meta = message_meta(turn_id, &part.message_id);
             if part.offset == 0 {
                 self.preview_seed.insert(key.clone(), String::new());
             }
@@ -238,47 +312,57 @@ impl Projection {
                         .preview_seed
                         .remove(&key)
                         .expect("complete preview seed");
-                    updates.extend(self.replace_text(
-                        turn_id,
-                        &part.message_id,
-                        kind,
-                        &text,
-                        message_meta(turn_id, &part.message_id),
-                    ));
+                    updates.extend(self.replace_text(identity, kind, &text, meta)?);
                 }
             } else {
-                if self
-                    .streams
-                    .get(&key)
-                    .map(|message| message.text.len() as u64)
-                    != Some(part.offset)
-                {
+                if previous.map(|message| message.text.len() as u64) != Some(part.offset) {
                     return Err("Preview suffix has no complete prefix".into());
                 }
                 if part.offset + part.text.len() as u64 > part.total_bytes {
                     return Err("Preview suffix exceeds its declared size".into());
                 }
-                updates.extend(self.append(turn_id, &part.message_id, text_kind, &part.text));
+                updates.extend(self.append_text(identity, kind, &part.text, meta)?);
             }
         }
         Ok(updates)
     }
 
-    pub fn append(&mut self, turn: &str, id: &str, kind: &ContentKind, delta: &str) -> Vec<Update> {
+    pub fn append(
+        &mut self,
+        turn: &str,
+        id: &str,
+        kind: &ContentKind,
+        delta: &str,
+    ) -> Result<Vec<Update>, crate::Error> {
         let message_kind = match kind {
             ContentKind::Text => MessageKind::Text,
             ContentKind::Thinking => MessageKind::Thinking,
         };
-        let key = (turn.to_owned(), id.to_owned(), message_kind);
-        let meta = message_meta(turn, id);
+        self.append_text(
+            MessageIdentity::live(turn, id),
+            message_kind,
+            delta,
+            message_meta(turn, id),
+        )
+    }
+
+    fn append_text(
+        &mut self,
+        identity: MessageIdentity,
+        kind: MessageKind,
+        delta: &str,
+        meta: Meta,
+    ) -> Result<Vec<Update>, crate::Error> {
+        let key = (identity.clone(), kind);
         if delta.is_empty()
             && self
                 .streams
                 .get(&key)
                 .is_none_or(|message| message.meta == meta)
         {
-            return vec![];
+            return Ok(vec![]);
         }
+        let id = identity.presentation_id(kind)?;
         let message = self.streams.entry(key).or_insert_with(|| Message {
             text: String::new(),
             meta: meta.clone(),
@@ -287,19 +371,82 @@ impl Projection {
         message.text.push_str(delta);
         message.meta = meta.clone();
         let update = Update::Message {
-            id: if message_kind == MessageKind::Thinking {
-                format!("thinking:{id}")
-            } else {
-                id.into()
-            },
-            kind: message_kind,
+            id,
+            kind,
             text: Text::Delta(delta.into()),
             meta,
         };
-        vec![update]
+        Ok(vec![update])
     }
 }
 
 fn message_meta(turn: &str, id: &str) -> Meta {
     Meta::from_iter([("maka".into(), json!({"hostMessageId":id,"turnId":turn}))])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_api::contract::PreviewPart;
+    use maka_agent_facts::{durable::FactId, history::HistoryOrder};
+
+    #[test]
+    fn committed_model_text_only_appends_the_unstreamed_suffix_in_v1() {
+        let run_id = RunId::new();
+        let step_id = StepId::new();
+        let attempt_id = ModelAttemptId::new();
+        let fact = FactId::new();
+        let mut source = Projection::default();
+        let mut client = crate::transport::v1::Projection::default();
+        let mut received = Vec::new();
+        for (revision, offset, text) in [(1, 0, "Hello"), (2, 5, " world")] {
+            let page = PreviewPage::Cut {
+                host_epoch: "host".into(),
+                run_id,
+                turn_id: "turn".into(),
+                step_id,
+                attempt_id,
+                revision,
+                depends_on: 0,
+                first: true,
+                last: true,
+                parts: vec![PreviewPart {
+                    ordinal: Some(0),
+                    message_id: "preview".into(),
+                    provider_part_id: Some("text".into()),
+                    started_at: 0.0,
+                    field: PreviewField::Text {
+                        text_kind: ContentKind::Text,
+                        final_answer: false,
+                    },
+                    offset,
+                    total_bytes: offset + text.len() as u64,
+                    text: text.into(),
+                }],
+            };
+            for update in source.preview(&page).unwrap() {
+                let notification = client.update(update).unwrap().unwrap();
+                received.push(serde_json::to_value(notification).unwrap());
+            }
+        }
+        source.commit_preview(run_id, step_id, attempt_id, Some(0));
+        let chunk: HistoryChunk = serde_json::from_value(json!({
+            "importedTurn":null, "runId":run_id, "modelPart":{"stepId":step_id,"attemptId":attempt_id,"ordinal":0},
+            "field":"body", "messageId":fact.to_string(), "turnId":"turn", "role":"assistant",
+            "position":RowPosition::Live {sequence:3, fact, item_index:0},
+            "order":HistoryOrder {path:vec![3], item_index:0},
+            "offset":0, "totalBytes":12, "text":"Hello world!", "tool":null,
+        })).unwrap();
+        for update in source.chunk(&chunk).unwrap() {
+            let notification = client.update(update).unwrap().unwrap();
+            received.push(serde_json::to_value(notification).unwrap());
+        }
+        assert_eq!(
+            received
+                .iter()
+                .map(|update| update["content"]["text"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["Hello", " world", "!"]
+        );
+    }
 }

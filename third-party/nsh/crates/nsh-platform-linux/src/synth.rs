@@ -138,6 +138,20 @@ pub(crate) fn enter(window: &gtk::Window) {
     }
 }
 
+/// Ctrl+Z (`redo`: Ctrl+Shift+Z) in the focused field: its `text.undo` /
+/// `text.redo` action, which the editors' own shortcuts activate.
+pub(crate) fn undo(window: &gtk::Window, redo: bool) {
+    let action = if redo { "text.redo" } else { "text.undo" };
+    match focused_text(window) {
+        Some(w) => {
+            if let Err(e) = w.activate_action(action, None) {
+                log::warn!("test: {action}: {e}");
+            }
+        }
+        None => log::warn!("test: no focused text field to undo in"),
+    }
+}
+
 /// Backspace in the focused field: deletes the selection or the character
 /// before the caret.
 pub(crate) fn backspace(window: &gtk::Window) {

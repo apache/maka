@@ -23,9 +23,9 @@ use crate::shell::{
     control::{Control, ControlError, Input},
     terminal::{PendingWrite, Terminal},
 };
-use maka_agent_facts::shell_run::ShellObservation;
-use maka_agent_facts::terminal::input::encode_actions_with_paste;
-use maka_agent_facts::terminal::input::encode_controller_actions;
+use maka_plugin_core::shell_run::ShellObservation;
+use maka_plugin_core::terminal::input::encode_actions_with_paste;
+use maka_plugin_core::terminal::input::encode_controller_actions;
 use maka_process::pty::PtyChild;
 use std::sync::Arc;
 

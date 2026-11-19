@@ -17,7 +17,7 @@ function App() {
         alignItems: "center", justifyContent: "center", gap: 16,
       }}
     >
-      <Text style={{ fontSize: 22 }}>{count() ? `Pressed ${Format.times(count())}` : "Not pressed yet"}</Text>
+      <Text class="text-foreground" style={{ fontSize: 22 }}>{count() ? `Pressed ${Format.times(count())}` : "Not pressed yet"}</Text>
       <Badge label="Press me" onPress={() => count.set(counter.increment())} />
     </View>
   );

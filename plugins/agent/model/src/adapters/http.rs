@@ -18,8 +18,7 @@
  */
 
 use super::{anthropic, anthropic_documents, body, error, events, request};
-#[cfg(test)]
-mod upload_tests;
+
 use crate::{ModelError, ProviderFailureReason};
 use maka_agent_facts::model::budget;
 use maka_agent_ports::model::{Context, Emission, Lifetime, ProviderAdapter, Request, Session};
@@ -54,6 +53,74 @@ impl Default for Shared {
 #[derive(Default)]
 pub(super) struct HttpAdapter(Arc<Shared>);
 impl ProviderAdapter for HttpAdapter {
+    fn recovery_contract(
+        &self,
+        kind: &maka_agent_ports::model::ProviderKind,
+        tools: &[Arc<maka_agent_facts::tools::ToolDefinition>],
+    ) -> Option<maka_agent_ports::model::RecoveryContract> {
+        use maka_agent_ports::model::ProviderKind;
+        if tools.iter().any(|tool| tool.provider.is_some()) {
+            return None;
+        }
+        let protocol = match kind {
+            ProviderKind::OpenaiChatCompletions | ProviderKind::OpenaiCompatible { .. } => {
+                "maka.adapter.chat-completions.local-functions"
+            }
+            ProviderKind::Anthropic => "maka.adapter.anthropic-messages.local-functions",
+            _ => return None,
+        };
+        Some(maka_agent_ports::model::RecoveryContract {
+            protocol: protocol.into(),
+            version: 1,
+        })
+    }
+    fn continuation_cursor(
+        &self,
+        contract: &maka_agent_ports::model::RecoveryContract,
+        part: &maka_agent_facts::model::ModelPart,
+    ) -> Option<serde_json::Value> {
+        use maka_agent_facts::model::{ModelPart, TextKind};
+        if contract.version != 1
+            || !matches!(
+                contract.protocol.as_str(),
+                "maka.adapter.chat-completions.local-functions"
+                    | "maka.adapter.anthropic-messages.local-functions"
+            )
+        {
+            return None;
+        }
+        let options = match part {
+            ModelPart::Text {
+                text_kind,
+                provider_options,
+                ..
+            } => {
+                let options = provider_options
+                    .as_deref()
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                if *text_kind == TextKind::Thinking
+                    && contract.protocol == "maka.adapter.anthropic-messages.local-functions"
+                    && !["signature", "redactedData"].iter().any(|key| {
+                        options["anthropic"][key]
+                            .as_str()
+                            .is_some_and(|value| !value.is_empty())
+                    })
+                {
+                    return None;
+                }
+                options
+            }
+            ModelPart::ToolCall { call } if !call.provider_executed => call
+                .provider_options
+                .clone()
+                .unwrap_or(serde_json::Value::Null),
+            ModelPart::Source { .. } => serde_json::Value::Null,
+            _ => return None,
+        };
+        Some(serde_json::json!({"providerOptions": options}))
+    }
+
     fn enforces_idle_timeout(&self) -> bool {
         true
     }
@@ -288,7 +355,7 @@ async fn run_inner(
         let response = dispatch(
             context,
             http::Request {
-                method: http::Method::Post,
+                method: maka_plugin_core::http::Method::Post,
                 url: url.clone(),
                 headers: headers.clone(),
                 body: upload,
@@ -533,144 +600,4 @@ async fn read_body(
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
-}
-
-#[cfg(test)]
-mod quota_scope_tests {
-    use super::*;
-    use futures_util::{StreamExt, future::BoxFuture};
-    use maka_agent_ports::model::{Connect, Credentials, Events, Provider, Socket, Transport};
-    use std::{
-        sync::atomic::{AtomicBool, Ordering},
-        time::Duration,
-    };
-
-    struct NoEvents;
-    impl Events for NoEvents {
-        fn emit(&self, _: Emission) -> BoxFuture<'_, Result<(), ModelError>> {
-            Box::pin(async { panic!("a rejected request cannot emit model output") })
-        }
-    }
-
-    #[derive(Clone, Default)]
-    struct Rejection {
-        read: Arc<AtomicBool>,
-        closed: Arc<AtomicBool>,
-    }
-    impl http::Body for Rejection {
-        fn next(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>, http::Error>> {
-            Box::pin(async move {
-                Ok((!self.read.swap(true, Ordering::SeqCst)).then(|| {
-                    br#"{"error":{"code":"1308","message":"original quota diagnostic"}}"#.to_vec()
-                }))
-            })
-        }
-        fn cancel(&self) {}
-        fn close(&self) -> BoxFuture<'_, Result<(), http::Error>> {
-            Box::pin(async move {
-                self.closed.store(true, Ordering::SeqCst);
-                Ok(())
-            })
-        }
-    }
-    impl Transport for Rejection {
-        fn identity(&self) -> u64 {
-            1
-        }
-        fn connect(&self, _: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, ModelError>> {
-            Box::pin(async { panic!("the HTTP quota boundary cannot open a WebSocket") })
-        }
-        fn request(
-            &self,
-            request: http::Request,
-            _: CancellationToken,
-        ) -> BoxFuture<'_, Result<http::Response, ModelError>> {
-            Box::pin(async move {
-                let mut upload = request.body.into_stream();
-                while let Some(bytes) = upload.next().await {
-                    bytes.unwrap();
-                }
-                Ok(http::Response {
-                    head: http::Head {
-                        status: 429,
-                        url: request.url,
-                        headers: vec![
-                            ("content-type".into(), b"application/json".to_vec()),
-                            ("retry-after".into(), b"18000".to_vec()),
-                        ],
-                    },
-                    body: Arc::new(self.clone()),
-                })
-            })
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn http_dispatch_keeps_quota_scope_original_diagnostics_and_retry_deadline() {
-        for (endpoint, reason) in [
-            (
-                "https://api.z.ai/api/coding/paas/v4",
-                ProviderFailureReason::QuotaExhausted,
-            ),
-            (
-                "https://foreign.invalid/v1",
-                ProviderFailureReason::RateLimit,
-            ),
-        ] {
-            let response = Rejection::default();
-            let context = Context {
-                transport: Arc::new(response.clone()),
-                events: Arc::new(NoEvents),
-                cancellation: CancellationToken::new(),
-                idle_timeout: Duration::from_secs(10),
-                source: None,
-            };
-            let before = crate::ProviderFailure::now_unix_ms();
-            let start = tokio::time::Instant::now();
-            let error = run(
-                Request {
-                    operation: maka_agent_facts::context::ModelOperation::Inference,
-                    language: Default::default(),
-                    provider: Provider {
-                        kind: crate::ProviderKind::OpenaiCompatible {
-                            name: "fixture".into(),
-                        },
-                        model: "quota-fixture".into(),
-                        base_url: endpoint.into(),
-                        auth: Credentials::ApiKey("fixture".into()),
-                        headers: Default::default(),
-                        body_overlay: None,
-                    },
-                    prompt: vec![crate::prompt::Message::user("hello")].into(),
-                    tools: vec![],
-                    tool_choice: Default::default(),
-                    provider_options: serde_json::Value::Null,
-                    max_output_tokens: None,
-                },
-                &context,
-                Arc::new(Shared::default()),
-            )
-            .await
-            .unwrap_err();
-            let after = crate::ProviderFailure::now_unix_ms();
-            let ModelError::Provider(failure) = error else {
-                panic!("typed quota evidence lost: {error}")
-            };
-            assert_eq!(failure.reason(), reason);
-            assert_eq!(
-                failure.retryable(),
-                reason == ProviderFailureReason::RateLimit
-            );
-            assert!(failure.replay_safe());
-            assert_eq!(failure.status(), Some(429));
-            assert_eq!(failure.code(), Some("1308"));
-            assert_eq!(failure.message(), "original quota diagnostic");
-            assert!(
-                (before + 18_000_000..=after + 18_000_000)
-                    .contains(&failure.retry_at_unix_ms().unwrap())
-            );
-            assert_eq!(start.elapsed(), Duration::ZERO);
-            assert!(response.closed.load(Ordering::SeqCst));
-        }
-    }
 }

@@ -7,6 +7,7 @@ export function createHost(player) {
   player.hostEvent("tick", 2);
   return {
     async call(name, args) {
+      if (name === "note") player.hostEvent("noted", args);
       if (name === "fail") throw new Error("boom");
       if (name === "big") return 1n;
       if (name === "slow") return new Promise(() => {});

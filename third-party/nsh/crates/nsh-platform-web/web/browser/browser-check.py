@@ -189,6 +189,18 @@ const first=hint('first hint'),second=hint('second hint');const shown=signal(fir
 prop(trigger,'tooltip',()=>shown());
 append(root,trigger);return root;});
 ''')
+        (root / "touch.js").write_text('''import {mount} from 'nsh';
+import {element,prop} from 'nsh:rt';
+const fields=({pointerType,pressure,tiltX,tiltY})=>[pointerType,pressure,tiltX,tiltY];
+parent.touchMoves=[];
+mount(()=>{
+  const view=element('view');
+  prop(view,'testID','touch-area');
+  prop(view,'style',{width:240,height:120});
+  prop(view,'onTouchMove',e=>parent.touchMoves.push([fields(e),e.touches.map(fields),e.changedTouches.map(fields)]));
+  return view;
+});
+''')
         (root / "cleanup.js").write_text(APP_SOURCE.replace(
             "cleanup(()=>parent.harness.events.push(`cleaned:${run}`));",
             "cleanup(()=>{const e=new Error('fixture cleanup failed');parent.harness.expectedReports.push(e.stack??String(e));throw e;});cleanup(()=>parent.harness.events.push(`cleaned:${run}`));"))
@@ -368,6 +380,55 @@ async def check_tooltip_function(page):
     await page.mouse.move(1000, 700)
     assert seen == {"first": ["first hint"], "second": ["second hint"]}, seen
     assert await page.evaluate("errors.length") == 0, await page.evaluate("errors.map(String)")
+    await page.evaluate("player.stop()")
+
+
+async def check_touch_pointer_fields(page):
+    """Pointer events keep their metadata through Wasm and the realm bootstrap."""
+    await page.evaluate("player.runModule('./touch.js')")
+    target = page.locator("[data-testid=touch-area]")
+    await target.wait_for()
+    box = await target.bounding_box()
+    x, y = box["x"] + 20, box["y"] + 20
+    moved_x = x + 40
+
+    async def read_move():
+        await page.wait_for_function("touchMoves.length > 0")
+        return await page.evaluate("touchMoves.splice(0).at(-1)")
+
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    await page.mouse.move(moved_x, y)
+    await page.mouse.up()
+    mouse = await read_move()
+
+    cdp = await page.context.new_cdp_session(page)
+    for phase, px, button, buttons in [
+        ("mousePressed", x, "left", 1),
+        ("mouseMoved", moved_x, "none", 1),
+        ("mouseReleased", moved_x, "left", 0),
+    ]:
+        await cdp.send("Input.dispatchMouseEvent", {
+            "type": phase, "x": px, "y": y, "pointerType": "pen",
+            "button": button, "buttons": buttons, "clickCount": 1,
+            "force": 0.25 if buttons else 0, "tiltX": 30, "tiltY": -15,
+        })
+    pen = await read_move()
+
+    await cdp.send("Emulation.setTouchEmulationEnabled", {"enabled": True})
+    await cdp.send("Input.dispatchTouchEvent", {
+        "type": "touchStart", "touchPoints": [{"x": x, "y": y, "force": 0.75}],
+    })
+    await cdp.send("Input.dispatchTouchEvent", {
+        "type": "touchMove", "touchPoints": [{"x": moved_x, "y": y, "force": 0.75}],
+    })
+    await cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+    touch = await read_move()
+
+    for actual, expected in [(mouse, ["mouse", 0.5, 0, 0]),
+                             (pen, ["pen", 0.25, 30, -15]),
+                             (touch, ["touch", 0.75, 0, 0])]:
+        assert actual == [expected, [expected], [expected]], (expected, actual)
     await page.evaluate("player.stop()")
 
 
@@ -568,6 +629,26 @@ async def check_facade_failure(page, script):
         await begin(page, "failed")
         reason = "could not load the browser facade" if script == "bootstrap.js" else "could not load the app realm"
         await outcome(page, "failed", "rejected", reason)
+        if script == "bootstrap.js":
+            assert "bootstrap.js" in await page.evaluate("harness.outcomes.failed.error")
+        await page.evaluate("harness.expectedReports.push(harness.outcomes.failed.report)")
+        assert await page.locator("iframe").count() == 0
+        assert len(await page.evaluate("errors")) == 1
+    finally:
+        await page.unroute(pattern)
+    await start(page, "recovered")
+    await stopped(page, ["recovered"])
+
+
+async def check_facade_not_found(page):
+    pattern = "**/browser/bootstrap.js"
+    await page.route(pattern, lambda route: route.fulfill(status=404, body=""))
+    try:
+        await begin(page, "failed")
+        await outcome(page, "failed", "rejected", "could not load the browser facade")
+        error = await page.evaluate("harness.outcomes.failed.error")
+        assert "bootstrap.js" in error, error
+        assert "status 404" in error, error
         await page.evaluate("harness.expectedReports.push(harness.outcomes.failed.report)")
         assert await page.locator("iframe").count() == 0
         assert len(await page.evaluate("errors")) == 1
@@ -641,6 +722,7 @@ def lifecycle_cases():
           for action in ("stop", "replace")],
         *[(f"failed-{script[:-3]}", functools.partial(check_facade_failure, script=script),
            (f"/browser/{script}",)) for script in ("bootstrap.js", "realm.js")],
+        ("failed-bootstrap-404", check_facade_not_found, ("/browser/bootstrap.js",)),
         *[(f"bootstrap-{name}", functools.partial(check_bootstrap_execution_failure, code=code), ())
           for name, code in [("syntax-error", "const = ;"),
                              ("throw", "throw new Error('fixture bootstrap failed');"),
@@ -761,6 +843,7 @@ async def check(wasm, chrome, browser_name, suite, artifacts):
                         cases += [(name, test, ()) for name, test in [
                             ("platform-props", check_platform_props),
                             ("pointer-styles", check_state_styles),
+                            ("touch-pointer-fields", check_touch_pointer_fields),
                             ("state-styles", check_other_states),
                             ("tooltip", check_tooltip_function),
                             ("scroll-content", check_scroll_content),

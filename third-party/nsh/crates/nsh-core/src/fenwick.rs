@@ -35,6 +35,26 @@ impl Fenwick {
         }
     }
 
+    /// Appends an item of `size` in O(log n): node `j` covers
+    /// `(j - lowbit(j), j]`, whose earlier items are already summed.
+    pub(crate) fn push(&mut self, size: f64) {
+        if self.tree.is_empty() {
+            self.tree.push(0.0);
+        }
+        let j = self.tree.len();
+        let low = j - j.isolate_lowest_one();
+        let covered = self.prefix(j - 1) - self.prefix(low);
+        self.tree.push(size + covered);
+    }
+
+    /// Drops the items past the first `len` in O(1): no node of the
+    /// kept prefix covers a dropped item.
+    pub(crate) fn truncate(&mut self, len: usize) {
+        if len < self.len() {
+            self.tree.truncate(len + 1);
+        }
+    }
+
     /// Sum of items `[0, i)`: the offset of item `i`.
     pub(crate) fn prefix(&self, i: usize) -> f64 {
         let mut i = i.min(self.len());
@@ -100,6 +120,25 @@ mod tests {
             assert!((f.prefix(i) - acc).abs() < 1e-9);
             assert_eq!(f.find(acc + s / 2.0), i);
             acc += s;
+        }
+    }
+
+    #[test]
+    fn push_and_truncate_match_a_rebuild() {
+        let sizes: Vec<f64> = (0..777).map(|i| (i % 11 + 1) as f64 * 2.5).collect();
+        let mut f = Fenwick::default();
+        for (i, &s) in sizes.iter().enumerate() {
+            f.push(s);
+            let built = Fenwick::from_sizes(sizes[..=i].iter().copied());
+            assert_eq!(f.tree, built.tree, "after {i}");
+        }
+        for len in [500, 333, 64, 63, 1, 0] {
+            f.truncate(len);
+            let built = Fenwick::from_sizes(sizes[..len].iter().copied());
+            assert_eq!(f.len(), len);
+            for i in 0..=len {
+                assert!((f.prefix(i) - built.prefix(i)).abs() < 1e-9);
+            }
         }
     }
 }

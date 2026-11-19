@@ -14,9 +14,11 @@ use crate::term;
 /// ABIs built by default: phones' 64-bit and 32-bit processes, and the
 /// emulators of x86-64 hosts.
 pub(crate) const ABIS: [&str; 3] = ["arm64-v8a", "armeabi-v7a", "x86_64"];
-/// Minimum Android API level (Android 9): hardware-accelerated shadow
-/// layers and the `Typeface` weight API.
-pub(crate) const MIN_SDK: u32 = 28;
+/// Minimum Android API level (Android 8.0). Android 8.x gets what API 28
+/// added another way: weights from Roboto's named families, text measured
+/// without `PrecomputedText`, shadows drawn in software
+/// (docs/dev/pitfalls.md, "Android 8").
+pub(crate) const MIN_SDK: u32 = 26;
 /// The SDK platform compiled against.
 pub(crate) const COMPILE_SDK: u32 = 35;
 
@@ -219,8 +221,9 @@ fn clang_target(triple: &str) -> &str {
     }
 }
 
-/// A cargo command set up to cross-compile for `triple` with the NDK.
-fn ndk_cargo(sdk: &Sdk, triple: &str) -> Command {
+/// `cargo <subcommand> --locked` set up to cross-compile for `triple` with
+/// the NDK.
+fn ndk_cargo(sdk: &Sdk, triple: &str, subcommand: &str) -> Command {
     let toolchain = sdk.toolchain();
     let bin = toolchain.join("bin");
     // On Windows the NDK's per-target compilers are batch files.
@@ -255,7 +258,7 @@ fn ndk_cargo(sdk: &Sdk, triple: &str) -> Command {
         let include = include.display().to_string().replace('\\', "/");
         extra.push_str(format!(" -idirafter \"{include}\"").as_str());
     }
-    let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    let mut cmd = crate::cargo::command(subcommand);
     cmd.current_dir(root())
         .env(format!("CC_{env_triple}"), &clang)
         .env(format!("AR_{env_triple}"), bin.join("llvm-ar"))
@@ -287,9 +290,8 @@ fn ndk_cargo(sdk: &Sdk, triple: &str) -> Command {
 pub(crate) fn clippy() -> anyhow::Result<()> {
     let sdk = Sdk::find()?;
     for features in ["--all-features", "--no-default-features"] {
-        let status = ndk_cargo(&sdk, "aarch64-linux-android")
+        let status = ndk_cargo(&sdk, "aarch64-linux-android", "clippy")
             .args([
-                "clippy",
                 "-p",
                 "nsh-platform-android",
                 "--target",
@@ -314,8 +316,8 @@ fn cargo_lib(
     release: bool,
     dev: bool,
 ) -> anyhow::Result<PathBuf> {
-    let mut cmd = ndk_cargo(sdk, triple);
-    cmd.args(["build", "-p", "nsh-platform-android", "--target", triple]);
+    let mut cmd = ndk_cargo(sdk, triple, "build");
+    cmd.args(["-p", "nsh-platform-android", "--target", triple]);
     if release {
         cmd.arg("--release");
     }

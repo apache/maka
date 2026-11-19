@@ -29,7 +29,6 @@ mod oauth;
 #[path = "oauth_login/main.rs"]
 mod oauth_login;
 mod onboarding;
-mod plugin_authorization;
 mod pricing;
 mod public_catalog;
 mod runtime_policy;

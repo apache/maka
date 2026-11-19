@@ -131,25 +131,27 @@ fn response_sources_follow_documents_and_search_results_without_losing_citations
     )
     .unwrap();
     assert_eq!(decoded.finish.reason, Stop::Stop);
-    assert_eq!(
-        ids, 2,
-        "search results suppress duplicate standalone web citations"
-    );
+    assert_eq!(ids, 3);
     let Part::Text { citations, .. } = &decoded.parts[1] else {
         panic!("text after fetched result")
     };
     assert_eq!(
         citations.len(),
         2,
-        "attachments survive standalone source suppression"
+        "text attachments survive source projection"
     );
     assert!(
         matches!(&citations[0].source, Source::Document { id, title, .. } if id == "0" && title == "https://example.org/document")
     );
     assert!(
-        matches!(&decoded.parts[2], Part::Source(Source::Document { id, .. }) if id == "source-1")
+        matches!(&decoded.parts[2], Part::Source { source: Source::Document { id, .. }, anchor: Some(crate::output::CitationAnchor::BlockEnd { part: 1 }) } if id == "source-1")
     );
-    assert!(matches!(&decoded.parts[4], Part::Source(Source::Url { id, .. }) if id == "source-2"));
+    assert!(
+        matches!(&decoded.parts[3], Part::Source { source: Source::Url { id, .. }, anchor: Some(crate::output::CitationAnchor::BlockEnd { part: 1 }) } if id == "source-2")
+    );
+    assert!(
+        matches!(&decoded.parts[5], Part::Source { source: Source::Url { id, .. }, anchor: None } if id == "source-3")
+    );
 }
 
 #[test]
@@ -206,4 +208,72 @@ fn stream_eof_reuses_only_completed_accounting_and_spliced_messages_latch() {
     ));
     assert!(feed(&mut stream, json!({"type":"message_stop"})).is_empty());
     assert!(stream.finish().is_empty());
+}
+
+#[test]
+fn web_citations_belong_to_their_text_block_even_with_search_results() {
+    use crate::output::{CitationAnchor, Event, Source};
+    let mut stream = stream::Stream::new(response::Options::default());
+    let mut events = vec![];
+    let citation = json!({"type":"web_search_result_location","cited_text":"source quote","url":"https://example.org/","title":"Example","encrypted_index":"x"});
+    let records = [
+        json!({"type":"message_start","message":{"id":"reply","usage":{"input_tokens":1}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"web_search_tool_result","tool_use_id":"search","content":[{"type":"web_search_result","url":"https://example.org/","title":"Example","encrypted_content":"opaque"}]}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}),
+        json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"first"}}),
+        json!({"type":"content_block_delta","index":1,"delta":{"type":"citations_delta","citation":citation}}),
+        json!({"type":"content_block_stop","index":1}),
+        json!({"type":"content_block_start","index":2,"content_block":{"type":"text","text":"second","citations":[citation]}}),
+        json!({"type":"content_block_stop","index":2}),
+    ];
+    for record in records {
+        events.extend(stream.value(record, &mut || "source".into()));
+    }
+    let anchors = events
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::Source {
+                source: Source::Url { url, .. },
+                anchor,
+            } if url == "https://example.org/" => Some(anchor),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        anchors,
+        vec![
+            None,
+            Some(CitationAnchor::BlockEnd { part: "1".into() }),
+            Some(CitationAnchor::BlockEnd { part: "2".into() })
+        ]
+    );
+}
+
+#[test]
+fn opaque_result_requires_the_id_of_a_server_call() {
+    use crate::output::Event;
+    let server = json!({"type":"server_tool_use","id":"r","name":"same","input":{"v":1}});
+    let local = json!({"type":"tool_use","id":"l","name":"same","input":{}});
+    let result = json!({"type":"vendor_lookup_tool_result","tool_use_id":"r","content":{"v":2},"is_error":false});
+    let mut decoder = stream::Stream::new(Default::default());
+    let events=decoder.value(json!({"type":"message_start","message":{"id":"m","usage":{"input_tokens":1},"content":[server,local,result]}}), &mut || "unused".into());
+    let calls: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::ToolCall(c) => Some((c.id.as_str(), c.name.as_str(), c.provider_executed)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls, [("r", "same", true), ("l", "same", false)]);
+    assert!(events.iter().any(|e|matches!(e,Event::ToolResult(r) if r.id=="r" && r.name=="same" && r.value==json!({"v":2}))));
+    let mut mismatched = result;
+    mismatched["tool_use_id"] = json!("l");
+    assert!(matches!(
+        &decoder.value(
+            json!({"type":"content_block_start","index":3,"content_block":mismatched}),
+            &mut || "unused".into()
+        )[..],
+        [Event::Error(_)]
+    ));
 }

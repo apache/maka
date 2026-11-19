@@ -20,6 +20,7 @@
 #[cfg(feature = "dev")]
 mod agent;
 mod animation;
+mod component;
 #[cfg(feature = "dev")]
 mod dev;
 mod encode;
@@ -37,7 +38,8 @@ mod text;
 
 use std::ffi::c_void;
 
-pub use host::run_root;
+pub use component::{ComponentContext, ComponentFactory, Components, NativeComponent};
+pub use host::{run_root, set_runtime};
 /// What [`ui_sets!`] gives.
 pub use nsh_core::element::Registry;
 /// What [`root!`] gives.
@@ -69,6 +71,30 @@ fn ui_sets() -> Vec<nsh_core::element::Registry> {
         return sets();
     }
     vec![nsh_base::registry()]
+}
+
+/// Returns the crate component registration callback exported via [`components!`].
+pub(crate) fn app_components_fn() -> Option<fn(&Components)> {
+    // SAFETY: looks up a symbol of the loaded libraries; [`components!`]
+    // defines it with this signature in a library built with this crate.
+    let app = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"nsh_app_components".as_ptr()) };
+    if app.is_null() {
+        return None;
+    }
+    // SAFETY: as above.
+    Some(unsafe { std::mem::transmute::<*mut c_void, fn(&Components)>(app) })
+}
+
+/// Registers the app crate's native components (`#[native_components(android)]`)
+/// on every `NshView` created from this `libnsh.so`.
+#[macro_export]
+macro_rules! components {
+    ($register:expr) => {
+        #[unsafe(no_mangle)]
+        fn nsh_app_components(components: &$crate::Components) {
+            ($register)(components);
+        }
+    };
 }
 
 /// Makes this library an app's `libnsh.so` that serves `$sets` (an

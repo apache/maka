@@ -98,13 +98,9 @@ pub(crate) fn wheel_with(
     let Some(ns) = NSEvent::eventWithCGEvent(&event) else {
         return;
     };
-    if momentum == 0 {
-        crate::view::scripted(&ns, || window.sendEvent(&ns));
-        return;
-    }
-    // The window drops synthesized momentum events (the system's go to
-    // the view that took the gesture): hand them to the view under the
-    // pointer, as AppKit would.
+    // AppKit can drop a windowless synthesized wheel event before it reaches
+    // an embedded window. Hit-test the requested point and use the same
+    // scrollWheel: handler the system would call.
     let view = window.contentView().and_then(|content| {
         let local = content.convertPoint_fromView(ns.locationInWindow(), None);
         // SAFETY: a superview's point, as hitTest: takes.

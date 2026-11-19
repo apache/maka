@@ -17,23 +17,48 @@
  * under the License.
  */
 
+use super::send::{PreparedAgentSend, PreparedSend};
 use super::*;
+use maka_agent_facts::durable::{ExecutionIdentity, UnixMillis};
+use maka_agent_state::{Head, queue as durable_queue};
 
 impl Owner {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "steering keeps message input, target execution, captured policy and original call authority explicit"
+    )]
     pub(super) async fn steer_message(
         self: &Arc<Self>,
-        text: String,
-        attachments: Vec<String>,
-        invocation: &Invocation,
-        basis: &MessageBasis,
+        unprepared: MessageInput,
+        origin: Option<MessageOrigin>,
+        key: &str,
+        execution: &ExecutionIdentity,
+        basis: &CapturedRun,
         operation: &maka_plugin_core::operation::RecoveryRef,
         parent: &maka_capabilities::call::Scope,
-    ) -> Result<SendResult, String> {
-        let session = invocation.session_id.as_str();
+        completion_request: Option<completions::CompletionRequest>,
+    ) -> Result<PreparedSend, String> {
+        let session = execution.session_id.as_str();
+        let target = self
+            .durable
+            .frontier(execution.run_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if target.spec.session_id != session
+            || target.spec.owner != self.run_owner()
+            || !parent
+                .sandbox_floor()
+                .contains(&target.spec.permission_ceiling.sandbox)
+                .map_err(|error| error.to_string())?
+            || !parent
+                .sandbox_floor()
+                .contains(&target.spec.approval_ceiling())
+                .map_err(|error| error.to_string())?
+        {
+            return Err("agent_steering_isolation_unavailable".into());
+        }
         let mut basis = basis.clone();
         basis.fingerprint = operation.fingerprint.clone();
-        let mut unprepared: MessageInput = text.into();
-        unprepared.attachments = self.attachment_refs(session, attachments).await?;
         let (message, required_tools) = match self
             .prepare_skills(
                 unprepared.clone(),
@@ -53,19 +78,17 @@ impl Owner {
                 required_tools,
             } => (message, required_tools),
             skills::Input::Rejected { reason, skills } => {
-                return Ok(SendResult::Rejected {
+                return Ok(PreparedSend::Returned(SendResult::Rejected {
                     session_id: session.into(),
                     reason,
                     skills,
-                });
+                }));
             }
         };
         let source = RootSourceMessage {
             message: DeliveredMessage {
-                origin: parent.identity.agent().cloned().map(|invocation| {
-                    maka_agent_facts::message::MessageOrigin::Session { invocation }
-                }),
-                message_id: format!("m_{}", self.operation_id(operation)),
+                origin,
+                message_id: format!("m_{key}"),
                 submitted_content_digest: unprepared
                     .content_digest()
                     .map_err(|_| "agent_message_invalid")?,
@@ -76,41 +99,74 @@ impl Owner {
             disposition: MessageDisposition::Steering,
             submitted_intent: None,
         };
-        let pending = maka_event_log::message_admissions::PendingMessageAdmission {
-            execution: maka_event_log::message_admissions::PendingExecution {
-                owner: self.prefix.clone(),
-                basis: serde_json::to_value(&basis).map_err(|error| error.to_string())?,
-            },
-            invocation: invocation.clone(),
-            steering_invocation: None,
-            source,
-            required_tools,
-            admitted_at: now(),
+        let (request, contents) = self
+            .freeze_request(
+                session,
+                source,
+                &basis,
+                required_tools,
+                key,
+                operation,
+                parent,
+            )
+            .await?;
+        let command_id = self.control_id(operation, &format!("{key}:steer_message"));
+        let at = UnixMillis(now().try_into().expect("Unix milliseconds"));
+        let Some(view) = self.session_run(session, execution.run_id).await? else {
+            return Err("agent_execution_unavailable".into());
         };
-        let store = self
-            .store
-            .session(session)
+        if view.stopped || view.terminal.is_some() {
+            return Ok(PreparedSend::Returned(SendResult::Rejected {
+                session_id: session.into(),
+                reason: SendRejection::TurnStopped,
+                skills: None,
+            }));
+        }
+        let queue = self
+            .durable
+            .queue()
+            .read(session.into())
             .await
             .map_err(|error| error.to_string())?;
-        loop {
-            let revision = store
-                .message_queue_revision(session)
-                .await
-                .map_err(|error| error.to_string())?;
-            match store
-                .admit_queued_message(&self.revision.activation, revision, pending.clone())
-                .await
-            {
-                Ok(receipt) => {
-                    return Ok(SendResult::Queued {
-                        session_id: session.into(),
-                        message_id: pending.source.message.message_id.clone(),
-                        revision: receipt.queue_revision,
-                    });
-                }
-                Err(maka_event_log::StoreError::RevisionConflict { .. }) => continue,
-                Err(error) => return Err(error.to_string()),
-            }
-        }
+        let command = durable_queue::QueueCommand {
+            id: command_id,
+            at,
+            expected_revision: queue.revision,
+            edit: durable_queue::QueueEdit::Enqueue {
+                request: Box::new(request.clone()),
+                placement: durable_queue::Placement::Steering {
+                    run: execution.run_id,
+                    expected_head: Head::from(&view),
+                },
+            },
+        };
+        let source_message_id = request.message_id.clone();
+        let completion = completion_request
+            .as_ref()
+            .map(|_| CompletionRegistration::Registered);
+        let statement = PreparedAgentSend {
+            queue: durable_queue::PreparedEnqueue {
+                session: session.into(),
+                command,
+                contents,
+                followup: None,
+                work_fence: None,
+            },
+            completion: completion_request
+                .map(|request| self.completion_statement(session, &source_message_id, request))
+                .transpose()?,
+        };
+        Ok(PreparedSend::Ready {
+            value: SendResult::Queued {
+                completion,
+                session_id: session.into(),
+                message_id: request.message_id,
+                revision: queue
+                    .revision
+                    .checked_add(1)
+                    .ok_or("agent_queue_revision_exhausted")?,
+            },
+            statement: Box::new(statement),
+        })
     }
 }

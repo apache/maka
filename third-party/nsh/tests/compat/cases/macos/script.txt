@@ -17,6 +17,33 @@ expect Passed: 1 Focus: first
 key tab
 expect Passed: 2 Focus: second
 covers [nsh] keymap
+# mod-keymap-focus
+tap id:case-mod-keymap-focus
+# The focus on no control: Return is the binding's.
+key enter
+expect Allows: 1 Denies: 0 Sends: 0
+# On Deny, Return and Space press it; Mod+Return still fires its binding.
+key tab
+key enter
+expect Allows: 1 Denies: 1 Sends: 0
+key space
+expect Allows: 1 Denies: 2 Sends: 0
+key mod+enter
+expect Allows: 1 Denies: 2 Sends: 1
+covers [nsh] keymap
+# mod-keymap-for-focus
+tap id:case-mod-keymap-for-focus
+# On the tile, Space is its forFocus binding's; Return still presses it.
+key tab
+key space
+expect Opens: 0 Flips: 1
+key enter
+expect Opens: 1 Flips: 1
+# On the next view, the tile's binding is gone: Space presses that view.
+key tab
+key space
+expect Opens: 1 Flips: 1
+covers [nsh] keymap
 # mod-standard-system
 tap id:case-mod-standard-system
 expect console.identity=true
@@ -27,6 +54,7 @@ expect os.home=true
 expect process.identity=true
 expect process.environment=true
 expect process.dataDir=true
+expect process.logFile=true
 expect process.runDenied=true
 expect process.spawnDenied=true
 expect process.exitDenied=true
@@ -168,6 +196,7 @@ expect Image size: Error ERR_ACCESS_DENIED network "https://example.com/a.png"
 expect Image prefetch: Error ERR_ACCESS_DENIED network "https://example.com/b.png"
 expect Fetch: TypeError ERR_ACCESS_DENIED network "https://example.com/data"
 expect WebSocket: Error ERR_ACCESS_DENIED network "ws://example.com/feed"
+expect WebSocket credentials: Error ERR_ACCESS_DENIED network "ws://example.com/feed"
 expect Global WebSocket: error,1006,false
 covers [nsh] Clipboard
 covers [nsh] Picker
@@ -204,3 +233,27 @@ style id:material-surface glassEffect regular
 covers [props] macos
 covers [props] macos.backdrop
 covers [styles] glassTintColor
+# application-refused
+tap id:case-application-refused
+wait 300
+expect Minimized: unknown
+expect Launch at login: ERR_ACCESS_DENIED application
+covers [nsh/desktop] currentWindow
+# base-select-cover
+tap id:case-base-select-cover
+# The chosen row opens over its trigger (150 × 30 at 20, 300).
+tap text:CoverSelect
+expect Lime
+frame parent:scroll:label:Lime 20 300 150 30
+touch start text:Elsewhere 5 5
+touch end
+absent Lime
+# With `cover={false}`, below its trigger (at 20, 338), although an item
+# is chosen.
+tap text:BelowSelect
+expect Kiwi
+frame parent:scroll:label:Kiwi 20 368 150 30
+touch start text:Elsewhere 5 5
+touch end
+absent Kiwi
+covers [props] Select.cover

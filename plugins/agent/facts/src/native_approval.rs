@@ -18,7 +18,7 @@
  */
 
 //! Durable native approval observations; these values carry no execution authority.
-use crate::event::Invocation;
+use crate::durable::ExecutionIdentity;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -32,28 +32,10 @@ pub struct DispatchReceipt {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeApprovalPending {
-    pub invocation: Invocation,
+    pub execution: ExecutionIdentity,
+    pub tool: crate::durable::ToolKey,
     pub operation_id: String,
     pub dispatch: DispatchReceipt,
     pub interaction_id: String,
     pub native: Value,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActivationCheckpoint {
-    pub id: String,
-    pub invocation: Invocation,
-    pub through: u64,
-    pub engine: Value,
-    pub native_basis: Value,
-    pub suspension: ActivationSuspension,
-}
-
-/// The durable reason that owns the next activation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ActivationSuspension {
-    NativeApprovals,
-    ModelRetry { plan: crate::model_retry::RetryPlan },
 }

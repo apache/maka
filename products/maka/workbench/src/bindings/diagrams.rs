@@ -158,7 +158,15 @@ mod tests {
                 .unwrap(),
             minify: false,
             split: false,
-            ui_sets: sets.iter().map(Into::into).collect(),
+            ui_sets: sets
+                .iter()
+                .flat_map(nsh_core::element::Registry::sets)
+                .map(Into::into)
+                .collect(),
+            asset_root_from: Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
+            ),
+            ..Default::default()
         })
         .unwrap();
         nsh_testing::Headless::start(nsh_engine::EngineConfig {
