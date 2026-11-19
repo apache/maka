@@ -31,6 +31,15 @@ pub(super) struct Screen {
     bytes: Vec<u8>,
 }
 impl Screen {
+    fn push_byte(&mut self, byte: u8) {
+        self.bytes.push(byte);
+        self.end += 1;
+    }
+    fn end_line(&mut self) {
+        if !self.bytes.is_empty() && !self.bytes.ends_with(b"\n") {
+            self.push_byte(b'\n');
+        }
+    }
     fn after(&self, mark: u64) -> String {
         let start = self.end - self.bytes.len() as u64;
         let at = mark.saturating_sub(start).min(self.bytes.len() as u64) as usize;
@@ -62,10 +71,7 @@ impl Decoder {
                     27 => self.escape = Escape::Start,
                     b'\r' => {}
                     b'\n' if self.above > 0 => self.above -= 1,
-                    b'\n' | b'\t' | 32..=255 if self.above == 0 => {
-                        screen.bytes.push(byte);
-                        screen.end += 1;
-                    }
+                    b'\n' | b'\t' | 32..=255 if self.above == 0 => screen.push_byte(byte),
                     _ => {}
                 },
                 Escape::Start => {
@@ -82,11 +88,19 @@ impl Decoder {
                             count.unwrap_or(0).saturating_mul(10).saturating_add(digit),
                         ));
                     } else if (0x40..=0x7e).contains(&byte) {
-                        match byte {
-                            b'A' => self.above = self.above.saturating_add(count.unwrap_or(1)),
-                            b'B' => self.above = self.above.saturating_sub(count.unwrap_or(1)),
-                            // An erased row is redrawn from here on.
-                            b'K' | b'J' => self.above = 0,
+                        match (byte, count) {
+                            (b'A', _) => {
+                                self.above = self.above.saturating_add(count.unwrap_or(1).max(1));
+                            }
+                            (b'B', _) => {
+                                self.above = self.above.saturating_sub(count.unwrap_or(1).max(1));
+                            }
+                            // Full-line (2K) and forward/full-screen (J/0J/2J/3J) erases start a
+                            // redraw; partial in-place erases (K/0K/1K/1J) leave rows below intact.
+                            (b'K', Some(2)) | (b'J', None | Some(0 | 2 | 3)) => {
+                                self.above = 0;
+                                screen.end_line();
+                            }
                             _ => {}
                         }
                         self.escape = Escape::Text;
@@ -344,15 +358,24 @@ mod tests {
             matches!(startup(&text, "/workspace"), Ok(Startup::Ready)),
             "{text:?}"
         );
+        // Partial erase-to-EOL on an earlier row (CSI K) and ECMA-48 zero counts (0A/0B -> 1)
+        // must not leak earlier-row updates onto the prompt row.
+        let edited = b"bypass permissions on\r\neffort: medium\r\n$\x1b[2G\x1b[2A\x1b[22G\x1b[K (updated)\x1b[2B\x1b[0Aabove\x1b[0B";
+        assert!(
+            matches!(startup(&observed(edited), "/workspace"), Ok(Startup::Ready)),
+            "{:?}",
+            observed(edited)
+        );
         // After the cursor is back on the prompt row, typed text is observed again.
         assert!(observed(&[hint.as_slice(), b"hello"].concat()).ends_with("$hello"));
+        assert!(observed(&[edited.as_slice(), b"hello"].concat()).ends_with("$hello"));
     }
     #[test]
     fn rows_that_claude_erases_and_redraws_are_observed() {
         let text = observed(
             b"$\xc2\xa0 one\r\ntwo\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[G$\xc2\xa0 one\r\ntwo three",
         );
-        assert!(text.ends_with("$\u{a0} one\ntwo three"), "{text:?}");
+        assert_eq!(composer(&text), "\u{a0} one\ntwo three");
     }
     #[test]
     fn a_prompt_wrapped_inside_text_without_spaces_is_acknowledged() {
