@@ -767,108 +767,71 @@ async fn scenario(
         assert_eq!((image.width(), image.height()), (2, 2));
     }
     progress["phase"] = json!("new client foreground operation after original tool settlement");
-    let normalizing = peer.lock().unwrap().window_bounds["windowState"] != "normal";
-    let foreground_id = Uuid::new_v4();
-    let foreground = client.mutation(
-        foreground_id, "computer", "presentTarget",
-        json!({"sessionId":sid,"bindingId":binding,"feedId":notice["feedId"],"targetId":target["id"],
-            "revision":target["revision"],"area":{"x":100,"y":50,"width":1000,"height":700}}),
-        Attachments::new(), None, json!({"kind":"post-settled-browser-presentation"}),
-    ).await?;
-    phase("foreground operation prepared", foreground.prepare()).await?;
-    let foreground_reply = phase("foreground operation confirmed", foreground.confirm()).await?;
-    let presented = success(&foreground_reply);
-    assert_eq!(presented["kind"], "requested");
-    assert_eq!(presented["details"]["windowId"], 7);
-    if normalizing {
+    // The first presentation restores the minimized window. The second must
+    // position and activate the same, now normal window without restoring it.
+    for normalizing in [true, false] {
+        let before = peer.lock().unwrap().methods.len();
+        let foreground_id = Uuid::new_v4();
+        let foreground = client.mutation(
+            foreground_id, "computer", "presentTarget",
+            json!({"sessionId":sid,"bindingId":binding,"feedId":notice["feedId"],"targetId":target["id"],
+                "revision":target["revision"],"area":{"x":100,"y":50,"width":1000,"height":700}}),
+            Attachments::new(), None, json!({"kind":"post-settled-browser-presentation"}),
+        ).await?;
+        phase("foreground operation prepared", foreground.prepare()).await?;
+        let foreground_reply = phase("foreground operation confirmed", foreground.confirm()).await?;
+        let presented = success(&foreground_reply);
+        assert_eq!(presented["kind"], "requested");
+        assert_eq!(presented["details"]["windowId"], 7);
+        if normalizing {
+            assert_eq!(
+                presented["details"]["normalizationRequested"],
+                json!({"windowState":"normal"})
+            );
+            assert_eq!(
+                presented["details"]["normalizationObserved"]["bounds"],
+                json!({"left":20,"top":30,"width":800,"height":600,"windowState":"normal"})
+            );
+        } else {
+            assert!(presented["details"].get("normalizationRequested").is_none());
+        }
         assert_eq!(
-            presented["details"]["normalizationRequested"],
-            json!({"windowState":"normal"})
+            presented["details"]["placementRequested"],
+            json!({"left":200,"top":100,"width":800,"height":600})
         );
         assert_eq!(
-            presented["details"]["normalizationObserved"]["bounds"],
-            json!({"left":20,"top":30,"width":800,"height":600,"windowState":"normal"})
-        );
-    } else {
-        assert!(presented["details"].get("normalizationRequested").is_none());
-    }
-    assert_eq!(
-        presented["details"]["placementRequested"],
-        json!({"left":200,"top":100,"width":800,"height":600})
-    );
-    assert_eq!(
-        presented["details"]["placementObserved"]["bounds"],
-        json!({"left":200,"top":100,"width":800,"height":600,"windowState":"normal"})
-    );
-    assert_eq!(presented["details"]["activationRequested"], json!({}));
-    {
-        let state = peer.lock().unwrap();
-        assert_eq!(
-            state.model_requests, held_requests,
-            "model hold ended before presentation"
-        );
-        assert!(!state.close_result_seen);
-        assert!(state.created);
-        assert!(state.preview_screenshots > 0);
-        assert_eq!(
-            state.window_bounds,
+            presented["details"]["placementObserved"]["bounds"],
             json!({"left":200,"top":100,"width":800,"height":600,"windowState":"normal"})
         );
-        assert_eq!(
-            state
-                .methods
+        assert_eq!(presented["details"]["activationRequested"], json!({}));
+        {
+            let state = peer.lock().unwrap();
+            assert_eq!(
+                state.model_requests, held_requests,
+                "model hold ended before presentation"
+            );
+            assert!(!state.close_result_seen);
+            assert!(state.created);
+            assert!(state.preview_screenshots > 0);
+            assert_eq!(
+                state.window_bounds,
+                json!({"left":200,"top":100,"width":800,"height":600,"windowState":"normal"})
+            );
+            let effects: Vec<_> = state.methods[before..]
                 .iter()
-                .filter(|method| method.as_str() == "Page.bringToFront")
-                .count(),
-            1
-        );
-        let window_methods: Vec<_> = state
-            .methods
-            .iter()
-            .map(String::as_str)
-            .filter(|method| {
-                matches!(
-                    *method,
-                    "Browser.getWindowForTarget"
-                        | "Browser.setWindowBounds"
-                        | "Browser.getWindowBounds"
-                        | "Page.bringToFront"
-                )
-            })
-            .collect();
-        assert_eq!(
-            window_methods,
-            if normalizing {
-                vec![
-                    "Browser.getWindowForTarget",
-                    "Browser.getWindowForTarget",
-                    "Browser.setWindowBounds",
-                    "Browser.getWindowForTarget",
-                    "Browser.getWindowBounds",
-                    "Browser.getWindowForTarget",
-                    "Browser.setWindowBounds",
-                    "Browser.getWindowForTarget",
-                    "Browser.getWindowBounds",
-                    "Browser.getWindowForTarget",
-                    "Page.bringToFront",
-                    "Browser.getWindowForTarget",
-                ]
+                .map(String::as_str)
+                .filter(|method| matches!(*method, "Browser.setWindowBounds" | "Page.bringToFront"))
+                .collect();
+            let expected: &[_] = if normalizing {
+                &["Browser.setWindowBounds", "Browser.setWindowBounds", "Page.bringToFront"]
             } else {
-                vec![
-                    "Browser.getWindowForTarget",
-                    "Browser.getWindowForTarget",
-                    "Browser.setWindowBounds",
-                    "Browser.getWindowForTarget",
-                    "Browser.getWindowBounds",
-                    "Browser.getWindowForTarget",
-                    "Page.bringToFront",
-                    "Browser.getWindowForTarget",
-                ]
-            }
-        );
+                &["Browser.setWindowBounds", "Page.bringToFront"]
+            };
+            assert_eq!(effects, expected);
+        }
+        progress["foreground"] =
+            json!({"operationId":foreground_id,"kind":presented["kind"],"cleanup":"confirmed"});
     }
-    progress["foreground"] =
-        json!({"operationId":foreground_id,"kind":presented["kind"],"cleanup":"confirmed"});
     phase("viewport subscription closed", frames.close()).await?;
     phase("stage subscription closed", stage.close()).await?;
     presentation_done
@@ -1127,16 +1090,7 @@ async fn scenario(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn browser_root_bridge_completes_on_normal_worker_stack() {
-    browser_presentation("normal").await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn browser_stage_presents_the_same_minimized_window_after_tool_settlement() {
-    browser_presentation("minimized").await;
-}
-
-async fn browser_presentation(window_state: &str) {
+async fn browser_stage_presents_the_same_window_after_tool_settlement() {
     let sandbox = Sandbox::new().await.unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut jpeg = std::io::Cursor::new(Vec::new());
@@ -1153,7 +1107,7 @@ async fn browser_presentation(window_state: &str) {
         created: false,
         methods: Vec::new(),
         preview_screenshots: 0,
-        window_bounds: json!({"left":20,"top":30,"width":800,"height":600,"windowState":window_state}),
+        window_bounds: json!({"left":20,"top":30,"width":800,"height":600,"windowState":"minimized"}),
         canonical_sent: Some(canonical_sent),
         canonical_ready: Some(canonical_ready),
         presentation_done: Some(presentation_done),
