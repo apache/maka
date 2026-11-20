@@ -36,6 +36,13 @@ fn executable_tempdir() -> tempfile::TempDir {
     .expect("create fixture on the same filesystem as the actual Maka executable")
 }
 
+fn product_bundle() -> PathBuf {
+    std::env::var_os("OUT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("OUT_DIR")))
+        .join("product")
+}
+
 mod candidate;
 
 mod initialize;
