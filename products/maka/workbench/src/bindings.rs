@@ -397,6 +397,26 @@ impl ApplicationHost {
         execute(owner, quick_tools::application_icon(path)).await
     }
 
+    pub async fn application_instance(
+        this: Instance<Self>,
+        path: String,
+    ) -> Result<Option<i32>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::application_instance(path)).await
+    }
+
+    pub async fn application_action(
+        this: Instance<Self>,
+        path: String,
+        pid: i32,
+        action: String,
+    ) -> Result<(), String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::application_action(path, pid, action)).await
+    }
+
     pub async fn search_file_names(
         this: Instance<Self>,
         query: String,

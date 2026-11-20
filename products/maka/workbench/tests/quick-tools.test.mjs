@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { historyAtSelection } from '../app/quick-input-history.ts';
 import {
   remember,
   DEFAULT_LIMIT,
@@ -237,4 +238,17 @@ test('a recorded shortcut needs a modifier that does not type text', () => {
     assert.ok(!keys.has(kept), kept);
   assert.ok(!new Set(recordable(false)).has('alt+f4'));
   assert.ok(new Set(recordable(false)).has('cmd+q'));
+});
+
+test('Up enters search history only at the first result and Down restores the draft', () => {
+  const history = ['older', 'newer'];
+  const idle = { index: -1, draft: '', text: '' };
+  for (const i of [2, 1]) assert.equal(historyAtSelection(history, i, idle, 'draft', -1), null);
+  const first = historyAtSelection(history, 0, idle, 'draft', -1);
+  assert.equal(first.text, 'newer');
+  assert.equal(historyAtSelection(history, 0, first, first.text, -1).text, 'older');
+  const back = historyAtSelection(history, 0, first, first.text, 1);
+  assert.equal(back.text, 'draft');
+  assert.equal(historyAtSelection(history, 0, back, back.text, 1), null);
+  assert.equal(historyAtSelection([], 0, idle, 'draft', -1), null);
 });

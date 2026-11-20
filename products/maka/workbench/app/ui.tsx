@@ -422,44 +422,86 @@ export type BrowserHeader = {
   expanded: boolean;
   hidden: boolean;
   toggle(): void;
+  sidebarHover?(inside: boolean): void;
   /** A pane beside another closes from its header instead of toggling the browser. */
   close?(): void;
 };
+/** Position the toggle from the window controls in every sidebar state. */
+export function SidebarTitleRow(props: {
+  toggle(): void;
+  pin?: (() => void) | undefined;
+  suppressHover?: (() => void) | undefined;
+}) {
+  let underPointer = false;
+  return (
+    <View
+      desktop={windowDrag}
+      style={{
+        height: TITLE_BAR_HEIGHT,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'flex-start',
+        paddingLeft: Math.max(4, controlsLeft(true) - 12),
+      }}
+    >
+      <SidebarToggle
+        expanded={!props.pin}
+        hover={(inside) => {
+          underPointer = inside;
+        }}
+        toggle={() => {
+          if (props.pin) return props.pin();
+          if (underPointer) props.suppressHover?.();
+          props.toggle();
+        }}
+      />
+    </View>
+  );
+}
+
 /** Shows or hides the session browser; its icon previews the change on hover. */
-export function SidebarToggle(props: { expanded: boolean; toggle(): void }) {
+export function SidebarToggle(props: {
+  expanded: boolean;
+  toggle(): void;
+  hover?(inside: boolean): void;
+}) {
   const label = () =>
     props.expanded ? tr('Collapse session browser') : tr('Expand session browser');
   return (
-    <Button
-      class="group/sidebar-toggle"
-      onPress={props.toggle}
-      accessibilityLabel={label()}
-      tooltip={textTooltip(label)}
-      selected={props.expanded}
-      style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-      hoverStyle={
-        platform.idiom === 'terminal' ? { backgroundColor: C.surface } : controlHoverStyle()
-      }
-      focusStyle={platform.idiom === 'terminal' ? { backgroundColor: C.raised } : quietFocusStyle()}
-    >
-      <View
-        accessibilityElementsHidden
-        style={[{ width: 16, height: 16 }, { pointerEvents: 'none' }]}
+    <View onMouseEnter={() => props.hover?.(true)} onMouseLeave={() => props.hover?.(false)}>
+      <Button
+        class="group/sidebar-toggle"
+        onPress={props.toggle}
+        accessibilityLabel={label()}
+        tooltip={textTooltip(label)}
+        selected={props.expanded}
+        style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+        hoverStyle={
+          platform.idiom === 'terminal' ? { backgroundColor: C.surface } : controlHoverStyle()
+        }
+        focusStyle={
+          platform.idiom === 'terminal' ? { backgroundColor: C.raised } : quietFocusStyle()
+        }
       >
-        <View class="group-hover/sidebar-toggle:opacity-0">
-          <Icon name="sidebar" color={platform.idiom === 'terminal' ? C.secondary : C.muted} />
-        </View>
         <View
-          class="opacity-0 group-hover/sidebar-toggle:opacity-100"
-          style={{ position: 'absolute', left: 0, top: 0 }}
+          accessibilityElementsHidden
+          style={[{ width: 16, height: 16 }, { pointerEvents: 'none' }]}
         >
-          <Icon
-            name={props.expanded ? 'sidebarCollapse' : 'sidebarExpand'}
-            color={platform.idiom === 'terminal' ? C.secondary : C.muted}
-          />
+          <View class="group-hover/sidebar-toggle:opacity-0">
+            <Icon name="sidebar" color={platform.idiom === 'terminal' ? C.secondary : C.muted} />
+          </View>
+          <View
+            class="opacity-0 group-hover/sidebar-toggle:opacity-100"
+            style={{ position: 'absolute', left: 0, top: 0 }}
+          >
+            <Icon
+              name={props.expanded ? 'sidebarCollapse' : 'sidebarExpand'}
+              color={platform.idiom === 'terminal' ? C.secondary : C.muted}
+            />
+          </View>
         </View>
-      </View>
-    </Button>
+      </Button>
+    </View>
   );
 }
 
@@ -562,7 +604,11 @@ export function Header(props: {
       }}
     >
       <If when={toggle()}>
-        <SidebarToggle expanded={props.browser.expanded} toggle={props.browser.toggle} />
+        <SidebarToggle
+          expanded={props.browser.expanded}
+          toggle={props.browser.toggle}
+          hover={props.browser.expanded ? undefined : props.browser.sidebarHover}
+        />
       </If>
       <If when={!desktop}>
         <Button

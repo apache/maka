@@ -17,18 +17,19 @@
  * under the License.
  */
 
-import { effect, computed, platform, signal, type JSX } from 'nsh';
+import { Clipboard, effect, computed, platform, signal, type JSX } from 'nsh';
 import type { ApplicationHost } from 'maka/host';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
   type QuickItem,
+  type QuickAction,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
 import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
 import { search } from '../../shared/quick-search';
 
-const KEYWORDS = ['app', 'apps', '应用', '應用'];
+const KEYWORDS = ['app', 'apps', '应用', '應用', 'Search applications', '搜索应用', '搜尋應用程式'];
 const applicationName = (path: string) => path.slice(path.lastIndexOf('/') + 1, -'.app'.length);
 
 function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
@@ -55,6 +56,50 @@ function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
         image: () => iconOf(path),
         source: tr('Application'),
         action: tr('Open'),
+        async actions(): Promise<readonly QuickAction[]> {
+          const pid = await host.applicationInstance(path);
+          const run = (task: Promise<unknown>) => void task.then(input.close, input.report);
+          return [
+            {
+              title: tr('Reveal in Finder'),
+              icon: 'folder',
+              run: () => run(host.applicationAction(path, 0, 'reveal')),
+            },
+            {
+              title: tr('Copy application path'),
+              icon: 'copy',
+              run: () => run(Clipboard.writeText(path)),
+            },
+            ...(pid == null
+              ? []
+              : [
+                  {
+                    title: tr('Hide application'),
+                    icon: 'minus' as const,
+                    startsGroup: true,
+                    run: () => run(host.applicationAction(path, pid, 'hide')),
+                  },
+                  {
+                    title: tr('Restart application'),
+                    icon: 'refresh' as const,
+                    run: () => run(host.applicationAction(path, pid, 'restart')),
+                  },
+                  {
+                    title: tr('Quit application'),
+                    icon: 'close' as const,
+                    run: () => run(host.applicationAction(path, pid, 'quit')),
+                  },
+                  {
+                    title: tr('Force quit application'),
+                    icon: 'stop' as const,
+                    confirm: tr('Force quit {app}? Unsaved changes may be lost.', {
+                      app: applicationName(path),
+                    }),
+                    run: () => run(host.applicationAction(path, pid, 'forceQuit')),
+                  },
+                ]),
+          ];
+        },
         match,
         remembered: true,
         run: () => void host.openLocalPath(path).then(input.close, input.report),
@@ -63,9 +108,7 @@ function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
   );
   input.attach({
     items,
-    entries: () => [
-      { id: 'search', title: tr('Search applications'), icon: 'app', keywords: KEYWORDS },
-    ],
+    entries: () => [{ id: 'search', title: tr('Applications'), icon: 'app', keywords: KEYWORDS }],
   });
   return null;
 }

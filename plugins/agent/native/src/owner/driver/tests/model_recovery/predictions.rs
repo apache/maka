@@ -161,3 +161,72 @@ async fn predictions_extend_the_original_provider_request() {
     assert!(matches!(provider, Some(Ok(Ok(())))), "{provider:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quick_questions_stream_with_explicit_history_outside_the_bot_transcript() {
+    let mut rig = Rig::new().unwrap();
+    let stop = CancellationToken::new();
+    let (requests, mut upstream) = tokio::sync::mpsc::unbounded_channel();
+    let mut wire = None;
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap_with(&base, format!("http://{}/v1", listener.local_addr()?), |config| config["bot"] = json!(true)).await?;
+        wire = Some(tokio::spawn(provider(listener, requests, stop.clone())));
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().ok_or("test client missing")?;
+        let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+        let connection = call(client, "settings", "create", json!({
+            "expectedCatalogRevision":catalog["revision"],
+            "connection":{
+                "slug":"prediction-model","name":"Prediction model",
+                "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2"],
+                "modelOverrides":{"llama3.2":{"apiProtocol":"openai-chat-completions","codeMode":false,
+                    "vision":true,"imageInput":{"maxWidth":16,"requestBytes":1000000}}}
+            }
+        })).await?;
+        assert_eq!(connection["kind"], "committed", "{connection}");
+        let bot = call(client, "agent", "openBot", json!({})).await?;
+        let session = bot["sessionId"].as_str().ok_or("missing Bot session")?;
+        let backend = json!({"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"});
+        call(client, "agent", "selectBackend", json!({"sessionId":session,"backend":backend})).await?;
+        let before = call(client, "agent", "observe", json!({"sessionId":session})).await?;
+        for (id, previous) in [("one", None), ("two", Some("one")), ("three", None)] {
+            let mut question = client.call("agent", "askQuickQuestion".into(), json!({
+                "sessionId":session,"requestId":id,"question":"Describe the square.","continueFrom":previous
+            }), Attachments::new()).await?;
+            question.start().await?;
+            assert!(matches!(question.receive().await?, Reply::Prepared { .. }));
+            let mut reply = question.confirm(json!({"test":"quick-question"})).await?;
+            let mut answer = Value::Null;
+            while let Reply::Progress { value } = reply {
+                answer = value;
+                reply = question.receive().await?;
+            }
+            let Reply::Mutation { reply, cleanup } = reply else { return Err("missing receipt".into()); };
+            cleanup?;
+            assert!(matches!(reply.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { .. } }, .. }), "{reply:?}");
+            assert_eq!(answer, "The image shows a red square.");
+            let request = upstream.recv().await.ok_or("missing model request")?;
+            assert!(request["tools"].as_array().is_none_or(Vec::is_empty));
+            let messages = request["messages"].as_array().unwrap();
+            assert_eq!(messages.iter().any(|m| m["role"] == "assistant"), previous.is_some());
+        }
+        let after = call(client, "agent", "observe", json!({"sessionId":session})).await?;
+        assert_eq!(before["lastCompletedTurnId"], after["lastCompletedTurnId"]);
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })).catch_unwind().await;
+    stop.cancel();
+    let provider = match wire {
+        Some(wire) => Some(wire.await),
+        None => None,
+    };
+    let cleanup = rig.finish().await;
+    assert!(
+        matches!(result, Ok(Ok(Ok(())))),
+        "quick question fixture failed: {result:?}"
+    );
+    assert!(matches!(provider, Some(Ok(Ok(())))), "{provider:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+}
