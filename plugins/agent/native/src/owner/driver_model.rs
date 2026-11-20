@@ -1095,6 +1095,7 @@ impl DriverModel {
                         &mut system,
                         &mut messages,
                         after,
+                        replay::FailureNote::Include,
                     )
                     .await?;
             } else {
@@ -1141,6 +1142,7 @@ impl DriverModel {
                         &mut system,
                         &mut messages,
                         0,
+                        replay::FailureNote::Include,
                     )
                     .await?;
             }
@@ -1833,7 +1835,15 @@ impl DriverModel {
                         .flatten();
                     let knowledge = self
                         .semantic_tail(
-                            target, reader, &view, attempt, vision, &mut None, messages, after,
+                            target,
+                            reader,
+                            &view,
+                            attempt,
+                            vision,
+                            &mut None,
+                            messages,
+                            after,
+                            replay::FailureNote::Include,
                         )
                         .await?;
                     if run == self.execution.run_id {
@@ -2015,7 +2025,15 @@ impl DriverModel {
                     }
                     let _ = self
                         .semantic_tail(
-                            target, reader, &prior, None, vision, system, messages, after,
+                            target,
+                            reader,
+                            &prior,
+                            None,
+                            vision,
+                            system,
+                            messages,
+                            after,
+                            replay::FailureNote::Omit,
                         )
                         .await?;
                 }
@@ -2034,7 +2052,17 @@ impl DriverModel {
                     self.project_message_input(reader, &prior, &input, vision, false, messages)
                         .await?;
                     let _ = self
-                        .semantic_tail(target, reader, &prior, None, vision, system, messages, 0)
+                        .semantic_tail(
+                            target,
+                            reader,
+                            &prior,
+                            None,
+                            vision,
+                            system,
+                            messages,
+                            0,
+                            replay::FailureNote::Omit,
+                        )
                         .await?;
                 }
                 Ok(previous)
@@ -2056,6 +2084,7 @@ impl DriverModel {
         system: &'a mut Option<SystemPrompt>,
         messages: &'a mut preparation::PromptBuilder,
         after_revision: u64,
+        failure_note: replay::FailureNote,
     ) -> BoxFuture<'a, Result<ReplayedTail, RunError>> {
         Box::pin(async move {
             let recorded = self.recorded_inputs(reader, view, after_revision).await?;
@@ -2069,6 +2098,7 @@ impl DriverModel {
                 system,
                 messages,
                 recorded,
+                failure_note,
             );
             let mut after = after_revision;
             loop {

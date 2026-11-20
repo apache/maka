@@ -1809,3 +1809,120 @@ async fn model_hears_about_one_withheld_response_and_a_second_ends_the_run() -> 
     assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn next_turn_reads_why_the_previous_turn_failed() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let model = model(client, &provider.url, false).await?;
+        let session = create(client, &base, &model, None).await?;
+        let id = session["id"].as_str().unwrap();
+        let send = |message: &'static str| {
+            call(
+                client,
+                "agent",
+                "send",
+                json!({"sessionId":id,"message":message,"delivery":"queue"}),
+            )
+        };
+        let wait_terminal = |target: Value, expected: &'static str| async move {
+            loop {
+                let work = call(
+                    client,
+                    "agent",
+                    "work",
+                    json!({"sessionId":id,"target":target}),
+                )
+                .await?;
+                match work["execution"]["state"]["kind"].as_str() {
+                    Some(kind) if kind == expected => return Ok::<Value, Box<dyn Error + Send + Sync>>(work),
+                    Some("completed" | "failed" | "cancelled") => return Err(format!("{work}").into()),
+                    _ => tokio::time::sleep(Duration::from_millis(30)).await,
+                }
+            }
+        };
+
+        // 1. Failed turn followed by a new user message carries the failure reason.
+        let failed = send("Summarize the report.").await?;
+        let (_, reply) = provider.next().await?;
+        reply
+            .send(ModelReply::Fatal("fixture rejected the report".into()))
+            .map_err(|_| "provider reply lost")?;
+        wait_terminal(json!({"kind":"message","messageId":failed["messageId"]}), "failed").await?;
+
+        let next = send("Try again.").await?;
+        let (request, reply) = provider.next().await?;
+        let text = text_messages(&request);
+        let note = text
+            .find("[Host] This turn failed and ended here:")
+            .ok_or_else(|| format!("failure note missing: {request}"))?;
+        assert!(text[note..].contains("fixture rejected the report"), "{request}");
+        assert!(note < text.find("Try again.").unwrap(), "{request}");
+        reply
+            .send(completion(json!({"role":"assistant","content":"Done."}), "stop"))
+            .map_err(|_| "provider reply lost")?;
+        quiescent_message(client, id, &next["messageId"]).await?;
+
+        // 2. Continuing a zero-output failed run via continueRun does not append the past-tense failure note.
+        let failed_again = send("Retry via continueRun.").await?;
+        let (_, reply) = provider.next().await?;
+        reply
+            .send(ModelReply::Fatal("temporary outage".into()))
+            .map_err(|_| "provider reply lost")?;
+        let failed_work = wait_terminal(
+            json!({"kind":"message","messageId":failed_again["messageId"]}),
+            "failed",
+        )
+        .await?;
+        let continued = call(
+            client,
+            "agent",
+            "continueRun",
+            json!({
+                "sessionId": id,
+                "sourceRunId": failed_work["execution"]["runId"],
+                "sourceHighWater": failed_work["execution"]["highWater"],
+                "model": {
+                    "connectionId": model["connectionId"],
+                    "modelId": model["modelId"]
+                }
+            }),
+        )
+        .await?;
+        assert_eq!(continued["kind"], "started", "{continued}");
+        let (cont_request, reply) = provider.next().await?;
+        let last_msg = cont_request["messages"]
+            .as_array()
+            .and_then(|arr| arr.last())
+            .ok_or_else(|| format!("missing last message: {cont_request}"))?;
+        let last_text = last_msg.to_string();
+        assert!(
+            last_text.contains("Retry via continueRun.")
+                && !last_text.contains("[Host] This turn failed and ended here"),
+            "continueRun should end on the user prompt without a past-tense failure note: {cont_request}"
+        );
+        reply
+            .send(completion(json!({"role":"assistant","content":"Recovered."}), "stop"))
+            .map_err(|_| "provider reply lost")?;
+        wait_terminal(
+            json!({"kind":"run","runId":continued["execution"]["runId"]}),
+            "completed",
+        )
+        .await?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
