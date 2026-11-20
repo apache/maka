@@ -181,6 +181,31 @@ impl ToolPreparer for OrdinaryTool {
     }
 }
 
+/// Ends like a tool whose connection was retired mid-call: no result is known.
+struct UncertainTool;
+impl ToolPreparer for UncertainTool {
+    fn names(&self) -> Vec<String> {
+        vec!["uncertain_local".into()]
+    }
+    fn prepare(
+        &self,
+        _name: String,
+        _input: Value,
+        _context: ToolCallContext,
+        _cancellation: CancellationToken,
+    ) -> PreparationFuture {
+        Box::pin(async {
+            Ok(PreparedEffect::new(|_| {
+                Box::pin(async {
+                    Err(ToolError::OutcomeUnknown(
+                        "the server stopped answering".into(),
+                    ))
+                })
+            }))
+        })
+    }
+}
+
 enum TestDirectory {
     Owned(tempfile::TempDir),
     Borrowed(std::path::PathBuf),
@@ -200,6 +225,7 @@ struct Rig {
     model_listener: std::net::TcpListener,
     model_overrides: Value,
     model_idle_timeout: Option<Duration>,
+    uncertain_tool: bool,
     native_grants: Vec<NativeGrant>,
     store: Option<Arc<RootStore>>,
     host: Option<Arc<Host>>,
@@ -237,6 +263,7 @@ impl Rig {
             model_listener,
             model_overrides: json!({}),
             model_idle_timeout: None,
+            uncertain_tool: false,
             native_grants: vec![],
             store: None,
             host: None,
@@ -798,7 +825,21 @@ impl Rig {
                 handler: ToolHandler::Prepared(Arc::new(OrdinaryTool(StdMutex::new(Some(receiver))))),
             }
         });
-        let catalog = maka_tools::ToolCatalog::new(ordinary_tool)?;
+        let uncertain_tool = self.uncertain_tool.then(|| ToolRegistration {
+            definition: ToolDefinition {
+                name: "uncertain_local".into(),
+                description: "Ends without a known result".into(),
+                input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
+                provider: None,
+                freeform: None,
+                output_schema: None,
+            },
+            nesting: ToolNesting::DirectOnly,
+            semantics: ToolSemantics::Parallel,
+            handler: ToolHandler::Prepared(Arc::new(UncertainTool)),
+        });
+        let catalog =
+            maka_tools::ToolCatalog::new(ordinary_tool.into_iter().chain(uncertain_tool))?;
         let tools = ContentBlob::json(&crate::tools::SelectionSnapshot {
             definitions: catalog.definitions().cloned().collect(),
             direct_only: catalog.names().into_iter().collect(),

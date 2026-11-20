@@ -137,6 +137,8 @@ impl LocalCompletion {
 
 pub(super) enum DispatchSource {
     Ordinary,
+    /// A code cell's exec: its Cell keeps running after the call returns.
+    CellExec,
     CellWait(super::driver_cells::OwnedCellWait),
 }
 struct PreparedDispatch {

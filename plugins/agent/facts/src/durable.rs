@@ -289,6 +289,7 @@ impl ToolDecision {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AcceptedResult {
     ProviderOutcomeUnknown,
+    OutcomeUnknown,
     CellRecovered { cell: crate::cells::CellId },
     Succeeded,
     Failed,

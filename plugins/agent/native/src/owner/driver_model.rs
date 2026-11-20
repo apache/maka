@@ -2406,7 +2406,10 @@ impl DriverModel {
             AcceptedToolResult::ProviderOutcomeUnknown => {
                 ToolOutput::ErrorText("Provider tool outcome unknown".into())
             }
-            AcceptedToolResult::Rejected { diagnostic } => ToolOutput::ErrorText(diagnostic),
+            AcceptedToolResult::Rejected { diagnostic }
+            | AcceptedToolResult::OutcomeUnknown { diagnostic } => {
+                ToolOutput::ErrorText(diagnostic)
+            }
             AcceptedToolResult::RiskAdjudicated { blocker, decision } => match decision {
                 RiskDecision::RecordExternalObservation { evidence } => {
                     let evidence: Value = reader.decode(view.run, &evidence).await?;

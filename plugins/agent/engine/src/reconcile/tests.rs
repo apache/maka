@@ -999,3 +999,196 @@ fn an_approval_no_one_answered_in_time_counts_as_denied() {
         }
     );
 }
+
+fn admitted_side_effecting_call() -> (RunView, ToolKey) {
+    use maka_agent_facts::{accounting::Outcome, context::ModelPurpose, model::ModelFinishReason};
+    let mut view = policy_view(None);
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
+    let (mut view, _, attempt) = model_closure(
+        view,
+        ModelPurpose::Main,
+        ModelFinishReason::Stop,
+        Outcome::Success,
+        true,
+    );
+    let tool = ToolKey {
+        attempt,
+        call: "continuation".into(),
+    };
+    let input = view.spec.input.clone();
+    apply_policy_fact(
+        &mut view,
+        Fact::ToolDecided {
+            tool: tool.clone(),
+            decision: ToolDecision::Approved {
+                input,
+                resources: Vec::new(),
+                approval: None,
+                display: Default::default(),
+                semantics: maka_agent_facts::tools::ToolSemantics::Parallel,
+            },
+        },
+    );
+    apply_policy_fact(&mut view, Fact::ToolAdmitted { tool: tool.clone() });
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelCleanupObserved {
+            attempt,
+            cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
+        },
+    );
+    (view, tool)
+}
+
+fn bind_host_operation(view: &mut RunView, tool: &ToolKey, cleanup: OperationCleanupState) {
+    use maka_plugin_core::operation::{
+        OperationOutcome, OperationReply, Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef,
+    };
+    let digest = format!(
+        "sha256-{}",
+        view.spec.input.digest.strip_prefix("sha256:").unwrap()
+    );
+    let reference = RecoveryRef {
+        source: maka_plugin_core::deployment::DeploymentRef {
+            state_domain: "a".repeat(64),
+            deployment: view.spec.owner.deployment,
+            revision: 1,
+        },
+        namespace: view.spec.owner.namespace.clone(),
+        export: "history".into(),
+        method: "write".into(),
+        operation: Uuid::new_v4(),
+        fingerprint: digest.clone(),
+        contract: RecoveryContract {
+            name: "history".into(),
+            version: 1,
+            transport: maka_plugin_core::contract::Transport::Local,
+            digest,
+        },
+        recovery: RecoveryProtocol::JournalV1,
+    };
+    apply_policy_fact(
+        view,
+        Fact::ToolOriginalBound {
+            tool: tool.clone(),
+            reference: reference.clone(),
+        },
+    );
+    apply_policy_fact(
+        view,
+        Fact::OperationObserved {
+            tool: tool.clone(),
+            reply: OperationReply {
+                reference,
+                receipt: Receipt::Recorded {
+                    outcome: OperationOutcome::Unknown {
+                        diagnostic: "the provider closed the connection".into(),
+                    },
+                    cleanup,
+                },
+            },
+        },
+    );
+}
+
+type OperationCleanupState = maka_plugin_core::operation::OperationCleanup;
+
+fn returned_unknown(view: &mut RunView, tool: &ToolKey) {
+    let result = view.spec.input.clone();
+    apply_policy_fact(
+        view,
+        Fact::LocalToolReturned {
+            tool: tool.clone(),
+            result,
+            is_error: true,
+            settlement: maka_agent_facts::tool_call::ToolSettlement::Unknown,
+            cell_observation: None,
+        },
+    );
+}
+
+fn hand_back(view: &mut RunView, live: &Live, tool: &ToolKey) {
+    let action = next(view, live, UnixMillis(1), None, false);
+    assert!(
+        matches!(&action, Action::Accept(key, AcceptedResult::OutcomeUnknown) if key == tool),
+        "an ended call with an unknown result must go back to the model"
+    );
+    let result = ContentBlob::json(
+        &maka_agent_facts::tool_output::AcceptedToolResult::OutcomeUnknown {
+            diagnostic: "the server stopped answering".into(),
+        },
+    )
+    .unwrap();
+    apply_policy_fact(
+        view,
+        Fact::ToolResultAccepted {
+            tool: tool.clone(),
+            result: result.reference().clone(),
+            outcome: AcceptedResult::OutcomeUnknown,
+        },
+    );
+    assert!(view.recovery_failure().is_none());
+    assert!(!view.has_unsettled_recovery());
+}
+
+#[test]
+fn an_ended_call_with_an_unknown_result_goes_back_to_the_model() {
+    // A Host operation whose cleanup is confirmed has ended.
+    let (mut host, tool) = admitted_side_effecting_call();
+    bind_host_operation(&mut host, &tool, OperationCleanupState::Confirmed);
+    hand_back(&mut host, &Live::default(), &tool);
+    assert!(view_continues(&host, &Live::default()));
+
+    // A local call is known to have ended only from this activation's dispatch.
+    let (mut local, tool) = admitted_side_effecting_call();
+    returned_unknown(&mut local, &tool);
+    let mut live = Live::default();
+    live.ended_unknown.insert(tool.clone());
+    hand_back(&mut local, &live, &tool);
+    assert!(view_continues(&local, &live));
+
+    // A Stop does not leave the ended call unsettled.
+    let (mut stopped, tool) = admitted_side_effecting_call();
+    returned_unknown(&mut stopped, &tool);
+    apply_policy_fact(
+        &mut stopped,
+        Fact::StopRequested {
+            diagnostic: "stopped by user".into(),
+        },
+    );
+    let mut live = Live::default();
+    live.ended_unknown.insert(tool.clone());
+    hand_back(&mut stopped, &live, &tool);
+}
+
+fn view_continues(view: &RunView, live: &Live) -> bool {
+    matches!(
+        next(view, live, UnixMillis(1), None, false),
+        Action::Prepare(Preparation::ToolContinuation { .. })
+    )
+}
+
+#[test]
+fn a_call_that_may_still_be_running_keeps_its_recovery() {
+    // The Host operation's cleanup is unconfirmed.
+    let (mut host, tool) = admitted_side_effecting_call();
+    bind_host_operation(&mut host, &tool, OperationCleanupState::Unconfirmed);
+    assert!(!matches!(
+        next(&host, &Live::default(), UnixMillis(1), None, false),
+        Action::Accept(..)
+    ));
+    // An unknown local return without this activation's dispatch: a failed Cell
+    // wait records one too, and so does a call recorded before a restart.
+    let (mut local, tool) = admitted_side_effecting_call();
+    returned_unknown(&mut local, &tool);
+    assert!(!matches!(
+        next(&local, &Live::default(), UnixMillis(1), None, false),
+        Action::Accept(..)
+    ));
+}

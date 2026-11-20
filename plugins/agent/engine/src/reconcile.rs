@@ -208,6 +208,8 @@ pub(crate) struct Live {
     pub publication_prepared: BTreeSet<ExternalPublicationId>,
     pub publication_looked_up: BTreeSet<ExternalPublicationKey>,
     pub publication_observed: BTreeSet<ExternalPublicationKey>,
+    /// Local calls whose dispatch recorded an unknown return in this activation.
+    pub ended_unknown: BTreeSet<ToolKey>,
 }
 pub(crate) enum Action {
     Prepare(Preparation),
@@ -316,8 +318,15 @@ pub(crate) fn recovery_action(view: &RunView, live: &Live) -> Option<Action> {
                 (!live.looked_up.contains(tool)).then(|| Action::Lookup(tool.clone()))
             }
         }
-        BlockerKind::OperationUnknown { tool, .. }
-        | BlockerKind::ToolCleanupUnconfirmed { tool, .. } => observe_tool(tool),
+        // A later observation may confirm that the call ended after all.
+        BlockerKind::OperationUnknown { tool, .. } => observe_tool(tool).or_else(|| {
+            unknown_outcome(
+                view,
+                live,
+                view.tools.get(&maka_agent_state::fold::tool_key(tool))?,
+            )
+        }),
+        BlockerKind::ToolCleanupUnconfirmed { tool, .. } => observe_tool(tool),
         BlockerKind::CleanupUnconfirmed { reference } => view
             .tools
             .values()
@@ -350,6 +359,35 @@ pub(crate) fn recovery_action(view: &RunView, live: &Live) -> Option<Action> {
             .map(|task| Action::ObserveExternal(task.task, descriptor.clone())),
         _ => None,
     })
+}
+/// A call that ended without a known result goes back to the model, which
+/// decides what to check next; it is never run again. A Host operation has
+/// ended once its cleanup is confirmed. A local return is ambiguous on its own
+/// (a failed Cell wait records one too), so only this activation's dispatch
+/// proves that a local call ended; after a restart the call keeps its recovery.
+fn unknown_outcome(
+    view: &RunView,
+    live: &Live,
+    tool: &maka_agent_state::fold::Tool,
+) -> Option<Action> {
+    if view.cancelled_by_risk
+        || tool.accepted.is_some()
+        || tool.call.provider_executed
+        || live.work.contains(&WorkKey::Tool(tool.key.clone()))
+    {
+        return None;
+    }
+    let ended = match &tool.original {
+        Some(_) => matches!(
+            &tool.receipt,
+            Some(Receipt::Recorded {
+                outcome: OperationOutcome::Unknown { .. },
+                cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
+            })
+        ),
+        None => live.ended_unknown.contains(&tool.key),
+    };
+    ended.then(|| Action::Accept(tool.key.clone(), AcceptedResult::OutcomeUnknown))
 }
 fn unresolved(view: &RunView) -> bool {
     view.blockers
@@ -886,6 +924,9 @@ fn next_action(
         if let Some(result) = outcome(tool) {
             return Action::Accept(tool.key.clone(), result);
         }
+        if let Some(action) = unknown_outcome(view, live, tool) {
+            return action;
+        }
     }
     if fenced {
         if finish
@@ -938,7 +979,9 @@ fn next_action(
             }
         }
         for tool in view.tools.values() {
-            if live.work.contains(&WorkKey::Tool(tool.key.clone())) {
+            if live.work.contains(&WorkKey::Tool(tool.key.clone()))
+                || tool.outcome_unknown_accepted()
+            {
                 continue;
             }
             if tool.original.is_some()
@@ -975,7 +1018,7 @@ fn next_action(
             return action;
         }
         for tool in view.tools.values() {
-            if view.cancelled_by_risk {
+            if view.cancelled_by_risk || tool.outcome_unknown_accepted() {
                 continue;
             }
             let reason = if tool.call.provider_executed
@@ -1109,7 +1152,7 @@ fn next_action(
     }
     let mut pending_effect = false;
     for tool in view.tools.values() {
-        if live.work.contains(&WorkKey::Tool(tool.key.clone())) {
+        if live.work.contains(&WorkKey::Tool(tool.key.clone())) || tool.outcome_unknown_accepted() {
             continue;
         }
         if tool.accepted.is_none()

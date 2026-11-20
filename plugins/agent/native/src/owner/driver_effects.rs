@@ -602,20 +602,43 @@ impl OriginalEffects {
         } else {
             result
         };
+        // The call returned, so nothing of it is still running; only its effect is
+        // unknown. Record that before releasing its resources; the engine hands it to
+        // the model. A code cell's exec keeps waiting for its Cell instead.
+        let ended_unknown = match &result {
+            Err(ToolError::OutcomeUnknown(diagnostic))
+                if matches!(&material.source, DispatchSource::Ordinary) =>
+            {
+                Some(diagnostic.clone())
+            }
+            _ => None,
+        };
         material.physical = match &result {
             Err(
                 ToolError::OperationUnknown { observation, .. }
                 | ToolError::OperationCleanupUnconfirmed { observation, .. },
             ) => PhysicalCleanup::Host(observation.reference.clone()),
-            Err(
-                ToolError::OutcomeUnknown(_)
-                | ToolError::CleanupUnconfirmed(_)
-                | ToolError::Persistence(_),
-            ) => PhysicalCleanup::Unobservable,
+            Err(ToolError::OutcomeUnknown(_)) if ended_unknown.is_none() => {
+                PhysicalCleanup::Unobservable
+            }
+            Err(ToolError::CleanupUnconfirmed(_) | ToolError::Persistence(_)) => {
+                PhysicalCleanup::Unobservable
+            }
             _ => PhysicalCleanup::Confirmed,
         };
         let successful = result.is_ok();
-        let mut batch = prepare_result(self.access.execution(), &material.key, result).await?;
+        let mut batch = match ended_unknown {
+            Some(diagnostic) => {
+                prepare_local_result(
+                    self.access.execution(),
+                    &material.key,
+                    ToolSuccess::from(ToolOutput::Text(diagnostic)).reporting_error(true),
+                    maka_agent_facts::tool_call::ToolSettlement::Unknown,
+                )
+                .await?
+            }
+            None => prepare_result(self.access.execution(), &material.key, result).await?,
+        };
         if successful {
             batch.local = local;
         }
@@ -741,8 +764,10 @@ impl OriginalEffects {
             self.publish_material(&mut material).await?;
             material.acknowledged = true;
         }
-        if matches!(&material.source, DispatchSource::Ordinary)
-            && !matches!(material.physical, PhysicalCleanup::Confirmed)
+        if matches!(
+            &material.source,
+            DispatchSource::Ordinary | DispatchSource::CellExec
+        ) && !matches!(material.physical, PhysicalCleanup::Confirmed)
             && let Some(reply) = material.observe(self).await?
         {
             if cleanup_confirmed(&reply) {
@@ -769,7 +794,7 @@ impl OriginalEffects {
             }
         }
         if cells_cleanup_confirmed
-            && matches!(&material.source, DispatchSource::Ordinary)
+            && matches!(&material.source, DispatchSource::CellExec)
             && material.batch.is_none()
             && !matches!(material.physical, PhysicalCleanup::Confirmed)
         {

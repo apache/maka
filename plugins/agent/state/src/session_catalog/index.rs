@@ -115,15 +115,16 @@ fn run_flags(view: &RunView) -> (bool, bool, bool) {
         .values()
         .any(|b| b.decision.is_none() && b.resolved_by.is_none());
     let unknown = view.tools.values().any(|t| {
-        matches!(
-            &t.receipt,
-            Some(
-                Receipt::Recorded {
-                    outcome: OperationOutcome::Unknown { .. },
-                    ..
-                } | Receipt::Unavailable { .. }
+        !t.outcome_unknown_accepted()
+            && matches!(
+                &t.receipt,
+                Some(
+                    Receipt::Recorded {
+                        outcome: OperationOutcome::Unknown { .. },
+                        ..
+                    } | Receipt::Unavailable { .. }
+                )
             )
-        )
     }) || view.blockers.values().any(|b| {
         b.resolved_by.is_none()
             && b.decision.is_none()
