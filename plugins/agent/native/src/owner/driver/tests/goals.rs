@@ -438,34 +438,57 @@ async fn background_wakeups_and_continuation_preserve_inherited_skill_catalog() 
     let mut rig = Rig::new()?;
     let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
     let (requests, mut received) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let step_index = Arc::new(AtomicUsize::new(0));
     let app = axum::Router::new().route(
         "/v1/chat/completions",
         axum::routing::post(move |body: axum::body::Bytes| {
             let requests = requests.clone();
+            let index = step_index.fetch_add(1, Ordering::SeqCst);
             async move {
                 let _ = requests.send(serde_json::from_slice(&body).unwrap_or_default());
-                let chunk = json!({
-                    "id":"cont-skill","object":"chat.completion.chunk",
-                    "created":1,"model":"llama3.2","choices":[{"index":0,
-                    "delta":{"role":"assistant","content":"Continued"},"finish_reason":"stop"}],
-                    "usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105}
-                });
-                (
-                    [("content-type", "text/event-stream")],
-                    format!(
-                        "data: {chunk}
-
-data: [DONE]
-
-"
-                    ),
-                )
+                let tool_sse = |id: &str, name: &str, args: &str| {
+                    let c1 = json!({
+                        "id":format!("cont-skill-{index}"),"object":"chat.completion.chunk",
+                        "created":1,"model":"llama3.2","choices":[{"index":0,"delta":{
+                            "role":"assistant",
+                            "tool_calls":[{"index":0,"id":id,"type":"function","function":{"name":name,"arguments":args}}]
+                        },"finish_reason":null}]
+                    });
+                    let c2 = json!({
+                        "id":format!("cont-skill-{index}"),"object":"chat.completion.chunk",
+                        "created":1,"model":"llama3.2","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
+                        "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}
+                    });
+                    format!("data: {c1}\n\ndata: {c2}\n\ndata: [DONE]\n\n")
+                };
+                let text_sse = |text: &str| {
+                    let chunk = json!({
+                        "id":format!("cont-skill-{index}"),"object":"chat.completion.chunk",
+                        "created":1,"model":"llama3.2","choices":[{"index":0,
+                        "delta":{"role":"assistant","content":text},"finish_reason":"stop"}],
+                        "usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105}
+                    });
+                    format!("data: {chunk}\n\ndata: [DONE]\n\n")
+                };
+                // 0: initial Continuation Main -> call CompactContext
+                // 1: Summary -> produce checkpoint summary (sets view.baseline)
+                // 2: post-compaction Main (view.baseline.is_some()) -> call exec tool
+                // 3: post-compaction tool continuation (view.baseline.is_some()) -> finish
+                let sse = match index {
+                    0 => tool_sse("call-compact", "CompactContext", "{}"),
+                    1 => text_sse("Compacted checkpoint summary."),
+                    2 => tool_sse("call-post-compact", "exec", r#"{"code":"text(\"post-compact\")"}"#),
+                    _ => text_sse("Continued after compaction"),
+                };
+                ([("content-type", "text/event-stream")], sse)
             }
         }),
     );
     let serving = tokio::spawn(async move { axum::serve(listener, app).await });
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
-        let session = rig.start_configured(None, |_| {}).await?;
+        let session = rig
+            .start_configured(None, |config| config["todo"] = json!(true))
+            .await?;
         rig.assemble(&session).await?;
         let driver = rig.driver.as_ref().unwrap();
         let seed = driver.access.execution().run_id;
@@ -598,22 +621,37 @@ data: [DONE]
         .await?;
         assert_eq!(continued["kind"], "started", "{continued}");
 
-        // Continuation must pass replay-signature verification and deliver the
-        // inherited skills catalog exactly once in the system message.
-        let request = received
-            .recv()
-            .await
-            .ok_or("continued model request missing")?;
-        let system = request["messages"]
-            .as_array()
-            .and_then(|m| m.iter().find(|msg| msg["role"] == "system"))
-            .and_then(|msg| msg["content"].as_str())
-            .ok_or("system message missing")?;
-        assert_eq!(
-            system.matches("SKILL_CATALOG_ALPHA").count(),
-            1,
-            "system prompt should inherit SKILL_CATALOG_ALPHA once: {system}"
-        );
+        // Continuation must pass replay-signature verification, compact in-run,
+        // execute a post-compaction tool call (entering view.baseline.is_some()),
+        // and deliver the inherited skills catalog exactly once on every Main step.
+        let mut captured: Vec<Value> = Vec::new();
+        for i in 0..4 {
+            let req = match tokio::time::timeout(Duration::from_secs(5), received.recv()).await {
+                Ok(Some(req)) => req,
+                other => {
+                    let work = model_recovery::call(
+                        rig.client.as_ref().unwrap(),
+                        "agent",
+                        "work",
+                        json!({"sessionId":session,"target":{"kind":"run","runId":continued["execution"]["runId"]}}),
+                    ).await?;
+                    return Err(format!("step {i} stopped ({other:?}); received={} work={work}", captured.len()).into());
+                }
+            };
+            captured.push(req);
+        }
+        for step in [0_usize, 2, 3] {
+            let system = captured[step]["messages"]
+                .as_array()
+                .and_then(|m| m.iter().find(|msg| msg["role"] == "system"))
+                .and_then(|msg| msg["content"].as_str())
+                .ok_or("system message missing")?;
+            assert_eq!(
+                system.matches("SKILL_CATALOG_ALPHA").count(),
+                1,
+                "step {step} system prompt should inherit SKILL_CATALOG_ALPHA once: {system}"
+            );
+        }
 
         let continued_target = json!({"kind":"run","runId":continued["execution"]["runId"]});
         loop {
@@ -633,41 +671,57 @@ data: [DONE]
             }
         }
 
-        // 3. A subsequent prepared user turn with an empty skill catalog terminates
-        // inheritance so a following background wakeup does not resurrect old skills.
-        admit_sealed(
+        // 3. An interactive user turn without any skill receipt (e.g. unconfigured
+        // skill library) does not inherit prior skills and terminates inheritance
+        // for subsequent background wakeups.
+        let bare_user = admit_sealed(
             driver,
             &base_spec,
             Trigger::Message {
                 message_id: Uuid::new_v4().to_string(),
             },
-            message_input("cleared", vec![skill_receipt("", "rev-empty")]),
+            message_input("bare user turn", vec![]),
             Terminal::Completed,
         )
         .await?;
-        let after_clear = admit_sealed(
-            driver,
-            &base_spec,
-            Trigger::Schedule {
-                schedule_id: "sched-after-clear".into(),
-            },
-            message_input("tick after clear", vec![]),
-            Terminal::Completed,
-        )
-        .await?;
-        let cleared_view = driver.state.frontier(after_clear).await?;
-        let cleared_input = message_input("tick after clear", vec![]);
+        let bare_view = driver.state.frontier(bare_user).await?;
+        let bare_input = message_input("bare user turn", vec![]);
         let mut system = None;
         super::super::super::driver_model::resolve_input_skills(
             &driver.state,
-            &cleared_view,
-            &cleared_input,
+            &bare_view,
+            &bare_input,
             &mut system,
         )
         .await?;
         assert!(
             system.is_none(),
-            "empty prepared receipt must stop skill inheritance: {system:?}"
+            "interactive user turn without receipt must not inherit prior skills: {system:?}"
+        );
+
+        let after_bare = admit_sealed(
+            driver,
+            &base_spec,
+            Trigger::Schedule {
+                schedule_id: "sched-after-bare".into(),
+            },
+            message_input("tick after bare user", vec![]),
+            Terminal::Completed,
+        )
+        .await?;
+        let after_bare_view = driver.state.frontier(after_bare).await?;
+        let after_bare_input = message_input("tick after bare user", vec![]);
+        let mut system = None;
+        super::super::super::driver_model::resolve_input_skills(
+            &driver.state,
+            &after_bare_view,
+            &after_bare_input,
+            &mut system,
+        )
+        .await?;
+        assert!(
+            system.is_none(),
+            "background wakeup after interactive user turn without skills must not resurrect old skills: {system:?}"
         );
 
         Ok::<_, Box<dyn Error + Send + Sync>>(())

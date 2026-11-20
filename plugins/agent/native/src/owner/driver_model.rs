@@ -1171,6 +1171,14 @@ impl DriverModel {
             if pre_turn_summary {
                 let before = history.capture_before(view.run).await?;
                 previous_checkpoint_id = if let Some(baseline) = &view.baseline {
+                    if let RunInput::Continuation { claim, .. } = input {
+                        resolve_continuation_skills(
+                            &self.state,
+                            claim.source.execution.run_id,
+                            &mut system,
+                        )
+                        .await?;
+                    }
                     self.append_compacted(
                         reader,
                         view.run,
@@ -1210,6 +1218,14 @@ impl DriverModel {
                 source_evidence.current = before;
                 source_evidence.current_revision = 0;
             } else if view.baseline.is_some() {
+                if let RunInput::Continuation { claim, .. } = input {
+                    resolve_continuation_skills(
+                        &self.state,
+                        claim.source.execution.run_id,
+                        &mut system,
+                    )
+                    .await?;
+                }
                 (previous_checkpoint_id, tail) = self
                     .project_history(
                         target,
@@ -2150,8 +2166,12 @@ impl DriverModel {
                         let capture = self
                             .append_compacted(reader, run, &baseline, target, language, messages)
                             .await?;
-                        if !input_has_skill_preparation(&ancestry[index].1) {
-                            let anchor = &ancestry[index].0;
+                        let (anchor, anchor_input) = &ancestry[index];
+                        if !run_went_through_skill_preparation(
+                            &anchor.spec.trigger,
+                            &anchor.spec.session_id,
+                            anchor_input,
+                        ) {
                             let history = self.state.session_history(
                                 anchor.spec.owner.clone(),
                                 anchor.spec.session_id.clone(),
@@ -2207,7 +2227,11 @@ impl DriverModel {
                     .state
                     .session_history(root.spec.owner.clone(), root.spec.session_id.clone());
                 let cut = history.capture_before(root.run).await?;
-                if !input_has_skill_preparation(root_input) {
+                if !run_went_through_skill_preparation(
+                    &root.spec.trigger,
+                    &root.spec.session_id,
+                    root_input,
+                ) {
                     inherit_prior_skills(&self.state, &history, cut.clone(), system).await?;
                 }
                 let previous = self
@@ -3929,6 +3953,41 @@ fn input_has_skill_preparation(input: &RunInput) -> bool {
 /// `CheckpointHandoff`, `ContextCompact`) bypass `prepare_skills`, so inherit
 /// the most recent prepared Run's skill catalog to keep `system.text` stable
 /// across turns and preserve prompt caches.
+/// True when this Run went through `prepare_skills` (so an absent skill receipt
+/// means no skill library is configured or the catalog is empty, avoiding any
+/// backwards history walk on interactive turns).
+fn run_went_through_skill_preparation(
+    trigger: &maka_agent_facts::durable::Trigger,
+    session_id: &str,
+    input: &RunInput,
+) -> bool {
+    if input_has_skill_preparation(input) {
+        return true;
+    }
+    let maka_agent_facts::durable::Trigger::Message { .. } = trigger else {
+        return false;
+    };
+    let RunInput::Message {
+        source_messages, ..
+    } = input
+    else {
+        return false;
+    };
+    if source_messages.is_empty() {
+        return true;
+    }
+    source_messages.iter().any(|source| {
+        matches!(
+            &source.message.origin,
+            None | Some(maka_agent_facts::message::MessageOrigin::Room { .. })
+        ) || matches!(
+            &source.message.origin,
+            Some(maka_agent_facts::message::MessageOrigin::Session { execution })
+                if execution.session_id != session_id
+        )
+    })
+}
+
 async fn inherit_prior_skills(
     state: &maka_agent_state::Store,
     history: &maka_agent_state::session_history::SessionHistory,
@@ -3938,12 +3997,50 @@ async fn inherit_prior_skills(
     while let Some(prior) = history.latest(&before).await? {
         if let Ok(prior_input) =
             serde_json::from_slice::<RunInput>(&state.content(prior.run, prior.spec.input).await?)
-            && input_has_skill_preparation(&prior_input)
+            && run_went_through_skill_preparation(
+                &prior.spec.trigger,
+                &prior.spec.session_id,
+                &prior_input,
+            )
         {
             merge_input_skills(system, &prior_input)?;
             break;
         }
         before = history.capture_before(prior.run).await?;
+    }
+    Ok(())
+}
+
+async fn resolve_continuation_skills(
+    state: &maka_agent_state::Store,
+    source_run: RunId,
+    system: &mut Option<SystemPrompt>,
+) -> Result<(), RunError> {
+    let mut ancestry = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut current = source_run;
+    while seen.insert(current) {
+        let view = state.frontier(current).await?;
+        let input: RunInput =
+            serde_json::from_slice(&state.content(current, view.spec.input.clone()).await?)
+                .map_err(|error| RunError::InvalidInput(error.to_string()))?;
+        let predecessor = input
+            .inherited_claim()
+            .map(|claim| claim.source.execution.run_id);
+        ancestry.push((view, input));
+        let Some(predecessor) = predecessor else {
+            break;
+        };
+        current = predecessor;
+    }
+    let (root, root_input) = ancestry.last().expect("continuation ancestry");
+    if !run_went_through_skill_preparation(&root.spec.trigger, &root.spec.session_id, root_input) {
+        let history = state.session_history(root.spec.owner.clone(), root.spec.session_id.clone());
+        let before = history.capture_before(root.run).await?;
+        inherit_prior_skills(state, &history, before, system).await?;
+    }
+    for (_, input) in ancestry.into_iter().rev() {
+        merge_input_skills(system, &input)?;
     }
     Ok(())
 }
@@ -3955,7 +4052,7 @@ pub(super) async fn resolve_input_skills(
     system: &mut Option<SystemPrompt>,
 ) -> Result<(), RunError> {
     merge_input_skills(system, input)?;
-    if input_has_skill_preparation(input) {
+    if run_went_through_skill_preparation(&view.spec.trigger, &view.spec.session_id, input) {
         return Ok(());
     }
     let history = state.session_history(view.spec.owner.clone(), view.spec.session_id.clone());
