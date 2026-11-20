@@ -149,6 +149,30 @@ async fn subscription_discovery_preserves_capacity_and_compaction_hash() {
     assert_eq!(model.info.max_output_tokens, Some(128_000));
     assert_eq!(model.info.context_window, Some(272_000));
     assert_eq!(model.info.codex_compaction_hash.as_deref(), Some("3000"));
+    let manual = provider
+        .resolve(Resolve {
+            service_tier: None,
+            connection: connection(),
+            model: maka_agent_facts::configuration::ModelInfo::new("gpt-6.2-sol"),
+            overrides: None,
+            thinking_level: Some(maka_agent_facts::execution::ThinkingLevel::High),
+        })
+        .await
+        .unwrap();
+    assert_eq!(manual.info.max_output_tokens, Some(128_000));
+    assert_eq!(manual.info.context_window, Some(500_000));
+    assert_eq!(
+        manual.thinking_levels,
+        [
+            maka_agent_facts::execution::ThinkingLevel::Low,
+            maka_agent_facts::execution::ThinkingLevel::Medium,
+            maka_agent_facts::execution::ThinkingLevel::High,
+            maka_agent_facts::execution::ThinkingLevel::Xhigh,
+            maka_agent_facts::execution::ThinkingLevel::Max,
+            maka_agent_facts::execution::ThinkingLevel::Ultra,
+        ]
+    );
+    assert_eq!(manual.provider_options["openai"]["reasoningEffort"], "high");
     assert!(
         maka_providers::codex::decode_model_inventory(
             br#"{"models":[{"slug":"unknown-future-model"}]}"#,

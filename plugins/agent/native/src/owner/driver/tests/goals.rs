@@ -432,3 +432,254 @@ async fn goal_tells_the_next_iteration_why_one_failed_and_pauses_after_two() -> 
     assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn background_wakeups_and_continuation_preserve_inherited_skill_catalog() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+    let (requests, mut received) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let app = axum::Router::new().route(
+        "/v1/chat/completions",
+        axum::routing::post(move |body: axum::body::Bytes| {
+            let requests = requests.clone();
+            async move {
+                let _ = requests.send(serde_json::from_slice(&body).unwrap_or_default());
+                let chunk = json!({
+                    "id":"cont-skill","object":"chat.completion.chunk",
+                    "created":1,"model":"llama3.2","choices":[{"index":0,
+                    "delta":{"role":"assistant","content":"Continued"},"finish_reason":"stop"}],
+                    "usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105}
+                });
+                (
+                    [("content-type", "text/event-stream")],
+                    format!(
+                        "data: {chunk}
+
+data: [DONE]
+
+"
+                    ),
+                )
+            }
+        }),
+    );
+    let serving = tokio::spawn(async move { axum::serve(listener, app).await });
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let session = rig.start_configured(None, |_| {}).await?;
+        rig.assemble(&session).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let seed = driver.access.execution().run_id;
+        let base_spec = driver.state.frontier(seed).await?.spec;
+        rig.append(
+            vec![Fact::RunTerminated {
+                terminal: Terminal::Completed,
+                diagnostic: None,
+            }],
+            vec![],
+        )
+        .await?;
+
+        let skill_receipt = |prompt: &str, rev: &str| maka_agent_facts::input::InputReceipt {
+            source: maka_agent_facts::composition::SourceRevision {
+                kind: maka_agent_facts::composition::SourceKind::Input,
+                name: "maka.agent.skills".into(),
+                package_id: "maka.skills".into(),
+                entry_id: "skills".into(),
+                activation: "act".into(),
+                revision: rev.into(),
+            },
+            receipt: serde_json::to_value(maka_skills_api::contract::PreparationRecord {
+                revision: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                metadata_prompt: prompt.into(),
+                invocation: Default::default(),
+            })
+            .unwrap(),
+        };
+        let message_input = |text: &str, preparation| maka_agent_facts::input::RunInput::Message {
+            content: maka_agent_facts::input::MessageInput {
+                text: text.into(),
+                display_text: None,
+                inline_references: None,
+                directory_references: None,
+                quotes: None,
+                attachments: None,
+                preparation,
+            },
+            request_fingerprint: None,
+            source_messages: Vec::new(),
+        };
+        let admit_sealed = |driver: &NativeDriver,
+                            base: &maka_agent_facts::durable::RunSpec,
+                            trigger: Trigger,
+                            input: maka_agent_facts::input::RunInput,
+                            terminal: Terminal| {
+            let state = driver.state.clone();
+            let mut spec = base.clone();
+            async move {
+                let blob = ContentBlob::json(&input)?;
+                spec.turn_id = Uuid::new_v4().to_string();
+                spec.trigger = trigger;
+                spec.input = blob.reference().clone();
+                let admission = Admission::new(spec, at(), vec![blob]);
+                let run = admission.run();
+                state.admit(admission).await?;
+                let claim = state.claim(run).await?;
+                let view = state.frontier(run).await?;
+                let diagnostic =
+                    (terminal == Terminal::Failed).then(|| "scheduled run failed".into());
+                state
+                    .append(
+                        &claim,
+                        (&view).into(),
+                        vec![Change::new(
+                            Fact::RunTerminated {
+                                terminal,
+                                diagnostic,
+                            },
+                            at(),
+                        )],
+                        vec![],
+                    )
+                    .await?;
+                Ok::<_, Box<dyn Error + Send + Sync>>(run)
+            }
+        };
+
+        // 1. User message with a prepared non-empty skills catalog.
+        admit_sealed(
+            driver,
+            &base_spec,
+            Trigger::Message {
+                message_id: Uuid::new_v4().to_string(),
+            },
+            message_input("start", vec![skill_receipt("SKILL_CATALOG_ALPHA", "rev-1")]),
+            Terminal::Completed,
+        )
+        .await?;
+
+        // 2. 18 consecutive background wakeups (> old 16-run cap) without skill receipts;
+        // the 18th fails and is continued via continueRun.
+        let mut last_bg = seed;
+        for i in 0..18 {
+            let terminal = if i == 17 {
+                Terminal::Failed
+            } else {
+                Terminal::Completed
+            };
+            last_bg = admit_sealed(
+                driver,
+                &base_spec,
+                Trigger::Schedule {
+                    schedule_id: format!("sched-{i}"),
+                },
+                message_input(&format!("tick {i}"), vec![]),
+                terminal,
+            )
+            .await?;
+        }
+        let failed_view = driver.state.frontier(last_bg).await?;
+        let NativeBackend::Model { model, .. } = &driver.backend else {
+            unreachable!()
+        };
+        let connection_id = &model.source.accepted.binding.connection_id;
+        let model_id = &model.source.accepted.binding.model;
+        let continued = model_recovery::call(
+            rig.client.as_ref().unwrap(),
+            "agent",
+            "continueRun",
+            json!({
+                "sessionId": session,
+                "sourceRunId": last_bg,
+                "sourceHighWater": failed_view.revision,
+                "model": {"connectionId": connection_id, "modelId": model_id}
+            }),
+        )
+        .await?;
+        assert_eq!(continued["kind"], "started", "{continued}");
+
+        // Continuation must pass replay-signature verification and deliver the
+        // inherited skills catalog exactly once in the system message.
+        let request = received
+            .recv()
+            .await
+            .ok_or("continued model request missing")?;
+        let system = request["messages"]
+            .as_array()
+            .and_then(|m| m.iter().find(|msg| msg["role"] == "system"))
+            .and_then(|msg| msg["content"].as_str())
+            .ok_or("system message missing")?;
+        assert_eq!(
+            system.matches("SKILL_CATALOG_ALPHA").count(),
+            1,
+            "system prompt should inherit SKILL_CATALOG_ALPHA once: {system}"
+        );
+
+        let continued_target = json!({"kind":"run","runId":continued["execution"]["runId"]});
+        loop {
+            let work = model_recovery::call(
+                rig.client.as_ref().unwrap(),
+                "agent",
+                "work",
+                json!({"sessionId":session,"target":continued_target}),
+            )
+            .await?;
+            match work["execution"]["state"]["kind"].as_str() {
+                Some("completed") => break,
+                Some("failed" | "cancelled") => {
+                    return Err(format!("continuation failed: {work}").into());
+                }
+                _ => tokio::task::yield_now().await,
+            }
+        }
+
+        // 3. A subsequent prepared user turn with an empty skill catalog terminates
+        // inheritance so a following background wakeup does not resurrect old skills.
+        admit_sealed(
+            driver,
+            &base_spec,
+            Trigger::Message {
+                message_id: Uuid::new_v4().to_string(),
+            },
+            message_input("cleared", vec![skill_receipt("", "rev-empty")]),
+            Terminal::Completed,
+        )
+        .await?;
+        let after_clear = admit_sealed(
+            driver,
+            &base_spec,
+            Trigger::Schedule {
+                schedule_id: "sched-after-clear".into(),
+            },
+            message_input("tick after clear", vec![]),
+            Terminal::Completed,
+        )
+        .await?;
+        let cleared_view = driver.state.frontier(after_clear).await?;
+        let cleared_input = message_input("tick after clear", vec![]);
+        let mut system = None;
+        super::super::super::driver_model::resolve_input_skills(
+            &driver.state,
+            &cleared_view,
+            &cleared_input,
+            &mut system,
+        )
+        .await?;
+        assert!(
+            system.is_none(),
+            "empty prepared receipt must stop skill inheritance: {system:?}"
+        );
+
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    serving.abort();
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}

@@ -281,6 +281,13 @@ async fn account_metadata_and_reply_capacity_survive_plugin_policy_resolution() 
         assert_eq!(model.thinking_levels, [Low, Medium, High, Xhigh, Max]);
         assert_eq!(model.provider_options["openai"]["reasoningEffort"], "max");
     }
+    let mut terra = request(&openai, "gpt-6.1-terra", ModelOverride::default());
+    terra.thinking_level = Some(Off);
+    let terra = openai.prepare(terra).await.unwrap();
+    assert!(matches!(terra.protocol, ProviderKind::OpenaiResponses));
+    assert_eq!(terra.info.display_name.as_deref(), Some("GPT-6.1 Terra"));
+    assert_eq!(terra.thinking_levels, [Off, Low, Medium, High, Xhigh, Max]);
+    assert_eq!(terra.provider_options["openai"]["reasoningEffort"], "none");
     let input = request(&openai, "gpt-5.2", ModelOverride::default());
     let model = openai.prepare(input.clone()).await.unwrap();
     assert_eq!(
