@@ -29,7 +29,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
-fn sample_rss_kib(pid: u32) -> Option<u64> {
+pub(super) fn sample_rss_kib(pid: u32) -> Option<u64> {
     let output = std::process::Command::new("ps")
         .args(["-o", "rss=", "-p", &pid.to_string()])
         .output()
@@ -37,7 +37,7 @@ fn sample_rss_kib(pid: u32) -> Option<u64> {
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
-async fn seed_workspace_files(workspace: &std::path::Path) {
+pub(super) async fn seed_workspace_files(workspace: &std::path::Path) {
     for i in 0..5 {
         let mut content = format!("# Synthetic workspace fixture {i}\n");
         for line in 0..40 {
@@ -51,7 +51,10 @@ async fn seed_workspace_files(workspace: &std::path::Path) {
     }
 }
 
-async fn seed_connections(root: &std::path::Path, base_url: &str) -> (String, String, String) {
+pub(super) async fn seed_connections(
+    root: &std::path::Path,
+    base_url: &str,
+) -> (String, String, String) {
     let root_owned = root.to_path_buf();
     let owner = tokio::task::spawn_blocking(move || {
         maka_event_log::root::RootOwner::create(
@@ -132,7 +135,7 @@ async fn seed_connections(root: &std::path::Path, base_url: &str) -> (String, St
     (ids[0].clone(), ids[1].clone(), ids[2].clone())
 }
 
-async fn save_credential(client: &Client, connection_id: &str) {
+pub(super) async fn save_credential(client: &Client, connection_id: &str) {
     let detail = call(
         client,
         "settings",
@@ -153,7 +156,7 @@ async fn save_credential(client: &Client, connection_id: &str) {
     assert_eq!(saved["kind"], "saved", "{saved}");
 }
 
-async fn wait_run_terminal(
+pub(super) async fn wait_run_terminal(
     client: &Client,
     session: &str,
     message_id: &str,

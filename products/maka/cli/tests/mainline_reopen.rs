@@ -667,3 +667,6 @@ mod background_compaction;
 
 #[path = "mainline_reopen/host_load_stress.rs"]
 mod host_load_stress;
+
+#[path = "mainline_reopen/host_nightmare_stress.rs"]
+mod host_nightmare_stress;
