@@ -146,13 +146,13 @@ impl DriverModel {
         }
         let evidence: maka_agent_facts::context::RequestContextEvidence =
             reader.decode(view.run, &request.provenance).await?;
-        let options = self
-            .compaction_options(&reader, view.run, evidence.compaction_request.as_ref())
+        let options = reader
+            .compaction_options(view.run, evidence.compaction_request.as_ref())
             .await?;
         let original_prompt = self
             .restore_frozen(&reader, view.run, &request, &frozen)
             .await?;
-        let native_compaction = !repair && options.native(&model);
+        let native_compaction = !repair && native_compaction(&options, &model);
         let context = model.context.as_ref();
         let operation = if native_compaction {
             ModelOperation::CodexCompaction

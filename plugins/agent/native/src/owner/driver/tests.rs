@@ -2002,6 +2002,15 @@ mod bounded_risk {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn compaction_reuses_background_summary_with_later_tool_result() {
+        check_background_summary_reuse(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn explicit_compaction_reuses_background_summary_below_threshold() {
+        check_background_summary_reuse(true).await;
+    }
+
+    async fn check_background_summary_reuse(explicit: bool) {
         use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
         use maka_agent_facts::{
             cells::{CellObservation, CellVmBinding, SessionPublication},
@@ -2011,7 +2020,8 @@ mod bounded_risk {
         use std::sync::atomic::AtomicUsize;
 
         let mut rig = Rig::new().unwrap();
-        rig.model_overrides = json!({"llama3.2":{"contextWindow":5_000}});
+        let window = if explicit { 100_000 } else { 5_000 };
+        rig.model_overrides = json!({"llama3.2":{"contextWindow":window}});
         let stop = CancellationToken::new();
         let posts = Arc::new(AtomicUsize::new(0));
         let listener =
@@ -2113,11 +2123,17 @@ mod bounded_risk {
                 vec![],
             )
             .await?;
-            let (tool, _) = rig
-                .tool(later, "exec", "later-exec", json!({"code":"later"}))
-                .await?;
+            let (name, input, marker) = if explicit {
+                ("CompactContext", json!({}), r#"{"status":"requested"}"#)
+            } else {
+                (
+                    "exec",
+                    json!({"code":"later"}),
+                    "Tool result belongs after the checkpoint.",
+                )
+            };
+            let (tool, _) = rig.tool(later, name, "later-call", input).await?;
             rig.finish_model_request(later, None).await?;
-            let marker = "Tool result belongs after the checkpoint.";
             let returned = ContentBlob::json(&ToolReturn {
                 schema_version: SCHEMA_VERSION,
                 artifacts: vec![],
@@ -2191,11 +2207,14 @@ mod bounded_risk {
                     .content(run, pending.request.provenance)
                     .await?,
             )?;
-            assert_eq!(
-                provenance.model_context.as_ref().unwrap().declared_window,
-                Some(4_250)
-            );
-            assert!(provenance.estimated_input_tokens >= 4_250, "{provenance:?}");
+            let threshold = provenance
+                .model_context
+                .as_ref()
+                .unwrap()
+                .declared_window
+                .unwrap();
+            assert_eq!(provenance.compaction_request.is_some(), explicit);
+            assert_eq!(provenance.estimated_input_tokens < threshold, explicit);
             let summary_text = "Already prepared in the background.";
             rig.finish_model_request(background, Some(summary_text))
                 .await?;
@@ -2244,7 +2263,10 @@ mod bounded_risk {
             let late_position = messages
                 .iter()
                 .position(|message| {
-                    message["role"] == "tool" && message.to_string().contains(marker)
+                    message["role"] == "tool"
+                        && message["content"]
+                            .as_str()
+                            .is_some_and(|text| text.contains(marker))
                 })
                 .ok_or("late tool result missing")?;
             assert!(summary_position < late_position);

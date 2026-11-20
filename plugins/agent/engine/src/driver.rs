@@ -663,14 +663,15 @@ impl Engine {
                 let active = live.work.contains(&WorkKey::Model(attempt));
                 let open = summary.closed.is_none() && summary.interrupted.is_none();
                 let terminating = matches!(action, Action::Terminate(_));
-                if open && !active && (summary.admission.is_some() || terminating) {
+                let superseded = matches!(action, Action::Prepare(Preparation::Summary));
+                if open && !active && (summary.admission.is_some() || terminating || superseded) {
                     action = Action::Interrupt(attempt, "Background summary did not finish".into());
-                } else if terminating && open && active {
-                    action = if live.models_cancelled.contains(&attempt) {
-                        Action::Idle
-                    } else {
-                        Action::CancelModel(attempt)
-                    };
+                } else if (terminating || superseded) && open && active {
+                    if !live.models_cancelled.contains(&attempt) {
+                        action = Action::CancelModel(attempt);
+                    } else if terminating {
+                        action = Action::Idle;
+                    }
                 } else if matches!(action, Action::Terminate(Terminal::Completed))
                     && summary.admission.is_some()
                     && summary.cleanup != maka_plugin_core::operation::OperationCleanup::Confirmed
@@ -740,10 +741,7 @@ impl Engine {
                             Action::Compact(attempt) => (SummaryOrigin { run, attempt }, None),
                             _ => unreachable!(),
                         };
-                        let (material, target) = match self
-                            .compaction_checkpoint(&view, origin)
-                            .await
-                        {
+                        let material = match self.compaction_checkpoint(&view, origin).await {
                             Ok(Some(material)) => material,
                             Ok(None) => return Ok::<_, RunError>(true),
                             Err(RunError::CompactionFailed(diagnostic)) => {
@@ -763,12 +761,17 @@ impl Engine {
                             }
                         };
                         let baseline = ContentBlob::json(&material)?;
-                        if let Some(target) = target {
+                        if let Some(target) =
+                            model_level.as_ref().and_then(|(_, _, m)| m.handoff.clone())
+                        {
                             match ports
-                                .handoff_checkpoint(&view, baseline.clone(), target)
+                                .handoff_checkpoint(&view, baseline.clone(), target, candidate)
                                 .await
                             {
                                 Ok(()) => (),
+                                Err(RunError::CompactionMismatch) if candidate.is_some() => {
+                                    live.rejected_summaries.extend(candidate);
+                                }
                                 Err(
                                     error @ (RunError::ModelUnavailable
                                     | RunError::AuthenticationRequired

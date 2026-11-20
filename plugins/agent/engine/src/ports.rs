@@ -144,6 +144,7 @@ pub trait DriverPorts: Send + Sync {
         view: &'a RunView,
         baseline: ContentBlob,
         target: maka_agent_facts::configuration::ModelSelection,
+        candidate: Option<maka_agent_facts::context::SummaryOrigin>,
     ) -> BoxFuture<'a, Result<(), RunError>>;
     fn external(&self) -> Option<Arc<dyn ExternalPorts>>;
     fn cells(&self) -> Option<Arc<dyn CellPorts>>;

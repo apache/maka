@@ -91,6 +91,22 @@ impl SummaryResult {
     }
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionOptions {
+    pub prompt: Option<String>,
+    pub resume_model: Option<crate::configuration::ModelSelection>,
+}
+
+impl CompactionOptions {
+    pub fn from_input(input: &crate::model::ToolInput) -> Result<Self, serde_json::Error> {
+        let value = input
+            .as_json()
+            .ok_or_else(|| serde::de::Error::custom("invalid CompactContext arguments"))?;
+        Self::deserialize(value)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestContextEvidence {
@@ -107,6 +123,20 @@ impl RequestContextEvidence {
     pub fn same_compaction_input(&self, other: &Self) -> bool {
         self.previous_checkpoint_id == other.previous_checkpoint_id
             && self.compaction_request == other.compaction_request
+    }
+
+    pub fn accepts_background_summary(&self, summary: &Self, options: &CompactionOptions) -> bool {
+        if self.same_compaction_input(summary) {
+            return true;
+        }
+        let native = summary
+            .model_context
+            .as_ref()
+            .is_some_and(|context| context.operation == super::ModelOperation::CodexCompaction);
+        self.previous_checkpoint_id == summary.previous_checkpoint_id
+            && summary.compaction_request.is_none()
+            && options.prompt.is_none()
+            && (options.resume_model.is_none() || !native)
     }
 
     pub fn needs_compaction(&self) -> bool {

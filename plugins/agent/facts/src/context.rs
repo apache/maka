@@ -24,7 +24,8 @@ use serde::{Deserialize, Serialize};
 mod breakdown;
 mod closure;
 pub use closure::{
-    ModelClosureProtocol, ModelFailureProtocol, RequestContextEvidence, SummaryResult,
+    CompactionOptions, ModelClosureProtocol, ModelFailureProtocol, RequestContextEvidence,
+    SummaryResult,
 };
 pub mod measure;
 pub use breakdown::{ContextBucket, ContextCounts, PreparedContextBreakdown};

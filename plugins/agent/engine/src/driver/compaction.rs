@@ -23,7 +23,6 @@ use crate::{
 };
 use maka_agent_facts::{
     accounting::Outcome,
-    configuration::ModelSelection,
     context::{
         CheckpointContent, CheckpointMode, CompactedContext, ContextCheckpoint,
         ModelClosureProtocol, ModelOperation, ModelPurpose, NativeCheckpoint,
@@ -91,10 +90,11 @@ impl Engine {
             ),
             None => None,
         };
-        let mut handoff = context.as_ref().is_some_and(|p| p.resume_model.is_some());
+        let mut handoff = None;
         let mut compaction = CompactionLevel::None;
         if let (Some(request), Some(provenance)) = (&request, &context) {
             if request.accounting.purpose == ModelPurpose::Summary {
+                handoff = provenance.resume_model.clone();
                 let main = if baseline
                     .as_ref()
                     .is_some_and(|baseline| baseline.checkpoint.summary_step_id == request.step)
@@ -129,6 +129,14 @@ impl Engine {
                     native,
                 };
             } else {
+                let options = self
+                    .store
+                    .compaction_options(
+                        view.run,
+                        &request.source_capture,
+                        provenance.compaction_request.as_ref(),
+                    )
+                    .await?;
                 let first_main = view
                     .current_attempt
                     .and_then(|id| view.attempts.get(&id))
@@ -170,7 +178,8 @@ impl Engine {
                         "request-provenance-schema",
                     )
                     .await?;
-                    has_proactive_summary = provenance.same_compaction_input(&summary_provenance);
+                    has_proactive_summary =
+                        provenance.accepts_background_summary(&summary_provenance, &options);
                     can_prepare = (original.closed.is_some() || original.interrupted.is_some())
                         && (original.admission.is_none()
                             || original.cleanup
@@ -180,7 +189,6 @@ impl Engine {
                     });
                     proactive_baseline |= already_adopted;
                     if has_proactive_summary {
-                        handoff = summary_provenance.resume_model.is_some();
                         if original.closed.is_none() && original.interrupted.is_none() {
                             compaction = CompactionLevel::Pending {
                                 attempt: summary,
@@ -225,10 +233,9 @@ impl Engine {
                             "request-provenance-schema",
                         )
                         .await?;
-                        if previous.same_compaction_input(provenance)
+                        if provenance.accepts_background_summary(&previous, &options)
                             && usable_summary(&original, &previous)?
                         {
-                            handoff = previous.resume_model.is_some();
                             compaction = if adopted_origin.is_some() {
                                 CompactionLevel::Adopted {
                                     summary: origin.attempt,
@@ -259,7 +266,6 @@ impl Engine {
                         if provenance.same_compaction_input(&summary_provenance)
                             && usable_summary(&original, &summary_provenance)?
                         {
-                            handoff = summary_provenance.resume_model.is_some();
                             if baseline.as_ref().is_some_and(|baseline| {
                                 baseline.checkpoint.summary_step_id == original.step
                             }) {
@@ -292,6 +298,7 @@ impl Engine {
                         adopt,
                     };
                 }
+                handoff = options.resume_model;
             }
         }
         Ok(ModelLevel {
@@ -443,7 +450,7 @@ impl Engine {
         )
         .await?
         .as_ref()
-        .map(|(material, _)| ContentBlob::json(material))
+        .map(ContentBlob::json)
         .transpose()
         .map_err(Into::into)
     }
@@ -452,7 +459,7 @@ impl Engine {
         &self,
         view: &RunView,
         origin: SummaryOrigin,
-    ) -> Result<Option<(CompactedContext, Option<ModelSelection>)>, RunError> {
+    ) -> Result<Option<CompactedContext>, RunError> {
         let original = self.store.model_attempt(origin.run, origin.attempt).await?;
         if let Some(reference) = &view.baseline {
             let baseline: CompactedContext =
@@ -595,7 +602,7 @@ impl Engine {
             native,
         };
         compacted.validate().map_err(unsupported)?;
-        Ok(Some((compacted, provenance.resume_model)))
+        Ok(Some(compacted))
     }
 }
 
