@@ -213,7 +213,10 @@ fn encode_items(input: &[Input], reasoning: ReasoningMode, options: &Value) -> R
     for item in input {
         match item {
             Input::CodexCompaction(item) => items.push(item.clone()),
-            Input::System(text) => items.push(json!({"role":"system", "content":text})),
+            Input::System(text) => items.push(json!({
+                "role": if reasoning.is_plaintext() { "system" } else { "developer" },
+                "content": text,
+            })),
             Input::User(content) => items.push(json!({"role":"user", "content":content.iter().map(Content::encode).collect::<Vec<_>>()})),
             Input::AssistantText { text, replay } => {
                 items.push(if reasoning == ReasoningMode::Encrypted && let Some(replay) = replay {
@@ -425,5 +428,43 @@ mod tests {
         request.reasoning = ReasoningMode::Encrypted;
         request.tools = &[];
         assert!(request.encode().unwrap().get("include").is_none());
+    }
+
+    #[test]
+    fn openai_responses_encodes_system_as_developer_and_plaintext_keeps_system() {
+        let input = [Input::System("Follow these rules.".into())];
+        let opts = json!({});
+        let openai = Request {
+            model: "gpt-6.2-sol",
+            input: &input,
+            tools: &[],
+            tool_choice: ToolChoice::Auto,
+            reasoning: ReasoningMode::Encrypted,
+            options: &opts,
+            max_output_tokens: None,
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(
+            openai["input"],
+            json!([{"role": "developer", "content": "Follow these rules."}])
+        );
+        assert!(openai.get("instructions").is_none());
+
+        let plaintext = Request {
+            model: "example",
+            input: &input,
+            tools: &[],
+            tool_choice: ToolChoice::Auto,
+            reasoning: ReasoningMode::PlaintextContent,
+            options: &opts,
+            max_output_tokens: None,
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(
+            plaintext["input"],
+            json!([{"role": "system", "content": "Follow these rules."}])
+        );
     }
 }

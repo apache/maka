@@ -485,13 +485,7 @@ impl NativeDriver {
                 ));
             }
         };
-        let visible = if reset_loaded_tools {
-            top_level.select(&Default::default())
-        } else {
-            top_level.snapshot().await?
-        };
-        definitions.extend(visible.definitions().cloned());
-        definitions.extend(top_level.definition());
+        definitions.extend(top_level.definitions(!reset_loaded_tools).await?);
         Ok(BoundStepTools {
             definitions,
             catalog,

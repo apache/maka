@@ -1073,7 +1073,9 @@ impl DriverModel {
         Box::pin(async move {
             let mut system: Option<SystemPrompt> =
                 self.decode(view.run, &view.spec.system_prompt).await?;
-            merge_input_skills(&mut system, input)?;
+            if !matches!(input, RunInput::Continuation { .. }) {
+                resolve_input_skills(&self.state, view, input, &mut system).await?;
+            }
             let history = self
                 .state
                 .session_history(view.spec.owner.clone(), view.spec.session_id.clone());
@@ -1169,6 +1171,14 @@ impl DriverModel {
             if pre_turn_summary {
                 let before = history.capture_before(view.run).await?;
                 previous_checkpoint_id = if let Some(baseline) = &view.baseline {
+                    if let RunInput::Continuation { claim, .. } = input {
+                        resolve_continuation_skills(
+                            &self.state,
+                            claim.source.execution.run_id,
+                            &mut system,
+                        )
+                        .await?;
+                    }
                     self.append_compacted(
                         reader,
                         view.run,
@@ -1208,6 +1218,14 @@ impl DriverModel {
                 source_evidence.current = before;
                 source_evidence.current_revision = 0;
             } else if view.baseline.is_some() {
+                if let RunInput::Continuation { claim, .. } = input {
+                    resolve_continuation_skills(
+                        &self.state,
+                        claim.source.execution.run_id,
+                        &mut system,
+                    )
+                    .await?;
+                }
                 (previous_checkpoint_id, tail) = self
                     .project_history(
                         target,
@@ -2148,6 +2166,19 @@ impl DriverModel {
                         let capture = self
                             .append_compacted(reader, run, &baseline, target, language, messages)
                             .await?;
+                        let (anchor, anchor_input) = &ancestry[index];
+                        if !run_went_through_skill_preparation(
+                            &anchor.spec.trigger,
+                            &anchor.spec.session_id,
+                            anchor_input,
+                        ) {
+                            let history = self.state.session_history(
+                                anchor.spec.owner.clone(),
+                                anchor.spec.session_id.clone(),
+                            );
+                            let before = history.capture_before(anchor.run).await?;
+                            inherit_prior_skills(&self.state, &history, before, system).await?;
+                        }
                         (
                             Some(id.to_string()),
                             Some(capture.current.through_sequence),
@@ -2191,11 +2222,18 @@ impl DriverModel {
                 }
                 Ok(previous)
             } else {
-                let root = &ancestry.last().expect("source ancestry").0;
+                let (root, root_input) = ancestry.last().expect("source ancestry");
                 let history = self
                     .state
                     .session_history(root.spec.owner.clone(), root.spec.session_id.clone());
                 let cut = history.capture_before(root.run).await?;
+                if !run_went_through_skill_preparation(
+                    &root.spec.trigger,
+                    &root.spec.session_id,
+                    root_input,
+                ) {
+                    inherit_prior_skills(&self.state, &history, cut.clone(), system).await?;
+                }
                 let previous = self
                     .canonical_messages(target, &cut, vision, language, messages)
                     .await?;
@@ -3893,6 +3931,135 @@ fn terminal_outcome(
         .then_some(maka_agent_facts::accounting::Outcome::Error)
 }
 
+fn input_has_skill_preparation(input: &RunInput) -> bool {
+    let RunInput::Message {
+        content,
+        source_messages,
+        ..
+    } = input
+    else {
+        return false;
+    };
+    if source_messages.is_empty() {
+        super::skills::has_receipt(content)
+    } else {
+        source_messages
+            .iter()
+            .any(|source| super::skills::has_receipt(&source.message.content))
+    }
+}
+
+/// Background wake-ups (`SessionCompletion`, `ScheduledTask`, `Goal`,
+/// `CheckpointHandoff`, `ContextCompact`) bypass `prepare_skills`, so inherit
+/// the most recent prepared Run's skill catalog to keep `system.text` stable
+/// across turns and preserve prompt caches.
+/// True when this Run went through `prepare_skills` (so an absent skill receipt
+/// means no skill library is configured or the catalog is empty, avoiding any
+/// backwards history walk on interactive turns).
+fn run_went_through_skill_preparation(
+    trigger: &maka_agent_facts::durable::Trigger,
+    session_id: &str,
+    input: &RunInput,
+) -> bool {
+    if input_has_skill_preparation(input) {
+        return true;
+    }
+    let maka_agent_facts::durable::Trigger::Message { .. } = trigger else {
+        return false;
+    };
+    let RunInput::Message {
+        source_messages, ..
+    } = input
+    else {
+        return false;
+    };
+    if source_messages.is_empty() {
+        return true;
+    }
+    source_messages.iter().any(|source| {
+        matches!(
+            &source.message.origin,
+            None | Some(maka_agent_facts::message::MessageOrigin::Room { .. })
+        ) || matches!(
+            &source.message.origin,
+            Some(maka_agent_facts::message::MessageOrigin::Session { execution })
+                if execution.session_id != session_id
+        )
+    })
+}
+
+async fn inherit_prior_skills(
+    state: &maka_agent_state::Store,
+    history: &maka_agent_state::session_history::SessionHistory,
+    mut before: maka_agent_state::session_history::HistoryCut,
+    system: &mut Option<SystemPrompt>,
+) -> Result<(), RunError> {
+    while let Some(prior) = history.latest(&before).await? {
+        if let Ok(prior_input) =
+            serde_json::from_slice::<RunInput>(&state.content(prior.run, prior.spec.input).await?)
+            && run_went_through_skill_preparation(
+                &prior.spec.trigger,
+                &prior.spec.session_id,
+                &prior_input,
+            )
+        {
+            merge_input_skills(system, &prior_input)?;
+            break;
+        }
+        before = history.capture_before(prior.run).await?;
+    }
+    Ok(())
+}
+
+async fn resolve_continuation_skills(
+    state: &maka_agent_state::Store,
+    source_run: RunId,
+    system: &mut Option<SystemPrompt>,
+) -> Result<(), RunError> {
+    let mut ancestry = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut current = source_run;
+    while seen.insert(current) {
+        let view = state.frontier(current).await?;
+        let input: RunInput =
+            serde_json::from_slice(&state.content(current, view.spec.input.clone()).await?)
+                .map_err(|error| RunError::InvalidInput(error.to_string()))?;
+        let predecessor = input
+            .inherited_claim()
+            .map(|claim| claim.source.execution.run_id);
+        ancestry.push((view, input));
+        let Some(predecessor) = predecessor else {
+            break;
+        };
+        current = predecessor;
+    }
+    let (root, root_input) = ancestry.last().expect("continuation ancestry");
+    if !run_went_through_skill_preparation(&root.spec.trigger, &root.spec.session_id, root_input) {
+        let history = state.session_history(root.spec.owner.clone(), root.spec.session_id.clone());
+        let before = history.capture_before(root.run).await?;
+        inherit_prior_skills(state, &history, before, system).await?;
+    }
+    for (_, input) in ancestry.into_iter().rev() {
+        merge_input_skills(system, &input)?;
+    }
+    Ok(())
+}
+
+pub(super) async fn resolve_input_skills(
+    state: &maka_agent_state::Store,
+    view: &RunView,
+    input: &RunInput,
+    system: &mut Option<SystemPrompt>,
+) -> Result<(), RunError> {
+    merge_input_skills(system, input)?;
+    if run_went_through_skill_preparation(&view.spec.trigger, &view.spec.session_id, input) {
+        return Ok(());
+    }
+    let history = state.session_history(view.spec.owner.clone(), view.spec.session_id.clone());
+    let before = history.capture_before(view.run).await?;
+    inherit_prior_skills(state, &history, before, system).await
+}
+
 pub(super) fn merge_input_skills(
     system: &mut Option<SystemPrompt>,
     input: &RunInput,
@@ -3928,12 +4095,28 @@ fn merge_skill(
     }
     Ok(())
 }
+fn has_skill_section(system_text: &str, skill_text: &str) -> bool {
+    system_text == skill_text
+        || system_text
+            .strip_suffix(skill_text)
+            .is_some_and(|prefix| prefix.ends_with("\n\n"))
+        || system_text
+            .strip_prefix(skill_text)
+            .is_some_and(|rest| rest.starts_with("\n\n"))
+        || system_text.contains(&format!("\n\n{skill_text}\n\n"))
+}
 fn append_skill(system: &mut Option<SystemPrompt>, skill: SystemPrompt) {
     match system {
         Some(system) => {
-            system.text.push_str("\n\n");
-            system.text.push_str(&skill.text);
-            system.sources.extend(skill.sources);
+            if !has_skill_section(&system.text, &skill.text) {
+                system.text.push_str("\n\n");
+                system.text.push_str(&skill.text);
+            }
+            for source in skill.sources {
+                if !system.sources.contains(&source) {
+                    system.sources.push(source);
+                }
+            }
         }
         None => *system = Some(skill),
     }
@@ -4491,5 +4674,57 @@ mod frozen_text_tests {
             Some(shared)
         );
         assert_eq!(hydrated.content_refs(), to_seal.content_refs());
+    }
+
+    #[test]
+    fn append_skill_deduplicates_identical_catalog_sections() {
+        let source = |rev: &str| SourceRevision {
+            kind: maka_agent_facts::composition::SourceKind::Input,
+            name: "maka.agent.skills".into(),
+            package_id: "maka.skills".into(),
+            entry_id: "skills".into(),
+            activation: "act".into(),
+            revision: rev.into(),
+        };
+        let mut system = Some(SystemPrompt {
+            text: "Base instructions".into(),
+            policy_revision: 1,
+            sources: Vec::new(),
+        });
+        append_skill(
+            &mut system,
+            SystemPrompt {
+                text: "Available skills: alpha".into(),
+                policy_revision: 0,
+                sources: vec![source("rev-1")],
+            },
+        );
+        // Repeated merge (e.g. steering or ancestry replay) with the same catalog text
+        // must not mutate system.text and invalidate the prompt cache prefix.
+        append_skill(
+            &mut system,
+            SystemPrompt {
+                text: "Available skills: alpha".into(),
+                policy_revision: 0,
+                sources: vec![source("rev-1"), source("rev-2")],
+            },
+        );
+        let merged = system.as_ref().unwrap();
+        assert_eq!(merged.text, "Base instructions\n\nAvailable skills: alpha");
+        assert_eq!(merged.sources, vec![source("rev-1"), source("rev-2")]);
+
+        // A genuinely updated catalog still appends once.
+        append_skill(
+            &mut system,
+            SystemPrompt {
+                text: "Available skills: alpha, beta".into(),
+                policy_revision: 0,
+                sources: vec![source("rev-3")],
+            },
+        );
+        assert_eq!(
+            system.as_ref().unwrap().text,
+            "Base instructions\n\nAvailable skills: alpha\n\nAvailable skills: alpha, beta"
+        );
     }
 }
