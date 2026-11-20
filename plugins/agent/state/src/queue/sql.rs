@@ -892,6 +892,35 @@ pub(super) fn entry(
     id(&request.0)?;
     Ok(row_entry(c, session, request)?.map(|row| row.0))
 }
+pub(super) fn entry_enqueued_at(
+    c: &Connection,
+    session: &str,
+    request: &RequestId,
+) -> Result<Option<UnixMillis>, StoreError> {
+    id(session)?;
+    id(&request.0)?;
+    let position: Option<i64> = c
+        .query_row(
+            "SELECT position FROM agent_queue_items WHERE session=? AND request=?",
+            params![session, request.0],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(position) = position else {
+        return Ok(None);
+    };
+    let revision = if position < 0 {
+        position.wrapping_sub(i64::MIN)
+    } else {
+        position
+    };
+    let at: i64 = c.query_row(
+        "SELECT at FROM agent_queue_events WHERE session=? AND revision=?",
+        params![session, revision],
+        |r| r.get(0),
+    )?;
+    Ok(Some(UnixMillis(at)))
+}
 pub(super) fn resolve(
     c: &Connection,
     session: &str,

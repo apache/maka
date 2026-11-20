@@ -1088,8 +1088,14 @@ impl Interactions for RunAccess {
                 .read(request_id)
                 .await?
                 .ok_or("agent_interaction_missing")?;
-            if !matches!(outcome, InteractionOutcome::Closure { .. }) {
-                return Err("agent_producer_cannot_answer".into());
+            match outcome {
+                // Only the Host decides that no one answered in time.
+                InteractionOutcome::Closure {
+                    reason: maka_agent_facts::interaction::ClosureReason::TimedOut,
+                    ..
+                } => return Err("agent_producer_cannot_time_out".into()),
+                InteractionOutcome::Closure { .. } => {}
+                _ => return Err("agent_producer_cannot_answer".into()),
             }
             self.owner()?
                 .durable
