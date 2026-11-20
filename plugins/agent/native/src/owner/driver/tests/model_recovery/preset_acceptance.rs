@@ -2036,3 +2036,109 @@ async fn preparation_model_error_fails_the_run_and_admits_the_next_queued_messag
     assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_overflow_after_partial_output_compacts_and_continues() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let model = model_options(
+            client,
+            &provider.url,
+            false,
+            json!({"contextWindow":400000,"compactionThreshold":200000}),
+        )
+        .await?;
+        let session = create(client, &base, &model, None).await?;
+        let id = session["id"].as_str().unwrap();
+        let send = async |message: &str| -> TestResult<Value> {
+            let sent = call(
+                client,
+                "agent",
+                "send",
+                json!({"sessionId":id,"message":message,"delivery":"queue"}),
+            )
+            .await?;
+            Ok(sent["messageId"].clone())
+        };
+        let overflow = |partial: &str| {
+            let chunk = json!({"id":"r","object":"chat.completion.chunk","created":1,"model":"llama3.2",
+                "choices":[{"index":0,"delta":{"role":"assistant","content":partial},"finish_reason":null}]});
+            let error = json!({"error":{"message":"This model's maximum context length is 8192 tokens.",
+                "type":"invalid_request_error","code":"context_length_exceeded"}});
+            ModelReply::Stream(format!("data: {chunk}\n\ndata: {error}\n\n"))
+        };
+        let summary_request = |request: &Value| {
+            request["messages"].as_array().and_then(|messages| messages.last())
+                .and_then(|message| message["content"].as_str())
+                .is_some_and(|text| text.starts_with("Summarize the captured conversation"))
+        };
+        let note = "[Host] Your previous response was cut off";
+
+        // 170k-200k estimated tokens: the next turn summarizes in the background.
+        let first = send("Produce long history.").await?;
+        let (_, reply) = provider.next().await?;
+        reply
+            .send(completion(json!({"role":"assistant","content":"padding ".repeat(66_000)}), "stop"))
+            .map_err(|_| "provider reply lost")?;
+        quiescent_message(client, id, &first).await?;
+
+        // The overflow adopts the background summary.
+        let second = send("Read the second file.").await?;
+        let (one, two) = (provider.next().await?, provider.next().await?);
+        let ((summary, summary_reply), (_, main_reply)) =
+            if summary_request(&one.0) { (one, two) } else { (two, one) };
+        assert!(summary_request(&summary), "{summary}");
+        summary_reply
+            .send(completion(json!({"role":"assistant","content":"background-summary-marker"}), "stop"))
+            .map_err(|_| "provider reply lost")?;
+        main_reply.send(overflow("second-partial-marker")).map_err(|_| "provider reply lost")?;
+        let (resumed, reply) = provider.next().await?;
+        let text = text_messages(&resumed);
+        assert!(text.contains("background-summary-marker") && text.contains(note), "{text}");
+        assert!(!text.contains("second-partial-marker"), "{text}");
+        reply
+            .send(completion(json!({"role":"assistant","content":"Second file read."}), "stop"))
+            .map_err(|_| "provider reply lost")?;
+        quiescent_message(client, id, &second).await?;
+
+        // Without a candidate, the overflow requests its own summary.
+        let third = send("Read the third file.").await?;
+        let (main, reply) = provider.next().await?;
+        assert!(!text_messages(&main).contains("second-partial-marker"), "{main}");
+        reply.send(overflow("third-partial-marker")).map_err(|_| "provider reply lost")?;
+        let (summary, reply) = tokio::select! {
+            request = provider.next() => request?,
+            ended = quiescent_message(client, id, &third) => {
+                return Err(format!("overflow ended the Run: {ended:?}").into());
+            }
+        };
+        assert!(summary_request(&summary), "{summary}");
+        assert!(!text_messages(&summary).contains("third-partial-marker"), "{summary}");
+        reply
+            .send(completion(json!({"role":"assistant","content":"overflow-summary-marker"}), "stop"))
+            .map_err(|_| "provider reply lost")?;
+        let (resumed, reply) = provider.next().await?;
+        let text = text_messages(&resumed);
+        assert!(text.contains("overflow-summary-marker") && text.contains(note), "{text}");
+        assert!(!text.contains("third-partial-marker"), "{text}");
+        reply
+            .send(completion(json!({"role":"assistant","content":"Third file read."}), "stop"))
+            .map_err(|_| "provider reply lost")?;
+        quiescent_message(client, id, &third).await?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}

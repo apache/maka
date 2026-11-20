@@ -560,14 +560,7 @@ impl Engine {
                 let overflow = view
                     .current_attempt
                     .and_then(|id| view.attempts.get(&id))
-                    .is_some_and(|attempt| {
-                        matches!(
-                            attempt.recovery,
-                            Some(AttemptRecovery::ContextOverflow {
-                                observed_output: false
-                            })
-                        )
-                    });
+                    .is_some_and(|attempt| attempt.compactable_overflow());
                 let key = (current_summary, overflow, live.rejected_summaries.len());
                 let reload = summary_key != Some(key)
                     || model_level.as_ref().is_none_or(|(step, baseline, _)| {

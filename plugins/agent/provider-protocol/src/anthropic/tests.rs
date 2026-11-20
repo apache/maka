@@ -211,6 +211,28 @@ fn stream_eof_reuses_only_completed_accounting_and_spliced_messages_latch() {
 }
 
 #[test]
+fn a_stop_at_a_full_context_window_is_a_provider_error() {
+    use crate::output::Event;
+    let mut stream = stream::Stream::new(response::Options::default());
+    let mut events = vec![];
+    for record in [
+        json!({"type":"message_start","message":{"id":"reply","usage":{"input_tokens":4}}}),
+        json!({"type":"message_delta","delta":{"stop_reason":"model_context_window_exceeded"},"usage":{"output_tokens":6}}),
+        json!({"type":"message_stop"}),
+    ] {
+        events.extend(stream.value(record, &mut || "unused".into()));
+    }
+    assert!(
+        matches!(events.as_slice(), [.., Event::ProviderError(error)] if error.kind.as_deref() == Some("model_context_window_exceeded")),
+        "{events:?}"
+    );
+    assert!(
+        !events.iter().any(|event| matches!(event, Event::Finish(_))),
+        "{events:?}"
+    );
+}
+
+#[test]
 fn web_citations_belong_to_their_text_block_even_with_search_results() {
     use crate::output::{CitationAnchor, Event, Source};
     let mut stream = stream::Stream::new(response::Options::default());

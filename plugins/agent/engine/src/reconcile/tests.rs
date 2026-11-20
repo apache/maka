@@ -1192,3 +1192,82 @@ fn a_call_that_may_still_be_running_keeps_its_recovery() {
         Action::Accept(..)
     ));
 }
+
+#[test]
+fn a_tool_call_from_an_overflowed_attempt_is_rejected_without_execution() {
+    let mut view = policy_view(None);
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
+    let step = StepId::new();
+    let attempt = ModelAttemptId::new();
+    let request = ContentBlob::json(&serde_json::json!({})).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::StepPrepared {
+            step,
+            request: request.reference().clone(),
+            adjudications: vec![],
+        },
+    );
+    apply_policy_fact(&mut view, Fact::ModelAttemptPrepared { attempt, step });
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelAttemptAdmitted {
+            attempt,
+            upstream: serde_json::json!({}),
+        },
+    );
+    let call_id = "call-before-overflow".to_owned();
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelObserved {
+            attempt,
+            index: 0,
+            part: maka_agent_facts::model::ModelPart::ToolCall {
+                call: maka_agent_facts::model::ModelToolCall {
+                    id: call_id.clone(),
+                    name: "Write".into(),
+                    input: maka_agent_facts::model::ToolInput::Json(serde_json::json!({})),
+                    provider_options: None,
+                    provider_executed: false,
+                },
+            },
+            continuation: None,
+        },
+    );
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelInterrupted {
+            attempt,
+            diagnostic: "context_length_exceeded".into(),
+        },
+    );
+    // Before recovery is assessed, reconcile must assess instead of approving/executing the tool.
+    assert!(matches!(
+        next(&view, &Live::default(), UnixMillis(1), None, false),
+        Action::Assess(id) if id == attempt
+    ));
+    apply_policy_fact(
+        &mut view,
+        Fact::AttemptRecoveryRecorded {
+            attempt,
+            recovery: AttemptRecovery::ContextOverflow {
+                observed_output: true,
+            },
+        },
+    );
+    // After ContextOverflow recovery is recorded, the unadmitted tool call is rejected rather than executed.
+    let key = ToolKey {
+        attempt,
+        call: call_id,
+    };
+    assert!(matches!(
+        next(&view, &Live::default(), UnixMillis(1), None, false),
+        Action::Reject(rejected, ToolRejection::PreparationFailed { .. }) if rejected == key
+    ));
+}

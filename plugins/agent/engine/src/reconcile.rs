@@ -1239,13 +1239,24 @@ fn next_action(
                 ToolRejection::for_refused_approval(&refusal.outcome),
             );
         }
-        if view.current_attempt != Some(tool.key.attempt)
-            && view
-                .attempts
-                .get(&tool.key.attempt)
-                .is_some_and(|attempt| attempt.interrupted.is_some())
-        {
-            return Action::Reject(tool.key.clone(), ToolRejection::Superseded);
+        if let Some(attempt) = view.attempts.get(&tool.key.attempt) {
+            if view.current_attempt != Some(tool.key.attempt) && attempt.interrupted.is_some() {
+                return Action::Reject(tool.key.clone(), ToolRejection::Superseded);
+            }
+            if matches!(
+                attempt.recovery,
+                Some(AttemptRecovery::ContextOverflow { .. })
+            ) {
+                return Action::Reject(
+                    tool.key.clone(),
+                    ToolRejection::PreparationFailed {
+                        message: "model response overflowed the context window".into(),
+                    },
+                );
+            }
+            if attempt.interrupted.is_some() && attempt.recovery.is_none() {
+                continue;
+            }
         }
         if unresolved(view) {
             continue;
@@ -1578,26 +1589,27 @@ fn next_action(
         Some(AttemptRecovery::CodexCompactionFallback) => {
             Action::Prepare(Preparation::CodexFallback { attempt: id })
         }
-        Some(AttemptRecovery::ContextOverflow { observed_output }) => {
+        Some(AttemptRecovery::ContextOverflow { .. }) => {
             if model.is_some_and(|m| m.codex) {
                 return Action::Terminate(Terminal::Failed);
             }
-            if !observed_output
+            let compactable = attempt.compactable_overflow();
+            if compactable
                 && let Some(CompactionLevel::Pending { attempt, .. }) =
                     model.map(|model| model.compaction)
             {
                 return wait(view, WaitReason::Model { attempt }, None, now);
             }
-            if !observed_output && live.work.contains(&WorkKey::PrepareProactiveSummary) {
+            if compactable && live.work.contains(&WorkKey::PrepareProactiveSummary) {
                 return Action::Idle;
             }
-            if !observed_output
+            if compactable
                 && let Some(CompactionLevel::Candidate { origin, .. }) =
                     model.map(|model| model.compaction)
             {
                 return Action::AdoptCandidate(origin);
             }
-            if !observed_output
+            if compactable
                 && model.is_some_and(|model| {
                     model.request.as_ref().is_some_and(|request| {
                         request.accounting.purpose == maka_agent_facts::context::ModelPurpose::Main

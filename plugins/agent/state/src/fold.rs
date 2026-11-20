@@ -106,6 +106,15 @@ impl Attempt {
             source_failure: None,
         }
     }
+
+    /// A context overflow whose partial output, if any, never reached the canonical log,
+    /// so compaction can drop it without later replays bringing it back.
+    pub fn compactable_overflow(&self) -> bool {
+        self.interrupted.is_some()
+            && !self.semantic
+            && !self.has_tools
+            && matches!(self.recovery, Some(AttemptRecovery::ContextOverflow { .. }))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1033,9 +1042,7 @@ impl RunView {
                                     AttemptRecovery::ContinueFromHistory { .. }
                                         | AttemptRecovery::ProjectPrefixSafe { .. }
                                 ) | Some(AttemptRecovery::CodexCompactionFallback)
-                                    | Some(AttemptRecovery::ContextOverflow {
-                                        observed_output: false
-                                    })
+                                    | Some(AttemptRecovery::ContextOverflow { .. })
                             ) && (failed.closed.is_some() || failed.interrupted.is_some()),
                             "new recovery step requires an interrupted or closed attempt with a recorded recovery plan",
                         )?;
@@ -1045,13 +1052,11 @@ impl RunView {
                         )?;
                         if matches!(
                             failed.recovery,
-                            Some(AttemptRecovery::ContextOverflow {
-                                observed_output: false
-                            })
+                            Some(AttemptRecovery::ContextOverflow { .. })
                         ) {
                             require(
-                                !failed.semantic && !failed.has_tools,
-                                "no-output context overflow contradicts recorded model output",
+                                failed.compactable_overflow(),
+                                "context overflow recovery cannot drop recorded model output",
                             )?;
                         }
                         if matches!(

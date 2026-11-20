@@ -108,17 +108,10 @@ impl DriverModel {
                 ));
             }
         } else if request.accounting.purpose != ModelPurpose::Main
-            || original.semantic
-            || original.has_tools
-            || !matches!(
-                original.recovery,
-                Some(AttemptRecovery::ContextOverflow {
-                    observed_output: false
-                })
-            )
+            || !original.compactable_overflow()
         {
             return Err(RunError::InvalidInput(
-                "summary recovery lacks the original no-output Main overflow".into(),
+                "summary recovery lacks the original compactable Main overflow".into(),
             ));
         }
         if !repair
