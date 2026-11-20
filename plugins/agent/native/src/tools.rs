@@ -976,7 +976,7 @@ impl Service {
                 // ceiling is independent of the preset's base network, which a
                 // process keeps until one applies. Process controls share it so
                 // a PTY launched with a grant stays usable.
-                *network = access.spec().network_approval_ceiling().clone();
+                *network = access.network_approval_ceiling()?;
             }
             let request = services
                 .request_with_work_and_context(

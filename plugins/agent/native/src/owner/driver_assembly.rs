@@ -111,6 +111,9 @@ impl Owner {
         &self,
         view: &RunView,
     ) -> Result<(CapturedRun, Arc<crate::tools::SelectionSnapshot>), RestorationError> {
+        self.require_execution(&view.spec.session_id)
+            .await
+            .map_err(RunError::InvalidInput)?;
         let current = self
             .mutable_session(&view.spec.session_id)
             .await
@@ -135,6 +138,12 @@ impl Owner {
                 )
             }
             BackendSpec::Executor { descriptor, .. } => {
+                if self.store.checkpoint_execution().is_some() {
+                    return Err(RunError::InvalidInput(
+                        "execution_grant_requires_native_model_backend".into(),
+                    )
+                    .into());
+                }
                 (None, Some(self.run_content(view.run, descriptor).await?))
             }
             BackendSpec::Historical { .. } => {

@@ -45,7 +45,15 @@ impl Owner {
             tokio::task::spawn_blocking(move || workspace::sandbox(&workspace, access, &root))
                 .await
                 .map_err(|error| error.to_string())??;
-        sandbox.intersect(floor).map_err(|error| error.to_string())
+        let sandbox = sandbox
+            .intersect(floor)
+            .map_err(|error| error.to_string())?;
+        match self.store.checkpoint_execution() {
+            Some(execution) => sandbox
+                .intersect(&execution.grant().permissions.sandbox)
+                .map_err(|error| error.to_string()),
+            None => Ok(sandbox),
+        }
     }
     #[expect(
         clippy::too_many_arguments,
@@ -191,6 +199,7 @@ impl Owner {
         budget: capture_budget::CaptureBudget,
         parent: &Scope,
     ) -> Result<(RunSpec, Vec<ContentBlob>), String> {
+        self.require_execution(session_id).await?;
         let session = self.mutable_session(session_id).await?;
         let mut configuration = session.configuration;
         if parent.cancellation.is_cancelled() || self.stop.is_cancelled() {
@@ -228,10 +237,17 @@ impl Owner {
                 maka_sandbox::Approval::Never
             },
         };
-        let inherited_network = parent.sandbox_floor().network();
+        let inherited_sandbox = match self.store.checkpoint_execution() {
+            Some(execution) => parent
+                .sandbox_floor()
+                .intersect(&execution.grant().permissions.sandbox)
+                .map_err(|error| error.to_string())?,
+            None => parent.sandbox_floor().clone(),
+        };
+        let inherited_network = inherited_sandbox.network();
         let network_approval_ceiling = (inherited_network != permission_ceiling.sandbox.network())
             .then(|| inherited_network.clone());
-        let inherited_filesystem = match parent.sandbox_floor() {
+        let inherited_filesystem = match &inherited_sandbox {
             maka_sandbox::Sandbox::Managed { filesystem, .. } => Some(filesystem.clone()),
             maka_sandbox::Sandbox::Disabled => Some(maka_sandbox::filesystem::Policy::uniform(
                 maka_sandbox::filesystem::Access::Write,

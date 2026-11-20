@@ -537,6 +537,8 @@ impl Rig {
                 "uploadAttachment",
                 "work",
                 "workReadiness",
+                "previewHistoryCheckpoint",
+                "publishCheckpoint",
                 "queue",
                 "queueMessage",
                 "editQueue",
@@ -3539,6 +3541,7 @@ mod model_recovery {
     mod codex_switch;
     mod compaction;
     mod discovery;
+    mod execution;
     mod memory;
     mod predictions;
     mod preset_acceptance;
