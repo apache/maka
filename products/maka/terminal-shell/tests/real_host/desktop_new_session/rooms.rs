@@ -120,7 +120,9 @@ pub(super) async fn desktop_composer_references_a_room_without_posting() {
     .await;
     let before = room_messages(&desktop, room, 1).await;
     assert_eq!(before.len(), 1);
+    let previous = desktop.platform.text_input_target();
     desktop.press("Open conversation review json-render").await;
+    desktop.target_after(previous).await;
     desktop.press("Focus message composer").await;
     desktop.paste("Read context from @").await;
     let file_row = desktop.control("Windows-CI.md").await;

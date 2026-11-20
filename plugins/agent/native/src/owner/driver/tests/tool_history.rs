@@ -2414,6 +2414,7 @@ await new Promise((r) => setTimeout(r, 30000));"#
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     });
 
+    let phase = std::cell::Cell::new("configure connection and session");
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
         let client = rig.client.as_ref().ok_or("client missing")?;
         let owner = rig.captured.lock().unwrap().clone().ok_or("owner missing")?;
@@ -2439,14 +2440,47 @@ await new Promise((r) => setTimeout(r, 30000));"#
         })).await?;
         let session = session_resp["session"]["id"].as_str().ok_or("session missing")?.to_owned();
         let backend = json!({"kind":"model","connectionId":conn_id,"modelId":"llama3.2"});
+        let continue_from = |run_id: Value| {
+            let (session, conn_id) = (&session, &conn_id);
+            async move {
+                // A terminal outcome can precede the final durable updates.
+                let target = json!({"kind":"run","runId":run_id});
+                loop {
+                    let readiness = model_recovery::call(client, "agent", "workReadiness", json!({
+                        "sessionId":session, "target":target
+                    })).await?;
+                    match readiness["kind"].as_str() {
+                        Some("ready") => break,
+                        Some("pending") => tokio::time::sleep(Duration::from_millis(10)).await,
+                        _ => return Err(format!("run {run_id} unavailable: {readiness}").into()),
+                    }
+                }
+                let availability = model_recovery::call(client, "agent", "continuationAvailability", json!({
+                    "sessionId":session, "runId":run_id
+                })).await?;
+                assert_eq!(availability["kind"], "ready", "run {run_id}: {availability}");
+                let source = &availability["source"];
+                assert_eq!(source["runId"], run_id);
+                let started = model_recovery::call(client, "agent", "continueRun", json!({
+                    "sessionId": session,
+                    "sourceRunId": run_id,
+                    "sourceHighWater": source["highWater"],
+                    "model": {"connectionId": conn_id, "modelId": "llama3.2"}
+                })).await?;
+                assert_eq!(started["kind"], "started", "continue {run_id}: {started}");
+                Ok::<_, Box<dyn Error + Send + Sync>>(started["execution"]["runId"].clone())
+            }
+        };
 
         model_recovery::call(client, "agent", "send", json!({
             "sessionId": session,
             "message": "Inspect pixel.",
             "backend": backend
         })).await?;
+        phase.set("initial provider request");
         let _ = req_rx.recv().await.ok_or("initial request missing")?;
         steer_ready.notified().await;
+        phase.set("persist interrupted reasoning");
         let r1: RunId = loop {
             let obs = model_recovery::call(client, "agent", "observe", json!({"sessionId":session})).await?;
             if !obs["run"]["runId"].is_null() {
@@ -2467,34 +2501,31 @@ await new Promise((r) => setTimeout(r, 30000));"#
             "delivery": "steer",
             "backend": backend
         })).await?;
+        phase.set("steered provider request");
         let steered_req = req_rx.recv().await.ok_or("steered request missing")?;
         assert!(!steered_req.to_string().contains("rs-steer"), "{steered_req}");
+        phase.set("provider request after yielding image");
         let step3_req = req_rx.recv().await.ok_or("post-yield request missing")?;
         assert!(step3_req.to_string().contains("input_image"), "{step3_req}");
+        phase.set("persist background notification");
         while owner.durable.cells().notifications(r1, None, 1).await?.is_empty() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         note_ready.notify_one();
+        phase.set("provider request after background notification");
         let note_req = req_rx.recv().await.ok_or("post-notification request missing")?;
         let note_text = note_req.to_string();
         assert!(note_text.contains("bg-note"), "{note_text}");
         assert!(!note_text.contains("rs-bg-prefix"), "prefix reasoning leaked before notification: {note_text}");
         model_recovery::call(client, "agent", "stop", json!({"sessionId":session,"runId":r1})).await?;
+        phase.set("cancel original run");
         let r1_exec = wait_terminal(client, &session, json!(r1)).await?;
         assert_eq!(r1_exec["state"]["kind"], "cancelled");
 
         let mut source = r1_exec;
+        phase.set("cancel two continued runs");
         for _ in 0..2 {
-            let avail = model_recovery::call(client, "agent", "continuationAvailability", json!({"sessionId":session,"runId":source["runId"]})).await?;
-            assert_eq!(avail["kind"], "ready", "avail={avail} frontier={:?}", owner.durable.frontier(serde_json::from_value(source["runId"].clone())?).await?);
-            let started = model_recovery::call(client, "agent", "continueRun", json!({
-                "sessionId": session,
-                "sourceRunId": source["runId"],
-                "sourceHighWater": source["highWater"],
-                "model": {"connectionId": conn_id, "modelId": "llama3.2"}
-            })).await?;
-            assert_eq!(started["kind"], "started", "started={started}");
-            let next_id = started["execution"]["runId"].clone();
+            let next_id = continue_from(source["runId"].clone()).await?;
             let _ = req_rx.recv().await.ok_or("held continuation request missing")?;
             model_recovery::call(client, "agent", "stop", json!({"sessionId":session,"runId":next_id})).await?;
             source = wait_terminal(client, &session, next_id.clone()).await?;
@@ -2506,46 +2537,30 @@ await new Promise((r) => setTimeout(r, 30000));"#
             model_recovery::call(client, "agent", "continuationAvailability", json!({"sessionId":session,"runId":r1})).await?["kind"],
             "rejected"
         );
-        assert_eq!(
-            model_recovery::call(client, "agent", "continuationAvailability", json!({"sessionId":session,"runId":source["runId"]})).await?["kind"],
-            "ready"
-        );
 
-        let r4 = model_recovery::call(client, "agent", "continueRun", json!({
-            "sessionId": session,
-            "sourceRunId": source["runId"],
-            "sourceHighWater": source["highWater"],
-            "model": {"connectionId": conn_id, "modelId": "llama3.2"}
-        })).await?;
+        phase.set("continue with the unaccepted image");
+        let r4 = continue_from(source["runId"].clone()).await?;
         let req2 = req_rx.recv().await.ok_or("r4 request missing")?;
         let req2_text = req2.to_string();
         assert!(req2_text.contains("input_image"), "unaccepted tool image lost: {req2_text}");
         assert!(req2_text.contains("call-2-hold"), "unaccepted interrupted cell lost: {req2_text}");
-        let r4_exec = wait_terminal(client, &session, r4["execution"]["runId"].clone()).await?;
+        let r4_exec = wait_terminal(client, &session, r4).await?;
 
-        let r5 = model_recovery::call(client, "agent", "continueRun", json!({
-            "sessionId": session,
-            "sourceRunId": r4_exec["runId"],
-            "sourceHighWater": r4_exec["highWater"],
-            "model": {"connectionId": conn_id, "modelId": "llama3.2"}
-        })).await?;
+        phase.set("continue after orphan reasoning");
+        let r5 = continue_from(r4_exec["runId"].clone()).await?;
         let req3 = req_rx.recv().await.ok_or("r5 request missing")?;
         let req3_text = req3.to_string();
         assert!(!req3_text.contains("rs-orphan"), "orphan reasoning leaked: {req3_text}");
         assert!(!req3_text.contains("Continue from where"), "unexpected cue: {req3_text}");
-        let r5_exec = wait_terminal(client, &session, r5["execution"]["runId"].clone()).await?;
+        let r5_exec = wait_terminal(client, &session, r5).await?;
 
-        let r6 = model_recovery::call(client, "agent", "continueRun", json!({
-            "sessionId": session,
-            "sourceRunId": r5_exec["runId"],
-            "sourceHighWater": r5_exec["highWater"],
-            "model": {"connectionId": conn_id, "modelId": "llama3.2"}
-        })).await?;
+        phase.set("continue after partial output");
+        let r6 = continue_from(r5_exec["runId"].clone()).await?;
         let req4 = req_rx.recv().await.ok_or("r6 request missing")?;
         let req4_text = req4.to_string();
         assert!(req4_text.contains("First half."), "{req4_text}");
         assert!(req4_text.contains("Continue from where"), "{req4_text}");
-        let r6_exec = wait_terminal(client, &session, r6["execution"]["runId"].clone()).await?;
+        let r6_exec = wait_terminal(client, &session, r6).await?;
         assert_eq!(r6_exec["state"]["kind"], "completed");
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
@@ -2554,7 +2569,11 @@ await new Promise((r) => setTimeout(r, 30000));"#
     stop.cancel();
     server.await??;
     let cleanup = rig.finish().await;
-    assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+    assert!(
+        matches!(&result, Ok(Ok(Ok(())))),
+        "{}: {result:?}",
+        phase.get()
+    );
     assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
 }

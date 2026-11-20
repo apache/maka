@@ -743,6 +743,10 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
             );
         }
         Command::SetClipboardItem(item) => {
+            #[cfg(feature = "terminal")]
+            if crate::terminal::clipboard_write(&item.text) {
+                return;
+            }
             let units: Vec<u16> = item.text.encode_utf16().chain(Some(0)).collect();
             let text: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
             let unicode = u32::from(windows::Win32::System::Ole::CF_UNICODETEXT.0);
