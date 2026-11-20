@@ -46,25 +46,32 @@ pub(super) async fn execute(
     owner: maka_process::isolated::TaskOwner,
 ) -> Result<Outcome, Error> {
     let observation = journal.observation();
-    let mut ticket = observation
-        .resources
-        .reserve()
-        .map_err(|_| Error::ObservationRetired)?;
-    ticket.start();
     let descriptor = owner.descriptor();
     let mut owner = Some(owner);
-    let lease = match fronts.open(config, cwd, &mut owner).await {
-        Ok(lease) => lease,
+    let (lease, ticket) = match fronts.open(config, cwd, &mut owner).await {
+        Ok(lease) => {
+            let mut ticket = observation
+                .resources
+                .reserve()
+                .map_err(|_| Error::ObservationRetired)?;
+            ticket.start();
+            (lease, ticket)
+        }
         Err(error) => {
             if let Some(owner) = owner {
-                let seal = owner.into_no_launch_seal();
-                match seal.record().await {
-                    Ok(()) => ticket.complete(Ok(())),
-                    Err(failure) => ticket.unconfirmed(failure.to_string(), seal),
-                }
-            } else {
-                ticket.unconfirmed(error.to_string(), descriptor);
+                let error = if cancellation.is_cancelled() {
+                    Error::Cancelled
+                } else {
+                    error
+                };
+                return runtime::fail_without_launch(&observation, owner, error).await;
             }
+            let mut ticket = observation
+                .resources
+                .reserve()
+                .map_err(|_| Error::ObservationRetired)?;
+            ticket.start();
+            ticket.unconfirmed(error.to_string(), descriptor);
             return Err(error);
         }
     };
@@ -140,13 +147,7 @@ impl Protocol<'_> {
                 | Error::CleanupUnconfirmed
                 | Error::Unknown),
             ) => return Err(error),
-            Err(error) => {
-                return Ok(Outcome::Failed {
-                    message: error.to_string(),
-                    code: Some("native_preparation_failed".into()),
-                    recoverable: false,
-                });
-            }
+            Err(error) => return runtime::preparation_failure(error),
         };
 
         io.turn_started();

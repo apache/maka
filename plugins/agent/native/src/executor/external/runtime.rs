@@ -135,6 +135,48 @@ impl Observation {
         Ok(())
     }
 }
+pub(super) fn preparation_failure(error: Error) -> Result<Outcome, Error> {
+    match error {
+        Error::Invalid(_) | Error::Provider(_) => Ok(Outcome::Failed {
+            message: error.to_string(),
+            code: Some("native_preparation_failed".into()),
+            recoverable: false,
+        }),
+        other => Err(other),
+    }
+}
+
+pub(super) async fn fail_without_launch(
+    observation: &Observation,
+    owner: TaskOwner,
+    error: Error,
+) -> Result<Outcome, Error> {
+    let mut ticket = observation
+        .resources
+        .reserve()
+        .map_err(|_| Error::ObservationRetired)?;
+    ticket.start();
+    let seal = owner.into_no_launch_seal();
+    match seal.record().await {
+        Ok(()) => {
+            ticket.complete(Ok(()));
+            observation
+                .binding
+                .cleanup(OperationCleanup::Confirmed)
+                .await?;
+            if observation.retired.is_cancelled() {
+                Err(Error::ObservationRetired)
+            } else {
+                preparation_failure(error)
+            }
+        }
+        Err(failure) => {
+            ticket.unconfirmed(failure.to_string(), seal);
+            Err(Error::CleanupUnconfirmed)
+        }
+    }
+}
+
 pub(super) fn command_basis(config: &NativeCommand, cwd: &str) -> Result<String, Error> {
     let bytes = serde_json::to_vec(&(config, cwd)).map_err(|e| Error::Invalid(e.to_string()))?;
     Ok(hex::encode(Sha256::digest(bytes)))
@@ -459,9 +501,14 @@ async fn execute_observed(
         NativeRuntime::Antigravity => {
             #[cfg(not(unix))]
             {
-                Err(Error::Invalid(
-                    "Native session ownership is unavailable on this platform".into(),
-                ))
+                fail_without_launch(
+                    &observation,
+                    owner,
+                    Error::Invalid(
+                        "Native session ownership is unavailable on this platform".into(),
+                    ),
+                )
+                .await
             }
             #[cfg(unix)]
             agy_acp::execute(
@@ -478,7 +525,14 @@ async fn execute_observed(
             .await
         }
         NativeRuntime::Codex => match foreground_codex(config, cwd).await {
-            Err(error) => Err(error),
+            Err(error) => {
+                let error = if cancellation.is_cancelled() {
+                    Error::Cancelled
+                } else {
+                    error
+                };
+                fail_without_launch(&observation, owner, error).await
+            }
             Ok(server) => {
                 task_pipe(
                     owner,
@@ -962,7 +1016,7 @@ pub(super) async fn pipe<P: PipeProtocol>(
     pipe_unowned(command, transport, bridge, cancellation, protocol).await
 }
 
-pub(super) async fn task_pipe<P: PipeProtocol>(
+pub(super) async fn task_pipe<P: PipeProtocol<Output = Outcome>>(
     owner: TaskOwner,
     observation: Observation,
     command: maka_process::Command,
@@ -970,7 +1024,7 @@ pub(super) async fn task_pipe<P: PipeProtocol>(
     bridge: Option<Arc<mcp::Bridge>>,
     cancellation: CancellationToken,
     protocol: P,
-) -> Result<P::Output, Error> {
+) -> Result<Outcome, Error> {
     pipe_owned(
         command,
         transport,
@@ -982,14 +1036,14 @@ pub(super) async fn task_pipe<P: PipeProtocol>(
     .await
 }
 
-async fn pipe_owned<P: PipeProtocol>(
+async fn pipe_owned<P: PipeProtocol<Output = Outcome>>(
     command: maka_process::Command,
     transport: Transport,
     bridge: Option<Arc<mcp::Bridge>>,
     cancellation: CancellationToken,
     owner: (TaskOwner, Observation),
     protocol: P,
-) -> Result<P::Output, Error> {
+) -> Result<Outcome, Error> {
     let (owner, observation) = owner;
     let mut ticket = observation
         .resources
@@ -1002,7 +1056,17 @@ async fn pipe_owned<P: PipeProtocol>(
         Ok(process) => process,
         Err(maka_process::isolated::SpawnError::Closed(error)) => {
             ticket.complete(Ok(()));
-            return Err(isolation_error(error));
+            observation
+                .binding
+                .cleanup(OperationCleanup::Confirmed)
+                .await?;
+            return if cancellation.is_cancelled() {
+                Err(Error::Cancelled)
+            } else if observation.retired.is_cancelled() {
+                Err(Error::ObservationRetired)
+            } else {
+                preparation_failure(isolation_error(error))
+            };
         }
         Err(maka_process::isolated::SpawnError::Unconfirmed(failure)) => {
             ticket.unconfirmed(failure.to_string(), failure);
@@ -1150,7 +1214,16 @@ async fn pipe_owned<P: PipeProtocol>(
                 .unwrap_or_else(|_| Err(Error::Unknown));
             (result, Some(io))
         }
-        Err(error) => (Err(error), None),
+        Err(error) => (
+            if cancellation.is_cancelled() {
+                Err(Error::Cancelled)
+            } else if retired.is_cancelled() {
+                Err(Error::ObservationRetired)
+            } else {
+                preparation_failure(error)
+            },
+            None,
+        ),
     };
     settled.cancel();
     if let Some(bridge) = &bridge {
@@ -1473,4 +1546,42 @@ pub(super) fn string<'a>(value: &'a Value, pointer: &str) -> Result<&'a str, Err
         .and_then(Value::as_str)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| Error::Invalid(format!("Native response missing {pointer}")))
+}
+
+#[cfg(test)]
+mod preparation_failure_tests {
+    use super::*;
+
+    #[test]
+    fn preparation_failure_maps_only_provider_and_invalid_errors() {
+        for (error, expected) in [
+            (
+                Error::Provider("usage limit reached".into()),
+                "executor failed: usage limit reached",
+            ),
+            (
+                Error::Invalid("Codex did not confirm requested model".into()),
+                "invalid executor input or output: Codex did not confirm requested model",
+            ),
+        ] {
+            let outcome = preparation_failure(error).unwrap();
+            assert!(matches!(
+                outcome,
+                Outcome::Failed { message, code, recoverable }
+                    if message == expected
+                        && code.as_deref() == Some("native_preparation_failed")
+                        && !recoverable
+            ));
+        }
+
+        for error in [
+            Error::Unknown,
+            Error::Cancelled,
+            Error::ObservationRetired,
+            Error::CleanupUnconfirmed,
+            Error::Persistence("disk full".into()),
+        ] {
+            assert!(preparation_failure(error).is_err());
+        }
+    }
 }
