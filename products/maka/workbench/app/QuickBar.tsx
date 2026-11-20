@@ -219,12 +219,14 @@ export const quickInputStyle = () =>
 
 const mark = new Path2D('M6.1 1.3h3.8 M1.35 14.35 8 3.55l6.65 10.8 M4.95 8.5 8 13.6l3.05-5.1');
 
-export function MakaMark() {
+export function MakaMark(props: { size?: number }) {
+  const size = () => props.size ?? 16;
   return (
     <Canvas
       accessibilityElementsHidden
-      style={[{ width: 16, height: 16, flexShrink: 0 }, { pointerEvents: 'none' }]}
+      style={[{ width: size(), height: size(), flexShrink: 0 }, { pointerEvents: 'none' }]}
       draw={(context) => {
+        context.scale(size() / 16, size() / 16);
         context.strokeStyle = '#47A3E2';
         context.lineWidth = 1.45;
         context.lineCap = 'round';
