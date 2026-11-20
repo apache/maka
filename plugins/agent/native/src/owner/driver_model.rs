@@ -28,7 +28,7 @@ use maka_agent_engine::{
 };
 use maka_agent_facts::{
     composition::{RequestComposition, SourceRevision},
-    context::{ModelOperation, ModelPurpose},
+    context::{CompactionOptions, ModelOperation, ModelPurpose},
     durable::*,
     execution::SystemPrompt,
     input::RunInput,
@@ -99,18 +99,12 @@ struct ReplayedTail {
 }
 type ProjectedHistory = (Option<String>, ReplayedTail);
 
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CompactionOptions {
-    prompt: Option<String>,
-    resume_model: Option<maka_agent_facts::configuration::ModelSelection>,
-}
-
-impl CompactionOptions {
-    fn native(&self, model: &maka_agent_engine::PreparedModel) -> bool {
-        // A checkpoint handed to another backend must be readable without its producer.
-        model.provider.capabilities.native_compaction == Some(true) && self.resume_model.is_none()
-    }
+fn native_compaction(
+    options: &CompactionOptions,
+    model: &maka_agent_engine::PreparedModel,
+) -> bool {
+    // A checkpoint handed to another backend must be readable without its producer.
+    model.provider.capabilities.native_compaction == Some(true) && options.resume_model.is_none()
 }
 
 struct ProjectedStepInput<'a> {
@@ -129,7 +123,7 @@ pub(super) struct PreparedContinuation {
     pub replay: maka_agent_facts::continuation::ReplayEvidence,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FrozenInput {
     continuing: Option<AcceptedModel>,
@@ -148,9 +142,53 @@ struct FrozenInput {
     wire: FrozenWire,
     notifications: Vec<FrozenNotification>,
     recovered_cells: Vec<FrozenCellKnowledge>,
+    /// Inline only in records written before the text became shared content.
+    #[serde(default)]
     instructions: Option<String>,
+    #[serde(default)]
     system: Option<SystemPrompt>,
     tool_choice: ToolChoiceMode,
+    #[serde(default)]
+    instructions_text: Option<ContentRef>,
+    #[serde(default)]
+    system_text: Option<FrozenSystem>,
+}
+
+/// Wire form of [FrozenInput]: system texts are always stored as shared content refs.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SealedFrozenInput<'a> {
+    continuing: &'a Option<AcceptedModel>,
+    accepted: &'a AcceptedModel,
+    adapter: &'a SourceRevision,
+    item_acceptance: bool,
+    route_identity: &'a str,
+    operation: ModelOperation,
+    language: maka_agent_facts::language::Language,
+    prompt: &'a ContentRef,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    prompt_chunks: &'a Vec<ContentRef>,
+    layout: &'a preparation::FrozenPromptLayout,
+    covered_prefix: &'a Option<CoveredPrefix>,
+    normalization: &'a Option<maka_model::ProviderKind>,
+    wire: &'a FrozenWire,
+    notifications: &'a Vec<FrozenNotification>,
+    recovered_cells: &'a Vec<FrozenCellKnowledge>,
+    tool_choice: ToolChoiceMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instructions_text: &'a Option<ContentRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_text: &'a Option<FrozenSystem>,
+}
+
+/// Each Step repeats the same system text; storing it as content keeps one copy.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FrozenSystem {
+    text: ContentRef,
+    policy_revision: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sources: Vec<SourceRevision>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -217,8 +255,134 @@ impl FrozenInput {
                 }
             }
         }
+        for reference in self.text_refs() {
+            if !refs.contains(&reference) {
+                refs.push(reference);
+            }
+        }
         refs
     }
+
+    fn text_refs(&self) -> Vec<ContentRef> {
+        let mut refs: Vec<ContentRef> = self.instructions_text.iter().cloned().collect();
+        if let Some(system) = &self.system_text
+            && !refs.contains(&system.text)
+        {
+            refs.push(system.text.clone());
+        }
+        refs
+    }
+
+    /// Serialize with the system text moved into shared content blobs.
+    fn seal(&mut self) -> Result<(ContentBlob, Vec<ContentBlob>), RunError> {
+        let (bytes, texts) = self.seal_bytes()?;
+        Ok((ContentBlob::new(bytes), texts))
+    }
+
+    fn seal_bytes(&mut self) -> Result<(Vec<u8>, Vec<ContentBlob>), RunError> {
+        let mut texts = Vec::new();
+        self.instructions_text = self
+            .instructions
+            .as_deref()
+            .map(|text| shared_text(text, &mut texts))
+            .transpose()?;
+        self.system_text = self
+            .system
+            .as_ref()
+            .map(|system| {
+                Ok::<_, RunError>(FrozenSystem {
+                    text: shared_text(&system.text, &mut texts)?,
+                    policy_revision: system.policy_revision,
+                    sources: system.sources.clone(),
+                })
+            })
+            .transpose()?;
+        let wire = SealedFrozenInput {
+            continuing: &self.continuing,
+            accepted: &self.accepted,
+            adapter: &self.adapter,
+            item_acceptance: self.item_acceptance,
+            route_identity: &self.route_identity,
+            operation: self.operation,
+            language: self.language,
+            prompt: &self.prompt,
+            prompt_chunks: &self.prompt_chunks,
+            layout: &self.layout,
+            covered_prefix: &self.covered_prefix,
+            normalization: &self.normalization,
+            wire: &self.wire,
+            notifications: &self.notifications,
+            recovered_cells: &self.recovered_cells,
+            tool_choice: self.tool_choice,
+            instructions_text: &self.instructions_text,
+            system_text: &self.system_text,
+        };
+        Ok((serde_json::to_vec(&wire).map_err(RunError::Json)?, texts))
+    }
+
+    /// Restore the system text of a sealed record from its resolved content.
+    fn hydrate(&mut self, texts: &[(ContentRef, String)]) -> Result<(), RunError> {
+        if (self.instructions_text.is_some() && self.instructions.is_some())
+            || (self.system_text.is_some() && self.system.is_some())
+        {
+            return Err(unsupported("frozen-input-manifest-schema"));
+        }
+        let text = |reference: &ContentRef| {
+            texts
+                .iter()
+                .find(|(resolved, _)| resolved == reference)
+                .map(|(_, text)| text.clone())
+                .ok_or_else(|| unsupported("frozen-input-system-text"))
+        };
+        let instructions = self.instructions_text.as_ref().map(text).transpose()?;
+        let system = self
+            .system_text
+            .as_ref()
+            .map(|system| {
+                Ok::<_, RunError>(SystemPrompt {
+                    text: text(&system.text)?,
+                    policy_revision: system.policy_revision,
+                    sources: system.sources.clone(),
+                })
+            })
+            .transpose()?;
+        if instructions.is_some() {
+            self.instructions = instructions;
+        }
+        if system.is_some() {
+            self.system = system;
+        }
+        Ok(())
+    }
+}
+
+async fn hydrate_frozen_input<F, Fut>(
+    mut frozen: FrozenInput,
+    mut load: F,
+) -> Result<FrozenInput, RunError>
+where
+    F: FnMut(ContentRef) -> Fut,
+    Fut: std::future::Future<Output = Result<String, RunError>>,
+{
+    let mut texts = Vec::new();
+    for reference in frozen.text_refs() {
+        let text = load(reference.clone()).await?;
+        texts.push((reference, text));
+    }
+    frozen.hydrate(&texts)?;
+    Ok(frozen)
+}
+
+fn shared_text(text: &str, blobs: &mut Vec<ContentBlob>) -> Result<ContentRef, RunError> {
+    let blob = ContentBlob::json(&text)?;
+    let reference = blob.reference().clone();
+    if !blobs
+        .iter()
+        .any(|existing| existing.reference() == &reference)
+    {
+        blobs.push(blob);
+    }
+    Ok(reference)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -302,25 +466,6 @@ struct ItemContinuation {
 }
 
 impl DriverModel {
-    async fn compaction_options(
-        &self,
-        reader: &HistorySource<'_>,
-        run: RunId,
-        key: Option<&ToolKey>,
-    ) -> Result<CompactionOptions, RunError> {
-        let Some(key) = key else {
-            return Ok(CompactionOptions::default());
-        };
-        let call = reader.tool_call(run, key).await?;
-        serde_json::from_value(
-            call.input
-                .as_json()
-                .cloned()
-                .ok_or_else(|| unsupported("compaction-tool-input"))?,
-        )
-        .map_err(RunError::Json)
-    }
-
     async fn summary_instruction(
         &self,
         view: &RunView,
@@ -641,14 +786,28 @@ impl DriverModel {
             })
             .await?;
         if matches!(mode, Preparation::ResumeFromHistory) {
-            append_continuation_cue(view.spec.language, &mut messages).await?;
+            if let Some(reason) = view
+                .retry_pending
+                .and_then(|attempt| view.attempts.get(&attempt))
+                .and_then(withheld)
+            {
+                messages
+                    .append(maka_model::prompt::Message::user(withheld_note(
+                        view.spec.language,
+                        &reason,
+                    )))
+                    .await?;
+            } else {
+                append_continuation_cue(view.spec.language, &mut messages).await?;
+            }
         }
         let purpose = if summary {
             ModelPurpose::Summary
         } else {
             ModelPurpose::Main
         };
-        let native_compaction = purpose == ModelPurpose::Summary && summary_options.native(model);
+        let native_compaction =
+            purpose == ModelPurpose::Summary && native_compaction(&summary_options, model);
         let context = model.context.as_ref();
         validate_native_compaction_producer(native_compaction, context)?;
         let settings = PromptSettings {
@@ -776,7 +935,7 @@ impl DriverModel {
                     cleanup_evidence.observe(&error);
                 }
             });
-            let frozen = FrozenInput {
+            let mut frozen = FrozenInput {
                 continuing: preflight.map(|_| self.source.accepted.clone()),
                 accepted: source.accepted.clone(),
                 adapter: adapter.source().clone(),
@@ -796,8 +955,10 @@ impl DriverModel {
                 instructions: request.request.prompt.instructions().map(str::to_owned),
                 system: system.clone(),
                 tool_choice: request.request.tool_choice,
+                instructions_text: None,
+                system_text: None,
             };
-            let body = ContentBlob::json(&frozen)?;
+            let (body, texts) = frozen.seal()?;
             let recovery_contract = ContentBlob::json(&FrozenRecovery {
                 protocol: format!("{PROTOCOL}/recovery"),
                 version: VERSION,
@@ -912,6 +1073,7 @@ impl DriverModel {
                     ];
                     contents.extend(chunks);
                     contents.extend(steering_contents);
+                    contents.extend(texts);
                     contents
                 },
                 steering,
@@ -995,12 +1157,12 @@ impl DriverModel {
             };
             let captured = HistorySource::live(&self.state, &source_evidence.current);
             let reader = &captured;
-            let summary_options = self
-                .compaction_options(reader, view.run, summary_request.as_ref())
+            let summary_options = reader
+                .compaction_options(view.run, summary_request.as_ref())
                 .await?;
             let target = ReplayTarget::new(
                 model,
-                if summary && summary_options.native(model) {
+                if summary && native_compaction(&summary_options, model) {
                     ModelOperation::CodexCompaction
                 } else {
                     ModelOperation::Inference
@@ -1106,6 +1268,7 @@ impl DriverModel {
                         &mut system,
                         &mut messages,
                         after,
+                        replay::FailureNote::Include,
                     )
                     .await?;
             } else {
@@ -1152,6 +1315,7 @@ impl DriverModel {
                         &mut system,
                         &mut messages,
                         0,
+                        replay::FailureNote::Include,
                     )
                     .await?;
             }
@@ -1402,7 +1566,12 @@ impl DriverModel {
         }
         super::driver::validate_tool_digest(request)?;
         let value: Value = reader.decode(run, &request.request).await?;
-        serde_json::from_value(value).map_err(|_| unsupported("frozen-input-manifest-schema"))
+        let frozen: FrozenInput = serde_json::from_value(value)
+            .map_err(|_| unsupported("frozen-input-manifest-schema"))?;
+        hydrate_frozen_input(frozen, |reference| async move {
+            reader.decode(run, &reference).await
+        })
+        .await
     }
     async fn restore_frozen(
         &self,
@@ -1844,7 +2013,15 @@ impl DriverModel {
                         .flatten();
                     let knowledge = self
                         .semantic_tail(
-                            target, reader, &view, attempt, vision, &mut None, messages, after,
+                            target,
+                            reader,
+                            &view,
+                            attempt,
+                            vision,
+                            &mut None,
+                            messages,
+                            after,
+                            replay::FailureNote::Include,
                         )
                         .await?;
                     if run == self.execution.run_id {
@@ -2026,7 +2203,15 @@ impl DriverModel {
                     }
                     let _ = self
                         .semantic_tail(
-                            target, reader, &prior, None, vision, system, messages, after,
+                            target,
+                            reader,
+                            &prior,
+                            None,
+                            vision,
+                            system,
+                            messages,
+                            after,
+                            replay::FailureNote::Omit,
                         )
                         .await?;
                 }
@@ -2045,7 +2230,17 @@ impl DriverModel {
                     self.project_message_input(reader, &prior, &input, vision, false, messages)
                         .await?;
                     let _ = self
-                        .semantic_tail(target, reader, &prior, None, vision, system, messages, 0)
+                        .semantic_tail(
+                            target,
+                            reader,
+                            &prior,
+                            None,
+                            vision,
+                            system,
+                            messages,
+                            0,
+                            replay::FailureNote::Omit,
+                        )
                         .await?;
                 }
                 Ok(previous)
@@ -2067,6 +2262,7 @@ impl DriverModel {
         system: &'a mut Option<SystemPrompt>,
         messages: &'a mut preparation::PromptBuilder,
         after_revision: u64,
+        failure_note: replay::FailureNote,
     ) -> BoxFuture<'a, Result<ReplayedTail, RunError>> {
         Box::pin(async move {
             let recorded = self.recorded_inputs(reader, view, after_revision).await?;
@@ -2080,6 +2276,7 @@ impl DriverModel {
                 system,
                 messages,
                 recorded,
+                failure_note,
             );
             let mut after = after_revision;
             loop {
@@ -2407,6 +2604,10 @@ impl DriverModel {
         }
         let frozen: FrozenInput = serde_json::from_slice(&bytes)
             .map_err(|_| unsupported("frozen-input-manifest-schema"))?;
+        let frozen = hydrate_frozen_input(frozen, |reference| async move {
+            self.decode(run, &reference).await
+        })
+        .await?;
         let source = self.request_source(&frozen)?;
         let recovery: FrozenRecovery = self
             .protocol_data(run, &request.recovery_contract, "recovery-contract-schema")
@@ -2634,7 +2835,15 @@ impl DriverModel {
                 };
                 let terminal = match &received {
                     Ok(Err(error)) => {
-                        terminal_outcome(error).map(|outcome| (outcome, error.to_string()))
+                        terminal_outcome(error).map(|outcome| {
+                            (
+                                outcome,
+                                format_retry_diagnostic(
+                                    error,
+                                    maka_agent_facts::model::error::ProviderFailure::now_unix_ms(),
+                                ),
+                            )
+                        })
                     }
                     _ => None,
                 };
@@ -2897,6 +3106,7 @@ impl DriverModel {
                                 prefix_request,
                                 prefix_adapter,
                                 &parts,
+                                withheld_before(&view, attempt),
                             )?
                             }
                         };
@@ -3171,6 +3381,7 @@ impl DriverModel {
             request.request,
             frozen.adapter,
             &parts,
+            withheld_before(view, attempt),
         )
     }
 
@@ -3735,6 +3946,53 @@ fn ensure_no_unknown_provider_effect(
     }
 }
 
+fn withheld(attempt: &maka_agent_state::fold::Attempt) -> Option<String> {
+    let closed = attempt
+        .closed
+        .as_ref()
+        .filter(|closed| closed.outcome == maka_agent_facts::accounting::Outcome::Error)?;
+    let protocol: maka_agent_facts::context::ModelFailureProtocol =
+        serde_json::from_value(closed.protocol.clone()).ok()?;
+    match protocol.failure {
+        maka_model::ModelError::Provider(failure)
+            if failure.reason()
+                == maka_agent_facts::model::error::ProviderFailureReason::Withheld =>
+        {
+            Some(failure.message().to_owned())
+        }
+        _ => None,
+    }
+}
+
+fn withheld_before(view: &RunView, attempt: ModelAttemptId) -> bool {
+    withheld_before_in(&view.attempts, view.proactive_summary, attempt)
+}
+
+fn withheld_before_in(
+    attempts: &BTreeMap<ModelAttemptId, maka_agent_state::fold::Attempt>,
+    proactive_summary: Option<ModelAttemptId>,
+    attempt: ModelAttemptId,
+) -> bool {
+    attempts.iter().any(|(id, earlier)| {
+        *id != attempt && Some(*id) != proactive_summary && withheld(earlier).is_some()
+    })
+}
+
+fn withheld_note(language: maka_agent_facts::language::Language, reason: &str) -> String {
+    use maka_agent_facts::language::Language;
+    match language {
+        Language::En => format!(
+            "[Host] The model provider did not return your previous response: {reason}. Do not repeat it. Take a different approach, or tell the user why you cannot continue."
+        ),
+        Language::ZhCn => format!(
+            "[Host] 模型服务商没有返回你上一次的回复：{reason}。不要重复它。换一种做法，或者告诉用户为什么无法继续。"
+        ),
+        Language::ZhTw => format!(
+            "[Host] 模型服務商沒有返回你上一次的回覆：{reason}。不要重複它。換一種做法，或者告訴使用者為什麼無法繼續。"
+        ),
+    }
+}
+
 fn missing_provider_result(parts: &[maka_agent_facts::model::ModelPart]) -> Option<&str> {
     use maka_agent_facts::model::ModelPart;
     let results: std::collections::BTreeSet<_> = parts
@@ -3762,6 +4020,7 @@ fn recovery_for_failure(
     request: ContentRef,
     adapter: SourceRevision,
     parts: &[maka_agent_facts::model::ModelPart],
+    withheld_before: bool,
 ) -> Result<RecoveryEvidence, RunError> {
     if let RunError::Model(maka_model::ModelError::ContextOverflow { observed_output }) = error {
         if !observed_output && !parts.is_empty() {
@@ -3787,8 +4046,32 @@ fn recovery_for_failure(
         return Ok(blocked());
     };
     failure.validate()?;
+    // The model hears about one withheld response and chooses another approach; a second ends the Run.
+    if failure.reason() == maka_agent_facts::model::error::ProviderFailureReason::Withheld {
+        return Ok(if withheld_before {
+            blocked()
+        } else {
+            RecoveryEvidence {
+                recovery: AttemptRecovery::ContinueFromHistory { not_before: None },
+                contents: vec![],
+            }
+        });
+    }
     if !failure.retryable() {
         return Ok(blocked());
+    }
+    if failure.retry_at_unix_ms().is_some_and(|at| {
+        retry_wait_exceeded(
+            at,
+            maka_agent_facts::model::error::ProviderFailure::now_unix_ms(),
+        )
+    }) {
+        return Ok(RecoveryEvidence {
+            recovery: AttemptRecovery::Blocked {
+                diagnostic: "provider asked to retry after more than 15 minutes".into(),
+            },
+            contents: vec![],
+        });
     }
     let not_before = failure
         .retry_at_unix_ms()
@@ -3801,16 +4084,10 @@ fn recovery_for_failure(
             contents: vec![],
         });
     }
-    if missing_provider_result(parts).is_some()
-        || (failure.reason() == maka_agent_facts::model::error::ProviderFailureReason::TimedOut
-            && (parts.is_empty() || !failure.retained_output_safe()))
+    if missing_provider_result(parts).is_none()
+        && !parts.is_empty()
+        && failure.retained_output_safe()
     {
-        return Ok(RecoveryEvidence {
-            recovery: AttemptRecovery::ContinueFromHistory { not_before },
-            contents: vec![],
-        });
-    }
-    if !parts.is_empty() && failure.retained_output_safe() {
         let proof = ContentBlob::json(&PrefixProof {
             run,
             attempt,
@@ -3830,7 +4107,11 @@ fn recovery_for_failure(
             contents: vec![proof],
         });
     }
-    Ok(blocked())
+    // The stream ended without a verbatim-replayable prefix; continue from canonical history.
+    Ok(RecoveryEvidence {
+        recovery: AttemptRecovery::ContinueFromHistory { not_before },
+        contents: vec![],
+    })
 }
 
 pub(crate) async fn append_continuation_cue(
@@ -3854,4 +4135,330 @@ pub(crate) async fn append_continuation_cue(
             .await?;
     }
     Ok(())
+}
+
+/// The longest provider-requested wait a Run sleeps through before ending instead.
+const MAX_RETRY_WAIT_MS: u64 = 15 * 60 * 1_000;
+
+fn retry_wait_exceeded(retry_at_unix_ms: u64, now_unix_ms: u64) -> bool {
+    retry_at_unix_ms.saturating_sub(now_unix_ms) > MAX_RETRY_WAIT_MS
+}
+
+fn format_retry_diagnostic(error: &RunError, now_unix_ms: u64) -> String {
+    let base = error.to_string();
+    let RunError::Model(maka_model::ModelError::Provider(failure)) = error else {
+        return base;
+    };
+    let Some(at) = failure
+        .retry_at_unix_ms()
+        .filter(|at| retry_wait_exceeded(*at, now_unix_ms))
+    else {
+        return base;
+    };
+    match i64::try_from(at)
+        .ok()
+        .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
+    {
+        Some(ts) => format!("{base} (the service asks to retry after {ts})"),
+        None => format!("{base} (the service asks to retry after more than 15 minutes)"),
+    }
+}
+
+#[cfg(test)]
+mod retry_wait_cap_tests {
+    use super::*;
+    use maka_agent_facts::composition::SourceKind;
+    use maka_agent_facts::model::error::{ProviderFailure, ProviderFailureReason};
+
+    fn probe(retry_at: u64) -> Result<RecoveryEvidence, RunError> {
+        let failure = ProviderFailure::new(
+            ProviderFailureReason::RateLimit,
+            "slow down",
+            true,
+            Some(retry_at),
+        );
+        recovery_for_failure(
+            &RunError::Model(maka_model::ModelError::Provider(failure)),
+            RunId::new(),
+            ModelAttemptId::new(),
+            ContentBlob::json(&"req").unwrap().reference().clone(),
+            SourceRevision {
+                kind: SourceKind::ModelAdapter,
+                name: "maka-model".into(),
+                package_id: "maka-model".into(),
+                entry_id: "maka-model".into(),
+                activation: "act".into(),
+                revision: "1".into(),
+            },
+            &[],
+            false,
+        )
+    }
+
+    #[test]
+    fn retry_after_wait_cap_blocks_over_fifteen_minutes_and_overflows() {
+        let now = ProviderFailure::now_unix_ms();
+        assert!(matches!(
+            probe(now + 60_000).unwrap().recovery,
+            AttemptRecovery::FrozenRetrySafe {
+                not_before: Some(_)
+            }
+        ));
+        assert!(!retry_wait_exceeded(now + MAX_RETRY_WAIT_MS, now));
+        assert!(retry_wait_exceeded(now + MAX_RETRY_WAIT_MS + 1, now));
+        for huge in [now + 16 * 60_000, 1_796_795_144_326_640, u64::MAX] {
+            assert!(
+                matches!(
+                    probe(huge).unwrap().recovery,
+                    AttemptRecovery::Blocked { .. }
+                ),
+                "expected blocked for retry_at={huge}"
+            );
+        }
+        let iso = format_retry_diagnostic(
+            &RunError::Model(maka_model::ModelError::Provider(ProviderFailure::new(
+                ProviderFailureReason::RateLimit,
+                "slow down",
+                true,
+                Some(now + 16 * 60_000),
+            ))),
+            now,
+        );
+        assert!(iso.contains("the service asks to retry after 20"), "{iso}");
+        let overflow = format_retry_diagnostic(
+            &RunError::Model(maka_model::ModelError::Provider(ProviderFailure::new(
+                ProviderFailureReason::RateLimit,
+                "slow down",
+                true,
+                Some(u64::MAX),
+            ))),
+            now,
+        );
+        assert!(overflow.contains("more than 15 minutes"), "{overflow}");
+    }
+}
+
+#[cfg(test)]
+mod withheld_recovery_tests {
+    use super::*;
+    use maka_agent_facts::{
+        accounting::Outcome,
+        context::ModelFailureProtocol,
+        durable::StepId,
+        model::error::{ProviderFailure, ProviderFailureReason},
+    };
+    use maka_agent_state::fold::{Attempt, ModelClosure};
+
+    fn withheld_attempt() -> Attempt {
+        let protocol = ModelFailureProtocol {
+            failure: maka_model::ModelError::Provider(ProviderFailure::new(
+                ProviderFailureReason::Withheld,
+                "refused",
+                false,
+                None,
+            )),
+            transport: None,
+        };
+        Attempt {
+            cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
+            step: StepId::new(),
+            admission: None,
+            observed: 0,
+            semantic: false,
+            has_tools: false,
+            recovery: None,
+            closed: Some(ModelClosure {
+                outcome: Outcome::Error,
+                diagnostic: Some("refused".into()),
+                usage: Default::default(),
+                protocol: serde_json::to_value(protocol).unwrap(),
+            }),
+            interrupted: None,
+            retry: None,
+            private_partial: None,
+            source_failure: None,
+        }
+    }
+
+    #[test]
+    fn withheld_before_ignores_proactive_summary_and_blocks_second_main_attempt() {
+        let mut attempts = BTreeMap::new();
+        let proactive = ModelAttemptId::new();
+        let main1 = ModelAttemptId::new();
+        let main2 = ModelAttemptId::new();
+        attempts.insert(proactive, withheld_attempt());
+        attempts.insert(main1, withheld_attempt());
+        assert!(
+            !withheld_before_in(&attempts, Some(proactive), main1),
+            "proactive summary refusal must not consume main turn retry"
+        );
+        attempts.insert(main2, withheld_attempt());
+        assert!(
+            withheld_before_in(&attempts, Some(proactive), main2),
+            "second main turn refusal must be blocked"
+        );
+    }
+}
+
+#[cfg(test)]
+mod frozen_text_tests {
+    use super::*;
+
+    fn minimal_inline_value(instructions: &str, system_text: &str) -> Value {
+        json!({
+            "accepted": {
+                "binding": {
+                    "connection_id": "00000000-0000-0000-0000-000000000001",
+                    "connection_slug": "fixture",
+                    "model": "fixture-model"
+                },
+                "thinking_level": null,
+                "tool_mode": "code_mode",
+                "editing_tools": "structured",
+                "public_model": {
+                    "id": "fixture-model",
+                    "displayName": "Fixture",
+                    "description": "",
+                    "contextWindow": 8192,
+                    "maxOutputTokens": 1024,
+                    "thinkingLevels": [],
+                    "structuredOutput": false,
+                    "lastUpdated": "2026-01-01",
+                    "capabilities": {
+                        "vision": false,
+                        "reasoning": false,
+                        "functionCalling": true,
+                        "imageGeneration": false
+                    },
+                    "modalities": { "input": ["text"], "output": ["text"] }
+                },
+                "provider": {
+                    "packageId": "maka.providers",
+                    "entryId": "maka.providers",
+                    "scope": "profile",
+                    "name": "fixture"
+                },
+                "route": {
+                    "adapter": "chat-completions",
+                    "protocol": { "openai_compatible": { "name": "fixture" } },
+                    "base_url": "http://127.0.0.1:1/v1"
+                },
+                "model_override": { "codeMode": true, "applyPatch": false },
+                "body_overlay": null
+            },
+            "adapter": {
+                "kind": "model_adapter",
+                "name": "chat-completions",
+                "packageId": "maka.agent.agent",
+                "entryId": "maka.agent.api",
+                "activation": "act-1",
+                "revision": "rev-1"
+            },
+            "itemAcceptance": false,
+            "routeIdentity": "sha256:0",
+            "operation": "inference",
+            "language": "en",
+            "prompt": { "digest": "sha256:1", "bytes": 2 },
+            "layout": {
+                "version": 2,
+                "message_count": 1,
+                "index_offset": 0,
+                "byte_len": 2,
+                "identity": "0",
+                "breakdown": {
+                    "system": { "contentBytes": 0, "estimatedTokens": 0 },
+                    "user": { "contentBytes": 0, "estimatedTokens": 0 },
+                    "assistant": { "contentBytes": 0, "estimatedTokens": 0 },
+                    "tool": { "contentBytes": 0, "estimatedTokens": 0 },
+                    "toolSchemas": { "contentBytes": 0, "estimatedTokens": 0 },
+                    "counts": { "messages": 1, "media": 0, "toolCalls": 0, "toolResults": 0, "tools": 0 }
+                }
+            },
+            "coveredPrefix": null,
+            "normalization": null,
+            "wire": { "format": "chat_completions", "codec": "{}", "identity": "0" },
+            "notifications": [],
+            "recoveredCells": [],
+            "instructions": instructions,
+            "system": {
+                "text": system_text,
+                "policy_revision": 1,
+                "sources": []
+            },
+            "toolChoice": "auto"
+        })
+    }
+
+    #[tokio::test]
+    async fn shared_system_text_deduplicates_on_seal_and_supports_legacy_inline() {
+        let shared = "You are a concise coding assistant.";
+        let legacy_json = minimal_inline_value(shared, shared);
+
+        // 1. Legacy inline records remain readable without external refs.
+        let legacy: FrozenInput = serde_json::from_value(legacy_json.clone()).unwrap();
+        assert!(legacy.text_refs().is_empty());
+        let legacy = hydrate_frozen_input(legacy, |_| async {
+            panic!("legacy inline record must not decode external text refs")
+        })
+        .await
+        .unwrap();
+        assert_eq!(legacy.instructions.as_deref(), Some(shared));
+        assert_eq!(
+            legacy.system.as_ref().map(|s| s.text.as_str()),
+            Some(shared)
+        );
+
+        // 2. Identical instructions and system.text collapse into one shared content blob.
+        let mut to_seal: FrozenInput = serde_json::from_value(legacy_json).unwrap();
+        let (bytes, blobs) = to_seal.seal_bytes().unwrap();
+        assert_eq!(
+            blobs.len(),
+            1,
+            "identical texts must deduplicate to one blob"
+        );
+        let expected_ref = ContentBlob::json(&shared).unwrap().reference().clone();
+        assert_eq!(blobs[0].reference(), &expected_ref);
+        let wire: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            wire.get("instructions").is_none(),
+            "wire omits inline instructions: {wire}"
+        );
+        assert!(
+            wire.get("system").is_none(),
+            "wire omits inline system: {wire}"
+        );
+        assert_eq!(to_seal.text_refs(), vec![expected_ref.clone()]);
+        assert!(to_seal.content_refs().contains(&expected_ref));
+
+        // 3. Round-trip reload restores both texts and preserves content_refs().
+        let reloaded: FrozenInput = serde_json::from_slice(&bytes).unwrap();
+        let hydrated = hydrate_frozen_input(reloaded, |reference| {
+            let blob_ref = expected_ref.clone();
+            async move {
+                assert_eq!(reference, blob_ref);
+                Ok(shared.to_owned())
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(hydrated.instructions.as_deref(), Some(shared));
+        assert_eq!(
+            hydrated.system.as_ref().map(|s| s.text.as_str()),
+            Some(shared)
+        );
+        assert_eq!(hydrated.content_refs(), to_seal.content_refs());
+
+        // 4. Records mixing inline text and external ref are rejected.
+        let mut mixed = wire;
+        mixed["instructions"] = json!(shared);
+        let mixed: FrozenInput = serde_json::from_value(mixed).unwrap();
+        let err = hydrate_frozen_input(mixed, |_| async { Ok(shared.to_owned()) })
+            .await
+            .err()
+            .expect("mixed inline and ref must fail");
+        assert!(
+            err.to_string().contains("frozen-input-manifest-schema"),
+            "{err}"
+        );
+    }
 }

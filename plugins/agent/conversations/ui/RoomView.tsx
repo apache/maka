@@ -26,6 +26,7 @@ import {
   canDockBrowser,
   canDockPreview,
   createPreviewDialog,
+  createSidebarHover,
 } from '../../../../products/maka/workbench/app/Workbench';
 import { HostProvider, type Host } from '../../../../products/maka/workbench/app/host';
 import { ImageViewer } from '../../../../products/maka/workbench/app/ImageViewer';
@@ -47,6 +48,9 @@ export function RoomView(props: { host: Host; input: RoomWorkspaceInput<JSX.Elem
   const navigationFits = () => canDockBrowser(resources.shown());
   const navigationDocked = () => input.sidebarExpanded() && navigationFits();
   const floatingNavigation = signal(false);
+  const sidebarHover = createSidebarHover(
+    () => !navigationDocked() && !floatingNavigation() && input.visible() && !input.blocked(),
+  );
   const closeNavigation = () => floatingNavigation.set(false);
   const toggleNavigation = () => {
     if (input.blocked() || !input.visible()) return;
@@ -69,6 +73,7 @@ export function RoomView(props: { host: Host; input: RoomWorkspaceInput<JSX.Elem
       expanded: navigationDocked(),
       hidden: !input.visible() || floatingNavigation(),
       toggle: toggleNavigation,
+      sidebarHover: sidebarHover.hover,
     }),
     closeNavigation,
     openAgent: input.openSession,
@@ -94,10 +99,17 @@ export function RoomView(props: { host: Host; input: RoomWorkspaceInput<JSX.Elem
     <HostProvider value={props.host}>
       <Workbench
         expanded={input.sidebarExpanded}
+        sidebarHover={sidebarHover}
         previewShown={resources.shown}
         previewDialog={previewDialog}
         closePreview={closePreview}
-        navigation={() => rooms.navigation(input.modeSwitch())}
+        navigation={(temporary) =>
+          rooms.navigation(
+            input.modeSwitch(),
+            temporary ? toggleNavigation : undefined,
+            sidebarHover.suppressUntilExit,
+          )
+        }
         preview={(docked) => (
           <Each
             of={resources.shown() && resources.sessionId() ? [resources.instance()] : []}

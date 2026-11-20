@@ -71,7 +71,7 @@ use nsh_core::{
     platform::InputModality,
     tailwind::state::{FOCUSED, HOVERED, PRESSED},
 };
-use objc2::{AnyThread, ClassType, rc::Retained, sel};
+use objc2::{AnyThread, ClassType, Message, rc::Retained, sel};
 use objc2_app_kit::{
     NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition, NSEvent, NSEventMask,
     NSEventModifierFlags, NSEventPhase, NSEventTrackingRunLoopMode, NSEventType, NSImage, NSView,
@@ -1264,19 +1264,26 @@ pub(crate) fn focus_path(surface: &Surface) -> Vec<NodeId> {
         root
     };
     let root = root.ns();
-    let Some(responder) = root.window().and_then(|window| window.firstResponder()) else {
+    let Some(window) = root.window() else {
         return Vec::new();
     };
-    let Ok(mut view) = responder.downcast::<objc2_app_kit::NSView>() else {
-        return Vec::new();
+    // AppKit can host its shared field editor outside the input's own subtree.
+    let mut view = if let Some(input) = crate::text_input::focused_input_view(surface, &window) {
+        input.ns().retain()
+    } else {
+        let Some(view) = window
+            .firstResponder()
+            .and_then(|responder| responder.downcast::<objc2_app_kit::NSView>().ok())
+        else {
+            return Vec::new();
+        };
+        view
     };
     if !view.isDescendantOf(root) {
         return Vec::new();
     }
     let mut path = Vec::new();
     loop {
-        // The shared field editor is a child of its native input while it
-        // edits. Walking actual superviews covers it and hosted controls.
         if let Some(node) = NshView::from_ns(&view) {
             if path.is_empty() {
                 if &*view != root && !node.can_reach() {

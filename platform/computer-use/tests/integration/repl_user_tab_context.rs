@@ -26,8 +26,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-struct ContextFixture(Arc<Mutex<Vec<Value>>>);
-impl ToolExecutor for ContextFixture {
+struct ReplFixture(Arc<Mutex<Vec<Value>>>);
+impl ToolExecutor for ReplFixture {
     fn names(&self) -> Vec<String> {
         vec!["cua".into()]
     }
@@ -43,6 +43,16 @@ impl ToolExecutor for ContextFixture {
             Ok(match input["method"].as_str() {
                 Some("documentation") => json!("Authored user-tab context fixture"),
                 Some("getBrowser") => json!({"id":"fixture","apiProfile":{"user":true}}),
+                Some("getApp") => json!({
+                    "kind":"app",
+                    "handle":{"kind":"app","id":"bound-window"},
+                    "state":"Owned window",
+                }),
+                Some("action") if input["action"]["kind"] == "bringToFront" => {
+                    assert_eq!(input["handle"], json!({"kind":"app","id":"bound-window"}));
+                    json!({"windowId":17})
+                }
+
                 Some("browserUserGetTabContext") => {
                     assert_eq!(input["browserId"], "fixture");
                     assert_eq!(input["tabId"], "17");
@@ -76,7 +86,7 @@ async fn get_tab_context_keeps_document_bytes_and_never_binds_the_user_tab() {
         if (!(context.data instanceof Uint8Array) || JSON.stringify([...context.data])!=='[37,80,68,70,45,49]') throw Error('wrong actual document bytes');
         if (context.path!=='/host/session/T.pdf' || 'dataBase64' in context) throw Error('wrong public document shape');
         if (context.title!=='T' || context.url!=='https://example.test/') throw Error('document identity changed');
-    "#.into(),Arc::new(ContextFixture(calls.clone())),CancellationToken::new(),cell,Duration::from_secs(5))
+    "#.into(),Arc::new(ReplFixture(calls.clone())),CancellationToken::new(),cell,Duration::from_secs(5))
         .await.expect("evaluate context fixture");
     assert!(
         matches!(result, CellResult::Success { .. }),
@@ -92,5 +102,37 @@ async fn get_tab_context_keeps_document_bytes_and_never_binds_the_user_tab() {
         actual,
         ["getBrowser", "documentation", "browserUserGetTabContext"],
         "context must not claim, focus, bind or observe a user tab"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_bring_to_front_uses_only_the_bound_window() {
+    let repl = Repl::new(facade(), CellLimits::default()).expect("create foreground REPL");
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let cell = CellContext::new(CellStore::temporary().expect("create cell store"), vec![])
+        .expect("create cell context");
+    let result = repl
+        .evaluate(
+            r#"
+            const app = await cua.getApp({windowId:17});
+            await app.bringToFront();
+            "#
+            .into(),
+            Arc::new(ReplFixture(calls.clone())),
+            CancellationToken::new(),
+            cell,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("evaluate foreground fixture");
+    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+    let calls = calls.lock().expect("fixture calls mutex poisoned");
+    assert_eq!(
+        calls.as_slice(),
+        [
+            json!({"method":"getApp","target":{"windowId":17}}),
+            json!({"method":"documentation"}),
+            json!({"method":"action","handle":{"kind":"app","id":"bound-window"},"action":{"kind":"bringToFront"}}),
+        ]
     );
 }

@@ -275,6 +275,7 @@ pub(crate) fn command(command: &Command, bound_target: Option<&str>) -> Text {
         ),
         Command::Action { action, .. } => {
             let (en, cn, tw) = match action {
+                Action::BringToFront => ("Bring window to front", "将窗口置前", "將視窗置前"),
                 Action::MoveCursor { .. } => ("Move cursor", "移动光标", "移動游標"),
                 Action::Click { .. } | Action::LinuxClick { .. } => ("Click", "点击", "點擊"),
                 Action::Drag { .. } | Action::LinuxDrag { .. } => ("Drag", "拖动", "拖曳"),

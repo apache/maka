@@ -44,6 +44,7 @@ pub enum ProviderFailureReason {
     QuotaExhausted,
     ProviderUnavailable,
     StreamTruncated,
+    Withheld,
 }
 
 impl ProviderFailure {

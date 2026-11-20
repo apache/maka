@@ -30,6 +30,32 @@ import {
 
 /** Shared interface terms have one translation owner across every surface. */
 export const commonMessages = {
+  'Quick question': ['Quick question', '快问', '快問'],
+  'Continue last question': ['Continue last question', '继续上次提问', '繼續上次提問'],
+  'Ask a question': ['Ask a question', '输入问题', '輸入問題'],
+  'Generating answer…': ['Generating answer…', '正在生成回答…', '正在產生回答…'],
+  'Stop generating': ['Stop generating', '停止生成', '停止產生'],
+  'Quick question failed.': ['Quick question failed.', '快问失败。', '快問失敗。'],
+  'Select a model for Maka Bot first.': [
+    'Select a model for Maka Bot first.',
+    '请先为 Maka Bot 选择模型。',
+    '請先為 Maka Bot 選擇模型。',
+  ],
+  'Launcher actions': ['Launcher actions', '操作', '操作'],
+  Applications: ['Applications', '应用', '應用程式'],
+  'Hide application': ['Hide application', '隐藏应用', '隱藏應用程式'],
+  'Quit application': ['Quit application', '退出应用', '結束應用程式'],
+  'Restart application': ['Restart application', '重启应用', '重新啟動應用程式'],
+  '{tool} settings': ['{tool} settings', '{tool}设置', '{tool}設定'],
+  'Force quit application': ['Force quit application', '强制退出应用', '強制結束應用程式'],
+  'Force quit {app}? Unsaved changes may be lost.': [
+    'Force quit {app}? Unsaved changes may be lost.',
+    '强制退出「{app}」？未保存的更改可能会丢失。',
+    '強制結束「{app}」？未儲存的變更可能會遺失。',
+  ],
+  'Copy application path': ['Copy application path', '复制路径', '複製路徑'],
+  'Reveal in Finder': ['Reveal in Finder', '在 Finder 中显示', '在 Finder 中顯示'],
+
   'Could not change the model.': [
     'Could not change the model.',
     '无法切换模型。',

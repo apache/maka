@@ -138,7 +138,7 @@ pub struct Consume {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadyCursor {
     pub session: String,
-    pub position: u64,
+    pub position: i64,
     pub request: RequestId,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -150,13 +150,27 @@ pub struct ReadyEntry {
 pub enum Followup {
     Queued(RunId),
     Interrupt { run: RunId, stop: FactId },
+    Resume(InterruptHandoff),
 }
 
 impl Followup {
     fn original(&self) -> RunId {
         match *self {
             Self::Queued(run) | Self::Interrupt { run, .. } => run,
+            Self::Resume(handoff) => handoff.interrupted,
         }
+    }
+}
+
+/// The interrupted Run and the frontier at which a subsequent steer joined it.
+#[derive(Clone, Copy)]
+pub struct InterruptHandoff {
+    interrupted: RunId,
+    frontier: RunId,
+}
+impl InterruptHandoff {
+    pub fn interrupted(self) -> RunId {
+        self.interrupted
     }
 }
 
@@ -181,23 +195,6 @@ impl QueueStore {
             command,
             contents,
             followup: None,
-            work_fence: None,
-        })
-    }
-    /// Fence a follow-up against the exact original Run observed by Native.
-    /// The Run id is a commit-time condition, never an execution grant.
-    pub fn prepare_followup(
-        &self,
-        session: String,
-        command: QueueCommand,
-        contents: Vec<ContentBlob>,
-        followup: Followup,
-    ) -> maka_event_log::root_store::DataChange {
-        self.data.prepare(PreparedEnqueue {
-            session,
-            command,
-            contents,
-            followup: Some(followup),
             work_fence: None,
         })
     }
@@ -314,6 +311,31 @@ impl QueueStore {
     ) -> Result<Vec<ReadyEntry>, StoreError> {
         self.data.query(Ready(owner, after, limit)).await
     }
+    pub async fn interrupt_handoff(
+        &self,
+        view: &crate::fold::RunView,
+    ) -> Result<Option<InterruptHandoff>, StoreError> {
+        if !matches!(view.spec.backend, BackendSpec::Executor { .. }) {
+            return Ok(None);
+        }
+        // Admission creates the successor Run before the executor binds its task.
+        let message = if view.stopped {
+            None
+        } else if let Trigger::Message { message_id } = &view.spec.trigger
+            && view.terminal.is_none()
+            && view
+                .external
+                .as_ref()
+                .is_none_or(|task| task.binding.is_none())
+        {
+            Some(message_id.clone())
+        } else {
+            return Ok(None);
+        };
+        self.data
+            .query(ReadHandoff(view.spec.session_id.clone(), view.run, message))
+            .await
+    }
     pub async fn steering(&self, session: String, run: RunId) -> Result<Queue, StoreError> {
         self.data.query(Steering(session, run)).await
     }
@@ -382,7 +404,7 @@ impl Statement for PreparedEnqueue {
             &self.session,
             self.command,
             self.contents,
-            self.followup.as_ref().map(Followup::original),
+            self.followup.as_ref(),
         )?;
         if changed && let Some(Followup::Interrupt { run, stop }) = self.followup {
             // The queue entry and Stop share the same Root receipt transaction.
@@ -452,6 +474,13 @@ impl Query for Steering {
     type Output = Queue;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::read(c, &self.0, Some(self.1))
+    }
+}
+struct ReadHandoff(String, RunId, Option<String>);
+impl Query for ReadHandoff {
+    type Output = Option<InterruptHandoff>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::interrupt_handoff(c, &self.0, self.1, self.2.as_deref())
     }
 }
 struct HasPendingSteering(String, RunId);

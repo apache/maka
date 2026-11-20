@@ -17,8 +17,9 @@
  * under the License.
  */
 
+import { formatCount } from './numberFormat';
 import { formatDuration } from './duration';
-import { executorUsageLabel } from './TurnUsage';
+import { ExecutorTokenCounts } from './TurnUsage';
 import { LoadingIndicator, ShimmerText } from './Loading';
 import { createText, errorText } from './text';
 import { displayText, tr } from './locale';
@@ -151,12 +152,14 @@ function activityCountLabel({
 }: Pick<NonNullable<Row['foldedWork']>, 'thoughts' | 'tools' | 'messages'>) {
   return [
     thoughts
-      ? tr(thoughts === 1 ? '{count} thought' : '{count} thoughts', { count: thoughts })
+      ? tr(thoughts === 1 ? '{count} thought' : '{count} thoughts', {
+          count: formatCount(thoughts),
+        })
       : '',
-    tools ? tr(tools === 1 ? '{count} tool' : '{count} tools', { count: tools }) : '',
+    tools ? tr(tools === 1 ? '{count} tool' : '{count} tools', { count: formatCount(tools) }) : '',
     messages
       ? tr(messages === 1 ? '{count} agent message' : '{count} agent messages', {
-          count: messages,
+          count: formatCount(messages),
         })
       : '',
   ]
@@ -193,6 +196,10 @@ export function TurnSummary(props: {
     const timer = setInterval(() => clock.set(Date.now()), 1000);
     cleanup(() => clearInterval(timer));
   });
+  const usage = () => {
+    const turn = props.turn();
+    return !running() && turn.finalOutputIds.length === 0 ? turn.timing?.executorUsage : null;
+  };
   const label = () => {
     const turn = props.turn();
     if (running()) {
@@ -217,9 +224,8 @@ export function TurnSummary(props: {
           ? activityCountLabel(turn.foldedWork)
           : activityCounts(props.groups(), props.row)
         : '';
-    const usage = turn.finalOutputIds.length === 0 ? turn.timing?.executorUsage : null;
     return (
-      [status, counts, usage ? executorUsageLabel(usage) : ''].filter(Boolean).join(' · ') ||
+      [status, counts].filter(Boolean).join(' · ') ||
       (outcome === 'failed' ? tr('Turn work details') : tr('Completed'))
     );
   };
@@ -245,7 +251,22 @@ export function TurnSummary(props: {
           open: !props.expanded(),
         })}
         trailing={
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <View
+            style={{
+              flexDirection: 'row',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              justifyContent: 'flex-end',
+              maxWidth: '70%',
+              gap: 8,
+            }}
+          >
+            <If when={usage()}>
+              <ExecutorTokenCounts
+                usage={usage()!}
+                style={{ ...captionTextStyle, color: C.muted }}
+              />
+            </If>
             <If when={props.images && !props.expanded() && props.images.refs().length > 0}>
               <ToolImageStrip
                 sessionId={props.images!.sessionId}

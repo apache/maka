@@ -42,7 +42,7 @@ export function CompactionDivider(props: CompactionDividerProps) {
       props.state === 'running'
         ? 'Compacting context… ({duration})'
         : 'Context compacted ({duration})',
-      { duration: formatDuration(durationMs(), true) },
+      { duration: formatDuration(durationMs(), 'tenths') },
     );
   return <NoteDivider label={label()} />;
 }

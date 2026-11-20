@@ -512,7 +512,13 @@ async fn dispatch(
             result = &mut pending => return result,
             _ = context.cancellation.cancelled() => ModelError::Cancelled,
             Ok(()) = progress.changed() => continue,
-            _ = tokio::time::sleep_until(deadline) => ModelError::TimedOut,
+            // No response byte arrived, so sending the same request again cannot repeat output.
+            _ = tokio::time::sleep_until(deadline) => ModelError::Provider(crate::ProviderFailure::new(
+                ProviderFailureReason::TimedOut,
+                "model response did not start before the idle timeout",
+                true,
+                None,
+            )),
         };
     };
     cancellation.cancel();

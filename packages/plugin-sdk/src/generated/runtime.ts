@@ -4399,7 +4399,8 @@ export type ProviderFailureReason =
   | 'rate_limit'
   | 'quota_exhausted'
   | 'provider_unavailable'
-  | 'stream_truncated';
+  | 'stream_truncated'
+  | 'withheld';
 export type ModelInterruption =
   | ('steered' | 'cancelled' | 'timed_out' | 'failed')
   | 'retryable_failure';

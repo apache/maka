@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use crate::executor::ActiveDelivery;
 use maka_agent_facts::durable::{BackendSpec, ExecutionIdentity, UnixMillis};
 use maka_agent_state::queue::{
     Followup, Placement as QueuePlacement, PreparedEnqueue, QueueCommand, QueueEdit,
@@ -79,6 +80,7 @@ pub(super) enum PreparedSend {
 pub(super) struct PreparedAgentSend {
     pub queue: PreparedEnqueue,
     pub completion: Option<RegisterCompletion>,
+    pub order: Option<Arc<runs::Ordered>>,
 }
 
 impl Statement for PreparedAgentSend {
@@ -86,7 +88,11 @@ impl Statement for PreparedAgentSend {
     type Output = maka_agent_state::queue::QueueCommit;
 
     fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
-        self.queue.retain()
+        let mut retained = self.queue.retain();
+        if let Some(order) = &self.order {
+            retained.push(order.clone());
+        }
+        retained
     }
 
     fn execute(
@@ -405,7 +411,19 @@ impl Owner {
         if admission.state().await.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
-        if let Some(expected) = expected_run_id {
+        let latest = self.latest_session_run(&id).await?;
+        let handoff = match (&latest, delivery) {
+            (Some(view), SendDelivery::Steer) => self
+                .durable
+                .queue()
+                .interrupt_handoff(view)
+                .await
+                .map_err(|error| error.to_string())?,
+            _ => None,
+        };
+        if let Some(expected) = expected_run_id
+            && handoff.is_none_or(|h| h.interrupted() != expected)
+        {
             let view = self
                 .session_run(&id, expected)
                 .await?
@@ -418,15 +436,6 @@ impl Owner {
                 }));
             }
         }
-        let latest = match self
-            .durable
-            .latest_run(id.clone())
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            Some(run) => self.session_run(&id, run).await?,
-            None => None,
-        };
         if latest.as_ref().is_some_and(|view| view.blocks_followup()) {
             return Ok(PreparedSend::Returned(SendResult::Rejected {
                 session_id: id,
@@ -435,7 +444,9 @@ impl Owner {
             }));
         }
         let mut after_stop = None;
-        let active = if latest.as_ref().is_some_and(|view| view.stopped) {
+        let active = if handoff.is_some() {
+            latest
+        } else if latest.as_ref().is_some_and(|view| view.stopped) {
             if admission.state().await.busy(&id) {
                 return Err("agent_admission_failed".into());
             }
@@ -450,30 +461,21 @@ impl Owner {
         } else {
             latest.filter(|view| view.terminal.is_none())
         };
-        let interrupt = if let (Some(view), SendDelivery::Steer) = (&active, delivery)
-            && let BackendSpec::Executor {
-                selection,
-                descriptor,
-            } = &view.spec.backend
-            && selection.settings.runtime.as_deref() == Some("antigravity")
-        {
-            let executor: crate::executor::Accepted = self
-                .run_content(view.run, descriptor)
-                .await
-                .map_err(public_error)?;
-            if &executor.selection != selection {
-                return Err("agent_executor_descriptor_changed".into());
-            }
-            matches!(
-                self.executors.active_delivery(&executor),
-                crate::executor::ActiveDelivery::InterruptResume
-            )
-            .then_some(selection)
-        } else {
-            None
+        let active_delivery = match (&active, delivery, handoff) {
+            (Some(view), SendDelivery::Steer, None) => self.active_delivery(view).await?,
+            _ => ActiveDelivery::Queue,
         };
+        let mut backend = backend;
         let followup = active.as_ref().map(|view| {
-            if interrupt.is_some() {
+            if handoff.is_some() || matches!(active_delivery, ActiveDelivery::InterruptResume) {
+                if let BackendSpec::Executor { selection, .. } = &view.spec.backend {
+                    backend.get_or_insert_with(|| BackendPreference::Executor {
+                        selection: selection.clone(),
+                    });
+                }
+                if let Some(handoff) = handoff {
+                    return Followup::Resume(handoff);
+                }
                 Followup::Interrupt {
                     run: view.run,
                     stop: self.control_id(operation, &format!("{key}:steering_interrupt")),
@@ -481,11 +483,6 @@ impl Owner {
             } else {
                 Followup::Queued(view.run)
             }
-        });
-        let backend = backend.or_else(|| {
-            interrupt.map(|selection| BackendPreference::Executor {
-                selection: selection.clone(),
-            })
         });
         let basis = match self
             .capture_current_run(&id, backend, operation.fingerprint.clone(), parent)
@@ -501,9 +498,7 @@ impl Owner {
             }
             Err(error) => return Err(error.into()),
         };
-        if let (Some(view), SendDelivery::Steer) = (&active, delivery)
-            && interrupt.is_none()
-        {
+        if let (Some(view), ActiveDelivery::Steer) = (&active, active_delivery) {
             let execution = ExecutionIdentity {
                 session_id: id.clone(),
                 turn_id: view.spec.turn_id.clone(),
@@ -593,6 +588,12 @@ impl Owner {
         let completion_statement = completion_request
             .map(|request| self.completion_statement(&id, &message_id, request))
             .transpose()?;
+        // Keep the scheduler and notification producers behind the steering receipt.
+        let order = matches!(
+            followup,
+            Some(Followup::Interrupt { .. } | Followup::Resume(_))
+        )
+        .then(|| Arc::new(admission.into_ordered()));
         let statement = PreparedAgentSend {
             queue: PreparedEnqueue {
                 session: id.clone(),
@@ -602,6 +603,7 @@ impl Owner {
                 work_fence: after_stop.map(Arc::new),
             },
             completion: completion_statement,
+            order,
         };
         Ok(PreparedSend::Ready {
             value: SendResult::Queued {

@@ -30,7 +30,7 @@ import { MessageCopy } from './MessageCopy';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { Button } from 'nsh/base';
 import type { MessageMenu } from './messageMenu';
-import { cacheHitRate, executorUsageLabel, TurnUsage } from './TurnUsage';
+import { cacheHitRate, ExecutorTokenCounts, TurnUsage } from './TurnUsage';
 import {
   C,
   controlDisabledStyle,
@@ -149,15 +149,9 @@ export function FinalActions(props: {
       timing?.finished && timing.finished.at >= timing.startedAt
         ? timing.finished.at - timing.startedAt
         : null;
-    const duration = elapsed === null ? '' : formatDuration(elapsed, true);
-    const reported = reportedUsage();
+    const duration = elapsed === null ? '' : formatDuration(elapsed, 'tenths');
     const cache = row.timing?.promptCache;
-    return [
-      name,
-      duration,
-      reported ? executorUsageLabel(reported) : '',
-      cache ? tr('Cache hit {rate}', { rate: cacheHitRate(cache) }) : '',
-    ]
+    return [name, duration, cache ? tr('Cache hit {rate}', { rate: cacheHitRate(cache) }) : '']
       .filter(Boolean)
       .join(' · ');
   };
@@ -204,6 +198,12 @@ export function FinalActions(props: {
             {details() || tr(reportedUsage() ? 'Turn usage' : 'Main model usage')}
           </Text>
         </Button>
+        <If when={reportedUsage()}>
+          <ExecutorTokenCounts
+            usage={reportedUsage()!}
+            style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}
+          />
+        </If>
       </View>
       <If when={notice()}>
         <Text style={[{ color: C.warning }, { userSelect: 'text' }]}>{notice()}</Text>

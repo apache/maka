@@ -614,7 +614,7 @@ export function ToolCard(props: {
     const time = details?.durationMs;
     return [
       exit == null ? '' : tr('Exit {code}', { code: String(exit) }),
-      time == null ? '' : formatDuration(time, true),
+      time == null ? '' : formatDuration(time, 'tenths'),
     ]
       .filter(Boolean)
       .join(' · ');

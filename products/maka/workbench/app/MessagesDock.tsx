@@ -18,7 +18,7 @@
  */
 
 import { textTooltip } from './ui';
-import { createText, errorText, message as uiMessage } from './text';
+import { errorText, message as uiMessage, renderText, type UiText } from './text';
 import { tr } from './locale';
 import { cleanup, computed, effect, inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
@@ -110,7 +110,12 @@ export function createMessagesDock(
   const composing = signal(false);
   const review = signal<Review | null>(null);
   const busy = signal<{ through: number | null } | null>(null);
-  const error = createText();
+  const notice = signal<{ text: UiText; messageId?: string }>({ text: '' });
+  const setError = (text: UiText, messageId?: string) => notice.set({ text, messageId });
+  const error = computed(() => {
+    const { text, messageId } = notice();
+    return messageId && !items().some((row) => row.messageId === messageId) ? '' : renderText(text);
+  });
   const copied = signal<string | null>(null);
   let alive = true;
   cleanup(() => {
@@ -124,7 +129,7 @@ export function createMessagesDock(
   const entry = (messageId: string) => items().find((row) => row.messageId === messageId);
   const revision = () => queue.snapshot()?.revision ?? -1;
   const report = (reason: unknown) => {
-    if (alive) error.set(errorText(reason, 'Could not update the message queue.'));
+    if (alive) setError(errorText(reason, 'Could not update the message queue.'));
   };
   const changedMessage = () =>
     editing()
@@ -139,12 +144,13 @@ export function createMessagesDock(
     edit: Exclude<AgentQueueAction, { kind: 'reorder' }>,
   ) => {
     if (!alive || !connected() || busy()) return false;
+    const promoting = edit.kind === 'promote' ? edit.messageId : undefined;
     if (expectedRevision !== revision()) {
-      error.set(changedMessage());
+      setError(changedMessage(), promoting);
       return false;
     }
     busy.set({ through: null });
-    error.set('');
+    setError('');
     try {
       const result = await queue.change(expectedRevision, edit);
       if (!alive) return false;
@@ -155,7 +161,7 @@ export function createMessagesDock(
         return true;
       }
       busy.set(null);
-      error.set(
+      setError(
         result.kind === 'revision_conflict'
           ? changedMessage()
           : result.reason === 'execution_changed'
@@ -165,6 +171,7 @@ export function createMessagesDock(
               : result.reason === 'missing' || result.reason === 'in_flight'
                 ? missingMessage()
                 : uiMessage('The Host did not accept this queue change.'),
+        promoting,
       );
     } catch (reason) {
       if (alive) busy.set(null);
@@ -175,13 +182,13 @@ export function createMessagesDock(
   const read = async (messageId: string, expectedRevision: number) => {
     if (!alive || !connected() || busy()) return null;
     busy.set({ through: null });
-    error.set('');
+    setError('');
     try {
       const result = await queue.read(messageId, expectedRevision);
       if (!alive) return null;
       if (result.kind === 'ready' && result.revision === revision() && entry(messageId))
         return result;
-      error.set(
+      setError(
         result.kind === 'missing'
           ? missingMessage()
           : uiMessage('The queue changed. Select Edit or Review again for its current message.'),
@@ -197,7 +204,10 @@ export function createMessagesDock(
     if (!alive || !connected() || request.sessionId !== queue.sessionId || busy()) return;
     const row = entry(request.messageId);
     if (!row || request.revision !== revision()) {
-      error.set(uiMessage('The queue changed before this action. Select the current row again.'));
+      setError(
+        uiMessage('The queue changed before this action. Select the current row again.'),
+        request.kind === 'promote' ? request.messageId : undefined,
+      );
       return;
     }
     if (request.kind === 'edit') {
@@ -213,7 +223,7 @@ export function createMessagesDock(
           quotes: result.quotes,
         });
       }
-    } else if (request.kind !== 'promote' || queue.running()) {
+    } else {
       await change(request.revision, { kind: request.kind, messageId: row.messageId });
     }
   };
@@ -234,7 +244,7 @@ export function createMessagesDock(
       editing.set(null);
       composing.set(false);
       review.set(null);
-      error.set('');
+      setError('');
     }
   };
   const reviewLatest = async () => {
@@ -247,7 +257,7 @@ export function createMessagesDock(
     const edit = editing();
     const latest = review();
     if (!edit || !latest || latest.revision !== revision()) {
-      error.set(uiMessage('The queue changed again. Review its current message before saving.'));
+      setError(uiMessage('The queue changed again. Review its current message before saving.'));
       return;
     }
     editing.set({
@@ -258,7 +268,7 @@ export function createMessagesDock(
       quotes: latest.quotes,
     });
     review.set(null);
-    error.set('');
+    setError('');
   };
   const copyEdit = async () => {
     const text = editing()?.text;
@@ -274,7 +284,7 @@ export function createMessagesDock(
   const rowHeight = platform.idiom === 'terminal' ? 32 : 40;
   const readerHeight = height;
   const clearError = () => {
-    if (alive) error.set('');
+    if (alive) setError('');
   };
   const canDismissAll = computed(
     () =>
@@ -287,7 +297,7 @@ export function createMessagesDock(
   );
   const dismissAll = () => {
     if (!alive || !canDismissAll()) return;
-    error.set('');
+    setError('');
     for (const item of sends()) {
       if (!item.busy && item.state === 'failed') void session.dismissSend(item.id);
     }
@@ -414,9 +424,7 @@ export function createMessagesDock(
                           number: number(),
                         })}
                         tooltip={textTooltip(() => tr('Steer now · use in the current turn'))}
-                        disabled={
-                          !connected() || busy() !== null || editing() !== null || !queue.running()
-                        }
+                        disabled={!connected() || busy() !== null || editing() !== null}
                         onPress={inputAction(act, request('promote'))}
                         style={actionStyle}
                         hoverStyle={{ backgroundColor: C.cardRaised }}

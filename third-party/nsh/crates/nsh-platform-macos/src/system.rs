@@ -663,6 +663,10 @@ pub(crate) fn command(surface: &Rc<Surface>, id: NodeId, command: &Command) {
         ),
         Command::SetClipboard(text) => write_clipboard(surface, text),
         Command::SetClipboardItem(item) => {
+            if surface.terminal.get() {
+                write_clipboard(surface, &item.text);
+                return;
+            }
             let pasteboard = NSPasteboard::generalPasteboard();
             pasteboard.clearContents();
             // SAFETY: immutable AppKit constants.

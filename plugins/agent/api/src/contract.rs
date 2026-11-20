@@ -2108,6 +2108,10 @@ pub fn contract() -> Contract {
                     method::<ChecklistRead, Checklist>(MethodMode::Query),
                 ),
                 (
+                    "askQuickQuestion".into(),
+                    Method { progress: Some(schemars::schema_for!(String).into()), ..method::<QuickQuestion, ()>(MethodMode::Mutation) },
+                ),
+                (
                     "predictNextMessage".into(),
                     method::<PredictNextMessage, MessagePrediction>(MethodMode::Mutation),
                 ),

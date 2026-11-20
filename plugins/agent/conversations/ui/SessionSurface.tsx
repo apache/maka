@@ -1918,6 +1918,7 @@ export function createConversationUi(
     const current = overlay();
     if (current && current.kind !== 'sessions') return;
     if (!request.expanded) {
+      shell()?.sidebarHover?.(false);
       open({ kind: 'sessions', sessionId: request.sessionId });
       return;
     }
@@ -1934,6 +1935,9 @@ export function createConversationUi(
     previewDocked: shell()?.previewDocked() ?? false,
     expanded: sidebarShown(),
     hidden: overlay()?.kind === 'sessions' && !foreground,
+    sidebarHover: (inside) => {
+      if (!overlay()) shell()?.sidebarHover?.(inside);
+    },
     toggle: inputAction(toggleSidebar, { sessionId, expanded: sidebarShown() }),
     close: shell()?.closePane,
   });
@@ -2316,7 +2320,14 @@ export function createConversationUi(
     sessionHandle,
     navigation(input: ConversationNavigationInput<JSX.Element>) {
       bind(input.shell);
-      return <WorkspaceBrowser {...browserProps} navigationMore={input.navigationMore} />;
+      return (
+        <WorkspaceBrowser
+          {...browserProps}
+          navigationMore={input.navigationMore}
+          pinSidebar={input.pinSidebar}
+          suppressSidebarHover={input.suppressSidebarHover}
+        />
+      );
     },
     preview(input: ConversationPreviewInput) {
       bind(input.shell);

@@ -144,6 +144,9 @@ export const composerMessages = {
     '此文件名无法作为文本引用。',
     '此檔案名稱無法以文字參照。',
   ],
+  'Compact context': ['Compact context', '压缩上下文', '壓縮上下文'],
+  'Keep in context': ['Keep in context', '保留重点', '保留重點'],
+  'Continue with model': ['Continue with model', '接手模型', '接手模型'],
   'Compact conversation': ['Compact conversation', '压缩对话上下文', '壓縮對話上下文'],
   'Summarize context for the next request': [
     'Summarize context for the next request',

@@ -20,8 +20,8 @@
 use maka_agent_facts::{
     accounting::Outcome,
     context::{
-        CheckpointContent, CompactedContext, ModelClosureProtocol, ModelOperation, ModelPurpose,
-        RequestContextEvidence, SummaryOrigin, SummaryResult,
+        CheckpointContent, CompactedContext, CompactionOptions, ModelClosureProtocol,
+        ModelOperation, ModelPurpose, RequestContextEvidence, SummaryOrigin, SummaryResult,
     },
     durable::*,
     history_snapshot::RequestSource,
@@ -75,6 +75,27 @@ pub(super) fn validate_proactive_request(
         return Err(invalid("invalid proactive Summary request"));
     }
     Ok(())
+}
+
+pub(crate) struct ReadCompactionOptions(pub RunId, pub ContentRef, pub ToolKey);
+
+impl Query for ReadCompactionOptions {
+    type Output = CompactionOptions;
+
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        compaction_options(c, self.0, &self.1, &self.2)
+    }
+}
+
+fn compaction_options(
+    c: &Connection,
+    run: RunId,
+    capture: &ContentRef,
+    key: &ToolKey,
+) -> Result<CompactionOptions, StoreError> {
+    let source: RequestSource = original(c, run, capture)?;
+    let call = crate::session_history::captured_tool_call(c, &source.current, run, key)?;
+    Ok(CompactionOptions::from_input(&call.input)?)
 }
 
 pub(crate) struct PreviousProactiveSummary(pub RunId, pub StepId);
@@ -139,7 +160,11 @@ fn extends_summary(
     }
     let summary_context: RequestContextEvidence = original(c, producer, &summary.provenance)?;
     let main_context: RequestContextEvidence = original(c, run, &main.provenance)?;
-    if !summary_context.same_compaction_input(&main_context) {
+    let options = match &main_context.compaction_request {
+        Some(key) => compaction_options(c, run, &main.source_capture, key)?,
+        None => CompactionOptions::default(),
+    };
+    if !main_context.accepts_background_summary(&summary_context, &options) {
         return Ok(false);
     }
     if producer != run {

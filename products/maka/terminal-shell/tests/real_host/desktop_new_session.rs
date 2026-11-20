@@ -376,10 +376,14 @@ impl Desktop {
         assert!(self.platform.paste(event));
     }
 
-    async fn type_text(&self, text: &str) {
+    async fn replace_text(&self, text: &str) {
         self.target_after(None).await;
         self.key("a", true);
         assert!(self.platform.paste(nsh_core::PasteEvent::new(text)));
+    }
+
+    async fn type_text(&self, text: &str) {
+        self.replace_text(text).await;
         self.expect_text(text).await;
     }
 
@@ -732,7 +736,7 @@ async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
             .is_empty()
     );
     assert_eq!(desktop.sessions().await.len(), 1);
-    desktop.type_text("FRESH_AFTER_REOPEN").await;
+    desktop.replace_text("FRESH_AFTER_REOPEN").await;
     desktop.submit().await;
     let request = desktop.request(&mut fixture).await;
     let body = request.body.to_string();
@@ -833,7 +837,7 @@ async fn desktop_new_conversation_preserves_an_owned_worktree() {
     client.close().await.unwrap();
     let desktop = Desktop::open(&fixture, &fixture.address).await;
     desktop.new_draft().await;
-    desktop.type_text("SAME_OWNED_WORKTREE").await;
+    desktop.replace_text("SAME_OWNED_WORKTREE").await;
     desktop.submit().await;
     let request = desktop.request(&mut fixture).await;
     assert!(request.body.to_string().contains("SAME_OWNED_WORKTREE"));
@@ -1384,7 +1388,7 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
     desktop.new_draft().await;
     desktop.attach(&path).await;
     std::fs::write(&path, b"changed after selection").unwrap();
-    desktop.type_text("FIRST_DESKTOP_MESSAGE").await;
+    desktop.replace_text("FIRST_DESKTOP_MESSAGE").await;
     assert_eq!(desktop.sessions().await.len(), 1);
     gate.arm();
     desktop.press("Send message").await;
@@ -1397,7 +1401,7 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
         .unwrap()["id"]
         .as_str()
         .unwrap();
-    desktop.type_text("NEXT_DESKTOP_DRAFT").await;
+    desktop.replace_text("NEXT_DESKTOP_DRAFT").await;
     desktop
         .wait(
             "the next draft was not saved independently of the first send",
@@ -1915,7 +1919,7 @@ async fn desktop_edits_a_message_in_place_and_forks_only_when_sent() {
     desktop.expect_text("ORIGINAL_EDIT_MESSAGE").await;
     desktop.artifact("message-editor");
     assert_eq!(desktop.sessions().await.len(), 2);
-    desktop.type_text("EDITED_IN_PLACE_MESSAGE").await;
+    desktop.replace_text("EDITED_IN_PLACE_MESSAGE").await;
     assert_eq!(desktop.sessions().await.len(), 2);
     desktop.press("Send edited message in a fork").await;
     let edited = desktop.request(&mut fixture).await;
@@ -2025,20 +2029,40 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
             },
         )
         .await;
+    // The inner group can keep its expansion across the turn's outer fold.
+    desktop.press("Process group").await;
+    desktop
+        .until("the process group did not close", || {
+            desktop
+                .controls("Toggle tool Read goal")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
     answer.delta("The goal is unchanged.").await;
     answer.finish().await;
     fixture.idle(&desktop.client, session).await;
     desktop.control("Copy message").await;
     desktop
         .until("completed answer did not fold the turn's work", || {
-            (desktop.controls("Toggle tool Read goal").is_empty()
+            (desktop.controls("Process group").is_empty()
+                && desktop.controls("Toggle tool Read goal").is_empty()
                 && desktop.controls("Thinking · Checking the log").is_empty())
             .then_some(())
         })
         .await;
     desktop.artifact("completed-answer-folded-work");
     desktop.press("Turn work details").await;
-    desktop.open_group("Toggle tool Read goal").await;
+    let group = desktop
+        .until("the reopened work group did not settle", || {
+            let [group] = desktop.controls("Process group")[..] else {
+                return None;
+            };
+            (!desktop.platform.has_pending()).then_some(group)
+        })
+        .await;
+    desktop.press_at(group.center());
+    desktop.control("Toggle tool Read goal").await;
     let observed = desktop
         .client
         .query("agent", "observe", json!({"sessionId":session}))
@@ -2427,7 +2451,7 @@ async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
         nsh_core::platform::Appearance::Dark,
     )
     .await;
-    desktop.type_text("MAIN_DRAFT").await;
+    desktop.replace_text("MAIN_DRAFT").await;
     let roots = desktop
         .client
         .query("agent", "directories", json!({"kind":"roots"}))
@@ -2446,7 +2470,7 @@ async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
     desktop.press("Actions for Side conversation").await;
     desktop.press("Open to the side").await;
     desktop.target_after(original).await;
-    desktop.type_text("SIDE_DRAFT").await;
+    desktop.replace_text("SIDE_DRAFT").await;
     desktop.press("Close side pane").await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("MAIN_DRAFT").await;
@@ -2507,7 +2531,7 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     gate.arm();
     desktop.press("Send message").await;
     desktop.held(&gate).await;
-    desktop.type_text("Keep the sidebar compact.").await;
+    desktop.replace_text("Keep the sidebar compact.").await;
     desktop
         .wait(
             "next draft was not saved independently",
@@ -2955,7 +2979,7 @@ async fn disconnected_desktop(
     desktop.control("Details").await;
     desktop.control("Retry").await;
     assert!(desktop.controls("Stop response").is_empty());
-    desktop.type_text("DRAFT_KEPT_WHILE_DISCONNECTED").await;
+    desktop.replace_text("DRAFT_KEPT_WHILE_DISCONNECTED").await;
     desktop.expect_text("DRAFT_KEPT_WHILE_DISCONNECTED").await;
     let retry = desktop.control("Retry").await;
     let composer = desktop.control("Focus message composer").await;
@@ -3386,7 +3410,7 @@ async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection()
     desktop.target_after(None).await;
     desktop.control("Connect ChatGPT Subscription").await;
     desktop.artifact(&format!("provider-picker-{theme}-{layout}"));
-    desktop.type_text("alibaba china").await;
+    desktop.replace_text("alibaba china").await;
     desktop
         .until("search retained unrelated providers", || {
             desktop
@@ -3641,11 +3665,19 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.artifact(&format!("goal-running-{theme}-{layout}"));
     desktop.press("Change budget").await;
     desktop.target_after(None).await;
-    desktop.type_text("250000").await;
+    desktop.replace_text("250000").await;
+    desktop
+        .until("the budget input did not accept the value", || {
+            (desktop.platform.editor_text().as_deref() == Some("250000")).then_some(())
+        })
+        .await;
     desktop.press("Toggle conversation todo").await;
     desktop.press(active_goal).await;
-    desktop.target_after(None).await;
-    desktop.expect_text("250000").await;
+    desktop
+        .until("the reopened budget input lost its value", || {
+            (desktop.platform.editor_text().as_deref() == Some("250000")).then_some(())
+        })
+        .await;
     desktop.artifact(&format!("goal-budget-editor-{theme}-{layout}"));
     desktop.key("escape", false);
     desktop.press("Pause Goal").await;

@@ -99,7 +99,7 @@ export const productConsumers = [
   'maka-ui-build',
 ];
 const skillConsumers = [
-  'maka-skills-core',
+  'maka-skills',
   'maka-skills-native',
   'maka-cli',
   'maka-terminal-shell',
@@ -122,12 +122,7 @@ export const suites = {
     extraInputPackages: [
       {
         inputs: sharedProductContractInputs,
-        packages: [
-          ...productConsumers,
-          'maka-agent-native',
-          'maka-skills-core',
-          'maka-skills-native',
-        ],
+        packages: [...productConsumers, 'maka-agent-native', 'maka-skills', 'maka-skills-native'],
       },
       { inputs: uiProductInputs, packages: productConsumers },
       { inputs: skillInputs, packages: skillConsumers },

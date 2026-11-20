@@ -421,6 +421,25 @@ impl Store {
             .query(fallback::ReadySummary(run, step, current_attempt))
             .await
     }
+    pub async fn compaction_options(
+        &self,
+        run: RunId,
+        capture: &ContentRef,
+        key: Option<&ToolKey>,
+    ) -> Result<maka_agent_facts::context::CompactionOptions, StoreError> {
+        match key {
+            Some(key) => {
+                self.data
+                    .query(sql::compaction::ReadCompactionOptions(
+                        run,
+                        capture.clone(),
+                        key.clone(),
+                    ))
+                    .await
+            }
+            None => Ok(Default::default()),
+        }
+    }
     pub async fn previous_proactive_summary(
         &self,
         view: &RunView,

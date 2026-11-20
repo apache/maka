@@ -63,6 +63,7 @@ export function LoadingIndicator(props: { label?: string; size?: number; color?:
             animationDuration: 800,
             animationTimingFunction: 'linear',
             animationIterationCount: 'infinite',
+            animationFrameRate: 30,
           }}
         >
           <Icon name="loader" size={size} color={props.color ?? C.muted} />
