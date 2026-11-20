@@ -82,7 +82,16 @@ import {
   type Usage,
 } from './quick-results';
 import { errorText, renderText } from './text';
-import { C, bodyTextStyle, controlHoverStyle, textTooltip } from './ui';
+import {
+  C,
+  bodyTextStyle,
+  controlHoverStyle,
+  floatingStyle,
+  menuDetailTextStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
+  textTooltip,
+} from './ui';
 
 const MAX_HEIGHT = 560;
 const MAX_LIST_HEIGHT = 360;
@@ -805,6 +814,10 @@ function Launcher(
         </View>
         <View
           style={{
+            // A content-sized launcher must also fit the overlay above its footer.
+            minHeight: menuOpen()
+              ? Math.min(MAX_LIST_HEIGHT, choices().length * menuRowStyle().minHeight + 18)
+              : 0,
             borderTopWidth: 1,
             borderTopColor: C.line,
             flexDirection: previewer() ? 'row' : 'column',
@@ -911,6 +924,9 @@ function Launcher(
               <Menu
                 open={menuOpen()}
                 onOpenChange={({ open }) => setMenu(open)}
+                popupStyle={floatingStyle()}
+                offset={4}
+                margin={8}
                 placement="top"
                 align="end"
                 trigger={
@@ -927,6 +943,9 @@ function Launcher(
                 <Each of={choices()} key={(item) => item.title}>
                   {(item) => (
                     <MenuItem
+                      style={{ ...menuRowStyle(), minWidth: 184 }}
+                      hoverStyle={menuRowHoverStyle()}
+                      focusStyle={menuRowHoverStyle()}
                       onSelect={() => {
                         const action = item();
                         setMenu(false);
@@ -934,7 +953,7 @@ function Launcher(
                         else action.run();
                       }}
                     >
-                      <Text style={{ ...bodyTextStyle, color: C.text }}>{item().title}</Text>
+                      <Text style={{ ...menuDetailTextStyle, color: C.text }}>{item().title}</Text>
                     </MenuItem>
                   )}
                 </Each>
