@@ -400,7 +400,7 @@ impl Ctx {
         }
         let generation = surface.admit_paste();
         let weak = Rc::downgrade(&surface);
-        let fallback_view = view.downgrade();
+        let target_view = view.downgrade();
         crate::system::read_pasted(widget.clipboard(), move |paste| {
             let Some(surface) = weak.upgrade() else {
                 return;
@@ -408,11 +408,13 @@ impl Ctx {
             if !surface.paste_is_current(generation) {
                 return;
             }
-            if !queue_if_unsettled(&surface, || Held::PasteEvent(paste.clone())) {
-                let target = focused_input_view(&surface).or_else(|| fallback_view.upgrade());
-                if let Some(target) = target {
-                    apply_paste_to_view(&surface, &target, paste);
-                }
+            if !queue_if_unsettled(&surface, || Held::PasteEvent {
+                target: Some(target_view.clone()),
+                paste: paste.clone(),
+            }) && let Some(target) = target_view.upgrade()
+                && focused_input_view(&surface).as_ref() == Some(&target)
+            {
+                apply_paste_to_view(&surface, &target, paste);
             }
             surface.finish_paste(generation);
         });
@@ -1906,7 +1908,10 @@ enum Held {
         modifiers: gtk::gdk::ModifierType,
         event: Option<gtk::gdk::Event>,
     },
-    PasteEvent(nsh_core::PasteEvent),
+    PasteEvent {
+        target: Option<glib::WeakRef<NshView>>,
+        paste: nsh_core::PasteEvent,
+    },
     #[cfg(all(test, feature = "js"))]
     Keystroke(nsh_core::keymap::Keystroke),
     #[cfg(all(test, feature = "js"))]
@@ -2239,7 +2244,7 @@ fn flush_pending(surface: &Rc<Surface>) {
             break;
         };
         let needs_editable = match &next {
-            Held::PasteEvent(_) => true,
+            Held::PasteEvent { .. } => true,
             Held::GdkKey { .. } => false,
             #[cfg(all(test, feature = "js"))]
             Held::Text(_) | Held::SelectAll => true,
@@ -2264,8 +2269,12 @@ fn flush_pending(surface: &Rc<Surface>) {
                 modifiers,
                 event,
             } => replay_gdk_key(surface, key, modifiers, event),
-            Held::PasteEvent(paste) => {
-                if let Some(view) = focused_input_view(surface) {
+            Held::PasteEvent { target, paste } => {
+                if let Some(view) = focused_input_view(surface)
+                    && target
+                        .as_ref()
+                        .is_none_or(|origin| origin.upgrade().as_ref() == Some(&view))
+                {
                     apply_paste_to_view(surface, &view, paste);
                 }
             }
@@ -2617,7 +2626,10 @@ pub(crate) fn paste_into_focused(
     surface: &Rc<Surface>,
     content: nsh_core::PasteEvent,
 ) -> Result<(), String> {
-    if queue_if_unsettled(surface, || Held::PasteEvent(content.clone())) {
+    if queue_if_unsettled(surface, || Held::PasteEvent {
+        target: None,
+        paste: content.clone(),
+    }) {
         return Ok(());
     }
     let view = focused_input_view(surface).ok_or("no focused input to paste into")?;

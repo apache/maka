@@ -256,24 +256,32 @@ fn read_uris(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The `file:` URL with the path of the local file or directory `uri`
+/// The local filesystem path and `file:` URL of the file or directory `uri`
 /// names, if it names one. Finder puts file reference URLs
 /// (`file:///.file/id=…`) on drag and copy pasteboards: they become the
 /// path's URL, which apps can turn into a path.
-pub(crate) fn local_file_uri(uri: &NSString) -> Option<String> {
+pub(crate) fn local_file_path_and_uri(uri: &NSString) -> Option<(std::path::PathBuf, String)> {
     let url = NSURL::URLWithString(uri)?.filePathURL()?;
-    let local = url.isFileURL()
-        && url
-            .path()
-            .is_some_and(|path| path.to_string().starts_with('/'))
-        && url.host().is_none_or(|host| {
-            let host = host.to_string();
-            host.is_empty() || host.eq_ignore_ascii_case("localhost")
-        });
-    local
-        .then(|| url.absoluteString())
-        .flatten()
-        .map(|uri| uri.to_string())
+    if !url.isFileURL() {
+        return None;
+    }
+    let path = url.path()?.to_string();
+    if !path.starts_with('/') {
+        return None;
+    }
+    let local_host = url.host().is_none_or(|host| {
+        let host = host.to_string();
+        host.is_empty() || host.eq_ignore_ascii_case("localhost")
+    });
+    if !local_host {
+        return None;
+    }
+    let resolved = url.absoluteString()?.to_string();
+    Some((std::path::PathBuf::from(path), resolved))
+}
+
+pub(crate) fn local_file_uri(uri: &NSString) -> Option<String> {
+    local_file_path_and_uri(uri).map(|(_, uri)| uri)
 }
 
 #[cfg(test)]
