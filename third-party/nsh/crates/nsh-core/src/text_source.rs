@@ -325,12 +325,8 @@ pub(crate) struct SourceGeometry {
 }
 
 impl SourceMap {
-    pub(crate) fn contains(&self, point: &SourcePoint) -> bool {
-        self.0.iter().any(|range| {
-            range.id == point.id
-                && range.source_start <= point.byte
-                && point.byte < range.source_end
-        })
+    pub(crate) fn has_document(&self, id: &str) -> bool {
+        self.0.iter().any(|range| range.id.as_ref() == id)
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -400,10 +396,6 @@ impl SourceMap {
 }
 
 impl SourceGeometry {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.lines.is_empty()
-    }
-
     fn index(&mut self) {
         self.lines.sort_by(|a, b| a.y.total_cmp(&b.y));
         self.documents.clear();

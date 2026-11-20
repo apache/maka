@@ -80,7 +80,7 @@ use crate::{
     fenwick::Fenwick,
     list_diff::ListDiff,
     ops::{CellSlot, ListAlignment, ListContentStyle, Viewability},
-    text_source::{SourceGeometry, SourcePoint, SourcePosition},
+    text_source::{SourcePoint, SourcePosition},
 };
 
 /// How far beyond the viewport cells are kept rendered, in viewports.
@@ -433,14 +433,16 @@ pub(super) struct ListState {
     /// Scroll that keeps the visible content in place after a splice or a
     /// change of columns.
     splice_anchor: f32,
+    /// Portion of `splice_anchor` overwritten by a pre-commit native scroll report.
+    splice_overwritten: f32,
     /// The target of the last scroll command, until it is reached with
     /// measured cells or the user scrolls away.
     pin: Option<Pin>,
-    /// Derived only when rendered source geometry or cell placement changes.
-    pub(super) source_geometry: SourceGeometry,
     /// Source addressing of the current native projection, including unbound rows.
     pub(super) source_rows: Option<std::sync::Arc<crate::ListSourceRows>>,
-    pub(super) source_dirty: bool,
+    /// A parent-viewport list changed its item offsets or ready cells since its
+    /// outer reader last settled.
+    pub(super) parent_offsets_changed: bool,
     /// Native interaction tracking stays enabled after an automatic request.
     pub(super) automatic: bool,
     /// A direct native snapshot, unknown until the initial TrackStates report.
@@ -522,10 +524,10 @@ impl ListState {
             paced: false,
             lead: 0.0,
             splice_anchor: 0.0,
+            splice_overwritten: 0.0,
             pin: None,
-            source_geometry: SourceGeometry::default(),
             source_rows: None,
-            source_dirty: false,
+            parent_offsets_changed: false,
             automatic: false,
             interaction: None,
             key_ends: Vec::new(),
@@ -643,7 +645,7 @@ impl ListState {
         if !matches!(self.pin, Some(Pin::Reading { .. })) {
             self.pin = None;
         }
-        self.source_dirty |= !self.source_geometry.is_empty();
+        self.parent_offsets_changed |= self.parent;
         let anchor = self
             .visible_anchor()
             .filter(|&(index, _)| index >= at + removed)
@@ -936,9 +938,12 @@ impl ListState {
         }
     }
 
-    /// The scroll a splice asked for, once.
+    /// The scroll a splice asked for, once. If a pre-commit native report
+    /// overwrote `offset` after the splice, restore it before clamp prediction.
     pub(super) fn take_splice_anchor(&mut self) -> f32 {
-        std::mem::take(&mut self.splice_anchor)
+        let delta = std::mem::take(&mut self.splice_anchor);
+        self.offset += std::mem::take(&mut self.splice_overwritten);
+        delta
     }
 
     /// Records a `ScrollBy` sent to the platform.
@@ -966,10 +971,11 @@ impl ListState {
     /// The platform reports its offset after applying `applied` of the
     /// issued scrolls: scrolls it has not applied yet still count, so a
     /// report that predates them does not move the window backwards.
-    pub(super) fn reported(&mut self, offset: f32, applied: u32) {
+    pub(super) fn reported(&mut self, offset: f32, applied: u32) -> bool {
         self.pending.retain(|&(n, _)| n > applied);
         let at = replay(offset, &self.pending);
-        self.moved_to(at, self.pending.is_empty());
+        self.splice_overwritten = self.splice_anchor;
+        self.moved_to(at, self.pending.is_empty())
     }
 
     /// No scroll the core issued is waiting for the platform.
@@ -979,8 +985,9 @@ impl ListState {
 
     /// The list is at `at`; `settled`: with every scroll the core issued
     /// applied, so a pinned target the list is away from was left by the
-    /// user.
-    fn moved_to(&mut self, at: f32, settled: bool) {
+    /// user. Returns whether the scroll position changed or displaced a
+    /// reading pin.
+    fn moved_to(&mut self, at: f32, settled: bool) -> bool {
         let moved = at != self.offset;
         if moved {
             let step = at - self.offset;
@@ -1033,12 +1040,7 @@ impl ListState {
                 }
             }
         }
-        if (moved || reading_displaced) && self.pin.is_none() {
-            // Capture from the geometry the user actually scrolled through,
-            // before a source reply in this same turn can replace it. This
-            // also begins reading when the user leaves end/target following.
-            self.anchor_source(false, 0.0, None);
-        }
+        moved || reading_displaced
     }
 
     /// A layout correction changes the offset's coordinate basis, keeping
@@ -1251,9 +1253,6 @@ impl ListState {
         anchored: f32,
         position: Option<SourcePosition>,
     ) -> f32 {
-        let near_end = self
-            .follow_end
-            .is_some_and(|threshold| self.content_len() - self.viewport - self.offset <= threshold);
         if explicit || self.parent || self.horizontal || self.inverted {
             if matches!(self.pin, Some(Pin::Reading { .. })) {
                 self.pin = None;
@@ -1261,14 +1260,10 @@ impl ListState {
             return 0.0;
         }
         if let Some(Pin::Reading { point, line, at }) = self.pin.clone() {
-            let position = position.unwrap_or_else(|| {
-                self.source_geometry
-                    .position(&point)
-                    .map_or(SourcePosition::Closed, SourcePosition::Ready)
-            });
+            let position = position.unwrap_or(SourcePosition::Closed);
             if position == SourcePosition::Pending {
-                // Item/splice compensation already moved the speculative offset.
-                // Keep the one source intent while its logical row is binding.
+                // `self.offset` already reflects item/splice anchoring and any
+                // native clamp prediction for this commit.
                 self.pin = Some(Pin::Reading {
                     point,
                     line,
@@ -1293,23 +1288,36 @@ impl ListState {
             }
             self.pin = None;
         }
-        if !near_end
-            && self.pin.is_none()
-            && self
+        0.0
+    }
+
+    /// Viewport range for establishing a new reading pin when eligible.
+    /// `content_len` is the committed length when called from `set_scroll_offset`
+    /// and the current length when called from `update_list`.
+    pub(super) fn wants_reading_pin(&self, explicit: bool, content_len: f32) -> Option<(f32, f32)> {
+        if explicit || self.parent || self.horizontal || self.inverted || self.pin.is_some() {
+            return None;
+        }
+        let near_end = self
+            .follow_end
+            .is_some_and(|threshold| content_len - self.viewport - self.offset <= threshold);
+        if near_end
+            || !self
                 .pending
                 .iter()
                 .all(|(_, scroll)| matches!(scroll, PendingScroll::By(_)))
-            && let Some((point, y)) = self
-                .source_geometry
-                .first_visible(self.offset, self.offset + self.viewport)
         {
-            self.pin = Some(Pin::Reading {
-                point,
-                line: y - self.offset,
-                at: self.offset,
-            });
+            return None;
         }
-        0.0
+        Some((self.offset, self.offset + self.viewport))
+    }
+
+    pub(super) fn set_reading_pin(&mut self, point: SourcePoint, y: f32) {
+        self.pin = Some(Pin::Reading {
+            point,
+            line: y - self.offset,
+            at: self.offset,
+        });
     }
 
     /// Whether every item overlapping the viewport has its measured size.
@@ -1389,7 +1397,7 @@ impl ListState {
     }
 
     fn rebuild_offsets(&mut self) {
-        self.source_dirty |= !self.source_geometry.is_empty();
+        self.parent_offsets_changed |= self.parent;
         let gap = self.main_gap() as f64;
         let rows = (0..self.row_count()).map(|r| self.row_size(r) as f64 + gap);
         self.rows = Fenwick::from_sizes(rows.collect::<Vec<_>>().into_iter());
@@ -1556,7 +1564,7 @@ impl ListState {
             return;
         }
         self.count = count;
-        self.source_dirty |= !self.source_geometry.is_empty();
+        self.parent_offsets_changed |= self.parent;
         self.items_changed = true;
         // The rows past the end went: a cell that showed one shows whatever
         // comes there next only once bound again.
@@ -1670,6 +1678,9 @@ impl ListState {
     pub(super) fn set_horizontal(&mut self, horizontal: bool) {
         if horizontal != self.horizontal {
             self.horizontal = horizontal;
+            if horizontal && matches!(self.pin, Some(Pin::Reading { .. })) {
+                self.pin = None;
+            }
             self.sizes.fill(f32::NAN);
             self.rebuild_offsets();
         }
@@ -1695,6 +1706,9 @@ impl ListState {
         if inverted != self.inverted {
             self.inverted = inverted;
             self.anchored_end = f32::NAN;
+            if inverted && matches!(self.pin, Some(Pin::Reading { .. })) {
+                self.pin = None;
+            }
             self.dirty = true;
         }
     }
@@ -2035,7 +2049,7 @@ impl ListState {
     // --- Cells -------------------------------------------------------------
 
     pub(super) fn add_slot_cell(&mut self, slot: CellSlot, cell: u32) {
-        self.source_dirty |= !self.source_geometry.is_empty();
+        self.parent_offsets_changed |= self.parent;
         let s = match slot {
             CellSlot::Item(s) => s as usize,
             CellSlot::Header => return self.set_extra(ExtraKind::Header, cell),
@@ -2066,7 +2080,7 @@ impl ListState {
     }
 
     pub(super) fn remove_cell(&mut self, cell: u32) {
-        self.source_dirty |= !self.source_geometry.is_empty();
+        self.parent_offsets_changed |= self.parent;
         for slot in &mut self.slots {
             if slot.cell == cell {
                 slot.cell = u32::MAX;
@@ -2104,8 +2118,7 @@ impl ListState {
 
     pub(super) fn rendered(&mut self, cell: u32, index: u32) {
         if let Some(slot) = self.slots.iter_mut().find(|s| s.cell == cell) {
-            // A previously unready cell may supply the first source geometry.
-            self.source_dirty = true;
+            self.parent_offsets_changed |= self.parent;
             slot.rendered = Some(index);
             self.dirty = true;
         }
@@ -2306,6 +2319,9 @@ impl ListState {
                 },
             };
             this.slots[slot as usize].index = Some(i);
+            if this.parent && this.slots[slot as usize].ready().is_some() {
+                this.parent_offsets_changed = true;
+            }
             this.by_index.insert(i, slot);
         };
         let count = self.count;
@@ -2453,6 +2469,9 @@ impl ListState {
     }
 
     fn unbind(&mut self, slot: u32) {
+        if self.parent && self.slots[slot as usize].ready().is_some() {
+            self.parent_offsets_changed = true;
+        }
         if let Some(i) = self.slots[slot as usize].index.take() {
             self.by_index.remove(&i);
             self.free.push(slot);
