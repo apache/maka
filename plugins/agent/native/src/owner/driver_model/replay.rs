@@ -43,6 +43,7 @@ struct AssistantBatch {
     parts: Vec<AssistantPart>,
     producer: Option<Producer>,
     recovered_outputs: Vec<Message>,
+    last_emitted_attempt: Option<ModelAttemptId>,
 }
 
 struct Producer {
@@ -85,6 +86,7 @@ impl AssistantBatch {
         if self.parts.is_empty() {
             return Ok(());
         }
+        self.last_emitted_attempt = attempt;
         match producer {
             Some(producer) => {
                 super::append_observed(
@@ -471,6 +473,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
         Ok(ReplayedTail {
             cells: self.recorded.cells.into_values().collect(),
             compaction_request: self.compaction_request,
+            last_emitted_attempt: self.assistant.last_emitted_attempt,
         })
     }
 }

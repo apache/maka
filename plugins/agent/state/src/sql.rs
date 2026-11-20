@@ -420,14 +420,20 @@ pub(crate) fn load(
             "Run indexes have an old projection schema; rebuild required",
         ));
     }
-    let (phase, finish, proactive_summary): (String, bool, Option<String>) = c.query_row(
-        "SELECT retry_phase,finish_requested,proactive_summary FROM agent_runs WHERE run=?",
+    let (phase, finish, proactive_summary, output_limit_continuations): (
+        String,
+        bool,
+        Option<String>,
+        u32,
+    ) = c.query_row(
+        "SELECT retry_phase,finish_requested,proactive_summary,output_limit_continuations FROM agent_runs WHERE run=?",
         [run.to_string()],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
     view.retry_phase = identity(phase)?;
     view.finish_requested = finish;
     view.proactive_summary = proactive_summary.map(identity).transpose()?;
+    view.output_limit_continuations = output_limit_continuations;
     view.revision = raw.1;
     view.control_version = raw.2;
     view.stopped = raw.3;
@@ -611,7 +617,7 @@ fn persist(c: &Connection, view: &RunView) -> Result<(), StoreError> {
         .query_row([view.run.to_string()], |r| column_u64(r, 0))?;
     c.prepare_cached("INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,control_version,stopped,terminal,tokens,retries,retry_due_at,retry_pending,current_step,current_attempt,cancelled_by_risk,replans,baseline,external,stop_request,stop_assessed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run) DO UPDATE SET schema_version=excluded.schema_version,revision=excluded.revision,control_version=excluded.control_version,stopped=excluded.stopped,terminal=excluded.terminal,tokens=excluded.tokens,retries=excluded.retries,retry_due_at=excluded.retry_due_at,retry_pending=excluded.retry_pending,current_step=excluded.current_step,current_attempt=excluded.current_attempt,cancelled_by_risk=excluded.cancelled_by_risk,replans=excluded.replans,baseline=excluded.baseline,external=excluded.external,stop_request=excluded.stop_request,stop_assessed=excluded.stop_assessed")?.execute(params![view.run.to_string(),HEADER_SCHEMA_VERSION,serde_json::to_string(&view.spec.owner)?,view.spec.session_id,signed(admission_sequence)?,matches!(view.spec.origin,RunOrigin::Local),signed(view.revision)?,signed(view.control_version)?,view.stopped,view.terminal.as_ref().map(serde_json::to_string).transpose()?,signed(view.tokens)?,view.retries,view.retry_due_at.map(|t|t.0),view.retry_pending.map(|v|v.to_string()),view.current_step.map(|v|v.to_string()),view.current_attempt.map(|v|v.to_string()),view.cancelled_by_risk,serde_json::to_string(&view.replans)?,view.baseline.as_ref().map(serde_json::to_string).transpose()?,view.external.as_ref().map(external_header).transpose()?,view.stop_request.map(|id|id.to_string()),view.stop_assessed.map(|id|id.to_string())])?;
     c.execute(
-        "UPDATE agent_runs SET retry_phase=?,finish_requested=?,proactive_summary=? WHERE run=?",
+        "UPDATE agent_runs SET retry_phase=?,finish_requested=?,proactive_summary=?,output_limit_continuations=? WHERE run=?",
         params![
             match view.retry_phase {
                 maka_agent_facts::model::retry_transport::RetryTransportPhase::Primary => "primary",
@@ -620,6 +626,7 @@ fn persist(c: &Connection, view: &RunView) -> Result<(), StoreError> {
             },
             view.finish_requested(),
             view.proactive_summary.map(|attempt| attempt.to_string()),
+            view.output_limit_continuations,
             view.run.to_string()
         ],
     )?;

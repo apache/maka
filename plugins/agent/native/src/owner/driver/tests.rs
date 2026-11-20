@@ -3913,21 +3913,26 @@ mod model_recovery {
                             .unwrap();
                         let request: Value = serde_json::from_slice(&body).unwrap();
                         requests.send(request).await.unwrap();
-                        let (delta, finish) = if index == 0 {
-                            (json!({"role":"assistant"}), "length")
-                        } else {
-                            (json!({"role":"assistant","content":"Continued"}), "stop")
-                        };
+                        use axum::response::IntoResponse;
+                        if index == 0 {
+                            return (
+                                axum::http::StatusCode::BAD_REQUEST,
+                                [("content-type", "application/json")],
+                                json!({"error":{"message":"Injected model failure","type":"invalid_request_error"}}).to_string(),
+                            )
+                                .into_response();
+                        }
                         let chunk = json!({
                             "id":format!("continuation-{index}"),"object":"chat.completion.chunk",
-                            "created":1,"model":"llama3.2","choices":[{"index":0,"delta":delta,
-                            "finish_reason":finish}],
+                            "created":1,"model":"llama3.2","choices":[{"index":0,
+                            "delta":{"role":"assistant","content":"Continued"},"finish_reason":"stop"}],
                             "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}
                         });
                         (
                             [("content-type", "text/event-stream")],
                             format!("data: {chunk}\n\ndata: [DONE]\n\n"),
                         )
+                            .into_response()
                     }
                 }
             }),
@@ -3998,6 +4003,162 @@ mod model_recovery {
             }
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         }).await;
+        stop.cancel();
+        server.await??;
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        result?
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn output_cut_off_at_the_length_limit_continues_and_enforces_frontier_cap()
+    -> TestResult<()> {
+        let mut rig = Rig::new()?;
+        let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+        let boot = bootstrap_deployment(
+            rig.directory.path(),
+            format!("http://{}/v1", listener.local_addr()?),
+            true,
+            |_| {},
+        )
+        .await?;
+        attach(&mut rig, &boot).await?;
+        let (requests, mut received) = tokio::sync::mpsc::channel(16);
+        let total_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post({
+                let count = total_requests.clone();
+                move |request: axum::extract::Request| {
+                    let requests = requests.clone();
+                    let index = count.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        let body = axum::body::to_bytes(request.into_body(), 1024 * 1024)
+                            .await
+                            .unwrap();
+                        let request: Value = serde_json::from_slice(&body).unwrap();
+                        requests.send(request).await.unwrap();
+                        // Turn 1: cut-off text -> cut-off reasoning-only -> cut-off tool call -> stop (3 continuations, succeeds).
+                        // Turn 2: consecutive cut-off text responses -> must fail on the 4th via Store::frontier with zero 5th request.
+                        let (delta, finish) = match index {
+                            0 => (json!({"role":"assistant","content":"PART_ONE of the answer"}), "length"),
+                            1 => (json!({"role":"assistant","reasoning_content":"deep hidden thought cut off"}), "length"),
+                            2 => (
+                                json!({"role":"assistant","tool_calls":[{"index":0,"id":"call-cut",
+                                    "type":"function","function":{"name":"WebFetch",
+                                    "arguments":"{\"url\":\"https://exa"}}]}),
+                                "length",
+                            ),
+                            3 => (json!({"role":"assistant","content":"PART_TWO"}), "stop"),
+                            _ => (json!({"role":"assistant","content":format!("TRUNCATED_{index}")}), "length"),
+                        };
+                        let chunk = |delta: Value, finish: Value| json!({
+                            "id":format!("cut-{index}"),"object":"chat.completion.chunk",
+                            "created":1,"model":"llama3.2","choices":[{"index":0,"delta":delta,
+                            "finish_reason":finish}],
+                            "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}
+                        });
+                        (
+                            [("content-type", "text/event-stream")],
+                            format!(
+                                "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                                chunk(delta, Value::Null),
+                                chunk(json!({}), json!(finish))
+                            ),
+                        )
+                    }
+                }
+            }),
+        );
+        let stop = CancellationToken::new();
+        let shutdown = stop.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown.cancelled_owned())
+                .await
+        });
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            let client = rig.client.as_ref().unwrap();
+            let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+            let connection = call(client, "settings", "create", json!({
+                "expectedCatalogRevision":catalog["revision"],
+                "connection":{"slug":"cut","name":"Cut",
+                    "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                    "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2"],
+                    "modelOverrides":{"llama3.2":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}}
+            })).await?;
+            assert_eq!(connection["kind"], "committed");
+            let connection_id = &connection["connection"]["connectionId"];
+            let created = call(client, "agent", "create", json!({
+                "title":"Cut off at the length limit","automaticTitle":false,"labels":[],
+                "workspace":{"kind":"directory","path":rig.directory.path().join("workspace")}
+            })).await?;
+            let session = created["session"]["id"].as_str().ok_or("session missing")?;
+            let backend = json!({"kind":"model","connectionId":connection_id,"modelId":"llama3.2"});
+
+            // Turn 1: text cut-off, reasoning-only cut-off, tool-call cut-off, then completion.
+            let sent = call(client, "agent", "send", json!({
+                "sessionId":session,"message":"Write the long answer.","backend":backend
+            })).await?;
+            assert_eq!(sent["kind"], "queued");
+            let _ = received.recv().await.ok_or("first request missing")?;
+            let after_text = received.recv().await.ok_or("text continuation missing")?;
+            let messages = after_text["messages"].as_array().ok_or("messages missing")?;
+            assert!(messages.iter().any(|m| m["role"] == "assistant"
+                && m["content"].to_string().contains("PART_ONE of the answer")), "{after_text}");
+            let last = messages.last().ok_or("empty prompt")?;
+            assert!(last["role"] == "user"
+                && last["content"].to_string().contains("Continue from where the previous response stopped"),
+                "{after_text}");
+
+            let after_reasoning = received.recv().await.ok_or("reasoning continuation missing")?;
+            let last = after_reasoning["messages"].as_array().ok_or("messages missing")?.last().ok_or("empty prompt")?;
+            assert!(last["role"] == "user"
+                && last["content"].to_string().contains("before producing a visible answer"),
+                "{after_reasoning}");
+
+            let after_tool = received.recv().await.ok_or("tool continuation missing")?;
+            assert!(after_tool["messages"].as_array().ok_or("messages missing")?.iter().any(|m|
+                m["role"] == "tool" && m["content"].to_string().contains("output length limit")
+            ), "{after_tool}");
+
+            let target = json!({"kind":"message","messageId":sent["messageId"]});
+            loop {
+                let work = call(client, "agent", "work", json!({"sessionId":session,"target":target})).await?;
+                match work["execution"]["state"]["kind"].as_str() {
+                    Some("completed") => break,
+                    Some("failed" | "cancelled") => return Err(format!("turn 1 failed: {work}").into()),
+                    _ => tokio::time::sleep(Duration::from_millis(20)).await,
+                }
+            }
+            assert_eq!(total_requests.load(Ordering::SeqCst), 4);
+
+            // Turn 2: persistent frontier counter must stop on the 4th consecutive length truncation.
+            let sent2 = call(client, "agent", "send", json!({
+                "sessionId":session,"message":"Keep hitting length.","backend":backend
+            })).await?;
+            assert_eq!(sent2["kind"], "queued");
+            let target2 = json!({"kind":"message","messageId":sent2["messageId"]});
+            loop {
+                let work = call(client, "agent", "work", json!({"sessionId":session,"target":target2})).await?;
+                match work["execution"]["state"]["kind"].as_str() {
+                    Some("failed") => break,
+                    Some("completed" | "cancelled") => return Err(format!("turn 2 unexpected: {work}").into()),
+                    _ => tokio::time::sleep(Duration::from_millis(20)).await,
+                }
+            }
+            // Exactly 4 requests for turn 2 (indices 4, 5, 6, 7), zero 5th request.
+            assert_eq!(total_requests.load(Ordering::SeqCst), 8);
+            let history = call(client, "agent", "history", json!({
+                "sessionId":session,"position":{"kind":"tail"},"includeThinking":false,"view":"conversation"
+            })).await?;
+            assert!(
+                history.to_string().contains("reached its length limit again after being asked to continue"),
+                "{history}"
+            );
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })
+        .await;
         stop.cancel();
         server.await??;
         let cleanup = rig.finish().await;
@@ -4712,7 +4873,7 @@ mod model_recovery {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delegated_notifications_survive_caller_failure_before_consumption() {
-        delegated_notifications("length", Waits::Answered).await;
+        delegated_notifications("failed", Waits::Answered).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4763,6 +4924,15 @@ mod model_recovery {
                         let (reply, response) = oneshot::channel::<(&'static str, &'static str)>();
                         requests.send((request, reply)).await.unwrap();
                         let (text, finish) = response.await.unwrap();
+                        use axum::response::IntoResponse;
+                        if finish == "failed" {
+                            return (
+                                axum::http::StatusCode::BAD_REQUEST,
+                                [("content-type", "application/json")],
+                                json!({"error":{"message":"Injected model failure","type":"invalid_request_error"}}).to_string(),
+                            )
+                                .into_response();
+                        }
                         // A tool call reply carries {"name", "input"} as its text.
                         let body = if finish == "tool_calls" {
                             let call: Value = serde_json::from_str(text).unwrap();
@@ -4775,7 +4945,7 @@ mod model_recovery {
                                     "choices":[{"index":0,"delta":{},"finish_reason":finish}],
                                     "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}}))
                         };
-                        ([("content-type", "text/event-stream")], body)
+                        ([("content-type", "text/event-stream")], body).into_response()
                     }
                 }));
             let shutdown = stop.clone();
@@ -4846,10 +5016,10 @@ mod model_recovery {
             drop(request);
             drop(access);
 
-            let caller_reply = if caller_finish == "length" {
+            let caller_reply = if caller_finish == "failed" {
                 // Settle failure before the worker asks for attention. A notice
                 // delivered earlier may now legitimately interrupt the model
-                // and continue the same Run before its length limit is observed.
+                // and continue the same Run before its failure is observed.
                 let mut changes = owner.durable.subscribe()?;
                 caller_reply.send(("The task is delegated.", caller_finish)).unwrap();
                 loop {
@@ -4908,7 +5078,7 @@ mod model_recovery {
             assert!(messages.contains("needs attention") && messages.contains(&request_id), "{messages}");
             let attention_run = owner.durable.latest_run(caller.clone()).await?.ok_or("attention Run missing")?;
             assert_eq!(attention_run == caller_run, caller_finish == "stop");
-            if caller_finish == "length" {
+            if caller_finish == "failed" {
                 assert_eq!(owner.durable.frontier(caller_run).await?.terminal, Some(Terminal::Failed));
             }
             for _ in 0..2 { owner.deliver_completions().await?; }
