@@ -118,6 +118,60 @@ async fn current(rig: &Rig, session: &str) -> TestResult<GoalDetail> {
     view.current.ok_or_else(|| "goal missing".into())
 }
 
+/// Arm a Goal that observes the Rig's current Run as its first iteration.
+async fn arm(
+    owner: &Arc<Owner>,
+    driver: &NativeDriver,
+    session: &str,
+    observed: RunId,
+) -> TestResult<()> {
+    let NativeBackend::Model { model, .. } = &driver.backend else {
+        unreachable!()
+    };
+    let config = owner.mutable_session(session).await?.configuration;
+    let grant = super::super::super::notifications::BackgroundApproval {
+        target: ScheduledTarget {
+            session_id: session.into(),
+            workspace: config.workspace,
+            permissions: config.permissions,
+            boundary_revision: config.boundary_revision,
+            binding: config.binding,
+        },
+        model: ModelSelection {
+            service_tier: None,
+            connection_id: model.source.accepted.binding.connection_id.clone(),
+            model_id: model.source.accepted.binding.model.clone(),
+        },
+        accepted_model: model.source.accepted.clone(),
+        thinking_level: None,
+        language: Language::En,
+        sandbox_ceiling: None,
+    };
+    let _gate = owner.goals.gate.lock().await;
+    owner
+        .goals
+        .repository
+        .arm_with(
+            session,
+            Arm {
+                operation_id: Uuid::new_v4(),
+                objective: "keep working".into(),
+                grant: crate::owner::scheduler::BackgroundGrant::Model(grant),
+                token_budget: None,
+                start: true,
+                language: Language::En,
+            },
+            Meter::default(),
+            Some(Pending::Existing {
+                run: observed,
+                managed: false,
+            }),
+            vec![],
+        )
+        .await?;
+    Ok(())
+}
+
 async fn exercise(
     rig: &mut Rig,
     posts: &AtomicUsize,
@@ -136,52 +190,7 @@ async fn exercise(
     let driver = rig.driver.as_ref().unwrap();
     let observed = driver.access.execution().run_id;
     let view = driver.state.frontier(observed).await?;
-    let NativeBackend::Model { model, .. } = &driver.backend else {
-        unreachable!()
-    };
-    let config = owner.mutable_session(&session).await?.configuration;
-    let grant = super::super::super::notifications::BackgroundApproval {
-        target: ScheduledTarget {
-            session_id: session.clone(),
-            workspace: config.workspace,
-            permissions: config.permissions,
-            boundary_revision: config.boundary_revision,
-            binding: config.binding,
-        },
-        model: ModelSelection {
-            service_tier: None,
-            connection_id: model.source.accepted.binding.connection_id.clone(),
-            model_id: model.source.accepted.binding.model.clone(),
-        },
-        accepted_model: model.source.accepted.clone(),
-        thinking_level: None,
-        language: Language::En,
-        sandbox_ceiling: None,
-    };
-    {
-        let _gate = owner.goals.gate.lock().await;
-        owner
-            .goals
-            .repository
-            .arm_with(
-                &session,
-                Arm {
-                    operation_id: Uuid::new_v4(),
-                    objective: "keep working".into(),
-                    grant: crate::owner::scheduler::BackgroundGrant::Model(grant),
-                    token_budget: None,
-                    start: true,
-                    language: Language::En,
-                },
-                Meter::default(),
-                Some(Pending::Existing {
-                    run: observed,
-                    managed: false,
-                }),
-                vec![],
-            )
-            .await?;
-    }
+    arm(&owner, driver, &session, observed).await?;
     let mut spec = view.spec.clone();
     spec.turn_id = Uuid::new_v4().to_string();
     spec.trigger = Trigger::Message {
@@ -300,5 +309,97 @@ async fn exercise(
     // A new stop command for the stopped Run cannot undo the explicit resume.
     assert_eq!(stop(&rig, &session, run).await?, json!({"requested":true}));
     assert_eq!(current(rig, &session).await?.status, Status::Active);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_tells_the_next_iteration_why_one_failed_and_pauses_after_two() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+    let (requests, mut received) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let app = axum::Router::new().route(
+        "/v1/chat/completions",
+        axum::routing::post(move |body: axum::body::Bytes| {
+            let requests = requests.clone();
+            async move {
+                let _ = requests.send(serde_json::from_slice(&body).unwrap_or_default());
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    [("content-type", "application/json")],
+                    json!({"error":{"message":"fixture rejected the goal","type":"invalid_request_error"}})
+                        .to_string(),
+                )
+            }
+        }),
+    );
+    let serving = tokio::spawn(async move { axum::serve(listener, app).await });
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let session = rig
+            .start_configured(None, |config| config["goals"] = json!(true))
+            .await?;
+        rig.assemble(&session).await?;
+        let owner = rig
+            .captured
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("owner missing")?;
+        let driver = rig.driver.as_ref().unwrap();
+        arm(&owner, driver, &session, driver.access.execution().run_id).await?;
+        let mut changes = owner.goal_changes();
+        rig.append(
+            vec![Fact::RunTerminated {
+                terminal: Terminal::Failed,
+                diagnostic: Some("fixture failure one".into()),
+            }],
+            vec![],
+        )
+        .await?;
+        let request = received
+            .recv()
+            .await
+            .ok_or("Goal iteration request missing")?;
+        let messages = request["messages"]
+            .as_array()
+            .ok_or("Goal request messages missing")?;
+        let failure_mentions = messages
+            .iter()
+            .filter(|message| message["content"].to_string().contains("fixture failure one"))
+            .count();
+        assert_eq!(
+            failure_mentions, 1,
+            "previous iteration failure must appear once via turn replay without Goal prompt duplication: {request:#}"
+        );
+        let goal = loop {
+            changes.borrow_and_update();
+            let goal = current(&rig, &session).await?;
+            if goal.status != Status::Active && !goal.pending {
+                break goal;
+            }
+            changes.changed().await?;
+        };
+        assert_eq!(goal.status, Status::Paused);
+        // The observed Run is the first iteration; one dispatched iteration followed.
+        assert_eq!(goal.iterations, 2);
+        assert!(
+            goal.note.contains("fixture rejected the goal"),
+            "{}",
+            goal.note
+        );
+        assert!(
+            received.try_recv().is_err(),
+            "a paused Goal sent another request"
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    serving.abort();
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+    assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
 }

@@ -241,20 +241,20 @@ impl Owner {
                 return Err("goal_execution_identity_changed".into());
             }
             if let Some(terminal) = view.terminal.clone() {
-                let retry_at = if terminal == Terminal::Failed {
+                let failure = if terminal == Terminal::Failed {
                     // A new iteration follows the same settlement rules as any follow-up.
                     if view.blocks_followup() {
                         return Ok(());
                     }
-                    failure_retry_at(&view)?
+                    Some(self.iteration_failure(&view).await?)
                 } else {
                     None
                 };
                 saved
                     .goal
                     .settled(terminal, self.goal_meter(&session).await)?;
-                if retry_at.is_some() {
-                    saved.goal.retry_at = retry_at;
+                if let Some(failure) = failure {
+                    saved.goal.failed(failure);
                 }
                 return self.goals.save(saved).await;
             }
@@ -308,7 +308,55 @@ impl Owner {
     }
 }
 
-fn failure_retry_at(view: &maka_agent_state::fold::RunView) -> Result<Option<u64>, String> {
+impl Owner {
+    async fn iteration_failure(
+        &self,
+        view: &maka_agent_state::fold::RunView,
+    ) -> Result<maka_goal::goal::IterationFailure, String> {
+        let (retry_at, needs_user) = match model_failure(view)? {
+            Some(maka_model::ModelError::Provider(failure)) => {
+                failure.validate().map_err(reason)?;
+                (
+                    failure.retry_at_unix_ms(),
+                    failure.reason() == maka_model::ProviderFailureReason::QuotaExhausted,
+                )
+            }
+            Some(
+                maka_model::ModelError::Http {
+                    status: 401 | 403, ..
+                }
+                | maka_model::ModelError::LocalAuthorization(_),
+            ) => (None, true),
+            _ => (None, false),
+        };
+        let mut diagnostic = None;
+        let mut end = view.revision;
+        while diagnostic.is_none() && end > 0 {
+            let start = end.saturating_sub(32);
+            let page = self
+                .durable
+                .history(view.run, start, (end - start) as u32)
+                .await
+                .map_err(reason)?;
+            diagnostic = page.into_iter().rev().find_map(|fact| match fact.fact {
+                Fact::RunTerminated { diagnostic, .. } => Some(diagnostic),
+                _ => None,
+            });
+            end = start;
+        }
+        Ok(maka_goal::goal::IterationFailure {
+            diagnostic: diagnostic
+                .flatten()
+                .or_else(|| view.recovery_failure_diagnostic()),
+            retry_at,
+            needs_user,
+        })
+    }
+}
+
+fn model_failure(
+    view: &maka_agent_state::fold::RunView,
+) -> Result<Option<maka_model::ModelError>, String> {
     let Some(closed) = view
         .current_attempt
         .and_then(|attempt| view.attempts.get(&attempt))
@@ -316,20 +364,10 @@ fn failure_retry_at(view: &maka_agent_state::fold::RunView) -> Result<Option<u64
     else {
         return Ok(None);
     };
-    let Some(failure) = closed
+    closed
         .protocol
         .get("failure")
         .filter(|value| !value.is_null())
-    else {
-        return Ok(None);
-    };
-    let failure: maka_model::ModelError =
-        serde_json::from_value(failure.clone()).map_err(reason)?;
-    match failure {
-        maka_model::ModelError::Provider(failure) => {
-            failure.validate().map_err(reason)?;
-            Ok(failure.retry_at_unix_ms())
-        }
-        _ => Ok(None),
-    }
+        .map(|failure| serde_json::from_value(failure.clone()).map_err(reason))
+        .transpose()
 }
