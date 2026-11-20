@@ -50,6 +50,8 @@ pub enum FileError {
     InvalidFile,
     #[error("selected file changed while it was being captured")]
     Changed,
+    #[error("selected_file_permission_denied")]
+    PermissionDenied,
     #[error("selected file snapshot: {0}")]
     Io(#[from] io::Error),
 }
@@ -146,10 +148,18 @@ pub fn read_selected(path: &Path) -> Result<Arc<FileSnapshot>, FileError> {
         return Err(FileError::InvalidFile);
     }
     let name = path.file_name().ok_or(FileError::InvalidFile)?;
+    let open_error = |error: io::Error| {
+        if error.kind() == io::ErrorKind::PermissionDenied {
+            FileError::PermissionDenied
+        } else {
+            FileError::Io(error)
+        }
+    };
     let directory = Dir::open_ambient_dir(
         path.parent().ok_or(FileError::InvalidFile)?,
         ambient_authority(),
-    )?;
+    )
+    .map_err(open_error)?;
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No);
     #[cfg(unix)]
@@ -157,7 +167,7 @@ pub fn read_selected(path: &Path) -> Result<Arc<FileSnapshot>, FileError> {
         use cap_std::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NONBLOCK);
     }
-    let mut file = directory.open_with(name, &options)?;
+    let mut file = directory.open_with(name, &options).map_err(open_error)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(FileError::InvalidFile);

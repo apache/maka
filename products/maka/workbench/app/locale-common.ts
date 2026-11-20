@@ -140,6 +140,12 @@ export const commonMessages = {
     '请在系统设置的「隐私与安全性 → 文件与文件夹」中允许 Maka 读取下载文件夹。',
     '請在系統設定的「隱私權與安全性 → 檔案與檔案夾」中允許 Maka 讀取下載項目。',
   ],
+  'Maka does not have permission to read that file. Allow access in System Settings or save a copy to an accessible folder.':
+    [
+      'Maka does not have permission to read that file. Allow access in System Settings or save a copy to an accessible folder.',
+      'Maka 没有权限读取该文件。请在系统设置中授予权限，或先保存到可访问的文件夹。',
+      'Maka 沒有權限讀取該檔案。請在系統設定中授予權限，或先儲存到可存取的檔案夾。',
+    ],
   'Clipboard format': ['Format', '格式', '格式'],
   'Clipboard text': ['Text', '文本', '文字'],
   'Pixel dimensions': ['Dimensions', '图片尺寸', '圖片尺寸'],

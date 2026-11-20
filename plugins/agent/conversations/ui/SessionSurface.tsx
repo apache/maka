@@ -1078,7 +1078,10 @@ export function createConversationUi(
         if (selected() === null && overlay() === null && (shell()?.visible() ?? false))
           focusComposer();
       })
-      .catch(report)
+      .catch((reason) => {
+        if (alive && pendingWorkspace() === workspace)
+          error.set(errorText(reason, 'Could not attach the file.'));
+      })
       .finally(() => {
         if (alive) pendingIntake.set(null);
       });

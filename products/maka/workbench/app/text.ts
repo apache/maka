@@ -104,6 +104,10 @@ export function errorText(reason: unknown, fallback: MessageKey, values?: UiText
       return message(
         'Allow Maka to read Downloads in System Settings > Privacy & Security > Files and Folders.',
       );
+    case 'selected_file_permission_denied':
+      return message(
+        'Maka does not have permission to read that file. Allow access in System Settings or save a copy to an accessible folder.',
+      );
     case 'agent_observation_closed':
     case 'agent_closed':
       return message('Connection interrupted. Your draft is kept.');
