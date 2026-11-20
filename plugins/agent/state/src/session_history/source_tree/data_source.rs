@@ -320,7 +320,7 @@ impl HistoryDataSource {
         include_internal: bool,
         min_admission: u64,
         limit: u32,
-        run_rows: Option<RunRows>,
+        filter: PositionFilter,
     ) -> Result<Vec<SnapshotPosition>, StoreError> {
         match self {
             Self::Snapshot(source) => {
@@ -339,7 +339,7 @@ impl HistoryDataSource {
                         include_internal,
                         min_admission,
                         limit,
-                        run_rows,
+                        filter,
                     ))
                     .await
             }

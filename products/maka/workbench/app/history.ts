@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { Buffer } from 'buffer';
 import type {
   RunId,
   StepId,
@@ -367,6 +368,46 @@ export function compareRows(a: Row, b: Row): number {
   );
 }
 
+// Forward and reverse pages can split the same immutable field at different UTF-8 offsets.
+function mergeFragments(
+  previous: Fragment[] | undefined,
+  fresh: Fragment,
+  older: boolean,
+  totalBytes: number,
+): Fragment[] {
+  if (
+    !previous?.length ||
+    (!older && fresh.offset === 0 && messageBytes(fresh.text) === totalBytes)
+  )
+    return [fresh];
+  if (!fresh.text) return previous;
+  if (previous.length === 1 && !previous[0].text) return [fresh];
+  const last = previous[previous.length - 1];
+  if (fresh.offset > last.offset && last.offset + messageBytes(last.text) <= fresh.offset)
+    return [...previous, fresh];
+  if (
+    fresh.offset < previous[0].offset &&
+    fresh.offset + messageBytes(fresh.text) <= previous[0].offset
+  )
+    return [fresh, ...previous];
+  const ordered = older ? [...previous, fresh] : [fresh, ...previous];
+  ordered.sort((a, b) => a.offset - b.offset);
+  const parts: Fragment[] = [];
+  let end = -1;
+  for (const part of ordered) {
+    if (part.offset >= end && part.offset !== parts.at(-1)?.offset) {
+      parts.push(part);
+      end = part.offset + messageBytes(part.text);
+    } else {
+      const bytes = Buffer.from(part.text, 'utf8');
+      if (part.offset + bytes.length > end) {
+        parts.push({ offset: end, text: bytes.toString('utf8', end - part.offset) });
+        end = part.offset + bytes.length;
+      }
+    }
+  }
+  return parts;
+}
 export function mergeHistoryPage(
   chunks: AgentHistoryChunk[],
   lookup: (key: string) => Row | undefined,
@@ -384,14 +425,12 @@ export function mergeHistoryPage(
       through !== null &&
       previousThrough > through;
     const fresh = { offset: chunk.offset, text: chunk.text };
-    const fragments = (
-      (older || newerMetadata) && previous
-        ? [
-            ...previous.fragments!,
-            ...(previous.fragments!.some((part) => part.offset === chunk.offset) ? [] : [fresh]),
-          ]
-        : [...(previous?.fragments ?? []).filter((part) => part.offset !== chunk.offset), fresh]
-    ).sort((a, b) => a.offset - b.offset);
+    const fragments = mergeFragments(
+      previous?.fragments,
+      fresh,
+      older || newerMetadata,
+      chunk.totalBytes,
+    );
     const next = {
       key,
       messageId: chunk.messageId ?? undefined,

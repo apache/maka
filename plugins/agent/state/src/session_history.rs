@@ -199,6 +199,16 @@ impl SessionHistory {
             ))
             .await
     }
+    /// Read a sparse window of original facts within the captured session.
+    pub async fn items(
+        &self,
+        cut: &HistoryCut,
+        sequences: Vec<u64>,
+    ) -> Result<std::collections::BTreeMap<u64, HistoryItem>, StoreError> {
+        self.data
+            .query(WindowItems(self.namespace.clone(), cut.clone(), sequences))
+            .await
+    }
     pub async fn tool_result_metadata(
         &self,
         cut: &HistoryCut,
@@ -617,6 +627,13 @@ impl Query for CaptureAt {
             &self.0.namespace.session,
             Some(self.1),
         )
+    }
+}
+struct WindowItems(HistoryNamespace, HistoryCut, Vec<u64>);
+impl Query for WindowItems {
+    type Output = std::collections::BTreeMap<u64, HistoryItem>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::window_items(c, &self.0, &self.1, &self.2)
     }
 }
 struct Item(SessionHistory, HistoryCut, u64);

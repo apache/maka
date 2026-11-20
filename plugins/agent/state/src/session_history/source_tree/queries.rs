@@ -39,7 +39,7 @@ pub(super) struct LivePositions(
     pub(super) bool,
     pub(super) u64,
     pub(super) u32,
-    pub(super) Option<RunRows>,
+    pub(super) PositionFilter,
 );
 impl Query for LivePositions {
     type Output = Vec<SnapshotPosition>;
@@ -57,7 +57,16 @@ impl Query for LivePositions {
             (">=", "ASC")
         };
         let visible = if self.4 { "" } else { " AND d.internal=0" };
-        let (constraint, run, attempt) = match self.7 {
+        // Internal Cell bookkeeping is addressable by Recall but has no transcript row.
+        let cell_steps = if matches!(self.7, PositionFilter::Transcript(_)) {
+            " AND (h.kind <> 'cell' OR (h.tool_use_id IS NOT NULL AND
+            (h.tool_start OR (SELECT json_extract(b.payload,'$.fact.event.kind') FROM agent_facts f
+            JOIN contents b ON b.id=f.body_content_id WHERE f.sequence=h.sequence)
+            IN ('child_rejected','child_result_recorded','local_child_returned','child_observed'))))"
+        } else {
+            ""
+        };
+        let (constraint, run, attempt) = match self.7.run() {
             None => ("?8 IS NULL AND ?9 IS NULL", None, None),
             Some(RunRows::Only { run, .. }) => ("d.run=?8 AND ?9 IS NULL", Some(run), None),
             Some(RunRows::Folded { run, attempt }) => (
@@ -76,7 +85,7 @@ impl Query for LivePositions {
              FROM agent_recall_messages d
              JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence
              WHERE d.owner=?1 AND d.session=?2 AND d.sequence<=?3 AND h.admission_sequence>?4
-               AND (d.sequence,d.ordinal){comparison}(?5,?6){visible} AND {constraint}
+               AND (d.sequence,d.ordinal){comparison}(?5,?6){visible}{cell_steps} AND {constraint}
              ORDER BY d.sequence {order},d.ordinal {order} LIMIT ?7"
         ))?;
         let rows = statement

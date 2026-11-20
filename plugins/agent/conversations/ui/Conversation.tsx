@@ -225,6 +225,7 @@ import {
 } from '../../../../products/maka/workbench/app/TurnPanel';
 import { turnImages } from '../../../../products/maka/workbench/app/ToolImage';
 import type {
+  ActivityPage,
   GroupViewState,
   LiveActivity,
   TurnViewState,
@@ -610,10 +611,21 @@ export function Conversation(props: ConversationProps) {
     !historyFollowPaused() && innerReader() !== null && innerReader() === readerAtEnd();
   const metrics = signal<any>(null);
   const turnStates = new Map<string, TurnViewState>();
-  const workPages = new Map<
+  const turnPages = new Map<
     string,
     { through: number; after: HistoryCursor | null; task?: Promise<void>; wanted?: number }
   >();
+  type StepDirection = 'before' | 'after';
+  type StepWindow = {
+    before: HistoryCursor | null;
+    after: HistoryCursor | null;
+    last: HistoryCursor | null;
+    through: number;
+    reading: boolean;
+    pending?: StepDirection;
+    seek?: StepDirection;
+  };
+  const stepWindows = new Map<string, StepWindow>();
   const groupStates = new Map<string, GroupViewState>();
   const rowStates = new Map<string, MessageViewState>();
   const turnState = (id: string) => {
@@ -1590,6 +1602,7 @@ export function Conversation(props: ConversationProps) {
     if (entry?.kind !== 'process') return;
     const state = groupState(entry.key);
     state.following.set(true);
+    if (state.open()) loadGroupSteps(() => entry, 'end');
     if (state.list) state.list.scrollToEnd({ animated: false });
     else state.opening = 'bottom';
   };
@@ -1666,6 +1679,15 @@ export function Conversation(props: ConversationProps) {
   ) => {
     if (alive) error.set(errorText(reason, fallback));
   };
+  const mergePage = (chunks: AgentHistoryChunk[], through: number, older = false) => {
+    const current = historyRows();
+    const changed = mergeHistoryPage(chunks, (key) => current.byKey.get(key), older, through);
+    if (changed.length) {
+      current.put(changed);
+      historyRows.set(current);
+    }
+    return current;
+  };
   const publishHistory = (
     chunks: AgentHistoryChunk[],
     through: number,
@@ -1674,13 +1696,7 @@ export function Conversation(props: ConversationProps) {
     windowStart?: number,
   ) => {
     batch(() => {
-      const current = historyRows();
-      const changed = mergeHistoryPage(chunks, (key) => current.byKey.get(key), older, through);
-      if (changed.length) {
-        current.put(changed);
-        historyRows.set(current);
-      }
-      const canonical = historyRows();
+      const canonical = mergePage(chunks, through, older);
       overlay.history(canonical.byId, atHistoryTail() ? through : null, coveredFrom, windowStart);
       publishOverlay();
       const currentPending = pendingMessages();
@@ -1795,7 +1811,8 @@ export function Conversation(props: ConversationProps) {
         deferOlderUntilScroll = jumpToTail;
         if (jumpToTail) historyScrollInput = 'idle';
         historyRows.set(new HistoryRows());
-        workPages.clear();
+        turnPages.clear();
+        stepWindows.clear();
         historyWindow.set({
           identity,
           view,
@@ -1841,27 +1858,21 @@ export function Conversation(props: ConversationProps) {
     windowTask = task;
     return task;
   };
-  const loadPages = (
-    key: string,
-    through: number,
-    start: HistoryPosition,
-    view: 'turn' | 'steps',
-  ): void => {
-    const previous = workPages.get(key);
+  const loadTurnPages = (key: string, through: number, start: HistoryPosition): void => {
+    const previous = turnPages.get(key);
     if (previous?.task) {
       previous.wanted = Math.max(previous.wanted ?? 0, through);
       return;
     }
     if (previous && previous.through >= through) return;
     const state: NonNullable<typeof previous> = { through, after: previous?.after ?? null };
-    workPages.set(key, state);
+    turnPages.set(key, state);
     state.task = (async () => {
       let cursor: HistoryPosition = state.after ? { kind: 'after', cursor: state.after } : start;
-      const chunks: AgentHistoryChunk[] = [];
       for (;;) {
-        const page = await history(through, cursor, view);
-        if (!alive || workPages.get(key) !== state) return;
-        chunks.push(...page.chunks);
+        const page = await history(through, cursor, 'turn');
+        if (!alive || turnPages.get(key) !== state) return;
+        mergePage(page.chunks, through);
         const last = page.chunks.at(-1);
         if (last)
           state.after = last.work?.end ?? {
@@ -1872,22 +1883,16 @@ export function Conversation(props: ConversationProps) {
         if (page.after === null) break;
         cursor = { kind: 'after', cursor: page.after };
       }
-      const current = historyRows();
-      const changed = mergeHistoryPage(chunks, (key) => current.byKey.get(key), false, through);
-      if (changed.length) {
-        current.put(changed);
-        historyRows.set(current);
-      }
     })()
       .catch((reason) => {
-        if (workPages.get(key) !== state) return;
-        workPages.delete(key);
+        if (turnPages.get(key) !== state) return;
+        turnPages.delete(key);
         report(reason);
       })
       .finally(() => {
         state.task = undefined;
-        if (state.wanted !== undefined && workPages.get(key) === state)
-          loadPages(key, state.wanted, start, view);
+        if (state.wanted !== undefined && turnPages.get(key) === state)
+          loadTurnPages(key, state.wanted, start);
       });
   };
   const loadTurnWork = (key: string) => {
@@ -1896,28 +1901,101 @@ export function Conversation(props: ConversationProps) {
       .byTurn.get(key)
       ?.find((row) => row.foldedWork && row.position);
     if (!owner || !first?.position) return;
-    loadPages(
-      key,
-      first.metadataThrough ?? owner.through,
-      { kind: 'row', position: first.position, field: 'body' },
-      'turn',
-    );
+    loadTurnPages(key, first.metadataThrough ?? owner.through, {
+      kind: 'row',
+      position: first.position,
+      field: 'body',
+    });
   };
-  const loadGroupSteps = (rowId: string) => {
+  const loadGroupSteps = (group: () => ProcessGroup, request?: ActivityPage): void => {
+    const { workRowId: id, closed, key } = group();
     const owner = historyWindow();
-    const row = historyRows().byId.get(rowId);
-    if (!owner || !row?.work || !row.position) return;
-    const existing = workPages.get(rowId);
-    const through =
-      !existing || existing.task
-        ? historyRowThrough(row, owner.through)
-        : (row.metadataThrough ?? owner.through);
-    loadPages(
-      rowId,
-      through,
-      { kind: 'row', position: row.position, field: row.field as 'body' | 'thinking' },
-      'steps',
-    );
+    const row = id && historyRows().byId.get(id);
+    if (!id || !owner || !row || !row.work || !row.position) return;
+    const reader = groupState(key);
+    if (!reader.open()) return;
+    const through = historyRowThrough(row, owner.through);
+    let state = stepWindows.get(id);
+    const edge = request === 'start' ? 'before' : request === 'end' ? 'after' : undefined;
+    const direction = request === 'before' || request === 'after' ? request : edge;
+    let position: HistoryPosition;
+    if (!state) {
+      const fromStart = edge ? edge === 'before' : closed;
+      position = fromStart
+        ? { kind: 'row', position: row.position, field: row.field as 'body' | 'thinking' }
+        : { kind: 'row_end', position: row.work.end.position, field: row.work.end.field };
+      state = { before: null, after: null, last: null, through: -1, reading: false };
+      stepWindows.set(id, state);
+    } else {
+      if (edge) state.seek = edge;
+      if (state.reading) {
+        if (!edge && direction) state.pending = direction;
+        return;
+      }
+      if (direction) {
+        const cursor = state[direction];
+        if (!cursor) {
+          if (edge) state.seek = undefined;
+          return;
+        }
+        position = { kind: direction, cursor };
+      } else if (!state.after && state.last && state.through < (row.metadataThrough ?? through)) {
+        position = { kind: 'after', cursor: state.last };
+      } else {
+        return;
+      }
+    }
+    const window = state;
+    window.reading = true;
+    void history(through, position, 'steps')
+      .then((page) => {
+        if (!alive || stepWindows.get(id) !== window) return;
+        if (position.kind !== 'after') window.before = page.before;
+        if (position.kind !== 'before') {
+          window.after = page.after;
+          window.through = through;
+          const last = page.chunks.at(-1);
+          if (last)
+            window.last = page.after ?? {
+              position: last.position,
+              field: last.field,
+              offset: last.totalBytes,
+            };
+        }
+        mergePage(page.chunks, through, position.kind === 'before');
+        window.reading = false;
+        const pending = window.pending;
+        window.pending = undefined;
+        if (!reader.open()) {
+          window.seek = undefined;
+          return;
+        }
+        if (window.seek) {
+          const target = window.seek;
+          if (window[target]) {
+            loadGroupSteps(group, target);
+            return;
+          }
+          window.seek = undefined;
+          if (target === 'before') reader.list?.scrollToOffset({ offset: 0, animated: false });
+          else reader.list?.scrollToEnd({ animated: false });
+        }
+        // A page of receipts may add no visible rows. Keep looking until the list can scroll.
+        if (pending && window[pending]) loadGroupSteps(group, pending);
+        else if (group().rowIds.length === 0 && (window.before || window.after))
+          loadGroupSteps(group, window.before ? 'before' : 'after');
+        else if (!group().closed && reader.following() && window.after)
+          loadGroupSteps(group, 'after');
+        else loadGroupSteps(group);
+      })
+      .catch((reason) => {
+        if (!alive || stepWindows.get(id) !== window) return;
+        window.reading = false;
+        window.pending = undefined;
+        window.seek = undefined;
+        if (window.through < 0) stepWindows.delete(id);
+        report(reason);
+      });
   };
   const hydrateAttachmentMetadata = () => {
     for (const rowKey of historyRows().missingAttachments) {
@@ -4036,12 +4114,14 @@ export function Conversation(props: ConversationProps) {
       if (!turn) return;
       unfoldTurn(turn);
       const state = groupState(group.key);
-      if (!state.open()) {
+      const opening = !state.open();
+      if (opening) {
         innerReader.set(group.closed ? group.key : null);
         state.opening = group.closed ? 'top' : 'bottom';
         state.following.set(!group.closed);
       }
       state.open.set(true);
+      if (opening) loadGroupSteps(() => group, group.closed ? 'start' : 'end');
       const index = displayKeys().indexOf(group.key);
       if (index >= 0) list?.scrollToIndex({ index, viewPosition: 0 });
       state.requestFocus = true;
@@ -4567,7 +4647,8 @@ export function Conversation(props: ConversationProps) {
               );
             effect(() => {
               const id = group().workRowId;
-              if (id && groupState(initial.group.key).open() && currentRow(id)) loadGroupSteps(id);
+              if (id && groupState(initial.group.key).open() && currentRow(id))
+                loadGroupSteps(group);
             });
             const liveTools = computed(() =>
               toolActivity().filter((item) =>
@@ -4596,7 +4677,13 @@ export function Conversation(props: ConversationProps) {
                 previewTerminal={props.previewTerminal}
                 openLink={openLink}
                 senders={senders}
-                userScroll={() => cancelNavigation()}
+                userScroll={() => {
+                  cancelNavigation();
+                  const id = group().workRowId;
+                  const window = id && stepWindows.get(id);
+                  if (window) window.seek = undefined;
+                }}
+                pageSteps={(direction) => loadGroupSteps(group, direction)}
                 revealTerminalGroup={
                   platform.idiom === 'terminal'
                     ? () =>

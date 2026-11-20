@@ -1665,7 +1665,7 @@ async fn desktop_resumes_live_activity_when_scrolling_back_to_latest() {
     )
     .await;
     let mut reply = fixture.next_request().await;
-    for index in 0..35 {
+    for index in 0..135 {
         reply
             .packet(json!({"type":"response.output_item.done","item":{
                 "type":"reasoning","id":format!("reasoning-{index}"),
@@ -1674,7 +1674,25 @@ async fn desktop_resumes_live_activity_when_scrolling_back_to_latest() {
             .await;
     }
     let desktop = Desktop::open(&fixture, &fixture.address).await;
-    let thumb = desktop.open_group("Thinking · Activity line 34").await;
+    use nsh_terminal::ScrollWheelEvent;
+    let latest = desktop.open_group("Thinking · Activity line 134").await;
+    desktop
+        .retry(
+            "read the first activity across page boundaries",
+            || !desktop.controls("Thinking · Activity line 0").is_empty(),
+            || {
+                desktop
+                    .platform
+                    .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                        position: latest.center(),
+                        delta: nsh_terminal::ScrollDelta::Lines(point(0., 24.))
+                    })))
+                    .unwrap();
+            },
+        )
+        .await;
+    desktop.press("Return to latest").await;
+    let thumb = desktop.control("Thinking · Activity line 134").await;
     assert!(desktop.controls("Return to latest").is_empty());
     let at = point(thumb.right() - px(5.), thumb.center().y);
     desktop.hover_at(at);
@@ -1710,7 +1728,7 @@ async fn desktop_resumes_live_activity_when_scrolling_back_to_latest() {
     let outer = point(at.x + px(16.), at.y);
     scroll(outer, point(outer.x, outer.y - px(120.)));
     let user = desktop.control("Copy user message").await;
-    assert!(desktop.controls("Thinking · Activity line 34").is_empty());
+    assert!(desktop.controls("Thinking · Activity line 134").is_empty());
     // The outer thumb now rests at the top of its track, level with the prompt.
     let outer = point(outer.x, user.top() + px(32.));
     desktop

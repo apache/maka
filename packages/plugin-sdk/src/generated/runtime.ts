@@ -4457,6 +4457,11 @@ export type HistoryPosition =
       field: HistoryField;
     }
   | {
+      kind: 'row_end';
+      position: HistoryRowAddress;
+      field: HistoryField;
+    }
+  | {
       kind: 'before';
       cursor: Cursor;
     }

@@ -30,7 +30,7 @@ use wire::{SourceField, SourceFormat, SourcePosition, SourceSegment};
 
 use maka_agent_state::session_history::{
     snapshot::Snapshot,
-    source_tree::{CompletedWork, RunRows, SourceItem, SourceTree},
+    source_tree::{CompletedWork, QualifiedRow, RunRows, SourceItem, SourceTree},
 };
 
 pub(super) struct Selected {
@@ -107,10 +107,6 @@ pub(super) async fn unpaired(
         return Err("agent_history_cancelled".into());
     }
     address.validate().map_err(str::to_owned)?;
-    let data = tree
-        .source_for_path(address.path(), snapshot_id(address))
-        .await
-        .map_err(|error| error.to_string())?;
     let item = tree
         .item(address)
         .await
@@ -126,6 +122,20 @@ pub(super) async fn unpaired(
             .ok_or("agent_history_source_missing")?
             .order
     };
+    project_item(tree, address, order, item, cache, stop).await
+}
+async fn project_item(
+    tree: &SourceTree,
+    address: &wire::HistoryRowAddress,
+    order: wire::HistoryOrder,
+    item: SourceItem,
+    cache: &mut Cache,
+    stop: &tokio_util::sync::CancellationToken,
+) -> Result<Selected, String> {
+    let data = tree
+        .source_for_path(address.path(), snapshot_id(address))
+        .await
+        .map_err(|error| error.to_string())?;
     let mut row = match &item {
         SourceItem::Canonical(item) => {
             let completed = completed_work(tree, address, item.recorded.run, cache).await?;
@@ -439,7 +449,7 @@ async fn scan_window(
     let mut steps_turn = None;
     let mut skip_turn: Option<Option<TurnKey>> = None;
     let mut pending: Option<(Option<TurnKey>, Vec<Selected>, bool)> = None;
-    'pages: loop {
+    loop {
         let filter = match turn {
             Some(RunRows::Only { run, start }) => Some(RunRows::Only {
                 run,
@@ -448,35 +458,90 @@ async fn scan_window(
             Some(selection) => Some(selection),
             None => folded.map(|(run, attempt)| RunRows::Folded { run, attempt }),
         };
-        let positions = tree
-            .positions_filtered(bound.clone(), reverse, include_thinking, 32, filter)
+        let page_size = match shape {
+            Shape::Groups { .. } => 32,
+            _ => limit.saturating_add(1).min(32) as u32,
+        };
+        let mut positions = tree
+            .transcript_positions(bound.clone(), reverse, include_thinking, page_size, filter)
             .await
             .map_err(|error| error.to_string())?;
         first = false;
-        let full = positions.len() == 32;
+        let full = positions.len() == page_size as usize;
         let last = positions.last().map(|row| row.address.clone());
-        for qualified in positions {
-            if exclude_anchor && Some(&qualified.address) == bound.as_ref() {
+        if exclude_anchor
+            && positions
+                .first()
+                .is_some_and(|row| Some(&row.address) == bound.as_ref())
+        {
+            positions.remove(0);
+        }
+        let mut seek = None;
+        if cache.chat {
+            for (index, row) in positions.iter().enumerate() {
+                let Some(run) = row.run else { continue };
+                if let Some(work) = completed_work(tree, &row.address, run, cache).await?
+                    && Some((run, work.attempt)) != folded
+                {
+                    seek = Some((index, row.address.clone(), (run, work.attempt)));
+                    break;
+                }
+            }
+            if let Some((index, ..)) = &seek {
+                positions.truncate(*index);
+            }
+        }
+        let live_sequence = |row: &QualifiedRow| match row.address {
+            wire::HistoryRowAddress::Live { sequence, .. } => Some(sequence),
+            _ => None,
+        };
+        let mut sequences: Vec<_> = positions.iter().filter_map(live_sequence).collect();
+        sequences.dedup();
+        let mut live = if sequences.is_empty() {
+            Default::default()
+        } else {
+            let data::DataSource::Live { history, cut } = tree
+                .source_for_path(&[], None)
+                .await
+                .map_err(|e| e.to_string())?
+            else {
+                return Err("agent_history_live_source_missing".into());
+            };
+            history
+                .items(&cut, sequences)
+                .await
+                .map_err(|e| e.to_string())?
+        };
+        let mut positions = positions.into_iter().peekable();
+        while let Some(qualified) = positions.next() {
+            if stop.is_cancelled() {
+                return Err("agent_history_cancelled".into());
+            }
+            let item = match &qualified.address {
+                wire::HistoryRowAddress::Live { sequence, fact, .. } => {
+                    let item = if positions.peek().and_then(live_sequence) == Some(*sequence) {
+                        live.get(sequence).cloned()
+                    } else {
+                        live.remove(sequence)
+                    };
+                    SourceItem::Canonical(
+                        item.filter(|item| item.recorded.id == *fact)
+                            .ok_or("agent_history_source_missing")?,
+                    )
+                }
+                address => tree.item(address).await.map_err(|e| e.to_string())?,
+            };
+            if let SourceItem::Canonical(item) = &item
+                && !projection::visible(&item.recorded.fact)
+            {
                 continue;
             }
-            let work = match qualified.run {
-                Some(run) => completed_work(tree, &qualified.address, run, cache)
-                    .await?
-                    .map(|work| (run, work.attempt)),
-                None => None,
-            };
-            if work.is_some() && work != folded {
-                // Re-seek in the index before loading any of this Run's activity.
-                bound = Some(qualified.address);
-                exclude_anchor = false;
-                folded = work;
-                continue 'pages;
-            }
             let row =
-                unpaired(tree, &qualified.address, Some(qualified.order), cache, stop).await?;
+                project_item(tree, &qualified.address, qualified.order, item, cache, stop).await?;
             if !row.row.visible
                 || (!include_thinking && row.row.chunk.field == wire::HistoryField::Thinking)
-                || (work.is_some()
+                || (matches!(qualified.address, wire::HistoryRowAddress::Live { .. })
+                    && folded.is_some_and(|(run, _)| qualified.run == Some(run))
                     && row.row.chunk.role == wire::Role::Assistant
                     && !row.row.chunk.final_output)
             {
@@ -557,6 +622,12 @@ async fn scan_window(
             if rows.len() >= limit {
                 return Ok(rows);
             }
+        }
+        if let Some((_, address, work)) = seek {
+            bound = Some(address);
+            exclude_anchor = false;
+            folded = Some(work);
+            continue;
         }
         if !full {
             if let Some((_, members, extend)) = pending.take() {
@@ -698,13 +769,11 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
     }
     let mut seats = Vec::new();
     let mut tools: Vec<(wire::Tool, Pairing)> = Vec::new();
+    let mut tool_indices = std::collections::HashMap::<&str, usize>::new();
     for (member, selected) in members.iter().enumerate() {
         let chunk = &selected.row.chunk;
         if let Some(tool) = &chunk.tool {
-            match tools
-                .iter()
-                .position(|(paired, _)| paired.tool_use_id == tool.tool_use_id)
-            {
+            match tool_indices.get(tool.tool_use_id.as_str()).copied() {
                 Some(index) => {
                     let (paired, pairing) = &mut tools[index];
                     pairing.absorb(paired, selected);
@@ -717,6 +786,7 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
                     };
                     let mut pairing = Pairing::default();
                     pairing.absorb(&mut paired, selected);
+                    tool_indices.insert(tool.tool_use_id.as_str(), tools.len());
                     seats.push((member, Seat::Tool(tools.len())));
                     tools.push((paired, pairing));
                 }

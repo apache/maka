@@ -49,6 +49,19 @@ pub enum RunRows {
     /// Retain public input, output from the final attempt and checkpoint markers.
     Folded { run: RunId, attempt: ModelAttemptId },
 }
+#[derive(Clone, Copy)]
+enum PositionFilter {
+    All,
+    Transcript(Option<RunRows>),
+}
+impl PositionFilter {
+    fn run(self) -> Option<RunRows> {
+        match self {
+            Self::All => None,
+            Self::Transcript(run) => run,
+        }
+    }
+}
 #[derive(Clone)]
 pub struct CompletedWork {
     pub attempt: ModelAttemptId,
@@ -242,7 +255,7 @@ impl SourceTree {
                 true,
                 section.after_admission,
                 1,
-                None,
+                PositionFilter::All,
             )
             .await?
             .into_iter()
@@ -378,7 +391,7 @@ impl SourceTree {
                         include_internal,
                         section.after_admission,
                         1,
-                        None,
+                        PositionFilter::All,
                     )
                     .await?
             }
@@ -416,17 +429,40 @@ impl SourceTree {
         include_internal: bool,
         limit: u32,
     ) -> Result<Vec<QualifiedRow>, StoreError> {
-        self.positions_filtered(anchor, reverse, include_internal, limit, None)
-            .await
+        self.positions_filtered(
+            anchor,
+            reverse,
+            include_internal,
+            limit,
+            PositionFilter::All,
+        )
+        .await
     }
 
-    pub async fn positions_filtered(
+    pub async fn transcript_positions(
         &self,
         anchor: Option<HistoryRowAddress>,
         reverse: bool,
         include_internal: bool,
         limit: u32,
-        run_rows: Option<RunRows>,
+        filter: Option<RunRows>,
+    ) -> Result<Vec<QualifiedRow>, StoreError> {
+        self.positions_filtered(
+            anchor,
+            reverse,
+            include_internal,
+            limit,
+            PositionFilter::Transcript(filter),
+        )
+        .await
+    }
+    async fn positions_filtered(
+        &self,
+        anchor: Option<HistoryRowAddress>,
+        reverse: bool,
+        include_internal: bool,
+        limit: u32,
+        filter: PositionFilter,
     ) -> Result<Vec<QualifiedRow>, StoreError> {
         if limit == 0 {
             return Ok(vec![]);
@@ -438,7 +474,7 @@ impl SourceTree {
             self.validate_address(address).await?;
             (
                 index,
-                match run_rows {
+                match filter.run() {
                     Some(RunRows::Only {
                         start: Some(sequence),
                         ..
@@ -468,7 +504,12 @@ impl SourceTree {
                         include_internal,
                         current.after_admission,
                         batch,
-                        (section == anchored_section).then_some(run_rows).flatten(),
+                        match filter {
+                            PositionFilter::Transcript(_) if section != anchored_section => {
+                                PositionFilter::Transcript(None)
+                            }
+                            _ => filter,
+                        },
                     )
                     .await?;
                 let full = rows.len() == batch as usize;
@@ -493,7 +534,7 @@ impl SourceTree {
                 bound = Some(last);
                 exclude_anchor = true;
             }
-            if matches!(run_rows, Some(RunRows::Only { .. })) {
+            if matches!(filter.run(), Some(RunRows::Only { .. })) {
                 break;
             }
             bound = None;
