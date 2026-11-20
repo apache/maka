@@ -234,6 +234,16 @@ async fn exercise(rig: &mut Rig) -> TestResult<()> {
             .access(&base.join("workspace/new.txt")),
         maka_sandbox::filesystem::Access::Read
     );
+    assert!(owner.restored_data(&captured).await.is_ok());
+    // Captures made before execution-managed bootstrap cannot retain wider rights.
+    let mut wider = captured.clone();
+    wider.spec.permission_ceiling.sandbox = maka_sandbox::Sandbox::Disabled;
+    assert!(owner.restored_data(&wider).await.is_err());
+    let mut wider = captured.clone();
+    wider.spec.filesystem_approval_ceiling = Some(maka_sandbox::filesystem::Policy::uniform(
+        maka_sandbox::filesystem::Access::Write,
+    ));
+    assert!(owner.restored_data(&wider).await.is_err());
     assert!(
         !model_request["tools"].to_string().contains("todo_write"),
         "{model_request}"
