@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use crate::executor::ActiveDelivery;
 use maka_agent_facts::durable::{BackendSpec, ExecutionIdentity, UnixMillis};
 use maka_agent_state::queue::{
     Followup, Placement as QueuePlacement, PreparedEnqueue, QueueCommand, QueueEdit,
@@ -450,30 +451,18 @@ impl Owner {
         } else {
             latest.filter(|view| view.terminal.is_none())
         };
-        let interrupt = if let (Some(view), SendDelivery::Steer) = (&active, delivery)
-            && let BackendSpec::Executor {
-                selection,
-                descriptor,
-            } = &view.spec.backend
-            && selection.settings.runtime.as_deref() == Some("antigravity")
-        {
-            let executor: crate::executor::Accepted = self
-                .run_content(view.run, descriptor)
-                .await
-                .map_err(public_error)?;
-            if &executor.selection != selection {
-                return Err("agent_executor_descriptor_changed".into());
-            }
-            matches!(
-                self.executors.active_delivery(&executor),
-                crate::executor::ActiveDelivery::InterruptResume
-            )
-            .then_some(selection)
-        } else {
-            None
+        let active_delivery = match (&active, delivery) {
+            (Some(view), SendDelivery::Steer) => self.active_delivery(view).await?,
+            _ => ActiveDelivery::Queue,
         };
+        let mut backend = backend;
         let followup = active.as_ref().map(|view| {
-            if interrupt.is_some() {
+            if matches!(active_delivery, ActiveDelivery::InterruptResume) {
+                if let BackendSpec::Executor { selection, .. } = &view.spec.backend {
+                    backend.get_or_insert_with(|| BackendPreference::Executor {
+                        selection: selection.clone(),
+                    });
+                }
                 Followup::Interrupt {
                     run: view.run,
                     stop: self.control_id(operation, &format!("{key}:steering_interrupt")),
@@ -481,11 +470,6 @@ impl Owner {
             } else {
                 Followup::Queued(view.run)
             }
-        });
-        let backend = backend.or_else(|| {
-            interrupt.map(|selection| BackendPreference::Executor {
-                selection: selection.clone(),
-            })
         });
         let basis = match self
             .capture_current_run(&id, backend, operation.fingerprint.clone(), parent)
@@ -501,9 +485,7 @@ impl Owner {
             }
             Err(error) => return Err(error.into()),
         };
-        if let (Some(view), SendDelivery::Steer) = (&active, delivery)
-            && interrupt.is_none()
-        {
+        if let (Some(view), ActiveDelivery::Steer) = (&active, active_delivery) {
             let execution = ExecutionIdentity {
                 session_id: id.clone(),
                 turn_id: view.spec.turn_id.clone(),

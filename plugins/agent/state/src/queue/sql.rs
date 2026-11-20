@@ -40,6 +40,8 @@ pub(crate) enum DeliveryTarget {
 pub(crate) enum Event {
     Command {
         expected_revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume_after_interrupt: Option<RunId>,
         edit: QueueEdit,
     },
     CallerStopped {
@@ -217,9 +219,10 @@ fn target(
     c: &Connection,
     session: &str,
     owner: &RunOwner,
-    target: &SteeringTarget,
+    run: RunId,
+    expected_head: Option<Head>,
 ) -> Result<(), StoreError> {
-    let (spec, actual, stopped, terminal) = run_head(c, target.run)?;
+    let (spec, actual, stopped, terminal) = run_head(c, run)?;
     if spec.session_id != session
         || &spec.owner != owner
         || !matches!(spec.origin, RunOrigin::Local)
@@ -230,9 +233,11 @@ fn target(
             "steering target is not a live local Run owned by this session",
         ));
     }
-    if actual != target.expected_head {
+    if let Some(expected) = expected_head
+        && actual != expected
+    {
         return Err(StoreError::RevisionConflict {
-            expected: serde_json::to_string(&target.expected_head)?,
+            expected: serde_json::to_string(&expected)?,
             actual: serde_json::to_string(&actual)?,
         });
     }
@@ -249,6 +254,17 @@ fn followup(
             diagnostic: "agent_admission_failed".into(),
             cause: Arc::new(invalid(reason)),
         }
+    }
+    // A promotion validates its original live Run and owner in project().
+    if let Event::Command {
+        edit: QueueEdit::Promote { target, .. },
+        resume_after_interrupt: Some(run),
+        ..
+    } = event
+        && *run == original
+        && target.run == original
+    {
+        return Ok(());
     }
     let Event::Command {
         edit:
@@ -356,18 +372,22 @@ pub(super) fn write(
     session: &str,
     command: QueueCommand,
     contents: Vec<ContentBlob>,
-    admission_fence: Option<RunId>,
+    followup_fence: Option<&Followup>,
 ) -> Result<(QueueCommit, bool), StoreError> {
     id(session)?;
     let event = Event::Command {
         expected_revision: command.expected_revision,
+        resume_after_interrupt: match followup_fence {
+            Some(Followup::Interrupt { run, .. }) => Some(*run),
+            _ => None,
+        },
         edit: command.edit,
     };
     if let Some(revision) = previous(c, session, command.id, &event)? {
         return Ok((QueueCommit { revision }, false));
     }
-    if let Some(original) = admission_fence {
-        followup(c, session, &event, original)?;
+    if let Some(fence) = followup_fence {
+        followup(c, session, &event, fence.original())?;
     }
     let next = cas(c, session, command.expected_revision)?;
     for blob in &contents {
@@ -419,34 +439,24 @@ fn row_entry(
     c: &Connection,
     session: &str,
     request: &RequestId,
-) -> Result<Option<(QueueEntry, String, u64)>, StoreError> {
-    let row: Option<(String, String, i64)> = c
+) -> Result<Option<(QueueEntry, String)>, StoreError> {
+    let row: Option<(String, String)> = c
         .query_row(
-            "SELECT entry_json,state,position FROM agent_queue_items WHERE session=? AND request=?",
+            "SELECT entry_json,state FROM agent_queue_items WHERE session=? AND request=?",
             params![session, request.0],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    row.map(|(body, state, position)| {
-        Ok((
-            serde_json::from_str(&body)?,
-            state,
-            from_sql_integer(position)?,
-        ))
-    })
-    .transpose()
+    row.map(|(body, state)| Ok((serde_json::from_str(&body)?, state)))
+        .transpose()
 }
-fn pending(
-    c: &Connection,
-    session: &str,
-    request: &RequestId,
-) -> Result<(QueueEntry, u64), StoreError> {
-    let (entry, state, position) =
+fn pending(c: &Connection, session: &str, request: &RequestId) -> Result<QueueEntry, StoreError> {
+    let (entry, state) =
         row_entry(c, session, request)?.ok_or_else(|| invalid("queue request not found"))?;
     if state != "pending" {
         return Err(invalid("queue request is no longer pending"));
     }
-    Ok((entry, position))
+    Ok(entry)
 }
 fn placement_columns(placement: &Placement) -> (&'static str, Option<String>) {
     match placement {
@@ -467,7 +477,19 @@ fn project(
     check: bool,
 ) -> Result<(), StoreError> {
     match event {
-        Event::Command { edit, .. } => {
+        Event::Command {
+            edit,
+            resume_after_interrupt,
+            ..
+        } => {
+            // Interrupted turns resume ahead of ordinary followups. Both groups
+            // keep revision order in the existing indexed position column.
+            let revision = to_sql_integer(next)?;
+            let position = if resume_after_interrupt.is_some() {
+                i64::MIN + revision
+            } else {
+                revision
+            };
             match edit {
                 QueueEdit::Enqueue { request, placement } => {
                     let source = validate_request(c, session, request)?;
@@ -483,15 +505,7 @@ fn project(
                         return Err(StoreError::EventConflict);
                     }
                     if check && let Placement::Steering { run, expected_head } = placement {
-                        target(
-                            c,
-                            session,
-                            &request.spec.owner,
-                            &SteeringTarget {
-                                run: *run,
-                                expected_head: *expected_head,
-                            },
-                        )?;
+                        target(c, session, &request.spec.owner, *run, Some(*expected_head))?;
                     }
                     for reference in references(request) {
                         pin(c, session, &request.id, reference)?;
@@ -532,10 +546,10 @@ fn project(
                             target = Some(caller.to_string());
                         }
                     }
-                    c.execute("INSERT INTO agent_queue_items(session,request,message,owner,position,lane,target_run,state,entry_json) VALUES(?,?,?,?,?,?,?,'pending',?)",params![session,request.id.0,request.message_id,serde_json::to_string(&request.spec.owner)?,to_sql_integer(next)?,lane,target,serde_json::to_string(&entry)?])?;
+                    c.execute("INSERT INTO agent_queue_items(session,request,message,owner,position,lane,target_run,state,entry_json) VALUES(?,?,?,?,?,?,?,'pending',?)",params![session,request.id.0,request.message_id,serde_json::to_string(&request.spec.owner)?,position,lane,target,serde_json::to_string(&entry)?])?;
                 }
                 QueueEdit::Update { request } => {
-                    let (mut old, _) = pending(c, session, &request.id)?;
+                    let mut old = pending(c, session, &request.id)?;
                     let before = source(c, &old.request)?;
                     if !is_interactive(&old.request, &before) {
                         return Err(invalid(
@@ -586,7 +600,7 @@ fn project(
                     request,
                     target: steering,
                 } => {
-                    let (mut entry, _) = pending(c, session, request)?;
+                    let mut entry = pending(c, session, request)?;
                     let source = source(c, &entry.request)?;
                     if !is_interactive(&entry.request, &source) {
                         return Err(invalid(
@@ -597,23 +611,30 @@ fn project(
                         return Err(invalid("request is already steering"));
                     }
                     if check {
-                        target(c, session, &entry.request.spec.owner, steering)?;
+                        // In-place steering targets a specific head. Interrupt/resume
+                        // targets the live Run even if it streamed another event.
+                        let head = resume_after_interrupt
+                            .is_none()
+                            .then_some(steering.expected_head);
+                        target(c, session, &entry.request.spec.owner, steering.run, head)?;
                     }
-                    entry.placement = Placement::Steering {
-                        run: steering.run,
-                        expected_head: steering.expected_head,
-                    };
-                    update_entry(c, session, &entry)?;
+                    if resume_after_interrupt.is_none() {
+                        entry.placement = Placement::Steering {
+                            run: steering.run,
+                            expected_head: steering.expected_head,
+                        };
+                        update_entry(c, session, &entry)?;
+                    }
                     c.execute(
                         "UPDATE agent_queue_items SET position=? WHERE session=? AND request=?",
-                        params![to_sql_integer(next)?, session, request.0],
+                        params![position, session, request.0],
                     )?;
                 }
                 QueueEdit::Reorder { requests } => {
                     if requests.is_empty() {
                         return Err(invalid("empty queue reorder"));
                     }
-                    let first = pending(c, session, &requests[0])?.0;
+                    let first = pending(c, session, &requests[0])?;
                     let (lane, _) = placement_columns(&first.placement);
                     let count: i64 = c.query_row("SELECT count(*) FROM agent_queue_items WHERE session=? AND state='pending' AND lane=?",params![session,lane],|r|r.get(0))?;
                     let unique: BTreeSet<_> = requests.iter().collect();
@@ -625,7 +646,7 @@ fn project(
                         return Err(invalid("reorder must name exactly the pending lane"));
                     }
                     for (position, request) in requests.iter().enumerate() {
-                        let item = pending(c, session, request)?.0;
+                        let item = pending(c, session, request)?;
                         if placement_columns(&item.placement).0 != lane {
                             return Err(invalid("reorder crosses queue lanes"));
                         }
@@ -869,13 +890,13 @@ pub(super) fn ready(
         ),
         None => ("", 0, ""),
     };
-    let rows = c.prepare_cached("SELECT session,position,request,entry_json FROM agent_queue_items WHERE owner=?1 AND state='pending' AND (session,position,request)>(?2,?3,?4) ORDER BY session,position,request LIMIT ?5")?.query_map(params![serde_json::to_string(owner)?,session,to_sql_integer(position)?,request,limit],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<Result<Vec<_>,_>>()?;
+    let rows = c.prepare_cached("SELECT session,position,request,entry_json FROM agent_queue_items WHERE owner=?1 AND state='pending' AND (session,position,request)>(?2,?3,?4) ORDER BY session,position,request LIMIT ?5")?.query_map(params![serde_json::to_string(owner)?,session,position,request,limit],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<Result<Vec<_>,_>>()?;
     rows.into_iter()
         .map(|(session, position, request, body)| {
             Ok(ReadyEntry {
                 cursor: ReadyCursor {
                     session,
-                    position: from_sql_integer(position)?,
+                    position,
                     request: RequestId(request),
                 },
                 entry: serde_json::from_str(&body)?,
@@ -930,7 +951,7 @@ pub(crate) fn consume(
         return Err(invalid("one Run admission consumes exactly one request"));
     }
     let next = cas(c, &cut.session, cut.expected_revision)?;
-    let (entry, _) = pending(c, &cut.session, &cut.requests[0])?;
+    let entry = pending(c, &cut.session, &cut.requests[0])?;
     if !entry.placement.is_followup() || entry.request.spec != *spec {
         return Err(invalid(
             "Run admission does not match frozen followup request",

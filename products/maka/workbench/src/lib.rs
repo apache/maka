@@ -494,6 +494,26 @@ mod tests {
     }
 
     #[test]
+    fn steering_warning_follows_the_original_queued_message() {
+        let mut app = fixture("messages-dock.tsx");
+        let steer = "label:Steer queued message 1 now";
+        let warning = "text:This turn cannot accept this message right now. It remains queued.";
+        app.wait_for(steer).unwrap();
+        app.press(steer).unwrap();
+        app.press("label:Release receipt").unwrap();
+        app.wait_for(warning).unwrap();
+        app.press("label:Deliver first").unwrap();
+        app.wait_for("text:second").unwrap();
+        assert!(!app.screen().matches(warning).unwrap());
+
+        app.press(steer).unwrap();
+        app.press("label:Deliver first").unwrap();
+        app.press("label:Release receipt").unwrap();
+        app.wait_for("text:Empty dock").unwrap();
+        assert!(!app.screen().matches(warning).unwrap());
+    }
+
+    #[test]
     fn inline_dictation_cancels_or_inserts_at_the_original_caret() {
         let mut app = fixture("inline-dictation.tsx");
         app.wait_for("label:Microphone").unwrap();
