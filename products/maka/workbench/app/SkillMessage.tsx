@@ -56,7 +56,7 @@ export function SkillMessage(props: {
         <If
           when={props.presentation().kind === 'tokens'}
           else={
-            <Text style={{ ...bodyTextStyle, color: C.text }}>
+            <Text style={{ ...bodyTextStyle, color: C.text, userSelect: 'text' }}>
               <SourceText row={props.row} sourceId={props.sourceId} />
             </Text>
           }
