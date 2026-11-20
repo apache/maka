@@ -58,6 +58,21 @@ pub(super) fn project(view: &RunView) -> Execution {
 }
 
 impl Owner {
+    pub(super) async fn latest_session_run(
+        &self,
+        session: &str,
+    ) -> Result<Option<RunView>, String> {
+        match self
+            .durable
+            .latest_run(session.into())
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            Some(run) => self.session_run(session, run).await,
+            None => Ok(None),
+        }
+    }
+
     pub(super) async fn session_run(
         &self,
         session: &str,

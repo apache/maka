@@ -1634,6 +1634,36 @@ async fn antigravity_accepts_steers_through_cancel_and_resume() {
             }
             mutate(&sdk, "agent", "send", input)
         };
+        let enqueue = |label: &str| {
+            mutate(
+                &sdk,
+                "agent",
+                "send",
+                json!({
+                    "sessionId":session, "delivery":"queue",
+                    "message":format!("MAKA_EXTERNAL_CASE {}", json!({"label":label}))
+                }),
+            )
+        };
+        let during_cancel = enqueue("ACP-steer-promote-cancel").await?;
+        let during_resume = enqueue("ACP-steer-promote-resume").await?;
+        let promote = |message_id: Value| {
+            let sdk = &sdk;
+            let session = &session;
+            async move {
+                let queue = query(sdk, "agent", "queue", json!({"sessionId":session})).await?;
+                mutate(
+                    sdk,
+                    "agent",
+                    "editQueue",
+                    json!({
+                        "sessionId":session, "expectedRevision":queue["revision"],
+                        "edit":{"kind":"promote", "messageId":message_id}
+                    }),
+                )
+                .await
+            }
+        };
         let gate = rig.sandbox.workspace.join("hold-acp-resume");
         std::fs::write(&gate, []).map_err(|e| e.to_string())?;
         let first = steer("ACP-steer-1", Some(&original)).await?;
@@ -1642,6 +1672,8 @@ async fn antigravity_accepts_steers_through_cancel_and_resume() {
             .controller
             .event("ACP-handoff", "cancel_pending")
             .await?;
+        let promoted = promote(during_cancel["messageId"].clone()).await?;
+        assert_eq!(promoted["kind"], "committed", "{promoted}");
         for (label, expected) in [("ACP-steer-2", Some(&original)), ("ACP-steer-3", None)] {
             let sent = steer(label, expected).await?;
             assert_eq!(sent["kind"], "queued", "{sent}");
@@ -1655,6 +1687,8 @@ async fn antigravity_accepts_steers_through_cancel_and_resume() {
             .event("ACP-handoff", "resume_pending")
             .await?;
         assert_eq!(original_prompt["thread"], resume["thread"]);
+        let promoted = promote(during_resume["messageId"].clone()).await?;
+        assert_eq!(promoted["kind"], "committed", "{promoted}");
         for (label, expected) in [("ACP-steer-4", None), ("ACP-steer-5", Some(&original))] {
             let sent = steer(label, expected).await?;
             assert_eq!(sent["kind"], "queued", "{sent}");
@@ -1692,8 +1726,10 @@ async fn antigravity_accepts_steers_through_cancel_and_resume() {
                 "ACP-parent",
                 "ACP-handoff",
                 "ACP-steer-1",
+                "ACP-steer-promote-cancel",
                 "ACP-steer-2",
                 "ACP-steer-3",
+                "ACP-steer-promote-resume",
                 "ACP-steer-4",
                 "ACP-steer-5",
                 "ACP-receipt"

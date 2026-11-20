@@ -198,23 +198,6 @@ impl QueueStore {
             work_fence: None,
         })
     }
-    /// Fence a follow-up against the exact original Run observed by Native.
-    /// The Run id is a commit-time condition, never an execution grant.
-    pub fn prepare_followup(
-        &self,
-        session: String,
-        command: QueueCommand,
-        contents: Vec<ContentBlob>,
-        followup: Followup,
-    ) -> maka_event_log::root_store::DataChange {
-        self.data.prepare(PreparedEnqueue {
-            session,
-            command,
-            contents,
-            followup: Some(followup),
-            work_fence: None,
-        })
-    }
     /// Native supplies the original positive fence selected for this same Root and Session.
     /// Retain that original owner through SQL settlement; this is not a grant.
     pub fn prepare_after_stop(

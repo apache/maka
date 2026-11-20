@@ -411,15 +411,7 @@ impl Owner {
         if admission.state().await.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
-        let latest = match self
-            .durable
-            .latest_run(id.clone())
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            Some(run) => self.session_run(&id, run).await?,
-            None => None,
-        };
+        let latest = self.latest_session_run(&id).await?;
         let handoff = match (&latest, delivery) {
             (Some(view), SendDelivery::Steer) => self
                 .durable
