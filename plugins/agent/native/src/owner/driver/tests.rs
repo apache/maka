@@ -226,6 +226,7 @@ struct Rig {
     model_overrides: Value,
     model_idle_timeout: Option<Duration>,
     uncertain_tool: bool,
+    extra_tools: Vec<ToolRegistration>,
     native_grants: Vec<NativeGrant>,
     store: Option<Arc<RootStore>>,
     host: Option<Arc<Host>>,
@@ -264,6 +265,7 @@ impl Rig {
             model_overrides: json!({}),
             model_idle_timeout: None,
             uncertain_tool: false,
+            extra_tools: vec![],
             native_grants: vec![],
             store: None,
             host: None,
@@ -838,11 +840,23 @@ impl Rig {
             semantics: ToolSemantics::Parallel,
             handler: ToolHandler::Prepared(Arc::new(UncertainTool)),
         });
-        let catalog =
-            maka_tools::ToolCatalog::new(ordinary_tool.into_iter().chain(uncertain_tool))?;
+        let extra_tools = std::mem::take(&mut self.extra_tools);
+        let direct_only = ordinary_tool
+            .iter()
+            .chain(uncertain_tool.iter())
+            .chain(extra_tools.iter())
+            .filter(|reg| matches!(reg.nesting, ToolNesting::DirectOnly))
+            .map(|reg| reg.definition.name.clone())
+            .collect();
+        let catalog = maka_tools::ToolCatalog::new(
+            ordinary_tool
+                .into_iter()
+                .chain(uncertain_tool)
+                .chain(extra_tools),
+        )?;
         let tools = ContentBlob::json(&crate::tools::SelectionSnapshot {
             definitions: catalog.definitions().cloned().collect(),
-            direct_only: catalog.names().into_iter().collect(),
+            direct_only,
             services: vec![],
             internal_bindings: Default::default(),
         })?;
@@ -2982,6 +2996,209 @@ mod source_recovery {
         assert!(
             matches!(result, Ok(Ok(()))),
             "late original ACK: {result:?}; {cleanup:?}"
+        );
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stopped_run_rejects_cell_child_admission_without_poisoning_cleanup() {
+        use maka_agent_facts::cells::CellEvent;
+
+        struct StopBoundaryTool {
+            entered_prepare: StdMutex<Option<oneshot::Sender<()>>>,
+            release_prepare: StdMutex<Option<oneshot::Receiver<()>>>,
+            effect_ran: Arc<AtomicBool>,
+        }
+        impl ToolPreparer for StopBoundaryTool {
+            fn names(&self) -> Vec<String> {
+                vec!["stop_boundary".into()]
+            }
+            fn prepare(
+                &self,
+                _name: String,
+                _input: Value,
+                _context: ToolCallContext,
+                cancellation: CancellationToken,
+            ) -> PreparationFuture {
+                let entered = self.entered_prepare.lock().unwrap().take();
+                let release = self
+                    .release_prepare
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("one stop_boundary preparation");
+                let effect_ran = self.effect_ran.clone();
+                Box::pin(async move {
+                    if let Some(entered) = entered {
+                        let _ = entered.send(());
+                    }
+                    tokio::select! {
+                        res = release => res.map_err(|e| maka_agent_facts::tool_call::ToolRejection::PreparationFailed { message: e.to_string() })?,
+                        _ = cancellation.cancelled() => return Err(maka_agent_facts::tool_call::ToolRejection::PreparationFailed { message: "prepare cancelled".into() }),
+                    }
+                    Ok(PreparedEffect::new(move |_| {
+                        let effect_ran = effect_ran.clone();
+                        Box::pin(async move {
+                            effect_ran.store(true, Ordering::SeqCst);
+                            Ok(ToolSuccess::from(ToolOutput::Text("must not run".into())))
+                        })
+                    }))
+                })
+            }
+        }
+
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let effect_ran = Arc::new(AtomicBool::new(false));
+        let mut rig = Rig::new().expect("owned stop-boundary cell fixture");
+        rig.extra_tools.push(ToolRegistration {
+            definition: ToolDefinition {
+                name: "stop_boundary".into(),
+                description: "Pauses during preparation so StopRequested commits before ChildAdmitted".into(),
+                input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
+                provider: None,
+                freeform: None,
+                output_schema: None,
+            },
+            nesting: ToolNesting::Nestable,
+            semantics: ToolSemantics::Parallel,
+            handler: ToolHandler::Prepared(Arc::new(StopBoundaryTool {
+                entered_prepare: StdMutex::new(Some(entered_tx)),
+                release_prepare: StdMutex::new(Some(release_rx)),
+                effect_ran: effect_ran.clone(),
+            })),
+        });
+
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            rig.assemble(&session).await?;
+            let attempt = rig.attempt().await?;
+
+            // Launch a real exec Cell whose child pauses inside PreparedTool::prepare (after
+            // check_tool and ChildPrepared have succeeded, immediately before ChildAdmitted).
+            let exec_input = json!({
+                "code": "await tools.stop_boundary({});",
+                "yield_time_ms": 30000
+            });
+            let (exec_key, exec_t1) = rig
+                .tool(attempt, "exec", "stop-boundary-exec", exec_input.clone())
+                .await?;
+            let driver = rig.driver.as_ref().unwrap();
+            let run = driver.access.execution().run_id;
+            let view = driver.state.frontier(run).await?;
+            let context = driver.context(&view, &exec_key)?;
+            let (exec, source) = rig
+                .cells
+                .as_ref()
+                .unwrap()
+                .prepare(
+                    context,
+                    "exec",
+                    &exec_input,
+                    driver.catalog.clone(),
+                    CancellationToken::new(),
+                    CancellationToken::new(),
+                )
+                .await?;
+            let exec_released = Arc::new(AtomicBool::new(false));
+            rig.begin(
+                exec,
+                exec_t1,
+                exec_key.clone(),
+                source,
+                driver.original_effects.clone(),
+                exec_released.clone(),
+            )?;
+
+            // Wait deterministically until ChildPrepared is committed and preparation is parked,
+            // then commit StopRequested (view.stopped == true && view.terminal == None).
+            entered_rx.await?;
+            rig.append(
+                vec![Fact::StopRequested {
+                    diagnostic: "user_requested_stop".into(),
+                    requester: maka_agent_facts::durable::StopRequester::User,
+                }],
+                vec![],
+            )
+            .await?;
+            let stopped_view = rig.driver.as_ref().unwrap().state.frontier(run).await?;
+            assert!(stopped_view.stopped && stopped_view.terminal.is_none());
+
+            // Release preparation so NativeCellPort::commit(ChildAdmitted) hits the stopped branch.
+            release_tx.send(()).map_err(|_| "prepare gate dropped")?;
+            rig.complete().await?;
+
+            assert!(
+                !effect_ran.load(Ordering::SeqCst),
+                "prepared child effect must not execute after StopRequested"
+            );
+
+            let driver = rig.driver.as_ref().unwrap();
+            assert!(
+                driver.cleanup.confirmed(),
+                "ordinary stop rejection during cell child admission must not poison cleanup"
+            );
+            let facts = driver.state.history(run, 0, 256).await?;
+            assert!(
+                facts.iter().any(|entry| matches!(
+                    &entry.fact,
+                    Fact::Cell {
+                        event: CellEvent::ChildRejected { diagnostic, .. }
+                    } if diagnostic == "tool failed: Cell admission is stopped"
+                )),
+                "expected ChildRejected(Cell admission is stopped) in run history: {facts:?}"
+            );
+            assert!(
+                !facts.iter().any(|entry| matches!(
+                    &entry.fact,
+                    Fact::Cell {
+                        event: CellEvent::ChildAdmitted { .. }
+                    }
+                )),
+                "stopped run must not commit ChildAdmitted"
+            );
+            assert!(
+                !facts.iter().any(|entry| matches!(
+                    &entry.fact,
+                    Fact::Blocked {
+                        reason: BlockerKind::CodeCellRecoveryUnavailable { .. },
+                        ..
+                    }
+                )),
+                "ordinary stopped child rejection must not quarantine the cell"
+            );
+
+            let after_view = driver.state.frontier(run).await?;
+            let returned = after_view.tools[&tool_key(&exec_key)]
+                .local_returned
+                .as_ref()
+                .ok_or("exec LocalToolReturned missing")?;
+            assert_eq!(returned.settlement, ToolSettlement::Returned);
+            let payload_bytes = driver.state.content(run, returned.result.clone()).await?;
+            let payload = String::from_utf8_lossy(&payload_bytes);
+            assert!(
+                payload.contains("Cell admission is stopped"),
+                "expected ordinary stopped-admission rejection in cell output, got: {payload}"
+            );
+
+            let cells = rig.cells.as_ref().unwrap();
+            cells.coordinator.shutdown().await?;
+            driver.workers.close();
+            driver.workers.wait().await;
+            assert!(
+                cells.original_cleanup_confirmed().await?,
+                "stopped cell must confirm original cleanup"
+            );
+            assert!(driver.original_effects.settle_all(true).await?);
+            rig.work_effects.as_ref().unwrap().settle().await?;
+            rig.lease.take().unwrap().finish();
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(
+            matches!(result, Ok(Ok(()))),
+            "stopped run cell child admission test failed: {result:?}; {cleanup:?}"
         );
         assert!(cleanup.is_empty(), "{cleanup:?}");
     }

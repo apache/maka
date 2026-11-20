@@ -28,9 +28,10 @@ use maka_event_log::{
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::HashMap,
     sync::{Arc, Mutex, Weak},
 };
+use tokio::sync::RwLock;
 
 pub(crate) fn invalid(reason: impl Into<String>) -> StoreError {
     StoreError::InvalidTransition(reason.into())
@@ -261,17 +262,99 @@ pub struct DriverDomain {
 }
 struct Domain {
     data: DataWriter,
-    drivers: Mutex<BTreeMap<RunId, Weak<Ticket>>>,
+    /// Maps each RunId with live tickets to its per-Run driver slot.
+    /// Held only for map lookup/insert/remove; never held across SQL or I/O.
+    slots: Mutex<HashMap<RunId, Weak<RunSlot>>>,
+}
+impl Domain {
+    fn slot(self: &Arc<Self>, run: RunId) -> Result<Arc<RunSlot>, StoreError> {
+        let mut slots = self
+            .slots
+            .lock()
+            .map_err(|_| invalid("poisoned driver domain"))?;
+        if let Some(slot) = slots.get(&run).and_then(Weak::upgrade) {
+            return Ok(slot);
+        }
+        let slot = Arc::new(RunSlot {
+            run,
+            domain: self.clone(),
+            current: RwLock::new(Weak::new()),
+        });
+        slots.insert(run, Arc::downgrade(&slot));
+        Ok(slot)
+    }
+
+    async fn current_ticket(&self, run: RunId) -> Result<Option<Arc<Ticket>>, StoreError> {
+        let slot = {
+            let slots = self
+                .slots
+                .lock()
+                .map_err(|_| invalid("poisoned driver domain"))?;
+            slots.get(&run).and_then(Weak::upgrade)
+        };
+        let Some(slot) = slot else {
+            return Ok(None);
+        };
+        Ok(slot.current.read().await.upgrade())
+    }
+}
+struct RunSlot {
+    run: RunId,
+    domain: Arc<Domain>,
+    /// Shared-locked during SQL work on dedicated event-log worker threads;
+    /// exclusively locked asynchronously during takeover so cancellation before
+    /// acquiring the lock leaves the prior driver intact and acquiring the lock
+    /// swaps and retires the prior driver within the same poll.
+    current: RwLock<Weak<Ticket>>,
+}
+impl Drop for RunSlot {
+    fn drop(&mut self) {
+        if let Ok(mut slots) = self.domain.slots.lock()
+            && slots
+                .get(&self.run)
+                .is_some_and(|entry| std::ptr::eq(entry.as_ptr(), self))
+        {
+            slots.remove(&self.run);
+        }
+    }
+}
+impl RunSlot {
+    async fn install(
+        &self,
+        ticket: &Arc<Ticket>,
+        check_blocks: Option<DriverPurpose>,
+    ) -> Option<DriverClaim> {
+        let mut guard = self.current.write().await;
+        let previous = guard.upgrade();
+        let allowed = match check_blocks {
+            Some(purpose) => !previous.as_ref().is_some_and(|old| old.blocks(purpose)),
+            None => true,
+        };
+        if !allowed {
+            return None;
+        }
+        *guard = Arc::downgrade(ticket);
+        drop(guard);
+        if let Some(previous) = previous {
+            previous.retirement.cancel();
+        }
+        Some(DriverClaim {
+            ticket: ticket.clone(),
+        })
+    }
 }
 struct Ticket {
     run: RunId,
-    domain: Arc<Domain>,
+    slot: Arc<RunSlot>,
     purpose: DriverPurpose,
     retirement: tokio_util::sync::CancellationToken,
     // Immutable publications may retain this ticket after its driver stops.
     active: std::sync::atomic::AtomicBool,
 }
 impl Ticket {
+    fn domain(&self) -> &Arc<Domain> {
+        &self.slot.domain
+    }
     fn blocks(&self, requested: DriverPurpose) -> bool {
         match requested {
             DriverPurpose::LateExternalCleanup { .. } | DriverPurpose::LateModelCleanup => true,
@@ -279,17 +362,6 @@ impl Ticket {
                 matches!(self.purpose, DriverPurpose::Business)
                     && self.active.load(std::sync::atomic::Ordering::Acquire)
             }
-        }
-    }
-}
-impl Drop for Ticket {
-    fn drop(&mut self) {
-        if let Ok(mut entries) = self.domain.drivers.lock()
-            && entries
-                .get(&self.run)
-                .is_some_and(|entry| std::ptr::eq(entry.as_ptr(), self))
-        {
-            entries.remove(&self.run);
         }
     }
 }
@@ -317,19 +389,11 @@ impl DriverClaim {
         data: &DataWriter,
         f: impl FnOnce() -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
-        if !data.same_root(&self.ticket.domain.data) {
+        if !data.same_root(&self.ticket.domain().data) {
             return Err(invalid("driver claim belongs to another Root owner"));
         }
-        let entries = self
-            .ticket
-            .domain
-            .drivers
-            .lock()
-            .map_err(|_| invalid("poisoned driver domain"))?;
-        if !entries
-            .get(&self.run())
-            .is_some_and(|entry| Weak::ptr_eq(entry, &Arc::downgrade(&self.ticket)))
-        {
+        let current = self.ticket.slot.current.blocking_read();
+        if !Weak::ptr_eq(&current, &Arc::downgrade(&self.ticket)) {
             return Err(invalid("superseded driver claim"));
         }
         f()
@@ -343,7 +407,7 @@ impl DriverDomain {
         Ok(Self {
             inner: Arc::new(Domain {
                 data,
-                drivers: Mutex::new(BTreeMap::new()),
+                slots: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -637,7 +701,7 @@ impl Store {
         claim: &DriverClaim,
         access: DriverRead,
     ) -> Result<RunView, StoreError> {
-        if !Arc::ptr_eq(&self.domain.inner, &claim.ticket.domain) {
+        if !Arc::ptr_eq(&self.domain.inner, claim.ticket.domain()) {
             return Err(invalid("foreign driver claim"));
         }
         self.data
@@ -730,28 +794,18 @@ impl Store {
         if !matches!(view.spec.origin, RunOrigin::Local) || view.terminal.is_some() {
             return Err(invalid("Run is not locally claimable"));
         }
+        let slot = self.domain.inner.slot(run)?;
         let ticket = Arc::new(Ticket {
             run,
-            domain: self.domain.inner.clone(),
+            slot: slot.clone(),
             purpose: DriverPurpose::Business,
             retirement: tokio_util::sync::CancellationToken::new(),
             active: std::sync::atomic::AtomicBool::new(true),
         });
-        let previous = {
-            let mut entries = self
-                .domain
-                .inner
-                .drivers
-                .lock()
-                .map_err(|_| invalid("poisoned driver domain"))?;
-            let previous = entries.get(&run).and_then(Weak::upgrade);
-            entries.insert(run, Arc::downgrade(&ticket));
-            previous
-        };
-        if let Some(previous) = previous {
-            previous.retirement.cancel();
-        }
-        Ok(DriverClaim { ticket })
+        Ok(slot
+            .install(&ticket, None)
+            .await
+            .expect("unconditional claim install always succeeds"))
     }
     pub async fn reserve_driver(
         &self,
@@ -759,19 +813,15 @@ impl Store {
         purpose: DriverPurpose,
         retirement: tokio_util::sync::CancellationToken,
     ) -> Result<Option<DriverClaim>, StoreError> {
-        let current = {
-            let entries = self
-                .domain
-                .inner
-                .drivers
-                .lock()
-                .map_err(|_| invalid("poisoned driver domain"))?;
-            entries.get(&run).and_then(Weak::upgrade)
-        };
-        if current.as_ref().is_some_and(|old| old.blocks(purpose)) {
+        if self
+            .domain
+            .inner
+            .current_ticket(run)
+            .await?
+            .is_some_and(|old| old.blocks(purpose))
+        {
             return Ok(None);
         }
-        drop(current);
         match purpose {
             DriverPurpose::Business => {
                 let view = self.frontier(run).await?;
@@ -796,40 +846,21 @@ impl Store {
                 }
             }
         }
+        let slot = self.domain.inner.slot(run)?;
         let ticket = Arc::new(Ticket {
             run,
-            domain: self.domain.inner.clone(),
+            slot: slot.clone(),
             purpose,
             retirement: retirement.child_token(),
             active: std::sync::atomic::AtomicBool::new(true),
         });
-        let (previous, reserved) = {
-            let mut entries = self
-                .domain
-                .inner
-                .drivers
-                .lock()
-                .map_err(|_| invalid("poisoned driver domain"))?;
-            let previous = entries.get(&run).and_then(Weak::upgrade);
-            let reserved = !previous.as_ref().is_some_and(|old| old.blocks(purpose));
-            if reserved {
-                entries.insert(run, Arc::downgrade(&ticket));
-            }
-            (previous, reserved)
-        };
-        if !reserved {
-            return Ok(None);
-        }
-        if let Some(previous) = previous {
-            previous.retirement.cancel();
-        }
-        Ok(Some(DriverClaim { ticket }))
+        Ok(slot.install(&ticket, Some(purpose)).await)
     }
     pub async fn cleanup_frontier(
         &self,
         claim: &DriverClaim,
     ) -> Result<CleanupFrontier, StoreError> {
-        if !Arc::ptr_eq(&self.domain.inner, &claim.ticket.domain) {
+        if !Arc::ptr_eq(&self.domain.inner, claim.ticket.domain()) {
             return Err(invalid("foreign cleanup claim"));
         }
         self.data.query(ReadClaimedCleanup(claim.clone())).await
@@ -841,7 +872,7 @@ impl Store {
         changes: Vec<Change>,
         contents: Vec<ContentBlob>,
     ) -> Result<Commit, StoreError> {
-        if !Arc::ptr_eq(&self.domain.inner, &claim.ticket.domain) {
+        if !Arc::ptr_eq(&self.domain.inner, claim.ticket.domain()) {
             return Err(invalid("foreign driver claim"));
         }
         self.data
@@ -864,7 +895,7 @@ impl Store {
         contents: Vec<ContentBlob>,
         consume: crate::queue::Consume,
     ) -> Result<Commit, StoreError> {
-        if !Arc::ptr_eq(&self.domain.inner, &claim.ticket.domain) {
+        if !Arc::ptr_eq(&self.domain.inner, claim.ticket.domain()) {
             return Err(invalid("foreign driver claim"));
         }
         self.data
@@ -957,7 +988,7 @@ impl Store {
         limit: u32,
         cold_probe: bool,
     ) -> Result<Vec<ModelCleanupItem>, StoreError> {
-        if !Arc::ptr_eq(&self.domain.inner, &claim.ticket.domain) {
+        if !Arc::ptr_eq(&self.domain.inner, claim.ticket.domain()) {
             return Err(invalid("foreign model cleanup claim"));
         }
         self.data
@@ -1068,7 +1099,7 @@ impl Store {
         baseline: ContentBlob,
         next: Admission,
     ) -> Result<impl Statement<Output = ()> + use<>, StoreError> {
-        if !Arc::ptr_eq(&self.domain.inner, &claim.ticket.domain)
+        if !Arc::ptr_eq(&self.domain.inner, claim.ticket.domain())
             || next.spec.trigger
                 != (Trigger::CheckpointHandoff {
                     source: claim.run(),
@@ -1158,26 +1189,17 @@ impl Statement for Append {
     type Value = Commit;
     type Output = Commit;
     fn execute(self, connection: &Connection) -> Result<Prepared<Commit>, StoreError> {
-        // The registry lock orders takeover with SQL admission, not async work.
-        let domain = match &self.mode {
-            Mode::Driver(claim) => Some(claim.ticket.domain.clone()),
+        // The per-Run slot lock orders takeover with SQL admission without serializing other Runs.
+        let _current_guard = match &self.mode {
+            Mode::Driver(claim) => {
+                let current = claim.ticket.slot.current.blocking_read();
+                if !Weak::ptr_eq(&current, &Arc::downgrade(&claim.ticket)) {
+                    return Err(invalid("superseded driver claim"));
+                }
+                Some(current)
+            }
             _ => None,
         };
-        let entries = domain
-            .as_ref()
-            .map(|domain| {
-                domain
-                    .drivers
-                    .lock()
-                    .map_err(|_| invalid("poisoned driver domain"))
-            })
-            .transpose()?;
-        if let Mode::Driver(claim) = &self.mode {
-            let current = entries.as_ref().and_then(|entries| entries.get(&self.run));
-            if !current.is_some_and(|entry| Weak::ptr_eq(entry, &Arc::downgrade(&claim.ticket))) {
-                return Err(invalid("superseded driver claim"));
-            }
-        }
         let (value, changed) = sql::append(
             connection,
             self.run,
@@ -1215,7 +1237,7 @@ struct ReadModelCleanups(DriverClaim, Option<ModelAttemptId>, u32, bool);
 impl Query for ReadModelCleanups {
     type Output = Vec<ModelCleanupItem>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        self.0.with_current(&self.0.ticket.domain.data, || {
+        self.0.with_current(&self.0.ticket.domain().data, || {
             if self.0.purpose() != DriverPurpose::LateModelCleanup {
                 return Err(invalid("not a model cleanup claim"));
             }
@@ -1235,7 +1257,7 @@ struct ReadClaimedCleanup(DriverClaim);
 impl Query for ReadClaimedCleanup {
     type Output = CleanupFrontier;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        self.0.with_current(&self.0.ticket.domain.data, || {
+        self.0.with_current(&self.0.ticket.domain().data, || {
             let view = sql::cleanup_frontier(c, self.0.run())?;
             if self.0.purpose() != (DriverPurpose::LateExternalCleanup { task: view.task }) {
                 return Err(invalid("not the original cleanup claim"));
@@ -1423,17 +1445,8 @@ struct ReadDriver {
 impl Query for ReadDriver {
     type Output = RunView;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        let entries = self
-            .claim
-            .ticket
-            .domain
-            .drivers
-            .lock()
-            .map_err(|_| invalid("poisoned driver domain"))?;
-        if !entries
-            .get(&self.claim.run())
-            .is_some_and(|entry| Weak::ptr_eq(entry, &Arc::downgrade(&self.claim.ticket)))
-        {
+        let current = self.claim.ticket.slot.current.blocking_read();
+        if !Weak::ptr_eq(&current, &Arc::downgrade(&self.claim.ticket)) {
             return Err(invalid("superseded driver claim"));
         }
         let view = sql::load(c, self.claim.run(), &[], false)?;

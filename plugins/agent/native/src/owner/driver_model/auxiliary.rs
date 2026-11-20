@@ -202,7 +202,7 @@ pub(in crate::owner) async fn prepare_completed(
             &settings,
             prompt.clone(),
             definitions,
-            model.main_output_limit,
+            preparation::OutputBudget::Compute(model.main_output_limit),
             purpose,
             None,
         )?

@@ -224,3 +224,290 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
     assert!(errors.is_empty(), "{errors:?}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn summary_repair_recovers_from_rejected_tool_content_and_preserves_frozen_cut()
+-> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let base = rig.directory.path().to_path_buf();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let boot = bootstrap_with(
+        &base,
+        format!("http://{}/v1", listener.local_addr()?),
+        |config| {
+            config["tools"] = json!([{
+                "name":"Write",
+                "description":"write",
+                "target":{"kind":"import","name":"files"},
+                "method":"write",
+                "nestable":true,
+                "result":"json",
+                "confirmation":"preapproved"
+            }]);
+        },
+    )
+    .await?;
+    let (mut observed, provider) = observed_provider(listener);
+    let result: Result<TestResult<()>, _> = tokio::time::timeout(Duration::from_secs(60), async {
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+        let connection = call(client, "settings", "create", json!({
+            "expectedCatalogRevision": catalog["revision"],
+            "connection": {
+                "slug": "repair",
+                "name": "Repair fixture",
+                "provider": {"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                "configuration": {"baseUrl": boot.base_url},
+                "enabled": true,
+                "enabledModelIds": ["llama3.2"],
+                "modelOverrides": {
+                    "llama3.2": {
+                        "codeMode": false,
+                        "apiProtocol": "openai-chat-completions",
+                        "contextWindow": 32000,
+                        "inputLimit": 32000,
+                        "maxOutputTokens": 4096
+                    }
+                }
+            }
+        })).await?;
+        let backend = json!({
+            "kind": "model",
+            "connectionId": connection["connection"]["connectionId"],
+            "modelId": "llama3.2",
+            "thinkingLevel": null
+        });
+        let created = call(client, "agent", "create", json!({
+            "title": "SummaryRepair",
+            "automaticTitle": false,
+            "labels": [],
+            "workspace": {"kind":"directory","path": base.join("workspace")}
+        })).await?;
+        let session = created["session"]["id"].as_str().ok_or("Session missing")?;
+        let text = |s| completion(json!({"role":"assistant","content":s}), "stop");
+
+        // Seed one completed turn so manual compaction has history to summarize.
+        let first = call(client, "agent", "send", json!({
+            "sessionId": session,
+            "message": "Seed turn before compaction.",
+            "backend": backend
+        })).await?;
+        let (_main, reply) = observed.recv().await.ok_or("seed main missing")?;
+        reply.send(text("Seed done.")).map_err(|_| "provider closed")?;
+        quiescent_message(client, session, &first["messageId"]).await?;
+
+        // Trigger explicit compaction; first Summary attempt emits a tool call (RejectedToolContent).
+        let compact = call(client, "agent", "compact", json!({
+            "sessionId": session,
+            "model": {
+                "connectionId": backend["connectionId"],
+                "modelId": "llama3.2"
+            },
+            "thinkingLevel": null,
+            "prompt": "Summarize cleanly without tools."
+        })).await?;
+        assert_eq!(compact["kind"], "started");
+
+        let req_output_limit = |req: &Value| {
+            req["max_tokens"]
+                .as_u64()
+                .or_else(|| req["max_completion_tokens"].as_u64())
+        };
+        let (summary_req, summary_reply) = observed.recv().await.ok_or("initial summary missing")?;
+        assert!(summary_req["tools"].as_array().is_none_or(Vec::is_empty));
+        assert_eq!(
+            req_output_limit(&summary_req),
+            Some(4096),
+            "initial summary must preserve frozen 4096 output cap instead of inflating to 8000: {summary_req}"
+        );
+        summary_reply
+            .send(tool_response("Write", json!({"path":"nope.txt","content":"bad"})))
+            .map_err(|_| "provider closed")?;
+
+        // Engine must issue a SummaryRepair request preserving both the original frozen cut and output budget.
+        let (repair_req, repair_reply) = observed.recv().await.ok_or("summary repair request missing")?;
+        assert!(repair_req["tools"].as_array().is_none_or(Vec::is_empty));
+        assert_eq!(
+            req_output_limit(&repair_req),
+            Some(4096),
+            "summary repair must preserve frozen 4096 output cap instead of inflating to 8000: {repair_req}"
+        );
+        repair_reply
+            .send(text("Repaired compaction checkpoint."))
+            .map_err(|_| "provider closed")?;
+
+        // Follow-up turn must succeed and include the repaired compaction summary.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let obs = call(client, "agent", "observe", json!({"sessionId": session})).await?;
+            if obs["session"]["activity"].as_str() == Some("idle") && obs["compacting"].is_null() {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "compaction did not settle: {obs}");
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let page = call(client, "agent", "history", json!({
+            "sessionId": session,
+            "position": {"kind":"tail"},
+            "view": "conversation",
+            "includeThinking": false
+        })).await?;
+        assert!(
+            page["chunks"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(|r| r["role"] == "compaction")),
+            "compaction checkpoint missing from history: {page}"
+        );
+        // Next turn must receive the repaired compaction summary in model input.
+        let follow = call(client, "agent", "send", json!({
+            "sessionId": session,
+            "message": "Continue after repaired compaction.",
+            "backend": backend,
+            "delivery": "queue"
+        })).await?;
+        assert!(follow["kind"] == "accepted" || follow["kind"] == "queued", "follow-up send rejected: {follow}");
+        let (follow_req, follow_reply) = observed.recv().await.ok_or("follow-up missing")?;
+        assert!(
+            follow_req["messages"].to_string().contains("Repaired compaction checkpoint."),
+            "follow-up request did not carry repaired summary: {follow_req}"
+        );
+        follow_reply.send(text("Continued.")).map_err(|_| "provider closed")?;
+        quiescent_message(client, session, &follow["messageId"]).await?;
+        Ok(())
+    }).await;
+    provider.abort();
+    let errors = rig.finish().await;
+    result??;
+    assert!(errors.is_empty(), "{errors:?}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cell_notifications_deduplicate_child_knowledge_per_step_cut() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let base = rig.directory.path().to_path_buf();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let boot = bootstrap_with(
+        &base,
+        format!("http://{}/v1", listener.local_addr()?),
+        |config| {
+            config["tools"] = json!([{
+                "name":"Write",
+                "description":"write",
+                "target":{"kind":"import","name":"files"},
+                "method":"write",
+                "nestable":true,
+                "result":"json",
+                "confirmation":"preapproved"
+            }]);
+        },
+    )
+    .await?;
+    let (mut observed, provider) = observed_provider(listener);
+    let result: Result<TestResult<()>, _> = tokio::time::timeout(Duration::from_secs(60), async {
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+        let connection = call(client, "settings", "create", json!({
+            "expectedCatalogRevision": catalog["revision"],
+            "connection": {
+                "slug": "notif-dedup",
+                "name": "Notification dedup fixture",
+                "provider": {"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                "configuration": {"baseUrl": boot.base_url},
+                "enabled": true,
+                "enabledModelIds": ["code-source"],
+                "modelOverrides": {
+                    "code-source": {
+                        "codeMode": true,
+                        "codeModeLanguage": "javascript",
+                        "apiProtocol": "openai-chat-completions",
+                        "contextWindow": 128000,
+                        "inputLimit": 128000
+                    }
+                }
+            }
+        })).await?;
+        let backend = json!({
+            "kind": "model",
+            "connectionId": connection["connection"]["connectionId"],
+            "modelId": "code-source",
+            "thinkingLevel": null
+        });
+        let created = call(client, "agent", "create", json!({
+            "title": "NotifDedup",
+            "automaticTitle": false,
+            "labels": [],
+            "workspace": {"kind":"directory","path": base.join("workspace")}
+        })).await?;
+        let session = created["session"]["id"].as_str().ok_or("Session missing")?;
+        let text = |s| completion(json!({"role":"assistant","content":s}), "stop");
+
+        let sent = call(client, "agent", "send", json!({
+            "sessionId": session,
+            "message": "Emit 12 notifications after nested tools.",
+            "backend": backend
+        })).await?;
+        let (_req1, reply1) = observed.recv().await.ok_or("first request missing")?;
+        let code = r#"
+            await Promise.all([0,1,2,3].map(i => tools.Write({ path: "n" + i + ".txt", content: "v" + i })));
+            for (let i = 0; i < 12; i++) notify("burst-note-" + i);
+            text("yield-now");
+            await yield_control();
+            text("cell-done");
+        "#;
+        reply1
+            .send(tool_response("exec", json!({ "code": code, "yield_time_ms": 15000 })))
+            .map_err(|_| "provider closed")?;
+
+        let (req2, reply2) = observed.recv().await.ok_or("second request missing")?;
+        let wire = req2["messages"].to_string();
+        for i in 0..12 {
+            assert!(
+                wire.contains(&format!("burst-note-{i}")),
+                "missing notification burst-note-{i} in step 2"
+            );
+        }
+        let knowledge_count = wire.matches("[Host Cell child knowledge;").count();
+        assert_eq!(
+            knowledge_count, 1,
+            "expected exactly 1 cell child knowledge block for 12 same-cell notifications, got {knowledge_count}"
+        );
+
+        // Extract cell_id and call wait so replay of step 2's FrozenNotifications is also exercised.
+        let cell_id = req2["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|m| m["role"] == "tool")
+            .and_then(|m| m["content"].as_str())
+            .and_then(|s| {
+                let pos = s.rfind(r#""cell_id":""#)?;
+                let rest = &s[pos + 11..];
+                Some(rest[..rest.find('"')?].to_owned())
+            })
+            .ok_or("running cell_id missing")?;
+        reply2
+            .send(tool_response("wait", json!({ "cell_id": cell_id, "yield_time_ms": 15000 })))
+            .map_err(|_| "provider closed")?;
+
+        let (req3, reply3) = observed.recv().await.ok_or("third request missing")?;
+        let wire3 = req3["messages"].to_string();
+        assert_eq!(
+            wire3.matches("[Host Cell child knowledge;").count(),
+            1,
+            "replayed step must preserve single deduplicated cell child knowledge block"
+        );
+        reply3.send(text("All 12 notes processed.")).map_err(|_| "provider closed")?;
+
+        quiescent_message(client, session, &sent["messageId"]).await?;
+        Ok(())
+    }).await;
+    provider.abort();
+    let errors = rig.finish().await;
+    result??;
+    assert!(errors.is_empty(), "{errors:?}");
+    Ok(())
+}

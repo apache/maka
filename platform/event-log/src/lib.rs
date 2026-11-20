@@ -213,7 +213,11 @@ impl EventLog {
     /// writer lease, never a guest path or serialized authorization token.
     pub fn owned_root(&self) -> Result<Arc<root::RootOwner>, StoreError> {
         self.validate_root()?;
-        self.root_owner.clone().ok_or_else(|| {
+        self.root_owner_ref().cloned()
+    }
+
+    pub(crate) fn root_owner_ref(&self) -> Result<&Arc<root::RootOwner>, StoreError> {
+        self.root_owner.as_ref().ok_or_else(|| {
             StoreError::InvalidTransition("store requires an owned State Root".into())
         })
     }

@@ -321,6 +321,17 @@ impl RunAccess {
             .map_err(|error| ToolError::Persistence(error.to_string()))
     }
     pub(crate) async fn fresh(&self) -> Result<RunView, String> {
+        self.driver_view(false).await
+    }
+
+    /// Read the Run frontier under this physical claim even after Stop, so
+    /// callers can distinguish a stopped Run from a persistence failure or
+    /// finish recording original-work fences before termination.
+    pub(crate) async fn original_frontier(&self) -> Result<RunView, String> {
+        self.driver_view(true).await
+    }
+
+    async fn driver_view(&self, allow_stopped: bool) -> Result<RunView, String> {
         let owner = self.owner()?;
         if owner.stop.is_cancelled() {
             return Err("agent_run_owner_closed".into());
@@ -329,11 +340,12 @@ impl RunAccess {
             .store
             .session_for_work(self.custody.as_ref(), &self.execution.session_id)
             .map_err(|error| error.to_string())?;
-        let view = owner
-            .durable
-            .driver_frontier(&self.claim)
-            .await
-            .map_err(|error| error.to_string())?;
+        let view = if allow_stopped {
+            owner.durable.original_driver_frontier(&self.claim).await
+        } else {
+            owner.durable.driver_frontier(&self.claim).await
+        }
+        .map_err(|error| error.to_string())?;
         if view.spec != *self.spec {
             return Err("agent_run_spec_mismatch".into());
         }

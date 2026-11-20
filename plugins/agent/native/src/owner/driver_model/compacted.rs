@@ -380,7 +380,7 @@ impl DriverModel {
             let result=async{
                 preparation::prepare_wire(&settings,&mut prompt,&definitions,model.main_output_limit,&self.cancellation).await?;
                 let calibration=self.calibration(view,&capture,&model,Some(&checkpoint)).await?;
-                let prepared=preparation::prepare_request(&settings,prompt.clone(),definitions.clone(),model.main_output_limit,ModelPurpose::Main,calibration)?;
+                let prepared=preparation::prepare_request(&settings,prompt.clone(),definitions.clone(),preparation::OutputBudget::Compute(model.main_output_limit),ModelPurpose::Main,calibration)?;
                 let snapshot=preparation::snapshot_prompt(self.preparation_io()?,self.resources.clone(),&prepared.request.prompt,&self.cancellation).await?;
                 let (prompt,layout_chunks,layout,cleanup)=snapshot.into_parts();
                 let evidence=self.cleanup.clone();

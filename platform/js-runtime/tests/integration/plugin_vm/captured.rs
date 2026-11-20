@@ -340,3 +340,106 @@ async fn pure_and_scoped_workers_decode_binary_base64_without_ambient_host_capab
         }
     }).await.unwrap();
 }
+
+#[tokio::test]
+async fn pure_and_scoped_plugins_enforce_off_heap_budget_and_disable_wasm() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let limits = Limits {
+            heap_bytes: 16 * 1024 * 1024,
+            ..Limits::default()
+        };
+        let factories: [fn(Limits) -> Result<Vm, Error>; 2] = [Vm::pure, Vm::scoped];
+        for make_vm in factories {
+            let vm = make_vm(limits.clone()).unwrap();
+            let module = vm
+                .load(
+                    "budget.mjs".into(),
+                    r#"
+                        export function checkWithinBudget() {
+                            let resizableError = null;
+                            try {
+                                new ArrayBuffer(1024, { maxByteLength: 4096 });
+                            } catch (error) {
+                                resizableError = error.name;
+                            }
+                            return {
+                                wasm: typeof WebAssembly,
+                                sab: typeof SharedArrayBuffer,
+                                atomics: typeof Atomics,
+                                resizableError,
+                                withinBudget: new Uint8Array(4 * 1024 * 1024).byteLength,
+                            };
+                        }
+                        export function exceedSingle() {
+                            return new Uint8Array(24 * 1024 * 1024).byteLength;
+                        }
+                    "#
+                    .into(),
+                )
+                .unwrap();
+            let ok = module
+                .call(vec!["checkWithinBudget".into()], vec![])
+                .await
+                .unwrap();
+            assert_eq!(
+                ok,
+                json!({
+                    "wasm": "undefined",
+                    "sab": "undefined",
+                    "atomics": "undefined",
+                    "resizableError": "RangeError",
+                    "withinBudget": 4 * 1024 * 1024,
+                })
+            );
+            assert!(!vm.is_terminated());
+
+            let single_err = module
+                .call(vec!["exceedSingle".into()], vec![])
+                .await
+                .expect_err("single off-heap ArrayBuffer above heap_bytes must fail");
+            let single_msg = single_err.to_string();
+            assert!(
+                single_msg.contains("heap budget exceeded")
+                    || single_msg.contains("RangeError")
+                    || single_msg.contains("Array buffer allocation failed"),
+                "expected ArrayBuffer budget rejection, got: {single_msg}"
+            );
+            let _ = module.close().await;
+            vm.shutdown().await;
+
+            let vm2 = make_vm(limits.clone()).unwrap();
+            let cumulative = vm2
+                .load(
+                    "cumulative.mjs".into(),
+                    r#"
+                        export function exceedCumulative() {
+                            const kept = [];
+                            for (let i = 0; i < 6; i++) {
+                                kept.push(new Uint8Array(4 * 1024 * 1024));
+                            }
+                            return kept.length;
+                        }
+                    "#
+                    .into(),
+                )
+                .unwrap();
+            let cum_err = cumulative
+                .call(vec!["exceedCumulative".into()], vec![])
+                .await
+                .expect_err(
+                    "cumulative off-heap ArrayBuffer allocations above heap_bytes must fail",
+                );
+            let cum_msg = cum_err.to_string();
+            assert!(
+                cum_msg.contains("heap budget exceeded")
+                    || cum_msg.contains("RangeError")
+                    || cum_msg.contains("Array buffer allocation failed"),
+                "expected cumulative ArrayBuffer budget rejection, got: {cum_msg}"
+            );
+            let _ = cumulative.close().await;
+            vm2.shutdown().await;
+        }
+    })
+    .await
+    .unwrap();
+}

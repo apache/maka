@@ -25,35 +25,51 @@ use maka_sandbox::workspace::BindingRef;
 impl RootStore {
     /// Capture data candidates only. A new binding is not published or usable
     /// authority until this statement validates it in the final transaction.
-    pub async fn prepare_creation_workspace<W: Serialize>(
+    pub async fn prepare_creation_workspace<W, B>(
         &self,
         owner_scope: &str,
-        workspace: &W,
+        workspace: B,
         project: Option<crate::root_store::ProjectWorkspacePlan>,
         writer: &DataWriter,
     ) -> Result<
         (
             WorkspaceBinding,
-            impl Statement<Value = BindingRef, Output = BindingRef> + use<W>,
+            impl Statement<Value = BindingRef, Output = BindingRef> + use<W, B>,
         ),
         StoreError,
-    > {
+    >
+    where
+        W: Serialize,
+        B: FnOnce(Option<uuid::Uuid>) -> W,
+    {
         self.capture_creation_workspace(owner_scope, workspace, project, writer)
             .await
     }
 
-    async fn capture_creation_workspace<W: Serialize>(
+    async fn capture_creation_workspace<W, B>(
         &self,
         owner_scope: &str,
-        workspace: &W,
-        project: Option<crate::root_store::ProjectWorkspacePlan>,
+        workspace: B,
+        mut project: Option<crate::root_store::ProjectWorkspacePlan>,
         writer: &DataWriter,
-    ) -> Result<(WorkspaceBinding, CreationWorkspace), StoreError> {
+    ) -> Result<(WorkspaceBinding, CreationWorkspace), StoreError>
+    where
+        W: Serialize,
+        B: FnOnce(Option<uuid::Uuid>) -> W,
+    {
         self.require_open()?;
         self.validate_data_writer(writer)?;
         let mutation = self.project_mutations.clone().lock_owned().await;
         self.require_open()?;
-        let attachment = WriteAttachment::new(owner_scope, serde_json::to_value(workspace)?)?;
+        if let Some(plan) = project.as_mut() {
+            plan.refresh_under_mutation().await?;
+        }
+        let workspace = workspace(
+            project
+                .as_ref()
+                .map(crate::root_store::ProjectWorkspacePlan::project_id),
+        );
+        let attachment = WriteAttachment::new(owner_scope, serde_json::to_value(&workspace)?)?;
         let (attachment, candidate, existing) = self
             .log
             .connection
@@ -74,14 +90,18 @@ impl RootStore {
     }
 
     /// Ordinary creation keeps its original semantics, without plugin origin.
-    pub async fn prepare_session_creation<W, F>(
+    pub async fn prepare_session_creation<W, B, F>(
         &self,
-        request: SessionCreationRequest<'_, W>,
+        request: SessionCreationRequest<'_, B>,
         writer: &DataWriter,
         configuration: F,
-    ) -> Result<impl Statement<Value = SessionRecord, Output = SessionRecord> + use<W, F>, StoreError>
+    ) -> Result<
+        impl Statement<Value = SessionRecord, Output = SessionRecord> + use<W, B, F>,
+        StoreError,
+    >
     where
         W: Serialize,
+        B: FnOnce(Option<uuid::Uuid>) -> W,
         F: FnOnce(BindingRef) -> Result<Value, StoreError> + Send + 'static,
     {
         self.require_open()?;

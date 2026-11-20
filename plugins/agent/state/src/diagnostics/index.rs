@@ -114,12 +114,15 @@ pub(crate) fn index_fact(
     {
         return Err(invalid("unsupported diagnostic source schema or metadata"));
     }
+    let run_id = fact.run.to_string();
     if let Some(detail) = classify(c, spec, fact)? {
-        c.execute("INSERT INTO agent_diagnostics(sequence,run,owner,session,event_id,at,detail_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(sequence) DO UPDATE SET run=excluded.run,owner=excluded.owner,session=excluded.session,event_id=excluded.event_id,at=excluded.at,detail_json=excluded.detail_json", params![signed(sequence)?, fact.run.to_string(), serde_json::to_string(&spec.owner)?, spec.session_id, fact.id.to_string(), fact.at.0, serde_json::to_string(&detail)?])?;
+        c.prepare_cached("INSERT INTO agent_diagnostics(sequence,run,owner,session,event_id,at,detail_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT(sequence) DO UPDATE SET run=excluded.run,owner=excluded.owner,session=excluded.session,event_id=excluded.event_id,at=excluded.at,detail_json=excluded.detail_json")?
+            .execute(params![signed(sequence)?, run_id, serde_json::to_string(&spec.owner)?, spec.session_id, fact.id.to_string(), fact.at.0, serde_json::to_string(&detail)?])?;
     }
     // New writes after an old/missing prefix must not certify that prefix.
     // Replaying an older fact never lowers an already indexed high-water mark.
-    c.execute("INSERT INTO agent_diagnostic_coverage(run,revision,sequence) SELECT ?1,?2,?3 WHERE ?2=1 OR EXISTS(SELECT 1 FROM agent_diagnostic_coverage WHERE run=?1 AND revision=?2-1 AND sequence<?3) ON CONFLICT(run) DO UPDATE SET revision=excluded.revision,sequence=excluded.sequence WHERE agent_diagnostic_coverage.revision=excluded.revision-1 AND agent_diagnostic_coverage.sequence<excluded.sequence", params![fact.run.to_string(), signed(fact.revision)?, signed(sequence)?])?;
+    c.prepare_cached("INSERT INTO agent_diagnostic_coverage(run,revision,sequence) SELECT ?1,?2,?3 WHERE ?2=1 OR EXISTS(SELECT 1 FROM agent_diagnostic_coverage WHERE run=?1 AND revision=?2-1 AND sequence<?3) ON CONFLICT(run) DO UPDATE SET revision=excluded.revision,sequence=excluded.sequence WHERE agent_diagnostic_coverage.revision=excluded.revision-1 AND agent_diagnostic_coverage.sequence<excluded.sequence")?
+        .execute(params![run_id, signed(fact.revision)?, signed(sequence)?])?;
     Ok(())
 }
 

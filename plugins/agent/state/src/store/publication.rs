@@ -42,13 +42,13 @@ impl Store {
         claim: Option<&DriverClaim>,
     ) -> Result<PublicationRead, StoreError> {
         if let Some(claim) = claim {
-            if !Arc::ptr_eq(&self.domain.inner, &claim.ticket.domain) {
+            if !Arc::ptr_eq(&self.domain.inner, claim.ticket.domain()) {
                 return Err(invalid("foreign driver claim"));
             }
             if claim.run() != run {
                 return Err(invalid("driver claim belongs to another Run"));
             }
-            if !self.data.same_root(&claim.ticket.domain.data) {
+            if !self.data.same_root(&claim.ticket.domain().data) {
                 return Err(invalid("driver claim belongs to another Root owner"));
             }
         }
@@ -78,28 +78,16 @@ impl Query for ReadPublication {
     type Output = PublicationRead;
 
     fn execute(self, connection: &Connection) -> Result<Self::Output, StoreError> {
-        // Hold the actual driver slot across the first SQL read and every fact read.
-        let drivers = self
+        // Hold the actual per-Run driver slot across the first SQL read and every fact read.
+        let current_guard = self
             .claim
             .as_ref()
-            .map(|claim| {
-                claim
-                    .ticket
-                    .domain
-                    .drivers
-                    .lock()
-                    .map_err(|_| invalid("poisoned driver domain"))
-            })
-            .transpose()?;
-        let claim_current =
-            self.claim
-                .as_ref()
-                .zip(drivers.as_ref())
-                .is_some_and(|(claim, drivers)| {
-                    drivers.get(&self.run).is_some_and(|current| {
-                        Weak::ptr_eq(current, &Arc::downgrade(&claim.ticket))
-                    })
-                });
+            .map(|claim| claim.ticket.slot.current.blocking_read());
+        let claim_current = self
+            .claim
+            .as_ref()
+            .zip(current_guard.as_ref())
+            .is_some_and(|(claim, current)| Weak::ptr_eq(current, &Arc::downgrade(&claim.ticket)));
         let head = connection
             .prepare_cached("SELECT revision, control_version FROM agent_runs WHERE run=?")?
             .query_row([self.run.to_string()], |row| {
@@ -116,7 +104,7 @@ impl Query for ReadPublication {
                 facts.push(fact);
             }
         }
-        drop(drivers);
+        drop(current_guard);
         Ok(PublicationRead {
             head,
             claim_current,

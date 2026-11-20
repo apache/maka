@@ -134,7 +134,7 @@ impl FrozenMaterializer {
                 &settings,
                 prompt.clone(),
                 self.request.composition.tools.clone(),
-                self.request.composition.max_output_tokens,
+                preparation::OutputBudget::Frozen(self.request.composition.max_output_tokens),
                 self.request.accounting.purpose,
                 None,
             )?;

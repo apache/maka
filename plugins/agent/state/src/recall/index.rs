@@ -111,17 +111,20 @@ fn insert(c: &Connection, spec: &RunSpec, mut message: Message) -> Result<(), St
     let owner = serde_json::to_string(&spec.owner)?;
     let seq = number(message.position.source_sequence)?;
     let ordinal = number(message.position.item_index)?;
-    let previous:Option<i64>=c.query_row("SELECT id FROM agent_recall_messages WHERE owner=? AND session=? AND sequence=? AND ordinal=?",params![owner,spec.session_id,seq,ordinal],|r|r.get(0)).optional()?;
+    let previous: Option<i64> = c
+        .prepare_cached("SELECT id FROM agent_recall_messages WHERE owner=? AND session=? AND sequence=? AND ordinal=?")?
+        .query_row(params![owner, spec.session_id, seq, ordinal], |r| r.get(0))
+        .optional()?;
     let folded = fold(&message.body);
     if let Some(id) = previous {
-        c.execute("DELETE FROM agent_recall_terms WHERE rowid=?", [id])?;
+        c.prepare_cached("DELETE FROM agent_recall_terms WHERE rowid=?")?
+            .execute([id])?;
     }
-    c.execute("INSERT INTO agent_recall_messages(owner,session,sequence,ordinal,run,turn,message,at,role,body,folded,attachments,references_json,fields_json,origin_json,internal) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner,session,sequence,ordinal) DO UPDATE SET message=excluded.message,body=excluded.body,folded=excluded.folded,attachments=excluded.attachments,references_json=excluded.references_json,fields_json=excluded.fields_json,origin_json=excluded.origin_json,internal=excluded.internal",params![owner,spec.session_id,seq,ordinal,message.run.to_string(),message.turn_id,message.message_id,number(message.timestamp)?,serde_json::to_string(&message.role)?,message.body,folded,serde_json::to_string(&message.attachments)?,serde_json::to_string(&message.references)?,serde_json::to_string(&message.fields)?,message.origin.map(|o|serde_json::to_string(&o)).transpose()?,message.fields.iter().all(|f|f.internal)])?;
-    let id:i64=c.query_row("SELECT id FROM agent_recall_messages WHERE owner=? AND session=? AND sequence=? AND ordinal=?",params![owner,spec.session_id,seq,ordinal],|r|r.get(0))?;
-    c.execute(
-        "INSERT INTO agent_recall_terms(rowid,grams) VALUES(?,?)",
-        params![id, terms::grams(&folded)],
-    )?;
+    let id: i64 = c
+        .prepare_cached("INSERT INTO agent_recall_messages(owner,session,sequence,ordinal,run,turn,message,at,role,body,folded,attachments,references_json,fields_json,origin_json,internal) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner,session,sequence,ordinal) DO UPDATE SET message=excluded.message,body=excluded.body,folded=excluded.folded,attachments=excluded.attachments,references_json=excluded.references_json,fields_json=excluded.fields_json,origin_json=excluded.origin_json,internal=excluded.internal RETURNING id")?
+        .query_row(params![owner, spec.session_id, seq, ordinal, message.run.to_string(), message.turn_id, message.message_id, number(message.timestamp)?, serde_json::to_string(&message.role)?, message.body, folded, serde_json::to_string(&message.attachments)?, serde_json::to_string(&message.references)?, serde_json::to_string(&message.fields)?, message.origin.map(|o| serde_json::to_string(&o)).transpose()?, message.fields.iter().all(|f| f.internal)], |r| r.get(0))?;
+    c.prepare_cached("INSERT INTO agent_recall_terms(rowid,grams) VALUES(?,?)")?
+        .execute(params![id, terms::grams(&folded)])?;
     Ok(())
 }
 fn project(
