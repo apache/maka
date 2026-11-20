@@ -713,7 +713,18 @@ function Launcher(
   };
   effect(() => {
     const node = input();
-    if (node && menuOpen()) {
+    if (!node) return;
+    const inMenu = menuOpen();
+    for (let index = 0; index < 9; index++) {
+      cleanup(
+        keymap.bind(
+          `mod+${index + 1}`,
+          () => (inMenu ? selectAction(choices()[index]) : runNumbered(index)),
+          inMenu ? { when: 'always' } : { when: 'always', within: node },
+        ),
+      );
+    }
+    if (inMenu) {
       cleanup(keymap.bind('escape', () => setMenu(false), { when: 'always', within: node }));
     }
   });
@@ -761,12 +772,6 @@ function Launcher(
                   input.set(node);
                   removeKeys();
                   const unbind = [
-                    ...Array.from({ length: 9 }, (_, index) =>
-                      keymap.bind(`mod+${index + 1}`, () => runNumbered(index), {
-                        when: 'always',
-                        within: node,
-                      }),
-                    ),
                     keymap.bind('up', () => moveSelection(-1), {
                       when: 'always',
                       repeat: true,
@@ -880,7 +885,7 @@ function Launcher(
                       {(row, index) => (
                         <LauncherRow
                           row={row()}
-                          shortcut={shortcut(section().start + index())}
+                          shortcut={menuOpen() ? undefined : shortcut(section().start + index())}
                           selected={selected() === section().start + index()}
                           select={
                             previewer() ? () => selection.set(section().start + index()) : undefined
@@ -897,7 +902,7 @@ function Launcher(
             <If when={pinned() !== null}>
               <LauncherRow
                 row={pinned()!}
-                shortcut={shortcut(listed().length)}
+                shortcut={menuOpen() ? undefined : shortcut(listed().length)}
                 selected={selected() === listed().length}
                 pressed={refocus}
                 activate={executeRow}
@@ -1003,8 +1008,10 @@ function Launcher(
                           {item().title}
                           {item().confirm ? '…' : ''}
                         </Text>
-                        <If when={index() === 0}>
-                          <Text style={{ ...menuDetailTextStyle, color: C.muted }}>↵</Text>
+                        <If when={index() === 0 || shortcut(index()) !== undefined}>
+                          <Text style={{ ...menuDetailTextStyle, color: C.muted }}>
+                            {shortcut(index()) ?? '↵'}
+                          </Text>
                         </If>
                       </MenuItem>
                     </>
