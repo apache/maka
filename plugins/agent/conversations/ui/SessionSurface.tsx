@@ -108,14 +108,10 @@ import {
   textTooltip,
   type BrowserHeader,
 } from '../../../../products/maka/workbench/app/ui';
-import {
-  Conversation,
-  type Control,
-  type ConversationAnchor,
-  type ConversationHandle,
-} from './Conversation';
+import { Conversation, type Control, type ConversationHandle } from './Conversation';
 import {
   RecallSearch,
+  type RecallAnchor,
   type RecallTarget,
 } from '../../../../products/maka/workbench/app/RecallSearch';
 import { createForeground } from '../../../../products/maka/workbench/app/activation';
@@ -508,7 +504,7 @@ export function createConversationUi(
   let overlayInstance = 0;
   let pendingReveal: {
     sessionId: string;
-    anchor: ConversationAnchor;
+    anchor: RecallAnchor;
     current(): boolean;
     resolve(): void;
     reject(reason: unknown): void;
@@ -625,7 +621,7 @@ export function createConversationUi(
       sessionId: selected(),
       instance: overlay()?.instance ?? null,
     },
-    anchor?: ConversationAnchor,
+    anchor?: RecallAnchor,
   ): Promise<boolean> => {
     const current = () =>
       alive && selected() === source.sessionId && (overlay()?.instance ?? null) === source.instance;
