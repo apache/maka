@@ -19,6 +19,7 @@
 
 import { cleanup, computed, signal } from 'nsh';
 import type { Host } from './host';
+import { invalidateUsageLimits } from './usageLimitsReading';
 import { message, UiError } from './text';
 import { sameValue } from '../../../../plugins/shared/value';
 import { providerLabel } from './settingsLabels';
@@ -581,6 +582,7 @@ export function createModelSettings(
             expectedConnection: expected,
           });
       if (result.kind !== 'committed') throw rejection(result);
+      invalidateUsageLimits(host, { kind: 'connection', connectionId: expected.connectionId });
       updated = result.status;
     });
     return updated;
@@ -780,6 +782,10 @@ export function createModelSettings(
           form.apiKey,
         );
         if (saved.kind !== 'saved') throw rejection(saved);
+        invalidateUsageLimits(host, {
+          kind: 'connection',
+          connectionId: detail.target.connectionId,
+        });
         if (!alive || editor()?.instance !== form.instance) return;
         editor.set({ ...editor()!, apiKey: '' });
         // Reauthentication advances the connection revision independently.
@@ -834,6 +840,7 @@ export function createModelSettings(
         editor()?.baseline?.target.revision !== target.revision
       )
         return;
+      invalidateUsageLimits(host, { kind: 'connection', connectionId: target.connectionId });
       await adopt(
         { connectionId: target.connectionId, revision: target.revision },
         request.editor,
@@ -1258,6 +1265,10 @@ export function createModelSettings(
           expectedConnection: form.baseline.target,
         });
         if (result.kind !== 'committed') throw rejection(result);
+        invalidateUsageLimits(host, {
+          kind: 'connection',
+          connectionId: form.baseline.target.connectionId,
+        });
         if (!(await adopt(basis(form.baseline), form.instance, 'committed'))) return;
         if (alive) notice.set(message('Stored provider credential removed.'));
       } else if (kind === 'model') {

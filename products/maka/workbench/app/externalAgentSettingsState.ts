@@ -26,6 +26,7 @@ import type {
   ManagementResultForDeploymentRef,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import type { Host } from './host';
+import { invalidateUsageLimits, isExternalUsageRuntime } from './usageLimitsReading';
 import type { SettingsOperations } from './settingsOperations';
 import { errorMessage, UiError } from './text';
 import { tr } from './locale';
@@ -188,6 +189,8 @@ export function createExternalAgentSettings(
       }
       invalidate();
       await host.refresh();
+      if (isExternalUsageRuntime(runtime))
+        invalidateUsageLimits(host, { kind: 'external', runtime });
       await load();
     });
   };
