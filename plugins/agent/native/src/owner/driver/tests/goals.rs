@@ -359,20 +359,16 @@ async fn goal_tells_the_next_iteration_why_one_failed_and_pauses_after_two() -> 
             .recv()
             .await
             .ok_or("Goal iteration request missing")?;
-        let continuation = request["messages"]
+        let messages = request["messages"]
             .as_array()
-            .and_then(|messages| {
-                messages
-                    .iter()
-                    .rev()
-                    .find(|message| message["role"] == "user")
-            })
-            .ok_or("Goal continuation missing")?;
-        assert!(
-            continuation["content"]
-                .to_string()
-                .contains("The previous iteration failed: fixture failure one"),
-            "{request:#}"
+            .ok_or("Goal request messages missing")?;
+        let failure_mentions = messages
+            .iter()
+            .filter(|message| message["content"].to_string().contains("fixture failure one"))
+            .count();
+        assert_eq!(
+            failure_mentions, 1,
+            "previous iteration failure must appear once via turn replay without Goal prompt duplication: {request:#}"
         );
         let goal = loop {
             changes.borrow_and_update();

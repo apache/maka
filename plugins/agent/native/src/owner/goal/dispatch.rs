@@ -330,22 +330,24 @@ impl Owner {
             _ => (None, false),
         };
         let mut diagnostic = None;
-        let mut after = 0;
-        while diagnostic.is_none() {
+        let mut end = view.revision;
+        while diagnostic.is_none() && end > 0 {
+            let start = end.saturating_sub(32);
             let page = self
                 .durable
-                .history(view.run, after, 256)
+                .history(view.run, start, (end - start) as u32)
                 .await
                 .map_err(reason)?;
-            let Some(last) = page.last() else { break };
-            after = last.revision;
-            diagnostic = page.into_iter().find_map(|fact| match fact.fact {
+            diagnostic = page.into_iter().rev().find_map(|fact| match fact.fact {
                 Fact::RunTerminated { diagnostic, .. } => Some(diagnostic),
                 _ => None,
             });
+            end = start;
         }
         Ok(maka_goal::goal::IterationFailure {
-            diagnostic: diagnostic.flatten(),
+            diagnostic: diagnostic
+                .flatten()
+                .or_else(|| view.recovery_failure_diagnostic()),
             retry_at,
             needs_user,
         })
