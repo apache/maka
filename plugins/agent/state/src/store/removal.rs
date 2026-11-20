@@ -22,81 +22,155 @@
 use super::*;
 use rusqlite::{OptionalExtension, params};
 
-// ?1 run, ?2 owner, ?3 session. Children before parents so foreign keys hold.
-const RUN_RELEASES: &[&str] = &[
-    "INSERT OR IGNORE INTO pending_content_releases(content_id)
-     SELECT body_content_id FROM agent_facts WHERE run=?1
-     UNION SELECT content_id FROM agent_content_pins WHERE run=?1
-     UNION SELECT content_id FROM agent_request_specs WHERE run=?1
-     UNION SELECT content_id FROM agent_answer_parts WHERE run=?1
-     UNION SELECT descriptor_content_id FROM agent_external_steering WHERE run=?1
-     UNION SELECT content_id FROM agent_history_content_refs WHERE owner=?2 AND session=?3 AND run=?1
-     UNION SELECT spec_content_id FROM agent_run_specs WHERE run=?1",
-    "DELETE FROM agent_recall_terms WHERE rowid IN(SELECT id FROM agent_recall_messages
-     WHERE owner=?2 AND session=?3 AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1))",
-    "DELETE FROM agent_recall_messages WHERE owner=?2 AND session=?3
-     AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
-    "DELETE FROM agent_session_history WHERE sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
-    "DELETE FROM agent_history_content_refs WHERE owner=?2 AND session=?3 AND run=?1",
-    "DELETE FROM agent_catalog_messages WHERE owner=?2 AND session=?3
-     AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
-    "DELETE FROM agent_catalog_runs WHERE run=?1",
-    "DELETE FROM agent_diagnostic_coverage WHERE run=?1",
-    "DELETE FROM agent_diagnostics WHERE run=?1",
-    "DELETE FROM agent_external_publication_items WHERE run=?1",
-    "DELETE FROM agent_external_publications WHERE run=?1",
-    "DELETE FROM agent_external_effects WHERE run=?1",
-    "DELETE FROM agent_external_steering WHERE run=?1",
-    "DELETE FROM agent_continuation_successors WHERE run=?1 OR source_run=?1",
-    "DELETE FROM agent_history_snapshot_adoptions WHERE run=?1",
-    "DELETE FROM agent_artifact_run_bindings WHERE run=?1",
-    "DELETE FROM agent_model_items WHERE run=?1",
-    "DELETE FROM agent_computer_native_turn_fences WHERE run=?1",
-    "DELETE FROM agent_computer_native_bindings WHERE run=?1",
-    "DELETE FROM agent_computer_facts WHERE run=?1",
-    // Profile-scoped computer grants outlive the Session that asked for them.
-    "DELETE FROM agent_computer_grants WHERE scope<>'profile'
-     AND request IN(SELECT request FROM agent_interaction_requests WHERE run=?1)",
-    "DELETE FROM agent_interaction_grants WHERE request IN(SELECT request FROM agent_interaction_requests WHERE run=?1)",
-    "DELETE FROM agent_interaction_outcomes WHERE request IN(SELECT request FROM agent_interaction_requests WHERE run=?1)",
-    "DELETE FROM agent_interaction_pending WHERE request IN(SELECT request FROM agent_interaction_requests WHERE run=?1)",
-    "DELETE FROM agent_interaction_requests WHERE run=?1
-     AND NOT EXISTS(SELECT 1 FROM agent_computer_grants g WHERE g.request=agent_interaction_requests.request)",
-    "DELETE FROM agent_attempt_ids WHERE run=?1",
-    "DELETE FROM agent_request_specs WHERE run=?1",
-    "DELETE FROM agent_attempts WHERE run=?1",
-    "DELETE FROM agent_steps WHERE run=?1",
-    "DELETE FROM agent_tools WHERE run=?1",
-    "DELETE FROM agent_approvals WHERE run=?1",
-    "DELETE FROM agent_blockers WHERE run=?1",
-    "DELETE FROM agent_waits WHERE run=?1",
-    "DELETE FROM agent_operation_pins WHERE run=?1",
-    "DELETE FROM agent_answer_parts WHERE run=?1",
-    "DELETE FROM agent_content_pins WHERE run=?1",
-    "DELETE FROM agent_facts WHERE run=?1",
-    "DELETE FROM agent_runs WHERE run=?1",
-    "DELETE FROM agent_run_specs WHERE run=?1
-     AND NOT EXISTS(SELECT 1 FROM agent_interaction_requests WHERE run=?1)",
+#[derive(Clone, Copy)]
+enum Step {
+    Run(&'static str),
+    RunOwnerSession(&'static str),
+    Session(&'static str),
+    OwnerSession(&'static str),
+}
+
+// Children before parents so PRAGMA foreign_keys = ON holds throughout.
+// Shared run-history cleanup executed for every removed Run, including Runs
+// that retain a minimal stub for profile-scoped computer grants/revocations.
+const RUN_HISTORY_RELEASES: &[Step] = &[
+    Step::RunOwnerSession(
+        "INSERT OR IGNORE INTO pending_content_releases(content_id)
+         SELECT body_content_id FROM agent_facts WHERE run=?1
+         UNION SELECT content_id FROM agent_request_specs WHERE run=?1
+         UNION SELECT content_id FROM agent_answer_parts WHERE run=?1
+         UNION SELECT descriptor_content_id FROM agent_external_steering WHERE run=?1
+         UNION SELECT content_id FROM agent_history_content_refs WHERE owner=?2 AND session=?3 AND run=?1",
+    ),
+    Step::RunOwnerSession(
+        "DELETE FROM agent_recall_terms WHERE rowid IN(SELECT id FROM agent_recall_messages
+         WHERE owner=?2 AND session=?3 AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1))",
+    ),
+    Step::RunOwnerSession(
+        "DELETE FROM agent_recall_messages WHERE owner=?2 AND session=?3
+         AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
+    ),
+    Step::Run(
+        "DELETE FROM agent_session_history WHERE sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
+    ),
+    Step::RunOwnerSession(
+        "DELETE FROM agent_history_content_refs WHERE owner=?2 AND session=?3 AND run=?1",
+    ),
+    Step::RunOwnerSession(
+        "DELETE FROM agent_catalog_messages WHERE owner=?2 AND session=?3
+         AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
+    ),
+    Step::Run("DELETE FROM agent_catalog_runs WHERE run=?1"),
+    Step::Run("DELETE FROM agent_diagnostic_coverage WHERE run=?1"),
+    Step::Run("DELETE FROM agent_diagnostics WHERE run=?1"),
+    Step::Run("DELETE FROM agent_external_publication_items WHERE run=?1"),
+    Step::Run("DELETE FROM agent_external_publications WHERE run=?1"),
+    Step::Run("DELETE FROM agent_external_effects WHERE run=?1"),
+    Step::Run("DELETE FROM agent_external_steering WHERE run=?1"),
+    Step::Run("DELETE FROM agent_continuation_successors WHERE run=?1 OR source_run=?1"),
+    Step::Run("DELETE FROM agent_history_snapshot_adoptions WHERE run=?1"),
+    Step::Run("DELETE FROM agent_artifact_run_bindings WHERE run=?1"),
+    Step::Run("DELETE FROM agent_model_items WHERE run=?1"),
+    Step::Run("DELETE FROM agent_computer_native_turn_fences WHERE run=?1"),
+    Step::Run("DELETE FROM agent_computer_native_bindings WHERE run=?1"),
+    Step::Run("DELETE FROM agent_computer_activities WHERE run=?1"),
+    Step::Run("DELETE FROM agent_computer_stops WHERE run=?1"),
+    Step::Run("DELETE FROM agent_computer_authorizations WHERE run=?1"),
+    Step::Run("DELETE FROM agent_attempt_ids WHERE run=?1"),
+    Step::Run("DELETE FROM agent_request_specs WHERE run=?1"),
+    Step::Run("DELETE FROM agent_attempts WHERE run=?1"),
+    Step::Run("DELETE FROM agent_steps WHERE run=?1"),
+    Step::Run("DELETE FROM agent_tools WHERE run=?1"),
+    Step::Run("DELETE FROM agent_approvals WHERE run=?1"),
+    Step::Run("DELETE FROM agent_blockers WHERE run=?1"),
+    Step::Run("DELETE FROM agent_waits WHERE run=?1"),
+    Step::Run("DELETE FROM agent_operation_pins WHERE run=?1"),
+    Step::Run("DELETE FROM agent_answer_parts WHERE run=?1"),
+    Step::Run("DELETE FROM agent_facts WHERE run=?1"),
 ];
 
-// ?1 owner, ?2 session.
-const SESSION_RELEASES: &[&str] = &[
-    "INSERT OR IGNORE INTO pending_content_releases(content_id)
-     SELECT body_content_id FROM agent_queue_events WHERE session=?2
-     UNION SELECT content_id FROM agent_queue_content_pins WHERE session=?2
-     UNION SELECT content_id FROM agent_cell_notifications WHERE session=?2
-     UNION SELECT value_content_id FROM agent_session_values WHERE session=?2",
-    "DELETE FROM agent_history_queue_requests WHERE session=?2",
-    "DELETE FROM agent_queue_events WHERE session=?2",
-    "DELETE FROM agent_queue_content_pins WHERE session=?2",
-    "DELETE FROM agent_queue_items WHERE session=?2",
-    "DELETE FROM agent_queue_heads WHERE session=?2",
-    "DELETE FROM agent_cell_notifications WHERE session=?2",
-    "DELETE FROM agent_session_values WHERE session=?2",
-    "DELETE FROM agent_session_loaded_tools WHERE session=?2",
-    "DELETE FROM agent_interaction_capabilities WHERE session=?2",
-    "DELETE FROM agent_recall_heads WHERE owner=?1 AND session=?2",
-    "DELETE FROM agent_recall_gaps WHERE owner=?1 AND session=?2",
+// Full Run release when no profile-scoped computer grant or revocation depends
+// on this Run's canonical computer facts, interactions, or run metadata.
+const RUN_FULL_TAIL: &[Step] = &[
+    Step::Run(
+        "INSERT OR IGNORE INTO pending_content_releases(content_id)
+         SELECT content_id FROM agent_content_pins WHERE run=?1
+         UNION SELECT spec_content_id FROM agent_run_specs WHERE run=?1",
+    ),
+    Step::Run("DELETE FROM agent_computer_subjects WHERE run=?1"),
+    Step::Run("DELETE FROM agent_computer_facts WHERE run=?1"),
+    Step::Run(
+        "DELETE FROM agent_computer_grants
+         WHERE request IN(SELECT request FROM agent_interaction_requests WHERE run=?1)",
+    ),
+    Step::Run(
+        "DELETE FROM agent_interaction_grants
+         WHERE request IN(SELECT request FROM agent_interaction_requests WHERE run=?1)",
+    ),
+    Step::Run(
+        "DELETE FROM agent_interaction_outcomes
+         WHERE request IN(SELECT request FROM agent_interaction_requests WHERE run=?1)",
+    ),
+    Step::Run(
+        "DELETE FROM agent_interaction_pending
+         WHERE request IN(SELECT request FROM agent_interaction_requests WHERE run=?1)",
+    ),
+    Step::Run("DELETE FROM agent_interaction_requests WHERE run=?1"),
+    Step::Run("DELETE FROM agent_content_pins WHERE run=?1"),
+    Step::Run("DELETE FROM agent_runs WHERE run=?1"),
+    Step::Run("DELETE FROM agent_run_specs WHERE run=?1"),
+];
+
+// Profile-scoped computer grants and revocations outlive the Session that
+// created them, and computer::rebuild / interactions::rebuild replay their
+// canonical backing facts, outcomes, subjects, pins, and run metadata.
+const RUN_PROFILE_COMPUTER_TAIL: &[Step] = &[
+    Step::Run(
+        "DELETE FROM agent_computer_grants WHERE scope<>'profile'
+         AND request IN(SELECT request FROM agent_interaction_requests WHERE run=?1)",
+    ),
+    Step::Run(
+        "DELETE FROM agent_interaction_grants
+         WHERE request IN(SELECT request FROM agent_interaction_requests WHERE run=?1)",
+    ),
+    Step::Run(
+        "DELETE FROM agent_interaction_pending
+         WHERE request IN(SELECT request FROM agent_interaction_requests WHERE run=?1)",
+    ),
+    Step::Run(
+        "DELETE FROM agent_interaction_outcomes
+         WHERE request IN(SELECT request FROM agent_interaction_requests WHERE run=?1)
+         AND NOT EXISTS(SELECT 1 FROM agent_computer_grants g WHERE g.request=agent_interaction_outcomes.request)",
+    ),
+    Step::Run(
+        "DELETE FROM agent_interaction_requests WHERE run=?1
+         AND NOT EXISTS(SELECT 1 FROM agent_computer_grants g WHERE g.request=agent_interaction_requests.request)",
+    ),
+];
+
+const SESSION_RELEASES: &[Step] = &[
+    Step::Session(
+        "INSERT OR IGNORE INTO pending_content_releases(content_id)
+         SELECT body_content_id FROM agent_queue_events WHERE session=?1
+         UNION SELECT content_id FROM agent_queue_content_pins WHERE session=?1
+         UNION SELECT content_id FROM agent_cell_notifications WHERE session=?1
+         UNION SELECT value_content_id FROM agent_session_values WHERE session=?1",
+    ),
+    Step::Session("DELETE FROM agent_history_queue_requests WHERE session=?1"),
+    Step::Session("DELETE FROM agent_queue_events WHERE session=?1"),
+    Step::Session("DELETE FROM agent_queue_content_pins WHERE session=?1"),
+    Step::Session("DELETE FROM agent_queue_items WHERE session=?1"),
+    Step::Session("DELETE FROM agent_queue_heads WHERE session=?1"),
+    Step::Session("DELETE FROM agent_cell_notifications WHERE session=?1"),
+    Step::Session("DELETE FROM agent_session_values WHERE session=?1"),
+    Step::Session("DELETE FROM agent_session_loaded_tools WHERE session=?1"),
+    Step::Session("DELETE FROM agent_interaction_capabilities WHERE session=?1"),
+    Step::Session(
+        "DELETE FROM agent_interaction_heads WHERE session=?1
+         AND NOT EXISTS(SELECT 1 FROM agent_interaction_requests r WHERE r.session=?1)",
+    ),
+    Step::OwnerSession("DELETE FROM agent_recall_heads WHERE owner=?1 AND session=?2"),
+    Step::OwnerSession("DELETE FROM agent_recall_gaps WHERE owner=?1 AND session=?2"),
 ];
 
 impl Store {
@@ -164,14 +238,57 @@ impl Query for RemovedWithHistory {
         Ok(c.prepare_cached(
             "SELECT t.session_id FROM session_retirements t
              WHERE t.remove_session=1 AND t.completed=1 AND (?2 IS NULL OR t.session_id>?2)
-             AND EXISTS(SELECT 1 FROM agent_run_specs r
-               WHERE r.owner=?1 AND r.session=t.session_id
-               AND NOT EXISTS(SELECT 1 FROM agent_interaction_requests i WHERE i.run=r.run))
+               AND (
+                 EXISTS(
+                   SELECT 1 FROM agent_run_specs r
+                   WHERE r.owner=?1 AND r.session=t.session_id
+                     AND (
+                       EXISTS(SELECT 1 FROM agent_facts f WHERE f.run=r.run)
+                       OR (
+                         NOT EXISTS(SELECT 1 FROM agent_computer_grants g WHERE g.run=r.run AND g.scope='profile')
+                         AND NOT EXISTS(
+                           SELECT 1 FROM agent_computer_facts cf
+                           WHERE cf.run=r.run AND json_extract(cf.fact_json,'$.kind')='profile_grant_revoked'
+                         )
+                       )
+                     )
+                 )
+                 OR EXISTS(SELECT 1 FROM agent_queue_events q WHERE q.session=t.session_id)
+                 OR EXISTS(SELECT 1 FROM agent_queue_items q WHERE q.session=t.session_id)
+                 OR EXISTS(SELECT 1 FROM agent_session_values v WHERE v.session=t.session_id)
+                 OR EXISTS(SELECT 1 FROM agent_cell_notifications n WHERE n.session=t.session_id)
+               )
              ORDER BY t.session_id LIMIT 32",
         )?
         .query_map(params![self.0, self.1], |row| row.get(0))?
         .collect::<Result<_, _>>()?)
     }
+}
+
+fn execute_steps(
+    c: &Connection,
+    steps: &[Step],
+    run: Option<&str>,
+    owner: &str,
+    session: &str,
+) -> Result<usize, StoreError> {
+    let mut changed = 0;
+    for &step in steps {
+        changed += match step {
+            Step::Run(sql) => {
+                let run = run.expect("run step requires run id");
+                c.prepare_cached(sql)?.execute([run])?
+            }
+            Step::RunOwnerSession(sql) => {
+                let run = run.expect("run step requires run id");
+                c.prepare_cached(sql)?
+                    .execute(params![run, owner, session])?
+            }
+            Step::Session(sql) => c.prepare_cached(sql)?.execute([session])?,
+            Step::OwnerSession(sql) => c.prepare_cached(sql)?.execute(params![owner, session])?,
+        };
+    }
+    Ok(changed)
 }
 
 struct Release {
@@ -191,16 +308,32 @@ impl Statement for Release {
         if !fenced {
             return Err(invalid("only a removed Session releases its history"));
         }
-        let (statements, values) = match &self.run {
-            Some(run) => (RUN_RELEASES, vec![run, &self.owner, &self.session]),
-            None => (SESSION_RELEASES, vec![&self.owner, &self.session]),
+        let changed = match self.run.as_deref() {
+            Some(run) => {
+                let preserve_profile_computer: bool = c
+                    .prepare_cached(
+                        "SELECT EXISTS(SELECT 1 FROM agent_computer_grants WHERE run=?1 AND scope='profile')
+                         OR EXISTS(
+                           SELECT 1 FROM agent_computer_facts
+                           WHERE run=?1 AND json_extract(fact_json,'$.kind')='profile_grant_revoked'
+                         )",
+                    )?
+                    .query_row([run], |row| row.get(0))?;
+                let tail = if preserve_profile_computer {
+                    RUN_PROFILE_COMPUTER_TAIL
+                } else {
+                    RUN_FULL_TAIL
+                };
+                execute_steps(
+                    c,
+                    RUN_HISTORY_RELEASES,
+                    Some(run),
+                    &self.owner,
+                    &self.session,
+                )? + execute_steps(c, tail, Some(run), &self.owner, &self.session)?
+            }
+            None => execute_steps(c, SESSION_RELEASES, None, &self.owner, &self.session)?,
         };
-        let mut changed = 0;
-        for sql in statements {
-            let mut statement = c.prepare_cached(sql)?;
-            let used = statement.parameter_count();
-            changed += statement.execute(rusqlite::params_from_iter(&values[..used]))?;
-        }
         Ok(Prepared {
             value: (),
             changed: changed != 0,
@@ -222,6 +355,25 @@ impl Statement for Release {
 mod tests {
     use super::super::stop_tests::{enqueue, open, spec};
     use super::*;
+    use crate::computer::{Change as ComputerChange, Fact as ComputerFact, Subject};
+    use maka_agent_facts::{
+        durable::{AuthorizationObligation, ExecutionIdentity, FactId, ModelAttemptId, ToolKey},
+        interaction::{
+            ComputerAppActivity, ComputerAppDecision, ComputerAppDisplay, ComputerAppPlatform,
+            GrantCapability, GrantScope, GrantTarget, InteractionOutcome, InteractionQuestion,
+            InteractionRecord, InteractionRequest, QuestionOption,
+        },
+        model::{ModelToolCall, ToolInput},
+        tool_call::tool_use_id,
+    };
+    use maka_plugin_core::{
+        composition::InstanceId,
+        contract::Transport,
+        deployment::DeploymentRef,
+        operation::{RecoveryContract, RecoveryProtocol, RecoveryRef},
+    };
+    use std::collections::BTreeSet;
+    use uuid::Uuid;
 
     struct Sql(&'static str, String);
     impl Query for Sql {
@@ -230,6 +382,64 @@ mod tests {
             Ok(c.prepare(self.0)?
                 .query_map([self.1], |row| row.get(0))?
                 .collect::<Result<_, _>>()?)
+        }
+    }
+    struct SeedSession(String, maka_sandbox::workspace::PermissionBasis);
+    impl Statement for SeedSession {
+        type Value = ();
+        type Output = ();
+        fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+            let binding = self.1.binding;
+            c.execute(
+                "INSERT OR IGNORE INTO workspace_bindings(id,owner_scope,selection_digest,workspace_json,permission_epoch,metadata_epoch) VALUES(?,'scope','digest','{}',?,0)",
+                params![binding.id.to_string(), binding.permission_epoch as i64],
+            )?;
+            let config = serde_json::json!({
+                "workspace": maka_sandbox::workspace::BindingRef {
+                    id: binding.id,
+                    permission_epoch_at_attach: binding.permission_epoch,
+                    metadata_epoch_at_attach: 0,
+                },
+                "boundary_revision": self.1.boundary_revision,
+                "permissions": { "access": "workspace_write" },
+            });
+            c.execute(
+                "INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration) VALUES(?,'fp',1,1,1,0,?)",
+                params![self.0, config.to_string()],
+            )?;
+            Ok(Prepared {
+                value: (),
+                changed: true,
+                notification: Notification::NONE,
+            })
+        }
+        fn committed(_: ()) {}
+        fn isolated_rejection(_: &StoreError) -> bool {
+            false
+        }
+    }
+    struct SeedTool(RunId, crate::fold::Tool);
+    impl Statement for SeedTool {
+        type Value = ();
+        type Output = ();
+        fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+            c.execute(
+                "INSERT INTO agent_tools(run,key,pending,body) VALUES(?,?,1,?)",
+                params![
+                    self.0.to_string(),
+                    crate::fold::tool_key(&self.1.key),
+                    serde_json::to_string(&self.1)?,
+                ],
+            )?;
+            Ok(Prepared {
+                value: (),
+                changed: true,
+                notification: Notification::NONE,
+            })
+        }
+        fn committed(_: ()) {}
+        fn isolated_rejection(_: &StoreError) -> bool {
+            false
         }
     }
     struct Fence(String);
@@ -308,7 +518,6 @@ mod tests {
         let after = rows(&store, referenced, "").await;
         let released: Vec<_> = before.iter().filter(|id| !after.contains(id)).collect();
         assert!(!released.is_empty());
-        // The Root collector may already have deleted them; otherwise they wait in its queue.
         let pending = rows(
             &store,
             "SELECT content_id FROM pending_content_releases WHERE ?1=?1",
@@ -321,8 +530,8 @@ mod tests {
                 .iter()
                 .all(|id| pending.contains(id) || !stored.contains(id))
         );
-        assert_eq!(rows(&store, owned, "removed").await, vec![0]);
         for table in [
+            owned,
             "SELECT count(*) FROM agent_session_history WHERE session=?1",
             "SELECT count(*) FROM agent_history_content_refs WHERE session=?1",
             "SELECT count(*) FROM agent_recall_messages WHERE session=?1",
@@ -341,14 +550,518 @@ mod tests {
             rows(
                 &store,
                 "SELECT count(*) FROM pragma_foreign_key_check WHERE ?1=?1",
-                ""
+                "",
             )
             .await,
             vec![0]
         );
-        // The surviving Session still reads the content it shared with the removed one.
         assert_eq!(rows(&store, owned, "kept").await, vec![1]);
         store.frontier(survivor.run()).await.unwrap();
+        drop(store);
+        root.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn backfill_includes_ordinary_interactions_and_preserves_profile_grants_across_rebuilds()
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let (root, store) = open(directory.path(), true).await;
+
+        // 1. Removed session with an ordinary Question interaction: discovered by
+        //    startup backfill and completely reclaimed.
+        let (mut ordinary_spec, ordinary_contents) = spec();
+        ordinary_spec.session_id = "ordinary-removed".into();
+        let ordinary = Admission::new(ordinary_spec.clone(), UnixMillis(10), ordinary_contents);
+        store.admit(ordinary.clone()).await.unwrap();
+        let ordinary_view = store.frontier(ordinary.run()).await.unwrap();
+        let ordinary_claim = store.claim(ordinary.run()).await.unwrap();
+        store
+            .interactions()
+            .establish(
+                &ordinary_claim,
+                Head::from(&ordinary_view),
+                InteractionRecord {
+                    request_id: "req-ordinary".into(),
+                    execution: ExecutionIdentity {
+                        session_id: ordinary_spec.session_id.clone(),
+                        turn_id: ordinary_spec.turn_id.clone(),
+                        run_id: ordinary.run(),
+                    },
+                    created_at: 11,
+                    request: InteractionRequest::Question {
+                        tool_use_id: tool_use_id(ordinary.run(), "question-1"),
+                        questions: vec![InteractionQuestion {
+                            question: "Proceed?".into(),
+                            options: vec![
+                                QuestionOption {
+                                    label: "Yes".into(),
+                                    description: None,
+                                },
+                                QuestionOption {
+                                    label: "No".into(),
+                                    description: None,
+                                },
+                            ],
+                        }],
+                    },
+                    outcome: None,
+                },
+                None,
+                vec![],
+            )
+            .await
+            .unwrap();
+        drop(ordinary_claim);
+        store
+            .data
+            .write(Fence(ordinary_spec.session_id.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .removed_sessions_with_history(ordinary_spec.owner.clone(), None)
+                .await
+                .unwrap(),
+            vec!["ordinary-removed".to_owned()]
+        );
+        store
+            .release_removed_session(
+                ordinary_spec.owner.clone(),
+                ordinary_spec.session_id.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM agent_run_specs WHERE session=?1",
+                "ordinary-removed",
+            )
+            .await,
+            vec![0]
+        );
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM agent_interaction_heads WHERE session=?1",
+                "ordinary-removed",
+            )
+            .await,
+            vec![0]
+        );
+        assert!(
+            store
+                .removed_sessions_with_history(ordinary_spec.owner.clone(), None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // 2. Removed session with a profile-scoped computer grant: releases agent_facts
+        //    but retains canonical backing so computer::rebuild & interactions::rebuild
+        //    keep the grant and never resurrect a pending request.
+        let (mut profile_spec, profile_contents) = spec();
+        profile_spec.session_id = "profile-removed".into();
+        store
+            .data
+            .write(SeedSession(
+                profile_spec.session_id.clone(),
+                profile_spec.permission_basis,
+            ))
+            .await
+            .unwrap();
+        let profile = Admission::new(profile_spec.clone(), UnixMillis(20), profile_contents);
+        store.admit(profile.clone()).await.unwrap();
+        let profile_view = store.frontier(profile.run()).await.unwrap();
+        let profile_claim = store.claim(profile.run()).await.unwrap();
+        let profile_execution = ExecutionIdentity {
+            session_id: profile_spec.session_id.clone(),
+            turn_id: profile_spec.turn_id.clone(),
+            run_id: profile.run(),
+        };
+        let capture_blob =
+            ContentBlob::json(&serde_json::json!({"kind": "computer-capture"})).unwrap();
+        let target = GrantTarget {
+            provider_id: "computer".into(),
+            contract_id: "computer_app".into(),
+            server_id: "local".into(),
+            tool_name: "cua".into(),
+            capability: GrantCapability::ComputerUse,
+            scope: GrantScope::ComputerApp {
+                platform: ComputerAppPlatform::Macos,
+                application_id: "com.example.demo".into(),
+            },
+        };
+        let display = ComputerAppDisplay {
+            name: "Demo App".into(),
+            app_path: "/Applications/Demo.app".into(),
+            risk: None,
+            warning: None,
+        };
+        let basis = profile_spec.permission_basis.clone();
+        let tool_key = ToolKey {
+            attempt: ModelAttemptId::new(),
+            call: "call-1".into(),
+        };
+        let obligation = AuthorizationObligation::Tool {
+            tool: tool_key.clone(),
+        };
+        let recovery_ref = RecoveryRef {
+            source: DeploymentRef {
+                state_domain: "a".repeat(64),
+                deployment: profile_spec.owner.deployment,
+                revision: 1,
+            },
+            namespace: InstanceId(vec![Uuid::new_v4()]),
+            export: "computer".into(),
+            method: "exec".into(),
+            operation: Uuid::new_v4(),
+            fingerprint: format!("sha256-{}", "0".repeat(64)),
+            contract: RecoveryContract {
+                name: "computer.exec".into(),
+                version: 1,
+                transport: Transport::Local,
+                digest: format!("sha256-{}", "0".repeat(64)),
+            },
+            recovery: RecoveryProtocol::JournalV1,
+        };
+        store
+            .data
+            .write(SeedTool(
+                profile.run(),
+                crate::fold::Tool {
+                    key: tool_key.clone(),
+                    call: ModelToolCall {
+                        id: "call-1".into(),
+                        name: "cua".into(),
+                        input: ToolInput::Json(serde_json::json!({})),
+                        provider_options: None,
+                        provider_executed: false,
+                    },
+                    decision: None,
+                    approval_refusal: None,
+                    original: Some(recovery_ref.clone()),
+                    receipt: None,
+                    provider_result: None,
+                    local_returned: None,
+                    host_returned: None,
+                    prohibited_before_host: None,
+                    admitted: true,
+                    accepted: None,
+                },
+            ))
+            .await
+            .unwrap();
+        let native_op = "native-op-1".to_owned();
+        let subject = Subject {
+            activity: ComputerAppActivity {
+                execution: profile_execution.clone(),
+                operation_id: native_op.clone(),
+                target: target.clone(),
+                display: display.clone(),
+            },
+            basis: basis.clone(),
+            allow_always: true,
+            target: obligation,
+            operation: recovery_ref,
+            capture: capture_blob.reference().clone(),
+        };
+        store
+            .computer()
+            .append(
+                &profile_claim,
+                Head::from(&profile_view),
+                ComputerChange {
+                    id: FactId::new(),
+                    at: UnixMillis(21),
+                    fact: ComputerFact::SubjectObserved { subject },
+                },
+                vec![capture_blob],
+            )
+            .await
+            .unwrap();
+        let t_id = tool_use_id(profile.run(), &crate::fold::tool_key(&tool_key));
+        store
+            .interactions()
+            .establish(
+                &profile_claim,
+                Head::from(&profile_view),
+                InteractionRecord {
+                    request_id: "req-profile".into(),
+                    execution: profile_execution,
+                    created_at: 22,
+                    request: InteractionRequest::ComputerApp {
+                        tool_use_id: t_id,
+                        native_operation_id: native_op,
+                        target,
+                        basis,
+                        display,
+                        allow_always: true,
+                        authority_revision: 0,
+                    },
+                    outcome: None,
+                },
+                None,
+                vec![],
+            )
+            .await
+            .unwrap();
+        drop(profile_claim);
+        store
+            .interactions()
+            .commit_outcome(
+                &profile_spec.session_id,
+                "req-profile",
+                InteractionOutcome::ComputerAppDecision {
+                    decision: ComputerAppDecision::Always,
+                    committed_at: 23,
+                },
+            )
+            .await
+            .unwrap();
+
+        store
+            .data
+            .write(Fence(profile_spec.session_id.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .removed_sessions_with_history(profile_spec.owner.clone(), None)
+                .await
+                .unwrap(),
+            vec!["profile-removed".to_owned()]
+        );
+        store
+            .release_removed_session(profile_spec.owner.clone(), profile_spec.session_id.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM agent_facts WHERE run=?1",
+                &profile.run().to_string(),
+            )
+            .await,
+            vec![0]
+        );
+        assert!(
+            store
+                .removed_sessions_with_history(profile_spec.owner.clone(), None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM pragma_foreign_key_check WHERE ?1=?1",
+                "",
+            )
+            .await,
+            vec![0]
+        );
+
+        // Rebuilding both projections preserves the profile grant and does not resurrect pending.
+        store.computer().rebuild().await.unwrap();
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM agent_computer_grants WHERE session=?1 AND scope='profile'",
+                "profile-removed",
+            )
+            .await,
+            vec![1]
+        );
+        store
+            .interactions()
+            .rebuild(&profile_spec.session_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT count(*) FROM agent_interaction_pending WHERE session=?1",
+                "profile-removed",
+            )
+            .await,
+            vec![0]
+        );
+
+        drop(store);
+        root.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn removal_queries_have_no_table_scans_and_account_for_all_agent_tables() {
+        let directory = tempfile::tempdir().unwrap();
+        let (root, store) = open(directory.path(), true).await;
+
+        struct Audit;
+        impl Query for Audit {
+            type Output = (Vec<(String, String)>, Vec<String>);
+            fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+                let mut scans = Vec::new();
+                for sql in [
+                    "DELETE FROM agent_facts WHERE run=?1",
+                    "DELETE FROM agent_run_specs WHERE run=?1",
+                    "DELETE FROM agent_request_specs WHERE run=?1",
+                    "DELETE FROM agent_interaction_requests WHERE run=?1",
+                    "DELETE FROM agent_computer_facts WHERE run=?1",
+                    "DELETE FROM agent_queue_events WHERE session=?1",
+                    "DELETE FROM agent_cell_notifications WHERE session=?1",
+                    "DELETE FROM agent_continuation_successors WHERE run=?1 OR source_run=?1",
+                ] {
+                    let mut stmt = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+                    let plan: Vec<String> = stmt
+                        .query_map(["probe"], |row| row.get(3))?
+                        .collect::<Result<_, _>>()?;
+                    for detail in plan {
+                        if detail.starts_with("SCAN ") {
+                            scans.push((sql.into(), detail));
+                        }
+                    }
+                }
+                let tables: Vec<String> = c
+                    .prepare(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'agent_%' ORDER BY name",
+                    )?
+                    .query_map([], |row| row.get(0))?
+                    .collect::<Result<_, _>>()?;
+                Ok((scans, tables))
+            }
+        }
+
+        let (scans, tables) = store.data.query(Audit).await.unwrap();
+        assert!(
+            scans.is_empty(),
+            "unexpected table scans during removal: {scans:?}"
+        );
+
+        let handled_in_sql: BTreeSet<&str> = [
+            "agent_answer_parts",
+            "agent_approvals",
+            "agent_artifact_run_bindings",
+            "agent_attempt_ids",
+            "agent_attempts",
+            "agent_blockers",
+            "agent_catalog_messages",
+            "agent_catalog_runs",
+            "agent_cell_notifications",
+            "agent_computer_activities",
+            "agent_computer_authorizations",
+            "agent_computer_facts",
+            "agent_computer_grants",
+            "agent_computer_native_bindings",
+            "agent_computer_native_turn_fences",
+            "agent_computer_stops",
+            "agent_computer_subjects",
+            "agent_content_pins",
+            "agent_continuation_successors",
+            "agent_diagnostic_coverage",
+            "agent_diagnostics",
+            "agent_external_effects",
+            "agent_external_publication_items",
+            "agent_external_publications",
+            "agent_external_steering",
+            "agent_facts",
+            "agent_history_content_refs",
+            "agent_history_queue_requests",
+            "agent_history_snapshot_adoptions",
+            "agent_history_tool_metadata",
+            "agent_interaction_capabilities",
+            "agent_interaction_grants",
+            "agent_interaction_heads",
+            "agent_interaction_outcomes",
+            "agent_interaction_pending",
+            "agent_interaction_requests",
+            "agent_model_items",
+            "agent_operation_pins",
+            "agent_queue_content_pins",
+            "agent_queue_events",
+            "agent_queue_heads",
+            "agent_queue_items",
+            "agent_recall_gaps",
+            "agent_recall_heads",
+            "agent_recall_messages",
+            "agent_recall_terms",
+            "agent_request_specs",
+            "agent_run_specs",
+            "agent_runs",
+            "agent_session_history",
+            "agent_session_loaded_tools",
+            "agent_session_values",
+            "agent_steps",
+            "agent_tools",
+            "agent_waits",
+        ]
+        .into_iter()
+        .collect();
+        let retained_or_global: BTreeSet<&str> = [
+            "agent_artifacts",
+            "agent_catalog_controls",
+            "agent_catalog_events",
+            "agent_catalog_revision",
+            "agent_catalog_sessions",
+            "agent_cell_operation_pins",
+            "agent_cells",
+            "agent_computer_revocations",
+            "agent_executor_profile_contents",
+            "agent_history_snapshot_catalog",
+            "agent_history_snapshot_entries",
+            "agent_history_snapshot_imports",
+            "agent_history_snapshot_ingest_edges",
+            "agent_history_snapshot_ingest_frames",
+            "agent_history_snapshot_ingest_nodes",
+            "agent_history_snapshot_inventory_pages",
+            "agent_history_snapshot_nav_chunks",
+            "agent_history_snapshot_nav_documents",
+            "agent_history_snapshot_nav_fields",
+            "agent_history_snapshot_nav_heads",
+            "agent_history_snapshot_nav_terms",
+            "agent_history_snapshot_pins",
+            "agent_history_snapshot_positions",
+            "agent_history_snapshot_run_refs",
+            "agent_history_snapshots",
+            "agent_memories",
+            "agent_memory_evidence",
+            "agent_memory_matches",
+            "agent_memory_relations",
+            "agent_memory_scopes",
+            "agent_memory_search",
+            "agent_memory_versions",
+            "agent_room_messages",
+            "agent_rooms",
+            "agent_session_artifact_registrations",
+            "agent_standalone_cell_events",
+            "agent_standalone_cell_pins",
+            "agent_subagent_presets",
+            "agent_usage_aux_events",
+            "agent_usage_aux_specs",
+            "agent_usage_calls",
+            "agent_usage_results",
+        ]
+        .into_iter()
+        .collect();
+        let unaccounted: Vec<String> = tables
+            .into_iter()
+            .filter(|t| {
+                !t.ends_with("_config")
+                    && !t.ends_with("_content")
+                    && !t.ends_with("_data")
+                    && !t.ends_with("_docsize")
+                    && !t.ends_with("_idx")
+            })
+            .filter(|t| {
+                !handled_in_sql.contains(t.as_str()) && !retained_or_global.contains(t.as_str())
+            })
+            .collect();
+        assert!(
+            unaccounted.is_empty(),
+            "new agent_* tables must be added to removal.rs or classified here: {unaccounted:?}"
+        );
+
         drop(store);
         root.close().await.unwrap();
     }
