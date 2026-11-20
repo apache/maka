@@ -49,6 +49,11 @@ impl WorkspacePath {
         path.validate()?;
         Ok(path)
     }
+    /// Whether the path was typed from the home directory (`~` or `~/…`).
+    pub fn is_home(&self) -> bool {
+        self.bytes()
+            .is_ok_and(|bytes| bytes == b"~" || bytes.starts_with(b"~/"))
+    }
     pub fn validate(&self) -> io::Result<()> {
         self.bytes().map(|_| ())
     }

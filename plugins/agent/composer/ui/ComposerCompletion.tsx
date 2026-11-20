@@ -163,8 +163,10 @@ export function createComposerCompletion(options: Options) {
   const stopFile = () => {
     if (fileRead) void releaseFile(fileRead).catch(() => {});
   };
-  const fileQuery = (value: string) => {
-    const slash = value.lastIndexOf('/');
+  const fileQuery = (typed: string) => {
+    // `./` names the workspace root; `~` is resolved by the Host.
+    const value = typed === '.' ? '' : typed.replace(/^(\.\/)+/, '');
+    const slash = value === '~' ? value.length : value.lastIndexOf('/');
     if (slash <= 0) return { query: value, directory: null };
     const prefix = value.slice(0, slash);
     if (directoryHint?.prefix === prefix)
