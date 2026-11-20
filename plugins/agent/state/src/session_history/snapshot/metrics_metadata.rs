@@ -38,6 +38,8 @@ pub(in crate::session_history) enum ModelMetadata {
         at: UnixMillis,
     },
     Closed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_time_ms: Option<u64>,
         outcome: Outcome,
         at: UnixMillis,
         usage: ModelUsage,
@@ -168,12 +170,16 @@ pub(super) fn classify(
             attempt: actual,
             outcome,
             usage,
+            protocol,
             ..
         } => {
             if *attempt != Some(*actual) {
                 return Err(invalid("snapshot metrics original closed attempt differs"));
             }
             Some(ModelMetadata::Closed {
+                model_time_ms: protocol
+                    .get("modelTimeMs")
+                    .and_then(serde_json::Value::as_u64),
                 outcome: *outcome,
                 at: record.at,
                 usage: usage.clone(),

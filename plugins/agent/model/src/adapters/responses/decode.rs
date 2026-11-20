@@ -161,14 +161,31 @@ impl Decoder {
                 ));
             }
         }
+        let live_item = event_type == "response.output_item.added"
+            && !matches!(
+                value["item"]["status"].as_str(),
+                Some("completed" | "failed" | "incomplete")
+            );
         let events = self.inner.push(value);
         self.observed_output = self.inner.observed_output || self.compaction.is_some();
         self.replay_safe = self.inner.replay_safe && self.compaction.is_none();
         events.map_err(Into::into).map(|events| {
-            events
-                .into_iter()
-                .map(|event| self.project(event))
-                .collect()
+            let mut projected = Vec::with_capacity(events.len());
+            for event in events {
+                let event = self.project(event);
+                if live_item
+                    && let ModelEvent::ToolCall(call) = &event
+                    && call.provider_executed
+                {
+                    projected.push(ModelEvent::ToolInputStarted {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        provider_executed: true,
+                    });
+                }
+                projected.push(event);
+            }
+            projected
         })
     }
 

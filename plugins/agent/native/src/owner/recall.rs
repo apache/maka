@@ -209,6 +209,7 @@ impl Recall {
                 session,
                 anchor_message_id: hit.anchor.message_id,
                 anchor_position: address,
+                through: hit.cut.through_sequence,
                 excerpt: hit.anchor.body,
                 highlights: vec![],
                 matched_terms: hit.matched_terms,

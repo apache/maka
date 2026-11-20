@@ -32,26 +32,7 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
             "TOOL_OUTPUT_EVIDENCE: verify snap-back threshold on page boundary.\n",
         )?;
 
-        let root = std::env::current_dir()?.join("../../..");
-        let output = tokio::process::Command::new("node")
-            .current_dir(root)
-            .args([
-                "--input-type=module",
-                "-e",
-                "import {installation} from './products/maka/bundle/src/installation.ts'; \
-                 console.log(JSON.stringify(installation({workspace:process.cwd(),helper:'test'}).agent.tools.filter(\
-                   t => (t.target.kind === 'export' && t.target.name === 'agent') || \
-                        (t.target.kind === 'import' && t.target.name === 'files' && t.name === 'Read')\
-                 )))",
-            ])
-            .output()
-            .await?;
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let tools: Value = serde_json::from_slice(&output.stdout)?;
+        let tools = product_agent_tools(true).await?;
         let boot = bootstrap_with(&base, provider.url.clone(), |config| {
             config["tools"] = tools;
             config["toolDiscovery"] = json!(true);
@@ -220,6 +201,10 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
                     msgs.contains("WORKER_FINAL_SUMMARY: snap-back check passed."),
                     "Parent wake-up must inline <worker_result>: {msgs}"
                 );
+                assert!(
+                    !msgs.contains("WORKER_EARLY_NARRATION"),
+                    "Only the worker's last message is its result: {msgs}"
+                );
                 saw_inline_worker_result = true;
                 reply
                     .send(completion(
@@ -233,7 +218,11 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
                 if !child_tool_step_done {
                     child_tool_step_done = true;
                     reply
-                        .send(tool_response("Read", json!({"path": "checklist.txt"})))
+                        .send(narrated_tool_response(
+                            "WORKER_EARLY_NARRATION: opening the checklist.",
+                            "Read",
+                            json!({"path": "checklist.txt"}),
+                        ))
                         .map_err(|_| "child Read lost")?;
                 } else if !child_finished {
                     child_finished = true;
@@ -325,8 +314,33 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
         );
 
         // 7. Self-inspection via SessionRead({}) and lifecycle management via SessionManage without expectedRevision
-        let self_read = tool_round(&rig, &mut provider, parent_id, false, "SessionRead", json!({})).await?;
-        assert!(self_read.contains(parent_id), "{self_read}");
+        let self_read =
+            tool_round(&rig, &mut provider, parent_id, false, "SessionRead", json!({})).await?;
+        let self_read_msgs: Vec<Value> = serde_json::from_str(&self_read)?;
+        let self_read_output: Value = serde_json::from_str(
+            self_read_msgs[0]["content"]
+                .as_str()
+                .ok_or("missing SessionRead tool content")?,
+        )?;
+        assert_eq!(
+            self_read_output["session"]["id"], parent_id,
+            "{self_read_output}"
+        );
+        let self_items = self_read_output["transcript"]["items"]
+            .as_array()
+            .ok_or("missing Agent transcript")?;
+        assert!(
+            self_items
+                .iter()
+                .any(|item| item["role"] == "user" && item["text"] == "Execute Read"),
+            "{self_read_output}"
+        );
+        assert!(
+            self_items
+                .iter()
+                .any(|item| item["toolName"] == "Read" && item["resultPath"].is_string()),
+            "{self_read_output}"
+        );
 
         let updated = tool_round(
             &rig,
@@ -727,10 +741,17 @@ async fn run_session_tools_edge_cases() -> TestResult<()> {
 
         let mut parent_closed = false;
         let mut saw_failed_wakeup = false;
+        let mut worker_reported = false;
         while !saw_failed_wakeup {
             let (req, reply) = provider.next().await?;
             let msgs = text_messages(&req);
             if msgs.contains("<worker_result>") && msgs.contains("FATAL_UPSTREAM_DIAGNOSTIC_400") {
+                // A failed worker's notice keeps what it said last beside why it failed.
+                assert!(
+                    msgs.contains("WORKER_PARTIAL_FINDINGS: two of three checks passed.")
+                        && msgs.contains("<failure_reason>"),
+                    "{msgs}"
+                );
                 saw_failed_wakeup = true;
                 reply
                     .send(completion(
@@ -738,6 +759,18 @@ async fn run_session_tools_edge_cases() -> TestResult<()> {
                         "stop",
                     ))
                     .map_err(|_| "fail wakeup")?;
+            } else if msgs.contains("Trigger fatal error")
+                && !msgs.contains("Dispatch failing worker")
+                && !worker_reported
+            {
+                worker_reported = true;
+                reply
+                    .send(narrated_tool_response(
+                        "WORKER_PARTIAL_FINDINGS: two of three checks passed.",
+                        "Read",
+                        json!({"path": "checklist.txt"}),
+                    ))
+                    .map_err(|_| "worker report")?;
             } else if msgs.contains("Trigger fatal error") && !msgs.contains("Dispatch failing worker") {
                 reply
                     .send(ModelReply::Fatal(
@@ -917,4 +950,14 @@ async fn run_session_tools_edge_cases() -> TestResult<()> {
     assert!(matches!(outcome, Ok(Ok(Ok(())))), "{outcome:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
+}
+
+fn narrated_tool_response(text: &str, name: &str, input: Value) -> ModelReply {
+    ModelReply::Stream(super::super::bot_tools::completion(
+        json!({"role":"assistant","content":text,"tool_calls":[{
+            "index":0,"id":format!("call-{name}"),"type":"function",
+            "function":{"name":name,"arguments":input.to_string()}
+        }]}),
+        "tool_calls",
+    ))
 }

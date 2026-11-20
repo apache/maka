@@ -191,6 +191,25 @@ impl Owner {
         render: impl FnOnce(Language) -> String,
         origin: MessageOrigin,
     ) -> Result<Option<PreparedRequest>, String> {
+        self.prepare_notification_at(
+            source,
+            route,
+            identity,
+            render,
+            origin,
+            UnixMillis(now() as i64),
+        )
+        .await
+    }
+    pub(super) async fn prepare_notification_at(
+        &self,
+        source: &ExecutionIdentity,
+        route: &ReturnRoute,
+        identity: &str,
+        render: impl FnOnce(Language) -> String,
+        origin: MessageOrigin,
+        at: UnixMillis,
+    ) -> Result<Option<PreparedRequest>, String> {
         let placement = if matches!(origin, MessageOrigin::SessionCompletion { .. })
             || matches!(&origin, MessageOrigin::Session { execution } if execution == source && identity == super::external_recovery::recovery_request_id(source.run_id))
         {
@@ -208,10 +227,12 @@ impl Owner {
             origin,
             placement,
             None,
+            at,
         )
         .await
         .map_err(String::from)
     }
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn prepare_notification_checked(
         &self,
         session_id: &str,
@@ -221,6 +242,7 @@ impl Owner {
         origin: MessageOrigin,
         placement: QueuePlacement,
         boundary: Option<&ScheduledTarget>,
+        at: UnixMillis,
     ) -> Result<Option<PreparedRequest>, send::CaptureError> {
         if let Some(original) = self
             .durable
@@ -292,6 +314,7 @@ impl Owner {
             placement,
             false,
             boundary,
+            at,
         )
         .await
         .map(Some)
@@ -349,9 +372,11 @@ impl Owner {
             placement,
             steer,
             None,
+            UnixMillis(now() as i64),
         )
         .await
     }
+    #[allow(clippy::too_many_arguments)]
     async fn enqueue_background_checked(
         &self,
         session: &str,
@@ -362,6 +387,7 @@ impl Owner {
         mut placement: QueuePlacement,
         steer: bool,
         boundary: Option<&ScheduledTarget>,
+        at: UnixMillis,
     ) -> Result<PreparedRequest, String> {
         let _ordered = self.runs.ordered(session).await;
         let queue = self.durable.queue();
@@ -413,24 +439,10 @@ impl Owner {
                 && let Some(view) = self.session_run(session, control.execution.run_id).await?
                 && !view.stopped
                 && view.terminal.is_none()
-                && view.spec.permission_basis == request.spec.permission_basis
-                && view.spec.workspace == request.spec.workspace
-                && request
-                    .spec
-                    .permission_ceiling
-                    .sandbox
-                    .contains(&view.spec.permission_ceiling.sandbox)
-                    .map_err(|error| error.to_string())?
-                && request
-                    .spec
-                    .approval_ceiling()
-                    .contains(&view.spec.approval_ceiling())
-                    .map_err(|error| error.to_string())?
                 && view
                     .spec
-                    .permission_ceiling
-                    .approval
-                    .is_subset_of(request.spec.permission_ceiling.approval)
+                    .accepts_steering_from(&request.spec)
+                    .map_err(|error| error.to_string())?
             {
                 placement = QueuePlacement::Steering {
                     run: view.run,
@@ -452,7 +464,7 @@ impl Owner {
                 session.to_owned(),
                 QueueCommand {
                     id,
-                    at: UnixMillis(0),
+                    at,
                     expected_revision: current.revision,
                     edit: QueueEdit::Enqueue {
                         request: Box::new(request.clone()),

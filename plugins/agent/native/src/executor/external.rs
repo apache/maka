@@ -45,6 +45,7 @@ mod steering;
 mod tools;
 const PRESENTATION_VERSION: u32 = 3;
 const AGY_ACP_VERSION: u32 = 5;
+const CONTEXT_VERSION: u32 = 6;
 pub(crate) use history::Inputs;
 pub(crate) use tools::{HostEffects, HostTools};
 
@@ -100,7 +101,7 @@ impl NativeBinding {
     pub(super) fn supported(&self) -> bool {
         matches!(
             self.adapter_version,
-            2 | PRESENTATION_VERSION | AGY_ACP_VERSION
+            2 | PRESENTATION_VERSION | AGY_ACP_VERSION | CONTEXT_VERSION
         )
     }
 }
@@ -676,6 +677,7 @@ struct CallResources {
 }
 struct PrelaunchRejection {
     seal: maka_process::isolated::NoLaunchSeal,
+    code: &'static str,
     message: String,
     binding: Arc<dyn TaskBinding>,
     recording: tokio::sync::Mutex<()>,
@@ -694,12 +696,40 @@ impl PrelaunchRejection {
         self.settle_cleanup().await?;
         let outcome = Outcome::Failed {
             message: self.message.clone(),
-            code: Some("native_input_rejected".into()),
+            code: Some(self.code.into()),
             recoverable: false,
         };
         self.binding.closed(outcome.clone()).await?;
         Ok(outcome)
     }
+}
+async fn reject_prelaunch(
+    isolated: maka_process::isolated::TaskOwner,
+    binding: Arc<dyn TaskBinding>,
+    root_resources: &Arc<CallResources>,
+    code: &'static str,
+    message: String,
+) -> Result<Outcome, Error> {
+    let original = Arc::new(PrelaunchRejection {
+        seal: isolated.into_no_launch_seal(),
+        code,
+        message,
+        binding,
+        recording: tokio::sync::Mutex::new(()),
+    });
+    *root_resources
+        .rejection
+        .lock()
+        .expect("original rejection custody") = Some(original.clone());
+    let result = original.record().await;
+    if result.is_ok() {
+        root_resources
+            .rejection
+            .lock()
+            .expect("original rejection custody")
+            .take();
+    }
+    result
 }
 impl maka_agent_ports::executor::RootSettlementOwner for CallResources {
     fn original_root_cleanup(&self) -> OperationCleanup {
@@ -811,115 +841,130 @@ impl Call {
             .map_err(|e| Error::Persistence(e.to_string()))?;
         let cwd = request.cwd.as_str();
         let material_root = isolated.inputs();
-        let runtime = owner.require_runtime(request.settings.runtime.as_deref())?;
-        let config = &owner.commands[&runtime];
-        let host_tools = tools::Tools::bind(
-            host_tools.clone(),
-            &request,
-            execution.clone(),
-            &owner,
-            cancellation.clone(),
-        )
-        .await?;
-        let (artifacts, scope) = inputs.artifacts();
-        if scope.session != request.execution.session_id {
-            return Err(Error::Invalid(
-                "External artifact scope belongs to another session".into(),
-            ));
+        enum PrelaunchError {
+            Rejected { code: &'static str, message: String },
+            Other(Error),
         }
-        let mut materials = match attachments::prepare(
-            &artifacts,
-            &scope,
-            &request.content,
-            request.language,
-            &cancellation,
-            &material_root,
-        )
-        .await
-        {
-            Ok(materials) => materials,
-            Err(attachments::PreparationError::Source(error)) => return Err(error),
-            Err(attachments::PreparationError::Unsupported(message)) => {
-                let original = Arc::new(PrelaunchRejection {
-                    seal: isolated.into_no_launch_seal(),
-                    message,
-                    binding,
-                    recording: tokio::sync::Mutex::new(()),
-                });
-                *root_resources
-                    .rejection
-                    .lock()
-                    .expect("original rejection custody") = Some(original.clone());
-                let result = original.record().await;
-                if result.is_ok() {
-                    root_resources
-                        .rejection
-                        .lock()
-                        .expect("original rejection custody")
-                        .take();
+        impl From<Error> for PrelaunchError {
+            fn from(error: Error) -> Self {
+                match error {
+                    Error::Invalid(_) | Error::Provider(_) => Self::Rejected {
+                        code: "native_preparation_failed",
+                        message: error.to_string(),
+                    },
+                    other => Self::Other(other),
                 }
-                return result;
             }
-        };
-        let command_basis = runtime::command_basis(config, cwd)?;
-        let mut journal = journal::ProtocolSession::load(
-            owner.sessions.clone(),
-            &request,
-            binding.clone(),
-            command_basis,
-            &isolated,
-            cancellation.clone(),
-        )
-        .await?;
-        let _ = root_resources
-            .pipes
-            .set(journal.observation().resources.clone());
-        let history_path = material_root.join(maka_agent_authority::executor::HISTORY_FILE);
-        let mut options = tokio::fs::OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut history = options
-            .open(&history_path)
-            .await
-            .map_err(|e| Error::Provider(format!("Canonical history file creation failed: {e}")))?;
-        inputs
-            .write_history(request.task_id, journal.last_delivered_run(), &mut history)
+        }
+        let prepared = async {
+            let runtime = owner.require_runtime(request.settings.runtime.as_deref())?;
+            let config = &owner.commands[&runtime];
+            let host_tools = tools::Tools::bind(
+                host_tools.clone(),
+                &request,
+                execution.clone(),
+                &owner,
+                cancellation.clone(),
+            )
             .await?;
-        tokio::io::AsyncWriteExt::flush(&mut history)
+            let (artifacts, scope) = inputs.artifacts();
+            if scope.session != request.execution.session_id {
+                return Err(Error::Invalid(
+                    "External artifact scope belongs to another session".into(),
+                )
+                .into());
+            }
+            let mut materials = match attachments::prepare(
+                &artifacts,
+                &scope,
+                &request.content,
+                request.language,
+                &cancellation,
+                &material_root,
+            )
             .await
-            .map_err(|e| Error::Provider(format!("Canonical history file flush failed: {e}")))?;
-        if history
-            .metadata()
-            .await
-            .map_err(|error| Error::Provider(error.to_string()))?
-            .len()
-            != 0
-        {
-            let history_path = history_path.to_str().ok_or_else(|| {
-                Error::Invalid("Private canonical history path must be UTF-8".into())
+            {
+                Ok(materials) => materials,
+                Err(attachments::PreparationError::Source(error)) => return Err(error.into()),
+                Err(attachments::PreparationError::Unsupported(message)) => {
+                    return Err(PrelaunchError::Rejected {
+                        code: "native_input_rejected",
+                        message,
+                    });
+                }
+            };
+            let command_basis = runtime::command_basis(config, cwd)?;
+            let journal = journal::ProtocolSession::load(
+                owner.sessions.clone(),
+                &request,
+                binding.clone(),
+                command_basis,
+                &isolated,
+                cancellation.clone(),
+            )
+            .await?;
+            let _ = root_resources
+                .pipes
+                .set(journal.observation().resources.clone());
+            let history_path = material_root.join(maka_agent_authority::executor::HISTORY_FILE);
+            let mut options = tokio::fs::OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let mut history = options.open(&history_path).await.map_err(|e| {
+                Error::Provider(format!("Canonical history file creation failed: {e}"))
             })?;
-            materials.message = format!(
-                "Read the prior conversation context from this file before answering: {}\n\n--- Current user message ---\n{}",
-                serde_json::to_string(history_path).expect("history path is JSON"),
-                materials.message
+            inputs
+                .write_history(request.task_id, journal.last_delivered_run(), &mut history)
+                .await?;
+            tokio::io::AsyncWriteExt::flush(&mut history).await.map_err(|e| {
+                Error::Provider(format!("Canonical history file flush failed: {e}"))
+            })?;
+            if history
+                .metadata()
+                .await
+                .map_err(|error| Error::Provider(error.to_string()))?
+                .len()
+                != 0
+            {
+                let history_path = history_path.to_str().ok_or_else(|| {
+                    Error::Invalid("Private canonical history path must be UTF-8".into())
+                })?;
+                materials.message = format!(
+                    "Read the prior conversation context from this file before answering: {}\n\n--- Current user message ---\n{}",
+                    serde_json::to_string(history_path).expect("history path is JSON"),
+                    materials.message
+                );
+            }
+            if cancellation.is_cancelled() || binding.observation_retired().is_cancelled() {
+                return Err(PrelaunchError::Other(Error::ObservationRetired));
+            }
+            let steering = steering::Steering::new(
+                artifacts,
+                scope,
+                request.language,
+                cancellation.clone(),
+                inputs.clone(),
+                request.task_id,
+                material_root.clone(),
             );
+            let bridge = owner
+                .bridge(&request, host_tools, material_root.join("mcp"))
+                .await?;
+            Ok((runtime, materials, journal, steering, bridge))
         }
-        if cancellation.is_cancelled() || binding.observation_retired().is_cancelled() {
-            return Err(Error::ObservationRetired);
-        }
-        let mut steering = steering::Steering::new(
-            artifacts,
-            scope,
-            request.language,
-            cancellation.clone(),
-            inputs.clone(),
-            request.task_id,
-            material_root.clone(),
-        );
-        let bridge = owner
-            .bridge(&request, host_tools, material_root.join("mcp"))
-            .await?;
+        .await;
+        let (runtime, mut materials, mut journal, mut steering, bridge) = match prepared {
+            Ok(prepared) => prepared,
+            Err(PrelaunchError::Rejected { code, message })
+                if !cancellation.is_cancelled()
+                    && !binding.observation_retired().is_cancelled() =>
+            {
+                return reject_prelaunch(isolated, binding, root_resources, code, message).await;
+            }
+            Err(PrelaunchError::Rejected { .. }) => return Err(Error::ObservationRetired),
+            Err(PrelaunchError::Other(error)) => return Err(error),
+        };
         *root_bridge = Some(bridge.clone());
         let native_request = serde_json::json!({
             "kind":"execute", "runtime":request.settings.runtime, "cwd":cwd,

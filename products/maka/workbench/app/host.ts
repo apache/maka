@@ -284,6 +284,7 @@ export function createHost(application: UiHost) {
     recoverControl: (id: string) => nativeHost.recoverControl(id) as Promise<OperationReply>,
     dismissControl: (id: string) => nativeHost.dismissControl(id) as Promise<void>,
     abandonControl: (id: string) => nativeHost.abandonControl(id) as Promise<ClientOperation>,
+    [Symbol.for('maka.hostIdentity')]: uiHost,
   };
 }
 

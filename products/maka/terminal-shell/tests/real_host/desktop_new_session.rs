@@ -19,7 +19,7 @@
 
 use super::support::{Fixture, ModelRequest, Options, ReplyGate, mutate};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use maka_app_client::Client;
+use maka_app_client::{Client, SubscriptionEvent};
 use maka_workbench::bindings::Bindings;
 #[cfg(target_os = "macos")]
 use nsh_platform_macos::TerminalSurface;
@@ -1647,6 +1647,111 @@ async fn desktop_history_anchors_keep_the_reader_off_live_output_until_latest() 
     fixture.finish().await;
 }
 
+async fn desktop_recall_opens_passages_at_their_history_boundaries() {
+    let mut fixture = Fixture::open().await;
+    let client = fixture.client().await;
+    let backend = json!({
+        "kind": "model", "connectionId": fixture.selection["connectionId"],
+        "modelId": fixture.selection["modelId"],
+    });
+    let other = mutate(
+        &client,
+        "create",
+        json!({
+            "title": "Second conversation", "labels": [], "backend": backend,
+            "workspace": {"kind": "session", "sessionId": fixture.session},
+        }),
+    )
+    .await;
+    let current = fixture.session.clone();
+    let sessions = [current.as_str(), other["session"]["id"].as_str().unwrap()];
+    let prompts = [
+        "needle needle needle",
+        "The second conversation also mentions needle.",
+    ];
+    let mut fences = Vec::new();
+    for (session, prompt) in sessions.into_iter().zip(prompts) {
+        mutate(
+            &client,
+            "send",
+            json!({
+                "sessionId": session, "backend": backend, "message": prompt,
+            }),
+        )
+        .await;
+        let mut reply = fixture.next_request().await;
+        reply
+            .delta(&"A later line in the reply.\n\n".repeat(60))
+            .await;
+        reply.finish().await;
+        fixture.idle(&client, session).await;
+        let tail = client
+            .query(
+                "agent",
+                "history",
+                json!({
+                    "sessionId": session, "position": {"kind": "tail"}, "view": "conversation",
+                }),
+            )
+            .await
+            .unwrap();
+        fences.push(tail["through"].as_u64().unwrap());
+    }
+    let search = client
+        .subscribe("agent", "recall", json!({"terms":["needle"]}))
+        .await
+        .unwrap();
+    let Some(SubscriptionEvent::Item(page) | SubscriptionEvent::Finished(page)) =
+        search.next().await.unwrap()
+    else {
+        panic!("expected search results");
+    };
+    search.close().await.unwrap();
+    let passages = page["passages"].as_array().unwrap();
+    assert_eq!(passages.len(), 2);
+    for (index, passage) in passages.iter().enumerate() {
+        assert_eq!(passage["session"]["id"], sessions[index]);
+        assert_eq!(passage["through"], fences[index]);
+    }
+    // Using the first result's fence for the second must fail the Host's exact row read.
+    assert!(passages[1]["anchorPosition"]["sequence"].as_u64().unwrap() > fences[0]);
+
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    for (within, selected) in [(true, 0), (false, 1)] {
+        let previous = desktop.platform.text_input_target();
+        desktop.key("o", true);
+        desktop.target_after(previous).await;
+        desktop.paste("needle").await;
+        if within {
+            desktop.press("This conversation").await;
+        }
+        let title = passages[selected]["session"]["title"].as_str().unwrap();
+        desktop
+            .press(&format!("Open matching passage in {title}"))
+            .await;
+        desktop
+            .until("the passage search did not close", || {
+                desktop
+                    .controls("All conversations")
+                    .is_empty()
+                    .then_some(())
+            })
+            .await;
+        let copy = desktop.control("Copy user message").await;
+        desktop.hover_at(copy.center());
+        let _ = desktop.platform.take_clipboard_write();
+        desktop.press("Copy user message").await;
+        let original = desktop
+            .until("the original message was not available to copy", || {
+                desktop.platform.take_clipboard_write()
+            })
+            .await;
+        assert_eq!(original, prompts[selected]);
+    }
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 #[cfg(target_os = "macos")]
 async fn desktop_resumes_live_activity_when_scrolling_back_to_latest() {
     let mut fixture = Fixture::configured(Options {
@@ -1665,7 +1770,7 @@ async fn desktop_resumes_live_activity_when_scrolling_back_to_latest() {
     )
     .await;
     let mut reply = fixture.next_request().await;
-    for index in 0..35 {
+    for index in 0..135 {
         reply
             .packet(json!({"type":"response.output_item.done","item":{
                 "type":"reasoning","id":format!("reasoning-{index}"),
@@ -1674,7 +1779,25 @@ async fn desktop_resumes_live_activity_when_scrolling_back_to_latest() {
             .await;
     }
     let desktop = Desktop::open(&fixture, &fixture.address).await;
-    let thumb = desktop.open_group("Thinking · Activity line 34").await;
+    use nsh_terminal::ScrollWheelEvent;
+    let latest = desktop.open_group("Thinking · Activity line 134").await;
+    desktop
+        .retry(
+            "read the first activity across page boundaries",
+            || !desktop.controls("Thinking · Activity line 0").is_empty(),
+            || {
+                desktop
+                    .platform
+                    .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                        position: latest.center(),
+                        delta: nsh_terminal::ScrollDelta::Lines(point(0., 24.))
+                    })))
+                    .unwrap();
+            },
+        )
+        .await;
+    desktop.press("Return to latest").await;
+    let thumb = desktop.control("Thinking · Activity line 134").await;
     assert!(desktop.controls("Return to latest").is_empty());
     let at = point(thumb.right() - px(5.), thumb.center().y);
     desktop.hover_at(at);
@@ -1710,7 +1833,7 @@ async fn desktop_resumes_live_activity_when_scrolling_back_to_latest() {
     let outer = point(at.x + px(16.), at.y);
     scroll(outer, point(outer.x, outer.y - px(120.)));
     let user = desktop.control("Copy user message").await;
-    assert!(desktop.controls("Thinking · Activity line 34").is_empty());
+    assert!(desktop.controls("Thinking · Activity line 134").is_empty());
     // The outer thumb now rests at the top of its track, level with the prompt.
     let outer = point(outer.x, user.top() + px(32.));
     desktop
@@ -1737,7 +1860,68 @@ async fn desktop_resumes_live_activity_when_scrolling_back_to_latest() {
     desktop
         .control("Thinking · New activity after scrolling")
         .await;
+    reply
+        .packet(json!({"type":"response.output_item.done","item":{
+            "type":"message","id":"final-answer","role":"assistant","phase":"final_answer",
+            "content":[{"type":"output_text","text":"All steps finished."}]
+        }}))
+        .await;
+    reply
+        .packet(json!({"type":"response.completed","response":{
+            "id":"response-1","usage":{"input_tokens":10,"output_tokens":20}
+        }}))
+        .await;
     reply.finish_stream().await;
+    desktop.control("Copy message").await;
+    desktop.close().await;
+    // Reopen cold to read a finished long group downward across page boundaries.
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.press("Turn work details").await;
+    let first = desktop.open_group("Thinking · Activity line 0").await;
+    assert!(
+        desktop
+            .controls("Thinking · New activity after scrolling")
+            .is_empty()
+    );
+    desktop
+        .retry(
+            "read the second page of a closed group without jumping past it",
+            || !desktop.controls("Thinking · Activity line 64").is_empty(),
+            || {
+                desktop
+                    .platform
+                    .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                        position: first.center(),
+                        delta: nsh_terminal::ScrollDelta::Lines(point(0., -12.))
+                    })))
+                    .unwrap();
+            },
+        )
+        .await;
+    assert!(
+        desktop
+            .controls("Thinking · New activity after scrolling")
+            .is_empty()
+    );
+    desktop
+        .retry(
+            "read down to the final activity of the closed group",
+            || {
+                !desktop
+                    .controls("Thinking · New activity after scrolling")
+                    .is_empty()
+            },
+            || {
+                desktop
+                    .platform
+                    .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                        position: first.center(),
+                        delta: nsh_terminal::ScrollDelta::Lines(point(0., -24.))
+                    })))
+                    .unwrap();
+            },
+        )
+        .await;
     desktop.close().await;
     fixture.finish().await;
 }
@@ -4147,6 +4331,13 @@ async fn desktop_composer_toolbar_customizes_layout_and_context_usage() {
     );
     desktop.press("Open settings").await;
     desktop.control("Close settings").await;
+    desktop.control("Edit connection NSH fixture").await;
+    desktop
+        .until("connection usage limits did not fetch in settings", || {
+            (fixture.control_plane_requests() >= 1).then_some(())
+        })
+        .await;
+    desktop.artifact("settings-connection-usage");
     desktop.press("Settings section General").await;
     desktop.control("Language").await;
     desktop.control("70%+").await;
@@ -4173,6 +4364,21 @@ async fn desktop_composer_toolbar_customizes_layout_and_context_usage() {
     assert!(
         usage_indicator.left() > model_after.left(),
         "usage limits indicator should render on the right side after moving model left: usage={usage_indicator:?}, model={model_after:?}"
+    );
+    desktop
+        .press("NSH fixture · API key spending limit · 72% remaining")
+        .await;
+    desktop.artifact("composer-usage-popover");
+    desktop.key("escape", false);
+    let before_new_draft = fixture.control_plane_requests();
+    desktop.new_draft().await;
+    desktop
+        .control("NSH fixture · API key spending limit · 72% remaining")
+        .await;
+    assert_eq!(
+        fixture.control_plane_requests(),
+        before_new_draft,
+        "opening a new session should reuse cached usage limits without refetching"
     );
     desktop.press("Open settings").await;
     desktop.press("Settings section General").await;
@@ -4665,6 +4871,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
     "desktop_continues_a_failed_run_without_duplicating_the_user_message",
     "desktop_history_anchors_keep_the_reader_off_live_output_until_latest",
+    "desktop_recall_opens_passages_at_their_history_boundaries",
     #[cfg(target_os = "macos")]
     "desktop_resumes_live_activity_when_scrolling_back_to_latest",
     "history_pages_return_each_prompt_once_from_tail_to_start",
@@ -4742,6 +4949,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_history_anchors_keep_the_reader_off_live_output_until_latest" => {
             runtime.block_on(desktop_history_anchors_keep_the_reader_off_live_output_until_latest())
+        }
+        "desktop_recall_opens_passages_at_their_history_boundaries" => {
+            runtime.block_on(desktop_recall_opens_passages_at_their_history_boundaries())
         }
         "history_pages_return_each_prompt_once_from_tail_to_start" => {
             runtime.block_on(history_pages_return_each_prompt_once_from_tail_to_start())

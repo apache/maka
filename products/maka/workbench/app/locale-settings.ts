@@ -229,7 +229,6 @@ export const settingsMessages = {
   ],
   'Weekly limit': ['Weekly limit', '每周额度', '每週用量限制'],
   '{duration} limit': ['{duration} limit', '{duration}额度', '{duration}用量限制'],
-  '{percent}% used': ['{percent}% used', '已用 {percent}%', '已用 {percent}%'],
   'Resets {time}': ['Resets {time}', '{time} 重置', '{time} 重設'],
   'Usage access key': ['Usage access key', '额度查询密钥', '用量查詢金鑰'],
   'Access key ID': ['Access key ID', '访问密钥 ID', '存取金鑰 ID'],

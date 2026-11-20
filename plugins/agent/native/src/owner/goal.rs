@@ -94,6 +94,7 @@ impl Goals {
 }
 fn detail(saved: Saved<BackgroundGrant>) -> GoalDetail {
     let goal = saved.goal;
+    let note = goal.display_note().to_owned();
     GoalDetail {
         id: goal.id,
         revision: saved.revision,
@@ -117,7 +118,7 @@ fn detail(saved: Saved<BackgroundGrant>) -> GoalDetail {
         pending: goal.pending.is_some(),
         dismissed: goal.dismissed,
         report: goal.report,
-        note: goal.note,
+        note,
     }
 }
 impl Owner {
@@ -233,7 +234,7 @@ impl Owner {
             .session_quiescence(self.run_owner(), session.to_owned())
             .await
             .map_err(reason)?
-            .is_quiescent())
+            .admits_run())
     }
 
     pub async fn goal_change(

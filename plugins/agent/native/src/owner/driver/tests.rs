@@ -181,6 +181,31 @@ impl ToolPreparer for OrdinaryTool {
     }
 }
 
+/// Ends like a tool whose connection was retired mid-call: no result is known.
+struct UncertainTool;
+impl ToolPreparer for UncertainTool {
+    fn names(&self) -> Vec<String> {
+        vec!["uncertain_local".into()]
+    }
+    fn prepare(
+        &self,
+        _name: String,
+        _input: Value,
+        _context: ToolCallContext,
+        _cancellation: CancellationToken,
+    ) -> PreparationFuture {
+        Box::pin(async {
+            Ok(PreparedEffect::new(|_| {
+                Box::pin(async {
+                    Err(ToolError::OutcomeUnknown(
+                        "the server stopped answering".into(),
+                    ))
+                })
+            }))
+        })
+    }
+}
+
 enum TestDirectory {
     Owned(tempfile::TempDir),
     Borrowed(std::path::PathBuf),
@@ -200,6 +225,7 @@ struct Rig {
     model_listener: std::net::TcpListener,
     model_overrides: Value,
     model_idle_timeout: Option<Duration>,
+    uncertain_tool: bool,
     native_grants: Vec<NativeGrant>,
     store: Option<Arc<RootStore>>,
     host: Option<Arc<Host>>,
@@ -237,6 +263,7 @@ impl Rig {
             model_listener,
             model_overrides: json!({}),
             model_idle_timeout: None,
+            uncertain_tool: false,
             native_grants: vec![],
             store: None,
             host: None,
@@ -798,7 +825,21 @@ impl Rig {
                 handler: ToolHandler::Prepared(Arc::new(OrdinaryTool(StdMutex::new(Some(receiver))))),
             }
         });
-        let catalog = maka_tools::ToolCatalog::new(ordinary_tool)?;
+        let uncertain_tool = self.uncertain_tool.then(|| ToolRegistration {
+            definition: ToolDefinition {
+                name: "uncertain_local".into(),
+                description: "Ends without a known result".into(),
+                input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
+                provider: None,
+                freeform: None,
+                output_schema: None,
+            },
+            nesting: ToolNesting::DirectOnly,
+            semantics: ToolSemantics::Parallel,
+            handler: ToolHandler::Prepared(Arc::new(UncertainTool)),
+        });
+        let catalog =
+            maka_tools::ToolCatalog::new(ordinary_tool.into_iter().chain(uncertain_tool))?;
         let tools = ContentBlob::json(&crate::tools::SelectionSnapshot {
             definitions: catalog.definitions().cloned().collect(),
             direct_only: catalog.names().into_iter().collect(),
@@ -3140,6 +3181,7 @@ mod source_recovery {
                 .append(
                     vec![Fact::StopRequested {
                         diagnostic: "fixture explicit Stop".into(),
+                        requester: maka_agent_facts::durable::StopRequester::Internal,
                     }],
                     vec![],
                 )
@@ -3913,21 +3955,26 @@ mod model_recovery {
                             .unwrap();
                         let request: Value = serde_json::from_slice(&body).unwrap();
                         requests.send(request).await.unwrap();
-                        let (delta, finish) = if index == 0 {
-                            (json!({"role":"assistant"}), "length")
-                        } else {
-                            (json!({"role":"assistant","content":"Continued"}), "stop")
-                        };
+                        use axum::response::IntoResponse;
+                        if index == 0 {
+                            return (
+                                axum::http::StatusCode::BAD_REQUEST,
+                                [("content-type", "application/json")],
+                                json!({"error":{"message":"Injected model failure","type":"invalid_request_error"}}).to_string(),
+                            )
+                                .into_response();
+                        }
                         let chunk = json!({
                             "id":format!("continuation-{index}"),"object":"chat.completion.chunk",
-                            "created":1,"model":"llama3.2","choices":[{"index":0,"delta":delta,
-                            "finish_reason":finish}],
+                            "created":1,"model":"llama3.2","choices":[{"index":0,
+                            "delta":{"role":"assistant","content":"Continued"},"finish_reason":"stop"}],
                             "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}
                         });
                         (
                             [("content-type", "text/event-stream")],
                             format!("data: {chunk}\n\ndata: [DONE]\n\n"),
                         )
+                            .into_response()
                     }
                 }
             }),
@@ -3998,6 +4045,162 @@ mod model_recovery {
             }
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         }).await;
+        stop.cancel();
+        server.await??;
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        result?
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn output_cut_off_at_the_length_limit_continues_and_enforces_frontier_cap()
+    -> TestResult<()> {
+        let mut rig = Rig::new()?;
+        let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+        let boot = bootstrap_deployment(
+            rig.directory.path(),
+            format!("http://{}/v1", listener.local_addr()?),
+            true,
+            |_| {},
+        )
+        .await?;
+        attach(&mut rig, &boot).await?;
+        let (requests, mut received) = tokio::sync::mpsc::channel(16);
+        let total_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post({
+                let count = total_requests.clone();
+                move |request: axum::extract::Request| {
+                    let requests = requests.clone();
+                    let index = count.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        let body = axum::body::to_bytes(request.into_body(), 1024 * 1024)
+                            .await
+                            .unwrap();
+                        let request: Value = serde_json::from_slice(&body).unwrap();
+                        requests.send(request).await.unwrap();
+                        // Turn 1: cut-off text -> cut-off reasoning-only -> cut-off tool call -> stop (3 continuations, succeeds).
+                        // Turn 2: consecutive cut-off text responses -> must fail on the 4th via Store::frontier with zero 5th request.
+                        let (delta, finish) = match index {
+                            0 => (json!({"role":"assistant","content":"PART_ONE of the answer"}), "length"),
+                            1 => (json!({"role":"assistant","reasoning_content":"deep hidden thought cut off"}), "length"),
+                            2 => (
+                                json!({"role":"assistant","tool_calls":[{"index":0,"id":"call-cut",
+                                    "type":"function","function":{"name":"WebFetch",
+                                    "arguments":"{\"url\":\"https://exa"}}]}),
+                                "length",
+                            ),
+                            3 => (json!({"role":"assistant","content":"PART_TWO"}), "stop"),
+                            _ => (json!({"role":"assistant","content":format!("TRUNCATED_{index}")}), "length"),
+                        };
+                        let chunk = |delta: Value, finish: Value| json!({
+                            "id":format!("cut-{index}"),"object":"chat.completion.chunk",
+                            "created":1,"model":"llama3.2","choices":[{"index":0,"delta":delta,
+                            "finish_reason":finish}],
+                            "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}
+                        });
+                        (
+                            [("content-type", "text/event-stream")],
+                            format!(
+                                "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                                chunk(delta, Value::Null),
+                                chunk(json!({}), json!(finish))
+                            ),
+                        )
+                    }
+                }
+            }),
+        );
+        let stop = CancellationToken::new();
+        let shutdown = stop.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown.cancelled_owned())
+                .await
+        });
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            let client = rig.client.as_ref().unwrap();
+            let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+            let connection = call(client, "settings", "create", json!({
+                "expectedCatalogRevision":catalog["revision"],
+                "connection":{"slug":"cut","name":"Cut",
+                    "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                    "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2"],
+                    "modelOverrides":{"llama3.2":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}}
+            })).await?;
+            assert_eq!(connection["kind"], "committed");
+            let connection_id = &connection["connection"]["connectionId"];
+            let created = call(client, "agent", "create", json!({
+                "title":"Cut off at the length limit","automaticTitle":false,"labels":[],
+                "workspace":{"kind":"directory","path":rig.directory.path().join("workspace")}
+            })).await?;
+            let session = created["session"]["id"].as_str().ok_or("session missing")?;
+            let backend = json!({"kind":"model","connectionId":connection_id,"modelId":"llama3.2"});
+
+            // Turn 1: text cut-off, reasoning-only cut-off, tool-call cut-off, then completion.
+            let sent = call(client, "agent", "send", json!({
+                "sessionId":session,"message":"Write the long answer.","backend":backend
+            })).await?;
+            assert_eq!(sent["kind"], "queued");
+            let _ = received.recv().await.ok_or("first request missing")?;
+            let after_text = received.recv().await.ok_or("text continuation missing")?;
+            let messages = after_text["messages"].as_array().ok_or("messages missing")?;
+            assert!(messages.iter().any(|m| m["role"] == "assistant"
+                && m["content"].to_string().contains("PART_ONE of the answer")), "{after_text}");
+            let last = messages.last().ok_or("empty prompt")?;
+            assert!(last["role"] == "user"
+                && last["content"].to_string().contains("Continue from where the previous response stopped"),
+                "{after_text}");
+
+            let after_reasoning = received.recv().await.ok_or("reasoning continuation missing")?;
+            let last = after_reasoning["messages"].as_array().ok_or("messages missing")?.last().ok_or("empty prompt")?;
+            assert!(last["role"] == "user"
+                && last["content"].to_string().contains("before producing a visible answer"),
+                "{after_reasoning}");
+
+            let after_tool = received.recv().await.ok_or("tool continuation missing")?;
+            assert!(after_tool["messages"].as_array().ok_or("messages missing")?.iter().any(|m|
+                m["role"] == "tool" && m["content"].to_string().contains("output length limit")
+            ), "{after_tool}");
+
+            let target = json!({"kind":"message","messageId":sent["messageId"]});
+            loop {
+                let work = call(client, "agent", "work", json!({"sessionId":session,"target":target})).await?;
+                match work["execution"]["state"]["kind"].as_str() {
+                    Some("completed") => break,
+                    Some("failed" | "cancelled") => return Err(format!("turn 1 failed: {work}").into()),
+                    _ => tokio::time::sleep(Duration::from_millis(20)).await,
+                }
+            }
+            assert_eq!(total_requests.load(Ordering::SeqCst), 4);
+
+            // Turn 2: persistent frontier counter must stop on the 4th consecutive length truncation.
+            let sent2 = call(client, "agent", "send", json!({
+                "sessionId":session,"message":"Keep hitting length.","backend":backend
+            })).await?;
+            assert_eq!(sent2["kind"], "queued");
+            let target2 = json!({"kind":"message","messageId":sent2["messageId"]});
+            loop {
+                let work = call(client, "agent", "work", json!({"sessionId":session,"target":target2})).await?;
+                match work["execution"]["state"]["kind"].as_str() {
+                    Some("failed") => break,
+                    Some("completed" | "cancelled") => return Err(format!("turn 2 unexpected: {work}").into()),
+                    _ => tokio::time::sleep(Duration::from_millis(20)).await,
+                }
+            }
+            // Exactly 4 requests for turn 2 (indices 4, 5, 6, 7), zero 5th request.
+            assert_eq!(total_requests.load(Ordering::SeqCst), 8);
+            let history = call(client, "agent", "history", json!({
+                "sessionId":session,"position":{"kind":"tail"},"includeThinking":false,"view":"conversation"
+            })).await?;
+            assert!(
+                history.to_string().contains("reached its length limit again after being asked to continue"),
+                "{history}"
+            );
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })
+        .await;
         stop.cancel();
         server.await??;
         let cleanup = rig.finish().await;
@@ -4707,16 +4910,37 @@ mod model_recovery {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delegated_task_attention_is_delivered_once_and_completion_still_follows() {
-        delegated_notifications("stop").await;
+        delegated_notifications("stop", Waits::Answered).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delegated_notifications_survive_caller_failure_before_consumption() {
-        delegated_notifications("length").await;
+        delegated_notifications("failed", Waits::Answered).await;
     }
 
-    async fn delegated_notifications(caller_finish: &'static str) {
-        use maka_agent_facts::interaction::{InteractionOutcome, InteractionRecord};
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn parallel_delegated_questions_time_out_from_first_notice_not_creation() {
+        delegated_notifications("stop", Waits::ParallelTimedOut).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_delegated_permission_no_one_answers_counts_as_denied() {
+        delegated_notifications("stop", Waits::Permission).await;
+    }
+
+    /// What the delegated task waits on after it asks its caller.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Waits {
+        /// A question recorded by hand, which the caller answers.
+        Answered,
+        /// Two parallel questions created together; Q2's deadline must start when Q2 is first noticed.
+        ParallelTimedOut,
+        /// A WebFetch permission request that no one answers.
+        Permission,
+    }
+
+    async fn delegated_notifications(caller_finish: &'static str, waits: Waits) {
+        use maka_agent_facts::interaction::{ClosureReason, InteractionOutcome, InteractionRecord};
         use maka_plugin_core::contract::ServiceTarget;
         let mut rig = Rig::new().unwrap();
         let stop = CancellationToken::new();
@@ -4725,7 +4949,14 @@ mod model_recovery {
         let result = tokio::time::timeout(Duration::from_secs(90), async {
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
             let base = rig.directory.path().to_path_buf();
-            let boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?), false).await?;
+            let boot = bootstrap_with(&base, format!("http://{}/v1", listener.local_addr()?), |config| {
+                config["todo"] = json!(false);
+                config["permissions"]["requestPermissions"] = json!(true);
+                config["tools"] = json!([
+                    {"name":"WebFetch","description":"Fetch a web page.","target":{"kind":"import","name":"web"},
+                        "method":"fetch","input":"web","result":"json","confirmation":"preapproved"}
+                ]);
+            }).await?;
             let app = axum::Router::new().route("/v1/chat/completions", axum::routing::post(
                 move |request: axum::extract::Request| {
                     let requests = requests.clone();
@@ -4735,13 +4966,28 @@ mod model_recovery {
                         let (reply, response) = oneshot::channel::<(&'static str, &'static str)>();
                         requests.send((request, reply)).await.unwrap();
                         let (text, finish) = response.await.unwrap();
-                        let body = format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-                            json!({"id":"delegation","object":"chat.completion.chunk","created":1,"model":"llama3.2",
-                                "choices":[{"index":0,"delta":{"role":"assistant","content":text},"finish_reason":null}]}),
-                            json!({"id":"delegation","object":"chat.completion.chunk","created":1,"model":"llama3.2",
-                                "choices":[{"index":0,"delta":{},"finish_reason":finish}],
-                                "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}}));
-                        ([("content-type", "text/event-stream")], body)
+                        use axum::response::IntoResponse;
+                        if finish == "failed" {
+                            return (
+                                axum::http::StatusCode::BAD_REQUEST,
+                                [("content-type", "application/json")],
+                                json!({"error":{"message":"Injected model failure","type":"invalid_request_error"}}).to_string(),
+                            )
+                                .into_response();
+                        }
+                        // A tool call reply carries {"name", "input"} as its text.
+                        let body = if finish == "tool_calls" {
+                            let call: Value = serde_json::from_str(text).unwrap();
+                            bot_tools::tool_response(call["name"].as_str().unwrap(), call["input"].clone())
+                        } else {
+                            format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                                json!({"id":"delegation","object":"chat.completion.chunk","created":1,"model":"llama3.2",
+                                    "choices":[{"index":0,"delta":{"role":"assistant","content":text},"finish_reason":null}]}),
+                                json!({"id":"delegation","object":"chat.completion.chunk","created":1,"model":"llama3.2",
+                                    "choices":[{"index":0,"delta":{},"finish_reason":finish}],
+                                    "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}}))
+                        };
+                        ([("content-type", "text/event-stream")], body).into_response()
                     }
                 }));
             let shutdown = stop.clone();
@@ -4760,10 +5006,14 @@ mod model_recovery {
             })).await?;
             assert_eq!(connection["kind"], "committed");
             let backend = json!({"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"});
+            let worker_tools = match waits {
+                Waits::Answered | Waits::ParallelTimedOut => json!([]),
+                Waits::Permission => json!(["WebFetch"]),
+            };
             let mut sessions = Vec::new();
-            for title in ["Caller", "Worker"] {
+            for (title, tools) in [("Caller", json!([])), ("Worker", worker_tools)] {
                 let created = call(client, "agent", "create", json!({
-                    "title":title,"automaticTitle":false,"labels":[],"tools":[],
+                    "title":title,"automaticTitle":false,"labels":[],"tools":tools,
                     "workspace":{"kind":"directory","path":base.join("workspace")}
                 })).await?;
                 assert_eq!(created["kind"], "created");
@@ -4797,14 +5047,21 @@ mod model_recovery {
             assert_eq!(delegated["kind"], "queued");
             assert_eq!(delegated["completion"], "registered");
             let (_, worker_reply) = observed.recv().await.ok_or("worker HTTP request missing")?;
+            let worker_reply = match waits {
+                Waits::Answered | Waits::ParallelTimedOut => Some(worker_reply),
+                Waits::Permission => {
+                    worker_reply.send((r#"{"name":"WebFetch","input":{"url":"https://example.com/"}}"#, "tool_calls")).unwrap();
+                    None
+                }
+            };
             let caller_run = access.execution().run_id;
             drop(request);
             drop(access);
 
-            let caller_reply = if caller_finish == "length" {
+            let caller_reply = if caller_finish == "failed" {
                 // Settle failure before the worker asks for attention. A notice
                 // delivered earlier may now legitimately interrupt the model
-                // and continue the same Run before its length limit is observed.
+                // and continue the same Run before its failure is observed.
                 let mut changes = owner.durable.subscribe()?;
                 caller_reply.send(("The task is delegated.", caller_finish)).unwrap();
                 loop {
@@ -4822,16 +5079,37 @@ mod model_recovery {
 
             let worker_access = owner.runs.state().await.controls.get(worker)
                 .and_then(|control| control.access.upgrade()).ok_or("worker access missing")?;
-            let worker_run = worker_access.execution().run_id;
-            let view = owner.durable.frontier(worker_run).await?;
-            let question = InteractionRecord {
-                execution:worker_access.execution().clone(),request_id:"delegated-question".into(),created_at:now(),
-                request:serde_json::from_value(json!({"kind":"question","toolUseId":"delegated-question-tool",
-                    "questions":[{"question":"Which result do you need?","options":[{"label":"Brief"},{"label":"Detailed"}]}]}))?,
-                outcome:None,
+            let t0 = now();
+            let request_id = if waits != Waits::Permission {
+                let view = owner.durable.frontier(worker_access.execution().run_id).await?;
+                let question = InteractionRecord {
+                    execution:worker_access.execution().clone(),request_id:"delegated-question".into(),created_at:t0,
+                    request:serde_json::from_value(json!({"kind":"question","toolUseId":"delegated-question-tool",
+                        "questions":[{"question":"Which result do you need?","options":[{"label":"Brief"},{"label":"Detailed"}]}]}))?,
+                    outcome:None,
+                };
+                owner.durable.interactions().establish(worker_access.claim(), (&view).into(), question, None, vec![]).await?;
+                if waits == Waits::ParallelTimedOut {
+                    let view = owner.durable.frontier(worker_access.execution().run_id).await?;
+                    let second = InteractionRecord {
+                        execution:worker_access.execution().clone(),request_id:"delegated-question-2".into(),created_at:t0,
+                        request:serde_json::from_value(json!({"kind":"question","toolUseId":"delegated-question-tool-2",
+                            "questions":[{"question":"Second parallel question?","options":[{"label":"Yes"},{"label":"No"}]}]}))?,
+                        outcome:None,
+                    };
+                    owner.durable.interactions().establish(worker_access.claim(), (&view).into(), second, None, vec![]).await?;
+                }
+                "delegated-question".to_owned()
+            } else {
+                loop {
+                    let pending = call(client, "agent", "pendingInteractions", json!({"sessionId":worker})).await?;
+                    if let Some(request) = pending["entries"][0]["requestId"].as_str() {
+                        break request.to_owned();
+                    }
+                    tokio::task::yield_now().await;
+                }
             };
-            owner.durable.interactions().establish(worker_access.claim(), (&view).into(), question, None, vec![]).await?;
-            owner.deliver_completions().await?;
+            owner.deliver_completions_at(t0).await?;
             if let Some(caller_reply) = caller_reply {
                 caller_reply.send(("The task is delegated.", caller_finish)).unwrap();
             }
@@ -4839,18 +5117,64 @@ mod model_recovery {
             let messages = serde_json::to_string(attention["messages"].as_array()
                 .and_then(|messages| messages.iter().rev().find(|message| message["role"] == "user"))
                 .ok_or("attention user message missing")?)?;
-            assert!(messages.contains("needs attention") && messages.contains("delegated-question"), "{messages}");
+            assert!(messages.contains("needs attention") && messages.contains(&request_id), "{messages}");
             let attention_run = owner.durable.latest_run(caller.clone()).await?.ok_or("attention Run missing")?;
             assert_eq!(attention_run == caller_run, caller_finish == "stop");
-            if caller_finish == "length" {
+            if caller_finish == "failed" {
                 assert_eq!(owner.durable.frontier(caller_run).await?.terminal, Some(Terminal::Failed));
             }
             for _ in 0..2 { owner.deliver_completions().await?; }
             let queue = call(client, "agent", "queue", json!({"sessionId":caller})).await?;
             assert_eq!(queue["entries"], json!([]), "the same pending question was queued again");
             assert_eq!(owner.durable.latest_run(caller.clone()).await?, Some(attention_run));
-            owner.durable.interactions().commit_outcome(worker, "delegated-question",
-                InteractionOutcome::QuestionAnswer {answers:vec![Some("Brief".into())],committed_at:now()}).await?;
+            let worker_reply = match worker_reply {
+                Some(worker_reply) => {
+                    let minute = 60 * 1000;
+                    if waits == Waits::ParallelTimedOut {
+                        let q1_answered_at = t0 + 30 * minute + 1_000;
+                        owner.durable.interactions().commit_outcome(worker, "delegated-question",
+                            InteractionOutcome::QuestionAnswer {answers:vec![Some("Brief".into())],committed_at:q1_answered_at}).await?;
+                        // Q2 was created at t0 alongside Q1, but only gets its first caller notice now.
+                        let q2_noticed_at = q1_answered_at + 1_000;
+                        owner.deliver_completions_at(q2_noticed_at).await?;
+                        let q2_after_notice = owner.durable.interactions().read(worker, "delegated-question-2").await?.ok_or("Q2 missing")?;
+                        assert!(q2_after_notice.outcome.is_none(), "Q2 closed immediately on first notice: {:?}", q2_after_notice.outcome);
+                        // 2 seconds later (30m+4s after creation), Q2 must still be open because the caller only just saw it.
+                        owner.deliver_completions_at(q2_noticed_at + 2_000).await?;
+                        let q2_after_tick = owner.durable.interactions().read(worker, "delegated-question-2").await?.ok_or("Q2 missing")?;
+                        assert!(q2_after_tick.outcome.is_none(), "Q2 closed prematurely 2s after first notice: {:?}", q2_after_tick.outcome);
+                        // 29m after first notice: still open.
+                        owner.deliver_completions_at(q2_noticed_at + 29 * minute).await?;
+                        let q2_before_limit = owner.durable.interactions().read(worker, "delegated-question-2").await?.ok_or("Q2 missing")?;
+                        assert!(q2_before_limit.outcome.is_none(), "Q2 closed before 30m from notice: {:?}", q2_before_limit.outcome);
+                        // 30m after first notice: closed as TimedOut.
+                        owner.deliver_completions_at(q2_noticed_at + 30 * minute).await?;
+                        let q2_closed = owner.durable.interactions().read(worker, "delegated-question-2").await?.ok_or("Q2 missing")?;
+                        assert!(matches!(q2_closed.outcome, Some(InteractionOutcome::Closure {reason:ClosureReason::TimedOut, ..})), "{:?}", q2_closed.outcome);
+                    } else {
+                        owner.durable.interactions().commit_outcome(worker, "delegated-question",
+                            InteractionOutcome::QuestionAnswer {answers:vec![Some("Brief".into())],committed_at:now()}).await?;
+                    }
+                    worker_reply
+                }
+                None => {
+                    let timed_out = InteractionOutcome::Closure {reason:ClosureReason::TimedOut,committed_at:t0};
+                    assert!(maka_agent_ports::execution::Interactions::commit_outcome(&*worker_access, &request_id, timed_out).await.is_err(),
+                        "only the Host closes a request as timed out");
+                    // The caller's Run is still open; only the time limit closes the request.
+                    owner.deliver_completions_at(t0 + 29 * 60 * 1000).await?;
+                    let open = owner.durable.interactions().read(worker, &request_id).await?.ok_or("delegated request missing")?;
+                    assert!(open.outcome.is_none(), "closed before the time limit: {:?}", open.outcome);
+                    owner.deliver_completions_at(t0 + 31 * 60 * 1000).await?;
+                    let closed = owner.durable.interactions().read(worker, &request_id).await?.ok_or("delegated request missing")?;
+                    assert!(matches!(closed.outcome, Some(InteractionOutcome::Closure {reason:ClosureReason::TimedOut, ..})), "{:?}", closed.outcome);
+                    let (continued, worker_reply) = observed.recv().await.ok_or("the delegated task did not continue")?;
+                    let result = continued["messages"].as_array().unwrap().iter().rev()
+                        .find(|message| message["role"] == "tool").ok_or("tool result missing")?.to_string();
+                    assert!(result.contains("denied"), "{result}");
+                    worker_reply
+                }
+            };
             worker_reply.send(("Delegated task completed.", "stop")).unwrap();
             completed_message(client, worker, &delegated["messageId"]).await?;
             owner.deliver_completions().await?;
@@ -5431,6 +5755,7 @@ mod model_recovery {
                 attempt, outcome: maka_agent_facts::accounting::Outcome::Success, diagnostic: None,
                 usage: maka_agent_facts::model::ModelUsage { input_tokens: Some(100), output_tokens: Some(10), ..Default::default() },
                 protocol: serde_json::to_value(maka_agent_facts::context::ModelClosureProtocol {
+                    model_time_ms: None,
                     finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
                     provider_options: None, cache_read_reported: None, response_id: None, model: None, timestamp: None, compaction: None, summary: None,
                 })?,
@@ -5920,6 +6245,7 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
         rig.append(
             vec![Fact::StopRequested {
                 diagnostic: "user_requested_stop".into(),
+                requester: maka_agent_facts::durable::StopRequester::User,
             }],
             vec![],
         )
@@ -5938,6 +6264,232 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
                 maka_agent_state::queue::MessageResolution::Cancelled
             );
         }
+        Ok(())
+    }
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    result.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_that_did_not_fail_reports_no_failure_reason() {
+    let mut rig = Rig::new().unwrap();
+    let result: TestResult<()> = async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let run = rig.driver.as_ref().unwrap().access.execution().run_id;
+        // A stopped Run whose executor was replaced ends on a diagnostic row.
+        let diagnostic = "The external executor changed while the run was interrupted";
+        rig.append(
+            vec![Fact::RunTerminated {
+                terminal: Terminal::Cancelled,
+                diagnostic: Some(diagnostic.into()),
+            }],
+            vec![],
+        )
+        .await?;
+        let result = owner.run_result(&session, run, &Terminal::Cancelled).await;
+        assert_eq!(result.failure, None);
+        let failed = owner.run_result(&session, run, &Terminal::Failed).await;
+        assert_eq!(failed.failure, None);
+        Ok(())
+    }
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    result.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_result_extracts_last_message_and_failure_without_tail_rolloff_narration_leak_or_middle_slice()
+ {
+    use maka_agent_facts::{
+        durable::ExternalTaskId,
+        executor::Output,
+        model::{ModelPart, TextKind},
+    };
+    let mut rig = Rig::new().unwrap();
+    let result: TestResult<()> = async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let run1 = rig.driver.as_ref().unwrap().access.execution().run_id;
+
+        // 1. Single run with early narration, a 40 KiB final message (with distinct head/tail),
+        //    10 trailing thinking/tool rows (exceeding the 8-chunk tail page), and a failure diagnostic.
+        let (_request, attempt, _at) = rig
+            .record_model_request(maka_agent_engine::ports::Preparation::Initial)
+            .await?;
+        let long_reply = format!("BEGIN_MARKER\n{}\nEND_MARKER", "x".repeat(40_000));
+        let mut facts = vec![
+            Fact::ModelObserved {
+                attempt,
+                index: 0,
+                part: ModelPart::Text {
+                    text_kind: TextKind::Text,
+                    text: "EARLY_NARRATION_SHOULD_NOT_LEAK".into(),
+                    provider_options: None,
+                },
+                continuation: None,
+            },
+            Fact::ModelObserved {
+                attempt,
+                index: 1,
+                part: ModelPart::Text {
+                    text_kind: TextKind::Text,
+                    text: long_reply.into(),
+                    provider_options: None,
+                },
+                continuation: None,
+            },
+        ];
+        for i in 0..10 {
+            facts.push(Fact::ModelObserved {
+                attempt,
+                index: 2 + i,
+                part: ModelPart::Text {
+                    text_kind: TextKind::Thinking,
+                    text: format!("thinking-{i}").into(),
+                    provider_options: None,
+                },
+                continuation: None,
+            });
+        }
+        facts.push(Fact::ModelClosed {
+            attempt,
+            outcome: maka_agent_facts::accounting::Outcome::Error,
+            diagnostic: Some("HTTP 400 bad request".into()),
+            usage: Default::default(),
+            protocol: json!({"finishReason": "error"}),
+        });
+        facts.push(Fact::ModelCleanupObserved {
+            attempt,
+            cleanup: OperationCleanup::Confirmed,
+        });
+        facts.push(Fact::RunTerminated {
+            terminal: Terminal::Failed,
+            diagnostic: Some("HTTP 400 bad request".into()),
+        });
+        rig.append(facts, vec![]).await?;
+
+        // 2. Admit a second external-worker Run in the SAME session to roll run1 off the
+        //    session tail page, with early narration, newline-split deltas, and failure.
+        let view1 = owner.durable.frontier(run1).await?;
+        let mut spec2 = view1.spec.clone();
+        spec2.turn_id = Uuid::new_v4().to_string();
+        spec2.trigger = Trigger::Message {
+            message_id: Uuid::new_v4().to_string(),
+        };
+        let exec_desc = ContentBlob::json(&json!({"executor": "claude"}))?;
+        spec2.backend = BackendSpec::Executor {
+            selection: maka_agent_facts::executor::Selection {
+                executor: "external".into(),
+                settings: Default::default(),
+            },
+            descriptor: exec_desc.reference().clone(),
+        };
+        let admission2 = maka_agent_state::Admission::new(spec2, at(), vec![exec_desc]);
+        let run2 = admission2.run();
+        owner.durable.admit(admission2).await?;
+        let claim2 = owner.durable.claim(run2).await?;
+        let view2 = owner.durable.frontier(run2).await?;
+        let task = ExternalTaskId::new();
+        let desc = ContentBlob::json(&json!({"task": task}))?;
+        let ext_facts = vec![
+            Fact::ExternalTaskPrepared {
+                task,
+                descriptor: desc.reference().clone(),
+                live_workspace: false,
+            },
+            Fact::ExternalTaskAdmitted { task },
+            Fact::ExternalTaskObserved {
+                task,
+                model_time_ms: None,
+                index: 0,
+                output: Output::OutputDelta {
+                    message_id: "m1".into(),
+                    text: "EARLY_EXTERNAL_NARRATION".into(),
+                },
+            },
+            Fact::ExternalTaskObserved {
+                task,
+                model_time_ms: None,
+                index: 1,
+                output: Output::OutputDelta {
+                    message_id: "m2".into(),
+                    text: "Line one".into(),
+                },
+            },
+            Fact::ExternalTaskObserved {
+                task,
+                model_time_ms: None,
+                index: 2,
+                output: Output::OutputDelta {
+                    message_id: "m2".into(),
+                    text: "\n".into(),
+                },
+            },
+            Fact::ExternalTaskObserved {
+                task,
+                model_time_ms: None,
+                index: 3,
+                output: Output::OutputDelta {
+                    message_id: "m2".into(),
+                    text: "Line two".into(),
+                },
+            },
+            Fact::ExternalTaskClosed {
+                task,
+                outcome: Terminal::Failed,
+                diagnostic: Some("usage limit reached".into()),
+                final_message: None,
+            },
+            Fact::ExternalTaskCleanupObserved {
+                task,
+                cleanup: OperationCleanup::Confirmed,
+            },
+            Fact::RunTerminated {
+                terminal: Terminal::Failed,
+                diagnostic: Some("usage limit reached".into()),
+            },
+        ];
+        owner
+            .durable
+            .append(
+                &claim2,
+                (&view2).into(),
+                ext_facts
+                    .into_iter()
+                    .map(|f| Change::new(f, at()))
+                    .collect(),
+                vec![desc],
+            )
+            .await?;
+        drop(claim2);
+
+        // Delayed lookup of run1 (after run2 in the same session) still returns exact head excerpt + failure.
+        let r1 = owner.run_result(&session, run1, &Terminal::Failed).await;
+        let reply = r1.reply.as_deref().expect("reply present");
+        assert!(
+            reply.starts_with("BEGIN_MARKER\n"),
+            "must excerpt from start of last message, not middle: {}",
+            &reply[..reply.len().min(80)]
+        );
+        assert!(
+            reply.ends_with("\n… [truncated]"),
+            "long reply must carry truncation marker"
+        );
+        assert!(
+            !reply.contains("EARLY_NARRATION_SHOULD_NOT_LEAK"),
+            "must not leak early narration"
+        );
+        assert_eq!(r1.failure.as_deref(), Some("HTTP 400 bad request"));
+
+        let r2 = owner.run_result(&session, run2, &Terminal::Failed).await;
+        assert_eq!(r2.reply.as_deref(), Some("Line one\nLine two"));
+        assert_eq!(r2.failure.as_deref(), Some("usage limit reached"));
         Ok(())
     }
     .await;
@@ -6450,7 +7002,7 @@ async fn compaction_checkpoint_survives_stop_and_is_used_by_the_next_message() {
             None,
         ).await?;
         assert!(driver.state.frontier(run).await?.baseline.is_none());
-        rig.append(vec![Fact::StopRequested { diagnostic: "user_requested_stop".into() }], vec![]).await?;
+        rig.append(vec![Fact::StopRequested { diagnostic: "user_requested_stop".into(), requester: maka_agent_facts::durable::StopRequester::User }], vec![]).await?;
         let exit = Engine::new(driver.state.clone())
             .drive(driver.access.claim().clone(), driver.clone(), CancellationToken::new())
             .await?;

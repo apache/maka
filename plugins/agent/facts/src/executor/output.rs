@@ -61,9 +61,20 @@ pub enum Output {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         details: Option<ToolResultDetails>,
     },
+    ContextUsage(ContextUsage),
     TurnUsage {
         usage: TurnUsage,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "ExecutorContextUsage")]
+pub struct ContextUsage {
+    pub used: u64,
+    pub window: std::num::NonZeroU64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -103,7 +114,7 @@ impl Output {
             | Self::ToolResult {
                 tool_call_id, text, ..
             } => (Some(tool_call_id), Some(text)),
-            Self::TurnUsage { .. } => (None, None),
+            Self::ContextUsage(_) | Self::TurnUsage { .. } => (None, None),
         };
         if let Some(id) = id {
             opaque(id)?;

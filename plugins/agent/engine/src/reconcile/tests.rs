@@ -356,6 +356,7 @@ pub(crate) fn model_closure(
         );
     }
     let protocol = serde_json::to_value(ModelClosureProtocol {
+        model_time_ms: None,
         finish_reason,
         provider_options: None,
         cache_read_reported: None,
@@ -768,6 +769,7 @@ fn spent_budget_does_not_promote_stop_unknown_failure_length_or_summary_to_succe
                 &mut view,
                 Fact::StopRequested {
                     diagnostic: "policy stop".into(),
+                    requester: StopRequester::Internal,
                 },
             );
         }
@@ -817,6 +819,8 @@ fn known_publication_failure_only_fences_followup_until_original_cleanup() {
         binding: None,
         observed: 0,
         active_tools: Default::default(),
+        context_usage: None,
+        model_time_ms: None,
         turn_usage: None,
         closed: Some(ExternalClosure {
             outcome: Terminal::Completed,
@@ -891,6 +895,8 @@ fn a_finished_turn_fails_the_run_when_its_external_task_closed_as_failed() {
         binding: None,
         observed: 0,
         active_tools: Default::default(),
+        context_usage: None,
+        model_time_ms: None,
         turn_usage: None,
         closed: None,
         cleanup: OperationCleanup::Confirmed,
@@ -934,5 +940,336 @@ fn a_finished_turn_fails_the_run_when_its_external_task_closed_as_failed() {
     assert!(matches!(
         next(&view, &Live::default(), UnixMillis(1), None, false),
         Action::Terminate(Terminal::Failed)
+    ));
+}
+
+#[test]
+fn an_approval_no_one_answered_in_time_counts_as_denied() {
+    use maka_agent_facts::{
+        accounting::Outcome,
+        context::ModelPurpose,
+        interaction::{ClosureReason, InteractionOutcome},
+        model::ModelFinishReason,
+    };
+    let mut view = policy_view(None);
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
+    let (mut view, _, attempt) = model_closure(
+        view,
+        ModelPurpose::Main,
+        ModelFinishReason::Stop,
+        Outcome::Success,
+        true,
+    );
+    let tool = ToolKey {
+        attempt,
+        call: "continuation".into(),
+    };
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelCleanupObserved {
+            attempt,
+            cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
+        },
+    );
+    apply_policy_fact(
+        &mut view,
+        Fact::ApprovalRefused {
+            approval: ApprovalId::new(),
+            tool: tool.clone(),
+            outcome: InteractionOutcome::Closure {
+                reason: ClosureReason::TimedOut,
+                committed_at: 1,
+            },
+        },
+    );
+    let Action::Reject(key, rejection) = next(&view, &Live::default(), UnixMillis(1), None, false)
+    else {
+        panic!("an unanswered approval must reject the call");
+    };
+    assert_eq!(key, tool);
+    assert_eq!(
+        rejection,
+        ToolRejection::PolicyDenied {
+            message: "No one approved this request in time".into()
+        }
+    );
+}
+
+fn admitted_side_effecting_call() -> (RunView, ToolKey) {
+    use maka_agent_facts::{accounting::Outcome, context::ModelPurpose, model::ModelFinishReason};
+    let mut view = policy_view(None);
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
+    let (mut view, _, attempt) = model_closure(
+        view,
+        ModelPurpose::Main,
+        ModelFinishReason::Stop,
+        Outcome::Success,
+        true,
+    );
+    let tool = ToolKey {
+        attempt,
+        call: "continuation".into(),
+    };
+    let input = view.spec.input.clone();
+    apply_policy_fact(
+        &mut view,
+        Fact::ToolDecided {
+            tool: tool.clone(),
+            decision: ToolDecision::Approved {
+                input,
+                resources: Vec::new(),
+                approval: None,
+                display: Default::default(),
+                semantics: maka_agent_facts::tools::ToolSemantics::Parallel,
+            },
+        },
+    );
+    apply_policy_fact(&mut view, Fact::ToolAdmitted { tool: tool.clone() });
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelCleanupObserved {
+            attempt,
+            cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
+        },
+    );
+    (view, tool)
+}
+
+fn bind_host_operation(view: &mut RunView, tool: &ToolKey, cleanup: OperationCleanupState) {
+    use maka_plugin_core::operation::{
+        OperationOutcome, OperationReply, Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef,
+    };
+    let digest = format!(
+        "sha256-{}",
+        view.spec.input.digest.strip_prefix("sha256:").unwrap()
+    );
+    let reference = RecoveryRef {
+        source: maka_plugin_core::deployment::DeploymentRef {
+            state_domain: "a".repeat(64),
+            deployment: view.spec.owner.deployment,
+            revision: 1,
+        },
+        namespace: view.spec.owner.namespace.clone(),
+        export: "history".into(),
+        method: "write".into(),
+        operation: Uuid::new_v4(),
+        fingerprint: digest.clone(),
+        contract: RecoveryContract {
+            name: "history".into(),
+            version: 1,
+            transport: maka_plugin_core::contract::Transport::Local,
+            digest,
+        },
+        recovery: RecoveryProtocol::JournalV1,
+    };
+    apply_policy_fact(
+        view,
+        Fact::ToolOriginalBound {
+            tool: tool.clone(),
+            reference: reference.clone(),
+        },
+    );
+    apply_policy_fact(
+        view,
+        Fact::OperationObserved {
+            tool: tool.clone(),
+            reply: OperationReply {
+                reference,
+                receipt: Receipt::Recorded {
+                    outcome: OperationOutcome::Unknown {
+                        diagnostic: "the provider closed the connection".into(),
+                    },
+                    cleanup,
+                },
+            },
+        },
+    );
+}
+
+type OperationCleanupState = maka_plugin_core::operation::OperationCleanup;
+
+fn returned_unknown(view: &mut RunView, tool: &ToolKey) {
+    let result = view.spec.input.clone();
+    apply_policy_fact(
+        view,
+        Fact::LocalToolReturned {
+            tool: tool.clone(),
+            result,
+            is_error: true,
+            settlement: maka_agent_facts::tool_call::ToolSettlement::Unknown,
+            cell_observation: None,
+        },
+    );
+}
+
+fn hand_back(view: &mut RunView, live: &Live, tool: &ToolKey) {
+    let action = next(view, live, UnixMillis(1), None, false);
+    assert!(
+        matches!(&action, Action::Accept(key, AcceptedResult::OutcomeUnknown) if key == tool),
+        "an ended call with an unknown result must go back to the model"
+    );
+    let result = ContentBlob::json(
+        &maka_agent_facts::tool_output::AcceptedToolResult::OutcomeUnknown {
+            diagnostic: "the server stopped answering".into(),
+        },
+    )
+    .unwrap();
+    apply_policy_fact(
+        view,
+        Fact::ToolResultAccepted {
+            tool: tool.clone(),
+            result: result.reference().clone(),
+            outcome: AcceptedResult::OutcomeUnknown,
+        },
+    );
+    assert!(view.recovery_failure().is_none());
+    assert!(!view.has_unsettled_recovery());
+}
+
+#[test]
+fn an_ended_call_with_an_unknown_result_goes_back_to_the_model() {
+    // A Host operation whose cleanup is confirmed has ended.
+    let (mut host, tool) = admitted_side_effecting_call();
+    bind_host_operation(&mut host, &tool, OperationCleanupState::Confirmed);
+    hand_back(&mut host, &Live::default(), &tool);
+    assert!(view_continues(&host, &Live::default()));
+
+    // A local call is known to have ended only from this activation's dispatch.
+    let (mut local, tool) = admitted_side_effecting_call();
+    returned_unknown(&mut local, &tool);
+    let mut live = Live::default();
+    live.ended_unknown.insert(tool.clone());
+    hand_back(&mut local, &live, &tool);
+    assert!(view_continues(&local, &live));
+
+    // A Stop does not leave the ended call unsettled.
+    let (mut stopped, tool) = admitted_side_effecting_call();
+    returned_unknown(&mut stopped, &tool);
+    apply_policy_fact(
+        &mut stopped,
+        Fact::StopRequested {
+            diagnostic: "stopped by user".into(),
+            requester: StopRequester::User,
+        },
+    );
+    let mut live = Live::default();
+    live.ended_unknown.insert(tool.clone());
+    hand_back(&mut stopped, &live, &tool);
+}
+
+fn view_continues(view: &RunView, live: &Live) -> bool {
+    matches!(
+        next(view, live, UnixMillis(1), None, false),
+        Action::Prepare(Preparation::ToolContinuation { .. })
+    )
+}
+
+#[test]
+fn a_call_that_may_still_be_running_keeps_its_recovery() {
+    // The Host operation's cleanup is unconfirmed.
+    let (mut host, tool) = admitted_side_effecting_call();
+    bind_host_operation(&mut host, &tool, OperationCleanupState::Unconfirmed);
+    assert!(!matches!(
+        next(&host, &Live::default(), UnixMillis(1), None, false),
+        Action::Accept(..)
+    ));
+    // An unknown local return without this activation's dispatch: a failed Cell
+    // wait records one too, and so does a call recorded before a restart.
+    let (mut local, tool) = admitted_side_effecting_call();
+    returned_unknown(&mut local, &tool);
+    assert!(!matches!(
+        next(&local, &Live::default(), UnixMillis(1), None, false),
+        Action::Accept(..)
+    ));
+}
+
+#[test]
+fn a_tool_call_from_an_overflowed_attempt_is_rejected_without_execution() {
+    let mut view = policy_view(None);
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
+    let step = StepId::new();
+    let attempt = ModelAttemptId::new();
+    let request = ContentBlob::json(&serde_json::json!({})).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::StepPrepared {
+            step,
+            request: request.reference().clone(),
+            adjudications: vec![],
+        },
+    );
+    apply_policy_fact(&mut view, Fact::ModelAttemptPrepared { attempt, step });
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelAttemptAdmitted {
+            attempt,
+            upstream: serde_json::json!({}),
+        },
+    );
+    let call_id = "call-before-overflow".to_owned();
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelObserved {
+            attempt,
+            index: 0,
+            part: maka_agent_facts::model::ModelPart::ToolCall {
+                call: maka_agent_facts::model::ModelToolCall {
+                    id: call_id.clone(),
+                    name: "Write".into(),
+                    input: maka_agent_facts::model::ToolInput::Json(serde_json::json!({})),
+                    provider_options: None,
+                    provider_executed: false,
+                },
+            },
+            continuation: None,
+        },
+    );
+    apply_policy_fact(
+        &mut view,
+        Fact::ModelInterrupted {
+            attempt,
+            diagnostic: "context_length_exceeded".into(),
+        },
+    );
+    // Before recovery is assessed, reconcile must assess instead of approving/executing the tool.
+    assert!(matches!(
+        next(&view, &Live::default(), UnixMillis(1), None, false),
+        Action::Assess(id) if id == attempt
+    ));
+    apply_policy_fact(
+        &mut view,
+        Fact::AttemptRecoveryRecorded {
+            attempt,
+            recovery: AttemptRecovery::ContextOverflow {
+                observed_output: true,
+            },
+        },
+    );
+    // After ContextOverflow recovery is recorded, the unadmitted tool call is rejected rather than executed.
+    let key = ToolKey {
+        attempt,
+        call: call_id,
+    };
+    assert!(matches!(
+        next(&view, &Live::default(), UnixMillis(1), None, false),
+        Action::Reject(rejected, ToolRejection::PreparationFailed { .. }) if rejected == key
     ));
 }

@@ -527,8 +527,9 @@ impl Owner {
                 });
                 if error.is_none() && matches!(view.terminal, Some(Terminal::Failed)) {
                     error = self
-                        .history_run_snippet(&session_id, latest_id, &Terminal::Failed)
-                        .await;
+                        .run_result(&session_id, latest_id, &Terminal::Failed)
+                        .await
+                        .failure;
                 }
                 run_overview = Some(SessionRunOverview {
                     run_id: latest_id,
@@ -1239,7 +1240,7 @@ impl Owner {
                 run_id: None,
             }));
         };
-        self.prepare_session_stop(&input.session_id, run_id, operation)
+        self.prepare_session_stop(&input.session_id, run_id, operation, scope)
             .await
             .map_err(humanize_agent_error)
     }

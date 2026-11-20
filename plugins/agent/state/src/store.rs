@@ -90,6 +90,7 @@ mod metadata;
 pub use metadata::{NotificationAttention, NotificationState};
 mod publication;
 mod quiescence;
+mod removal;
 pub use content::{ContentBlob, ImmutableContentBody};
 pub use publication::PublicationRead;
 pub use quiescence::{SessionObligation, SessionQuiescence, SessionQuiescenceGuard};
@@ -550,11 +551,29 @@ impl Store {
         })
     }
     /// Stop this exact Run at its current head. The first Stop while latest also
-    /// retracts pending interactive requests and reports that Session fence.
-    pub fn stop_run_statement(&self, run: RunId, change: Change) -> StopRun {
+    /// settles what is queued for the Session and reports that Session fence.
+    pub fn stop_run_statement(
+        &self,
+        run: RunId,
+        id: FactId,
+        at: UnixMillis,
+        requester: StopRequester,
+    ) -> StopRun {
         StopRun {
             run,
-            change,
+            change: Change {
+                id,
+                at,
+                fact: Fact::StopRequested {
+                    diagnostic: match requester {
+                        StopRequester::User => crate::queue::USER_STOP,
+                        StopRequester::Session { .. } => crate::queue::SESSION_STOP,
+                        StopRequester::Internal => "internal_stop",
+                    }
+                    .into(),
+                    requester,
+                },
+            },
             retract_pending: true,
         }
     }
@@ -979,6 +998,13 @@ impl Store {
     pub async fn content(&self, run: RunId, reference: ContentRef) -> Result<Vec<u8>, StoreError> {
         self.data.query(ReadContent { run, reference }).await
     }
+    pub async fn verify_owned_content(
+        &self,
+        run: RunId,
+        reference: ContentRef,
+    ) -> Result<(), StoreError> {
+        self.data.query(VerifyOwnedContent { run, reference }).await
+    }
     pub async fn due_waits(
         &self,
         at: UnixMillis,
@@ -1269,6 +1295,16 @@ impl Query for ReadContent {
         sql::owned_content(c, self.run, &self.reference)
     }
 }
+struct VerifyOwnedContent {
+    run: RunId,
+    reference: ContentRef,
+}
+impl Query for VerifyOwnedContent {
+    type Output = ();
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::verify_owned_content(c, self.run, &self.reference)
+    }
+}
 struct ReadDue {
     at: UnixMillis,
     after: Option<(UnixMillis, RunId, WaitId)>,
@@ -1480,8 +1516,11 @@ impl Statement for StopRun {
         }
         let latest =
             self.retract_pending && sql::latest(c, view.spec.session_id.clone())? == Some(self.run);
-        if latest {
-            crate::queue::retract_interactive(c, &view.spec.session_id, &self.change)?;
+        if latest
+            && let Fact::StopRequested { requester, .. } = &self.change.fact
+            && !matches!(requester, StopRequester::Internal)
+        {
+            crate::queue::stop_queue(c, &view.spec.session_id, self.run, &self.change, requester)?;
         }
         let (_, changed) = sql::append(
             c,

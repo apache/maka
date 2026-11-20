@@ -17,16 +17,9 @@
  * under the License.
  */
 
-import type {
-  AgentNativeRuntime,
-  ConnectionVersionBasis,
-  ServiceMethods,
-  SettingsConnectionDetail,
-} from '../../../../packages/plugin-sdk/src/index.js';
-import { watchUsageLimits, type UsageReading, type UsageResult } from './usageLimitsReading.ts';
+import type { UsageResult } from './usageLimitsReading.ts';
 
-type UsageLimitsOutput = ServiceMethods['settings']['connectionUsageLimits']['output'];
-export type UsageLimitEntry = Extract<UsageLimitsOutput, { kind: 'ready' }>['limits'][number];
+export type UsageLimitEntry = Extract<UsageResult, { kind: 'ready' }>['limits'][number];
 type UsageLimitPeriod = Extract<UsageLimitEntry, { kind: 'window' }>['period'];
 export type UsageTone = 'normal' | 'warning' | 'danger';
 
@@ -44,45 +37,8 @@ export type ComposerUsageSummary =
       text: string;
     };
 
-export type ComposerUsageTarget =
-  | { key: string; kind: 'connection'; connectionId: string }
-  | { key: string; kind: 'external'; runtime: AgentNativeRuntime };
-
-export type ComposerUsageObservation = {
-  reading: UsageReading;
-  sourceName: string;
-};
-
-export interface ComposerUsageHost {
-  query(
-    endpoint: 'settings',
-    method: 'connection',
-    input: { connectionId: string; includeEditingFacts?: boolean },
-  ): Promise<SettingsConnectionDetail>;
-  query(
-    endpoint: 'settings',
-    method: 'connectionUsageLimits',
-    input: ConnectionVersionBasis,
-  ): Promise<UsageResult>;
-  query(
-    endpoint: 'agent',
-    method: 'externalUsageLimits',
-    input: { runtime: AgentNativeRuntime },
-  ): Promise<UsageResult>;
-}
-
-const EXTERNAL_USAGE_RUNTIMES = new Set<string>(['antigravity', 'codex', 'claude']);
-
-export const EXTERNAL_USAGE_RUNTIME_NAMES: Record<AgentNativeRuntime, string> = {
-  antigravity: 'Antigravity',
-  codex: 'Codex',
-  claude: 'Claude Code',
-};
-
-export function isExternalUsageRuntime(
-  runtime: string | null | undefined,
-): runtime is AgentNativeRuntime {
-  return typeof runtime === 'string' && EXTERNAL_USAGE_RUNTIMES.has(runtime);
+export function remainingPercent(usedPercent: number): number {
+  return Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
 }
 
 export function usageSeverity(usedPercent: number): UsageTone {
@@ -112,12 +68,11 @@ export function summarizeComposerUsage(
     for (let i = 1; i < windows.length; i++) {
       if (windows[i]!.usedPercent > hottest.usedPercent) hottest = windows[i]!;
     }
-    const remainingPercent = Math.max(0, Math.min(100, Math.round(100 - hottest.usedPercent)));
     return {
       kind: 'window',
       limit: hottest,
       shortWindow: shortUsagePeriod(hottest.period),
-      remainingPercent,
+      remainingPercent: remainingPercent(hottest.usedPercent),
       tone: usageSeverity(hottest.usedPercent),
     };
   }
@@ -134,109 +89,4 @@ export function summarizeComposerUsage(
     return { kind: 'balance', limit: balance, text };
   }
   return null;
-}
-
-type BasisResolution =
-  | { kind: 'ready'; basis: ConnectionVersionBasis; name: string }
-  | { kind: 'disabled' }
-  | { kind: 'missing' }
-  | { kind: 'stale' };
-
-export function watchComposerUsage(
-  host: ComposerUsageHost,
-  target: ComposerUsageTarget,
-  publish: (observation: ComposerUsageObservation) => void,
-  previous: ComposerUsageObservation | null,
-): () => void {
-  let stopped = false;
-  let cachedConnection: { basis: ConnectionVersionBasis; name: string } | null = null;
-  let committedSource =
-    target.kind === 'external'
-      ? EXTERNAL_USAGE_RUNTIME_NAMES[target.runtime]
-      : (previous?.sourceName ?? '');
-  let pendingSource = committedSource;
-
-  const resolveBasis = async (connectionId: string): Promise<BasisResolution> => {
-    const detail = await host.query('settings', 'connection', {
-      connectionId,
-      includeEditingFacts: false,
-    });
-    if (stopped) return { kind: 'stale' };
-    if (detail.kind !== 'ready') {
-      return detail.actual === null ? { kind: 'missing' } : { kind: 'stale' };
-    }
-    if (!detail.enabled) {
-      cachedConnection = null;
-      return { kind: 'disabled' };
-    }
-    cachedConnection = {
-      basis: {
-        connectionId: detail.target.connectionId,
-        revision: detail.target.revision,
-      },
-      name: detail.name,
-    };
-    return { kind: 'ready', ...cachedConnection };
-  };
-
-  const query = async (): Promise<UsageResult> => {
-    if (stopped) return { kind: 'unavailable' };
-    if (target.kind === 'external') {
-      pendingSource = EXTERNAL_USAGE_RUNTIME_NAMES[target.runtime];
-      return host.query('agent', 'externalUsageLimits', { runtime: target.runtime });
-    }
-
-    let connection = cachedConnection;
-    if (!connection) {
-      const resolved = await resolveBasis(target.connectionId);
-      if (stopped) return { kind: 'unavailable' };
-      if (resolved.kind === 'missing') return { kind: 'unsupported' };
-      if (resolved.kind !== 'ready') return { kind: 'superseded' };
-      connection = resolved;
-    }
-
-    const first = await host.query('settings', 'connectionUsageLimits', connection.basis);
-    if (stopped) return { kind: 'unavailable' };
-    if (first.kind !== 'superseded') {
-      pendingSource = connection.name;
-      return first;
-    }
-
-    cachedConnection = null;
-    let resolved: BasisResolution;
-    try {
-      resolved = await resolveBasis(target.connectionId);
-    } catch {
-      return { kind: 'superseded' };
-    }
-    if (stopped) return { kind: 'unavailable' };
-    if (resolved.kind === 'missing') return { kind: 'unsupported' };
-    if (resolved.kind !== 'ready') return { kind: 'superseded' };
-
-    let retried: UsageResult;
-    try {
-      retried = await host.query('settings', 'connectionUsageLimits', resolved.basis);
-    } catch {
-      return { kind: 'superseded' };
-    }
-    if (stopped) return { kind: 'unavailable' };
-    if (retried.kind === 'unavailable') return { kind: 'superseded' };
-    pendingSource = resolved.name;
-    return retried;
-  };
-
-  const stopWatcher = watchUsageLimits(
-    query,
-    (reading) => {
-      if (stopped) return;
-      if (!reading.refreshFailed) committedSource = pendingSource;
-      publish({ reading, sourceName: committedSource });
-    },
-    previous?.reading ?? null,
-  );
-
-  return () => {
-    stopped = true;
-    stopWatcher();
-  };
 }

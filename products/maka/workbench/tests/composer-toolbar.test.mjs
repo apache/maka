@@ -22,9 +22,9 @@ import { registerHooks } from 'node:module';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import {
+  remainingPercent,
   summarizeComposerUsage,
   usageSeverity,
-  watchComposerUsage,
 } from '../app/composerUsageSummary.ts';
 
 const appRoot = new URL('../app/', import.meta.url);
@@ -164,103 +164,11 @@ test('drag reorder handles async measure races, cancel, and outside-track releas
   assert.equal(commits.length, 1);
 });
 
-test('watchComposerUsage guards ABA races, superseded rename recovery, and disabled re-enable', async (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const detail = (connectionId, revision, name, enabled = true) => ({
-    kind: 'ready',
-    enabled,
-    name,
-    target: { connectionId, revision },
-  });
-  const ready = (usedPercent) => ({
-    kind: 'ready',
-    limits: [{ kind: 'window', period: { kind: 'duration', seconds: 18000 }, usedPercent }],
-  });
+test('summarizeComposerUsage picks hottest window with remainingPercent and formats balance', () => {
+  assert.equal(remainingPercent(0), 100);
+  assert.equal(remainingPercent(34), 66);
+  assert.equal(remainingPercent(120), 0);
 
-  // ABA race: stopped watch cannot overwrite sourceName or query further.
-  const pending = [];
-  const abaObs = [];
-  const abaHost = { query: () => new Promise((resolve) => pending.push(resolve)) };
-  const stopOld = watchComposerUsage(
-    abaHost,
-    { key: 'model:A', kind: 'connection', connectionId: 'A' },
-    (o) => abaObs.push(o),
-    null,
-  );
-  const oldDetail = pending.shift();
-  stopOld();
-  t.after(
-    watchComposerUsage(
-      abaHost,
-      { key: 'model:A', kind: 'connection', connectionId: 'A' },
-      (o) => abaObs.push(o),
-      null,
-    ),
-  );
-  pending.shift()(detail('A', 2, 'Current'));
-  await setImmediate();
-  pending.shift()(ready(25));
-  await setImmediate();
-  oldDetail(detail('A', 1, 'Stale'));
-  await setImmediate();
-  assert.equal(abaObs.at(-1)?.sourceName, 'Current');
-  assert.equal(pending.length, 0);
-
-  // Superseded retry failure clears stale reading; next ready poll keeps renamed connection name.
-  const replies = [
-    detail('B', 1, 'Old'),
-    ready(40),
-    { kind: 'unavailable' },
-    { kind: 'superseded' },
-    detail('B', 2, 'New'),
-    { kind: 'unavailable' },
-    ready(15),
-  ];
-  const supObs = [];
-  t.after(
-    watchComposerUsage(
-      { query: () => Promise.resolve(replies.shift()) },
-      { key: 'model:B', kind: 'connection', connectionId: 'B' },
-      (o) => supObs.push(o),
-      null,
-    ),
-  );
-  await setImmediate();
-  t.mock.timers.tick(60_000);
-  await setImmediate();
-  assert.equal(supObs.at(-1)?.reading.refreshFailed, true);
-  assert.equal(supObs.at(-1)?.sourceName, 'Old');
-  t.mock.timers.tick(60_000);
-  await setImmediate();
-  assert.equal(supObs.at(-1)?.reading.result.kind, 'superseded');
-  t.mock.timers.tick(60_000);
-  await setImmediate();
-  assert.equal(supObs.at(-1)?.reading.result.kind, 'ready');
-  assert.equal(supObs.at(-1)?.sourceName, 'New');
-
-  // Disabled connection recovers after re-enabling.
-  let enabled = false;
-  const disObs = [];
-  t.after(
-    watchComposerUsage(
-      {
-        query: (_e, m) =>
-          Promise.resolve(m === 'connection' ? detail('C', 1, 'Acct C', enabled) : ready(30)),
-      },
-      { key: 'model:C', kind: 'connection', connectionId: 'C' },
-      (o) => disObs.push(o),
-      null,
-    ),
-  );
-  await setImmediate();
-  assert.equal(disObs.at(-1)?.reading.result.kind, 'superseded');
-  enabled = true;
-  t.mock.timers.tick(60_000);
-  await setImmediate();
-  assert.equal(disObs.at(-1)?.reading.result.kind, 'ready');
-});
-
-test('summarizeComposerUsage picks hottest window with usageSeverity and formats balance', () => {
   const win = summarizeComposerUsage([
     { kind: 'window', period: { kind: 'duration', seconds: 604800 }, usedPercent: 18 },
     { kind: 'window', period: { kind: 'duration', seconds: 18000 }, usedPercent: 94.75 },

@@ -11155,7 +11155,7 @@ export const contracts: {
               },
               query: {
                 description:
-                  "Empty or whitespace browses the selected directory's direct files and directories.\nOtherwise, searches file paths within that directory's descendants.",
+                  "Empty or whitespace browses the selected directory's direct files and directories.\nOtherwise, matches direct entries when `directory` is set, or fuzzy-searches descendants of the workspace root.",
                 type: 'string',
               },
             },
@@ -15604,6 +15604,25 @@ export const contracts: {
                       kind: {
                         type: 'string',
                         const: 'row',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                      field: {
+                        $ref: '#/$defs/HistoryField',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position', 'field'],
+                  },
+                  {
+                    description:
+                      'Open a reverse window at the end of this field, including an empty tool row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'row_end',
                       },
                       position: {
                         $ref: '#/$defs/HistoryRowAddress',
@@ -24354,6 +24373,25 @@ export const contracts: {
                     required: ['kind', 'position', 'field'],
                   },
                   {
+                    description:
+                      'Open a reverse window at the end of this field, including an empty tool row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'row_end',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                      field: {
+                        $ref: '#/$defs/HistoryField',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position', 'field'],
+                  },
+                  {
                     type: 'object',
                     properties: {
                       kind: {
@@ -31600,7 +31638,7 @@ export const contracts: {
                 required: ['id', 'startedAt'],
               },
               AgentSessionMetrics: {
-                description: 'Display-only readings from the latest completed main-model request.',
+                description: 'Display-only model readings from the session backend.',
                 type: 'object',
                 properties: {
                   modelId: {
@@ -31628,8 +31666,7 @@ export const contracts: {
                     type: 'boolean',
                   },
                   outputTokensPerSecond: {
-                    description:
-                      "Provider output tokens divided by the model request's wall time.\nIncludes reasoning and time to first token; excludes tool/user waits.",
+                    description: 'Output tokens per second of model activity, when measured.',
                     type: ['number', 'null'],
                     format: 'double',
                   },
@@ -33621,7 +33658,7 @@ export const contracts: {
               },
               AgentQueueKind: {
                 type: 'string',
-                enum: ['in_flight', 'steering', 'followup'],
+                enum: ['in_flight', 'steering', 'followup', 'held'],
               },
             },
           },
@@ -35050,6 +35087,13 @@ export const contracts: {
                   anchorPosition: {
                     $ref: '#/$defs/HistoryRowAddress',
                   },
+                  through: {
+                    description: 'History boundary at which the anchor was resolved.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
                   excerpt: {
                     description:
                       'Display preview beginning at the first match. The anchor opens the complete source.',
@@ -35074,6 +35118,7 @@ export const contracts: {
                   'session',
                   'anchorMessageId',
                   'anchorPosition',
+                  'through',
                   'excerpt',
                   'highlights',
                   'matchedTerms',
@@ -52451,7 +52496,7 @@ export const contracts: {
               },
               AgentQueueKind: {
                 type: 'string',
-                enum: ['in_flight', 'steering', 'followup'],
+                enum: ['in_flight', 'steering', 'followup', 'held'],
               },
               AgentPendingInteractions: {
                 type: 'object',
@@ -56090,6 +56135,30 @@ export const contracts: {
                     properties: {
                       type: {
                         type: 'string',
+                        const: 'context_usage',
+                      },
+                      used: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      window: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 1,
+                      },
+                      model: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    required: ['type', 'used', 'window'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
                         const: 'turn_usage',
                       },
                       usage: {
@@ -56411,6 +56480,30 @@ export const contracts: {
                       },
                     },
                     required: ['type', 'toolCallId', 'text'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'context_usage',
+                      },
+                      used: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      window: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 1,
+                      },
+                      model: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    required: ['type', 'used', 'window'],
                   },
                   {
                     type: 'object',

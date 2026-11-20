@@ -24,6 +24,8 @@ use rusqlite::params;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionObligation {
     QueuedInput,
+    /// Only messages waiting after a user Stop for the Session's next Run.
+    HeldInput,
     LocalRun,
     Interaction,
     Model,
@@ -45,6 +47,13 @@ pub enum SessionQuiescence {
 impl SessionQuiescence {
     pub fn is_quiescent(self) -> bool {
         matches!(self, Self::Quiescent)
+    }
+    /// Nothing but held messages remains, and a new Run would take them.
+    pub fn admits_run(self) -> bool {
+        matches!(
+            self,
+            Self::Quiescent | Self::Busy(SessionObligation::HeldInput)
+        )
     }
 }
 
@@ -130,7 +139,7 @@ fn observe(
     let checks = [
         (
             SessionObligation::QueuedInput,
-            "SELECT EXISTS(SELECT 1 FROM agent_queue_items WHERE owner=?1 AND session=?2 AND state='pending')",
+            "SELECT EXISTS(SELECT 1 FROM agent_queue_items WHERE owner=?1 AND session=?2 AND state='pending' AND lane<>'held')",
         ),
         (
             SessionObligation::LocalRun,
@@ -200,6 +209,13 @@ fn observe(
         if cell.blocks_session_retirement(terminal.as_ref()) {
             return Ok(SessionQuiescence::Busy(SessionObligation::Cell));
         }
+    }
+    // Checked last so that HeldInput means nothing else is pending.
+    let held: bool = c
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM agent_queue_items WHERE owner=?1 AND session=?2 AND state='pending' AND lane='held')")?
+        .query_row(params![owner, session], |r| r.get(0))?;
+    if held {
+        return Ok(SessionQuiescence::Busy(SessionObligation::HeldInput));
     }
     Ok(SessionQuiescence::Quiescent)
 }

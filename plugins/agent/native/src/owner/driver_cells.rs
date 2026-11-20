@@ -370,7 +370,7 @@ impl RunCells {
         let source = if name == "wait" {
             super::driver::DispatchSource::CellWait(OwnedCellWait { port })
         } else {
-            super::driver::DispatchSource::Ordinary
+            super::driver::DispatchSource::CellExec
         };
         Ok((effect, source))
     }
@@ -789,13 +789,15 @@ impl RunCells {
             ));
         }
         let child = original;
-        let bytes = self
-            .state
-            .content(execution.run_id, self.access.spec().tool_selection.clone())
+        let selection = self
+            .owner
+            .selection_snapshot(
+                &self.state,
+                execution.run_id,
+                &self.access.spec().tool_selection,
+            )
             .await
             .map_err(persistence)?;
-        let selection: crate::tools::SelectionSnapshot =
-            serde_json::from_slice(&bytes).map_err(persistence)?;
         let selected = selection
             .selected_service(&self.owner.services, &self.owner.tool_basis, &child.name)
             .map_err(ToolError::OutcomeUnknown)?

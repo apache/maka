@@ -18,25 +18,22 @@
  */
 
 use super::*;
-use maka_agent_facts::durable::RunId;
-use maka_agent_state::{Change, StopOutcome, StopRun};
+use maka_agent_state::{StopOutcome, StopRun};
 
 impl Owner {
     pub(in crate::owner) async fn prepare_stop_with_goal(
         self: &Arc<Self>,
         session: &str,
-        run: RunId,
-        change: Change,
+        stop: StopRun,
     ) -> Result<NativeMutation<Stopped>, String> {
-        self.prepare_stop_with_goal_mapped(session, run, change, std::convert::identity)
+        self.prepare_stop_with_goal_mapped(session, stop, std::convert::identity)
             .await
     }
 
     pub(in crate::owner) async fn prepare_stop_with_goal_mapped<U, M>(
         self: &Arc<Self>,
         session: &str,
-        run: RunId,
-        change: Change,
+        stop: StopRun,
         map: M,
     ) -> Result<NativeMutation<U>, String>
     where
@@ -57,7 +54,6 @@ impl Owner {
             }
             _ => vec![],
         };
-        let stop = self.durable.stop_run_statement(run, change);
         let writer = self.store.data_writer().map_err(reason)?;
         let change = writer
             .prepare_result(|writer| {

@@ -89,7 +89,9 @@ export function createMessagesDock(
       queue
         .snapshot()
         ?.entries.filter(
-          (row) => row.kind === 'followup' && row.origin?.kind !== 'session_completion',
+          (row) =>
+            (row.kind === 'followup' || row.kind === 'held') &&
+            row.origin?.kind !== 'session_completion',
         ) ?? [],
   );
   type Message =

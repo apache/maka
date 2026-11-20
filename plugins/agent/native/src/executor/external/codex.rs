@@ -163,7 +163,14 @@ pub(super) async fn execute(
             }
         }
         Custody::Submitted => Err(Error::Unknown),
-        Custody::Preparing | Custody::Settled => result,
+        Custody::Preparing => {
+            if io.stop.is_cancelled() {
+                result
+            } else {
+                result.or_else(runtime::preparation_failure)
+            }
+        }
+        Custody::Settled => result,
     }
 }
 enum Custody {
@@ -261,9 +268,11 @@ async fn run(
     let failed = std::mem::replace(&mut io.failed, CancellationToken::new());
     *custody = Custody::Submitted;
     io.turn_started();
+    let clock = crate::model_time::ModelTime::new();
     let started = match io.request("turn/start", params).await {
         Ok(started) => started,
         Err(RpcError::Rejected(message)) => {
+            *custody = Custody::Preparing;
             io.turn_finished();
             return Err(Error::Provider(message));
         }
@@ -276,8 +285,15 @@ async fn run(
         messages: Default::default(),
         final_message_id: None,
         presentation: true,
+        context: true,
+        model: opened["model"].as_str().map(str::to_owned),
+        clock: Some(clock),
         fresh_thread,
-        usage_baseline: None,
+        usage_baseline: io
+            .setup_usage
+            .take()
+            .filter(|e| e["params"]["threadId"] == thread)
+            .and_then(|e| e.pointer("/params/tokenUsage/total").cloned()),
         usage: None,
     });
     journal
@@ -377,8 +393,11 @@ struct Turn {
     final_message_id: Option<String>,
     presentation: bool,
     fresh_thread: bool,
+    model: Option<String>,
     usage_baseline: Option<Value>,
     usage: Option<TurnUsage>,
+    context: bool,
+    clock: Option<crate::model_time::ModelTime>,
 }
 #[derive(Default)]
 struct Message {
@@ -489,6 +508,23 @@ impl Turn {
                 let item = &p["item"];
                 let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
                 let id = string(item, "/id")?.to_owned();
+                if let Some(clock) = &mut self.clock
+                    && !matches!(
+                        kind,
+                        "userMessage"
+                            | "hookPrompt"
+                            | "agentMessage"
+                            | "reasoning"
+                            | "plan"
+                            | "functionCallOutput"
+                    )
+                {
+                    if method == "item/started" {
+                        clock.tool_started(&id);
+                    } else {
+                        clock.tool_finished(&id);
+                    }
+                }
                 if matches!(kind, "agentMessage" | "reasoning") {
                     self.start_message(&id, output).await?;
                     if method == "item/completed" {
@@ -646,6 +682,25 @@ impl Turn {
                 }
             }
             "thread/tokenUsage/updated" if self.presentation => {
+                if self.context
+                    && let (Some(used), Some(window)) = (
+                        p.pointer("/tokenUsage/last/totalTokens")
+                            .and_then(Value::as_u64),
+                        p.pointer("/tokenUsage/modelContextWindow")
+                            .and_then(Value::as_u64)
+                            .and_then(std::num::NonZeroU64::new),
+                    )
+                {
+                    output
+                        .emit(Output::ContextUsage(
+                            maka_agent_facts::executor::ContextUsage {
+                                used,
+                                window,
+                                model: self.model.clone(),
+                            },
+                        ))
+                        .await?;
+                }
                 if let Some(total) = p.pointer("/tokenUsage/total").and_then(Value::as_object)
                     && (self.fresh_thread || self.usage_baseline.is_some())
                 {
@@ -695,7 +750,14 @@ impl Turn {
                 };
                 if let Some(mut usage) = self.usage.take() {
                     usage.duration_ms = p["turn"]["durationMs"].as_u64();
-                    output.emit(Output::TurnUsage { usage }).await?;
+                    output
+                        .turn_usage(
+                            usage,
+                            self.clock
+                                .as_ref()
+                                .and_then(crate::model_time::ModelTime::millis),
+                        )
+                        .await?;
                 }
                 return Ok(Some(outcome));
             }
@@ -830,6 +892,9 @@ pub(super) async fn replay(
         messages: Default::default(),
         final_message_id: None,
         presentation: binding.adapter_version >= PRESENTATION_VERSION,
+        context: binding.adapter_version >= CONTEXT_VERSION,
+        clock: None,
+        model: None,
         fresh_thread: sent.fresh_thread,
         usage_baseline: None,
         usage: None,
@@ -869,6 +934,7 @@ pub(super) async fn replay(
                     return Err(Error::Unknown);
                 }
                 if id == sent.thread {
+                    state.model = result["model"].as_str().map(str::to_owned);
                     if result["thread"]["id"] != *thread
                         || result["approvalPolicy"] != "never"
                         || result["sandbox"]["type"] != "dangerFullAccess"

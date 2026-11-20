@@ -199,6 +199,16 @@ impl SessionHistory {
             ))
             .await
     }
+    /// Read a sparse window of original facts within the captured session.
+    pub async fn items(
+        &self,
+        cut: &HistoryCut,
+        sequences: Vec<u64>,
+    ) -> Result<std::collections::BTreeMap<u64, HistoryItem>, StoreError> {
+        self.data
+            .query(WindowItems(self.namespace.clone(), cut.clone(), sequences))
+            .await
+    }
     pub async fn tool_result_metadata(
         &self,
         cut: &HistoryCut,
@@ -381,6 +391,21 @@ impl SessionHistory {
     ) -> Result<HistoryPage, StoreError> {
         self.data
             .query(Previous(self.clone(), cut.clone(), before_sequence, limit))
+            .await
+    }
+    pub async fn run_revision_through(
+        &self,
+        cut: &HistoryCut,
+        run: RunId,
+        through_sequence: u64,
+    ) -> Result<u64, StoreError> {
+        self.data
+            .query(RunRevisionThrough(
+                self.clone(),
+                cut.clone(),
+                run,
+                through_sequence,
+            ))
             .await
     }
     /// Exact queue snapshots consumed by the fact at sequence, in original
@@ -604,6 +629,13 @@ impl Query for CaptureAt {
         )
     }
 }
+struct WindowItems(HistoryNamespace, HistoryCut, Vec<u64>);
+impl Query for WindowItems {
+    type Output = std::collections::BTreeMap<u64, HistoryItem>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::window_items(c, &self.0, &self.1, &self.2)
+    }
+}
 struct Item(SessionHistory, HistoryCut, u64);
 impl Query for Item {
     type Output = Option<HistoryItem>;
@@ -687,6 +719,13 @@ impl Query for FactSequence {
     type Output = Option<u64>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::fact_sequence(c, &self.0.namespace, &self.1, self.2, self.3)
+    }
+}
+struct RunRevisionThrough(SessionHistory, HistoryCut, RunId, u64);
+impl Query for RunRevisionThrough {
+    type Output = u64;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::run_revision_through(c, &self.0.namespace, &self.1, self.2, self.3)
     }
 }
 

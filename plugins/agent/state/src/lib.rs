@@ -262,6 +262,16 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "permission grant sources",
         sql: include_str!("../migrations/0048_permission_grant_sources.sql"),
     },
+    maka_event_log::migration::Migration {
+        version: 49,
+        description: "session removal foreign-key indexes",
+        sql: include_str!("../migrations/0049_session_removal_fk_indexes.sql"),
+    },
+    maka_event_log::migration::Migration {
+        version: 50,
+        description: "persist run output-limit continuation count",
+        sql: include_str!("../migrations/0050_output_limit_continuations.sql"),
+    },
 ];
 
 #[cfg(test)]

@@ -44,9 +44,10 @@ import {
   inputBorderRadius,
 } from './ui';
 
+export type RecallAnchor = { messageId: string; position: HistoryRowAddress; through: number };
 export type RecallTarget = {
   sessionId: string;
-  anchor?: { messageId: string; position: HistoryRowAddress };
+  anchor?: RecallAnchor;
 };
 type Request = {
   id: number;
@@ -271,6 +272,7 @@ export function RecallSearch(props: {
             anchor: {
               messageId: result.passage.anchorMessageId,
               position: result.passage.anchorPosition,
+              through: result.passage.through,
             },
           };
     batch(() => {

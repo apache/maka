@@ -656,6 +656,11 @@ export type AgentLoadedHistoryCheckpointHistoryInput_HistoryPosition =
       field: AgentLoadedHistoryCheckpointHistoryInput_HistoryField;
     }
   | {
+      kind: 'row_end';
+      position: AgentLoadedHistoryCheckpointHistoryInput_HistoryRowAddress;
+      field: AgentLoadedHistoryCheckpointHistoryInput_HistoryField;
+    }
+  | {
       kind: 'before';
       cursor: AgentLoadedHistoryCheckpointHistoryInput_Cursor;
     }

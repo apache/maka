@@ -373,8 +373,11 @@ export function projectProcessGroups(input: {
       kind: 'process',
       key: groupKey(
         turnKey,
-        first && !members.some((member) => memberId(member) === first)
-          ? [{ kind: 'row', rowId: first }, ...members]
+        first
+          ? [
+              { kind: 'row', rowId: first },
+              ...members.filter((member) => memberId(member) !== first),
+            ]
           : members,
       ),
       turnKey,

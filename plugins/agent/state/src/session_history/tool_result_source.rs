@@ -732,7 +732,9 @@ impl ToolResultReader {
                 }
             } else if json::text_eq(&kind, "provider", budget.clone()).await? {
                 source = present(output)?.source;
-            } else if json::text_eq(&kind, "rejected", budget.clone()).await? {
+            } else if json::text_eq(&kind, "rejected", budget.clone()).await?
+                || json::text_eq(&kind, "outcome_unknown", budget.clone()).await?
+            {
                 source = present(diagnostic)?.source;
             } else if json::text_eq(&kind, "recovered_cell", budget.clone()).await? {
                 let evidence = present(evidence)?;

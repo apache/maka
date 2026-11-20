@@ -269,65 +269,139 @@ impl Declarations {
     ) -> Result<Self, maka_tool_catalog::CatalogError> {
         self.0.with_additional(declarations).map(Self)
     }
+
+    pub(crate) fn as_catalog(&self) -> &ToolCatalog {
+        &self.0
+    }
 }
 
-pub(crate) struct Catalog<T> {
-    pub tools: T,
+struct PreparedServiceTool {
+    selected: SelectedTool,
+    services: NativeServices,
+    target: String,
+    computer: bool,
+    network_ceiling: bool,
+    file_ceiling: bool,
+    input_projection: Projection,
+    title_kind: Option<title::Kind>,
+    presentation: Option<String>,
+    mode: MethodMode,
+    shell_input: Option<Arc<Value>>,
+}
+
+/// Pre-validated, pre-compiled Host tool catalog reused across Runs without
+/// re-inlining schemas or recompiling JSON Schema validators.
+pub(crate) struct PreparedCatalog {
+    run_base: ToolCatalog,
+    services: Vec<PreparedServiceTool>,
+    tool_names: ToolNames,
+}
+
+pub(crate) struct Catalog {
+    pub tools: Declarations,
+    pub prepared: PreparedCatalog,
     pub basis: Vec<SelectedTool>,
     /// Derived from actual bound contracts and methods, never display names.
     pub editing: Vec<(String, EditingTools)>,
+}
+
+impl PreparedCatalog {
+    pub(crate) fn for_run(
+        &self,
+        configuration: Arc<maka_config::ConfigurationStore>,
+        workers: tokio_util::task::TaskTracker,
+        access: Arc<RunAccess>,
+    ) -> Result<ToolCatalog, String> {
+        let mut web_bindings = std::collections::BTreeMap::<ServiceTarget, Vec<Service>>::new();
+        let mut shell_bindings = Vec::new();
+        let mut skill_bindings = Vec::new();
+        let mut handlers = Vec::with_capacity(self.services.len());
+        for template in &self.services {
+            let service = Service {
+                services: template.services.clone(),
+                access: access.clone(),
+                binding: template.selected.binding.clone(),
+                target: template.target.clone(),
+                tool_names: self.tool_names.clone(),
+                selection: template.selected.selection.clone(),
+                computer: template.computer,
+                network_ceiling: template.network_ceiling,
+                file_ceiling: template.file_ceiling,
+                input_projection: template.input_projection,
+                title_kind: template.title_kind,
+                presentation: template.presentation.clone(),
+                mode: template.mode,
+                web_basis: None,
+                shell: None,
+            };
+            match template.selected.selection.input {
+                ToolInput::Skill => skill_bindings.push((
+                    template.selected.selection.name.clone(),
+                    Arc::new(SkillBinding(service.clone())),
+                )),
+                ToolInput::Shell => shell_bindings.push((
+                    template.selected.selection.name.clone(),
+                    Arc::new(shell::Binding {
+                        service: service.clone(),
+                        configuration: configuration.clone(),
+                        input: template
+                            .shell_input
+                            .clone()
+                            .expect("shell service tool captures input schema"),
+                    }),
+                )),
+                ToolInput::Web => web_bindings
+                    .entry(template.selected.selection.target.clone())
+                    .or_default()
+                    .push(service.clone()),
+                ToolInput::Json => {}
+            }
+            handlers.push((
+                template.selected.selection.name.clone(),
+                ToolHandler::Prepared(Arc::new(service)),
+            ));
+        }
+        let mut catalog = self
+            .run_base
+            .clone()
+            .with_rebound_handlers(handlers)
+            .map_err(|_| "agent_tool_catalog_invalid")?;
+        for (name, binding) in skill_bindings {
+            catalog = catalog
+                .with_request_binding([name].into(), binding)
+                .map_err(|_| "agent_skill_binding_invalid")?;
+        }
+        for services in web_bindings.into_values() {
+            let names = services
+                .iter()
+                .map(|service| service.selection.name.clone())
+                .collect();
+            catalog = catalog
+                .with_request_binding(
+                    names,
+                    Arc::new(web::Binding {
+                        services,
+                        workers: workers.clone(),
+                    }),
+                )
+                .map_err(|_| "agent_web_binding_invalid")?;
+        }
+        for (name, binding) in shell_bindings {
+            catalog = catalog
+                .with_request_binding([name].into(), binding)
+                .map_err(|_| "agent_shell_binding_invalid")?;
+        }
+        Ok(catalog)
+    }
 }
 
 pub(crate) fn catalog(
     services: NativeServices,
     selected: &[ServiceTool],
     additional: Vec<ToolRegistration>,
-) -> Result<Catalog<Declarations>, String> {
-    let Catalog {
-        tools,
-        basis,
-        editing,
-    } = catalog_inner(services, selected, additional, None)?;
-    Ok(Catalog {
-        tools: Declarations(tools),
-        basis,
-        editing,
-    })
-}
-
-pub(crate) fn catalog_for_run(
-    services: NativeServices,
-    configuration: Arc<maka_config::ConfigurationStore>,
-    selected: &[ServiceTool],
-    additional: Vec<ToolRegistration>,
-    workers: tokio_util::task::TaskTracker,
-    access: Arc<RunAccess>,
-) -> Result<Catalog<ToolCatalog>, String> {
-    catalog_inner(
-        services,
-        selected,
-        additional,
-        Some(RunBindings {
-            access,
-            configuration,
-            workers,
-        }),
-    )
-}
-
-struct RunBindings {
-    access: Arc<RunAccess>,
-    configuration: Arc<maka_config::ConfigurationStore>,
-    workers: tokio_util::task::TaskTracker,
-}
-
-fn catalog_inner(
-    services: NativeServices,
-    selected: &[ServiceTool],
-    additional: Vec<ToolRegistration>,
-    run: Option<RunBindings>,
-) -> Result<Catalog<ToolCatalog>, String> {
+) -> Result<Catalog, String> {
     let mut basis = Vec::new();
+    let mut prepared_services = Vec::with_capacity(selected.len());
     let file_contract = maka_workspace_api::files::contract();
     let editing: Vec<_> = selected
         .iter()
@@ -346,9 +420,6 @@ fn catalog_inner(
         .collect();
     let computer_contract = maka_workspace_api::computer::contract();
     let web_contract = maka_web_api::contract();
-    let mut web_bindings = std::collections::BTreeMap::<ServiceTarget, Vec<Service>>::new();
-    let mut shell_bindings = Vec::new();
-    let mut skill_bindings = Vec::new();
     let skill_contract = maka_skills_api::contract();
     let agent_contract = maka_agent_api::contract::contract();
     let questions_contract = maka_interactions_api::questions::contract();
@@ -496,71 +567,44 @@ fn catalog_inner(
                 selection: selection.clone(),
                 binding: binding.execution_basis().into(),
             };
-            let handler = if let Some(run) = &run {
-                let presentation = selection.presentation.clone().or_else(|| {
-                    (contract == &agent_contract
-                        || contract == &deployment_contract
-                        || contract == &questions_contract
-                        || contract == &computer_contract
-                        || contract == &skill_contract
-                        || (contract == &process_contract && selection.method == "health"))
-                        .then(|| format!("{}@{}/{}", contract.name, contract.version, selection.method))
-                });
-                let service = Service {
-                    services: selected.services(&services)?,
-                    access: run.access.clone(),
-                    binding: selected.binding.clone(),
-                    target: format!(
-                        "{} · {} v{} · {} / {} · {}",
-                        selection.target.name(),
-                        binding.contract().name,
-                        binding.contract().version,
-                        serde_json::to_string(binding.provider().instance())
-                            .expect("instance identity"),
-                        binding.export(),
-                        binding
-                            .provider()
-                            .remote_target()
-                            .map_or("local", |target| target.deployment.as_str())
-                    ),
-                    tool_names: tool_names.clone(),
-                    selection: selection.clone(),
-                    computer: binding.contract().name == computer_contract.name && binding.contract().version == 1,
-                    network_ceiling: selection.input == ToolInput::Web
-                        || contract == &process_contract,
-                    file_ceiling: contract == &file_contract
-                        || (contract == &process_contract
-                            && matches!(selection.method.as_str(), "execute" | "writeStdin")),
-                    input_projection,
-                    title_kind,
-                    presentation,
-                    mode: method.mode,
-                    web_basis: None,
-                    shell: None,
-                };
-                match selection.input {
-                    ToolInput::Skill => skill_bindings.push((
-                        selection.name.clone(),
-                        Arc::new(SkillBinding(service.clone())),
-                    )),
-                    ToolInput::Shell => shell_bindings.push((
-                        selection.name.clone(),
-                        Arc::new(shell::Binding {
-                            service: service.clone(),
-                            configuration: run.configuration.clone(),
-                            input: method.input.as_ref().clone(),
-                        }),
-                    )),
-                    ToolInput::Web => web_bindings
-                        .entry(selection.target.clone())
-                        .or_default()
-                        .push(service.clone()),
-                    ToolInput::Json => {}
-                }
-                ToolHandler::Prepared(Arc::new(service))
-            } else {
-                ToolHandler::Declaration(selection.name.clone())
-            };
+            let presentation = selection.presentation.clone().or_else(|| {
+                (contract == &agent_contract
+                    || contract == &deployment_contract
+                    || contract == &questions_contract
+                    || contract == &computer_contract
+                    || contract == &skill_contract
+                    || (contract == &process_contract && selection.method == "health"))
+                    .then(|| format!("{}@{}/{}", contract.name, contract.version, selection.method))
+            });
+            let target = format!(
+                "{} · {} v{} · {} / {} · {}",
+                selection.target.name(),
+                binding.contract().name,
+                binding.contract().version,
+                serde_json::to_string(binding.provider().instance()).expect("instance identity"),
+                binding.export(),
+                binding
+                    .provider()
+                    .remote_target()
+                    .map_or("local", |target| target.deployment.as_str())
+            );
+            prepared_services.push(PreparedServiceTool {
+                services: selected.services(&services)?,
+                selected: selected.clone(),
+                target,
+                computer: binding.contract().name == computer_contract.name
+                    && binding.contract().version == 1,
+                network_ceiling: selection.input == ToolInput::Web || contract == &process_contract,
+                file_ceiling: contract == &file_contract
+                    || (contract == &process_contract
+                        && matches!(selection.method.as_str(), "execute" | "writeStdin")),
+                input_projection,
+                title_kind,
+                presentation,
+                mode: method.mode,
+                shell_input: (selection.input == ToolInput::Shell)
+                    .then(|| Arc::new(method.input.as_ref().clone())),
+            });
             basis.push(selected);
             let mut description = selection.description.clone();
             if binding.contract() == &file_contract && selection.method == "read" {
@@ -596,49 +640,28 @@ fn catalog_inner(
                 } else {
                     ToolSemantics::Parallel
                 },
-                handler,
+                handler: ToolHandler::Declaration(selection.name.clone()),
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let mut catalog = ToolCatalog::new(registrations.into_iter().chain(additional))
+    let compiled = ToolCatalog::new(registrations.into_iter().chain(additional))
         .map_err(|_| "agent_tool_catalog_invalid")?;
-    for (name, binding) in skill_bindings {
-        catalog = catalog
-            .with_request_binding([name].into(), binding)
-            .map_err(|_| "agent_skill_binding_invalid")?;
-    }
-    if let Some(run) = run {
-        catalog = catalog
-            .with_always_visible(
-                &editing
-                    .iter()
-                    .map(|(name, _)| name.as_str())
-                    .collect::<Vec<_>>(),
-            )
-            .map_err(|_| "agent_tool_catalog_invalid")?;
-        for services in web_bindings.into_values() {
-            let names = services
+    let run_base = compiled
+        .clone()
+        .with_always_visible(
+            &editing
                 .iter()
-                .map(|service| service.selection.name.clone())
-                .collect();
-            catalog = catalog
-                .with_request_binding(
-                    names,
-                    Arc::new(web::Binding {
-                        services,
-                        workers: run.workers.clone(),
-                    }),
-                )
-                .map_err(|_| "agent_web_binding_invalid")?;
-        }
-    }
-    for (name, binding) in shell_bindings {
-        catalog = catalog
-            .with_request_binding([name].into(), binding)
-            .map_err(|_| "agent_shell_binding_invalid")?;
-    }
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|_| "agent_tool_catalog_invalid")?;
     Ok(Catalog {
-        tools: catalog,
+        tools: Declarations(compiled),
+        prepared: PreparedCatalog {
+            run_base,
+            services: prepared_services,
+            tool_names,
+        },
         basis,
         editing,
     })

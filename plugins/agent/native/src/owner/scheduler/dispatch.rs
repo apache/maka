@@ -774,7 +774,6 @@ impl Owner {
             basis.mcp_revision = selected.revision.clone();
             basis.client_mcp = selected.client_mcp;
             basis.mcp_catalog = Some(selected.clone());
-            basis.internal_tools = selected.definitions.clone();
             basis.internal_bindings = selected.bindings.clone();
         }
         let message: MessageInput = fire.intent.body().to_string().into();

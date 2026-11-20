@@ -216,17 +216,25 @@ fn recovery_unavailable(diagnostic: impl Into<String>) -> RunError {
 }
 
 impl OriginalEffects {
-    async fn selection(&self) -> Result<crate::tools::SelectionSnapshot, RunError> {
-        let bytes = self
-            .state
-            .content(
+    async fn selection(&self) -> Result<Arc<crate::tools::SelectionSnapshot>, RunError> {
+        let owner = self
+            .access
+            .owner
+            .upgrade()
+            .ok_or_else(|| recovery_unavailable("original native owner is unavailable"))?;
+        owner
+            .selection_snapshot(
+                &self.state,
                 self.access.execution().run_id,
-                self.access.spec().tool_selection.clone(),
+                &self.access.spec().tool_selection,
             )
-            .await?;
-        serde_json::from_slice(&bytes).map_err(|error| {
-            recovery_unavailable(format!("original tool selection is unavailable: {error}"))
-        })
+            .await
+            .map_err(|error| match error {
+                RunError::InvalidInput(message) => recovery_unavailable(format!(
+                    "original tool selection is unavailable: {message}"
+                )),
+                other => other,
+            })
     }
     pub(super) async fn selected_for_tool(
         &self,
@@ -594,20 +602,43 @@ impl OriginalEffects {
         } else {
             result
         };
+        // The call returned, so nothing of it is still running; only its effect is
+        // unknown. Record that before releasing its resources; the engine hands it to
+        // the model. A code cell's exec keeps waiting for its Cell instead.
+        let ended_unknown = match &result {
+            Err(ToolError::OutcomeUnknown(diagnostic))
+                if matches!(&material.source, DispatchSource::Ordinary) =>
+            {
+                Some(diagnostic.clone())
+            }
+            _ => None,
+        };
         material.physical = match &result {
             Err(
                 ToolError::OperationUnknown { observation, .. }
                 | ToolError::OperationCleanupUnconfirmed { observation, .. },
             ) => PhysicalCleanup::Host(observation.reference.clone()),
-            Err(
-                ToolError::OutcomeUnknown(_)
-                | ToolError::CleanupUnconfirmed(_)
-                | ToolError::Persistence(_),
-            ) => PhysicalCleanup::Unobservable,
+            Err(ToolError::OutcomeUnknown(_)) if ended_unknown.is_none() => {
+                PhysicalCleanup::Unobservable
+            }
+            Err(ToolError::CleanupUnconfirmed(_) | ToolError::Persistence(_)) => {
+                PhysicalCleanup::Unobservable
+            }
             _ => PhysicalCleanup::Confirmed,
         };
         let successful = result.is_ok();
-        let mut batch = prepare_result(self.access.execution(), &material.key, result).await?;
+        let mut batch = match ended_unknown {
+            Some(diagnostic) => {
+                prepare_local_result(
+                    self.access.execution(),
+                    &material.key,
+                    ToolSuccess::from(ToolOutput::Text(diagnostic)).reporting_error(true),
+                    maka_agent_facts::tool_call::ToolSettlement::Unknown,
+                )
+                .await?
+            }
+            None => prepare_result(self.access.execution(), &material.key, result).await?,
+        };
         if successful {
             batch.local = local;
         }
@@ -733,8 +764,10 @@ impl OriginalEffects {
             self.publish_material(&mut material).await?;
             material.acknowledged = true;
         }
-        if matches!(&material.source, DispatchSource::Ordinary)
-            && !matches!(material.physical, PhysicalCleanup::Confirmed)
+        if matches!(
+            &material.source,
+            DispatchSource::Ordinary | DispatchSource::CellExec
+        ) && !matches!(material.physical, PhysicalCleanup::Confirmed)
             && let Some(reply) = material.observe(self).await?
         {
             if cleanup_confirmed(&reply) {
@@ -761,7 +794,7 @@ impl OriginalEffects {
             }
         }
         if cells_cleanup_confirmed
-            && matches!(&material.source, DispatchSource::Ordinary)
+            && matches!(&material.source, DispatchSource::CellExec)
             && material.batch.is_none()
             && !matches!(material.physical, PhysicalCleanup::Confirmed)
         {

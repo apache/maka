@@ -178,6 +178,13 @@ pub enum Error {
 /// Resolves only after the observation is committed. Consumer loss does not
 /// undo accepted execution or permit unbounded output buffering.
 pub trait OutputSink: Send + Sync {
+    fn turn_usage(
+        &self,
+        usage: maka_agent_facts::executor::TurnUsage,
+        _model_time_ms: Option<u64>,
+    ) -> BoxFuture<'_, Result<(), Error>> {
+        self.emit(Output::TurnUsage { usage })
+    }
     fn emit(&self, output: Output) -> BoxFuture<'_, Result<(), Error>>;
 }
 #[derive(Clone)]

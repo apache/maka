@@ -195,6 +195,22 @@ pub struct Goal<A = Id> {
     pub authority_blocked: bool,
     #[serde(default)]
     pub dismissed: bool,
+    /// Consecutive failed iterations since the last completed one or a resume.
+    pub failures: u32,
+    /// User-facing pause diagnostic kept separate from the model's checkpoint note.
+    pub pause_reason: Option<String>,
+}
+
+/// Consecutive failed iterations without provider retry guidance before pausing.
+pub const FAILURE_LIMIT: u32 = 2;
+/// Consecutive rate-limited iterations with a provider retry deadline before pausing.
+pub const RATE_LIMIT_FAILURE_LIMIT: u32 = 6;
+
+pub struct IterationFailure {
+    pub diagnostic: Option<String>,
+    pub retry_at: Option<u64>,
+    /// Waiting cannot fix it, for example rejected credentials or an exhausted quota.
+    pub needs_user: bool,
 }
 impl<A> Goal<A> {
     pub fn keeps_host_awake(&self) -> bool {
@@ -215,12 +231,18 @@ impl<A> Goal<A> {
             {
                 self.status = Status::Active;
                 self.report = None;
+                self.failures = 0;
+                self.pause_reason = None;
             }
             Control::Cancel if !self.status.terminal() || self.status == Status::Cancelled => {
                 self.status = Status::Cancelled;
                 self.report = None;
+                self.pause_reason = None;
             }
-            Control::Complete if !self.status.terminal() => self.status = Status::Achieved,
+            Control::Complete if !self.status.terminal() => {
+                self.status = Status::Achieved;
+                self.pause_reason = None;
+            }
             Control::SetBudget if !self.status.terminal() => {}
             Control::Dismiss if self.status.terminal() && self.pending.is_none() => {
                 self.dismissed = true;
@@ -248,17 +270,66 @@ impl<A> Goal<A> {
     ) -> Result<(), String> {
         let total = usage?;
         self.pending = None;
-        // Stop is a persistent user fence, not an invitation to schedule another Run.
-        if self.status == Status::Active
-            && matches!(outcome, maka_agent_facts::durable::Terminal::Cancelled)
-        {
-            self.status = Status::Paused;
+        match outcome {
+            // Stop is a persistent user fence, not an invitation to schedule another Run.
+            maka_agent_facts::durable::Terminal::Cancelled if self.status == Status::Active => {
+                self.status = Status::Paused;
+                self.failures = 0;
+            }
+            maka_agent_facts::durable::Terminal::Completed => {
+                self.failures = 0;
+                self.pause_reason = None;
+            }
+            _ => {}
         }
         self.meter(total);
         Ok(())
     }
+    pub fn display_note(&self) -> &str {
+        self.pause_reason.as_deref().unwrap_or(&self.note)
+    }
+    pub fn failed(&mut self, failure: IterationFailure) {
+        if self.status != Status::Active {
+            return;
+        }
+        self.failures = self.failures.saturating_add(1);
+        let limit = if failure.retry_at.is_some() {
+            RATE_LIMIT_FAILURE_LIMIT
+        } else {
+            FAILURE_LIMIT
+        };
+        if failure.needs_user || self.failures >= limit {
+            let reason = failure.diagnostic.unwrap_or_else(|| {
+                match self.arm.language {
+                    Language::En => "no reason was recorded",
+                    Language::ZhCn => "没有记录原因",
+                    Language::ZhTw => "沒有記錄原因",
+                }
+                .into()
+            });
+            self.status = Status::Paused;
+            self.retry_at = None;
+            self.pause_reason = Some(match self.arm.language {
+                Language::En => format!(
+                    "Paused after {} failed iteration(s) in a row. Last failure: {reason}",
+                    self.failures
+                ),
+                Language::ZhCn => format!(
+                    "连续 {} 次迭代失败，已暂停。最近一次失败：{reason}",
+                    self.failures
+                ),
+                Language::ZhTw => format!(
+                    "連續 {} 次迭代失敗，已暫停。最近一次失敗：{reason}",
+                    self.failures
+                ),
+            });
+        } else if failure.retry_at.is_some() {
+            self.retry_at = failure.retry_at;
+        }
+    }
     pub fn report(&mut self, report: Report) {
         self.note = report.note.clone();
+        self.pause_reason = None;
         self.status = match report.status {
             ReportKind::Progress => Status::Active,
             ReportKind::Achieved => Status::Achieved,
@@ -458,6 +529,8 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
             note: String::new(),
             authority_blocked: false,
             dismissed: false,
+            failures: 0,
+            pause_reason: None,
         };
         index.update(&goal);
         let mutations = vec![
@@ -671,5 +744,132 @@ mod tests {
         )
         .unwrap();
         assert!(!replacement.dismissed);
+    }
+
+    #[test]
+    fn repeated_failures_pause_without_overwriting_checkpoint_and_resume_cleanly() {
+        let (mut goal, _) = Repository::prepare_arm(
+            "s-fail",
+            sample_arm(Uuid::from_u128(20), true),
+            Meter::default(),
+            None,
+            None,
+            None,
+            ScheduleIndex::default(),
+        )
+        .unwrap();
+        goal.report(Report {
+            status: ReportKind::Progress,
+            note: "step 1 done, step 2 remaining".into(),
+        });
+
+        // 1st ordinary failure keeps Goal active without changing checkpoint note.
+        goal.failed(IterationFailure {
+            diagnostic: Some("HTTP 400 bad request".into()),
+            retry_at: None,
+            needs_user: false,
+        });
+        assert_eq!(goal.status, Status::Active);
+        assert_eq!(goal.failures, 1);
+        assert_eq!(goal.note, "step 1 done, step 2 remaining");
+        assert_eq!(goal.display_note(), "step 1 done, step 2 remaining");
+
+        // 2nd consecutive failure pauses and exposes pause reason via display_note()
+        // while keeping the model's checkpoint intact in goal.note.
+        goal.failed(IterationFailure {
+            diagnostic: Some("HTTP 400 bad request".into()),
+            retry_at: None,
+            needs_user: false,
+        });
+        assert_eq!(goal.status, Status::Paused);
+        assert_eq!(goal.failures, 2);
+        assert_eq!(goal.note, "step 1 done, step 2 remaining");
+        assert!(goal.display_note().contains("HTTP 400 bad request"));
+
+        // Late failures on non-Active Goals must not mutate failures or pause_reason.
+        goal.failed(IterationFailure {
+            diagnostic: Some("late stale failure".into()),
+            retry_at: Some(999_999),
+            needs_user: false,
+        });
+        assert_eq!(goal.failures, 2);
+        assert!(goal.retry_at.is_none());
+        assert!(!goal.display_note().contains("late stale failure"));
+
+        // Resuming clears failures and pause_reason, and reserve() replays the preserved checkpoint.
+        goal.control(Control::Resume).unwrap();
+        assert_eq!(goal.status, Status::Active);
+        assert_eq!(goal.failures, 0);
+        assert_eq!(goal.pause_reason, None);
+        assert!(goal.reserve().unwrap());
+        let Some(Pending::Dispatch { request }) = &goal.pending else {
+            panic!("expected dispatched continuation");
+        };
+        assert!(
+            request
+                .content
+                .text
+                .contains("Previous checkpoint: step 1 done, step 2 remaining"),
+            "{}",
+            request.content.text
+        );
+        assert!(
+            !request.content.text.contains("HTTP 400 bad request"),
+            "Goal continuation prompt must not duplicate prior turn failure: {}",
+            request.content.text
+        );
+    }
+
+    #[test]
+    fn rate_limit_retry_at_honors_higher_cap_and_needs_user_pauses_immediately() {
+        let (mut goal, _) = Repository::prepare_arm(
+            "s-rl",
+            sample_arm(Uuid::from_u128(21), true),
+            Meter::default(),
+            None,
+            None,
+            None,
+            ScheduleIndex::default(),
+        )
+        .unwrap();
+        for attempt in 1..RATE_LIMIT_FAILURE_LIMIT {
+            goal.failed(IterationFailure {
+                diagnostic: Some("429 rate limited".into()),
+                retry_at: Some(10_000 + u64::from(attempt)),
+                needs_user: false,
+            });
+            assert_eq!(goal.status, Status::Active);
+            assert_eq!(goal.retry_at, Some(10_000 + u64::from(attempt)));
+        }
+        // A completed iteration resets consecutive failures.
+        goal.settled(
+            maka_agent_facts::durable::Terminal::Completed,
+            Ok(Meter::default()),
+        )
+        .unwrap();
+        assert_eq!(goal.failures, 0);
+
+        // Exhausting RATE_LIMIT_FAILURE_LIMIT pauses the Goal.
+        for _ in 0..RATE_LIMIT_FAILURE_LIMIT {
+            goal.failed(IterationFailure {
+                diagnostic: Some("429 persistent".into()),
+                retry_at: Some(20_000),
+                needs_user: false,
+            });
+        }
+        assert_eq!(goal.status, Status::Paused);
+        assert!(goal.retry_at.is_none());
+        assert!(goal.display_note().contains("429 persistent"));
+
+        // needs_user pauses on the very first failure.
+        goal.control(Control::Resume).unwrap();
+        goal.failed(IterationFailure {
+            diagnostic: Some("401 invalid API key".into()),
+            retry_at: None,
+            needs_user: true,
+        });
+        assert_eq!(goal.status, Status::Paused);
+        assert_eq!(goal.failures, 1);
+        assert!(goal.display_note().contains("401 invalid API key"));
     }
 }

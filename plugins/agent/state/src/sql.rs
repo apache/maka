@@ -146,6 +146,27 @@ pub(crate) fn owned_content(
 ) -> Result<Vec<u8>, StoreError> {
     with_owned_content(c, run, reference, |bytes| Ok(bytes.to_vec()))
 }
+pub(crate) fn verify_owned_content(
+    c: &Connection,
+    run: RunId,
+    reference: &ContentRef,
+) -> Result<(), StoreError> {
+    reference.validate().map_err(invalid)?;
+    let owns: bool = c
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM agent_run_content p JOIN contents c ON c.id=p.content_id WHERE p.run=? AND c.content_sha256=? AND length(c.payload)=?)")?
+        .query_row(
+            params![
+                run.to_string(),
+                reference.digest,
+                signed(reference.bytes)?
+            ],
+            |r| r.get(0),
+        )?;
+    if !owns {
+        return Err(invalid("content is not retained by this Run"));
+    }
+    Ok(())
+}
 pub(crate) fn with_owned_content<T>(
     c: &Connection,
     run: RunId,
@@ -399,14 +420,20 @@ pub(crate) fn load(
             "Run indexes have an old projection schema; rebuild required",
         ));
     }
-    let (phase, finish, proactive_summary): (String, bool, Option<String>) = c.query_row(
-        "SELECT retry_phase,finish_requested,proactive_summary FROM agent_runs WHERE run=?",
+    let (phase, finish, proactive_summary, output_limit_continuations): (
+        String,
+        bool,
+        Option<String>,
+        u32,
+    ) = c.query_row(
+        "SELECT retry_phase,finish_requested,proactive_summary,output_limit_continuations FROM agent_runs WHERE run=?",
         [run.to_string()],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
     view.retry_phase = identity(phase)?;
     view.finish_requested = finish;
     view.proactive_summary = proactive_summary.map(identity).transpose()?;
+    view.output_limit_continuations = output_limit_continuations;
     view.revision = raw.1;
     view.control_version = raw.2;
     view.stopped = raw.3;
@@ -590,7 +617,7 @@ fn persist(c: &Connection, view: &RunView) -> Result<(), StoreError> {
         .query_row([view.run.to_string()], |r| column_u64(r, 0))?;
     c.prepare_cached("INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,control_version,stopped,terminal,tokens,retries,retry_due_at,retry_pending,current_step,current_attempt,cancelled_by_risk,replans,baseline,external,stop_request,stop_assessed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run) DO UPDATE SET schema_version=excluded.schema_version,revision=excluded.revision,control_version=excluded.control_version,stopped=excluded.stopped,terminal=excluded.terminal,tokens=excluded.tokens,retries=excluded.retries,retry_due_at=excluded.retry_due_at,retry_pending=excluded.retry_pending,current_step=excluded.current_step,current_attempt=excluded.current_attempt,cancelled_by_risk=excluded.cancelled_by_risk,replans=excluded.replans,baseline=excluded.baseline,external=excluded.external,stop_request=excluded.stop_request,stop_assessed=excluded.stop_assessed")?.execute(params![view.run.to_string(),HEADER_SCHEMA_VERSION,serde_json::to_string(&view.spec.owner)?,view.spec.session_id,signed(admission_sequence)?,matches!(view.spec.origin,RunOrigin::Local),signed(view.revision)?,signed(view.control_version)?,view.stopped,view.terminal.as_ref().map(serde_json::to_string).transpose()?,signed(view.tokens)?,view.retries,view.retry_due_at.map(|t|t.0),view.retry_pending.map(|v|v.to_string()),view.current_step.map(|v|v.to_string()),view.current_attempt.map(|v|v.to_string()),view.cancelled_by_risk,serde_json::to_string(&view.replans)?,view.baseline.as_ref().map(serde_json::to_string).transpose()?,view.external.as_ref().map(external_header).transpose()?,view.stop_request.map(|id|id.to_string()),view.stop_assessed.map(|id|id.to_string())])?;
     c.execute(
-        "UPDATE agent_runs SET retry_phase=?,finish_requested=?,proactive_summary=? WHERE run=?",
+        "UPDATE agent_runs SET retry_phase=?,finish_requested=?,proactive_summary=?,output_limit_continuations=? WHERE run=?",
         params![
             match view.retry_phase {
                 maka_agent_facts::model::retry_transport::RetryTransportPhase::Primary => "primary",
@@ -599,6 +626,7 @@ fn persist(c: &Connection, view: &RunView) -> Result<(), StoreError> {
             },
             view.finish_requested(),
             view.proactive_summary.map(|attempt| attempt.to_string()),
+            view.output_limit_continuations,
             view.run.to_string()
         ],
     )?;
@@ -792,6 +820,7 @@ fn validate_external_final_message(
             task: observed_task,
             index,
             output: maka_agent_facts::executor::Output::MessageEnd { message_id },
+            ..
         } if observed_task == *task
             && index < external.observed
             && message_id == final_message.message_id =>
@@ -906,17 +935,10 @@ fn validate_request_lineage(
             if !resumed_summary
                 && (previous != Some((original.step, ModelPurpose::Main, None))
                     || incoming.accounting.purpose != ModelPurpose::Summary
-                    || original.semantic
-                    || original.has_tools
-                    || !matches!(
-                        original.recovery,
-                        Some(AttemptRecovery::ContextOverflow {
-                            observed_output: false
-                        })
-                    ))
+                    || !original.compactable_overflow())
             {
                 return Err(invalid(
-                    "compaction recovery requires the original no-output Main overflow",
+                    "compaction recovery requires the original compactable Main overflow",
                 ));
             }
         }
@@ -1196,6 +1218,19 @@ pub(crate) fn admit(c: &Connection, admission: Admission) -> Result<(Commit, boo
     index_derived(c, &view.spec, &recorded)?;
     persist(c, &view)?;
     index_usage(c, &view.spec, &recorded)?;
+    // A compaction or handoff continues earlier work; what waits after a user
+    // Stop waits for a Run that starts new work.
+    if matches!(view.spec.origin, RunOrigin::Local)
+        && matches!(
+            view.spec.trigger,
+            Trigger::Message { .. }
+                | Trigger::Goal { .. }
+                | Trigger::Schedule { .. }
+                | Trigger::Continuation { .. }
+        )
+    {
+        crate::queue::deliver_held(c, &view, admission.id, admission.at)?;
+    }
     Ok((
         Commit {
             head: Head::from(&view),
@@ -1525,7 +1560,7 @@ pub(crate) fn append(
         view.apply(&recorded)?;
         record(c, &recorded)?;
         match &recorded.fact {
-            Fact::StopRequested { diagnostic } => {
+            Fact::StopRequested { diagnostic, .. } => {
                 crate::queue::stop_completions(c, &view.spec.session_id, run, recorded.at)?;
                 if diagnostic == crate::queue::GOAL_CONTROL_STOP {
                     crate::queue::release_steering(c, &view.spec.session_id, run, recorded.at)?;

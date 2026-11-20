@@ -1719,7 +1719,6 @@ export const conversationMessages = {
     '显示简写 token 数',
     '顯示簡寫 token 數',
   ],
-  'Consumed tokens': ['Consumed tokens', '已用 Token', '已用 Token'],
   'Token limit': ['Token limit', 'Token 上限', 'Token 上限'],
   'Context used (tokens)': ['Context used (tokens)', '已用上下文 Token', '已用上下文 Token'],
   'Estimated input tokens': ['Estimated input tokens', '预估输入 Token', '預估輸入 Token'],

@@ -312,6 +312,20 @@ impl Snapshot {
             .query(read::Page(self.clone(), after, limit))
             .await
     }
+    pub async fn previous_page(
+        &self,
+        before: Option<u64>,
+        limit: u32,
+    ) -> Result<SnapshotPage, StoreError> {
+        self.data
+            .query(read::PreviousPage(self.clone(), before, limit))
+            .await
+    }
+    pub async fn run_revision_through(&self, run: RunId, through: u64) -> Result<u64, StoreError> {
+        self.data
+            .query(read::RunRevisionThrough(self.clone(), run, through))
+            .await
+    }
     pub async fn run_source(&self, run: RunId) -> Result<RunSource, StoreError> {
         self.data.query(read::Run(self.clone(), run)).await
     }

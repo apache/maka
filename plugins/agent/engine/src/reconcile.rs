@@ -113,6 +113,18 @@ fn closure_protocol(
     })
 }
 
+const OUTPUT_LIMIT_TOOL_REJECTION: &str = "your output reached the output length limit, so the arguments of this tool call may be cut off. The call was not run. Retry with smaller calls, for example by splitting a large write into several edits";
+/// A Run keeps going after this many outputs cut off at the length limit; the
+/// next one ends it, so a reply that never fits cannot loop forever.
+const MAX_OUTPUT_LIMIT_CONTINUATIONS: u32 = 3;
+pub(crate) const OUTPUT_LIMIT_DIAGNOSTIC: &str = "The model's output reached its length limit again after being asked to continue, so the turn stopped. Ask for a shorter answer or smaller steps.";
+
+/// Whether this Run's main-model outputs ended at the output length limit more
+/// often than it continues them.
+pub(crate) fn output_limit_exhausted(view: &RunView) -> bool {
+    view.output_limit_continuations > MAX_OUTPUT_LIMIT_CONTINUATIONS
+}
+
 pub(crate) fn tool_incomplete(view: &RunView, key: &ToolKey) -> Result<bool, Box<BlockerKind>> {
     let closed = view
         .attempts
@@ -196,6 +208,8 @@ pub(crate) struct Live {
     pub publication_prepared: BTreeSet<ExternalPublicationId>,
     pub publication_looked_up: BTreeSet<ExternalPublicationKey>,
     pub publication_observed: BTreeSet<ExternalPublicationKey>,
+    /// Local calls whose dispatch recorded an unknown return in this activation.
+    pub ended_unknown: BTreeSet<ToolKey>,
 }
 pub(crate) enum Action {
     Prepare(Preparation),
@@ -304,8 +318,15 @@ pub(crate) fn recovery_action(view: &RunView, live: &Live) -> Option<Action> {
                 (!live.looked_up.contains(tool)).then(|| Action::Lookup(tool.clone()))
             }
         }
-        BlockerKind::OperationUnknown { tool, .. }
-        | BlockerKind::ToolCleanupUnconfirmed { tool, .. } => observe_tool(tool),
+        // A later observation may confirm that the call ended after all.
+        BlockerKind::OperationUnknown { tool, .. } => observe_tool(tool).or_else(|| {
+            unknown_outcome(
+                view,
+                live,
+                view.tools.get(&maka_agent_state::fold::tool_key(tool))?,
+            )
+        }),
+        BlockerKind::ToolCleanupUnconfirmed { tool, .. } => observe_tool(tool),
         BlockerKind::CleanupUnconfirmed { reference } => view
             .tools
             .values()
@@ -338,6 +359,35 @@ pub(crate) fn recovery_action(view: &RunView, live: &Live) -> Option<Action> {
             .map(|task| Action::ObserveExternal(task.task, descriptor.clone())),
         _ => None,
     })
+}
+/// A call that ended without a known result goes back to the model, which
+/// decides what to check next; it is never run again. A Host operation has
+/// ended once its cleanup is confirmed. A local return is ambiguous on its own
+/// (a failed Cell wait records one too), so only this activation's dispatch
+/// proves that a local call ended; after a restart the call keeps its recovery.
+fn unknown_outcome(
+    view: &RunView,
+    live: &Live,
+    tool: &maka_agent_state::fold::Tool,
+) -> Option<Action> {
+    if view.cancelled_by_risk
+        || tool.accepted.is_some()
+        || tool.call.provider_executed
+        || live.work.contains(&WorkKey::Tool(tool.key.clone()))
+    {
+        return None;
+    }
+    let ended = match &tool.original {
+        Some(_) => matches!(
+            &tool.receipt,
+            Some(Receipt::Recorded {
+                outcome: OperationOutcome::Unknown { .. },
+                cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
+            })
+        ),
+        None => live.ended_unknown.contains(&tool.key),
+    };
+    ended.then(|| Action::Accept(tool.key.clone(), AcceptedResult::OutcomeUnknown))
 }
 fn unresolved(view: &RunView) -> bool {
     view.blockers
@@ -874,6 +924,9 @@ fn next_action(
         if let Some(result) = outcome(tool) {
             return Action::Accept(tool.key.clone(), result);
         }
+        if let Some(action) = unknown_outcome(view, live, tool) {
+            return action;
+        }
     }
     if fenced {
         if finish
@@ -926,7 +979,9 @@ fn next_action(
             }
         }
         for tool in view.tools.values() {
-            if live.work.contains(&WorkKey::Tool(tool.key.clone())) {
+            if live.work.contains(&WorkKey::Tool(tool.key.clone()))
+                || tool.outcome_unknown_accepted()
+            {
                 continue;
             }
             if tool.original.is_some()
@@ -963,7 +1018,7 @@ fn next_action(
             return action;
         }
         for tool in view.tools.values() {
-            if view.cancelled_by_risk {
+            if view.cancelled_by_risk || tool.outcome_unknown_accepted() {
                 continue;
             }
             let reason = if tool.call.provider_executed
@@ -1097,7 +1152,7 @@ fn next_action(
     }
     let mut pending_effect = false;
     for tool in view.tools.values() {
-        if live.work.contains(&WorkKey::Tool(tool.key.clone())) {
+        if live.work.contains(&WorkKey::Tool(tool.key.clone())) || tool.outcome_unknown_accepted() {
             continue;
         }
         if tool.accepted.is_none()
@@ -1179,27 +1234,29 @@ fn next_action(
             );
         }
         if let Some(refusal) = &tool.approval_refusal {
-            let rejection = match &refusal.outcome {
-                maka_agent_facts::interaction::InteractionOutcome::Closure {
-                    reason: maka_agent_facts::interaction::ClosureReason::Steered,
-                    ..
-                } => ToolRejection::Superseded,
-                maka_agent_facts::interaction::InteractionOutcome::Closure { .. } => {
-                    ToolRejection::Cancelled
-                }
-                _ => ToolRejection::PolicyDenied {
-                    message: "The original tool approval was refused".into(),
-                },
-            };
-            return Action::Reject(tool.key.clone(), rejection);
+            return Action::Reject(
+                tool.key.clone(),
+                ToolRejection::for_refused_approval(&refusal.outcome),
+            );
         }
-        if view.current_attempt != Some(tool.key.attempt)
-            && view
-                .attempts
-                .get(&tool.key.attempt)
-                .is_some_and(|attempt| attempt.interrupted.is_some())
-        {
-            return Action::Reject(tool.key.clone(), ToolRejection::Superseded);
+        if let Some(attempt) = view.attempts.get(&tool.key.attempt) {
+            if view.current_attempt != Some(tool.key.attempt) && attempt.interrupted.is_some() {
+                return Action::Reject(tool.key.clone(), ToolRejection::Superseded);
+            }
+            if matches!(
+                attempt.recovery,
+                Some(AttemptRecovery::ContextOverflow { .. })
+            ) {
+                return Action::Reject(
+                    tool.key.clone(),
+                    ToolRejection::PreparationFailed {
+                        message: "model response overflowed the context window".into(),
+                    },
+                );
+            }
+            if attempt.interrupted.is_some() && attempt.recovery.is_none() {
+                continue;
+            }
         }
         if unresolved(view) {
             continue;
@@ -1218,7 +1275,7 @@ fn next_action(
                     return Action::Reject(
                         tool.key.clone(),
                         ToolRejection::PreparationFailed {
-                            message: "model output was incomplete".into(),
+                            message: OUTPUT_LIMIT_TOOL_REJECTION.into(),
                         },
                     );
                 }
@@ -1458,7 +1515,11 @@ fn next_action(
                 Ok(protocol) => protocol,
                 Err(reason) => return Action::Block(*reason),
             };
-        if protocol.finish_reason == maka_agent_facts::model::ModelFinishReason::Length {
+        // Output cut off at the length limit goes back to the model: its tool calls
+        // were rejected above, and a cut-off reply is continued.
+        let truncated =
+            protocol.finish_reason == maka_agent_facts::model::ModelFinishReason::Length;
+        if truncated && output_limit_exhausted(view) {
             return Action::Terminate(Terminal::Failed);
         }
         if view
@@ -1468,8 +1529,8 @@ fn next_action(
         {
             return Action::Prepare(Preparation::Notifications { attempt: id });
         }
-        let needs_continuation = protocol.finish_reason
-            == maka_agent_facts::model::ModelFinishReason::ToolCalls
+        let needs_continuation = truncated
+            || protocol.finish_reason == maka_agent_facts::model::ModelFinishReason::ToolCalls
             || (attempt.has_tools && has_local_tool_calls(view, id));
         if let Some(cell) = view
             .cells
@@ -1528,26 +1589,27 @@ fn next_action(
         Some(AttemptRecovery::CodexCompactionFallback) => {
             Action::Prepare(Preparation::CodexFallback { attempt: id })
         }
-        Some(AttemptRecovery::ContextOverflow { observed_output }) => {
+        Some(AttemptRecovery::ContextOverflow { .. }) => {
             if model.is_some_and(|m| m.codex) {
                 return Action::Terminate(Terminal::Failed);
             }
-            if !observed_output
+            let compactable = attempt.compactable_overflow();
+            if compactable
                 && let Some(CompactionLevel::Pending { attempt, .. }) =
                     model.map(|model| model.compaction)
             {
                 return wait(view, WaitReason::Model { attempt }, None, now);
             }
-            if !observed_output && live.work.contains(&WorkKey::PrepareProactiveSummary) {
+            if compactable && live.work.contains(&WorkKey::PrepareProactiveSummary) {
                 return Action::Idle;
             }
-            if !observed_output
+            if compactable
                 && let Some(CompactionLevel::Candidate { origin, .. }) =
                     model.map(|model| model.compaction)
             {
                 return Action::AdoptCandidate(origin);
             }
-            if !observed_output
+            if compactable
                 && model.is_some_and(|model| {
                     model.request.as_ref().is_some_and(|request| {
                         request.accounting.purpose == maka_agent_facts::context::ModelPurpose::Main

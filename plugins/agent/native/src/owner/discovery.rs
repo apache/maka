@@ -476,6 +476,7 @@ impl Owner {
                 vec![Change::new(
                     Fact::StopRequested {
                         diagnostic: "discovery_cancelled".into(),
+                        requester: maka_agent_facts::durable::StopRequester::Internal,
                     },
                     UnixMillis(now() as i64),
                 )],
@@ -1111,6 +1112,7 @@ impl Owner {
                 },
                 maka_agent_state::queue::Placement::Followup,
                 Some(&job.approval.target),
+                UnixMillis(at as i64),
             )
             .await
         {

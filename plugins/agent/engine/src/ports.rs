@@ -312,7 +312,10 @@ pub enum ExternalObservation {
     Bound {
         descriptor: ContentBlob,
     },
-    Output(maka_agent_facts::executor::Output),
+    Output {
+        output: maka_agent_facts::executor::Output,
+        model_time_ms: Option<u64>,
+    },
     Closed {
         outcome: Terminal,
         diagnostic: Option<String>,

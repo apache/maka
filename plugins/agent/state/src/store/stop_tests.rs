@@ -35,7 +35,7 @@ use maka_sandbox::workspace::{BindingStamp, PermissionBasis};
 use std::{path::Path, sync::Arc};
 use uuid::Uuid;
 
-async fn open(base: &Path, initialize: bool) -> (RootStore, Store) {
+pub(super) async fn open(base: &Path, initialize: bool) -> (RootStore, Store) {
     let namespaces = RootNamespaces {
         ownership: base.join("owners"),
         control: base.join("control"),
@@ -59,7 +59,7 @@ async fn open(base: &Path, initialize: bool) -> (RootStore, Store) {
     (root, store)
 }
 
-fn spec() -> (RunSpec, Vec<ContentBlob>) {
+pub(super) fn spec() -> (RunSpec, Vec<ContentBlob>) {
     let blob = ContentBlob::json(&RunInput::Message {
         content: MessageInput::from("fixture"),
         request_fingerprint: None,
@@ -120,11 +120,21 @@ fn spec() -> (RunSpec, Vec<ContentBlob>) {
     (spec, vec![blob])
 }
 
-async fn enqueue(
+pub(super) async fn enqueue(
     store: &Store,
     basis: &RunSpec,
     message: &str,
     origin: Option<MessageOrigin>,
+) -> PreparedRequest {
+    enqueue_placed(store, basis, message, origin, Placement::Followup).await
+}
+
+async fn enqueue_placed(
+    store: &Store,
+    basis: &RunSpec,
+    message: &str,
+    origin: Option<MessageOrigin>,
+    placement: Placement,
 ) -> PreparedRequest {
     let (request, contents) = prepare_message(basis, message, origin);
     let queue = store.queue().read(basis.session_id.clone()).await.unwrap();
@@ -138,7 +148,7 @@ async fn enqueue(
                 expected_revision: queue.revision,
                 edit: QueueEdit::Enqueue {
                     request: Box::new(request.clone()),
-                    placement: Placement::Followup,
+                    placement,
                 },
             },
             contents,
@@ -327,6 +337,7 @@ async fn pausing_a_goal_preserves_pending_steering_as_an_independent_turn() {
     let stop = Change::new(
         Fact::StopRequested {
             diagnostic: GOAL_CONTROL_STOP.into(),
+            requester: StopRequester::Internal,
         },
         UnixMillis(3),
     );
@@ -437,7 +448,7 @@ async fn pausing_a_goal_preserves_pending_steering_as_an_independent_turn() {
 }
 
 #[tokio::test]
-async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reopen() {
+async fn a_user_stop_cancels_what_the_user_queued_and_holds_the_rest_for_the_next_run() {
     let directory = tempfile::tempdir().unwrap();
     let (root, store) = open(directory.path(), true).await;
     let (spec, contents) = spec();
@@ -463,6 +474,29 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
     enqueue(
         &store,
         &spec,
+        "task-completed",
+        Some(MessageOrigin::SessionCompletion {
+            session_id: "worker".into(),
+            message_id: "delegated".into(),
+        }),
+    )
+    .await;
+    enqueue(
+        &store,
+        &spec,
+        "from-another-session",
+        Some(MessageOrigin::Session {
+            execution: maka_agent_facts::durable::ExecutionIdentity {
+                session_id: "peer".into(),
+                turn_id: "peer-turn".into(),
+                run_id: older.run(),
+            },
+        }),
+    )
+    .await;
+    enqueue(
+        &store,
+        &spec,
         "discovery-report",
         Some(MessageOrigin::DiscoveryReport {
             session_id: "investigation".into(),
@@ -479,9 +513,47 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
         }),
     )
     .await;
+    let mut elsewhere = spec.clone();
+    elsewhere.workspace = "/elsewhere".into();
+    enqueue(
+        &store,
+        &elsewhere,
+        "peer-elsewhere",
+        from_session("peer", older.run()),
+    )
+    .await;
+    let caller = Placement::Completion {
+        caller: current.run(),
+    };
+    enqueue_placed(
+        &store,
+        &spec,
+        "delegated-result",
+        Some(MessageOrigin::SessionCompletion {
+            session_id: "worker".into(),
+            message_id: "delegated".into(),
+        }),
+        caller.clone(),
+    )
+    .await;
+    enqueue_placed(
+        &store,
+        &spec,
+        "continuation",
+        Some(MessageOrigin::Session {
+            execution: maka_agent_facts::durable::ExecutionIdentity {
+                session_id: spec.session_id.clone(),
+                turn_id: "current-turn".into(),
+                run_id: current.run(),
+            },
+        }),
+        caller,
+    )
+    .await;
     let stop = Change::new(
         Fact::StopRequested {
             diagnostic: "user_requested_stop".into(),
+            requester: StopRequester::User,
         },
         UnixMillis(3),
     );
@@ -548,18 +620,79 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
         resolution(&store, "queued-one").await,
         MessageResolution::Cancelled
     );
+    // The stopped turn's own continuation goes with it.
     assert_eq!(
-        resolution(&store, "worker-finished").await,
+        resolution(&store, "continuation").await,
         MessageResolution::Cancelled
     );
+    // What others sent stays, since its sender will not send it again, and
+    // waits for the next Run instead of starting one.
+    let placements = |queue: crate::queue::Queue| {
+        queue
+            .entries
+            .into_iter()
+            .map(|entry| (entry.request.message_id, entry.placement))
+            .collect::<Vec<_>>()
+    };
+    let held = |message: &str| (message.to_owned(), Placement::Held);
     assert_eq!(
-        resolution(&store, "discovery-report").await,
-        MessageResolution::Pending
+        placements(store.queue().read(spec.session_id.clone()).await.unwrap()),
+        [
+            held("worker-finished"),
+            held("task-completed"),
+            held("from-another-session"),
+            held("discovery-report"),
+            ("scheduled".to_owned(), Placement::Followup),
+            held("peer-elsewhere"),
+            held("delegated-result"),
+        ]
     );
-    assert_eq!(
-        resolution(&store, "scheduled").await,
-        MessageResolution::Pending
+    // So does what others send until then, also when the sender retries.
+    let (notice, notice_contents) = prepare_message(
+        &spec,
+        "late-notice",
+        Some(MessageOrigin::BotWorker {
+            session_id: "worker".into(),
+        }),
     );
+    let late = QueueCommand {
+        id: FactId::new(),
+        at: UnixMillis(3),
+        expected_revision: store
+            .queue()
+            .read(spec.session_id.clone())
+            .await
+            .unwrap()
+            .revision,
+        edit: QueueEdit::Enqueue {
+            request: Box::new(notice),
+            placement: Placement::Followup,
+        },
+    };
+    let mut commits = Vec::new();
+    for _ in 0..2 {
+        commits.push(
+            store
+                .queue()
+                .execute(
+                    spec.session_id.clone(),
+                    late.clone(),
+                    notice_contents.clone(),
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    assert_eq!(commits[0], commits[1]);
+    let ready: Vec<_> = store
+        .queue()
+        .ready(spec.owner.clone(), None, 64)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|ready| ready.entry.request.message_id)
+        .collect();
+    assert_eq!(ready, ["scheduled"]);
 
     let later = enqueue(&store, &spec, "after-stop", None).await;
     let cut = store.queue().read(spec.session_id.clone()).await.unwrap();
@@ -591,19 +724,11 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
         .await
         .unwrap();
     assert_eq!(
+        store.queue().read(spec.session_id.clone()).await.unwrap(),
+        cut
+    );
+    assert_eq!(
         resolution(&store, "queued-one").await,
-        MessageResolution::Cancelled
-    );
-    assert_eq!(
-        resolution(&store, "scheduled").await,
-        MessageResolution::Pending
-    );
-    assert_eq!(
-        resolution(&store, "discovery-report").await,
-        MessageResolution::Pending
-    );
-    assert_eq!(
-        resolution(&store, "worker-finished").await,
         MessageResolution::Cancelled
     );
     store
@@ -653,6 +778,48 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
             shared: false
         }
     );
+    // The next Run reads what waited, in order, after the message that
+    // started it. What it may not read gets a turn of its own after it.
+    let carried: Vec<_> = store
+        .queue()
+        .steering(spec.session_id.clone(), fresh.run())
+        .await
+        .unwrap()
+        .entries
+        .into_iter()
+        .map(|entry| entry.request.message_id)
+        .collect();
+    assert_eq!(
+        carried,
+        [
+            "worker-finished",
+            "task-completed",
+            "from-another-session",
+            "discovery-report",
+            "delegated-result",
+            "late-notice",
+        ]
+    );
+    let released = store.queue().read(spec.session_id.clone()).await.unwrap();
+    assert_eq!(
+        placements(released.clone())
+            .into_iter()
+            .filter(|(_, placement)| !matches!(placement, Placement::Steering { .. }))
+            .collect::<Vec<_>>(),
+        [
+            ("scheduled".to_owned(), Placement::Followup),
+            ("peer-elsewhere".to_owned(), Placement::Followup),
+        ]
+    );
+    store
+        .queue()
+        .rebuild(spec.session_id.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        store.queue().read(spec.session_id.clone()).await.unwrap(),
+        released
+    );
     {
         let claim = store.claim(fresh.run()).await.unwrap();
         let view = store.frontier(fresh.run()).await.unwrap();
@@ -682,6 +849,7 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
             change: Change::new(
                 Fact::StopRequested {
                     diagnostic: "user_requested_stop".into(),
+                    requester: StopRequester::User,
                 },
                 UnixMillis(6),
             ),
@@ -783,5 +951,227 @@ async fn confirmed_native_exit_unblocks_a_previously_failed_conversation() {
         }
     );
     drop((claim, store));
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn verify_owned_content_and_run_revision_through_respect_pins_and_boundaries() {
+    let directory = tempfile::tempdir().unwrap();
+    let (root, store) = open(directory.path(), true).await;
+    let (spec1, contents1) = spec();
+    let run1_admission = Admission::new(spec1.clone(), UnixMillis(1), contents1);
+    let run1 = run1_admission.run();
+    store.admit(run1_admission).await.unwrap();
+
+    let mut foreign_spec = spec1.clone();
+    foreign_spec.session_id = "other-session".into();
+    foreign_spec.turn_id = "foreign-turn".into();
+    foreign_spec.trigger = Trigger::Message {
+        message_id: "foreign-message".into(),
+    };
+    let foreign_blob = ContentBlob::json(&"foreign-selection").unwrap();
+    foreign_spec.tool_selection = foreign_blob.reference().clone();
+    let foreign_admission = Admission::new(foreign_spec, UnixMillis(1), vec![foreign_blob]);
+    let foreign_run = foreign_admission.run();
+    store.admit(foreign_admission).await.unwrap();
+
+    // Pinned content passes; unpinned digest and wrong length fail.
+    store
+        .verify_owned_content(run1, spec1.tool_selection.clone())
+        .await
+        .unwrap();
+    let mut wrong_len = spec1.tool_selection.clone();
+    wrong_len.bytes += 1;
+    assert!(store.verify_owned_content(run1, wrong_len).await.is_err());
+
+    let extra_blob = ContentBlob::json(&"other-run-only").unwrap();
+    let extra_ref = extra_blob.reference().clone();
+    let mut spec2 = spec1.clone();
+    spec2.turn_id = "second-turn".into();
+    spec2.trigger = Trigger::Message {
+        message_id: "second-message".into(),
+    };
+    spec2.tool_selection = extra_ref.clone();
+    let run2_admission = Admission::new(spec2, UnixMillis(2), vec![extra_blob]);
+    let run2 = run2_admission.run();
+
+    // Append a second fact to run1 before run2 is admitted, then terminate run1 after run2.
+    {
+        let claim1 = store.claim(run1).await.unwrap();
+        let view1 = store.frontier(run1).await.unwrap();
+        store
+            .append(
+                &claim1,
+                Head::from(&view1),
+                vec![Change::new(
+                    Fact::StopRequested {
+                        diagnostic: "mid-run".into(),
+                        requester: StopRequester::Internal,
+                    },
+                    UnixMillis(2),
+                )],
+                vec![],
+            )
+            .await
+            .unwrap();
+        store.admit(run2_admission).await.unwrap();
+        let view1 = store.frontier(run1).await.unwrap();
+        store
+            .append(
+                &claim1,
+                Head::from(&view1),
+                vec![Change::new(
+                    Fact::RunTerminated {
+                        terminal: Terminal::Cancelled,
+                        diagnostic: None,
+                    },
+                    UnixMillis(3),
+                )],
+                vec![],
+            )
+            .await
+            .unwrap();
+    }
+
+    // Foreign run cannot pass pin check for run2's content.
+    assert!(
+        store
+            .verify_owned_content(run1, extra_ref.clone())
+            .await
+            .is_err()
+    );
+    store.verify_owned_content(run2, extra_ref).await.unwrap();
+
+    let history = store.session_history(spec1.owner.clone(), spec1.session_id.clone());
+    let cut = history.capture().await.unwrap();
+    let items = history.page(&cut, 0, 16).await.unwrap().items;
+    assert_eq!(items.len(), 4);
+    let seq_r1_adm = items[0].sequence;
+    let seq_r1_stop = items[1].sequence;
+    let seq_r2_adm = items[2].sequence;
+    let seq_r1_term = items[3].sequence;
+
+    assert_eq!(
+        history.run_revision_through(&cut, run1, 0).await.unwrap(),
+        0
+    );
+    assert_eq!(
+        history
+            .run_revision_through(&cut, run1, seq_r1_adm)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        history
+            .run_revision_through(&cut, run1, seq_r1_stop)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        history
+            .run_revision_through(&cut, run1, seq_r2_adm)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        history
+            .run_revision_through(&cut, run1, seq_r1_term)
+            .await
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        history
+            .run_revision_through(&cut, run2, seq_r1_stop)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        history
+            .run_revision_through(&cut, run2, seq_r2_adm)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        history
+            .run_revision_through(&cut, foreign_run, cut.through_sequence)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(
+        history
+            .run_revision_through(&cut, run1, cut.through_sequence + 1)
+            .await
+            .is_err()
+    );
+    drop(store);
+    root.close().await.unwrap();
+}
+
+fn from_session(session: &str, run: RunId) -> Option<MessageOrigin> {
+    Some(MessageOrigin::Session {
+        execution: maka_agent_facts::durable::ExecutionIdentity {
+            session_id: session.into(),
+            turn_id: format!("{session}-turn"),
+            run_id: run,
+        },
+    })
+}
+
+#[tokio::test]
+async fn a_session_stop_takes_back_only_what_that_session_sent() {
+    let directory = tempfile::tempdir().unwrap();
+    let (root, store) = open(directory.path(), true).await;
+    let (spec, contents) = spec();
+    let worker = Admission::new(spec.clone(), UnixMillis(1), contents);
+    store.admit(worker.clone()).await.unwrap();
+    enqueue(&store, &spec, "typed-by-user", None).await;
+    enqueue(
+        &store,
+        &spec,
+        "from-stopper",
+        from_session("parent", worker.run()),
+    )
+    .await;
+    enqueue(
+        &store,
+        &spec,
+        "from-peer",
+        from_session("peer", worker.run()),
+    )
+    .await;
+    store
+        .data
+        .write(store.stop_run_statement(
+            worker.run(),
+            FactId::new(),
+            UnixMillis(2),
+            StopRequester::Session {
+                session_id: "parent".into(),
+            },
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resolution(&store, "from-stopper").await,
+        MessageResolution::Cancelled
+    );
+    // Only a user Stop holds the queue; the rest stays ready to run.
+    let ready: Vec<_> = store
+        .queue()
+        .ready(spec.owner.clone(), None, 64)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|ready| ready.entry.request.message_id)
+        .collect();
+    assert_eq!(ready, ["typed-by-user", "from-peer"]);
+    drop(store);
     root.close().await.unwrap();
 }

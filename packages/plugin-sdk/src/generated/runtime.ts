@@ -1163,6 +1163,12 @@ export type ExecutorOutput =
       details?: ToolResultDetails | null;
     }
   | {
+      type: 'context_usage';
+      used: number;
+      window: number;
+      model?: string | null;
+    }
+  | {
       type: 'turn_usage';
       usage: ExecutorTurnUsage;
     };
@@ -4451,6 +4457,11 @@ export type HistoryPosition =
       field: HistoryField;
     }
   | {
+      kind: 'row_end';
+      position: HistoryRowAddress;
+      field: HistoryField;
+    }
+  | {
       kind: 'before';
       cursor: Cursor;
     }
@@ -4577,7 +4588,7 @@ export type AgentPreviewField =
       name: string;
       providerExecuted: boolean;
     };
-export type AgentQueueKind = 'in_flight' | 'steering' | 'followup';
+export type AgentQueueKind = 'in_flight' | 'steering' | 'followup' | 'held';
 export type AgentQueueMessageResult =
   | {
       kind: 'ready';
@@ -7692,6 +7703,10 @@ export interface AgentRecallPassage {
   anchorMessageId: string;
   anchorPosition: HistoryRowAddress;
   /**
+   * History boundary at which the anchor was resolved.
+   */
+  through: number;
+  /**
    * Display preview beginning at the first match. The anchor opens the complete source.
    */
   excerpt: string;
@@ -8326,7 +8341,7 @@ export interface AgentFileCandidatesRead {
   directory?: WorkspacePath | null;
   /**
    * Empty or whitespace browses the selected directory's direct files and directories.
-   * Otherwise, searches file paths within that directory's descendants.
+   * Otherwise, matches direct entries when `directory` is set, or fuzzy-searches descendants of the workspace root.
    */
   query: string;
 }
@@ -8517,7 +8532,7 @@ export interface AgentCompactionProgress {
   startedAt: number;
 }
 /**
- * Display-only readings from the latest completed main-model request.
+ * Display-only model readings from the session backend.
  */
 export interface AgentSessionMetrics {
   modelId: string;
@@ -8530,8 +8545,7 @@ export interface AgentSessionMetrics {
    */
   contextLastKnown: boolean;
   /**
-   * Provider output tokens divided by the model request's wall time.
-   * Includes reasoning and time to first token; excludes tool/user waits.
+   * Output tokens per second of model activity, when measured.
    */
   outputTokensPerSecond?: number | null;
 }

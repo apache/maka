@@ -27,8 +27,7 @@ use maka_agent_state::{
     ContentBlob, DriverClaim,
     fold::{RunView, tool_key},
 };
-#[cfg(test)]
-use maka_plugin_core::operation::{OperationCleanup, Receipt};
+use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, Receipt};
 
 fn portless_reconciliation(view: &RunView, at: UnixMillis, complete_at_budget: bool) -> Action {
     let live = Live {
@@ -97,6 +96,148 @@ impl Engine {
         Ok(None)
     }
 
+    /// Fail a Run whose driver stopped with an error, so its session can admit queued work.
+    pub async fn fail_after_driver_error(
+        &self,
+        claim: &DriverClaim,
+        diagnostic: String,
+        at: UnixMillis,
+    ) -> Result<DriverExit, RunError> {
+        loop {
+            let view = self.store.frontier(claim.run()).await?;
+            if view.terminal.is_some() {
+                return Ok(exit(&view));
+            }
+            let terminal = if view.cancelled_by_risk
+                || (view.stopped
+                    && view.external.as_ref().is_some_and(|task| {
+                        task.admitted
+                            && task.closed.is_none()
+                            && task.cleanup == OperationCleanup::Confirmed
+                            && task.effects.values().all(|effect| !effect.pending())
+                    })) {
+                Terminal::Cancelled
+            } else {
+                Terminal::Failed
+            };
+            let mut facts: Vec<Fact> = view
+                .waits
+                .iter()
+                .filter(|(_, wait)| wait.satisfied.is_none() && wait.cancelled.is_none())
+                .map(|(wait, _)| Fact::WaitCancelled {
+                    wait: *wait,
+                    diagnostic: diagnostic.clone(),
+                })
+                .collect();
+            if terminal == Terminal::Failed && view.recovery_failure().is_none() {
+                for (attempt, state) in &view.attempts {
+                    if state.closed.is_none()
+                        && state.interrupted.is_none()
+                        && (view.current_attempt == Some(*attempt)
+                            || view.proactive_summary == Some(*attempt))
+                    {
+                        facts.push(Fact::ModelInterrupted {
+                            attempt: *attempt,
+                            diagnostic: diagnostic.clone(),
+                        });
+                    }
+                }
+                if let Some(task) = &view.external {
+                    if !view.external_terminal_allowed(&Terminal::Failed) {
+                        for (operation, effect) in &task.effects {
+                            if effect.pending() {
+                                facts.push(Fact::Blocked {
+                                    blocker: BlockerId::new(),
+                                    reason: BlockerKind::ExternalEffectUnknown {
+                                        task: task.task,
+                                        operation: *operation,
+                                    },
+                                });
+                            }
+                        }
+                        if task.closed.is_none()
+                            && !(view.stopped && task.cleanup == OperationCleanup::Confirmed)
+                        {
+                            facts.push(Fact::Blocked {
+                                blocker: BlockerId::new(),
+                                reason: BlockerKind::ExternalTaskUnobservable {
+                                    descriptor: task.descriptor.clone(),
+                                },
+                            });
+                        }
+                    }
+                    if let Some(publication) = &task.publication
+                        && !publication.applied()
+                        && !publication.abandoned
+                        && !(publication.settled() && !publication.unknown())
+                    {
+                        facts.push(Fact::Blocked {
+                            blocker: BlockerId::new(),
+                            reason: BlockerKind::ExternalPublicationUnavailable {
+                                publication: publication.id,
+                                diagnostic: diagnostic.clone(),
+                            },
+                        });
+                    }
+                }
+                for tool in view.tools.values().filter(|tool| tool.accepted.is_none()) {
+                    let reason = if let Some(reference) = &tool.original
+                        && !matches!(
+                            &tool.receipt,
+                            Some(Receipt::Recorded {
+                                outcome: OperationOutcome::Returned { .. }
+                                    | OperationOutcome::NotExecuted { .. },
+                                ..
+                            })
+                        ) {
+                        BlockerKind::OperationUnknown {
+                            tool: tool.key.clone(),
+                            reference: reference.clone(),
+                        }
+                    } else if tool.admitted
+                        && tool.original.is_none()
+                        && tool.prohibited_before_host.is_none()
+                        && tool.local_returned.as_ref().is_none_or(|returned| {
+                            returned.settlement
+                                == maka_agent_facts::tool_call::ToolSettlement::Unknown
+                        })
+                    {
+                        BlockerKind::OriginalAdmissionUnknown {
+                            tool: tool.key.clone(),
+                        }
+                    } else if tool.call.provider_executed && tool.provider_result.is_none() {
+                        BlockerKind::ProviderEffectUnknown {
+                            attempt: tool.key.attempt,
+                            call: tool.key.call.clone(),
+                        }
+                    } else {
+                        BlockerKind::ResourcesUnavailable {
+                            tool: tool.key.clone(),
+                        }
+                    };
+                    facts.push(Fact::Blocked {
+                        blocker: BlockerId::new(),
+                        reason,
+                    });
+                }
+            }
+            facts.push(Fact::RunTerminated {
+                terminal,
+                diagnostic: Some(diagnostic.clone()),
+            });
+            let published = match self.publish(Some(claim), &view, facts, vec![], at).await {
+                Err(RunError::PublicationUncertain { publication, .. }) => {
+                    publication.reconcile(&self.store).await?;
+                    false
+                }
+                result => result?,
+            };
+            if published {
+                return Ok(exit(&self.store.frontier(claim.run()).await?));
+            }
+        }
+    }
+
     /// Settle an old native executor Run using only its canonical state. A
     /// different executor must never observe or submit work as the old one.
     pub async fn retire_replaced_native_executor(
@@ -145,6 +286,7 @@ impl Engine {
                         if !view.stopped {
                             facts.push(Fact::StopRequested {
                                 diagnostic: diagnostic.into(),
+                                requester: StopRequester::Internal,
                             });
                         }
                         (Terminal::Cancelled, Some(diagnostic.into()))

@@ -203,14 +203,14 @@ impl Publications {
         publication: &mut PublicationState,
         observation: ExternalObservation,
     ) -> Result<(), Error> {
-        let output = matches!(&observation, ExternalObservation::Output(_));
+        let output = matches!(&observation, ExternalObservation::Output { .. });
         if output && publication.closed.is_some() {
             return Err(Error::Invalid(
                 "executor output after canonical closure".into(),
             ));
         }
         let message = match &observation {
-            ExternalObservation::Output(output) => MessageEvent::from_output(output),
+            ExternalObservation::Output { output, .. } => MessageEvent::from_output(output),
             _ => None,
         };
         let next = if output {
@@ -275,12 +275,26 @@ impl Publications {
     }
 }
 impl OutputSink for Publications {
+    fn turn_usage(
+        &self,
+        usage: maka_agent_facts::executor::TurnUsage,
+        model_time_ms: Option<u64>,
+    ) -> BoxFuture<'_, Result<(), Error>> {
+        Box::pin(self.publish(ExternalObservation::Output {
+            output: maka_agent_facts::executor::Output::TurnUsage { usage },
+            model_time_ms,
+        }))
+    }
     fn emit(&self, output: maka_agent_facts::executor::Output) -> BoxFuture<'_, Result<(), Error>> {
         Box::pin(async move {
             output
                 .validate()
                 .map_err(|error| Error::Invalid(error.into()))?;
-            self.publish(ExternalObservation::Output(output)).await
+            self.publish(ExternalObservation::Output {
+                output,
+                model_time_ms: None,
+            })
+            .await
         })
     }
 }
@@ -816,29 +830,14 @@ impl DriverExecutor {
                         )
                         .await
                 };
-                let result = if publications.accepted().await {
-                    if let Err(error) = &settlement.result {
-                        tracing::error!(%error, "Original executor teardown failed after canonical closure ACK");
-                    }
-                    Ok(())
-                } else { match settlement.result.clone() {
-                    Ok(outcome) => publications
-                        .closed(outcome)
-                        .await
-                        .map_err(|error| external_error(error, descriptor.clone())),
-                    Err(error) => Err(external_error(error, descriptor.clone())),
-                }};
-                if !matches!(settlement.root_cleanup, OperationCleanup::Confirmed) {
-                    let _ = cleanup.unconfirmed();
-                    retained
-                        .lock()
-                        .await
-                        .push(RetainedSource::Resources(settlement));
-                    return Err(RunError::CleanupUnconfirmed);
-                }
-                result?;
-                drop(settlement);
-                Ok(())
+                settle_execution(
+                    publications.as_ref(),
+                    settlement,
+                    descriptor,
+                    &cleanup,
+                    &retained,
+                )
+                .await
             };
             let result = AssertUnwindSafe(work)
                 .catch_unwind()
@@ -1192,6 +1191,7 @@ async fn task_prefix(
                 task: original,
                 index: position,
                 output,
+                ..
             } = recorded.fact
             {
                 if original != task || position != index {
@@ -1562,5 +1562,178 @@ impl maka_agent_engine::ports::ExternalPublicationPorts for DriverExecutor {
                 .observe_publication_item(run, key, reference, witness)
                 .await
         })
+    }
+}
+
+trait SettlementSink: Sync {
+    fn accepted(&self) -> BoxFuture<'_, bool>;
+    fn close(&self, outcome: Outcome) -> BoxFuture<'_, Result<(), Error>>;
+}
+
+impl SettlementSink for Publications {
+    fn accepted(&self) -> BoxFuture<'_, bool> {
+        Box::pin(Publications::accepted(self))
+    }
+    fn close(&self, outcome: Outcome) -> BoxFuture<'_, Result<(), Error>> {
+        TaskBinding::closed(self, outcome)
+    }
+}
+
+async fn settle_execution(
+    publications: &dyn SettlementSink,
+    settlement: Settlement,
+    descriptor: ContentRef,
+    cleanup: &Evidence,
+    retained: &Mutex<Vec<RetainedSource>>,
+) -> Result<(), RunError> {
+    let accepted = publications.accepted().await;
+    if accepted && let Err(error) = &settlement.result {
+        tracing::error!(%error, "Original executor teardown failed after canonical closure ACK");
+    }
+    if !matches!(settlement.root_cleanup, OperationCleanup::Confirmed) {
+        let _ = cleanup.unconfirmed();
+        retained
+            .lock()
+            .await
+            .push(RetainedSource::Resources(settlement));
+        return Err(RunError::CleanupUnconfirmed);
+    }
+    if !accepted {
+        match settlement.result.clone() {
+            Ok(outcome) => publications
+                .close(outcome)
+                .await
+                .map_err(|error| external_error(error, descriptor))?,
+            Err(error) => return Err(external_error(error, descriptor)),
+        }
+    }
+    drop(settlement);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_ports::executor::RootSettlementOwner;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct StubSettlementOwner;
+    impl RootSettlementOwner for StubSettlementOwner {
+        fn original_root_cleanup(&self) -> OperationCleanup {
+            OperationCleanup::Unconfirmed
+        }
+        fn original_root_cleanup_signal(self: Arc<Self>) -> BoxFuture<'static, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingSink {
+        accepted: AtomicBool,
+        closed: std::sync::Mutex<Vec<Outcome>>,
+    }
+
+    impl SettlementSink for RecordingSink {
+        fn accepted(&self) -> BoxFuture<'_, bool> {
+            let value = self.accepted.load(Ordering::Acquire);
+            Box::pin(async move { value })
+        }
+        fn close(&self, outcome: Outcome) -> BoxFuture<'_, Result<(), Error>> {
+            Box::pin(async move {
+                self.closed.lock().unwrap().push(outcome);
+                self.accepted.store(true, Ordering::Release);
+                Ok(())
+            })
+        }
+    }
+
+    fn descriptor() -> ContentRef {
+        ContentBlob::json(&serde_json::json!({"task": "fixture"}))
+            .unwrap()
+            .reference()
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_cleanup_never_commits_closure_and_retains_resources() {
+        for result in [
+            Ok(Outcome::Failed {
+                message: "preparation failed".into(),
+                code: Some("native_preparation_failed".into()),
+                recoverable: false,
+            }),
+            Err(Error::Provider(
+                "agy ACP supervisor exited during admission".into(),
+            )),
+        ] {
+            let sink = RecordingSink::default();
+            let cleanup = Evidence::default();
+            let retained = Mutex::new(Vec::new());
+            let settlement = Settlement::new(
+                result,
+                OperationCleanup::Unconfirmed,
+                Arc::new(StubSettlementOwner),
+            );
+            let err = settle_execution(&sink, settlement, descriptor(), &cleanup, &retained)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, RunError::CleanupUnconfirmed), "{err:?}");
+            assert!(
+                sink.closed.lock().unwrap().is_empty(),
+                "unconfirmed cleanup must never commit ExternalTaskClosed"
+            );
+            assert_eq!(retained.lock().await.len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn confirmed_cleanup_closes_failed_outcome_and_keeps_observation_errors_on_recovery() {
+        let sink = RecordingSink::default();
+        let cleanup = Evidence::default();
+        let retained = Mutex::new(Vec::new());
+        let settlement = Settlement::new(
+            Ok(Outcome::Failed {
+                message: "executor failed: usage limit reached".into(),
+                code: Some("native_preparation_failed".into()),
+                recoverable: false,
+            }),
+            OperationCleanup::Confirmed,
+            Arc::new(StubSettlementOwner),
+        );
+        settle_execution(&sink, settlement, descriptor(), &cleanup, &retained)
+            .await
+            .unwrap();
+        let closed = sink.closed.lock().unwrap();
+        assert_eq!(closed.len(), 1);
+        assert!(matches!(
+            &closed[0],
+            Outcome::Failed { message, code, recoverable }
+                if message == "executor failed: usage limit reached"
+                    && code.as_deref() == Some("native_preparation_failed")
+                    && !recoverable
+        ));
+        assert!(retained.lock().await.is_empty());
+
+        let sink = RecordingSink::default();
+        let settlement = Settlement::new(
+            Err(Error::Invalid("Claude live transcript rotated".into())),
+            OperationCleanup::Confirmed,
+            Arc::new(StubSettlementOwner),
+        );
+        let err = settle_execution(&sink, settlement, descriptor(), &cleanup, &retained)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RunError::Blocked(ref reason)
+                    if matches!(**reason, BlockerKind::ExternalTaskUnobservable { .. })
+            ),
+            "{err:?}"
+        );
+        assert!(
+            sink.closed.lock().unwrap().is_empty(),
+            "post-submission observation errors must stay on recovery path"
+        );
     }
 }

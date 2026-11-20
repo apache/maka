@@ -215,6 +215,10 @@ impl Owner {
                     self.executors
                         .remove_sessions(&[session.to_owned()])
                         .await?;
+                    self.durable
+                        .release_removed_session(self.run_owner(), session.to_owned())
+                        .await
+                        .map_err(|error| error.to_string())?;
                     match self.store.finish_session_retirement(session).await {
                         Ok(SessionRetirement::Removed) => return Ok(()),
                         Ok(SessionRetirement::Removing) | Err(StoreError::SessionBusy) => {}

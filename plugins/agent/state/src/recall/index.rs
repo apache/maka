@@ -321,7 +321,8 @@ fn project(
                 AcceptedToolResult::Provider { output, .. } => {
                     message.body = serde_json::to_string(&output)?
                 }
-                AcceptedToolResult::Rejected { diagnostic } => message.body = diagnostic,
+                AcceptedToolResult::Rejected { diagnostic }
+                | AcceptedToolResult::OutcomeUnknown { diagnostic } => message.body = diagnostic,
                 AcceptedToolResult::Host { result } => {
                     let returned = tool_return(c, fact.run, &result)?;
                     let maka_agent_facts::tool_output::ToolOutput::Operation(reply) =

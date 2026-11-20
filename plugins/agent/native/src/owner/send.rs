@@ -302,11 +302,6 @@ impl Owner {
             allowed_tools,
             background: None,
             background_sandbox_ceiling: None,
-            internal_tools: if external && !host_bridge {
-                Arc::default()
-            } else {
-                selected_catalog.definitions.clone()
-            },
             internal_bindings: if external && !host_bridge {
                 Arc::default()
             } else {

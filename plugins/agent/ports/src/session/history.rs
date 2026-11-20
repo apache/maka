@@ -188,6 +188,11 @@ pub enum Position {
         position: RowPosition,
         field: HistoryField,
     },
+    /// Open a reverse window at the end of this field, including an empty tool row.
+    RowEnd {
+        position: RowPosition,
+        field: HistoryField,
+    },
     Before {
         cursor: Cursor,
     },
@@ -226,7 +231,7 @@ impl Read {
             | Position::AfterMessage { message_id } => {
                 crate::name(message_id).map_err(|_| invalid())?;
             }
-            Position::Row { position, field } => {
+            Position::Row { position, field } | Position::RowEnd { position, field } => {
                 if self.through.is_none()
                     || position.validate().is_err()
                     || matches!(position, HistoryRowAddress::Live { sequence, .. } if self.through.is_some_and(|through| *sequence > through))

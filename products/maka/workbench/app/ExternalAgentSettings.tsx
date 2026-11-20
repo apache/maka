@@ -22,7 +22,6 @@ import type { AgentExternalRuntime } from '../../../../packages/plugin-sdk/src/g
 import type { ExternalAgentSettingsOwner } from './externalAgentSettingsState';
 import { LoadingIndicator } from './Loading';
 import { tr } from './locale';
-import { useHost } from './host';
 import { UsageLimits } from './UsageLimits';
 import {
   SettingsBody,
@@ -82,7 +81,6 @@ function runtimeDescription(owner: ExternalAgentSettingsOwner, id: string, enabl
 }
 
 export function ExternalAgentSection(props: { owner: ExternalAgentSettingsOwner; query: string }) {
-  const host = useHost();
   const owner = props.owner;
   const unavailable = () => {
     const state = owner.catalog()?.state;
@@ -117,11 +115,7 @@ export function ExternalAgentSection(props: { owner: ExternalAgentSettingsOwner;
                 }
                 detail={
                   <If when={runtime().enabled && runtime().usageLimits}>
-                    <UsageLimits
-                      query={() =>
-                        host.query('agent', 'externalUsageLimits', { runtime: runtime().id })
-                      }
-                    />
+                    <UsageLimits target={() => ({ kind: 'external', runtime: runtime().id })} />
                   </If>
                 }
                 accessibilityLabel={tr(runtime().enabled ? 'Disable {name}' : 'Enable {name}', {

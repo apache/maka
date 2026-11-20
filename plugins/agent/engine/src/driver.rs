@@ -560,14 +560,7 @@ impl Engine {
                 let overflow = view
                     .current_attempt
                     .and_then(|id| view.attempts.get(&id))
-                    .is_some_and(|attempt| {
-                        matches!(
-                            attempt.recovery,
-                            Some(AttemptRecovery::ContextOverflow {
-                                observed_output: false
-                            })
-                        )
-                    });
+                    .is_some_and(|attempt| attempt.compactable_overflow());
                 let key = (current_summary, overflow, live.rejected_summaries.len());
                 let reload = summary_key != Some(key)
                     || model_level.as_ref().is_none_or(|(step, baseline, _)| {
@@ -1369,6 +1362,7 @@ impl Engine {
                         | RunError::InvalidImage(_)
                         | RunError::InvalidInput(_)
                         | RunError::Json(_)
+                        | RunError::Model(_)
                         | RunError::ModelUnavailable
                         | RunError::AuthenticationRequired
                         | RunError::Preparation(_)
@@ -1787,6 +1781,13 @@ impl Engine {
                                     .into(),
                             ));
                         }
+                        if let Fact::LocalToolReturned {
+                            settlement: maka_agent_facts::tool_call::ToolSettlement::Unknown,
+                            ..
+                        } = &original.fact
+                        {
+                            live.ended_unknown.insert(key);
+                        }
                     }
                     Ok(DispatchOutcome::Prevented { rejection }) => {
                         self.publish(
@@ -2092,7 +2093,21 @@ impl Engine {
         outcome: AcceptedResult,
     ) -> Result<(Vec<Fact>, ContentBlob), RunError> {
         let tool = &view.tools[&tool_key(&key)];
-        let result = accepted_content(view, tool, &outcome)?;
+        let result = if outcome == AcceptedResult::OutcomeUnknown {
+            let diagnostic = self.unknown_outcome_diagnostic(view, tool).await?;
+            ContentBlob::json(
+                &maka_agent_facts::tool_output::AcceptedToolResult::OutcomeUnknown {
+                    diagnostic: format!(
+                        "The call ended, but its result is unknown: {}. It may or may not have \
+                         taken effect. Check the current state before deciding what to do next; \
+                         do not simply repeat the call.",
+                        diagnostic.trim_end_matches('.')
+                    ),
+                },
+            )?
+        } else {
+            accepted_content(view, tool, &outcome)?
+        };
         let loaded = self.accept_tool_loading(view, tool, &outcome).await?;
         let mut acceptance = if let AcceptedResult::CellRecovered { cell } = &outcome {
             if !view.stopped
@@ -2118,6 +2133,43 @@ impl Engine {
         });
         acceptance.extend(loaded);
         Ok((acceptance, result))
+    }
+
+    /// A Host operation carries its diagnostic in the receipt; a local call
+    /// recorded it as the text of its unknown return.
+    async fn unknown_outcome_diagnostic(
+        &self,
+        view: &RunView,
+        tool: &Tool,
+    ) -> Result<String, RunError> {
+        use maka_agent_facts::{
+            artifact::ToolReturn,
+            tool_output::{ReturnedToolResult, StoredToolResult, ToolOutput},
+        };
+        if let Some(maka_agent_facts::operation::RecordedReceipt::Recorded {
+            outcome: OperationOutcome::Unknown { diagnostic },
+            ..
+        }) = &tool.receipt
+        {
+            return Ok(diagnostic.clone());
+        }
+        let local = tool.local_returned.as_ref().ok_or_else(|| {
+            RunError::Internal("an unknown result has neither a receipt nor a return".into())
+        })?;
+        let bytes = self.store.content(view.run, local.result.clone()).await?;
+        let returned: ToolReturn<StoredToolResult> =
+            serde_json::from_slice(&bytes).map_err(|error| {
+                RunError::InvalidInput(format!("original tool return is invalid: {error}"))
+            })?;
+        match returned.body {
+            StoredToolResult::Inline(ReturnedToolResult {
+                output: ToolOutput::Text(text),
+                ..
+            }) => Ok(text),
+            _ => Err(RunError::InvalidInput(
+                "an unknown tool return has no diagnostic text".into(),
+            )),
+        }
     }
 
     async fn port_failure(
@@ -2185,19 +2237,26 @@ pub(super) fn termination_facts(
                 }),
         );
     }
-    let diagnostic = diagnostic.or_else(|| {
-        let attempt = view
-            .current_attempt
-            .filter(|_| terminal == Terminal::Failed)
-            .and_then(|id| view.attempts.get(&id))
-            .filter(|attempt| Some(attempt.step) == view.current_step)?;
-        attempt
-            .closed
-            .as_ref()
-            .filter(|closed| closed.outcome == maka_agent_facts::accounting::Outcome::Error)
-            .and_then(|closed| closed.diagnostic.clone())
-            .or_else(|| attempt.interrupted.clone())
-    });
+    let diagnostic = diagnostic
+        .or_else(|| {
+            let attempt = view
+                .current_attempt
+                .filter(|_| terminal == Terminal::Failed)
+                .and_then(|id| view.attempts.get(&id))
+                .filter(|attempt| Some(attempt.step) == view.current_step)?;
+            attempt
+                .closed
+                .as_ref()
+                .filter(|closed| closed.outcome == maka_agent_facts::accounting::Outcome::Error)
+                .and_then(|closed| closed.diagnostic.clone())
+                .or_else(|| attempt.interrupted.clone())
+        })
+        .or_else(|| {
+            (terminal == Terminal::Failed
+                && !reconcile::budget_exhausted(view)
+                && reconcile::output_limit_exhausted(view))
+            .then(|| reconcile::OUTPUT_LIMIT_DIAGNOSTIC.into())
+        });
     facts.push(Fact::RunTerminated {
         terminal,
         diagnostic,

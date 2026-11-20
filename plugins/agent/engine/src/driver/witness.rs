@@ -497,11 +497,15 @@ impl ExternalWitness {
                 }],
                 vec![descriptor],
             ),
-            ExternalObservation::Output(output) => (
+            ExternalObservation::Output {
+                output,
+                model_time_ms,
+            } => (
                 vec![Fact::ExternalTaskObserved {
                     task,
                     index,
                     output,
+                    model_time_ms,
                 }],
                 vec![],
             ),
@@ -1040,6 +1044,7 @@ mod tests {
                         diagnostic: None,
                         usage: Default::default(),
                         protocol: serde_json::to_value(ModelClosureProtocol {
+                            model_time_ms: None,
                             finish_reason: ModelFinishReason::Stop,
                             provider_options: None,
                             cache_read_reported: None,
@@ -1092,6 +1097,7 @@ mod tests {
                         diagnostic: None,
                         usage: Default::default(),
                         protocol: serde_json::to_value(ModelClosureProtocol {
+                            model_time_ms: None,
                             finish_reason: ModelFinishReason::Stop,
                             provider_options: None,
                             cache_read_reported: None,
@@ -1182,6 +1188,207 @@ mod tests {
                 fact: resolution,
             })?;
             assert!(replay.recovery_failure().is_none());
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        })
+        .catch_unwind()
+        .await;
+        root.shutdown().await?;
+        match result {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    #[tokio::test]
+    async fn fail_after_driver_error_interrupts_open_attempt_without_adding_blockers()
+    -> TestResult<()> {
+        let (_temp, root, store, claim, attempt, _witness) = fixture(true).await?;
+        let result = AssertUnwindSafe(async {
+            append(
+                &store,
+                &claim,
+                vec![Fact::ModelCleanupObserved {
+                    attempt,
+                    cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
+                }],
+                vec![],
+            )
+            .await?;
+
+            let exit = Engine::new(store.clone())
+                .fail_after_driver_error(&claim, "driver crashed".into(), at())
+                .await?;
+            assert!(matches!(
+                exit,
+                DriverExit::Terminal {
+                    terminal: Terminal::Failed,
+                    ..
+                }
+            ));
+
+            let view = store.frontier(claim.run()).await?;
+            assert!(view.blockers.is_empty(), "{:?}", view.blockers);
+            assert!(view.attempts[&attempt].interrupted.is_some());
+            assert!(!view.blocks_followup());
+
+            let mut successor = view.spec.clone();
+            successor.turn_id = uuid::Uuid::new_v4().to_string();
+            successor.trigger = Trigger::Message {
+                message_id: uuid::Uuid::new_v4().to_string(),
+            };
+            store.admit(Admission::new(successor, at(), vec![])).await?;
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        })
+        .catch_unwind()
+        .await;
+        root.shutdown().await?;
+        match result {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    #[tokio::test]
+    async fn fail_after_driver_error_preserves_risk_cancellation_and_existing_blockers()
+    -> TestResult<()> {
+        // Case 1: existing recovery blocker is preserved without adding another blocker.
+        let (_temp, root, store, claim, attempt, witness) = fixture(true).await?;
+        let result = AssertUnwindSafe(async {
+            let (tool, part) = call(attempt);
+            witness.part(0, part, None, at()).await?;
+            let reason = BlockerKind::ProviderEffectUnknown {
+                attempt,
+                call: tool.call.clone(),
+            };
+            append(
+                &store,
+                &claim,
+                vec![Fact::Blocked {
+                    blocker: BlockerId::new(),
+                    reason: reason.clone(),
+                }],
+                vec![],
+            )
+            .await?;
+
+            let exit = Engine::new(store.clone())
+                .fail_after_driver_error(&claim, "driver crashed".into(), at())
+                .await?;
+            assert!(matches!(
+                exit,
+                DriverExit::Terminal {
+                    terminal: Terminal::Failed,
+                    ..
+                }
+            ));
+            let view = store.frontier(claim.run()).await?;
+            assert_eq!(view.blockers.len(), 1);
+            assert_eq!(view.recovery_failure(), Some(&reason));
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        })
+        .catch_unwind()
+        .await;
+        root.shutdown().await?;
+        match result {
+            Ok(result) => result?,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+
+        // Case 2: cancelled_by_risk terminates as Cancelled with zero extra blockers.
+        let (_temp, root, store, claim, attempt, witness) = fixture(true).await?;
+        let result = AssertUnwindSafe(async {
+            let (tool, part) = call(attempt);
+            witness.part(0, part, None, at()).await?;
+            let blocker = BlockerId::new();
+            append(
+                &store,
+                &claim,
+                vec![
+                    Fact::Blocked {
+                        blocker,
+                        reason: BlockerKind::ProviderEffectUnknown {
+                            attempt,
+                            call: tool.call.clone(),
+                        },
+                    },
+                    Fact::RiskAdjudicated {
+                        blocker,
+                        decision: RiskDecision::CancelBlockedRun {
+                            diagnostic: "user cancelled".into(),
+                        },
+                        scope: RiskActionScope::RunCancellation,
+                    },
+                ],
+                vec![],
+            )
+            .await?;
+
+            let exit = Engine::new(store.clone())
+                .fail_after_driver_error(&claim, "driver crashed".into(), at())
+                .await?;
+            assert!(matches!(
+                exit,
+                DriverExit::Terminal {
+                    terminal: Terminal::Cancelled,
+                    ..
+                }
+            ));
+            let view = store.frontier(claim.run()).await?;
+            assert_eq!(view.blockers.len(), 1);
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        })
+        .catch_unwind()
+        .await;
+        root.shutdown().await?;
+        match result {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    #[tokio::test]
+    async fn fail_after_driver_error_handles_unadmitted_and_admitted_tools_accurately()
+    -> TestResult<()> {
+        // Unadmitted tool -> ResourcesUnavailable, follow-up still allowed.
+        let (_temp, root, store, claim, attempt, witness) = fixture(true).await?;
+        let result = AssertUnwindSafe(async {
+            let part = ModelPart::ToolCall {
+                call: ModelToolCall {
+                    id: "local-call".into(),
+                    name: "read".into(),
+                    input: ToolInput::Json(serde_json::json!({})),
+                    provider_options: None,
+                    provider_executed: false,
+                },
+            };
+            witness.part(0, part, None, at()).await?;
+            append(
+                &store,
+                &claim,
+                vec![Fact::ModelCleanupObserved {
+                    attempt,
+                    cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
+                }],
+                vec![],
+            )
+            .await?;
+
+            let exit = Engine::new(store.clone())
+                .fail_after_driver_error(&claim, "driver crashed".into(), at())
+                .await?;
+            assert!(matches!(
+                exit,
+                DriverExit::Terminal {
+                    terminal: Terminal::Failed,
+                    ..
+                }
+            ));
+            let view = store.frontier(claim.run()).await?;
+            assert!(matches!(
+                view.recovery_failure(),
+                Some(BlockerKind::ResourcesUnavailable { .. })
+            ));
+            assert!(!view.blocks_followup());
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         })
         .catch_unwind()

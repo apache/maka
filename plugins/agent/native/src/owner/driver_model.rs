@@ -96,6 +96,7 @@ pub(super) struct DriverModel {
 struct ReplayedTail {
     cells: Vec<FrozenCellKnowledge>,
     compaction_request: Option<ToolKey>,
+    last_emitted_attempt: Option<ModelAttemptId>,
 }
 type ProjectedHistory = (Option<String>, ReplayedTail);
 
@@ -123,7 +124,7 @@ pub(super) struct PreparedContinuation {
     pub replay: maka_agent_facts::continuation::ReplayEvidence,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FrozenInput {
     continuing: Option<AcceptedModel>,
@@ -142,43 +143,15 @@ struct FrozenInput {
     wire: FrozenWire,
     notifications: Vec<FrozenNotification>,
     recovered_cells: Vec<FrozenCellKnowledge>,
-    /// Inline only in records written before the text became shared content.
-    #[serde(default)]
+    #[serde(skip)]
     instructions: Option<String>,
-    #[serde(default)]
+    #[serde(skip)]
     system: Option<SystemPrompt>,
     tool_choice: ToolChoiceMode,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     instructions_text: Option<ContentRef>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     system_text: Option<FrozenSystem>,
-}
-
-/// Wire form of [FrozenInput]: system texts are always stored as shared content refs.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SealedFrozenInput<'a> {
-    continuing: &'a Option<AcceptedModel>,
-    accepted: &'a AcceptedModel,
-    adapter: &'a SourceRevision,
-    item_acceptance: bool,
-    route_identity: &'a str,
-    operation: ModelOperation,
-    language: maka_agent_facts::language::Language,
-    prompt: &'a ContentRef,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    prompt_chunks: &'a Vec<ContentRef>,
-    layout: &'a preparation::FrozenPromptLayout,
-    covered_prefix: &'a Option<CoveredPrefix>,
-    normalization: &'a Option<maka_model::ProviderKind>,
-    wire: &'a FrozenWire,
-    notifications: &'a Vec<FrozenNotification>,
-    recovered_cells: &'a Vec<FrozenCellKnowledge>,
-    tool_choice: ToolChoiceMode,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    instructions_text: &'a Option<ContentRef>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system_text: &'a Option<FrozenSystem>,
 }
 
 /// Each Step repeats the same system text; storing it as content keeps one copy.
@@ -297,36 +270,11 @@ impl FrozenInput {
                 })
             })
             .transpose()?;
-        let wire = SealedFrozenInput {
-            continuing: &self.continuing,
-            accepted: &self.accepted,
-            adapter: &self.adapter,
-            item_acceptance: self.item_acceptance,
-            route_identity: &self.route_identity,
-            operation: self.operation,
-            language: self.language,
-            prompt: &self.prompt,
-            prompt_chunks: &self.prompt_chunks,
-            layout: &self.layout,
-            covered_prefix: &self.covered_prefix,
-            normalization: &self.normalization,
-            wire: &self.wire,
-            notifications: &self.notifications,
-            recovered_cells: &self.recovered_cells,
-            tool_choice: self.tool_choice,
-            instructions_text: &self.instructions_text,
-            system_text: &self.system_text,
-        };
-        Ok((serde_json::to_vec(&wire).map_err(RunError::Json)?, texts))
+        Ok((serde_json::to_vec(self).map_err(RunError::Json)?, texts))
     }
 
     /// Restore the system text of a sealed record from its resolved content.
     fn hydrate(&mut self, texts: &[(ContentRef, String)]) -> Result<(), RunError> {
-        if (self.instructions_text.is_some() && self.instructions.is_some())
-            || (self.system_text.is_some() && self.system.is_some())
-        {
-            return Err(unsupported("frozen-input-manifest-schema"));
-        }
         let text = |reference: &ContentRef| {
             texts
                 .iter()
@@ -334,8 +282,8 @@ impl FrozenInput {
                 .map(|(_, text)| text.clone())
                 .ok_or_else(|| unsupported("frozen-input-system-text"))
         };
-        let instructions = self.instructions_text.as_ref().map(text).transpose()?;
-        let system = self
+        self.instructions = self.instructions_text.as_ref().map(text).transpose()?;
+        self.system = self
             .system_text
             .as_ref()
             .map(|system| {
@@ -346,12 +294,6 @@ impl FrozenInput {
                 })
             })
             .transpose()?;
-        if instructions.is_some() {
-            self.instructions = instructions;
-        }
-        if system.is_some() {
-            self.system = system;
-        }
         Ok(())
     }
 }
@@ -643,6 +585,7 @@ impl DriverModel {
                 ReplayedTail {
                     cells: recovered_cells,
                     compaction_request,
+                    last_emitted_attempt,
                 },
         } = self
             .project_step_input(
@@ -798,6 +741,31 @@ impl DriverModel {
                     )))
                     .await?;
             } else {
+                append_continuation_cue(view.spec.language, &mut messages).await?;
+            }
+        } else if !summary && let Preparation::ToolContinuation { attempt } = mode {
+            let truncated_without_tools = view.attempts.get(&attempt).is_some_and(|state| {
+                !state.has_tools
+                    && state.closed.as_ref().is_some_and(|closed| {
+                        closed.outcome == maka_agent_facts::accounting::Outcome::Success
+                            && serde_json::from_value::<
+                                maka_agent_facts::context::ModelClosureProtocol,
+                            >(closed.protocol.clone())
+                            .is_ok_and(|protocol| {
+                                protocol.summary.is_none()
+                                    && protocol.compaction.is_none()
+                                    && protocol.finish_reason
+                                        == maka_agent_facts::model::ModelFinishReason::Length
+                            })
+                    })
+            });
+            if truncated_without_tools && last_emitted_attempt != Some(attempt) {
+                messages
+                    .append(maka_model::prompt::Message::user(
+                        length_limit_no_output_cue(view.spec.language),
+                    ))
+                    .await?;
+            } else if messages.needs_continuation_cue() {
                 append_continuation_cue(view.spec.language, &mut messages).await?;
             }
         }
@@ -1891,10 +1859,15 @@ impl DriverModel {
                         }
                         let mut base = None;
                         let mut order = std::collections::BTreeMap::<u64, (RunId, u64)>::new();
-                        let mut after = 0;
-                        loop {
-                            let (items, next) = reader.page(after, 256).await?;
-                            for item in items {
+                        let mut before = None;
+                        let mut min_seen = None;
+                        'scan: loop {
+                            let (items, next) = reader.previous_page(before, 256).await?;
+                            for item in items.into_iter().rev() {
+                                min_seen = Some(item.sequence);
+                                order
+                                    .entry(item.admission_sequence)
+                                    .or_insert((item.recorded.run, item.recorded.revision));
                                 match &item.recorded.fact {
                                     Fact::RunAdmitted { .. } => {
                                         let source = reader.run_source(item.recorded.run).await?;
@@ -1911,6 +1884,7 @@ impl DriverModel {
                                                 sequence: item.sequence,
                                                 run: item.recorded.run,
                                             });
+                                            break 'scan;
                                         }
                                     }
                                     Fact::StepPrepared { step, .. } => {
@@ -1922,6 +1896,7 @@ impl DriverModel {
                                                 run: item.recorded.run,
                                                 request: Box::new(request),
                                             });
+                                            break 'scan;
                                         }
                                     }
                                     Fact::ContextCompacted { baseline } => {
@@ -1929,19 +1904,16 @@ impl DriverModel {
                                             id: item.recorded.id,
                                             run: item.recorded.run,
                                             baseline: baseline.clone(),
-                                        })
+                                        });
+                                        break 'scan;
                                     }
                                     _ => {}
                                 }
-                                order
-                                    .entry(item.admission_sequence)
-                                    .and_modify(|entry| entry.1 = item.recorded.revision)
-                                    .or_insert((item.recorded.run, item.recorded.revision));
                             }
                             let Some(next) = next else {
                                 break;
                             };
-                            after = next;
+                            before = Some(next);
                         }
                         let (covered, previous_checkpoint_id) = match base {
                             None => (None, None),
@@ -1963,7 +1935,32 @@ impl DriverModel {
                                         reader, run, &baseline, target, language, messages,
                                     )
                                     .await?;
-                                (Some(capture.current.through_sequence), Some(id.to_string()))
+                                let through = capture.current.through_sequence;
+                                // A proactive summary can cover an earlier sequence than the
+                                // ContextCompacted adoption fact; collect any tail items between.
+                                let mut cursor = min_seen;
+                                while let Some(bound) = cursor {
+                                    if bound <= through.saturating_add(1) {
+                                        break;
+                                    }
+                                    let (items, next) =
+                                        reader.previous_page(Some(bound), 256).await?;
+                                    let mut done = false;
+                                    for item in items.into_iter().rev() {
+                                        if item.sequence <= through {
+                                            done = true;
+                                            break;
+                                        }
+                                        order
+                                            .entry(item.admission_sequence)
+                                            .or_insert((item.recorded.run, item.recorded.revision));
+                                    }
+                                    if done {
+                                        break;
+                                    }
+                                    cursor = next;
+                                }
+                                (Some(through), Some(id.to_string()))
                             }
                             Some(Base::Snapshot { sequence, run }) => {
                                 let nested = reader.nested(run).await?;
@@ -1988,22 +1985,23 @@ impl DriverModel {
                 .await?;
             loop {
                 let reader = current.as_ref();
-                let covered_revisions = match covered {
-                    Some(through) => self.covered_revisions(reader, through).await?,
-                    None => Default::default(),
-                };
                 let mut tail = ReplayedTail::default();
                 for (admission, (run, through)) in order {
+                    let after = match covered {
+                        Some(covered) if admission <= covered => {
+                            reader.run_revision_through(run, covered).await?
+                        }
+                        _ => 0,
+                    };
+                    if after >= through {
+                        continue;
+                    }
                     let source = reader.run_source(run).await?;
                     if matches!(source.spec.backend, BackendSpec::Historical {}) {
                         continue;
                     }
-                    let after = covered_revisions.get(&run).copied().unwrap_or(0);
-                    if after >= through {
-                        continue;
-                    }
                     let view = reader.view(run).await?;
-                    if !covered.is_some_and(|through| admission <= through) {
+                    if !covered.is_some_and(|covered| admission <= covered) {
                         let input: RunInput = reader.decode(run, &view.spec.input).await?;
                         self.project_message_input(reader, &view, &input, vision, false, messages)
                             .await?;
@@ -2036,28 +2034,6 @@ impl DriverModel {
                 order = frame.order;
             }
         })
-    }
-
-    async fn covered_revisions(
-        &self,
-        reader: &HistorySource<'_>,
-        through: u64,
-    ) -> Result<std::collections::BTreeMap<RunId, u64>, RunError> {
-        let mut revisions = std::collections::BTreeMap::new();
-        let mut after = 0;
-        loop {
-            let (items, next) = reader.page(after, 256).await?;
-            for item in items {
-                if item.sequence > through {
-                    return Ok(revisions);
-                }
-                revisions.insert(item.recorded.run, item.recorded.revision);
-            }
-            let Some(next) = next else {
-                return Ok(revisions);
-            };
-            after = next;
-        }
     }
 
     async fn request_checkpoint(
@@ -2179,22 +2155,20 @@ impl DriverModel {
                         )
                     }
                 };
-                let covered_revisions = match covered {
-                    Some(through) => self.covered_revisions(reader, through).await?,
-                    None => Default::default(),
-                };
                 for (position, (prior, input)) in
                     ancestry.into_iter().enumerate().take(index + 1).rev()
                 {
                     merge_input_skills(system, &input)?;
-                    let after = if position == index {
-                        request_after.unwrap_or_else(|| {
-                            covered_revisions.get(&prior.run).copied().unwrap_or(0)
-                        })
-                    } else {
-                        covered_revisions.get(&prior.run).copied().unwrap_or(0)
-                    };
                     let admission = reader.run_source(prior.run).await?.admission_sequence;
+                    let after = match (position == index).then_some(request_after).flatten() {
+                        Some(after) => after,
+                        None => match covered {
+                            Some(through) if admission <= through => {
+                                reader.run_revision_through(prior.run, through).await?
+                            }
+                            _ => 0,
+                        },
+                    };
                     if !(position == index && request_after.is_some())
                         && !covered.is_some_and(|through| admission <= through)
                     {
@@ -2432,7 +2406,10 @@ impl DriverModel {
             AcceptedToolResult::ProviderOutcomeUnknown => {
                 ToolOutput::ErrorText("Provider tool outcome unknown".into())
             }
-            AcceptedToolResult::Rejected { diagnostic } => ToolOutput::ErrorText(diagnostic),
+            AcceptedToolResult::Rejected { diagnostic }
+            | AcceptedToolResult::OutcomeUnknown { diagnostic } => {
+                ToolOutput::ErrorText(diagnostic)
+            }
             AcceptedToolResult::RiskAdjudicated { blocker, decision } => match decision {
                 RiskDecision::RecordExternalObservation { evidence } => {
                     let evidence: Value = reader.decode(view.run, &evidence).await?;
@@ -3724,6 +3701,8 @@ async fn receive(
     let mut pending = BTreeMap::new();
     let mut emitted = 0u64;
     let mut saw_token = false;
+    let mut clock = crate::model_time::ModelTime::new();
+    let mut provider_inputs = std::collections::BTreeSet::new();
     let mut can_steer = !private_summary && observation.contract.is_some();
     let steering = pending_steering(log, &observation.state, observation.run);
     tokio::pin!(steering);
@@ -3739,7 +3718,28 @@ async fn receive(
         };
         let Some(next) = next else { break };
         let emission = next?;
+        match &emission.event {
+            ModelEvent::ToolInputStarted {
+                id,
+                provider_executed: true,
+                ..
+            } => {
+                provider_inputs.insert(id.clone());
+            }
+            ModelEvent::ToolCall(call) if call.provider_executed => {
+                // Argument generation belongs to the model. A terminal-only receipt
+                // cannot tell us when the provider actually began running the tool.
+                if provider_inputs.remove(&call.id) {
+                    clock.tool_started(&call.id);
+                } else {
+                    clock.unmeasured_tool();
+                }
+            }
+            ModelEvent::ProviderToolResult { id, .. } => clock.tool_finished(id),
+            _ => {}
+        }
         let finished = matches!(&emission.event, ModelEvent::Finished { .. });
+        let model_time_ms = finished.then(|| clock.millis()).flatten();
         let first_token = !saw_token
             && match &emission.event {
                 ModelEvent::PartDelta { text, .. } | ModelEvent::ToolInputDelta { text, .. } => {
@@ -3808,6 +3808,7 @@ async fn receive(
                 None
             };
             let protocol = serde_json::to_value(maka_agent_facts::context::ModelClosureProtocol {
+                model_time_ms,
                 finish_reason: step.finish_reason,
                 provider_options: step.provider_options.map(Arc::unwrap_or_clone),
                 cache_read_reported: (step.usage.cache_read_tokens == Some(0)).then_some(true),
@@ -4151,6 +4152,20 @@ pub(crate) async fn append_continuation_cue(
     Ok(())
 }
 
+fn length_limit_no_output_cue(language: maka_agent_facts::language::Language) -> &'static str {
+    match language {
+        maka_agent_facts::language::Language::En => {
+            "Your previous response reached the output length limit before producing a visible answer or tool call. Keep reasoning brief and respond directly or break the work into smaller steps."
+        }
+        maka_agent_facts::language::Language::ZhCn => {
+            "你上一次回复在输出可见内容或工具调用前就达到了输出长度上限。请精简思考过程，直接作答或拆分成更小的步骤。"
+        }
+        maka_agent_facts::language::Language::ZhTw => {
+            "你上一次回覆在輸出可見內容或工具呼叫前就達到了輸出長度上限。請精簡思考過程，直接作答或拆分成更小的步驟。"
+        }
+    }
+}
+
 /// The longest provider-requested wait a Run sleeps through before ending instead.
 const MAX_RETRY_WAIT_MS: u64 = 15 * 60 * 1_000;
 
@@ -4330,8 +4345,9 @@ mod withheld_recovery_tests {
 mod frozen_text_tests {
     use super::*;
 
-    fn minimal_inline_value(instructions: &str, system_text: &str) -> Value {
+    fn minimal_wire_value() -> Value {
         json!({
+            "continuing": null,
             "accepted": {
                 "binding": {
                     "connection_id": "00000000-0000-0000-0000-000000000001",
@@ -4405,37 +4421,39 @@ mod frozen_text_tests {
             "wire": { "format": "chat_completions", "codec": "{}", "identity": "0" },
             "notifications": [],
             "recoveredCells": [],
-            "instructions": instructions,
-            "system": {
-                "text": system_text,
-                "policy_revision": 1,
-                "sources": []
-            },
             "toolChoice": "auto"
         })
     }
 
     #[tokio::test]
-    async fn shared_system_text_deduplicates_on_seal_and_supports_legacy_inline() {
+    async fn shared_system_text_deduplicates_on_seal_and_rejects_inline_fields() {
         let shared = "You are a concise coding assistant.";
-        let legacy_json = minimal_inline_value(shared, shared);
+        let base = minimal_wire_value();
 
-        // 1. Legacy inline records remain readable without external refs.
-        let legacy: FrozenInput = serde_json::from_value(legacy_json.clone()).unwrap();
-        assert!(legacy.text_refs().is_empty());
-        let legacy = hydrate_frozen_input(legacy, |_| async {
-            panic!("legacy inline record must not decode external text refs")
-        })
-        .await
-        .unwrap();
-        assert_eq!(legacy.instructions.as_deref(), Some(shared));
-        assert_eq!(
-            legacy.system.as_ref().map(|s| s.text.as_str()),
-            Some(shared)
-        );
+        // 1. Legacy inline fields are rejected directly at deserialization.
+        for (field, value) in [
+            ("instructions", json!(shared)),
+            (
+                "system",
+                json!({ "text": shared, "policy_revision": 1, "sources": [] }),
+            ),
+        ] {
+            let mut legacy = base.clone();
+            legacy[field] = value;
+            assert!(
+                serde_json::from_value::<FrozenInput>(legacy).is_err(),
+                "inline {field} field must be rejected"
+            );
+        }
 
         // 2. Identical instructions and system.text collapse into one shared content blob.
-        let mut to_seal: FrozenInput = serde_json::from_value(legacy_json).unwrap();
+        let mut to_seal: FrozenInput = serde_json::from_value(base).unwrap();
+        to_seal.instructions = Some(shared.to_owned());
+        to_seal.system = Some(SystemPrompt {
+            text: shared.to_owned(),
+            policy_revision: 1,
+            sources: Vec::new(),
+        });
         let (bytes, blobs) = to_seal.seal_bytes().unwrap();
         assert_eq!(
             blobs.len(),
@@ -4473,18 +4491,5 @@ mod frozen_text_tests {
             Some(shared)
         );
         assert_eq!(hydrated.content_refs(), to_seal.content_refs());
-
-        // 4. Records mixing inline text and external ref are rejected.
-        let mut mixed = wire;
-        mixed["instructions"] = json!(shared);
-        let mixed: FrozenInput = serde_json::from_value(mixed).unwrap();
-        let err = hydrate_frozen_input(mixed, |_| async { Ok(shared.to_owned()) })
-            .await
-            .err()
-            .expect("mixed inline and ref must fail");
-        assert!(
-            err.to_string().contains("frozen-input-manifest-schema"),
-            "{err}"
-        );
     }
 }

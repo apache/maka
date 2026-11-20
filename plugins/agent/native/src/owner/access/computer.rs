@@ -159,8 +159,12 @@ impl BoundCall {
             ));
         }
         let owner = self.access.owner().map_err(ToolError::Failed)?;
-        let selection: crate::tools::SelectionSnapshot = owner
-            .run_content(self.call.execution.run_id, &self.access.spec.tool_selection)
+        let selection = owner
+            .selection_snapshot(
+                &owner.durable,
+                self.call.execution.run_id,
+                &self.access.spec.tool_selection,
+            )
             .await
             .map_err(|error| ToolError::Persistence(error.to_string()))?;
         let selected = selection

@@ -134,3 +134,35 @@ fn repeated_responses_annotations_bind_to_their_own_content_part() {
         ]
     );
 }
+
+#[test]
+fn hosted_execution_only_has_a_start_when_the_provider_streams_it() {
+    let item = json!({"type":"file_search_call","id":"search","status":"completed"});
+    let mut live = Decoder::new(None, &[]);
+    let start = live
+        .push(json!({"type":"response.output_item.added","item":{
+            "type":"file_search_call","id":"search","status":"in_progress"
+        }}))
+        .unwrap();
+    assert!(
+        matches!(&start[..], [ModelEvent::ToolInputStarted { id, provider_executed: true, .. }, ModelEvent::ToolCall(call)] if id == &call.id)
+    );
+    assert!(
+        matches!(&live.push(done(item.clone())).unwrap()[..], [ModelEvent::ProviderToolResult { id, .. }] if id == "search")
+    );
+
+    let mut terminal_only = Decoder::new(None, &[]);
+    let final_events = terminal_only
+        .push(terminal("response.completed", vec![item]))
+        .unwrap();
+    assert!(
+        final_events
+            .iter()
+            .any(|event| matches!(event, ModelEvent::ProviderToolResult { .. }))
+    );
+    assert!(
+        !final_events
+            .iter()
+            .any(|event| matches!(event, ModelEvent::ToolInputStarted { .. }))
+    );
+}

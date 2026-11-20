@@ -349,9 +349,9 @@ async function acp(id, method, params) {
     return reply(id, method === 'session/resume' ? {} : { sessionId: thread });
   }
   if (method === 'session/prompt' && params.sessionId === thread) {
-    const text = params.prompt[0].text;
+    const text = params.prompt.findLast((block) => block.type === 'text').text;
     const start = text.indexOf('MAKA_EXTERNAL_CASE ');
-    if (start === -1) return reply(id, { stopReason: 'end_turn' });
+    if (start === -1) throw Error('Missing task in ACP prompt');
     if (job) throw Error('Duplicate ACP task prompt');
     job = JSON.parse(text.slice(start + 'MAKA_EXTERNAL_CASE '.length).split('\n')[0]);
     turn = id;

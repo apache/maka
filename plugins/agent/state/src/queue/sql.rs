@@ -47,6 +47,16 @@ pub(crate) enum Event {
     CallerStopped {
         caller: RunId,
     },
+    /// A user Stop keeps what others queued until the Session's next Run.
+    Held {
+        requests: Vec<RequestId>,
+    },
+    /// That Run takes `steering` as its steering; the rest become follow-ups.
+    HeldReleased {
+        run: RunId,
+        expected_head: Head,
+        steering: Vec<RequestId>,
+    },
     SteeringReleased {
         run: RunId,
     },
@@ -194,6 +204,115 @@ fn is_interactive(request: &PreparedRequest, source: &RootSourceMessage) -> bool
             &source.message.origin,
             Some(maka_agent_facts::message::MessageOrigin::Goal { .. })
         )
+}
+/// A Stop takes back what the stopping party queued. A message from anyone
+/// else is sent once: its sender has already settled it, so retracting it
+/// would leave this Session never told.
+fn sent_by(requester: &StopRequester, source: &RootSourceMessage) -> bool {
+    use maka_agent_facts::{message::MessageOrigin, room::RoomAuthor};
+    match (requester, &source.message.origin) {
+        (
+            StopRequester::User,
+            None
+            | Some(MessageOrigin::Room {
+                author: RoomAuthor::Human,
+                ..
+            }),
+        ) => true,
+        (
+            StopRequester::Session { session_id },
+            Some(
+                MessageOrigin::Session { execution }
+                | MessageOrigin::Room {
+                    author: RoomAuthor::Session { execution },
+                    ..
+                },
+            ),
+        ) => &execution.session_id == session_id,
+        _ => false,
+    }
+}
+/// What waits after a user Stop: messages others sent that a Stop would
+/// otherwise have taken back.
+fn held(request: &PreparedRequest, source: &RootSourceMessage) -> bool {
+    is_interactive(request, source) && !sent_by(&StopRequester::User, source)
+}
+fn derived_id(tag: &[u8], parts: &[&[u8]]) -> FactId {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(tag);
+    for part in parts {
+        hash.update(part);
+    }
+    let bytes = hash.finalize()[..16].try_into().expect("SHA256 prefix");
+    FactId::try_from(uuid::Uuid::from_bytes(bytes)).expect("non-nil control identity")
+}
+pub(crate) fn stopped_by_user(c: &Connection, run: RunId) -> Result<bool, StoreError> {
+    Ok(c.prepare_cached(
+        "SELECT EXISTS(SELECT 1 FROM agent_runs r
+         JOIN agent_facts f ON f.id=r.stop_request AND f.run=r.run
+         JOIN contents b ON b.id=f.body_content_id
+         WHERE r.run=?1 AND json_extract(b.payload,'$.fact.requester.kind')='user')",
+    )?
+    .query_row([run.to_string()], |row| row.get(0))?)
+}
+fn has_held(c: &Connection, session: &str) -> Result<bool, StoreError> {
+    Ok(c.prepare_cached(
+        "SELECT EXISTS(SELECT 1 FROM agent_queue_items WHERE session=? AND state='pending' AND lane='held')",
+    )?
+    .query_row([session], |row| row.get(0))?)
+}
+/// From a user Stop until the Session's next Run, what others send waits.
+fn holding(c: &Connection, session: &str) -> Result<bool, StoreError> {
+    Ok(has_held(c, session)?
+        || match crate::sql::latest(c, session.to_owned())? {
+            Some(run) => stopped_by_user(c, run)?,
+            None => false,
+        })
+}
+/// Called inside the admission of a Run that starts new work, once the Run's
+/// row exists. What waited after a user Stop becomes this Run's steering, so
+/// the model reads it with the message that started the Run. A message this
+/// Run may not carry becomes a follow-up and runs after it.
+pub(crate) fn deliver_held(
+    c: &Connection,
+    run: &crate::fold::RunView,
+    admission: FactId,
+    at: UnixMillis,
+) -> Result<(), StoreError> {
+    let session = &run.spec.session_id;
+    if !has_held(c, session)? {
+        return Ok(());
+    }
+    let mut steering = Vec::new();
+    if matches!(run.spec.backend, BackendSpec::Model { .. }) {
+        for entry in read(c, session, None)?.entries {
+            if matches!(entry.placement, Placement::Held)
+                && entry.request.spec.owner == run.spec.owner
+                && run
+                    .spec
+                    .accepts_steering_from(&entry.request.spec)
+                    .map_err(|error| invalid(error.to_string()))?
+            {
+                steering.push(entry.request.id);
+            }
+        }
+    }
+    let event = Event::HeldReleased {
+        run: run.run,
+        expected_head: Head::from(run),
+        steering,
+    };
+    let next = cas(c, session, revision(c, session)?)?;
+    project(c, session, next, &event, true)?;
+    record(
+        c,
+        session,
+        next,
+        derived_id(b"held-release", &[admission.as_uuid().as_bytes()]),
+        at,
+        &event,
+    )
 }
 fn run_head(c: &Connection, run: RunId) -> Result<(RunSpec, Head, bool, bool), StoreError> {
     let row: Option<(Vec<u8>,u32,i64,i64,bool,bool)> = c.query_row(
@@ -447,7 +566,7 @@ pub(super) fn write(
     followup_fence: Option<&Followup>,
 ) -> Result<(QueueCommit, bool), StoreError> {
     id(session)?;
-    let event = Event::Command {
+    let mut event = Event::Command {
         expected_revision: command.expected_revision,
         resume_after_interrupt: match followup_fence {
             Some(fence @ (Followup::Interrupt { .. } | Followup::Resume(_))) => {
@@ -457,56 +576,134 @@ pub(super) fn write(
         },
         edit: command.edit,
     };
-    if let Some(revision) = previous(c, session, command.id, &event)? {
+    // A follow-up from someone else that arrives while the Session is holding
+    // is recorded as held.
+    fn hold(event: &mut Event) -> Option<&PreparedRequest> {
+        match event {
+            Event::Command {
+                edit:
+                    QueueEdit::Enqueue {
+                        request,
+                        placement: placement @ Placement::Followup,
+                    },
+                resume_after_interrupt: None,
+                ..
+            } => {
+                *placement = Placement::Held;
+                Some(request)
+            }
+            _ => None,
+        }
+    }
+    let replayed = match previous(c, session, command.id, &event) {
+        Err(StoreError::EventConflict) if followup_fence.is_none() => {
+            hold(&mut event).ok_or(StoreError::EventConflict)?;
+            previous(c, session, command.id, &event)?
+        }
+        result => result?,
+    };
+    if let Some(revision) = replayed {
         return Ok((QueueCommit { revision }, false));
+    }
+    // The hold decision reads the message's source, which may arrive with
+    // this command.
+    for blob in &contents {
+        put(c, blob)?;
+    }
+    if followup_fence.is_none()
+        && matches!(
+            &event,
+            Event::Command {
+                edit: QueueEdit::Enqueue {
+                    placement: Placement::Followup,
+                    ..
+                },
+                ..
+            }
+        )
+        && holding(c, session)?
+    {
+        let mut waiting = event.clone();
+        if let Some(request) = hold(&mut waiting)
+            && held(request, &source(c, request)?)
+        {
+            event = waiting;
+        }
     }
     if let Some(fence) = followup_fence {
         followup(c, session, &event, fence)?;
     }
     let next = cas(c, session, command.expected_revision)?;
-    for blob in &contents {
-        put(c, blob)?;
-    }
     project(c, session, next, &event, true)?;
     record(c, session, next, command.id, command.at, &event)?;
     Ok((QueueCommit { revision: next }, true))
 }
-pub(crate) fn retract_interactive(
+/// The first Stop of a Session's latest Run takes back what the requester
+/// queued. After a user Stop, what others queued waits for the next Run,
+/// including results other Sessions reported back to the stopped Run.
+pub(crate) fn stop_queue(
     c: &Connection,
     session: &str,
+    run: RunId,
     stop: &Change,
+    requester: &StopRequester,
 ) -> Result<(), StoreError> {
-    use sha2::{Digest, Sha256};
+    use maka_agent_facts::message::MessageOrigin;
 
     let queue = read(c, session, None)?;
     let mut expected_revision = queue.revision;
+    let mut hold = Vec::new();
     for entry in queue.entries {
         let source = source(c, &entry.request)?;
-        if !is_interactive(&entry.request, &source)
-            || matches!(
-                source.message.origin,
-                Some(maka_agent_facts::message::MessageOrigin::DiscoveryReport { .. })
-            )
-        {
+        if !is_interactive(&entry.request, &source) {
             continue;
         }
-        let mut hash = Sha256::new();
-        hash.update(b"stop-retract");
-        hash.update(stop.id.as_uuid().as_bytes());
-        hash.update(entry.request.id.0.as_bytes());
-        let bytes = hash.finalize()[..16].try_into().expect("SHA256 prefix");
-        let command = QueueCommand {
-            id: FactId::try_from(uuid::Uuid::from_bytes(bytes)).expect("non-nil control identity"),
-            at: stop.at,
-            expected_revision,
-            edit: QueueEdit::Retract {
-                request: entry.request.id,
-            },
+        if sent_by(requester, &source) {
+            let command = QueueCommand {
+                id: derived_id(
+                    b"stop-retract",
+                    &[stop.id.as_uuid().as_bytes(), entry.request.id.0.as_bytes()],
+                ),
+                at: stop.at,
+                expected_revision,
+                edit: QueueEdit::Retract {
+                    request: entry.request.id,
+                },
+            };
+            let (commit, _) = write(c, session, command, Vec::new(), None)?;
+            expected_revision = commit.revision;
+            continue;
+        }
+        // The stopped turn's own continuation is taken back with the Stop.
+        let keep = match entry.placement {
+            Placement::Completion { caller } => {
+                caller == run
+                    && matches!(
+                        source.message.origin,
+                        Some(MessageOrigin::SessionCompletion { .. })
+                    )
+            }
+            Placement::Held => false,
+            Placement::Followup | Placement::Steering { .. } => true,
         };
-        let (commit, _) = write(c, session, command, Vec::new(), None)?;
-        expected_revision = commit.revision;
+        if matches!(requester, StopRequester::User) && keep {
+            hold.push(entry.request.id);
+        }
     }
-    Ok(())
+    if hold.is_empty() {
+        return Ok(());
+    }
+    let event = Event::Held { requests: hold };
+    let next = cas(c, session, expected_revision)?;
+    project(c, session, next, &event, true)?;
+    record(
+        c,
+        session,
+        next,
+        derived_id(b"stop-hold", &[stop.id.as_uuid().as_bytes()]),
+        stop.at,
+        &event,
+    )
 }
 
 fn row_entry(
@@ -536,6 +733,7 @@ fn placement_columns(placement: &Placement) -> (&'static str, Option<String>) {
     match placement {
         Placement::Followup | Placement::Completion { .. } => ("followup", None),
         Placement::Steering { run, .. } => ("steering", Some(run.to_string())),
+        Placement::Held => ("held", None),
     }
 }
 fn update_entry(c: &Connection, session: &str, entry: &QueueEntry) -> Result<(), StoreError> {
@@ -572,6 +770,9 @@ fn project(
                         && !matches!(&request.spec.trigger, Trigger::Schedule { .. })
                     {
                         return Err(invalid("message cannot be delivered as steering"));
+                    }
+                    if matches!(placement, Placement::Held) && !held(request, &source) {
+                        return Err(invalid("only messages others sent can wait after a Stop"));
                     }
                     crate::artifacts::pin_request(c, request, &source)?;
                     let exists: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agent_queue_items WHERE session=? AND (request=? OR message=?))",params![session,request.id.0,request.message_id],|r|r.get(0))?;
@@ -741,6 +942,44 @@ fn project(
         Event::CallerStopped { caller } => {
             retract_completions(c, session, *caller)?;
         }
+        Event::Held { requests } => {
+            for request in requests {
+                let mut entry = pending(c, session, request)?;
+                entry.placement = Placement::Held;
+                update_entry(c, session, &entry)?;
+            }
+        }
+        Event::HeldReleased {
+            run,
+            expected_head,
+            steering,
+        } => {
+            let held: Vec<QueueEntry> = c
+                .prepare_cached(
+                    "SELECT entry_json FROM agent_queue_items
+                     WHERE session=? AND state='pending' AND lane='held'",
+                )?
+                .query_map([session], |row| row.get::<_, String>(0))?
+                .map(|row| Ok(serde_json::from_str(&row?)?))
+                .collect::<Result<_, StoreError>>()?;
+            if steering
+                .iter()
+                .any(|request| !held.iter().any(|entry| &entry.request.id == request))
+            {
+                return Err(invalid("released steering was not held"));
+            }
+            for mut entry in held {
+                entry.placement = if steering.contains(&entry.request.id) {
+                    Placement::Steering {
+                        run: *run,
+                        expected_head: *expected_head,
+                    }
+                } else {
+                    Placement::Followup
+                };
+                update_entry(c, session, &entry)?;
+            }
+        }
         Event::SteeringReleased { run } => {
             move_steering_to_followup(c, session, *run)?;
         }
@@ -892,6 +1131,35 @@ pub(super) fn entry(
     id(&request.0)?;
     Ok(row_entry(c, session, request)?.map(|row| row.0))
 }
+pub(super) fn entry_enqueued_at(
+    c: &Connection,
+    session: &str,
+    request: &RequestId,
+) -> Result<Option<UnixMillis>, StoreError> {
+    id(session)?;
+    id(&request.0)?;
+    let position: Option<i64> = c
+        .query_row(
+            "SELECT position FROM agent_queue_items WHERE session=? AND request=?",
+            params![session, request.0],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(position) = position else {
+        return Ok(None);
+    };
+    let revision = if position < 0 {
+        position.wrapping_sub(i64::MIN)
+    } else {
+        position
+    };
+    let at: i64 = c.query_row(
+        "SELECT at FROM agent_queue_events WHERE session=? AND revision=?",
+        params![session, revision],
+        |r| r.get(0),
+    )?;
+    Ok(Some(UnixMillis(at)))
+}
 pub(super) fn resolve(
     c: &Connection,
     session: &str,
@@ -965,7 +1233,7 @@ pub(super) fn ready(
         ),
         None => ("", 0, ""),
     };
-    let rows = c.prepare_cached("SELECT session,position,request,entry_json FROM agent_queue_items WHERE owner=?1 AND state='pending' AND (session,position,request)>(?2,?3,?4) ORDER BY session,position,request LIMIT ?5")?.query_map(params![serde_json::to_string(owner)?,session,position,request,limit],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<Result<Vec<_>,_>>()?;
+    let rows = c.prepare_cached("SELECT session,position,request,entry_json FROM agent_queue_items WHERE owner=?1 AND state='pending' AND lane<>'held' AND (session,position,request)>(?2,?3,?4) ORDER BY session,position,request LIMIT ?5")?.query_map(params![serde_json::to_string(owner)?,session,position,request,limit],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<Result<Vec<_>,_>>()?;
     rows.into_iter()
         .map(|(session, position, request, body)| {
             Ok(ReadyEntry {

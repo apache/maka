@@ -391,6 +391,7 @@ async fn unknown_tool_effect_releases_followup_only_after_cleanup() {
             reference: reference.clone(),
         };
         let diagnostic = "paste did not produce an observable change";
+        let shown = "paste did not produce an observable change. The call may still be running; its end was not confirmed.";
         let observed = |cleanup| Fact::OperationObserved {
             tool: tool.clone(),
             reply: maka_agent_facts::operation::RecordedOperationReply {
@@ -430,7 +431,7 @@ async fn unknown_tool_effect_releases_followup_only_after_cleanup() {
             .filter(|row| row["role"] == "failure")
             .map(|row| row["text"].as_str().unwrap())
             .collect();
-        assert_eq!(failures, [diagnostic]);
+        assert_eq!(failures, [shown]);
 
         let history = driver.state.session_history(owner, session.clone());
         let cut = history.capture().await?;
@@ -455,7 +456,7 @@ async fn unknown_tool_effect_releases_followup_only_after_cleanup() {
             maka_agent_state::session_history::source_tree::HistoryDataSource::Snapshot(snapshot);
         assert_eq!(
             archived.recovery_failure_at(&termination).await?.as_deref(),
-            Some(diagnostic)
+            Some(shown)
         );
         let BackendSpec::Model { binding, .. } = driver.state.frontier(run).await?.spec.backend
         else {
@@ -501,6 +502,202 @@ async fn unknown_tool_effect_releases_followup_only_after_cleanup() {
     let cleanup = rig.finish().await;
     assert!(matches!(&result, Ok(Ok(()))), "{result:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
+/// Both kinds of ended call: a local tool that returned OutcomeUnknown and a
+/// Host operation whose receipt is Unknown with confirmed cleanup.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ended_calls_with_unknown_results_reach_the_model_and_settle_the_run() {
+    use maka_agent_engine::{ports::Preparation, preparation};
+    use maka_agent_facts::model::prompt_source::source::{
+        MessageRecipe, ToolOutputRecipe, json as stream,
+    };
+    use maka_agent_state::session_history::tool_result_source::ToolResultReader;
+    use maka_plugin_core::operation::{Receipt, RecoveryContract, RecoveryProtocol, RecoveryRef};
+
+    let mut rig = Rig::new().unwrap();
+    rig.uncertain_tool = true;
+    let result = AssertUnwindSafe(async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
+        let (local, admitted) = rig
+            .tool(attempt, "uncertain_local", "uncertain-1", json!({}))
+            .await?;
+        let (host, _) = rig.tool(attempt, "Computer", "click-1", json!({})).await?;
+        rig.finish_model_request(attempt, None).await?;
+        let driver = rig.driver.as_ref().unwrap().clone();
+        let run = driver.access.execution().run_id;
+
+        let view = driver.state.frontier(run).await?;
+        let prepared = driver
+            .prepare_tool(
+                &view,
+                &view.tools[&tool_key(&local)],
+                driver.catalog.clone(),
+            )
+            .await?;
+        let released = Arc::new(AtomicBool::new(false));
+        rig.begin(
+            prepared.tool.effect,
+            admitted,
+            local.clone(),
+            prepared.source,
+            driver.original_effects.clone(),
+            released.clone(),
+        )?;
+        let DispatchOutcome::Recorded { fact } = rig.complete().await? else {
+            return Err("an unknown local result must be recorded".into());
+        };
+        assert!(matches!(
+            driver
+                .state
+                .fact(run, fact)
+                .await?
+                .map(|recorded| recorded.fact),
+            Some(Fact::LocalToolReturned {
+                settlement: ToolSettlement::Unknown,
+                ..
+            })
+        ));
+        // The call returned, so it holds no resources once its return is durable.
+        assert!(released.load(Ordering::SeqCst));
+
+        let owner = view.spec.owner.clone();
+        let digest = format!("sha256-{}", "a".repeat(64));
+        let reference = RecoveryRef {
+            source: maka_plugin_core::deployment::DeploymentRef {
+                state_domain: "b".repeat(64),
+                deployment: owner.deployment,
+                revision: 1,
+            },
+            namespace: owner.namespace.clone(),
+            export: "computer".into(),
+            method: "evaluate".into(),
+            operation: Uuid::new_v4(),
+            fingerprint: digest.clone(),
+            contract: RecoveryContract {
+                name: "maka.workspace.Computer".into(),
+                version: 1,
+                transport: maka_plugin_core::contract::Transport::Remote,
+                digest,
+            },
+            recovery: RecoveryProtocol::JournalV1,
+        };
+        // What the engine accepts for each call.
+        let local_text = "The call ended, but its result is unknown: the server stopped answering.";
+        let host_text = "The call ended, but its result is unknown: the click was not confirmed.";
+        let local_result = ContentBlob::json(&AcceptedToolResult::OutcomeUnknown {
+            diagnostic: local_text.into(),
+        })?;
+        let host_result = ContentBlob::json(&AcceptedToolResult::OutcomeUnknown {
+            diagnostic: host_text.into(),
+        })?;
+        let committed = rig
+            .append(
+                vec![
+                    Fact::ToolOriginalBound {
+                        tool: host.clone(),
+                        reference: reference.clone(),
+                    },
+                    Fact::OperationObserved {
+                        tool: host.clone(),
+                        reply: maka_agent_facts::operation::RecordedOperationReply {
+                            reference,
+                            receipt: Receipt::Recorded {
+                                outcome: OperationOutcome::Unknown {
+                                    diagnostic: "the click was not confirmed".into(),
+                                },
+                                cleanup: OperationCleanup::Confirmed,
+                            },
+                        },
+                    },
+                    Fact::ToolResultAccepted {
+                        tool: local,
+                        result: local_result.reference().clone(),
+                        outcome: AcceptedResult::OutcomeUnknown,
+                    },
+                    Fact::ToolResultAccepted {
+                        tool: host,
+                        result: host_result.reference().clone(),
+                        outcome: AcceptedResult::OutcomeUnknown,
+                    },
+                ],
+                vec![local_result.clone(), host_result],
+            )
+            .await?;
+
+        // The next model request carries both diagnostics as tool errors.
+        let (request, _, _) = rig
+            .record_model_request(Preparation::ToolContinuation { attempt })
+            .await?;
+        let frozen: Value =
+            serde_json::from_slice(&driver.state.content(run, request.request).await?)?;
+        let history = driver.state.session_history(owner, session.clone());
+        let cut = history.capture().await?;
+        let resources = driver.owner.services.model_preparation_resources();
+        let prompt = preparation::restore_prompt(
+            preparation::PreparationIo::new(&rig.lease.as_ref().unwrap().store())?,
+            resources.clone(),
+            &history,
+            &cut,
+            run,
+            &serde_json::from_value(frozen["prompt"].clone())?,
+            &serde_json::from_value::<Vec<_>>(frozen["promptChunks"].clone())?,
+            &serde_json::from_value(frozen["layout"].clone())?,
+            &CancellationToken::new(),
+        )
+        .await?;
+        let work = resources.acquire_work().await?;
+        let budget = work.budget();
+        let mut sent = Vec::new();
+        let mut messages = prompt.recipes().ok_or("prompt recipes missing")?.open(0);
+        while let Some(message) = messages.next().await? {
+            let MessageRecipe::Tool { content, .. } = message else {
+                continue;
+            };
+            let mut results = content.open(0);
+            while let Some(result) = results.next().await? {
+                let ToolOutputRecipe::ErrorText(text) = result.output else {
+                    continue;
+                };
+                for expected in [local_text, host_text] {
+                    if stream::text_eq(&text, expected, budget.clone()).await? {
+                        sent.push(expected);
+                    }
+                }
+            }
+        }
+        assert_eq!(sent, [local_text, host_text]);
+
+        // History reads the diagnostic, not internal evidence.
+        let stop = CancellationToken::new();
+        let value = ToolResultReader::live(&history, &cut, run, &stop)
+            .result(
+                &committed.facts[2].fact,
+                local_result.reference(),
+                budget.clone(),
+            )
+            .await?
+            .value(budget.clone())
+            .await?;
+        let shown = stream::inspect(&value, budget.clone()).await?.text()?;
+        assert!(stream::text_eq(&shown, local_text, budget).await?);
+
+        // Rebuilt indexes agree with the live projection.
+        driver.state.rebuild(run).await?;
+        let catalog = driver.owner.canonical_catalog()?;
+        catalog.rebuild(session.clone()).await?;
+        let record = catalog.record(&session).await?.ok_or("missing session")?;
+        assert!(!record.status.unknown_effects, "{:?}", record.status);
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })
+    .catch_unwind()
+    .await;
+    // A call that still holds its resources keeps cleanup waiting.
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await;
+    assert!(matches!(&result, Ok(Ok(()))), "{result:?}");
+    assert!(cleanup.as_ref().is_ok_and(Vec::is_empty), "{cleanup:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -961,6 +1158,12 @@ async fn history_exposes_only_reported_prompt_cache_usage() -> TestResult<()> {
                 .find(|chunk| chunk["finalOutput"] == true)
                 .expect("completed reply");
             assert_eq!(reply["text"], "Cached turn.");
+            let observed = query(&rig, "observe", json!({"sessionId":session})).await?;
+            assert!(
+                observed["metrics"]["outputTokensPerSecond"]
+                    .as_f64()
+                    .is_some_and(|rate| rate > 0.0)
+            );
             assert_eq!(
                 reply["timing"].get("promptCache").cloned(),
                 reported.map(|read| json!({"inputTokens":100,"readTokens":read})),
@@ -2069,6 +2272,11 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
                 message_id: message_id.clone(),
                 text: "le.txt` successfully.".into(),
             },
+            Output::ContextUsage(maka_agent_facts::executor::ContextUsage {
+                used: 0,
+                window: 1_048_576u64.try_into().unwrap(),
+                model: Some("test-model".into()),
+            }),
             Output::TurnUsage {
                 usage: TurnUsage {
                     tokens: maka_agent_facts::model::ModelUsage {
@@ -2100,6 +2308,7 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
                 Fact::ExternalTaskObserved {
                     task,
                     index: index as u64,
+                    model_time_ms: matches!(&output, Output::TurnUsage { .. }).then_some(250),
                     output,
                 }
             }));
@@ -2173,6 +2382,10 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
             )
             .await?;
         let observed = query(&rig, "observe", json!({"sessionId":session})).await?;
+        assert_eq!(observed["metrics"]["modelId"], "test-model");
+        assert_eq!(observed["metrics"]["contextTokens"], 0);
+        assert_eq!(observed["metrics"]["contextWindow"], 1_048_576);
+        assert_eq!(observed["metrics"]["outputTokensPerSecond"], 100.0);
         assert_eq!(observed["toolSeeds"], json!([]));
         let page = live(&rig, &session, wire::Position::Tail).await?;
         let mut replies = page["chunks"]

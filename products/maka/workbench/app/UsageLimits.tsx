@@ -18,10 +18,18 @@
  */
 
 import { formatDuration } from './duration';
-import { cleanup, effect, lifecycle, platform, signal, Text, untracked, View } from 'nsh';
+import { cleanup, effect, lifecycle, platform, signal, Text, View } from 'nsh';
 import { usageSeverity } from './composerUsageSummary';
+import { useHost } from './host';
 import { currentLocale, tr } from './locale';
-import { watchUsageLimits, type UsageReading, type UsageResult } from './usageLimitsReading';
+import {
+  usageTargetKey,
+  watchUsageLimits,
+  type UsageLimitsHost,
+  type UsageObservation,
+  type UsageResult,
+  type UsageTarget,
+} from './usageLimitsReading';
 import { C, captionTextStyle } from './ui';
 import { TokenCount } from './TokenCount';
 
@@ -62,35 +70,70 @@ export function usageLabel(limit: UsageLimit) {
   return [limit.label, period].filter(Boolean).join(' · ') || tr('Usage limit');
 }
 
+function remainingShare(usedPercent: number) {
+  return Math.max(0, Math.min(100, 100 - usedPercent));
+}
+
 export function usageValue(limit: UsageLimit) {
   if (limit.kind === 'balance')
     return [usageNumber(limit.amount), limit.unit].filter(Boolean).join(' ');
   if (limit.kind === 'unlimited') return tr('Unlimited');
   if (limit.kind === 'disabled') return tr('Disabled');
-  const percent = tr('{percent}% used', { percent: usageNumber(limit.usedPercent) });
+  const percent = tr('{percent}% remaining', {
+    percent: usageNumber(remainingShare(limit.usedPercent)),
+  });
   if (!limit.quantity) return percent;
   const { used, limit: total, unit } = limit.quantity;
-  return `${percent} · ${usageNumber(used)} / ${usageNumber(total)}${unit ? ` ${unit}` : ''}`;
+  const left = Math.max(0, total - used);
+  return `${percent} · ${usageNumber(left)} / ${usageNumber(total)}${unit ? ` ${unit}` : ''}`;
 }
 
-export function UsageLimits(props: { query: () => Promise<UsageResult>; revision?: number }) {
-  const usage = signal<UsageReading | null>(null);
-  let lastRevision: number | undefined;
+export function useUsageLimits(target: () => UsageTarget | null) {
+  const host = useHost();
+  const observation = signal<UsageObservation | null>(null);
+  let activeKey: string | null = null;
+  let activeRevision: number | undefined;
   let stop: (() => void) | undefined;
-  cleanup(() => stop?.());
-  effect(() => {
-    const current = props.revision;
+  const detach = () => {
     stop?.();
     stop = undefined;
-    if (current !== lastRevision) usage.set(null);
-    lastRevision = current;
-    if (lifecycle() !== 'active') return;
-    stop = watchUsageLimits(
-      () => untracked(props.query),
-      (reading) => usage.set(reading),
-      untracked(usage),
-    );
+  };
+  cleanup(detach);
+  effect(() => {
+    const current = target();
+    if (!current) {
+      detach();
+      activeKey = null;
+      activeRevision = undefined;
+      observation.set(null);
+      return;
+    }
+    const key = usageTargetKey(current);
+    const revision = current.kind === 'connection' ? current.basis?.revision : undefined;
+    if (lifecycle() !== 'active') {
+      detach();
+      if (key !== activeKey || revision !== activeRevision) {
+        activeKey = key;
+        activeRevision = revision;
+        observation.set(null);
+      }
+      return;
+    }
+    if (key === activeKey && revision === activeRevision && stop !== undefined) return;
+    detach();
+    activeKey = key;
+    activeRevision = revision;
+    observation.set(null);
+    stop = watchUsageLimits(host as unknown as UsageLimitsHost, current, (next) => {
+      observation.set(next);
+    });
   });
+  return observation;
+}
+
+export function UsageLimits(props: { target: () => UsageTarget }) {
+  const observation = useUsageLimits(props.target);
+  const usage = () => observation()?.reading ?? null;
   const limits = () => {
     const result = usage()?.result;
     return result?.kind === 'ready' ? result.limits : [];
@@ -124,7 +167,7 @@ export function UsageLimits(props: { query: () => Promise<UsageResult>; revision
   );
 }
 
-export function UsageLimitsList(props: { limits: () => UsageLimit[]; showRemaining?: boolean }) {
+export function UsageLimitsList(props: { limits: () => UsageLimit[] }) {
   const terminal = platform.idiom === 'terminal';
   return (
     <View style={{ gap: terminal ? 0 : 8 }}>
@@ -150,7 +193,7 @@ export function UsageLimitsList(props: { limits: () => UsageLimit[]; showRemaini
           };
           const remaining = () => {
             const value = used();
-            return value === null ? null : Math.max(0, Math.min(100, Math.round(100 - value)));
+            return value === null ? null : remainingShare(value);
           };
           const tokenQuantity = () => {
             const limit = entry();
@@ -160,11 +203,8 @@ export function UsageLimitsList(props: { limits: () => UsageLimit[]; showRemaini
           };
           const summary = () => {
             const limit = entry();
-            if (props.showRemaining && limit.kind === 'window') {
-              return tr('{percent}% remaining', { percent: usageNumber(remaining() ?? 0) });
-            }
             return tokenQuantity() && limit.kind === 'window'
-              ? tr('{percent}% used', { percent: usageNumber(limit.usedPercent) })
+              ? tr('{percent}% remaining', { percent: usageNumber(remaining() ?? 0) })
               : usageValue(limit);
           };
           const barColor = () => {
@@ -181,8 +221,8 @@ export function UsageLimitsList(props: { limits: () => UsageLimit[]; showRemaini
                   style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}
                 >
                   <TokenCount
-                    label={tr('Consumed tokens')}
-                    value={tokenQuantity()!.used}
+                    label={tr('Remaining tokens')}
+                    value={Math.max(0, tokenQuantity()!.limit - tokenQuantity()!.used)}
                     style={captionTextStyle}
                   />
                   <Text style={{ ...captionTextStyle, color: C.muted }}>/</Text>
@@ -194,11 +234,18 @@ export function UsageLimitsList(props: { limits: () => UsageLimit[]; showRemaini
                   />
                 </View>
               </If>
-              <If when={!terminal && used() !== null}>
-                <View style={{ height: 3, borderRadius: 2, backgroundColor: C.line }}>
+              <If when={!terminal && remaining() !== null}>
+                <View
+                  style={{
+                    height: 3,
+                    borderRadius: 2,
+                    backgroundColor: C.line,
+                    overflow: 'hidden',
+                  }}
+                >
                   <View
                     style={{
-                      width: `${Math.min(100, used() ?? 0)}%`,
+                      width: `${remaining() ?? 0}%`,
                       height: 3,
                       borderRadius: 2,
                       backgroundColor: barColor(),

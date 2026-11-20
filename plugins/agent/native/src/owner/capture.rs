@@ -285,6 +285,7 @@ impl Owner {
         let mut contents = Vec::new();
         let system = ContentBlob::json(&system_prompt).map_err(|e| e.to_string())?;
         let tools = ContentBlob::json(&selection).map_err(|e| e.to_string())?;
+        self.cache_selection_snapshot(tools.reference().clone(), Arc::new(selection));
         let input = ContentBlob::json(&input).map_err(|error| error.to_string())?;
         let backend = match (&basis.model, &basis.executor) {
             (Some(model), None) => {

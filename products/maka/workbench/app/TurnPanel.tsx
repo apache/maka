@@ -342,6 +342,8 @@ function ActivityEdgeFade(props: { bottom?: boolean }) {
   );
 }
 
+export type ActivityPage = 'before' | 'after' | 'start' | 'end';
+
 function ActivityLog(props: {
   group: () => ProcessGroup;
   toolProgress(id: string): ToolActivity['phase'] | null;
@@ -356,6 +358,8 @@ function ActivityLog(props: {
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   senders?: MessageSenders;
   inspectTool?(key: string): void;
+  pageSteps?(direction: ActivityPage): void;
+  hasMoreAfter?(): boolean;
   userScroll(): void;
   reading(away: boolean): void;
   resumed(): void;
@@ -373,11 +377,13 @@ function ActivityLog(props: {
   state.opening = undefined;
   let ownList: ListRef | undefined;
   let scrollInput: 'idle' | 'pending' | 'dragging' = 'idle';
+  let nearStart = true;
   let nearEnd = false;
   let atEnd = false;
   let lastOffset = 0;
   let alive = true;
   const resumeFollowing = () => {
+    if (props.group().closed) return;
     const resuming = !state.following();
     state.following.set(true);
     props.reading(false);
@@ -410,16 +416,18 @@ function ActivityLog(props: {
   const bodyHeight = () => {
     measurements();
     const viewport = props.viewport();
-    const measured = props.group().rowIds.reduce((height, id) => {
+    const maximum = bodyMaxHeight();
+    const ids = props.group().rowIds;
+    let height = 0;
+    for (const id of ids) {
       const row = state.measured.get(id);
-      return (
-        height +
-        (row?.width === viewport.width
+      height +=
+        row?.width === viewport.width
           ? row.height
-          : controlStyle.minHeight + (id === props.group().rowIds.at(-1) ? 0 : memberGap))
-      );
-    }, 0);
-    return Math.min(bodyMaxHeight(), Math.max(16, measured));
+          : controlStyle.minHeight + (id === ids.at(-1) ? 0 : memberGap);
+      if (height >= maximum) return maximum;
+    }
+    return Math.min(maximum, Math.max(16, height));
   };
   // Read before binding: the new List's first layout writes its scroll gauge.
   if (opening || state.following()) initial.set({ y: 0 });
@@ -470,7 +478,11 @@ function ActivityLog(props: {
             if (!alive || lease !== state.lease) return;
             if (scrollInput !== 'dragging') scrollInput = 'pending';
             props.userScroll();
-            if (intent === 'end' || (nearEnd && (delta ?? 0) > 0)) resumeFollowing();
+            if (intent === 'start' || intent === 'end') props.pageSteps?.(intent);
+            else if ((delta ?? 0) < 0 && nearStart) props.pageSteps?.('before');
+            else if ((delta ?? 0) > 0 && nearEnd) props.pageSteps?.('after');
+            if (intent === 'end' || (nearEnd && (delta ?? 0) > 0 && !props.hasMoreAfter?.()))
+              resumeFollowing();
           }}
           onScroll={(event) => {
             if (!alive || lease !== state.lease) return;
@@ -482,13 +494,18 @@ function ActivityLog(props: {
               fadeTop.set(end > 1 && lastOffset > 1);
               fadeBottom.set(end > 1 && distance > 1);
             }
+            if (end <= 1) props.pageSteps?.(props.group().closed ? 'after' : 'before');
+            const moreAfter = props.hasMoreAfter?.() ?? false;
+            nearStart = lastOffset <= activityFollowThreshold;
             nearEnd = distance <= activityFollowThreshold;
-            atEnd = distance <= 1;
+            atEnd = distance <= 1 && !moreAfter;
             props.settled?.(atEnd);
             // Reflow and restoring a saved offset also report scroll geometry.
             if (movement === 0 || scrollInput === 'idle') return;
             if (scrollInput === 'pending') scrollInput = 'idle';
-            if (movement > 0 && nearEnd) resumeFollowing();
+            if (movement < 0 && lastOffset <= event.size.height) props.pageSteps?.('before');
+            if (movement > 0 && distance <= event.size.height) props.pageSteps?.('after');
+            if (movement > 0 && nearEnd && !moreAfter) resumeFollowing();
             else if (movement < 0 && !nearEnd) {
               state.following.set(false);
               props.reading(true);
@@ -617,6 +634,8 @@ type TurnPanelProps = {
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   senders?: MessageSenders;
   inspectTool?(key: string): void;
+  pageSteps?(direction: ActivityPage): void;
+  hasMoreAfter?(): boolean;
   userScroll(): void;
   reading(away: boolean): void;
   resumed(): void;
@@ -743,7 +762,10 @@ function GroupHeader(props: TurnPanelProps) {
     props.reading(action.open && props.group().closed);
     animateDisclosure();
     props.state.open.set(action.open);
-    if (action.open) props.revealTerminalGroup?.();
+    if (action.open) {
+      props.pageSteps?.(props.group().closed ? 'start' : 'end');
+      props.revealTerminalGroup?.();
+    }
   };
   const icon = () => {
     const last =
