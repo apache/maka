@@ -193,7 +193,7 @@ async fn serve(
     let mut runtime = JsRuntime::try_new(RuntimeOptions {
         inspector: true,
         extensions: vec![maka_code::init()],
-        create_params: Some(v8::CreateParams::default().heap_limits(0, limits.heap_bytes)),
+        create_params: Some(crate::bounded_create_params(limits.heap_bytes)),
         ..Default::default()
     })
     .map_err(|e| CellAbort::Internal(e.to_string()))?;

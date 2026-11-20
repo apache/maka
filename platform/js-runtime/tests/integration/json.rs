@@ -149,3 +149,35 @@ async fn exit_and_non_json_inputs_stop_before_tool_or_draft_dispatch() {
     assert!(tool_calls.is_empty(), "{tool_calls:?}");
     assert_eq!(dispatched.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn array_buffer_allocations_are_bounded_by_heap_limit() {
+    let tools = Arc::new(Tools(|value: Value| -> ToolFuture {
+        Box::pin(async move { Ok(value) })
+    }));
+    let limits = CellLimits {
+        heap_bytes: 16 * 1024 * 1024,
+        ..CellLimits::default()
+    };
+    let engine = CodeExecutor::new(limits).unwrap();
+    let bomb = engine
+        .execute(
+            "const arr = []; while (true) { arr.push(new Uint8Array(2 * 1024 * 1024)); }".into(),
+            tools.clone(),
+            CancellationToken::new(),
+        )
+        .await;
+    assert!(
+        !matches!(bomb, Ok(CellResult::Success { .. })),
+        "unbounded Uint8Array loop must fail under 16 MiB heap_bytes, got {bomb:?}"
+    );
+    // Subsequent healthy cell execution must still succeed cleanly.
+    let healthy = engine
+        .execute("return 21 + 21;".into(), tools, CancellationToken::new())
+        .await
+        .unwrap();
+    let CellResult::Success { value, .. } = healthy else {
+        panic!("expected healthy cell after OOM bomb, got {healthy:?}");
+    };
+    assert_eq!(value, json!(42));
+}

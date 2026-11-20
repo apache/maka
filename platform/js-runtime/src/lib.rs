@@ -216,7 +216,7 @@ async fn run_cell(
     initialize_platform();
     let mut runtime = JsRuntime::try_new(RuntimeOptions {
         extensions: vec![maka_code::init()],
-        create_params: Some(v8::CreateParams::default().heap_limits(0, limits.heap_bytes)),
+        create_params: Some(bounded_create_params(limits.heap_bytes)),
         ..Default::default()
     })
     .map_err(|error| CellAbort::Internal(error.to_string()))?;
@@ -323,6 +323,110 @@ enum StopReason {
     Cancelled,
     ExecutionBudget,
     HeapLimit,
+}
+
+struct ArrayBufferBudget {
+    allocated: std::sync::atomic::AtomicUsize,
+    limit: usize,
+}
+
+impl ArrayBufferBudget {
+    const ALIGN: usize = 16;
+
+    fn layout(len: usize) -> Option<std::alloc::Layout> {
+        std::alloc::Layout::from_size_align(len.max(1), Self::ALIGN).ok()
+    }
+
+    fn reserve(&self, len: usize) -> bool {
+        use std::sync::atomic::Ordering;
+        self.allocated
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(len).filter(|&next| next <= self.limit)
+            })
+            .is_ok()
+    }
+
+    fn release(&self, len: usize) {
+        self.allocated
+            .fetch_sub(len, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// Bounds both V8's JS heap and off-heap ArrayBuffer backing stores to `heap_bytes`.
+/// Without a bounded ArrayBuffer allocator, `new Uint8Array(N)` allocates native RAM
+/// outside V8's heap limit and can spike Host RSS or OOM-kill the Host process.
+pub(crate) fn bounded_create_params(heap_bytes: usize) -> v8::CreateParams {
+    use std::ffi::c_void;
+
+    unsafe extern "C" fn allocate(budget: &ArrayBufferBudget, len: usize) -> *mut c_void {
+        let Some(layout) = ArrayBufferBudget::layout(len) else {
+            return std::ptr::null_mut();
+        };
+        if !budget.reserve(len) {
+            return std::ptr::null_mut();
+        }
+        // SAFETY: `layout` has non-zero size (`len.max(1)`) and valid power-of-two alignment.
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        if ptr.is_null() {
+            budget.release(len);
+            return std::ptr::null_mut();
+        }
+        ptr.cast()
+    }
+
+    unsafe extern "C" fn allocate_uninitialized(
+        budget: &ArrayBufferBudget,
+        len: usize,
+    ) -> *mut c_void {
+        let Some(layout) = ArrayBufferBudget::layout(len) else {
+            return std::ptr::null_mut();
+        };
+        if !budget.reserve(len) {
+            return std::ptr::null_mut();
+        }
+        // SAFETY: `layout` has non-zero size (`len.max(1)`) and valid power-of-two alignment.
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        if ptr.is_null() {
+            budget.release(len);
+            return std::ptr::null_mut();
+        }
+        ptr.cast()
+    }
+
+    unsafe extern "C" fn free(budget: &ArrayBufferBudget, data: *mut c_void, len: usize) {
+        if data.is_null() {
+            return;
+        }
+        if let Some(layout) = ArrayBufferBudget::layout(len) {
+            // SAFETY: `data` was returned by `allocate` or `allocate_uninitialized` with the
+            // exact same `len`, so `layout` matches the original allocation layout.
+            unsafe { std::alloc::dealloc(data.cast(), layout) };
+        }
+        budget.release(len);
+    }
+
+    unsafe extern "C" fn drop_budget(handle: *const ArrayBufferBudget) {
+        // SAFETY: `handle` was created once by `Arc::into_raw` when constructing the allocator.
+        drop(unsafe { Arc::from_raw(handle) });
+    }
+
+    static VTABLE: v8::RustAllocatorVtable<ArrayBufferBudget> = v8::RustAllocatorVtable {
+        allocate,
+        allocate_uninitialized,
+        free,
+        drop: drop_budget,
+    };
+
+    let budget = Arc::new(ArrayBufferBudget {
+        allocated: std::sync::atomic::AtomicUsize::new(0),
+        limit: heap_bytes,
+    });
+    // SAFETY: `Arc::into_raw` transfers ownership of one strong reference to V8, which
+    // passes `&ArrayBufferBudget` to callbacks and releases it once via `drop_budget`.
+    let allocator = unsafe { v8::new_rust_allocator(Arc::into_raw(budget), &VTABLE) };
+    v8::CreateParams::default()
+        .heap_limits(0, heap_bytes)
+        .array_buffer_allocator(allocator)
 }
 
 fn initialize_platform() {
