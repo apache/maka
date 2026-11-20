@@ -171,6 +171,7 @@ export function QuickFooter(props: {
   action: string;
   title: string;
   menu: JSX.Element;
+  menuOpen?: boolean;
   onAction?: (() => void) | undefined;
 }) {
   // Read when drawn: the theme can change while the launcher is open.
@@ -183,7 +184,8 @@ export function QuickFooter(props: {
         alignItems: 'center',
         gap: 16,
         height: 32,
-        paddingHorizontal: 16,
+        paddingLeft: 16,
+        paddingRight: props.menuOpen ? 0 : 16,
         borderTopWidth: 1,
         borderTopColor: C.line,
       }}

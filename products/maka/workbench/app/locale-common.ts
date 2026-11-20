@@ -46,6 +46,7 @@ export const commonMessages = {
   'Hide application': ['Hide application', '隐藏应用', '隱藏應用程式'],
   'Quit application': ['Quit application', '退出应用', '結束應用程式'],
   'Restart application': ['Restart application', '重启应用', '重新啟動應用程式'],
+  '{tool} settings': ['{tool} settings', '{tool}设置', '{tool}設定'],
   'Force quit application': ['Force quit application', '强制退出应用', '強制結束應用程式'],
   'Force quit {app}? Unsaved changes may be lost.': [
     'Force quit {app}? Unsaved changes may be lost.',

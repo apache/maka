@@ -23,6 +23,7 @@ import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk
 import {
   quickToolView,
   type QuickItem,
+  type QuickAction,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
 import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
@@ -55,38 +56,48 @@ function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
         image: () => iconOf(path),
         source: tr('Application'),
         action: tr('Open'),
-        async actions() {
+        async actions(): Promise<readonly QuickAction[]> {
           const pid = await host.applicationInstance(path);
           const run = (task: Promise<unknown>) => void task.then(input.close, input.report);
           return [
+            {
+              title: tr('Reveal in Finder'),
+              icon: 'folder',
+              run: () => run(host.applicationAction(path, 0, 'reveal')),
+            },
+            {
+              title: tr('Copy application path'),
+              icon: 'copy',
+              run: () => run(Clipboard.writeText(path)),
+            },
             ...(pid == null
               ? []
               : [
                   {
                     title: tr('Hide application'),
+                    icon: 'minus' as const,
+                    startsGroup: true,
                     run: () => run(host.applicationAction(path, pid, 'hide')),
                   },
                   {
                     title: tr('Restart application'),
+                    icon: 'refresh' as const,
                     run: () => run(host.applicationAction(path, pid, 'restart')),
                   },
                   {
                     title: tr('Quit application'),
+                    icon: 'close' as const,
                     run: () => run(host.applicationAction(path, pid, 'quit')),
                   },
                   {
                     title: tr('Force quit application'),
+                    icon: 'stop' as const,
                     confirm: tr('Force quit {app}? Unsaved changes may be lost.', {
                       app: applicationName(path),
                     }),
                     run: () => run(host.applicationAction(path, pid, 'forceQuit')),
                   },
                 ]),
-            { title: tr('Copy application path'), run: () => run(Clipboard.writeText(path)) },
-            {
-              title: tr('Reveal in Finder'),
-              run: () => run(host.applicationAction(path, 0, 'reveal')),
-            },
           ];
         },
         match,

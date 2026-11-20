@@ -38,7 +38,7 @@ import {
   type ScrollRef,
   type Signal,
 } from 'nsh';
-import { Button, Input, Menu, MenuItem } from 'nsh/base';
+import { Button, Input, Menu, MenuItem, MenuSeparator } from 'nsh/base';
 import { createQuickQuestion } from './quickQuestion';
 import { quickQuestionIcon } from './quick-question-icon';
 import { QuickQuestionPanel } from './QuickQuestionPanel';
@@ -90,6 +90,8 @@ import {
   menuDetailTextStyle,
   menuRowHoverStyle,
   menuRowStyle,
+  menuSeparatorStyle,
+  menuLabelStyle,
   textTooltip,
 } from './ui';
 
@@ -664,18 +666,31 @@ function Launcher(
     refocus();
   };
   const menuOpen = signal(false);
+  const menuIndex = signal(-1);
   const choices = signal<readonly QuickAction[]>([]);
   const confirm = signal<QuickAction | null>(null);
   let menuRequest = 0;
-  const setMenu = (open: boolean) => {
+  const setMenu = (open: boolean, keyboard = false) => {
+    menuIndex.set(keyboard ? 0 : -1);
     const ticket = ++menuRequest;
     menuOpen.set(open);
     if (!open) return;
     const row = rows()[selected()];
     if (!row) return;
-    const first = { title: row.action, run: () => executeRow(row) };
-    const settings = row.tool
-      ? [{ title: tr('Settings'), run: () => openSettings(row.tool!) }]
+    const first: QuickAction = {
+      icon: row.icon === 'maka' ? 'command' : row.icon,
+      title: row.action,
+      run: () => executeRow(row),
+    };
+    const settings: QuickAction[] = row.tool
+      ? [
+          {
+            title: tr('{tool} settings', { tool: quick.title(row.tool) }),
+            icon: 'settings',
+            startsGroup: true,
+            run: () => openSettings(row.tool!),
+          },
+        ]
       : [];
     choices.set([first, ...settings]);
     if (row.actions)
@@ -686,6 +701,22 @@ function Launcher(
         (reason) => failure.set(errorText(reason, 'Could not run {tool}.', { tool: row.title })),
       );
   };
+  const selectAction = (action: QuickAction | undefined) => {
+    if (!action) return;
+    setMenu(false);
+    if (action.confirm) confirm.set(action);
+    else action.run();
+  };
+  const moveSelection = (direction: -1 | 1) => {
+    if (!menuOpen()) return navigate(direction);
+    menuIndex.set(Math.max(0, Math.min(choices().length - 1, menuIndex() + direction)));
+  };
+  effect(() => {
+    const node = input();
+    if (node && menuOpen()) {
+      cleanup(keymap.bind('escape', () => setMenu(false), { when: 'always', within: node }));
+    }
+  });
   const placeholder = () =>
     props.scope() !== null
       ? tr('Search {tool}', { tool: props.scope()!.entry.title })
@@ -736,17 +767,17 @@ function Launcher(
                         within: node,
                       }),
                     ),
-                    keymap.bind('up', () => navigate(-1), {
+                    keymap.bind('up', () => moveSelection(-1), {
                       when: 'always',
                       repeat: true,
                       within: node,
                     }),
-                    keymap.bind('down', () => navigate(1), {
+                    keymap.bind('down', () => moveSelection(1), {
                       when: 'always',
                       repeat: true,
                       within: node,
                     }),
-                    keymap.bind('mod+k', () => setMenu(!menuOpen()), {
+                    keymap.bind('mod+k', () => setMenu(!menuOpen(), true), {
                       when: 'always',
                       within: node,
                     }),
@@ -774,6 +805,7 @@ function Launcher(
                 placeholder={placeholder()}
                 value={query()}
                 onChange={({ value }) => {
+                  if (menuOpen()) setMenu(false);
                   cursor = { index: -1, draft: '', text: '' };
                   failure.set(null);
                   if (!props.scope()) {
@@ -795,7 +827,7 @@ function Launcher(
                   selection.set(0);
                   query.set(value);
                 }}
-                onSubmit={activate}
+                onSubmit={() => (menuOpen() ? selectAction(choices()[menuIndex()]) : activate())}
                 style={{ ...quickInputStyle(), flex: 1, minWidth: 0, marginTop: 8 }}
               />
             )}
@@ -816,7 +848,12 @@ function Launcher(
           style={{
             // A content-sized launcher must also fit the overlay above its footer.
             minHeight: menuOpen()
-              ? Math.min(MAX_LIST_HEIGHT, choices().length * menuRowStyle().minHeight + 18)
+              ? Math.min(
+                  MAX_LIST_HEIGHT,
+                  choices().length * menuRowStyle().minHeight +
+                    32 +
+                    choices().filter((item) => item.startsGroup).length * 9,
+                )
               : 0,
             borderTopWidth: 1,
             borderTopColor: C.line,
@@ -917,6 +954,7 @@ function Launcher(
             </View>
           </If>
           <QuickFooter
+            menuOpen={menuOpen()}
             title={rows()[selected()]?.title ?? ''}
             onAction={activate}
             action={rows()[selected()]?.action ?? ''}
@@ -924,9 +962,9 @@ function Launcher(
               <Menu
                 open={menuOpen()}
                 onOpenChange={({ open }) => setMenu(open)}
-                popupStyle={floatingStyle()}
-                offset={4}
-                margin={8}
+                popupStyle={{ ...floatingStyle(), width: 224 }}
+                offset={-30}
+                margin={0}
                 placement="top"
                 align="end"
                 trigger={
@@ -940,21 +978,36 @@ function Launcher(
                   </Button>
                 }
               >
+                <Text style={{ ...menuLabelStyle(), numberOfLines: 1, textOverflow: 'ellipsis' }}>
+                  {rows()[selected()]?.title}
+                </Text>
                 <Each of={choices()} key={(item) => item.title}>
-                  {(item) => (
-                    <MenuItem
-                      style={{ ...menuRowStyle(), minWidth: 184 }}
-                      hoverStyle={menuRowHoverStyle()}
-                      focusStyle={menuRowHoverStyle()}
-                      onSelect={() => {
-                        const action = item();
-                        setMenu(false);
-                        if (action.confirm) confirm.set(action);
-                        else action.run();
-                      }}
-                    >
-                      <Text style={{ ...menuDetailTextStyle, color: C.text }}>{item().title}</Text>
-                    </MenuItem>
+                  {(item, index) => (
+                    <>
+                      <If when={item().startsGroup}>
+                        <MenuSeparator style={menuSeparatorStyle()} />
+                      </If>
+                      <MenuItem
+                        accessibilityLabel={item().title}
+                        style={{
+                          ...menuRowStyle(),
+                          minWidth: 184,
+                          ...(menuIndex() === index() ? menuRowHoverStyle() : {}),
+                        }}
+                        hoverStyle={menuRowHoverStyle()}
+                        focusStyle={menuRowHoverStyle()}
+                        onSelect={() => selectAction(item())}
+                      >
+                        <Icon name={item().icon ?? 'command'} size={16} color={C.secondary} />
+                        <Text style={{ ...menuDetailTextStyle, color: C.text, flex: 1 }}>
+                          {item().title}
+                          {item().confirm ? '…' : ''}
+                        </Text>
+                        <If when={index() === 0}>
+                          <Text style={{ ...menuDetailTextStyle, color: C.muted }}>↵</Text>
+                        </If>
+                      </MenuItem>
+                    </>
                   )}
                 </Each>
               </Menu>

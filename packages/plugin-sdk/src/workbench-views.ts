@@ -70,6 +70,17 @@ export type QuickIcon =
   | 'symbol';
 
 export interface QuickAction {
+  icon?:
+    | QuickIcon
+    | 'folder'
+    | 'copy'
+    | 'minus'
+    | 'refresh'
+    | 'close'
+    | 'stop'
+    | 'settings'
+    | 'command';
+  startsGroup?: boolean;
   title: string;
   confirm?: string;
   run(): void;
