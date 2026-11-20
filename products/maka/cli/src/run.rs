@@ -20,16 +20,19 @@
 //! Headless single-shot Agent prompt execution over the public Host client.
 
 use std::{
-    io::{IsTerminal, Read},
+    borrow::Cow,
+    io::{IsTerminal, Read, Write},
     path::PathBuf,
     time::Duration,
 };
 
 use maka_agent_api::contract::{
     BackendPreference, Created, DeliveryFact, DeliveryPage, ExecutionState, HistoryPage,
-    HistoryPosition, SendResult, Stopped, Work, WorkTarget,
+    HistoryPosition, HistoryRowAddress, InteractionKind, Queue, QueueAction, QueueMutationResult,
+    QueueRejection, Rejection, SendRejection, SendResult, Stopped, Work, WorkReadiness, WorkTarget,
 };
-use maka_agent_facts::durable::RunId;
+use maka_agent_facts::durable::BlockerKind;
+use maka_agent_ports::session::history::Role;
 use maka_host_runtime::{
     HostError,
     application::{
@@ -57,8 +60,27 @@ pub(super) struct Args {
 }
 
 enum WatchOutcome {
-    Ended,
+    Ended { sequence: u64 },
+    CancelledExternally,
     Interrupted(String),
+}
+
+enum MutationError {
+    Rejected(String),
+    Other(HostError),
+}
+
+impl From<MutationError> for HostError {
+    fn from(error: MutationError) -> Self {
+        match error {
+            MutationError::Rejected(diagnostic) => diagnostic.into(),
+            MutationError::Other(err) => err,
+        }
+    }
+}
+
+fn other_mutation_error<E: Into<HostError>>(error: E) -> MutationError {
+    MutationError::Other(error.into())
 }
 
 impl Args {
@@ -93,11 +115,7 @@ impl Args {
                 if let Some(answer) = answer
                     && !answer.is_empty()
                 {
-                    if answer.ends_with('\n') {
-                        print!("{answer}");
-                    } else {
-                        println!("{answer}");
-                    }
+                    write_answer(answer, &stop).await?;
                 }
                 Ok(())
             }
@@ -170,14 +188,9 @@ async fn default_backend(host: &HostClient) -> Result<BackendPreference, HostErr
         return Err("unexpected settings.models response".into());
     };
     match *default_model {
-        DefaultModel::Ready { choice, .. } => Ok(BackendPreference::Model {
-            connection_id: choice.selection.connection_id,
-            model_id: choice.selection.model_id,
-            service_tier: None,
-            thinking_level: None,
-        }),
+        DefaultModel::Ready { choice, .. } => Ok(BackendPreference::model(choice.selection, None)),
         DefaultModel::None => Err(
-            "no default model configured; set defaultTarget via `maka host init --settings-stdin`"
+            "no default model configured; configure a default model in Host settings (or initialize a new Root with `maka host init --settings-stdin`)"
                 .into(),
         ),
         DefaultModel::Unavailable { target } => Err(format!(
@@ -211,69 +224,141 @@ async fn execute_turn(
     let session_id = match created {
         Created::Created { session } => session.id,
         Created::Rejected { reason } => {
-            return Err(format!(
-                "session creation rejected: {}",
-                serde_json::to_string(&reason).unwrap_or_default()
-            )
-            .into());
+            return Err(format!("session creation rejected: {}", format_rejection(&reason)).into());
         }
     };
 
-    let mut watch = subscribe(
+    if stop.is_cancelled() {
+        return Err("interrupted by signal".into());
+    }
+
+    let send_result: SendResult = mutate(
+        host,
+        "agent",
+        "send",
+        json!({
+            "sessionId": session_id,
+            "message": prompt,
+            "delivery": "queue",
+        }),
+    )
+    .await?;
+
+    let (message_id, revision) = match send_result {
+        SendResult::Queued {
+            message_id,
+            revision,
+            ..
+        } => (message_id, revision),
+        SendResult::Rejected { reason, .. } => {
+            return Err(format!("agent.send rejected: {}", format_send_rejection(&reason)).into());
+        }
+        SendResult::Started { .. }
+        | SendResult::Posted { .. }
+        | SendResult::NotYourWorker { .. } => {
+            return Err("unexpected agent.send result".into());
+        }
+    };
+
+    if stop.is_cancelled() {
+        return Err(cancel_with_reason(
+            host,
+            &session_id,
+            &message_id,
+            revision,
+            "interrupted by signal",
+        )
+        .await);
+    }
+
+    let mut watch = match subscribe(
         host,
         "agent",
         "watch",
         json!({ "sessionId": session_id, "after": 0 }),
     )
-    .await?;
-
-    let outcome = async {
-        let send_result: SendResult = mutate(
-            host,
-            "agent",
-            "send",
-            json!({
-                "sessionId": session_id,
-                "message": prompt,
-            }),
-        )
-        .await?;
-
-        let message_id = match send_result {
-            SendResult::Queued { message_id, .. } => message_id,
-            SendResult::Rejected { reason, .. } => {
-                return Err(format!(
-                    "agent.send rejected: {}",
-                    serde_json::to_string(&reason).unwrap_or_default()
-                )
-                .into());
-            }
-            SendResult::Started { .. }
-            | SendResult::Posted { .. }
-            | SendResult::NotYourWorker { .. } => {
-                return Err("unexpected agent.send result".into());
-            }
-        };
-
-        let watched = observe_run(host, &session_id, &message_id, &mut watch, stop).await?;
-        Ok::<_, HostError>((message_id, watched))
-    }
-    .await;
-
-    let close_watch = watch.close().await;
-    let (message_id, watched) = match (outcome, close_watch) {
-        (Ok(pair), Ok(())) => pair,
-        (Err(err), _) => return Err(err),
-        (Ok(_), Err(close_err)) => return Err(format!("watch close failed: {close_err}").into()),
+    .await
+    {
+        Ok(watch) => watch,
+        Err(err) => {
+            return Err(cancel_with_reason(
+                host,
+                &session_id,
+                &message_id,
+                revision,
+                &err.to_string(),
+            )
+            .await);
+        }
     };
 
-    match watched {
-        WatchOutcome::Ended => read_completed_answer(host, &session_id, &message_id).await,
-        WatchOutcome::Interrupted(reason) => {
-            if let Err(cancel_err) = cancel_work(host, &session_id, &message_id).await {
-                return Err(format!("{reason}; cancel failed: {cancel_err}").into());
-            }
-            Err(reason.into())
+    let outcome = match observe_run(host, &session_id, &message_id, &mut watch, stop).await {
+        Ok(WatchOutcome::Ended { sequence }) => tokio::select! {
+            biased;
+            _ = stop.cancelled() => Err("interrupted by signal".into()),
+            res = read_completed_answer(host, &session_id, &message_id, sequence) => res,
+        },
+        Ok(WatchOutcome::CancelledExternally) => {
+            Err("queued message was cancelled before execution".into())
+        }
+        Ok(WatchOutcome::Interrupted(reason)) => {
+            Err(cancel_with_reason(host, &session_id, &message_id, revision, &reason).await)
+        }
+        Err(err) => {
+            Err(
+                cancel_with_reason(host, &session_id, &message_id, revision, &err.to_string())
+                    .await,
+            )
+        }
+    };
+
+    let close_watch = watch.close().await;
+    match (outcome, close_watch) {
+        (Ok(answer), Ok(())) => Ok(answer),
+        (Err(err), _) => Err(err),
+        (Ok(_), Err(close_err)) => Err(format!("watch close failed: {close_err}").into()),
+    }
+}
+
+async fn cancel_with_reason(
+    host: &HostClient,
+    session_id: &str,
+    message_id: &str,
+    revision: u64,
+    reason: &str,
+) -> HostError {
+    if let Err(cancel_err) = cancel_work(host, session_id, message_id, revision).await {
+        format!("{reason}; cancel failed: {cancel_err}").into()
+    } else {
+        reason.into()
+    }
+}
+
+async fn write_answer(mut answer: String, stop: &CancellationToken) -> Result<(), HostError> {
+    if stop.is_cancelled() {
+        return Err("interrupted by signal".into());
+    }
+    if !answer.ends_with('\n') {
+        answer.push('\n');
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    // Dedicated OS thread so a signal exits promptly even when stdout's pipe is full,
+    // without blocking Tokio's shutdown pool.
+    std::thread::Builder::new()
+        .name("maka-run-stdout".into())
+        .spawn(move || {
+            let mut stdout = std::io::stdout().lock();
+            let res = stdout
+                .write_all(answer.as_bytes())
+                .and_then(|()| stdout.flush());
+            let _ = tx.send(res);
+        })?;
+    tokio::select! {
+        biased;
+        _ = stop.cancelled() => Err("interrupted by signal".into()),
+        res = rx => {
+            res.map_err(|_| HostError::from("stdout writer closed unexpectedly"))??;
+            Ok(())
         }
     }
 }
@@ -285,15 +370,17 @@ async fn observe_run(
     watch: &mut Subscription,
     stop: &CancellationToken,
 ) -> Result<WatchOutcome, HostError> {
+    let mut delivered = false;
     loop {
         tokio::select! {
             biased;
             _ = stop.cancelled() => return Ok(WatchOutcome::Interrupted("interrupted by signal".into())),
             page = watch.next::<DeliveryPage>() => match page? {
                 DeliveryPage::Queue { queue }
-                    if !queue.entries.iter().any(|entry| entry.message_id == message_id) =>
+                    if !delivered
+                        && !queue.entries.iter().any(|entry| entry.message_id == message_id) =>
                 {
-                    let work: Work = query(
+                    match query::<Work>(
                         host,
                         "agent",
                         "work",
@@ -303,9 +390,15 @@ async fn observe_run(
                             "cursor": Value::Null,
                         }),
                     )
-                    .await?;
-                    if matches!(work, Work::Cancelled | Work::Missing) {
-                        return Err("queued message was cancelled before execution".into());
+                    .await?
+                    {
+                        Work::Cancelled | Work::Missing => {
+                            return Ok(WatchOutcome::CancelledExternally);
+                        }
+                        Work::Delivered { .. } => {
+                            delivered = true;
+                        }
+                        Work::Pending | Work::Changed => {}
                     }
                 }
                 DeliveryPage::Interactions { pending } if !pending.entries.is_empty() => {
@@ -313,8 +406,11 @@ async fn observe_run(
                         .entries
                         .iter()
                         .map(|entry| {
-                            let kind = serde_json::to_string(&entry.kind).unwrap_or_default();
-                            format!("{}({})", kind.trim_matches('"'), entry.request_id)
+                            format!(
+                                "{}({})",
+                                format_interaction_kind(&entry.kind),
+                                entry.request_id
+                            )
                         })
                         .collect();
                     return Ok(WatchOutcome::Interrupted(format!(
@@ -322,10 +418,15 @@ async fn observe_run(
                         items.join(", ")
                     )));
                 }
-                DeliveryPage::Events { events, .. }
-                    if events.iter().any(|ev| matches!(ev.fact, DeliveryFact::Ended { .. })) =>
-                {
-                    return Ok(WatchOutcome::Ended);
+                DeliveryPage::Events { events, .. } => {
+                    if let Some(ended) = events
+                        .iter()
+                        .find(|ev| matches!(ev.fact, DeliveryFact::Ended { .. }))
+                    {
+                        return Ok(WatchOutcome::Ended {
+                            sequence: ended.sequence,
+                        });
+                    }
                 }
                 _ => {}
             }
@@ -337,6 +438,7 @@ async fn read_completed_answer(
     host: &HostClient,
     session_id: &str,
     message_id: &str,
+    ended_sequence: u64,
 ) -> Result<Option<String>, HostError> {
     let work: Work = query(
         host,
@@ -358,15 +460,11 @@ async fn read_completed_answer(
     match &execution.state {
         ExecutionState::Completed => {}
         ExecutionState::Failed { reason } => {
-            if let Some(diag) = read_failure_diagnostic(host, session_id, execution.run_id).await {
+            if let Some(diag) = read_failure_diagnostic(host, session_id, ended_sequence).await {
                 return Err(format!("run failed: {diag}").into());
             }
             if let Some(blocker) = reason {
-                return Err(format!(
-                    "run failed: {}",
-                    serde_json::to_string(blocker).unwrap_or_default()
-                )
-                .into());
+                return Err(format!("run failed: {}", format_blocker_kind(blocker)).into());
             }
             return Err("run failed".into());
         }
@@ -386,10 +484,7 @@ async fn read_completed_answer(
             return Err("agent.work answer pagination did not advance".into());
         }
         prev_offset = next.offset;
-        let Work::Delivered {
-            answer: Some(next_page),
-            ..
-        } = query::<Work>(
+        let next_page = match query::<Work>(
             host,
             "agent",
             "work",
@@ -400,8 +495,23 @@ async fn read_completed_answer(
             }),
         )
         .await?
-        else {
-            break;
+        {
+            Work::Delivered {
+                answer: Some(next_page),
+                ..
+            } => next_page,
+            Work::Delivered { answer: None, .. } => {
+                return Err("agent.work answer pagination missing subsequent page".into());
+            }
+            Work::Changed => {
+                return Err("agent.work answer changed during pagination".into());
+            }
+            Work::Missing => {
+                return Err("agent.work execution missing during pagination".into());
+            }
+            Work::Pending | Work::Cancelled => {
+                return Err("unexpected non-delivered agent.work state during pagination".into());
+            }
         };
         text.push_str(&next_page.text);
         page = next_page;
@@ -412,79 +522,47 @@ async fn read_completed_answer(
 async fn read_failure_diagnostic(
     host: &HostClient,
     session_id: &str,
-    run_id: RunId,
+    ended_sequence: u64,
 ) -> Option<String> {
-    let Ok(HistoryPage::Ready {
-        through: Some(through),
-        chunks,
-        ..
-    }) = query::<HistoryPage>(
+    let Ok(HistoryPage::Ready { chunks, .. }) = query::<HistoryPage>(
         host,
         "agent",
         "history",
         json!({
             "sessionId": session_id,
-            "through": Value::Null,
-            "position": HistoryPosition::Tail,
+            "through": ended_sequence,
+            "position": HistoryPosition::Event {
+                sequence: ended_sequence,
+            },
         }),
     )
     .await
     else {
         return None;
     };
-    let position = chunks
-        .into_iter()
-        .rev()
-        .find(|chunk| chunk.run_id == Some(run_id))?
-        .position;
-
-    let mut after: Option<u64> = None;
-    let mut latest = None;
-    loop {
-        let Ok(page) = query::<Value>(
-            host,
-            "agent",
-            "historyRequests",
-            json!({
-                "sessionId": session_id,
-                "through": through,
-                "position": &position,
-                "after": after,
-            }),
-        )
-        .await
-        else {
-            break;
-        };
-        if let Some(requests) = page["requests"].as_array() {
-            for req in requests {
-                if let Some(diag) = req["finished"]["diagnostic"]
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                {
-                    latest = Some(diag.to_owned());
-                }
-            }
-        }
-        match page["next"].as_u64() {
-            Some(next) if after.is_none_or(|prev| next > prev) => after = Some(next),
-            _ => break,
-        }
-    }
-    latest
+    chunks.into_iter().find_map(|chunk| {
+        (chunk.role == Role::Failure
+            && matches!(
+                chunk.position,
+                HistoryRowAddress::Live { sequence, .. } if sequence == ended_sequence
+            ))
+        .then_some(chunk.text)
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
+    })
 }
 
 async fn cancel_work(
     host: &HostClient,
     session_id: &str,
     message_id: &str,
+    mut queue_revision: u64,
 ) -> Result<(), HostError> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    let mut poll = tokio::time::interval(Duration::from_millis(50));
+    let mut poll = tokio::time::interval(Duration::from_millis(25));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut stopped_run: Option<RunId> = None;
-    loop {
+
+    let run_id = loop {
         match query::<Work>(
             host,
             "agent",
@@ -497,18 +575,72 @@ async fn cancel_work(
         )
         .await?
         {
-            Work::Delivered { execution, .. }
-                if matches!(
+            Work::Pending => {
+                match mutate_checked::<QueueMutationResult>(
+                    host,
+                    "agent",
+                    "editQueue",
+                    json!({
+                        "sessionId": session_id,
+                        "expectedRevision": queue_revision,
+                        "edit": QueueAction::Retract {
+                            message_id: message_id.to_owned(),
+                        },
+                    }),
+                )
+                .await
+                {
+                    Ok(
+                        QueueMutationResult::Committed { .. }
+                        | QueueMutationResult::Rejected {
+                            reason: QueueRejection::Closed,
+                        },
+                    ) => return Ok(()),
+                    Ok(QueueMutationResult::RevisionConflict { actual, .. }) => {
+                        queue_revision = actual;
+                    }
+                    Ok(QueueMutationResult::Rejected { reason }) => {
+                        return Err(format!(
+                            "queue retract rejected: {}",
+                            format_queue_rejection(&reason)
+                        )
+                        .into());
+                    }
+                    Err(MutationError::Other(err)) => return Err(err),
+                    Err(MutationError::Rejected(diagnostic)) => {
+                        // A scheduler consume between `editQueue` prepare and SQLite commit surfaces
+                        // as `OperationResult::Failure` instead of `RevisionConflict`. Check
+                        // `agent.queue` before retrying so persistent errors fail immediately.
+                        let queue: Queue =
+                            query(host, "agent", "queue", json!({ "sessionId": session_id }))
+                                .await?;
+                        let still_pending = queue
+                            .entries
+                            .iter()
+                            .any(|entry| entry.message_id == message_id);
+                        if !still_pending {
+                            if tokio::time::Instant::now() >= deadline {
+                                return Err(
+                                    "timed out waiting for cancelled execution to settle".into()
+                                );
+                            }
+                            continue;
+                        }
+                        if queue.revision != queue_revision {
+                            queue_revision = queue.revision;
+                        } else {
+                            return Err(diagnostic.into());
+                        }
+                    }
+                }
+            }
+            Work::Delivered { execution, .. } => {
+                if !matches!(
                     execution.state,
                     ExecutionState::Completed
                         | ExecutionState::Failed { .. }
                         | ExecutionState::Cancelled
-                ) =>
-            {
-                return Ok(());
-            }
-            Work::Delivered { execution, .. } => {
-                if stopped_run != Some(execution.run_id) {
+                ) {
                     let _: Stopped = mutate(
                         host,
                         "agent",
@@ -516,11 +648,38 @@ async fn cancel_work(
                         json!({ "sessionId": session_id, "runId": execution.run_id }),
                     )
                     .await?;
-                    stopped_run = Some(execution.run_id);
                 }
+                break execution.run_id;
             }
             Work::Cancelled | Work::Missing => return Ok(()),
-            Work::Pending | Work::Changed => {}
+            Work::Changed => {
+                return Err("unexpected agent.work Changed without cursor".into());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("timed out waiting for cancelled execution to settle".into());
+        }
+        poll.tick().await;
+    };
+
+    loop {
+        match query::<WorkReadiness>(
+            host,
+            "agent",
+            "workReadiness",
+            json!({
+                "sessionId": session_id,
+                "target": WorkTarget::Run { run_id },
+                "cursor": Value::Null,
+            }),
+        )
+        .await?
+        {
+            WorkReadiness::Ready => return Ok(()),
+            WorkReadiness::Unavailable => {
+                return Err("cancelled execution became unavailable before settling".into());
+            }
+            WorkReadiness::Pending => {}
         }
         if tokio::time::Instant::now() >= deadline {
             return Err("timed out waiting for cancelled execution to settle".into());
@@ -571,23 +730,41 @@ async fn mutate<T: DeserializeOwned>(
     method: &str,
     input: Value,
 ) -> Result<T, HostError> {
-    let mut call = open_call(host, endpoint, method, input).await?;
-    match call.receive().await? {
+    mutate_checked(host, endpoint, method, input)
+        .await
+        .map_err(HostError::from)
+}
+
+async fn mutate_checked<T: DeserializeOwned>(
+    host: &HostClient,
+    endpoint: &str,
+    method: &str,
+    input: Value,
+) -> Result<T, MutationError> {
+    let mut call = open_call(host, endpoint, method, input)
+        .await
+        .map_err(MutationError::Other)?;
+    match call.receive().await.map_err(other_mutation_error)? {
         Reply::Prepared { .. } => {}
         Reply::Aborted { reason, cleanup } => {
-            cleanup?;
-            return Err(reason.into());
+            cleanup.map_err(other_mutation_error)?;
+            return Err(MutationError::Other(reason.into()));
         }
         _ => {
             let _ = call.close().await;
-            return Err(format!("expected preparation for {endpoint}.{method}").into());
+            return Err(MutationError::Other(
+                format!("expected preparation for {endpoint}.{method}").into(),
+            ));
         }
     }
-    let mut reply = call.confirm(Value::Null).await?;
+    let mut reply = call
+        .confirm(Value::Null)
+        .await
+        .map_err(other_mutation_error)?;
     loop {
         match reply {
             Reply::Mutation { reply, cleanup } => {
-                cleanup?;
+                cleanup.map_err(other_mutation_error)?;
                 return match reply.receipt {
                     Receipt::Recorded {
                         outcome:
@@ -595,33 +772,39 @@ async fn mutate<T: DeserializeOwned>(
                                 result: OperationResult::Success { value },
                             },
                         cleanup: OperationCleanup::Confirmed,
-                    } => Ok(serde_json::from_value(value)?),
+                    } => serde_json::from_value(value).map_err(other_mutation_error),
                     Receipt::Recorded {
                         outcome:
                             OperationOutcome::Returned {
                                 result: OperationResult::Failure { diagnostic },
                             },
                         cleanup: OperationCleanup::Confirmed,
-                    } => Err(diagnostic.into()),
+                    } => Err(MutationError::Rejected(diagnostic)),
                     Receipt::Recorded {
                         outcome: OperationOutcome::NotExecuted { .. },
                         cleanup: OperationCleanup::Confirmed,
-                    } => Err(format!("{endpoint}.{method} prevented before execution").into()),
-                    other => Err(format!(
-                        "{endpoint}.{method} unconfirmed receipt: {}",
-                        serde_json::to_string(&other).unwrap_or_default()
-                    )
-                    .into()),
+                    } => Err(MutationError::Other(
+                        format!("{endpoint}.{method} prevented before execution").into(),
+                    )),
+                    other => Err(MutationError::Other(
+                        format!(
+                            "{endpoint}.{method} unconfirmed receipt: {}",
+                            format_unconfirmed_receipt(&other)
+                        )
+                        .into(),
+                    )),
                 };
             }
-            Reply::Progress { .. } => reply = call.receive().await?,
+            Reply::Progress { .. } => reply = call.receive().await.map_err(other_mutation_error)?,
             Reply::Aborted { reason, cleanup } => {
-                cleanup?;
-                return Err(reason.into());
+                cleanup.map_err(other_mutation_error)?;
+                return Err(MutationError::Other(reason.into()));
             }
             _ => {
                 let _ = call.close().await;
-                return Err(format!("expected mutation receipt for {endpoint}.{method}").into());
+                return Err(MutationError::Other(
+                    format!("expected mutation receipt for {endpoint}.{method}").into(),
+                ));
             }
         }
     }
@@ -668,5 +851,130 @@ impl Subscription {
 
     async fn close(mut self) -> Result<(), HostError> {
         self.0.close().await.map_err(Into::into)
+    }
+}
+
+fn format_rejection(reason: &Rejection) -> &'static str {
+    match reason {
+        Rejection::PresetNotFound => "preset not found",
+        Rejection::PresetDisabled => "preset disabled",
+        Rejection::PresetConflict => "preset conflict",
+        Rejection::PresetModelUnavailable => "preset model unavailable",
+        Rejection::PresetThinkingLevelUnavailable => "preset thinking level unavailable",
+        Rejection::PresetBackendConflict => "preset backend conflict",
+        Rejection::PermissionChangeRequiresUser => "permission change requires user approval",
+        Rejection::TitleInvalid => "title is invalid",
+        Rejection::LabelsInvalid => "labels are invalid",
+        Rejection::ToolsUnavailable => "tools unavailable",
+        Rejection::Busy => "session is busy",
+        Rejection::WorkspaceUnavailable => "workspace unavailable",
+        Rejection::SessionUnavailable => "session unavailable",
+        Rejection::HistoryUnavailable => "history unavailable",
+        Rejection::Closed => "session is closed",
+    }
+}
+
+fn format_send_rejection(reason: &SendRejection) -> &'static str {
+    match reason {
+        SendRejection::ModelUnavailable => "model unavailable",
+        SendRejection::SkillsUnavailable => "skills unavailable",
+        SendRejection::TurnStopped => "turn stopped",
+        SendRejection::OriginalOperationUnsettled => "original operation unsettled",
+    }
+}
+
+fn format_queue_rejection(reason: &QueueRejection) -> &'static str {
+    match reason {
+        QueueRejection::NotYourMessage => "not your message",
+        QueueRejection::Closed => "session is closed",
+        QueueRejection::Missing => "queued message missing",
+        QueueRejection::InFlight => "message is already in flight",
+        QueueRejection::InvalidEdit => "invalid queue edit",
+        QueueRejection::ExecutionChanged => "execution changed",
+        QueueRejection::NotRunning => "execution is not running",
+    }
+}
+
+fn format_interaction_kind(kind: &InteractionKind) -> &'static str {
+    match kind {
+        InteractionKind::SessionApproval => "session_approval",
+        InteractionKind::ServiceApproval => "service_approval",
+        InteractionKind::Question => "question",
+        InteractionKind::Permissions => "permissions",
+        InteractionKind::Form => "form",
+        InteractionKind::ClientCapability => "client_capability",
+        InteractionKind::ComputerApp => "computer_app",
+        InteractionKind::SystemPermission => "system_permission",
+    }
+}
+
+fn format_blocker_kind(blocker: &BlockerKind) -> Cow<'_, str> {
+    match blocker {
+        BlockerKind::ExternalPublicationUnavailable { diagnostic, .. }
+        | BlockerKind::CurrentAuthorityUnavailable { diagnostic, .. }
+        | BlockerKind::ToolCleanupUnconfirmed { diagnostic, .. }
+        | BlockerKind::ModelCleanupUnconfirmed { diagnostic, .. }
+            if !diagnostic.trim().is_empty() =>
+        {
+            Cow::Borrowed(diagnostic.trim())
+        }
+        BlockerKind::ExternalPublicationUnavailable { .. } => {
+            Cow::Borrowed("external publication unavailable")
+        }
+        BlockerKind::ExternalPublicationItem { .. } => {
+            Cow::Borrowed("external publication item blocked")
+        }
+        BlockerKind::CurrentAuthorityUnavailable { .. } => {
+            Cow::Borrowed("current authority unavailable")
+        }
+        BlockerKind::ExternalEffectUnknown { .. } => {
+            Cow::Borrowed("external effect outcome unknown")
+        }
+        BlockerKind::OperationUnknown { .. } => Cow::Borrowed("operation outcome unknown"),
+        BlockerKind::ProviderEffectUnknown { .. } => Cow::Borrowed("provider tool effect unknown"),
+        BlockerKind::OriginalAdmissionUnknown { .. } => {
+            Cow::Borrowed("original tool admission unknown")
+        }
+        BlockerKind::CodeCellRecoveryUnavailable { .. } => {
+            Cow::Borrowed("code cell recovery unavailable")
+        }
+        BlockerKind::UnsupportedProtocol { .. } => Cow::Borrowed("unsupported protocol"),
+        BlockerKind::ToolCleanupUnconfirmed { .. } => Cow::Borrowed("tool cleanup unconfirmed"),
+        BlockerKind::ModelCleanupUnconfirmed { .. } => Cow::Borrowed("model cleanup unconfirmed"),
+        BlockerKind::CleanupUnconfirmed { .. } => Cow::Borrowed("operation cleanup unconfirmed"),
+        BlockerKind::ResourcesUnavailable { .. } => {
+            Cow::Borrowed("operation resources unavailable")
+        }
+        BlockerKind::ExternalTaskUnobservable { .. } => Cow::Borrowed("external task unobservable"),
+    }
+}
+
+fn format_unconfirmed_receipt(receipt: &Receipt) -> String {
+    match receipt {
+        Receipt::NotRecorded => "receipt not recorded".into(),
+        Receipt::Unavailable { diagnostic } => match diagnostic.trim() {
+            "" => "receipt unavailable".into(),
+            diag => format!("receipt unavailable: {diag}"),
+        },
+        Receipt::Recorded { outcome, cleanup } => {
+            let outcome_desc = match outcome {
+                OperationOutcome::Unresolved => Cow::Borrowed("outcome unresolved"),
+                OperationOutcome::Returned { .. } => Cow::Borrowed("outcome recorded"),
+                OperationOutcome::NotExecuted { .. } => Cow::Borrowed("not executed"),
+                OperationOutcome::Unknown { diagnostic } => match diagnostic.trim() {
+                    "" => Cow::Borrowed("outcome unknown"),
+                    diag => Cow::Owned(format!("outcome unknown: {diag}")),
+                },
+            };
+            let cleanup_desc = match cleanup {
+                OperationCleanup::Confirmed => Cow::Borrowed("cleanup confirmed"),
+                OperationCleanup::Unconfirmed => Cow::Borrowed("cleanup unconfirmed"),
+                OperationCleanup::Failed { diagnostic } => match diagnostic.trim() {
+                    "" => Cow::Borrowed("cleanup failed"),
+                    diag => Cow::Owned(format!("cleanup failed: {diag}")),
+                },
+            };
+            format!("{outcome_desc}; {cleanup_desc}")
+        }
     }
 }

@@ -207,6 +207,13 @@ impl Cli {
             }
             return result;
         }
+        if self.timeout_ms.is_some()
+            && !matches!(&self.command, Some(Command::Host(_) | Command::Sandbox(_)))
+        {
+            return Err(
+                "--timeout-ms is only supported by finite Host and sandbox commands".into(),
+            );
+        }
         self.execute().await
     }
 
@@ -226,17 +233,7 @@ impl Cli {
             Command::TerminalShell(args) => {
                 command_exit(async move { args.run().await.map_err(Into::into) })
             }
-            Command::Run(args) => {
-                if self.timeout_ms.is_some() {
-                    return command_exit(async {
-                        Err(
-                            "--timeout-ms is only supported by finite Host and sandbox commands"
-                                .into(),
-                        )
-                    });
-                }
-                command_exit(args.run())
-            }
+            Command::Run(args) => command_exit(args.run()),
             Command::Application(args) => command_exit(args.run()),
             Command::Sandbox(args) => Box::pin(args.run(self.timeout_ms)),
             Command::Host(HostCommand::Fetch(args)) => command_exit(args.run()),

@@ -23,7 +23,7 @@ use std::{
     process::{Child, Command, Output, Stdio},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -34,10 +34,9 @@ use maka_mock_ai::{
     NormalizedRequest, TurnContext, TurnPlan, Usage,
 };
 use serde_json::{Value, json};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
+use tokio::io::AsyncWriteExt;
+#[cfg(unix)]
+use tokio::{io::AsyncReadExt, net::TcpStream};
 
 struct TestEnv {
     _root: tempfile::TempDir,
@@ -234,6 +233,7 @@ async fn wait_for_root_released(root: &Path, timeout: Duration) {
     );
 }
 
+#[cfg(unix)]
 async fn http_get_loopback(port: u16) -> Result<(String, String), std::io::Error> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
     stream
@@ -245,6 +245,7 @@ async fn http_get_loopback(port: u16) -> Result<(String, String), std::io::Error
     Ok((head.to_owned(), body.to_owned()))
 }
 
+#[cfg(unix)]
 async fn assert_port_closed(port: u16, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -256,10 +257,12 @@ async fn assert_port_closed(port: u16, timeout: Duration) {
     panic!("background HTTP server on port {port} stayed alive after cleanup");
 }
 
+#[cfg(unix)]
 fn shell_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\"'\"'"))
 }
 
+#[cfg(unix)]
 fn bg_server_turn_plan(port_file: &Path) -> TurnPlan {
     let port_json = serde_json::to_string(port_file).unwrap();
     let tmp_json = serde_json::to_string(&port_file.with_extension("tmp")).unwrap();
@@ -307,7 +310,9 @@ fn spawn_serve_host(env: &TestEnv, root: &Path) -> (Child, std::thread::JoinHand
     let mut line = String::new();
     let mut ready = false;
     while reader.read_line(&mut line).unwrap() > 0 {
-        if serde_json::from_str::<Value>(&line).is_ok_and(|v| v["kind"] == "ready") {
+        if let Ok(v) = serde_json::from_str::<Value>(&line)
+            && v["kind"] == "ready"
+        {
             ready = true;
             break;
         }
@@ -325,9 +330,16 @@ fn spawn_serve_host(env: &TestEnv, root: &Path) -> (Child, std::thread::JoinHand
 
 #[tokio::test]
 async fn run_completes_arg_and_stdin_and_retires_idle_candidate() {
-    let mock = start_mock_ai(|req, _| {
+    // 43-byte line ensures 8192-byte page boundaries split inside multi-byte UTF-8.
+    let large_reply: String = (0..600)
+        .map(|i| format!("line-{i:04}: 分页校验 🚀 payload-line!\n"))
+        .collect();
+    assert!(large_reply.len() > 20 * 1024);
+    let large_reply_cb = large_reply.clone();
+
+    let mock = start_mock_ai(move |req, _| {
         let reply = if req.raw_body["messages"].to_string().contains("From stdin") {
-            "Hello from stdin"
+            large_reply_cb.as_str()
         } else {
             "Hello from maka run"
         };
@@ -354,7 +366,7 @@ async fn run_completes_arg_and_stdin_and_retires_idle_candidate() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
+        std::str::from_utf8(&out.stdout).expect("valid utf8 stdout"),
         "Hello from maka run\n"
     );
 
@@ -369,11 +381,14 @@ async fn run_completes_arg_and_stdin_and_retires_idle_candidate() {
         "maka run stdin failed: {}",
         String::from_utf8_lossy(&out2.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&out2.stdout), "Hello from stdin\n");
+    let stdout2 = std::str::from_utf8(&out2.stdout).expect("valid utf8 stdout");
+    assert_eq!(stdout2.len(), large_reply.len());
+    assert_eq!(stdout2, large_reply);
 
     wait_for_root_released(&root, Duration::from_secs(10)).await;
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn run_preserves_background_http_server_across_completion_and_subsequent_failure() {
     let mut env = TestEnv::new();
@@ -458,35 +473,6 @@ async fn run_preserves_background_http_server_across_completion_and_subsequent_f
     assert!(env.retire(&root).status.success());
     wait_for_root_released(&root, Duration::from_secs(10)).await;
     assert_port_closed(port, Duration::from_secs(5)).await;
-}
-
-#[tokio::test]
-async fn run_failure_reports_model_diagnostic_and_retires_idle_candidate() {
-    let mock = start_mock_ai(|_, _| {
-        TurnPlan::http_error(HttpErrorSpec::new(
-            400,
-            "invalid_request_error",
-            "simulated model failure",
-        ))
-    })
-    .await;
-
-    let mut env = TestEnv::new();
-    let root = env.init_root("root-fail", &mock.base_url(), "danger-full-access");
-
-    let mut cmd = env.maka_command();
-    cmd.args(["run", "--root"])
-        .arg(&root)
-        .arg("--workspace")
-        .arg(&env.workspace)
-        .arg("Fail on model error");
-    let out = run_cli(cmd, None).await;
-    assert_eq!(out.status.code(), Some(1), "expected non-zero exit");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("simulated model failure"), "{stderr}");
-    assert!(!stderr.contains("run failed: null"), "{stderr}");
-
-    wait_for_root_released(&root, Duration::from_secs(5)).await;
 }
 
 #[tokio::test]
@@ -595,4 +581,195 @@ async fn run_reuses_service_host_and_stops_on_pending_interaction() {
     assert!(env.retire(&root).status.success());
     assert!(serve_child.wait().unwrap().success());
     let _ = drain.join();
+}
+
+#[tokio::test]
+async fn run_failure_after_429_reports_terminal_output_limit_diagnostic() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_cb = Arc::clone(&calls);
+    let mock = start_mock_ai(move |_, _| {
+        let idx = calls_cb.fetch_add(1, Ordering::SeqCst);
+        if idx == 0 {
+            TurnPlan::http_error(
+                HttpErrorSpec::rate_limit(None, "transient rate limit").with_retry_after_ms(1),
+            )
+        } else {
+            TurnPlan::new()
+                .push_text("truncated chunk ")
+                .with_usage(Usage::new(100, 20))
+                .finish(FinishReason::Length)
+        }
+    })
+    .await;
+
+    let mut env = TestEnv::new();
+    let root = env.init_root("root-429-length", &mock.base_url(), "danger-full-access");
+
+    let mut cmd = env.maka_command();
+    cmd.args(["run", "--root"])
+        .arg(&root)
+        .arg("--workspace")
+        .arg(&env.workspace)
+        .arg("Hit 429 then exhaust output length");
+    let out = run_cli(cmd, None).await;
+    assert_eq!(out.status.code(), Some(1), "expected non-zero exit");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("reached its length limit again after being asked to continue"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("transient rate limit"), "{stderr}");
+
+    wait_for_root_released(&root, Duration::from_secs(5)).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn run_sigterm_interrupts_blocked_stdout_pipe() {
+    use std::os::fd::AsRawFd;
+
+    let payload = "A".repeat(512 * 1024);
+    let mock = start_mock_ai(move |_, _| {
+        TurnPlan::new()
+            .push_text(payload.clone())
+            .with_usage(Usage::new(100, 20))
+            .finish(FinishReason::Stop)
+    })
+    .await;
+
+    let mut env = TestEnv::new();
+    let root = env.init_root(
+        "root-blocked-stdout",
+        &mock.base_url(),
+        "danger-full-access",
+    );
+
+    let mut cmd = tokio::process::Command::from(env.maka_command());
+    cmd.args(["run", "--root"])
+        .arg(&root)
+        .arg("--workspace")
+        .arg(&env.workspace)
+        .arg("Emit large answer")
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn maka run");
+
+    let stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        stderr.read_to_end(&mut buf).await.expect("read stderr");
+        buf
+    });
+
+    // Wait until Host completes and `maka run` starts writing to stdout (without reading it).
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut poll_fd = libc::pollfd {
+        fd: stdout.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let mut ready = false;
+    while Instant::now() < deadline {
+        // SAFETY: `poll_fd` points to a valid `libc::pollfd` for an open stdout read fd.
+        let n = unsafe { libc::poll(&mut poll_fd, 1, 0) };
+        if n > 0 && (poll_fd.revents & libc::POLLIN) != 0 {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(ready, "stdout pipe never received answer bytes");
+
+    // Let `write` fill the OS pipe buffer and block.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let pid = child.id().expect("child pid");
+    // SAFETY: `pid` is a live child process spawned by this test.
+    let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    assert_eq!(rc, 0, "failed to send SIGTERM");
+
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("maka run did not exit promptly on SIGTERM while stdout pipe was blocked")
+        .expect("wait child");
+    assert_eq!(status.code(), Some(1), "expected exit 1 on SIGTERM");
+
+    drop(stdout);
+    let stderr_bytes = stderr_task.await.expect("join stderr task");
+    let stderr_text = String::from_utf8_lossy(&stderr_bytes);
+    assert!(
+        stderr_text.contains("interrupted by signal"),
+        "{stderr_text}"
+    );
+
+    wait_for_root_released(&root, Duration::from_secs(10)).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn run_sigterm_cancels_in_flight_run() {
+    let mut mock = MockAiBuilder::new()
+        .control(ControlPlaneConfig {
+            models: vec![ModelEntry::simple("test-model")],
+            ..Default::default()
+        })
+        .interactive(4)
+        .start()
+        .await
+        .expect("start interactive mock-ai server");
+
+    let mut env = TestEnv::new();
+    let root = env.init_root(
+        "root-sigterm-inflight",
+        &mock.base_url(),
+        "danger-full-access",
+    );
+
+    let mut cmd = tokio::process::Command::from(env.maka_command());
+    cmd.args(["run", "--root"])
+        .arg(&root)
+        .arg("--workspace")
+        .arg(&env.workspace)
+        .arg("Hold in-flight request")
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn maka run");
+
+    let _stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        stderr.read_to_end(&mut buf).await.expect("read stderr");
+        buf
+    });
+
+    let _turn = tokio::time::timeout(Duration::from_secs(15), mock.next_turn())
+        .await
+        .expect("model request did not arrive")
+        .expect("interactive turn handle");
+
+    let pid = child.id().expect("child pid");
+    // SAFETY: `pid` is a live child process spawned by this test.
+    let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    assert_eq!(rc, 0, "failed to send SIGTERM");
+
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("maka run did not exit promptly on SIGTERM during in-flight run")
+        .expect("wait child");
+    assert_eq!(status.code(), Some(1), "expected exit 1 on SIGTERM");
+
+    let stderr_bytes = stderr_task.await.expect("join stderr task");
+    let stderr_text = String::from_utf8_lossy(&stderr_bytes);
+    assert!(
+        stderr_text.contains("interrupted by signal"),
+        "{stderr_text}"
+    );
+
+    wait_for_root_released(&root, Duration::from_secs(10)).await;
 }
