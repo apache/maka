@@ -30,6 +30,7 @@ import {
   Text,
   untracked,
   View,
+  type InputRef,
   type JSX,
   type ScrollRef,
 } from 'nsh';
@@ -135,6 +136,7 @@ export function createRoomWorkspace(options: {
   const choosingWorkspace = signal(false);
   const createBusy = signal(false);
   const renaming = signal<AgentSession | null>(null);
+  let renameInput: InputRef | undefined;
   const renameTitle = signal('');
   const removing = signal<AgentSession | null>(null);
   let composer: RoomComposerHandle | null = null;
@@ -524,6 +526,7 @@ export function createRoomWorkspace(options: {
       <If when={renaming()}>
         <ModalDialog
           size="form"
+          onOpen={() => renameInput?.focus()}
           onCancel={() => {
             if (!createBusy()) renaming.set(null);
           }}
@@ -531,8 +534,10 @@ export function createRoomWorkspace(options: {
           <DialogHeader title={tr('Rename room')} />
           <Input
             accessibilityLabel={tr('Room name')}
+            ref={(node) => {
+              renameInput = node;
+            }}
             value={renameTitle()}
-            autoFocus
             onChange={({ value }) => renameTitle.set(value)}
             onSubmit={() => void rename()}
             style={{

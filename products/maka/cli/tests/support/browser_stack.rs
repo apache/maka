@@ -669,13 +669,12 @@ async fn scenario(
     };
     progress["phase"] = json!("admit original Browser Run");
     let sent=mutate(client,"agent","send",json!({"sessionId":sid,"message":"Explicitly authorize nonisolated Computer only for the owned-stack loopback protocol peer and its /fixture URL. Perform the one Browser regression and close only its owned tab.","delivery":"queue"}),Attachments::new()).await?;
-    progress["phase"] = json!("settled original tool and Read results; model response held");
-    phase("original canonical tool and Read results", async {
-        canonical_ready
-            .await
-            .map_err(|_| "canonical sender closed".into())
-    })
-    .await?;
+    progress["phase"] = json!("waiting for original canonical tool and Read results");
+    // This spans the original call and every Read continuation, not one RPC.
+    // The scenario deadline bounds the entire exchange.
+    canonical_ready
+        .await
+        .map_err(|_| "canonical sender closed")?;
     let held_requests = {
         let state = peer.lock().unwrap();
         check_report(
@@ -779,7 +778,8 @@ async fn scenario(
             Attachments::new(), None, json!({"kind":"post-settled-browser-presentation"}),
         ).await?;
         phase("foreground operation prepared", foreground.prepare()).await?;
-        let foreground_reply = phase("foreground operation confirmed", foreground.confirm()).await?;
+        let foreground_reply =
+            phase("foreground operation confirmed", foreground.confirm()).await?;
         let presented = success(&foreground_reply);
         assert_eq!(presented["kind"], "requested");
         assert_eq!(presented["details"]["windowId"], 7);
@@ -823,7 +823,11 @@ async fn scenario(
                 .filter(|method| matches!(*method, "Browser.setWindowBounds" | "Page.bringToFront"))
                 .collect();
             let expected: &[_] = if normalizing {
-                &["Browser.setWindowBounds", "Browser.setWindowBounds", "Page.bringToFront"]
+                &[
+                    "Browser.setWindowBounds",
+                    "Browser.setWindowBounds",
+                    "Page.bringToFront",
+                ]
             } else {
                 &["Browser.setWindowBounds", "Page.bringToFront"]
             };
@@ -1174,7 +1178,7 @@ async fn browser_stage_presents_the_same_window_after_tool_settlement() {
     }
     if !matches!(&outcome, Ok(Ok(Ok(())))) {
         let state = peer.lock().unwrap();
-        progress["peer"] = json!({"modelRequests":state.model_requests,"methods":state.methods,"tabCreated":state.created});
+        progress["peer"] = json!({"modelRequests":state.model_requests,"archiveBytes":state.model_pages.len(),"methods":state.methods,"tabCreated":state.created});
         eprintln!("Browser Root failure metadata: {progress}");
     }
     match outcome {

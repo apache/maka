@@ -3610,6 +3610,20 @@ fn input_text(string: &NSString, range: NSRange) -> String {
 /// The focused input of `surface` and the `NSTextView` currently editing it.
 fn focused_editor(surface: &Surface) -> Option<(NshView, Rc<InputState>, Retained<NSTextView>)> {
     let window = crate::window::key_root(surface).ns().window()?;
+    focused_editor_in(surface, &window)
+}
+
+pub(crate) fn focused_input_view(
+    surface: &Surface,
+    window: &objc2_app_kit::NSWindow,
+) -> Option<NshView> {
+    focused_editor_in(surface, window).map(|(view, _, _)| view)
+}
+
+fn focused_editor_in(
+    surface: &Surface,
+    window: &objc2_app_kit::NSWindow,
+) -> Option<(NshView, Rc<InputState>, Retained<NSTextView>)> {
     let responder = window.firstResponder()?;
     let object: &AnyObject = &responder;
     let cx = if let Some(area) = object.downcast_ref::<TextArea>() {
@@ -3631,7 +3645,7 @@ fn focused_editor(surface: &Surface) -> Option<(NshView, Rc<InputState>, Retaine
         || !view.can_reach()
         || !view
             .ns()
-            .isDescendantOf(&crate::navigation::focus_scope_of(surface, &window))
+            .isDescendantOf(&crate::navigation::focus_scope_of(surface, window))
     {
         return None;
     }

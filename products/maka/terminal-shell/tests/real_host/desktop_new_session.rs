@@ -651,7 +651,7 @@ async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
     let desktop = Desktop::open(&fixture, &fixture.address).await;
     desktop.new_draft().await;
     desktop.attach(&path).await;
-    desktop.replace_text("UNSENT_LOCAL_ONLY").await;
+    desktop.type_text("UNSENT_LOCAL_ONLY").await;
     desktop.press("Choose composer workspace").await;
     desktop.press("Choose another folder…").await;
     desktop.press("Browse folder Workspace").await;
@@ -877,7 +877,7 @@ async fn desktop_recovers_an_unavailable_remembered_folder() {
         .restart(&fixture, nsh_core::platform::Appearance::Dark)
         .await;
     desktop.target_after(None).await;
-    desktop.replace_text("KEEP_CURRENT_WINDOW_DRAFT").await;
+    desktop.type_text("KEEP_CURRENT_WINDOW_DRAFT").await;
     desktop.control("Retry folder").await;
     desktop.key("enter", false);
     assert_eq!(desktop.sessions().await.len(), 1);
@@ -3645,11 +3645,19 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.artifact(&format!("goal-running-{theme}-{layout}"));
     desktop.press("Change budget").await;
     desktop.target_after(None).await;
-    desktop.type_text("250000").await;
+    desktop.replace_text("250000").await;
+    desktop
+        .until("the budget input did not accept the value", || {
+            (desktop.platform.editor_text().as_deref() == Some("250000")).then_some(())
+        })
+        .await;
     desktop.press("Toggle conversation todo").await;
     desktop.press(active_goal).await;
-    desktop.target_after(None).await;
-    desktop.expect_text("250000").await;
+    desktop
+        .until("the reopened budget input lost its value", || {
+            (desktop.platform.editor_text().as_deref() == Some("250000")).then_some(())
+        })
+        .await;
     desktop.artifact(&format!("goal-budget-editor-{theme}-{layout}"));
     desktop.key("escape", false);
     desktop.press("Pause Goal").await;
