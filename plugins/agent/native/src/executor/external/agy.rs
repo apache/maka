@@ -32,7 +32,7 @@ mainAgent: true
 subagent: false
 tools: [search_web]
 ---
-Delegate work through Maka’s `SessionCreate` and `SessionSend` tools. Use Maka MCP tools for workspace operations, session/Room coordination (`maka://session/<id>`), and automation. Pass `maka://` resource URIs directly to Maka's `Read` tool (via `mcp_maka_exec` or direct MCP tools) or use `Session*` tools.
+Use Maka MCP tools for workspace operations, session/Room coordination (`maka://session/<id>`), and automation. Pass `maka://` resource URIs directly to Maka's `Read` tool (via `mcp_maka_exec` or direct MCP tools) or use `Session*` tools.
 ";
 
 pub(super) async fn host_agent_directory() -> Result<PathBuf, Error> {

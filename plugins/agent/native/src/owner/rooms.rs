@@ -196,10 +196,15 @@ impl Owner {
                 Ok((
                     PreparedSend::Ready {
                         value: SendResult::Queued { message_id, .. },
-                        statement,
+                        mut statement,
                     },
                     copies,
                 )) => {
+                    // A multi-target post settles under each target's SQL fence. Never
+                    // retain one session mutex while preparing another target.
+                    if input.mentions.len() > 1 {
+                        statement.order = None;
+                    }
                     targets.push((
                         deliveries.len(),
                         RoomTarget {

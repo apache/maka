@@ -243,12 +243,61 @@ fn target(
     }
     Ok(())
 }
+pub(super) fn interrupt_handoff(
+    c: &Connection,
+    session: &str,
+    frontier: RunId,
+    message: Option<&str>,
+) -> Result<Option<InterruptHandoff>, StoreError> {
+    // Priority positions encode the revision of the enqueue or promotion that
+    // requested the resume, including entries written before this Host started.
+    let position: Option<i64> = match message {
+        None => c
+            .query_row(
+                "SELECT position FROM agent_queue_items
+             WHERE session=? AND state='pending' AND lane='followup' AND position<0
+             ORDER BY position DESC LIMIT 1",
+                [session],
+                |r| r.get(0),
+            )
+            .optional()?,
+        Some(message) => c
+            .query_row(
+                "SELECT position FROM agent_queue_items WHERE session=? AND message=?
+             AND state='delivered' AND accepted_run=? AND position<0",
+                params![session, message, frontier.to_string()],
+                |r| r.get(0),
+            )
+            .optional()?,
+    };
+    let Some(position) = position else {
+        return Ok(None);
+    };
+    let origin: String = c.query_row(
+        "SELECT json_extract(CAST(b.payload AS TEXT), '$.resume_after_interrupt')
+         FROM agent_queue_events e JOIN contents b ON b.id=e.body_content_id
+         WHERE e.session=? AND e.revision=?",
+        params![session, position - i64::MIN],
+        |r| r.get(0),
+    )?;
+    let interrupted = RunId::try_from(
+        uuid::Uuid::parse_str(&origin).map_err(|_| invalid("invalid interrupted Run"))?,
+    )
+    .map_err(invalid)?;
+    Ok(
+        (message.is_some() || interrupted == frontier).then_some(InterruptHandoff {
+            interrupted,
+            frontier,
+        }),
+    )
+}
 fn followup(
     c: &Connection,
     session: &str,
     event: &Event,
-    original: RunId,
+    fence: &Followup,
 ) -> Result<(), StoreError> {
+    let original = fence.original();
     fn rejected(reason: &str) -> StoreError {
         StoreError::StatementRejected {
             diagnostic: "agent_admission_failed".into(),
@@ -323,7 +372,17 @@ fn followup(
             "original follow-up Run scope or canonical Local metadata differs",
         ));
     }
-    if stopped != 0 {
+    if let Followup::Resume(handoff) = fence {
+        let current = c.query_row(
+            "SELECT run=?2 AND (run=?3 OR (NOT stopped AND terminal IS NULL))
+             FROM agent_runs WHERE session=?1 ORDER BY admission_sequence DESC LIMIT 1",
+            params![session, handoff.frontier.to_string(), original.to_string()],
+            |r| r.get::<_, bool>(0),
+        )?;
+        if stopped != 1 || !current {
+            return Err(rejected("steering handoff no longer current"));
+        }
+    } else if stopped != 0 {
         return Err(rejected("original follow-up Run has been stopped"));
     }
     Ok(())
@@ -378,7 +437,9 @@ pub(super) fn write(
     let event = Event::Command {
         expected_revision: command.expected_revision,
         resume_after_interrupt: match followup_fence {
-            Some(Followup::Interrupt { run, .. }) => Some(*run),
+            Some(fence @ (Followup::Interrupt { .. } | Followup::Resume(_))) => {
+                Some(fence.original())
+            }
             _ => None,
         },
         edit: command.edit,
@@ -387,7 +448,7 @@ pub(super) fn write(
         return Ok((QueueCommit { revision }, false));
     }
     if let Some(fence) = followup_fence {
-        followup(c, session, &event, fence.original())?;
+        followup(c, session, &event, fence)?;
     }
     let next = cas(c, session, command.expected_revision)?;
     for blob in &contents {
