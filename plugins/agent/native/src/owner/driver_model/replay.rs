@@ -251,13 +251,13 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         .append_notification(
                             reader,
                             view,
-                            notice.knowledge.through,
+                            notice.through,
                             &maka_agent_state::cells::PendingNotification {
                                 cell: notice.cell,
                                 id: notice.id,
                                 content: notice.content,
                             },
-                            &notice.knowledge,
+                            notice.knowledge.as_ref(),
                             vision,
                             messages,
                         )

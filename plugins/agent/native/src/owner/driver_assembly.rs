@@ -572,6 +572,15 @@ impl Owner {
                 }
                 let cleaned = driver.finish().await;
                 cleanup_confirmed = cleaned.is_ok();
+                if let Err(error) = &cleaned {
+                    tracing::error!(
+                        run = %view.run,
+                        session = %view.spec.session_id,
+                        driven = ?driven,
+                        cleanup_error = %error,
+                        "Original driver finish left cleanup unconfirmed"
+                    );
+                }
                 // Preserve an uncertain original batch alongside its cleanup state.
                 if !matches!(&driven, Err(RunError::PublicationUncertain { .. })) {
                     cleaned?;

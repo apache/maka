@@ -709,7 +709,7 @@ impl Owner {
             result => result,
         };
         if matches!(&cleanup, OperationCleanup::Unconfirmed) {
-            tracing::error!(stage = "queue_cleanup_unconfirmed", cause = "cleanup_unconfirmed", consequence = "resources_retained", run_id = %run, session_id = %session, turn_id = %turn, activation = %self.revision.activation, "Agent original Root work remains unconfirmed");
+            tracing::error!(stage = "queue_cleanup_unconfirmed", cause = "cleanup_unconfirmed", consequence = "resources_retained", run_id = %run, session_id = %session, turn_id = %turn, activation = %self.revision.activation, outcome = ?result, "Agent original Root work remains unconfirmed");
         } else if let Err(error) = &result {
             let cause = match error {
                 RunError::Store(error)

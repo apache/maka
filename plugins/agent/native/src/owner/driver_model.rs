@@ -169,9 +169,11 @@ struct FrozenSystem {
 struct FrozenNotification {
     cell: maka_agent_facts::cells::CellId,
     id: FactId,
+    through: u64,
     content: ContentRef,
     dependencies: Vec<ContentRef>,
-    knowledge: FrozenCellKnowledge,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    knowledge: Option<FrozenCellKnowledge>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -698,15 +700,20 @@ impl DriverModel {
                     });
                 let notification_through = view.revision;
                 let mut notification_sources = Vec::with_capacity(notifications.len());
+                let mut seen_knowledge_cells = std::collections::BTreeSet::new();
                 for notice in &notifications {
-                    let knowledge = FrozenCellKnowledge::capture(view, notice.cell)?;
+                    // Project each cell's child graph once per step cut instead of repeating up to 256 KiB per notice.
+                    let knowledge = seen_knowledge_cells
+                        .insert(notice.cell)
+                        .then(|| FrozenCellKnowledge::capture(view, notice.cell))
+                        .transpose()?;
                     let dependencies = self
                         .append_notification(
                             reader,
                             view,
                             notification_through,
                             notice,
-                            &knowledge,
+                            knowledge.as_ref(),
                             model.supports_vision,
                             &mut messages,
                         )
@@ -714,6 +721,7 @@ impl DriverModel {
                     notification_sources.push(FrozenNotification {
                         cell: notice.cell,
                         id: notice.id,
+                        through: notification_through,
                         content: notice.content.clone(),
                         dependencies,
                         knowledge,
@@ -1377,11 +1385,11 @@ impl DriverModel {
         view: &RunView,
         through: u64,
         notification: &maka_agent_state::cells::PendingNotification,
-        knowledge: &FrozenCellKnowledge,
+        knowledge: Option<&FrozenCellKnowledge>,
         vision: bool,
         messages: &mut preparation::PromptBuilder,
     ) -> Result<Vec<ContentRef>, RunError> {
-        let (message, dependencies) = preparation::project_cell_notification_from(
+        let (message, mut dependencies) = preparation::project_cell_notification_from(
             reader.notification_source(),
             &maka_agent_state::artifacts::ArtifactScope {
                 owner: view.spec.owner.clone(),
@@ -1397,28 +1405,29 @@ impl DriverModel {
         )
         .await?;
         messages.append(message).await?;
-        let (message, extra) = preparation::project_cell_knowledge(
-            reader.notification_source(),
-            &self.history,
-            &maka_agent_state::artifacts::ArtifactScope {
-                owner: view.spec.owner.clone(),
-                session: view.spec.session_id.clone(),
-                run: view.run,
-                through: knowledge.through,
-            },
-            knowledge.cell,
-            &knowledge.children,
-            view.spec.language,
-            vision,
-            &self.resources,
-            &self.cancellation,
-        )
-        .await?;
-        messages.append(message).await?;
-        let mut dependencies = dependencies;
-        for reference in extra {
-            if !dependencies.contains(&reference) {
-                dependencies.push(reference);
+        if let Some(knowledge) = knowledge {
+            let (message, extra) = preparation::project_cell_knowledge(
+                reader.notification_source(),
+                &self.history,
+                &maka_agent_state::artifacts::ArtifactScope {
+                    owner: view.spec.owner.clone(),
+                    session: view.spec.session_id.clone(),
+                    run: view.run,
+                    through: knowledge.through,
+                },
+                knowledge.cell,
+                &knowledge.children,
+                view.spec.language,
+                vision,
+                &self.resources,
+                &self.cancellation,
+            )
+            .await?;
+            messages.append(message).await?;
+            for reference in extra {
+                if !dependencies.contains(&reference) {
+                    dependencies.push(reference);
+                }
             }
         }
         Ok(dependencies)

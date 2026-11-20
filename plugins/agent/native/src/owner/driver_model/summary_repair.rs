@@ -294,26 +294,26 @@ impl DriverModel {
                 .collect();
             frozen.layout = layout;
             contents.extend(chunks);
-            let mut provenance: Value = reader.decode(view.run, &request.provenance).await?;
-            current_context(&mut provenance, &model, settings.operation)?;
-            let fields = provenance
-                .as_object_mut()
-                .ok_or_else(|| unsupported("frozen-summary-provenance"))?;
-            if let Some(model) = &options.resume_model {
-                fields.insert("resumeModel".into(), json!(model));
-            }
-            fields.insert("inputDigest".into(), json!(prepared.input_digest));
-            fields.insert("routeIdentity".into(), json!(prepared.route_identity));
-            fields.insert("breakdown".into(), json!(prepared.context_breakdown));
-            fields.insert(
-                "estimatedInputTokens".into(),
-                json!(prepared.estimated_input_tokens),
-            );
-            let provenance = ContentBlob::json(&provenance)?;
-            request.provenance = provenance.reference().clone();
-            contents.push(provenance);
-            request.composition.max_output_tokens = prepared.request.max_output_tokens;
             if !repair {
+                let mut provenance: Value = reader.decode(view.run, &request.provenance).await?;
+                current_context(&mut provenance, &model, settings.operation)?;
+                let fields = provenance
+                    .as_object_mut()
+                    .ok_or_else(|| unsupported("frozen-summary-provenance"))?;
+                if let Some(model) = &options.resume_model {
+                    fields.insert("resumeModel".into(), json!(model));
+                }
+                fields.insert("inputDigest".into(), json!(prepared.input_digest));
+                fields.insert("routeIdentity".into(), json!(prepared.route_identity));
+                fields.insert("breakdown".into(), json!(prepared.context_breakdown));
+                fields.insert(
+                    "estimatedInputTokens".into(),
+                    json!(prepared.estimated_input_tokens),
+                );
+                let provenance = ContentBlob::json(&provenance)?;
+                request.provenance = provenance.reference().clone();
+                contents.push(provenance);
+                request.composition.max_output_tokens = prepared.request.max_output_tokens;
                 request.adjudications.clear();
                 request.compaction_recovery = Some(attempt);
             }
