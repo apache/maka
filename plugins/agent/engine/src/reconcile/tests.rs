@@ -769,7 +769,7 @@ fn spent_budget_does_not_promote_stop_unknown_failure_length_or_summary_to_succe
                 &mut view,
                 Fact::StopRequested {
                     diagnostic: "policy stop".into(),
-                    requester: None,
+                    requester: StopRequester::Internal,
                 },
             );
         }
@@ -1161,6 +1161,7 @@ fn an_ended_call_with_an_unknown_result_goes_back_to_the_model() {
         &mut stopped,
         Fact::StopRequested {
             diagnostic: "stopped by user".into(),
+            requester: StopRequester::User,
         },
     );
     let mut live = Live::default();

@@ -568,9 +568,10 @@ impl Store {
                     diagnostic: match requester {
                         StopRequester::User => crate::queue::USER_STOP,
                         StopRequester::Session { .. } => crate::queue::SESSION_STOP,
+                        StopRequester::Internal => "internal_stop",
                     }
                     .into(),
-                    requester: Some(requester),
+                    requester,
                 },
             },
             retract_pending: true,
@@ -1516,10 +1517,8 @@ impl Statement for StopRun {
         let latest =
             self.retract_pending && sql::latest(c, view.spec.session_id.clone())? == Some(self.run);
         if latest
-            && let Fact::StopRequested {
-                requester: Some(requester),
-                ..
-            } = &self.change.fact
+            && let Fact::StopRequested { requester, .. } = &self.change.fact
+            && !matches!(requester, StopRequester::Internal)
         {
             crate::queue::stop_queue(c, &view.spec.session_id, self.run, &self.change, requester)?;
         }

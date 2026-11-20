@@ -286,7 +286,7 @@ impl Engine {
                         if !view.stopped {
                             facts.push(Fact::StopRequested {
                                 diagnostic: diagnostic.into(),
-                                requester: None,
+                                requester: StopRequester::Internal,
                             });
                         }
                         (Terminal::Cancelled, Some(diagnostic.into()))

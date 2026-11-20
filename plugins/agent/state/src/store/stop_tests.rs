@@ -337,7 +337,7 @@ async fn pausing_a_goal_preserves_pending_steering_as_an_independent_turn() {
     let stop = Change::new(
         Fact::StopRequested {
             diagnostic: GOAL_CONTROL_STOP.into(),
-            requester: None,
+            requester: StopRequester::Internal,
         },
         UnixMillis(3),
     );
@@ -553,7 +553,7 @@ async fn a_user_stop_cancels_what_the_user_queued_and_holds_the_rest_for_the_nex
     let stop = Change::new(
         Fact::StopRequested {
             diagnostic: "user_requested_stop".into(),
-            requester: Some(StopRequester::User),
+            requester: StopRequester::User,
         },
         UnixMillis(3),
     );
@@ -849,7 +849,7 @@ async fn a_user_stop_cancels_what_the_user_queued_and_holds_the_rest_for_the_nex
             change: Change::new(
                 Fact::StopRequested {
                     diagnostic: "user_requested_stop".into(),
-                    requester: Some(StopRequester::User),
+                    requester: StopRequester::User,
                 },
                 UnixMillis(6),
             ),
@@ -1006,7 +1006,7 @@ async fn verify_owned_content_and_run_revision_through_respect_pins_and_boundari
                 vec![Change::new(
                     Fact::StopRequested {
                         diagnostic: "mid-run".into(),
-                        requester: None,
+                        requester: StopRequester::Internal,
                     },
                     UnixMillis(2),
                 )],

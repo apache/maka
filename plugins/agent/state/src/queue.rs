@@ -450,7 +450,7 @@ impl Statement for PreparedEnqueue {
                     at,
                     fact: Fact::StopRequested {
                         diagnostic: "steering_interrupt".into(),
-                        requester: None,
+                        requester: StopRequester::Internal,
                     },
                 },
                 retract_pending: false,
