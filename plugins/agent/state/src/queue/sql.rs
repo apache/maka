@@ -605,6 +605,11 @@ pub(super) fn write(
     if let Some(revision) = replayed {
         return Ok((QueueCommit { revision }, false));
     }
+    // The hold decision reads the message's source, which may arrive with
+    // this command.
+    for blob in &contents {
+        put(c, blob)?;
+    }
     if followup_fence.is_none()
         && matches!(
             &event,
@@ -629,9 +634,6 @@ pub(super) fn write(
         followup(c, session, &event, fence)?;
     }
     let next = cas(c, session, command.expected_revision)?;
-    for blob in &contents {
-        put(c, blob)?;
-    }
     project(c, session, next, &event, true)?;
     record(c, session, next, command.id, command.at, &event)?;
     Ok((QueueCommit { revision: next }, true))
