@@ -311,6 +311,21 @@ impl QueueStore {
     ) -> Result<Vec<ReadyEntry>, StoreError> {
         self.data.query(Ready(owner, after, limit)).await
     }
+    /// The queue revision at which this pending message already has steering priority.
+    pub async fn pending_steer_revision(
+        &self,
+        session: String,
+        request: RequestId,
+        run: RunId,
+    ) -> Result<Option<u64>, StoreError> {
+        self.data
+            .query(PendingSteerRevision {
+                session,
+                request,
+                run,
+            })
+            .await
+    }
     pub async fn interrupt_handoff(
         &self,
         view: &crate::fold::RunView,
@@ -474,6 +489,32 @@ impl Query for Steering {
     type Output = Queue;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::read(c, &self.0, Some(self.1))
+    }
+}
+struct PendingSteerRevision {
+    session: String,
+    request: RequestId,
+    run: RunId,
+}
+impl Query for PendingSteerRevision {
+    type Output = Option<u64>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        use rusqlite::{OptionalExtension, params};
+
+        // Interrupt/resume steers occupy negative followup positions, including after a restart.
+        let mut statement = c.prepare_cached(
+            "SELECT h.revision FROM agent_queue_items q JOIN agent_queue_heads h USING (session)
+             WHERE q.session=?1 AND q.request=?2 AND q.state='pending'
+               AND ((q.lane='steering' AND q.target_run=?3) OR (q.lane='followup' AND q.position<0))",
+        )?;
+        statement
+            .query_row(
+                params![self.session, self.request.0, self.run.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .map(sql::from_sql_integer)
+            .transpose()
     }
 }
 struct ReadHandoff(String, RunId, Option<String>);
