@@ -138,6 +138,7 @@ tokio-tungstenite.workspace = true
 nsh-core.workspace = true
 maka-capabilities.workspace = true
 maka-app-client.workspace = true
+maka-mock-ai.workspace = true
 maka-workbench.workspace = true
 log = "0.4.34"
 tokio-util = { workspace = true, features = ["compat"] }

@@ -17,15 +17,6 @@
  * under the License.
  */
 
-use futures_util::{StreamExt, stream};
-use http_body_util::{BodyExt, Full, StreamBody, combinators::UnsyncBoxBody};
-use hyper::{
-    Method, Request, Response,
-    body::{Bytes, Frame, Incoming},
-    server::conn::http1,
-    service::service_fn,
-};
-use hyper_util::rt::TokioIo;
 use maka_app_client::{Client, Journal};
 use maka_capabilities::call::Attachments;
 use maka_event_log::{
@@ -39,13 +30,16 @@ use maka_host_runtime::{
     },
     ipc::{self, LocalListener},
 };
+use maka_mock_ai::{
+    AuthPolicy, ControlPlaneConfig, FinishReason, HttpErrorSpec, InteractiveHandler, MockAiBuilder,
+    MockAiServer, ModelEntry, NormalizedRequest, TurnContext, TurnHandle, TurnHandler, Usage,
+};
 use maka_packages::Package;
 use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, OperationResult, Receipt};
 use nsh_platform_tui::{AppOptions, AppView};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    convert::Infallible,
     path::{Path, PathBuf},
     sync::{
         Arc, OnceLock,
@@ -55,11 +49,10 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
     sync::{Notify, mpsc},
     task::{JoinHandle, JoinSet},
 };
-use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub const EDITOR: &str = "composer";
@@ -135,12 +128,12 @@ pub struct Fixture {
     pub session: String,
     pub selection: Value,
     pub request_count: Arc<AtomicUsize>,
-    requests: mpsc::Receiver<ModelRequest>,
+    requests: mpsc::Receiver<TurnHandle>,
     host: Arc<Host>,
     #[cfg(feature = "desktop-tests")]
     pub store: Arc<RootStore>,
     server: JoinHandle<Result<(), String>>,
-    provider: AbortOnDropHandle<()>,
+    provider: MockAiServer,
 }
 
 #[derive(Default)]
@@ -184,7 +177,58 @@ impl Fixture {
             )
             .unwrap(),
         );
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let (interactive, requests) = InteractiveHandler::channel(8);
+        struct CountingInteractive {
+            inner: Arc<InteractiveHandler>,
+            count: Arc<AtomicUsize>,
+        }
+        impl TurnHandler for CountingInteractive {
+            fn handle<'a>(
+                &'a self,
+                req: &'a NormalizedRequest,
+                ctx: &'a TurnContext,
+            ) -> maka_mock_ai::handler::HandlerFuture<'a> {
+                self.count.fetch_add(1, Ordering::SeqCst);
+                self.inner.handle(req, ctx)
+            }
+        }
+        let discovered = ModelEntry::simple("fixture-discovered-model")
+            .with_name("Discovered UI Model")
+            .with_context(131072, 4096)
+            .with_extra(
+                "reasoning",
+                json!({
+                    "mandatory": false,
+                    "default_enabled": true,
+                    "supported_efforts": ["max", "high", "low", "none"],
+                    "default_effort": "high"
+                }),
+            );
+        let provider = MockAiBuilder::new()
+            .auth(AuthPolicy::ApiKey {
+                token: PROVIDER_KEY.into(),
+            })
+            .control(ControlPlaneConfig {
+                models: vec![discovered],
+                relay_token_usage: Some(json!({
+                    "code": true,
+                    "data": {
+                        "unlimited_quota": false,
+                        "total_granted": 100.0,
+                        "total_used": 28.0,
+                        "total_available": 72.0
+                    }
+                })),
+                ..Default::default()
+            })
+            .handler(Arc::new(CountingInteractive {
+                inner: interactive,
+                count: request_count.clone(),
+            }))
+            .start()
+            .await
+            .unwrap();
         let bundled = product_packages().await;
         let home = directory.path().join("assistant-home");
         std::fs::create_dir(&home).unwrap();
@@ -233,13 +277,8 @@ impl Fixture {
             }
             other => panic!("unexpected fixture sandbox access {other:?}"),
         };
-        let selection = configure(
-            owner.clone(),
-            &format!("http://{}/v1", listener.local_addr().unwrap()),
-            &options,
-            sandbox_mode,
-        )
-        .await;
+        let selection =
+            configure(owner.clone(), &provider.base_url(), &options, sandbox_mode).await;
         let store = Arc::new(
             maka_transport::open_store(owner, &maka_product_native::root_migrations())
                 .await
@@ -320,32 +359,7 @@ impl Fixture {
             let host = host.clone();
             async move { host.serve_local(local, CancellationToken::new()).await }
         });
-        let (send, requests) = mpsc::channel(8);
-        let responses = options.responses;
-        let request_count = Arc::new(AtomicUsize::new(0));
-        let provider = AbortOnDropHandle::new(tokio::spawn({
-            let count = request_count.clone();
-            async move {
-                let mut connections = JoinSet::new();
-                loop {
-                    tokio::select! {
-                        accepted = listener.accept() => {
-                            let (stream, _) = accepted.unwrap();
-                            let send = send.clone();
-                            let count = count.clone();
-                            connections.spawn(async move {
-                                if responses {
-                                    ModelRequest::serve_responses(stream, send, count).await;
-                                } else {
-                                    ModelRequest::serve(stream, send, count).await;
-                                }
-                            });
-                        },
-                        Some(result)=connections.join_next(),if !connections.is_empty()=>{result.unwrap();}
-                    }
-                }
-            }
-        }));
+
         let mut fixture = Self {
             directory,
             address,
@@ -395,10 +409,14 @@ impl Fixture {
         .unwrap()
     }
     pub async fn next_request(&mut self) -> ModelRequest {
-        tokio::time::timeout(WAIT_TIMEOUT, self.requests.recv())
+        let handle = tokio::time::timeout(WAIT_TIMEOUT, self.requests.recv())
             .await
             .unwrap()
-            .unwrap()
+            .unwrap();
+        ModelRequest {
+            body: handle.request.raw_body.clone(),
+            handle,
+        }
     }
     pub async fn idle(&self, client: &Client, session: &str) {
         tokio::time::timeout(WAIT_TIMEOUT, async {
@@ -433,8 +451,7 @@ impl Fixture {
     pub async fn finish(self) {
         self.host.shutdown().await.unwrap();
         self.server.await.unwrap().unwrap();
-        self.provider.abort();
-        assert!(self.provider.await.unwrap_err().is_cancelled());
+        self.provider.shutdown().await;
     }
 }
 pub(crate) async fn configure(
@@ -545,198 +562,55 @@ pub async fn mutate(client: &Client, method: &str, input: Value) -> Value {
 
 pub struct ModelRequest {
     pub body: Value,
-    response: mpsc::Sender<ModelReply>,
-    completed: Arc<Notify>,
-}
-type ModelBody = UnsyncBoxBody<Bytes, Infallible>;
-
-enum ModelReply {
-    Event(Value),
-    Done,
-    Rejected(Value),
-}
-
-impl ModelReply {
-    fn sse(self) -> Bytes {
-        match self {
-            Self::Event(value) => Bytes::from(format!("data: {value}\n\n")),
-            Self::Done => Bytes::from_static(b"data: [DONE]\n\n"),
-            Self::Rejected(_) => panic!("HTTP status cannot change after streaming starts"),
-        }
-    }
-}
-
-fn model_http_error(body: Value) -> Response<ModelBody> {
-    Response::builder()
-        .status(hyper::StatusCode::BAD_REQUEST)
-        .header(hyper::header::CONTENT_TYPE, "application/json")
-        .body(Full::new(Bytes::from(body.to_string())).boxed_unsync())
-        .unwrap()
+    handle: TurnHandle,
 }
 
 impl ModelRequest {
-    pub(crate) async fn serve(
-        socket: TcpStream,
-        requests: mpsc::Sender<Self>,
-        count: Arc<AtomicUsize>,
-    ) {
-        let completed = Arc::new(Notify::new());
-        let notification = completed.clone();
-        let service = service_fn(move |request: Request<Incoming>| {
-            let requests = requests.clone();
-            let count = count.clone();
-            let completed = completed.clone();
-            async move {
-                assert_eq!(
-                    request.headers()[hyper::header::AUTHORIZATION],
-                    format!("Bearer {PROVIDER_KEY}")
-                );
-                if request.method() == Method::GET && request.uri().path() == "/v1/models" {
-                    let body = Bytes::from_static(br#"{"data":[{"id":"fixture-discovered-model","name":"Discovered UI Model","context_length":131072,"top_provider":{"max_completion_tokens":4096},"reasoning":{"mandatory":false,"default_enabled":true,"supported_efforts":["max","high","low","none"],"default_effort":"high"}}]}"#);
-                    return Ok::<Response<ModelBody>, hyper::Error>(
-                        Response::builder()
-                            .header(hyper::header::CONTENT_TYPE, "application/json")
-                            .body(Full::new(body).boxed_unsync())
-                            .unwrap(),
-                    );
-                }
-                if request.method() == Method::GET && request.uri().path() == "/api/usage/token/" {
-                    let body = Bytes::from_static(
-                        br#"{"code":true,"data":{"unlimited_quota":false,"total_granted":100.0,"total_used":28.0,"total_available":72.0}}"#,
-                    );
-                    return Ok::<Response<ModelBody>, hyper::Error>(
-                        Response::builder()
-                            .header(hyper::header::CONTENT_TYPE, "application/json")
-                            .body(Full::new(body).boxed_unsync())
-                            .unwrap(),
-                    );
-                }
-                assert_eq!(request.method(), Method::POST);
-                assert_eq!(request.uri().path(), "/v1/chat/completions");
-                let bytes = request.into_body().collect().await?.to_bytes();
-                let body: Value = serde_json::from_slice(&bytes).unwrap();
-                let (response, mut receiver) = mpsc::channel(1);
-                count.fetch_add(1, Ordering::SeqCst);
-                requests
-                    .send(Self {
-                        body,
-                        response,
-                        completed,
-                    })
-                    .await
-                    .unwrap();
-                let first = match receiver.recv().await {
-                    Some(ModelReply::Rejected(body)) => return Ok(model_http_error(body)),
-                    reply => reply.map(ModelReply::sse),
-                };
-                let events = stream::iter(first)
-                    .chain(stream::unfold(receiver, |mut receiver| async move {
-                        receiver.recv().await.map(|reply| (reply.sse(), receiver))
-                    }))
-                    .map(|bytes| Ok::<_, Infallible>(Frame::data(bytes)));
-                Ok(Response::builder()
-                    .header(hyper::header::CONTENT_TYPE, "text/event-stream")
-                    .body(StreamBody::new(events).boxed_unsync())
-                    .unwrap())
-            }
-        });
-        // The provider's JoinSet owns the entire HTTP connection, including its
-        // streamed response. Cancellation may close the client before [DONE].
-        let result = http1::Builder::new()
-            .keep_alive(false)
-            .serve_connection(TokioIo::new(socket), service)
-            .await;
-        notification.notify_one();
-        if let Err(error) = result {
-            assert!(!error.is_parse(), "invalid fixture HTTP request: {error}");
-        }
-    }
-    async fn serve_responses(
-        socket: TcpStream,
-        requests: mpsc::Sender<Self>,
-        count: Arc<AtomicUsize>,
-    ) {
-        use futures_util::SinkExt;
-        use tokio_tungstenite::tungstenite::{
-            Message,
-            handshake::server::{Request, Response},
-        };
-
-        let mut socket =
-            tokio_tungstenite::accept_hdr_async(socket, |request: &Request, response: Response| {
-                assert_eq!(request.uri().path(), "/v1/responses");
-                assert_eq!(
-                    request.headers()["authorization"],
-                    format!("Bearer {PROVIDER_KEY}")
-                );
-                Ok(response)
-            })
-            .await
-            .unwrap();
-        let frame = socket.next().await.unwrap().unwrap().into_text().unwrap();
-        let body: Value = serde_json::from_str(&frame).unwrap();
-        assert_eq!(body["type"], "response.create");
-        let (response, mut receiver) = mpsc::channel(1);
-        let completed = Arc::new(Notify::new());
-        count.fetch_add(1, Ordering::SeqCst);
-        requests
-            .send(Self {
-                body,
-                response,
-                completed: completed.clone(),
-            })
-            .await
-            .unwrap();
-        while let Some(reply) = receiver.recv().await {
-            let ModelReply::Event(value) = reply else {
-                panic!("the Responses fixture expects JSON events");
-            };
-            socket.send(Message::text(value.to_string())).await.unwrap();
-        }
-        completed.notify_one();
-    }
-
     pub async fn packet(&mut self, value: Value) {
-        // The Agent may cancel an in-flight response and close its HTTP body.
-        let _ = self.response.send(ModelReply::Event(value)).await;
+        let _ = self.handle.raw_json(value).await;
     }
+
     pub async fn delta(&mut self, text: &str) {
-        self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]})).await;
+        let _ = self.handle.delta(text).await;
     }
+
     pub async fn thinking(&mut self, text: &str) {
-        self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{"reasoning_content":text},"finish_reason":null}]})).await;
+        let _ = self.handle.thinking(text).await;
     }
+
     pub async fn finish(self) {
-        self.finish_with_reason("stop").await;
+        self.finish_with_reason(FinishReason::Stop).await;
     }
+
     /// Ends the reply with one call to `name`.
     #[cfg(any(unix, feature = "desktop-tests"))]
-    pub async fn tool_call(mut self, name: &str, arguments: Value) {
-        self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"nsh-real-call","type":"function","function":{"name":name,"arguments":arguments.to_string()}}]},"finish_reason":null}]})).await;
-        self.finish_with_reason("tool_calls").await;
+    pub async fn tool_call(self, name: &str, arguments: Value) {
+        let _ = self
+            .handle
+            .tool_call("nsh-real-call", name, arguments)
+            .await;
+        self.finish_with_reason(FinishReason::ToolCalls).await;
     }
 
     pub async fn http_error(self, body: Value) {
-        self.response
-            .send(ModelReply::Rejected(body))
-            .await
-            .unwrap();
-        drop(self.response);
-        self.completed.notified().await;
+        let closed = self.handle.closed_signal();
+        self.handle.http_error(HttpErrorSpec::raw(400, body)).await;
+        closed.notified().await;
     }
 
-    async fn finish_with_reason(mut self, reason: &str) {
-        self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}})).await;
-        let _ = self.response.send(ModelReply::Done).await;
-        self.finish_stream().await;
+    async fn finish_with_reason(self, reason: FinishReason) {
+        let closed = self.handle.closed_signal();
+        let _ = self.handle.usage(Usage::new(1, 2)).await;
+        self.handle.finish_with(reason).await;
+        closed.notified().await;
     }
 
     pub async fn finish_stream(self) {
-        drop(self.response);
-        self.completed.notified().await;
+        let closed = self.handle.closed_signal();
+        drop(self.handle);
+        closed.notified().await;
     }
 }
-
 pub async fn wait_enabled_button(
     view: &mut AppView,
     label: &str,
