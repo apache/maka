@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+import { formatCount } from './numberFormat';
 import {
   batch,
   cleanup,
@@ -34,6 +35,7 @@ import { SettingsButton } from './SettingsPage';
 import type { ComposerGoal } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { GoalStatus } from '../../../../packages/plugin-sdk/src/index.js';
 import { formatDuration } from './duration';
+import { TokenCount } from './TokenCount';
 import { tr, type MessageKey } from './locale';
 import { SettingsEditor, SettingsField } from './SettingsField';
 import { LoadingIndicator, LoadingState } from './Loading';
@@ -191,7 +193,7 @@ export function createGoalContent(props: {
                 </If>
                 <Text style={{ ...captionTextStyle, color: C.secondary }}>
                   {tr(goalStatusLabel(current()!.status))} ·{' '}
-                  {tr('Iteration {count}', { count: current()!.iterations })}
+                  {tr('Iteration {count}', { count: formatCount(current()!.iterations) })}
                 </Text>
               </View>
               <Text style={{ ...bodyTextStyle, color: C.text }}>{current()!.objective}</Text>
@@ -212,21 +214,32 @@ export function createGoalContent(props: {
                 <Text style={{ ...captionTextStyle, color: C.secondary }}>{current()!.note}</Text>
               </If>
               <View style={{ flexDirection: 'row', gap: 24, flexWrap: 'wrap' }}>
-                <View style={{ gap: 4 }}>
+                <View style={{ gap: 4, alignItems: 'flex-start' }}>
                   <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Known tokens')}</Text>
-                  <Text style={{ ...bodyTextStyle, color: C.text }}>
-                    {current()!.consumed.missing ? '≥' : ''}
-                    {current()!.consumed.known.toLocaleString()}
-                  </Text>
+                  <TokenCount
+                    label={tr('Known tokens')}
+                    value={current()!.consumed.known}
+                    prefix={current()!.consumed.missing ? '≥' : ''}
+                  />
                 </View>
                 <If when={current()?.tokenBudget !== null}>
-                  <View style={{ gap: 4 }}>
+                  <View style={{ gap: 4, alignItems: 'flex-start' }}>
                     <Text style={{ ...captionTextStyle, color: C.muted }}>
                       {tr('Remaining tokens')}
                     </Text>
-                    <Text style={{ ...bodyTextStyle, color: C.text }}>
-                      {current()!.remainingTokens?.toLocaleString() ?? tr('Usage incomplete')}
-                    </Text>
+                    <If
+                      when={current()!.remainingTokens != null}
+                      else={
+                        <Text style={{ ...bodyTextStyle, color: C.text }}>
+                          {tr('Usage incomplete')}
+                        </Text>
+                      }
+                    >
+                      <TokenCount
+                        label={tr('Remaining tokens')}
+                        value={current()!.remainingTokens!}
+                      />
+                    </If>
                   </View>
                 </If>
                 <View style={{ gap: 4 }}>

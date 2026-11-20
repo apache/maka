@@ -17,9 +17,11 @@
  * under the License.
  */
 
+import { formatCount } from './numberFormat';
 import { UiError, errorText, renderText, type UiText } from './text';
 import { currentLocale, tr } from './locale';
 import { formatDuration } from './duration';
+import { TokenCount } from './TokenCount';
 import { cleanup, inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import type {
@@ -48,16 +50,15 @@ type Counter =
   | 'cache_read_tokens'
   | 'cache_write_tokens';
 
-function total(attempts: UsageModelAttempt[], key: Counter): string {
+function total(attempts: UsageModelAttempt[], key: Counter): number | null {
   let value = 0;
   for (const attempt of attempts) {
     const next: ModelUsage[Counter] = attempt.usage[key];
-    if (typeof next !== 'number' || next < 0 || !Number.isSafeInteger(next))
-      return tr('Unavailable');
+    if (typeof next !== 'number' || next < 0 || !Number.isSafeInteger(next)) return null;
     value += next;
-    if (!Number.isSafeInteger(value)) return tr('Unavailable');
+    if (!Number.isSafeInteger(value)) return null;
   }
-  return String(value);
+  return value;
 }
 
 export function cacheHitRate(cache: PromptCacheUsage): string {
@@ -71,19 +72,32 @@ export function cacheHitRate(cache: PromptCacheUsage): string {
   return format.format(rate);
 }
 
-export function executorUsageLabel(usage: ExecutorTurnUsage): string {
-  return usage.totalTokens == null
-    ? [
-        usage.tokens.input_tokens == null
-          ? ''
-          : tr('{count} input tokens', { count: usage.tokens.input_tokens }),
-        usage.tokens.output_tokens == null
-          ? ''
-          : tr('{count} output tokens', { count: usage.tokens.output_tokens }),
-      ]
-        .filter(Boolean)
-        .join(' · ')
-    : tr('{count} tokens', { count: usage.totalTokens });
+export function ExecutorTokenCounts(props: {
+  usage: ExecutorTurnUsage;
+  style: NonNullable<Parameters<typeof TokenCount>[0]['style']>;
+}) {
+  const counts = () => {
+    const { totalTokens, tokens } = props.usage;
+    const counters =
+      totalTokens != null
+        ? ([[totalTokens, '{count} tokens']] as const)
+        : ([
+            [tokens.input_tokens, '{count} input tokens'],
+            [tokens.output_tokens, '{count} output tokens'],
+          ] as const);
+    return counters.flatMap(([value, label]) => (value == null ? [] : [{ label, value }]));
+  };
+  return (
+    <Each of={counts()} key={(counter) => counter.label}>
+      {(counter) => (
+        <TokenCount
+          value={counter().value}
+          format={(count) => tr(counter().label, { count })}
+          style={props.style}
+        />
+      )}
+    </Each>
+  );
 }
 
 /** Read original turn accounting at one captured usage fence, including across retries. */
@@ -193,14 +207,16 @@ export function TurnUsage(props: {
   const reportedCounters = () => {
     const usage = props.reported;
     if (!usage) return [];
-    const counts = counters().flatMap(({ key, label }) => {
-      const value = usage.tokens[key];
-      return value == null ? [] : [{ label, value: String(value) }];
-    });
+    const counts: { label: string; value: number | string }[] = counters().flatMap(
+      ({ key, label }) => {
+        const value = usage.tokens[key];
+        return value == null ? [] : [{ label, value }];
+      },
+    );
     if (usage.totalTokens != null)
-      counts.push({ label: tr('Total tokens'), value: String(usage.totalTokens) });
+      counts.push({ label: tr('Total tokens'), value: usage.totalTokens });
     if (usage.durationMs != null)
-      counts.push({ label: tr('Duration'), value: formatDuration(usage.durationMs, true) });
+      counts.push({ label: tr('Duration'), value: formatDuration(usage.durationMs, 'tenths') });
     return counts;
   };
   const cost = () => {
@@ -230,7 +246,14 @@ export function TurnUsage(props: {
               {(counter) => (
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
                   <Text style={{ flex: 1, color: C.secondary }}>{counter().label}</Text>
-                  <Text style={[{ color: C.text }, { userSelect: 'text' }]}>{counter().value}</Text>
+                  <If
+                    when={typeof counter().value === 'number'}
+                    else={
+                      <Text style={{ color: C.text, userSelect: 'text' }}>{counter().value}</Text>
+                    }
+                  >
+                    <TokenCount label={counter().label} value={counter().value as number} />
+                  </If>
                 </View>
               )}
             </Each>
@@ -238,10 +261,7 @@ export function TurnUsage(props: {
           <If when={!props.reported && reading().kind === 'loading'}>
             <Text style={{ color: C.muted }}>
               {tr('Reading original usage… {count} records checked', {
-                count:
-                  reading().kind === 'loading'
-                    ? (reading() as Extract<Reading, { kind: 'loading' }>).checked
-                    : 0,
+                count: formatCount((reading() as Extract<Reading, { kind: 'loading' }>).checked),
               })}
             </Text>
           </If>
@@ -278,18 +298,24 @@ export function TurnUsage(props: {
                 attempts().length === 1
                   ? '{count} main model request in this turn'
                   : '{count} main model requests in this turn',
-                { count: attempts().length },
+                { count: formatCount(attempts().length) },
               )}
             </Text>
             <Each of={counters()} key={(counter) => counter.key}>
-              {(counter) => (
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
-                  <Text style={{ flex: 1, color: C.secondary }}>{counter().label}</Text>
-                  <Text style={[{ color: C.text }, { userSelect: 'text' }]}>
-                    {total(attempts(), counter().key)}
-                  </Text>
-                </View>
-              )}
+              {(counter) => {
+                const count = () => total(attempts(), counter().key);
+                return (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
+                    <Text style={{ flex: 1, color: C.secondary }}>{counter().label}</Text>
+                    <If
+                      when={count() !== null}
+                      else={<Text style={{ color: C.text }}>{tr('Unavailable')}</Text>}
+                    >
+                      <TokenCount label={counter().label} value={count()!} />
+                    </If>
+                  </View>
+                );
+              }}
             </Each>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
               <Text style={{ flex: 1, color: C.secondary }}>{tr('Recorded cost')}</Text>

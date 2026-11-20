@@ -344,6 +344,34 @@ mod tests {
         assert!(!app.screen().matches("role:button[Remove quote]").unwrap());
     }
 
+    #[test]
+    fn request_metrics_toggle_token_counts_independently() {
+        let mut app = headless_fixture(
+            "tests/fixtures/request-metrics.tsx",
+            Size::new(px(460.0), px(420.0)),
+            false,
+        );
+        app.wait_for("text:1h 43m 4s").unwrap();
+        app.wait_for("text:325 ms").unwrap();
+        app.wait_for("text:984").unwrap();
+        app.wait_for("role:button[Context window (tokens): 4m · Show exact token count]")
+            .unwrap();
+
+        app.press("role:button[Estimated input tokens: 3.1k · Show exact token count]")
+            .unwrap();
+        app.wait_for("role:button[Estimated input tokens: 3,125 · Show compact token count]")
+            .unwrap();
+        assert!(app.shows("4m"));
+        app.press("role:button[Context window (tokens): 4m · Show exact token count]")
+            .unwrap();
+        app.wait_for("text:4,000,000").unwrap();
+        app.press("role:button[Estimated input tokens: 3,125 · Show compact token count]")
+            .unwrap();
+        app.wait_for("role:button[Estimated input tokens: 3.1k · Show exact token count]")
+            .unwrap();
+        assert!(app.shows("4,000,000"));
+    }
+
     fn headless_fixture(
         entry: &str,
         viewport: Size<Points>,

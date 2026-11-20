@@ -26,7 +26,7 @@ export const cardFamily = (key: string | null | undefined) =>
 export type ToolFamily = ReturnType<typeof cardFamily>;
 export type ToolSection = {
   label: string;
-  text: string;
+  text: string | { tokens: number; prefix?: string };
   style?: 'text' | 'code';
   tone?: 'added' | 'removed' | 'warning' | 'error';
 };
