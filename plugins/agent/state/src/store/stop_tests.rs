@@ -795,6 +795,18 @@ async fn verify_owned_content_and_run_revision_through_respect_pins_and_boundari
     let run1 = run1_admission.run();
     store.admit(run1_admission).await.unwrap();
 
+    let mut foreign_spec = spec1.clone();
+    foreign_spec.session_id = "other-session".into();
+    foreign_spec.turn_id = "foreign-turn".into();
+    foreign_spec.trigger = Trigger::Message {
+        message_id: "foreign-message".into(),
+    };
+    let foreign_blob = ContentBlob::json(&"foreign-selection").unwrap();
+    foreign_spec.tool_selection = foreign_blob.reference().clone();
+    let foreign_admission = Admission::new(foreign_spec, UnixMillis(1), vec![foreign_blob]);
+    let foreign_run = foreign_admission.run();
+    store.admit(foreign_admission).await.unwrap();
+
     // Pinned content passes; unpinned digest and wrong length fail.
     store
         .verify_owned_content(run1, spec1.tool_selection.clone())
@@ -915,6 +927,13 @@ async fn verify_owned_content_and_run_revision_through_respect_pins_and_boundari
             .await
             .unwrap(),
         1
+    );
+    assert_eq!(
+        history
+            .run_revision_through(&cut, foreign_run, cut.through_sequence)
+            .await
+            .unwrap(),
+        0
     );
     assert!(
         history

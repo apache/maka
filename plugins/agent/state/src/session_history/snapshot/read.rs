@@ -330,18 +330,22 @@ impl Query for RunRevisionThrough {
         if self.2 == 0 {
             return Ok(0);
         }
-        let revision: Option<i64> = c
+        let revision: Option<Option<i64>> = c
             .prepare_cached(
-                "SELECT MAX(CAST(json_extract(entry_json,'$.revision') AS INTEGER))
-                 FROM agent_history_snapshot_entries
-                 WHERE snapshot=?1 AND kind='fact' AND run=?2 AND sequence<=?3",
+                "SELECT CAST(json_extract(entry_json,'$.revision') AS INTEGER)
+                 FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_run
+                 WHERE snapshot=?1 AND kind='fact' AND run=?2 AND sequence<=?3
+                 ORDER BY sequence DESC
+                 LIMIT 1",
             )?
             .query_row(
                 params![self.0.id.to_string(), self.1.to_string(), bind_u64(self.2)?],
                 |row| row.get(0),
-            )?;
+            )
+            .optional()?;
         match revision {
-            Some(value) => u64::try_from(value).map_err(|_| invalid("negative revision")),
+            Some(Some(value)) => u64::try_from(value).map_err(|_| invalid("negative revision")),
+            Some(None) => Err(invalid("snapshot fact missing revision")),
             None => Ok(0),
         }
     }

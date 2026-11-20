@@ -229,8 +229,11 @@ impl OriginalEffects {
                 &self.access.spec().tool_selection,
             )
             .await
-            .map_err(|error| {
-                recovery_unavailable(format!("original tool selection is unavailable: {error}"))
+            .map_err(|error| match error {
+                RunError::InvalidInput(message) => recovery_unavailable(format!(
+                    "original tool selection is unavailable: {message}"
+                )),
+                other => other,
             })
     }
     pub(super) async fn selected_for_tool(

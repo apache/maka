@@ -93,7 +93,7 @@ impl RunAccess {
             .await?;
         self.validate_model_tools_with_selection(
             request,
-            &selection,
+            Some(&selection),
             &catalog,
             &bound.all(),
             &mcp,
@@ -110,19 +110,14 @@ impl RunAccess {
         mcp: &crate::mcp::Catalog,
         mode: maka_agent_facts::execution::ToolMode,
     ) -> Result<(), RunError> {
-        let view = self.fresh().await.map_err(RunError::InvalidInput)?;
-        let owner = self.owner().map_err(RunError::InvalidInput)?;
-        let selection = owner
-            .selection_snapshot(&owner.durable, view.run, &view.spec.tool_selection)
-            .await?;
-        self.validate_model_tools_with_selection(request, &selection, raw, bound, mcp, mode)
+        self.validate_model_tools_with_selection(request, None, raw, bound, mcp, mode)
             .await
     }
 
     async fn validate_model_tools_with_selection(
         self: &Arc<Self>,
         request: &RequestSpec,
-        selection: &crate::tools::SelectionSnapshot,
+        selection: Option<&crate::tools::SelectionSnapshot>,
         raw: &maka_tools::ToolCatalog,
         bound: &maka_tools::ToolCatalog,
         mcp: &crate::mcp::Catalog,
@@ -132,6 +127,16 @@ impl RunAccess {
         let view = self.fresh().await.map_err(RunError::InvalidInput)?;
         let owner = self.owner().map_err(RunError::InvalidInput)?;
         let current = self.live_configuration().await?;
+        let loaded;
+        let selection = match selection {
+            Some(selection) => selection,
+            None => {
+                loaded = owner
+                    .selection_snapshot(&owner.durable, view.run, &view.spec.tool_selection)
+                    .await?;
+                &loaded
+            }
+        };
         let code = mode == maka_agent_facts::execution::ToolMode::CodeMode;
         let contracts: BTreeMap<String, String> = if code {
             let provenance: serde_json::Value =
