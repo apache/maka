@@ -885,19 +885,55 @@ text("H_PY_CELL_DONE:" + str(load("py_tag")) + ":" + r["kind"] + ":" + s["kind"]
         "all 100 first-wave messages must be accepted/queued before SIGKILL"
     );
 
-    // Wait until a massive wave is actively in flight (model calls + shell/V8/Monty executing).
+    // Wait until >= 60 model requests have entered mock AND confirm via agent/observe across
+    // the 100 wave-1 sessions that >= 50 wave-1 runs are actively in flight right before SIGKILL #1.
     let wait_start = Instant::now();
-    while wave_model_reqs.load(Ordering::Relaxed) < 60
-        && wait_start.elapsed() < Duration::from_secs(15)
-    {
+    let mut active_before_kill = 0usize;
+    while wait_start.elapsed() < Duration::from_secs(15) {
+        if wave_model_reqs.load(Ordering::Relaxed) >= 60 {
+            let mut obs_set = JoinSet::new();
+            for (sid, _) in &wave1_message_ids {
+                let c = client.clone();
+                let sid = sid.clone();
+                obs_set.spawn(async move {
+                    try_call(
+                        &c,
+                        "agent",
+                        "observe",
+                        json!({ "sessionId": sid }),
+                        Duration::from_secs(5),
+                    )
+                    .await
+                    .ok()
+                    .is_some_and(|obs| {
+                        obs["session"]["activity"].as_str() == Some("working")
+                            && obs["run"]["runId"].as_str().is_some()
+                    })
+                });
+            }
+            let mut active = 0usize;
+            while let Some(r) = obs_set.join_next().await {
+                if r.unwrap_or(false) {
+                    active += 1;
+                }
+            }
+            active_before_kill = active;
+            if active_before_kill >= 50 {
+                break;
+            }
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(
-        wave_model_reqs.load(Ordering::Relaxed) >= 60,
-        "expected >= 60 in-flight model requests before SIGKILL #1, got {}",
+        wave_model_reqs.load(Ordering::Relaxed) >= 60 && active_before_kill >= 50,
+        "expected >= 60 model requests and >= 50 active wave-1 runs right before SIGKILL #1, got wave_reqs={} active={active_before_kill}",
         wave_model_reqs.load(Ordering::Relaxed)
     );
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    eprintln!(
+        "[SCEN H] Pre-SIGKILL #1 verified in-flight wave-1 runs: {active_before_kill}/{} (wave_reqs={})",
+        wave1_message_ids.len(),
+        wave_model_reqs.load(Ordering::Relaxed),
+    );
 
     // =========================================================================
     // 5 CONSECUTIVE SIGKILLs!
@@ -4151,19 +4187,28 @@ text((r && !r.error ? "SCHED_CREATED_OK:" : "SCHED_CREATED_ERR:") + JSON.stringi
                     else {
                         return (false, false);
                     };
-                    let was_active = obs["session"]["activity"].as_str() == Some("working")
-                        && obs["run"]["runId"].as_str().is_some();
-                    if let Some(run_id) = obs["run"]["runId"].as_str() {
-                        let _ = try_call(
+                    let active_run_id = if obs["session"]["activity"].as_str() == Some("working") {
+                        obs["run"]["runId"].as_str().map(str::to_owned)
+                    } else {
+                        None
+                    };
+                    let stop_requested = if let Some(ref run_id) = active_run_id {
+                        try_call(
                             &c,
                             "agent",
                             "stop",
                             json!({ "sessionId": sid, "runId": run_id }),
                             Duration::from_secs(10),
                         )
-                        .await;
-                    }
-                    let _ = wait_session_settled(&c, &sid, Duration::from_secs(20)).await;
+                        .await
+                        .ok()
+                        .is_some_and(|v| v["requested"] == true)
+                    } else {
+                        false
+                    };
+                    let settled_ok = wait_session_settled(&c, &sid, Duration::from_secs(20))
+                        .await
+                        .is_ok();
                     let Ok(settled) = try_call(
                         &c,
                         "agent",
@@ -4173,10 +4218,10 @@ text((r && !r.error ? "SCHED_CREATED_OK:" : "SCHED_CREATED_ERR:") + JSON.stringi
                     )
                     .await
                     else {
-                        return (was_active, false);
+                        return (false, false);
                     };
                     let Some(rev) = settled["session"]["revision"].as_u64() else {
-                        return (was_active, false);
+                        return (false, false);
                     };
                     let Ok(res) = try_call(
                         &c,
@@ -4187,9 +4232,11 @@ text((r && !r.error ? "SCHED_CREATED_OK:" : "SCHED_CREATED_ERR:") + JSON.stringi
                     )
                     .await
                     else {
-                        return (was_active, false);
+                        return (false, false);
                     };
-                    (was_active, res["kind"] == "removed")
+                    let removed = res["kind"] == "removed";
+                    let active_stopped = active_run_id.is_some() && stop_requested && settled_ok;
+                    (active_stopped, removed)
                 });
             }
             while let Some(r) = del_set.join_next().await {

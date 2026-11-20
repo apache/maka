@@ -195,8 +195,7 @@ struct ReadQueue {
     closed: bool,
     active_readers: usize,
     next_id: u64,
-    shared_order: VecDeque<u64>,
-    shared_pending: std::collections::HashMap<u64, ReadJob>,
+    shared: std::collections::BTreeMap<u64, ReadJob>,
     targeted: Vec<VecDeque<ReadJob>>,
 }
 
@@ -217,8 +216,7 @@ impl ReadDispatcher {
                 closed: false,
                 active_readers: 0,
                 next_id: 0,
-                shared_order: VecDeque::new(),
-                shared_pending: std::collections::HashMap::new(),
+                shared: std::collections::BTreeMap::new(),
                 targeted: (0..readers).map(|_| VecDeque::new()).collect(),
             }),
             available: Condvar::new(),
@@ -239,9 +237,11 @@ impl ReadDispatcher {
             return Err(StoreError::ConnectionClosed);
         }
         let id = queue.next_id;
-        queue.next_id = queue.next_id.wrapping_add(1);
-        queue.shared_order.push_back(id);
-        queue.shared_pending.insert(id, job);
+        queue.next_id = queue
+            .next_id
+            .checked_add(1)
+            .expect("read queue id overflow");
+        queue.shared.insert(id, job);
         drop(queue);
         self.available.notify_one();
         Ok(id)
@@ -250,11 +250,7 @@ impl ReadDispatcher {
     fn cancel(&self, id: u64) {
         let removed = {
             let mut queue = self.queue.lock().unwrap();
-            let removed = queue.shared_pending.remove(&id);
-            if queue.shared_pending.is_empty() {
-                queue.shared_order.clear();
-            }
-            removed
+            queue.shared.remove(&id)
         };
         drop(removed);
     }
@@ -279,10 +275,8 @@ impl ReadDispatcher {
             if let Some(job) = queue.targeted[index].pop_front() {
                 return Some(job);
             }
-            while let Some(id) = queue.shared_order.pop_front() {
-                if let Some(job) = queue.shared_pending.remove(&id) {
-                    return Some(job);
-                }
+            if let Some((_, job)) = queue.shared.pop_first() {
+                return Some(job);
             }
             if queue.closed {
                 return None;
@@ -301,14 +295,13 @@ impl ReadDispatcher {
 
     fn reader_exited(&self, index: usize) {
         let mut drained_targeted = VecDeque::new();
-        let mut drained_shared = std::collections::HashMap::new();
+        let mut drained_shared = std::collections::BTreeMap::new();
         {
             let mut queue = self.queue.lock().unwrap();
             std::mem::swap(&mut queue.targeted[index], &mut drained_targeted);
             queue.active_readers = queue.active_readers.saturating_sub(1);
             if queue.active_readers == 0 {
-                queue.shared_order.clear();
-                std::mem::swap(&mut queue.shared_pending, &mut drained_shared);
+                std::mem::swap(&mut queue.shared, &mut drained_shared);
             }
         }
         drop(drained_targeted);
@@ -615,11 +608,33 @@ mod tests {
         assert!(matches!(queued.as_mut().poll(&mut cx), Poll::Pending));
         assert!(!payload_dropped.load(Ordering::Acquire));
 
+        // Keep one live queued read pending while cancelling a burst of other reads.
+        let mut live_queued = Box::pin(
+            conn.read(|db| Ok(db.query_row("SELECT v FROM items", [], |r| r.get::<_, i64>(0))?)),
+        );
+        assert!(matches!(live_queued.as_mut().poll(&mut cx), Poll::Pending));
+
         // Dropping the pending future must drop the queued closure immediately while readers are still busy.
         drop(queued);
         assert!(
             payload_dropped.load(Ordering::Acquire),
             "cancelled queued read must release its closure/custody immediately"
+        );
+
+        // Repeatedly enqueueing and cancelling reads while a live read remains queued must not accumulate stale entries.
+        for _ in 0..32 {
+            let exec_flag = executed.clone();
+            let mut transient = Box::pin(conn.read(move |_db| {
+                exec_flag.store(true, Ordering::Release);
+                Ok(2i64)
+            }));
+            assert!(matches!(transient.as_mut().poll(&mut cx), Poll::Pending));
+            drop(transient);
+        }
+        assert_eq!(
+            conn.admission.reads.queue.lock().unwrap().shared.len(),
+            1,
+            "cancelled reads must not leave stale queue entries while another read stays pending"
         );
 
         tokio::task::spawn_blocking(move || release.wait())
@@ -628,6 +643,7 @@ mod tests {
         for blocker in blockers {
             assert_eq!(blocker.await.unwrap(), 7);
         }
+        assert_eq!(live_queued.await.unwrap(), 7);
         assert!(
             !executed.load(Ordering::Acquire),
             "cancelled queued read must not execute after readers become free"

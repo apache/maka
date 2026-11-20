@@ -75,6 +75,9 @@ fn runtime_base(health: &Arc<Health>, limits: &Limits, realm: super::Realm) -> R
                 for (const name of names) Object.defineProperty(globalThis, name, {
                     value: exports[name], configurable: true, writable: true,
                 });
+            }
+            for (const name of ['Atomics', 'SharedArrayBuffer', 'WebAssembly']) {
+                delete globalThis[name];
             }"#,
         )
         .map_err(failed)?;
