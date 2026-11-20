@@ -118,9 +118,15 @@ struct CompactionExpectation {
     pre_compaction_messages: usize,
 }
 
+const MAX_GLOBAL_TOOL_CALLS: usize = 65_536;
+
 struct WatchdogInner {
     sessions: HashMap<String, SessionAuditState>,
     order: VecDeque<String>,
+    /// Bounded FIFO ring of call_ids legitimately emitted by this server across any session/WS conn,
+    /// so WS reconnects and post-compaction key changes never falsely trigger UnknownToolResult.
+    global_tool_calls: HashSet<String>,
+    global_tool_order: VecDeque<String>,
     violations: VecDeque<ViolationRecord>,
     by_kind: HashMap<ViolationKind, u64>,
 }
@@ -142,6 +148,8 @@ impl ProtocolWatchdog {
             inner: Mutex::new(WatchdogInner {
                 sessions: HashMap::new(),
                 order: VecDeque::new(),
+                global_tool_calls: HashSet::new(),
+                global_tool_order: VecDeque::new(),
                 violations: VecDeque::new(),
                 by_kind: HashMap::new(),
             }),
@@ -184,8 +192,13 @@ impl ProtocolWatchdog {
         let mut pending_violations: Vec<(ViolationKind, String)> = Vec::new();
         let has_replayed_compaction = request_contains_compaction_replay(req);
         let is_incremental_ws = req.previous_response_id.is_some();
+        let WatchdogInner {
+            sessions,
+            global_tool_calls,
+            ..
+        } = &mut *inner;
 
-        if let Some(state) = inner.sessions.get_mut(&req.session_key) {
+        if let Some(state) = sessions.get_mut(&req.session_key) {
             state.last_sequence = req.sequence;
             state.turns_observed = state.turns_observed.saturating_add(1);
 
@@ -236,10 +249,17 @@ impl ProtocolWatchdog {
                             ));
                         }
                         if !state.known_tool_evicted && !state.known_tool_calls.contains(call_id) {
-                            pending_violations.push((
+                            if state.turns_observed == 1 && global_tool_calls.contains(call_id) {
+                                // Legitimate history replay on a reconnected WS socket or post-compaction session key.
+                                if state.known_tool_calls.insert(call_id.clone()) {
+                                    state.known_tool_order.push_back(call_id.clone());
+                                }
+                            } else {
+                                pending_violations.push((
                                     ViolationKind::UnknownToolResult,
                                     format!("tool_result references unknown call_id '{call_id}' never emitted in this session"),
                                 ));
+                            }
                         }
                     }
                 }
@@ -299,6 +319,16 @@ impl ProtocolWatchdog {
             return;
         }
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        for id in emitted_tool_call_ids {
+            if inner.global_tool_calls.insert(id.clone()) {
+                inner.global_tool_order.push_back(id.clone());
+                if inner.global_tool_order.len() > MAX_GLOBAL_TOOL_CALLS
+                    && let Some(evicted) = inner.global_tool_order.pop_front()
+                {
+                    inner.global_tool_calls.remove(&evicted);
+                }
+            }
+        }
         if let Some(state) = inner.sessions.get_mut(&req.session_key) {
             state.pending_tool_calls.clear();
             for id in emitted_tool_call_ids {
@@ -356,6 +386,8 @@ impl ProtocolWatchdog {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.sessions.clear();
         inner.order.clear();
+        inner.global_tool_calls.clear();
+        inner.global_tool_order.clear();
         inner.violations.clear();
         inner.by_kind.clear();
         self.total_violations.store(0, Ordering::Relaxed);
