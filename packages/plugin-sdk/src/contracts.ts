@@ -11155,7 +11155,7 @@ export const contracts: {
               },
               query: {
                 description:
-                  "Empty or whitespace browses the selected directory's direct files and directories.\nOtherwise, searches file paths within that directory's descendants.",
+                  "Empty or whitespace browses the selected directory's direct files and directories.\nOtherwise, matches direct entries when `directory` is set, or fuzzy-searches descendants of the workspace root.",
                 type: 'string',
               },
             },

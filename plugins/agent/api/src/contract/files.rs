@@ -45,7 +45,7 @@ pub struct FileCandidatesRead {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory: Option<WorkspacePath>,
     /// Empty or whitespace browses the selected directory's direct files and directories.
-    /// Otherwise, searches file paths within that directory's descendants.
+    /// Otherwise, matches direct entries when `directory` is set, or fuzzy-searches descendants of the workspace root.
     pub query: String,
 }
 
