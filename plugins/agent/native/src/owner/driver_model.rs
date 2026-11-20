@@ -2835,7 +2835,7 @@ impl DriverModel {
                 };
                 let terminal = match &received {
                     Ok(Err(error)) => {
-                        terminal_outcome(error).map(|outcome| {
+                        terminal_outcome(error, request.accounting.purpose).map(|outcome| {
                             (
                                 outcome,
                                 format_retry_diagnostic(
@@ -3079,6 +3079,15 @@ impl DriverModel {
                     {
                         return Ok(());
                     }
+                    // ContextOverflow recovery requires ModelInterrupted in state::fold:
+                    // Main emits Err(error) below so the engine interrupts and assesses;
+                    // Summary already closed with Outcome::Error for compaction fallback.
+                    if matches!(
+                        error,
+                        RunError::Model(maka_model::ModelError::ContextOverflow { .. })
+                    ) {
+                        return Ok(());
+                    }
                     let evidence =
                         if matches!(error, RunError::Model(maka_model::ModelError::Cancelled))
                             && can_replay_without_output
@@ -3123,7 +3132,7 @@ impl DriverModel {
                 .await;
                 if let Err(error) = published {
                     emit(&send, &cancellation, Err(error)).await;
-                } else if terminal_outcome(&error).is_none() {
+                } else if terminal_outcome(&error, request.accounting.purpose).is_none() {
                     emit(&send, &cancellation, Err(error)).await;
                 }
             }
@@ -3863,7 +3872,10 @@ fn observation_time(time: std::time::SystemTime) -> Result<UnixMillis, RunError>
     Ok(UnixMillis(at))
 }
 
-fn terminal_outcome(error: &RunError) -> Option<maka_agent_facts::accounting::Outcome> {
+fn terminal_outcome(
+    error: &RunError,
+    purpose: ModelPurpose,
+) -> Option<maka_agent_facts::accounting::Outcome> {
     let RunError::Model(error) = error else {
         return None;
     };
@@ -3871,7 +3883,9 @@ fn terminal_outcome(error: &RunError) -> Option<maka_agent_facts::accounting::Ou
         error,
         maka_model::ModelError::ImageInputPayloadTooLarge { .. }
             | maka_model::ModelError::LocalAuthorization(_)
-    ) {
+    ) || (purpose == ModelPurpose::Main
+        && matches!(error, maka_model::ModelError::ContextOverflow { .. }))
+    {
         return None;
     }
     (crate::model::inference_outcome(error) == maka_agent_facts::accounting::Outcome::Error)
@@ -4235,6 +4249,18 @@ mod retry_wait_cap_tests {
             now,
         );
         assert!(overflow.contains("more than 15 minutes"), "{overflow}");
+    }
+
+    #[test]
+    fn context_overflow_terminal_outcome_interrupts_main_and_closes_summary() {
+        let no_output = RunError::Model(maka_model::ModelError::ContextOverflow {
+            observed_output: false,
+        });
+        assert_eq!(terminal_outcome(&no_output, ModelPurpose::Main), None);
+        assert_eq!(
+            terminal_outcome(&no_output, ModelPurpose::Summary),
+            Some(maka_agent_facts::accounting::Outcome::Error)
+        );
     }
 }
 

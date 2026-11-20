@@ -279,17 +279,15 @@ impl Statement for WriteRegistration {
                     return rejected(ProjectError::Changed);
                 }
             }
-            RegistrationGuard::ObservedAvailable(expected) => {
-                if actual != expected {
-                    return rejected(ProjectError::Changed);
+            RegistrationGuard::ObservedAvailable(expected) => match (&expected, &actual) {
+                (None, None) => {}
+                (Some(exp), Some(act)) if act.id == exp.id && act.identity == exp.identity => {
+                    if act.archived_at.is_some() {
+                        return rejected(ProjectError::Archived);
+                    }
                 }
-                if actual
-                    .as_ref()
-                    .is_some_and(|record| record.archived_at.is_some())
-                {
-                    return rejected(ProjectError::Archived);
-                }
-            }
+                _ => return rejected(ProjectError::Changed),
+            },
             RegistrationGuard::Available => {
                 if let Some(id) = &existing {
                     let archived: Option<i64> = connection.query_row(
@@ -488,4 +486,71 @@ fn touch(connection: &rusqlite::Connection, id: &str, path: &str, now: i64) -> R
         params![now, id],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn concurrent_available_registration_ignores_last_used_at_bump_but_rejects_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = EventLog::open(&dir.path().join("events.db")).await.unwrap();
+        let reg = ProjectRegistration {
+            identity: "dir:/tmp/concurrent-proj".into(),
+            name: "concurrent-proj".into(),
+            path: "/tmp/concurrent-proj".into(),
+            is_worktree: false,
+        };
+        let initial = log.register_project(reg.clone(), true, 1000).await.unwrap();
+        let id = Uuid::parse_str(&initial.id).unwrap();
+
+        // Two concurrent SessionCreate plans both observe the same initial record.
+        let plan_a = EventLog::prepare_available_project_registration(
+            reg.clone(),
+            1001,
+            Some(initial.clone()),
+            id,
+        )
+        .unwrap();
+        let plan_b = EventLog::prepare_available_project_registration(
+            reg.clone(),
+            1002,
+            Some(initial.clone()),
+            id,
+        )
+        .unwrap();
+
+        // Commit plan_a first (bumps last_used_at to 1001), then plan_b must still succeed!
+        let rec_a = log
+            .connection
+            .write(plan_a, log.commits.notice())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(rec_a.last_used_at, 1001);
+        let rec_b = log
+            .connection
+            .write(plan_b, log.commits.notice())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(rec_b.id, initial.id);
+        assert_eq!(rec_b.last_used_at, 1002);
+
+        // Archiving the project must still reject a stale plan with ProjectError::Archived.
+        log.mutate_project(&initial.id, ProjectMutation::Archive, 1003)
+            .await
+            .unwrap();
+        let plan_c =
+            EventLog::prepare_available_project_registration(reg, 1004, Some(initial), id).unwrap();
+        let res_c = log
+            .connection
+            .write(plan_c, log.commits.notice())
+            .await
+            .unwrap();
+        assert!(matches!(res_c, Err(ProjectError::Archived)), "{res_c:?}");
+
+        log.close().await.unwrap();
+    }
 }
