@@ -276,6 +276,7 @@ impl Owner {
                         vec![Change::new(
                             Fact::StopRequested {
                                 diagnostic: maka_agent_state::queue::GOAL_CONTROL_STOP.into(),
+                                requester: None,
                             },
                             UnixMillis(now() as i64),
                         )],

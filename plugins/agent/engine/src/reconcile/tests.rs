@@ -769,6 +769,7 @@ fn spent_budget_does_not_promote_stop_unknown_failure_length_or_summary_to_succe
                 &mut view,
                 Fact::StopRequested {
                     diagnostic: "policy stop".into(),
+                    requester: None,
                 },
             );
         }

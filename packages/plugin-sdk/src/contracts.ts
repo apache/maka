@@ -33620,7 +33620,7 @@ export const contracts: {
               },
               AgentQueueKind: {
                 type: 'string',
-                enum: ['in_flight', 'steering', 'followup'],
+                enum: ['in_flight', 'steering', 'followup', 'held'],
               },
             },
           },
@@ -52450,7 +52450,7 @@ export const contracts: {
               },
               AgentQueueKind: {
                 type: 'string',
-                enum: ['in_flight', 'steering', 'followup'],
+                enum: ['in_flight', 'steering', 'followup', 'held'],
               },
               AgentPendingInteractions: {
                 type: 'object',

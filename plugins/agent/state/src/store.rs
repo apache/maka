@@ -551,13 +551,13 @@ impl Store {
         })
     }
     /// Stop this exact Run at its current head. The first Stop while latest also
-    /// retracts the interactive requests `stopper` queued and reports that Session fence.
+    /// settles what is queued for the Session and reports that Session fence.
     pub fn stop_run_statement(
         &self,
         run: RunId,
         id: FactId,
         at: UnixMillis,
-        stopper: crate::queue::Stopper,
+        requester: StopRequester,
     ) -> StopRun {
         StopRun {
             run,
@@ -565,10 +565,15 @@ impl Store {
                 id,
                 at,
                 fact: Fact::StopRequested {
-                    diagnostic: stopper.diagnostic().into(),
+                    diagnostic: match requester {
+                        StopRequester::User => crate::queue::USER_STOP,
+                        StopRequester::Session { .. } => crate::queue::SESSION_STOP,
+                    }
+                    .into(),
+                    requester: Some(requester),
                 },
             },
-            retract: Some(stopper),
+            retract_pending: true,
         }
     }
     pub async fn missing_external_returns(
@@ -1487,8 +1492,7 @@ pub enum StopOutcome {
 pub struct StopRun {
     pub(crate) run: RunId,
     pub(crate) change: Change,
-    /// Who asked; `None` for a Stop that only interrupts the Run for steering.
-    pub(crate) retract: Option<crate::queue::Stopper>,
+    pub(crate) retract_pending: bool,
 }
 impl Statement for StopRun {
     type Value = StopOutcome;
@@ -1509,10 +1513,15 @@ impl Statement for StopRun {
                 notification: Notification::NONE,
             });
         }
-        let latest = self.retract.is_some()
-            && sql::latest(c, view.spec.session_id.clone())? == Some(self.run);
-        if latest && let Some(stopper) = &self.retract {
-            crate::queue::retract_sent_by(c, &view.spec.session_id, &self.change, stopper)?;
+        let latest =
+            self.retract_pending && sql::latest(c, view.spec.session_id.clone())? == Some(self.run);
+        if latest
+            && let Fact::StopRequested {
+                requester: Some(requester),
+                ..
+            } = &self.change.fact
+        {
+            crate::queue::stop_queue(c, &view.spec.session_id, self.run, &self.change, requester)?;
         }
         let (_, changed) = sql::append(
             c,

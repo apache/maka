@@ -34,34 +34,12 @@ use std::{collections::BTreeSet, sync::Arc};
 mod sql;
 pub(crate) use sql::{
     DeliveryTarget, Event, consume, consume_external_steering, consume_steering, deliver_held,
-    release_steering, retract_sent_by, stop_completions, stopped_by_user,
+    release_steering, stop_completions, stop_queue,
 };
 
 pub const GOAL_CONTROL_STOP: &str = "goal_control";
 pub const USER_STOP: &str = "user_requested_stop";
 pub const SESSION_STOP: &str = "session_requested_stop";
-
-/// Who asked for a Stop. A Stop takes back only what that party queued.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Stopper {
-    User,
-    Session(String),
-}
-impl Stopper {
-    pub fn diagnostic(&self) -> &'static str {
-        match self {
-            Self::User => USER_STOP,
-            Self::Session(_) => SESSION_STOP,
-        }
-    }
-}
-
-/// The first follow-up a new Run may consume now, read at `revision`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct NextFollowup {
-    pub revision: u64,
-    pub entry: Option<QueueEntry>,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -88,8 +66,16 @@ pub struct SteeringTarget {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Placement {
     Followup,
-    Steering { run: RunId, expected_head: Head },
-    Completion { caller: RunId },
+    Steering {
+        run: RunId,
+        expected_head: Head,
+    },
+    Completion {
+        caller: RunId,
+    },
+    /// Queued by someone other than the user after the user stopped the
+    /// Session. It waits for the Session's next Run instead of starting one.
+    Held,
 }
 impl Placement {
     pub fn is_followup(&self) -> bool {
@@ -382,11 +368,6 @@ impl QueueStore {
             .query(ReadHandoff(view.spec.session_id.clone(), view.run, message))
             .await
     }
-    /// After the user stops a Session, what others queued for it waits for
-    /// the user's next message instead of starting a Run of its own.
-    pub async fn next_followup(&self, session: String) -> Result<NextFollowup, StoreError> {
-        self.data.query(ReadNextFollowup(session)).await
-    }
     pub async fn stopped_by_user(&self, run: RunId) -> Result<bool, StoreError> {
         self.data.query(StoppedByUser(run)).await
     }
@@ -469,9 +450,10 @@ impl Statement for PreparedEnqueue {
                     at,
                     fact: Fact::StopRequested {
                         diagnostic: "steering_interrupt".into(),
+                        requester: None,
                     },
                 },
-                retract: None,
+                retract_pending: false,
             }
             .execute(c)?;
         }
@@ -636,13 +618,6 @@ impl Query for StoppedByUser {
     type Output = bool;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::stopped_by_user(c, self.0)
-    }
-}
-struct ReadNextFollowup(String);
-impl Query for ReadNextFollowup {
-    type Output = NextFollowup;
-    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        sql::next_followup(c, &self.0)
     }
 }
 struct Ready(RunOwner, Option<ReadyCursor>, u32);

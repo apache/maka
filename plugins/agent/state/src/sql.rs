@@ -1171,11 +1171,6 @@ pub(crate) fn admit(c: &Connection, admission: Admission) -> Result<(Commit, boo
             "native budget admission basis requires its live admission guard",
         ));
     }
-    let after_user_stop = matches!(view.spec.origin, RunOrigin::Local)
-        && match latest(c, view.spec.session_id.clone())? {
-            Some(prior) => crate::queue::stopped_by_user(c, prior)?,
-            None => false,
-        };
     if matches!(view.spec.origin, RunOrigin::Local) {
         // Late receipts and a successor admission share the same Root transaction.
         let prior: Option<String> = c.prepare_cached(
@@ -1223,7 +1218,17 @@ pub(crate) fn admit(c: &Connection, admission: Admission) -> Result<(Commit, boo
     index_derived(c, &view.spec, &recorded)?;
     persist(c, &view)?;
     index_usage(c, &view.spec, &recorded)?;
-    if after_user_stop {
+    // A compaction or handoff continues earlier work; what waits after a user
+    // Stop waits for a Run that starts new work.
+    if matches!(view.spec.origin, RunOrigin::Local)
+        && matches!(
+            view.spec.trigger,
+            Trigger::Message { .. }
+                | Trigger::Goal { .. }
+                | Trigger::Schedule { .. }
+                | Trigger::Continuation { .. }
+        )
+    {
         crate::queue::deliver_held(c, &view, admission.id, admission.at)?;
     }
     Ok((
@@ -1555,14 +1560,8 @@ pub(crate) fn append(
         view.apply(&recorded)?;
         record(c, &recorded)?;
         match &recorded.fact {
-            Fact::StopRequested { diagnostic } => {
-                crate::queue::stop_completions(
-                    c,
-                    &view.spec.session_id,
-                    run,
-                    diagnostic,
-                    recorded.at,
-                )?;
+            Fact::StopRequested { diagnostic, .. } => {
+                crate::queue::stop_completions(c, &view.spec.session_id, run, recorded.at)?;
                 if diagnostic == crate::queue::GOAL_CONTROL_STOP {
                     crate::queue::release_steering(c, &view.spec.session_id, run, recorded.at)?;
                 }

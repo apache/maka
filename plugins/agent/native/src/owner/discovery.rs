@@ -476,6 +476,7 @@ impl Owner {
                 vec![Change::new(
                     Fact::StopRequested {
                         diagnostic: "discovery_cancelled".into(),
+                        requester: None,
                     },
                     UnixMillis(now() as i64),
                 )],

@@ -18,8 +18,8 @@
  */
 
 use super::*;
-use maka_agent_facts::durable::{self, FactId, RunId, Terminal, UnixMillis};
-use maka_agent_state::{StopRun, fold::RunView, queue::Stopper};
+use maka_agent_facts::durable::{self, FactId, RunId, StopRequester, Terminal, UnixMillis};
+use maka_agent_state::{StopRun, fold::RunView};
 
 pub(super) fn project(view: &RunView) -> Execution {
     let state = match &view.terminal {
@@ -142,7 +142,7 @@ impl Owner {
             .session_quiescence(self.run_owner(), input.session_id)
             .await
             .map_err(|error| error.to_string())?;
-        Ok(if canonical.is_quiescent() {
+        Ok(if canonical.admits_run() {
             WorkReadiness::Ready
         } else {
             WorkReadiness::Pending
@@ -320,15 +320,17 @@ impl Owner {
         operation: &maka_plugin_core::operation::RecoveryRef,
         scope: &maka_capabilities::call::Scope,
     ) -> StopRun {
-        let stopper = match scope.identity.agent() {
-            Some(caller) => Stopper::Session(caller.session_id.clone()),
-            None => Stopper::User,
+        let requester = match scope.identity.agent() {
+            Some(caller) => StopRequester::Session {
+                session_id: caller.session_id.clone(),
+            },
+            None => StopRequester::User,
         };
         self.durable.stop_run_statement(
             run,
             self.control_id(operation, "stop"),
             UnixMillis(now().try_into().expect("Unix milliseconds")),
-            stopper,
+            requester,
         )
     }
 

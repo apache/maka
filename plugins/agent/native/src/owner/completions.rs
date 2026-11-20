@@ -499,8 +499,8 @@ impl Owner {
         else {
             return self.retire_completion(&entry).await;
         };
-        // After a user Stop the result waits in the queue for the user's next
-        // message; any other Stop withdraws it.
+        // After a user Stop the result stays with the Session; any other Stop
+        // withdraws it.
         let placement = if !source.stopped {
             QueuePlacement::Completion {
                 caller: request.source.run_id,

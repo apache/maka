@@ -411,6 +411,14 @@ pub struct ExternalFinalMessage {
     pub end: FactId,
 }
 
+/// Who asked for a Stop. A Stop takes back only what that party queued.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StopRequester {
+    User,
+    Session { session_id: String },
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Fact {
@@ -582,6 +590,8 @@ pub enum Fact {
     },
     StopRequested {
         diagnostic: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requester: Option<StopRequester>,
     },
     ApprovalRecorded {
         approval: ApprovalId,

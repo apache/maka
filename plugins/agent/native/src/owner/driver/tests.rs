@@ -3181,6 +3181,7 @@ mod source_recovery {
                 .append(
                     vec![Fact::StopRequested {
                         diagnostic: "fixture explicit Stop".into(),
+                        requester: None,
                     }],
                     vec![],
                 )
@@ -6206,7 +6207,7 @@ mod goals;
 mod permission_boundary;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_user_stop_keeps_a_completion_notice_and_cancels_the_turn_continuation() {
+async fn stop_cancels_an_unconsumed_completion_notice() {
     let mut rig = Rig::new().unwrap();
     let result: TestResult<()> = async {
         let session = rig.start().await?;
@@ -6244,25 +6245,22 @@ async fn a_user_stop_keeps_a_completion_notice_and_cancels_the_turn_continuation
         rig.append(
             vec![Fact::StopRequested {
                 diagnostic: "user_requested_stop".into(),
+                requester: None,
             }],
             vec![],
         )
         .await?;
-        // The delegated result waits as a plain follow-up; the stopped turn's
-        // own continuation is taken back.
-        let kept = vec![maka_agent_state::queue::QueueEntry {
-            request: notice.request.clone(),
-            placement: maka_agent_state::queue::Placement::Followup,
-        }];
-        for rebuilt in [false, true] {
-            if rebuilt {
-                queue.rebuild(session.clone()).await?;
-            }
-            assert_eq!(queue.read(session.clone()).await?.entries, kept);
+        let message = notice.request.message_id.clone();
+        assert_eq!(
+            queue
+                .resolve_message(session.clone(), message.clone())
+                .await?,
+            maka_agent_state::queue::MessageResolution::Cancelled
+        );
+        queue.rebuild(session.clone()).await?;
+        for id in [message, recovery.message_id] {
             assert_eq!(
-                queue
-                    .resolve_message(session.clone(), recovery.message_id.clone())
-                    .await?,
+                queue.resolve_message(session.clone(), id).await?,
                 maka_agent_state::queue::MessageResolution::Cancelled
             );
         }
@@ -7004,7 +7002,7 @@ async fn compaction_checkpoint_survives_stop_and_is_used_by_the_next_message() {
             None,
         ).await?;
         assert!(driver.state.frontier(run).await?.baseline.is_none());
-        rig.append(vec![Fact::StopRequested { diagnostic: "user_requested_stop".into() }], vec![]).await?;
+        rig.append(vec![Fact::StopRequested { diagnostic: "user_requested_stop".into(), requester: None }], vec![]).await?;
         let exit = Engine::new(driver.state.clone())
             .drive(driver.access.claim().clone(), driver.clone(), CancellationToken::new())
             .await?;

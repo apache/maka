@@ -105,6 +105,7 @@ impl Owner {
                     durable_queue::Placement::Followup
                     | durable_queue::Placement::Completion { .. } => QueueKind::Followup,
                     durable_queue::Placement::Steering { .. } => QueueKind::Steering,
+                    durable_queue::Placement::Held => QueueKind::Held,
                 },
                 preview: text
                     .chars()

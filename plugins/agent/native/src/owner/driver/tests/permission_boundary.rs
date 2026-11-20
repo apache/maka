@@ -312,6 +312,7 @@ async fn retained_preview_after_input(stop: bool) {
             rig.append(
                 vec![Fact::StopRequested {
                     diagnostic: "preview-stop".into(),
+                    requester: None,
                 }],
                 vec![],
             )

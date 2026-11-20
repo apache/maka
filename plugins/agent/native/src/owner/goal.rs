@@ -234,7 +234,7 @@ impl Owner {
             .session_quiescence(self.run_owner(), session.to_owned())
             .await
             .map_err(reason)?
-            .is_quiescent())
+            .admits_run())
     }
 
     pub async fn goal_change(
