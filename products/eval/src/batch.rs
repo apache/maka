@@ -27,10 +27,13 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use crate::harbor::{
-    EvalStatus, Metering, TrialOutcome, TrialSpec, resolve_bundle_dir, resolve_task_dir,
-    run_prepared_trial, validate_harbor_bin, validate_subject_target, validate_verifier_env_map,
+    DEFAULT_HARBOR_BIN, DEFAULT_MAX_STEPS, DEFAULT_SANDBOX_MODE, DEFAULT_TIMEOUT_MS,
+    HarborRunOptions, TrialOutcome, UsageSettlement, prepend_search_path, resolve_bundle_dir,
+    resolve_task_dir, run_and_settle, validate_env_entry, validate_subject_target,
     write_run_summary,
 };
+
+const RESULTS_FILE: &str = "results.jsonl";
 
 #[derive(Debug, Clone, clap::Args)]
 pub(crate) struct BatchOptions {
@@ -40,7 +43,7 @@ pub(crate) struct BatchOptions {
     pub out_dir: PathBuf,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BatchSpec {
     bundle_dir: PathBuf,
@@ -52,8 +55,6 @@ struct BatchSpec {
     verifier_env: BTreeMap<String, String>,
     #[serde(default = "default_one")]
     repetitions: NonZeroU32,
-    #[serde(default)]
-    max_retries: u32,
     #[serde(default = "default_max_steps")]
     max_steps: NonZeroU32,
     #[serde(default = "default_timeout_ms")]
@@ -62,7 +63,7 @@ struct BatchSpec {
     tasks: Vec<PathBuf>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SubjectSpec {
     id: String,
@@ -76,72 +77,142 @@ struct SubjectSpec {
 }
 
 fn default_harbor_bin() -> String {
-    "harbor".to_owned()
+    DEFAULT_HARBOR_BIN.to_owned()
 }
 fn default_one() -> NonZeroU32 {
     NonZeroU32::MIN
 }
 fn default_max_steps() -> NonZeroU32 {
-    NonZeroU32::new(64).expect("non-zero")
+    DEFAULT_MAX_STEPS
 }
 fn default_timeout_ms() -> NonZeroU64 {
-    NonZeroU64::new(600_000).expect("non-zero")
+    DEFAULT_TIMEOUT_MS
 }
 fn default_sandbox_mode() -> maka_sandbox::Mode {
-    maka_sandbox::Mode::DangerFullAccess
+    DEFAULT_SANDBOX_MODE
 }
 
-struct PreparedBatch {
-    spec: BatchSpec,
-    bundle_dir: PathBuf,
-    harbor_bin: String,
-    max_attempts: NonZeroU32,
-    tasks: Vec<(String, PathBuf)>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CellStatus {
+    Completed,
+    SubjectFailed,
+    Failed,
 }
 
-struct Cell<'a> {
-    id: String,
-    dir_slug: String,
-    task_path: &'a Path,
-    subject: &'a SubjectSpec,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Metering {
+    Complete,
+    LowerBound,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct AttemptRecord {
-    cell_id: String,
-    sequence: NonZeroU32,
-    duration_ms: u64,
-    status: EvalStatus,
-    score: Option<f64>,
-    metering: Option<Metering>,
-    cost_usd: Option<f64>,
-    failure_reason: Option<String>,
-    summary_path: PathBuf,
+// Keep enums externally tagged so serde_json/arbitrary_precision preserves f64 values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum CellOutcome {
+    Completed {
+        score: f64,
+        metering: Metering,
+        cost_usd: Option<f64>,
+        duration_ms: u64,
+        summary_path: PathBuf,
+    },
+    SubjectFailed {
+        score: f64,
+        metering: Metering,
+        cost_usd: Option<f64>,
+        duration_ms: u64,
+        failure_reason: String,
+        summary_path: PathBuf,
+    },
+    Failed {
+        failure_reason: String,
+        duration_ms: Option<u64>,
+        summary_path: Option<PathBuf>,
+    },
+}
+
+impl CellOutcome {
+    fn from_trial(outcome: TrialOutcome, duration_ms: u64, summary_path: PathBuf) -> Self {
+        let settle = |s: UsageSettlement| match s {
+            UsageSettlement::Complete { cost_usd } => (Metering::Complete, cost_usd),
+            UsageSettlement::LowerBound => (Metering::LowerBound, None),
+        };
+        match outcome {
+            TrialOutcome::Completed { score, settlement } => {
+                let (metering, cost_usd) = settle(settlement);
+                Self::Completed {
+                    score,
+                    metering,
+                    cost_usd,
+                    duration_ms,
+                    summary_path,
+                }
+            }
+            TrialOutcome::SubjectFailed {
+                score,
+                settlement,
+                reason,
+            } => {
+                let (metering, cost_usd) = settle(settlement);
+                Self::SubjectFailed {
+                    score,
+                    metering,
+                    cost_usd,
+                    duration_ms,
+                    failure_reason: reason,
+                    summary_path,
+                }
+            }
+            TrialOutcome::Failed { reason } => Self::Failed {
+                failure_reason: reason,
+                duration_ms: Some(duration_ms),
+                summary_path: Some(summary_path),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum JournalEvent {
+    Started {
+        cell_id: String,
+    },
+    Settled {
+        cell_id: String,
+        outcome: CellOutcome,
+    },
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CellSummary {
     cell_id: String,
-    attempts: usize,
-    selected_sequence: Option<NonZeroU32>,
-    status: EvalStatus,
+    status: CellStatus,
     score: Option<f64>,
     metering: Option<Metering>,
     cost_usd: Option<f64>,
     duration_ms: Option<u64>,
     failure_reason: Option<String>,
-    summary_path: PathBuf,
+    summary_path: Option<PathBuf>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BatchSummary {
-    attempts_recorded: usize,
-    selected: usize,
-    blocked: usize,
-    exhausted: usize,
+    completed: usize,
+    subject_failed: usize,
+    failed: usize,
     cells: Vec<CellSummary>,
 }
 
@@ -150,144 +221,231 @@ pub(crate) fn run_batch(opts: &BatchOptions) -> Result<(), String> {
         .map_err(|e| format!("failed to read spec {}: {e}", opts.spec_path.display()))?;
     let spec: BatchSpec = serde_json::from_str(&raw_spec)
         .map_err(|e| format!("invalid batch spec {}: {e}", opts.spec_path.display()))?;
-    let prepared = prepare_batch(&opts.spec_path, spec)?;
+    let (frozen, cell_cap) = freeze_spec(&opts.spec_path, spec)?;
+
+    prepend_search_path(&opts.out_dir, std::env::var_os("PYTHONPATH").as_deref())?;
 
     std::fs::create_dir_all(&opts.out_dir)
         .map_err(|e| format!("failed to create out dir {}: {e}", opts.out_dir.display()))?;
     let out_dir = std::fs::canonicalize(&opts.out_dir)
         .map_err(|e| format!("failed to canonicalize out dir: {e}"))?;
 
-    let mut store = AttemptLog::open_exclusive(&out_dir.join("attempts.jsonl"))?;
-    let cells = expand_cells(&prepared);
-
-    for cell in &cells {
-        while can_admit_attempt(store.for_cell(&cell.id), prepared.max_attempts) {
-            let seq = NonZeroU32::new(store.for_cell(&cell.id).len() as u32 + 1)
-                .expect("admitted attempt count is < u32::MAX");
-            let attempt_dir = out_dir
-                .join("trials")
-                .join(&cell.dir_slug)
-                .join(format!("attempt-{seq}"));
-            if attempt_dir.exists() {
-                std::fs::remove_dir_all(&attempt_dir).map_err(|e| {
-                    format!(
-                        "failed to clean stale attempt dir {}: {e}",
-                        attempt_dir.display()
-                    )
-                })?;
-            }
-            let record = execute_attempt(&prepared, cell, seq, &attempt_dir)?;
-            store.append(record)?;
+    let results_path = out_dir.join(RESULTS_FILE);
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&results_path)
+        .map_err(|e| format!("failed to open {}: {e}", results_path.display()))?;
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => {
+            return Err(format!(
+                "{} is locked by another maka-eval batch process",
+                results_path.display()
+            ));
+        }
+        Err(TryLockError::Error(e)) => {
+            return Err(format!("failed to lock {}: {e}", results_path.display()));
         }
     }
 
-    let summary = build_summary(&cells, &store);
-    let summary_path = out_dir.join("summary.json");
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|e| format!("failed to read {}: {e}", results_path.display()))?;
+    verify_or_write_experiment(&out_dir, &frozen, !bytes.is_empty())?;
+
+    let mut cells = Vec::with_capacity(cell_cap);
+    for task_path in &frozen.tasks {
+        let task_id = task_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("validated task dir name");
+        for rep in 1..=frozen.repetitions.get() {
+            for subject in &frozen.subjects {
+                let id = format!("{task_id}::{rep}::{}", subject.id);
+                cells.push((cells.len(), id, task_path.as_path(), subject));
+            }
+        }
+    }
+    let valid_ids: BTreeSet<&str> = cells.iter().map(|(_, id, _, _)| id.as_str()).collect();
+    let (mut by_cell, pending) = load_journal(&results_path, &bytes, &valid_ids)?;
+    file.seek(SeekFrom::End(0))
+        .map_err(|e| format!("failed seeking {}: {e}", results_path.display()))?;
+
+    if let Some(interrupted_id) = pending {
+        let (index, ..) = cells
+            .iter()
+            .find(|(_, id, _, _)| id == &interrupted_id)
+            .expect("pending cell is in valid_ids");
+        let cell_dir = out_dir.join("trials").join(format!("cell-{index}"));
+        let outcome = CellOutcome::Failed {
+            failure_reason: format!(
+                "cell '{interrupted_id}' interrupted before settlement; preserved {}",
+                cell_dir.display()
+            ),
+            duration_ms: None,
+            summary_path: None,
+        };
+        append_event(
+            &mut file,
+            &results_path,
+            &JournalEvent::Settled {
+                cell_id: interrupted_id.clone(),
+                outcome: outcome.clone(),
+            },
+        )?;
+        by_cell.insert(interrupted_id, outcome);
+    }
+
+    let verifier_env: Vec<(String, String)> = frozen
+        .verifier_env
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    for (index, cell_id, task_path, subject) in &cells {
+        if by_cell.contains_key(cell_id) {
+            continue;
+        }
+        let cell_dir = out_dir.join("trials").join(format!("cell-{index}"));
+        prepare_cell_dir(&cell_dir, cell_id)?;
+        append_event(
+            &mut file,
+            &results_path,
+            &JournalEvent::Started {
+                cell_id: cell_id.clone(),
+            },
+        )?;
+        let run_opts = HarborRunOptions {
+            task_path: task_path.to_path_buf(),
+            bundle_dir: frozen.bundle_dir.clone(),
+            out_dir: cell_dir.clone(),
+            harbor_bin: frozen.harbor_bin.clone(),
+            force_build: frozen.force_build,
+            base_url: subject.base_url.clone(),
+            api_key_env: subject.api_key_env.clone(),
+            provider: subject.provider.clone(),
+            model_id: subject.model_id.clone(),
+            sandbox_mode: subject.sandbox_mode,
+            max_steps: frozen.max_steps,
+            timeout_ms: frozen.timeout_ms,
+            verifier_env: verifier_env.clone(),
+        };
+        let started = Instant::now();
+        let (summary, trial_outcome) = run_and_settle(&run_opts)?;
+        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let (summary_path, _) = write_run_summary(&cell_dir, &summary)?;
+        let outcome = CellOutcome::from_trial(trial_outcome, duration_ms, summary_path);
+        append_event(
+            &mut file,
+            &results_path,
+            &JournalEvent::Settled {
+                cell_id: cell_id.clone(),
+                outcome: outcome.clone(),
+            },
+        )?;
+        by_cell.insert(cell_id.clone(), outcome);
+    }
+
+    let (mut completed, mut subject_failed, mut failed) = (0, 0, 0);
+    let ordered: Vec<CellSummary> = cells
+        .into_iter()
+        .map(|(_, cell_id, _, _)| {
+            match by_cell
+                .remove(&cell_id)
+                .expect("every cell runs and settles")
+            {
+                CellOutcome::Completed {
+                    score,
+                    metering,
+                    cost_usd,
+                    duration_ms,
+                    summary_path,
+                } => {
+                    completed += 1;
+                    CellSummary {
+                        cell_id,
+                        status: CellStatus::Completed,
+                        score: Some(score),
+                        metering: Some(metering),
+                        cost_usd,
+                        duration_ms: Some(duration_ms),
+                        failure_reason: None,
+                        summary_path: Some(summary_path),
+                    }
+                }
+                CellOutcome::SubjectFailed {
+                    score,
+                    metering,
+                    cost_usd,
+                    duration_ms,
+                    failure_reason,
+                    summary_path,
+                } => {
+                    subject_failed += 1;
+                    CellSummary {
+                        cell_id,
+                        status: CellStatus::SubjectFailed,
+                        score: Some(score),
+                        metering: Some(metering),
+                        cost_usd,
+                        duration_ms: Some(duration_ms),
+                        failure_reason: Some(failure_reason),
+                        summary_path: Some(summary_path),
+                    }
+                }
+                CellOutcome::Failed {
+                    failure_reason,
+                    duration_ms,
+                    summary_path,
+                } => {
+                    failed += 1;
+                    CellSummary {
+                        cell_id,
+                        status: CellStatus::Failed,
+                        score: None,
+                        metering: None,
+                        cost_usd: None,
+                        duration_ms,
+                        failure_reason: Some(failure_reason),
+                        summary_path,
+                    }
+                }
+            }
+        })
+        .collect();
+
+    let summary = BatchSummary {
+        completed,
+        subject_failed,
+        failed,
+        cells: ordered,
+    };
     let encoded = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
-    let tmp_path = out_dir.join(".summary.json.tmp");
-    std::fs::write(&tmp_path, format!("{encoded}\n"))
-        .map_err(|e| format!("failed to write {}: {e}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, &summary_path)
-        .map_err(|e| format!("failed to replace {}: {e}", summary_path.display()))?;
+    write_atomic(
+        &out_dir.join("summary.json"),
+        format!("{encoded}\n").as_bytes(),
+    )?;
     println!("{encoded}");
 
-    let incomplete = summary.cells.len() - summary.selected;
-    if incomplete > 0 {
-        return Err(format!(
-            "batch finished with {incomplete} incomplete cell(s) ({} blocked, {} exhausted)",
-            summary.blocked, summary.exhausted
-        ));
+    if failed > 0 {
+        return Err(format!("batch finished with {failed} failed cell(s)"));
     }
     Ok(())
 }
 
 fn validate_id(raw: &str, label: &str) -> Result<(), String> {
-    if raw.trim().is_empty()
-        || raw == "."
-        || raw.contains("..")
-        || raw.contains("::")
-        || raw.contains("__")
-        || raw
-            .chars()
-            .any(|c| matches!(c, '/' | '\\' | '\0') || c.is_control())
-    {
+    if raw.trim().is_empty() || raw.contains("::") || raw.chars().any(char::is_control) {
         return Err(format!(
-            "invalid {label} '{raw}': cannot be empty or contain path/delimiter tokens"
+            "invalid {label} '{raw}': cannot be empty or contain '::' or control characters"
         ));
     }
     Ok(())
 }
 
-fn prepare_batch(spec_path: &Path, spec: BatchSpec) -> Result<PreparedBatch, String> {
-    let base_dir = spec_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let max_attempts = spec
-        .max_retries
-        .checked_add(1)
-        .and_then(NonZeroU32::new)
-        .ok_or("maxRetries overflowed u32")?;
-
-    let bundle_dir = resolve_bundle_dir(&resolve_path(base_dir, &spec.bundle_dir))?;
-    validate_harbor_bin(&spec.harbor_bin)?;
-    let harbor_bin =
-        if spec.harbor_bin.contains('/') || spec.harbor_bin.contains(std::path::MAIN_SEPARATOR) {
-            resolve_path(base_dir, Path::new(&spec.harbor_bin))
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            spec.harbor_bin.clone()
-        };
-    validate_verifier_env_map(&spec.verifier_env)?;
-
-    if spec.subjects.is_empty() {
-        return Err("subjects cannot be empty".into());
-    }
-    let mut subject_ids = BTreeSet::new();
-    for subject in &spec.subjects {
-        validate_id(&subject.id, "subject id")?;
-        if !subject_ids.insert(subject.id.as_str()) {
-            return Err(format!("duplicate subject id '{}'", subject.id));
-        }
-        validate_subject_target(
-            Some(&subject.id),
-            &subject.provider,
-            &subject.model_id,
-            &subject.api_key_env,
-            subject.base_url.as_deref(),
-        )?;
-    }
-
-    if spec.tasks.is_empty() {
-        return Err("tasks cannot be empty".into());
-    }
-    let mut task_ids = BTreeSet::new();
-    let mut tasks = Vec::with_capacity(spec.tasks.len());
-    for raw_task in &spec.tasks {
-        let path = resolve_task_dir(&resolve_path(base_dir, raw_task))?;
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| format!("task path has non-UTF-8 directory name: {}", path.display()))?
-            .to_owned();
-        validate_id(&name, "task directory name")?;
-        if !task_ids.insert(name.clone()) {
-            return Err(format!("duplicate task name '{name}'"));
-        }
-        tasks.push((name, path));
-    }
-
-    Ok(PreparedBatch {
-        spec,
-        bundle_dir,
-        harbor_bin,
-        max_attempts,
-        tasks,
-    })
-}
-
-fn resolve_path(base_dir: &Path, path: &Path) -> PathBuf {
+fn resolve_from(base_dir: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -295,283 +453,217 @@ fn resolve_path(base_dir: &Path, path: &Path) -> PathBuf {
     }
 }
 
-fn expand_cells(prepared: &PreparedBatch) -> Vec<Cell<'_>> {
-    let cap = prepared.tasks.len()
-        * prepared.spec.repetitions.get() as usize
-        * prepared.spec.subjects.len();
-    let mut cells = Vec::with_capacity(cap);
-    for (task_id, task_path) in &prepared.tasks {
-        for repetition in 1..=prepared.spec.repetitions.get() {
-            for subject in &prepared.spec.subjects {
-                cells.push(Cell {
-                    id: format!("{task_id}::{repetition}::{}", subject.id),
-                    dir_slug: format!("{task_id}__{repetition}__{}", subject.id),
-                    task_path,
-                    subject,
-                });
-            }
+fn freeze_spec(spec_path: &Path, mut spec: BatchSpec) -> Result<(BatchSpec, usize), String> {
+    let base_dir = spec_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+
+    spec.bundle_dir = resolve_bundle_dir(&resolve_from(base_dir, &spec.bundle_dir))?;
+    if spec.harbor_bin.trim().is_empty() {
+        return Err("harborBin cannot be empty".into());
+    }
+    let mut comps = Path::new(&spec.harbor_bin).components();
+    if !matches!(
+        (comps.next(), comps.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    ) {
+        let candidate = resolve_from(base_dir, Path::new(&spec.harbor_bin));
+        let resolved = std::fs::canonicalize(&candidate)
+            .map_err(|e| format!("failed to resolve harborBin {}: {e}", candidate.display()))?;
+        if !resolved.is_file() {
+            return Err(format!("harborBin is not a file: {}", resolved.display()));
+        }
+        spec.harbor_bin = resolved
+            .to_str()
+            .ok_or_else(|| format!("harborBin path is not valid UTF-8: {}", resolved.display()))?
+            .to_owned();
+    }
+    for (k, v) in &spec.verifier_env {
+        validate_env_entry(k, v)?;
+    }
+
+    if spec.subjects.is_empty() {
+        return Err("subjects cannot be empty".into());
+    }
+    let mut subject_ids = BTreeSet::new();
+    for s in &spec.subjects {
+        validate_id(&s.id, "subject id")?;
+        if !subject_ids.insert(s.id.as_str()) {
+            return Err(format!("duplicate subject id '{}'", s.id));
+        }
+        validate_subject_target(
+            Some(&s.id),
+            &s.provider,
+            &s.model_id,
+            &s.api_key_env,
+            s.base_url.as_deref(),
+        )?;
+    }
+
+    if spec.tasks.is_empty() {
+        return Err("tasks cannot be empty".into());
+    }
+    let mut task_ids = BTreeSet::new();
+    for task in &mut spec.tasks {
+        *task = resolve_task_dir(&resolve_from(base_dir, task))?;
+        let id = task
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| format!("task path has non-UTF-8 directory name: {}", task.display()))?
+            .to_owned();
+        validate_id(&id, "task directory name")?;
+        if !task_ids.insert(id.clone()) {
+            return Err(format!("duplicate task name '{id}'"));
         }
     }
-    cells
+
+    let cell_cap = usize::try_from(spec.repetitions.get())
+        .ok()
+        .and_then(|r| spec.tasks.len().checked_mul(r))
+        .and_then(|n| n.checked_mul(spec.subjects.len()))
+        .ok_or("experiment cell count overflowed usize")?;
+
+    Ok((spec, cell_cap))
 }
 
-fn execute_attempt(
-    prepared: &PreparedBatch,
-    cell: &Cell<'_>,
-    sequence: NonZeroU32,
-    attempt_dir: &Path,
-) -> Result<AttemptRecord, String> {
-    let trial_spec = TrialSpec {
-        task_path: cell.task_path,
-        bundle_dir: &prepared.bundle_dir,
-        out_dir: attempt_dir,
-        harbor_bin: &prepared.harbor_bin,
-        force_build: prepared.spec.force_build,
-        base_url: cell.subject.base_url.as_deref(),
-        api_key_env: &cell.subject.api_key_env,
-        provider: &cell.subject.provider,
-        model_id: &cell.subject.model_id,
-        sandbox_mode: cell.subject.sandbox_mode,
-        max_steps: prepared.spec.max_steps,
-        timeout_ms: prepared.spec.timeout_ms,
-        verifier_env: &prepared.spec.verifier_env,
-    };
-
-    let started = Instant::now();
-    let (summary, outcome) = run_prepared_trial(&trial_spec)?.settle();
-    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let (summary_path, _) = write_run_summary(attempt_dir, &summary)?;
-
-    let (status, score, metering, cost_usd, failure_reason) = match outcome {
-        TrialOutcome::Completed { score, settlement } => {
-            let (m, c) = settlement.into_parts();
-            (EvalStatus::Completed, Some(score), Some(m), c, None)
-        }
-        TrialOutcome::SubjectFailed {
-            score,
-            settlement,
-            reason,
-        } => {
-            let (m, c) = settlement.into_parts();
-            (
-                EvalStatus::SubjectFailed,
-                Some(score),
-                Some(m),
-                c,
-                Some(reason),
-            )
-        }
-        TrialOutcome::InfraFailed { reason } => {
-            (EvalStatus::InfraFailed, None, None, None, Some(reason))
-        }
-        TrialOutcome::Indeterminate { reason } => {
-            (EvalStatus::Indeterminate, None, None, None, Some(reason))
-        }
-    };
-
-    Ok(AttemptRecord {
-        cell_id: cell.id.clone(),
-        sequence,
-        duration_ms,
-        status,
-        score,
-        metering,
-        cost_usd,
-        failure_reason,
-        summary_path,
-    })
-}
-
-fn can_admit_attempt(attempts: &[AttemptRecord], max_attempts: NonZeroU32) -> bool {
-    attempts.len() < max_attempts.get() as usize
-        && attempts.iter().all(|a| a.status == EvalStatus::InfraFailed)
-}
-
-fn validate_attempt_record(record: &AttemptRecord) -> Result<(), String> {
-    match record.status {
-        EvalStatus::Completed => {
-            if !record.score.is_some_and(f64::is_finite) || record.failure_reason.is_some() {
-                return Err("completed attempt requires finite score and no failureReason".into());
-            }
-        }
-        EvalStatus::SubjectFailed => {
-            if !record.score.is_some_and(f64::is_finite) || record.failure_reason.is_none() {
-                return Err(
-                    "subject_failed attempt requires finite score and failureReason".into(),
-                );
-            }
-        }
-        EvalStatus::InfraFailed | EvalStatus::Indeterminate => {
-            if record.score.is_some() || record.failure_reason.is_none() {
-                return Err("non-selectable attempt requires null score and failureReason".into());
-            }
-        }
+fn prepare_cell_dir(cell_dir: &Path, cell_id: &str) -> Result<(), String> {
+    let err = |e| format!("failed preparing cell dir {}: {e}", cell_dir.display());
+    if let Some(parent) = cell_dir.parent() {
+        std::fs::create_dir_all(parent).map_err(err)?;
     }
-    if let Some(cost) = record.cost_usd
-        && (!cost.is_finite() || cost < 0.0 || record.metering != Some(Metering::Complete))
-    {
-        return Err("costUsd must be finite >= 0 with metering=complete".into());
-    }
-    Ok(())
-}
-
-struct AttemptLog {
-    path: PathBuf,
-    file: File,
-    total_records: usize,
-    by_cell: BTreeMap<String, Vec<AttemptRecord>>,
-}
-
-impl AttemptLog {
-    fn open_exclusive(path: &Path) -> Result<Self, String> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-            .map_err(|e| format!("failed to open {}: {e}", path.display()))?;
-
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(TryLockError::WouldBlock) => {
+    match std::fs::create_dir(cell_dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let is_dir = std::fs::symlink_metadata(cell_dir)
+                .map_err(err)?
+                .file_type()
+                .is_dir();
+            if !is_dir
+                || std::fs::read_dir(cell_dir)
+                    .map_err(err)?
+                    .next()
+                    .transpose()
+                    .map_err(err)?
+                    .is_some()
+            {
                 return Err(format!(
-                    "{} is locked by another maka-eval batch process",
-                    path.display()
+                    "refusing to overwrite non-empty cell dir {} for cell '{cell_id}'",
+                    cell_dir.display()
                 ));
             }
-            Err(TryLockError::Error(e)) => {
-                return Err(format!("failed to lock {}: {e}", path.display()));
-            }
+            Ok(())
         }
+        Err(e) => Err(err(e)),
+    }
+}
 
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
-            .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+fn append_event(file: &mut File, path: &Path, event: &JournalEvent) -> Result<(), String> {
+    let mut line = serde_json::to_string(event).map_err(|e| e.to_string())?;
+    line.push('\n');
+    file.write_all(line.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|e| format!("failed to persist {}: {e}", path.display()))
+}
 
-        let mut total_records = 0usize;
-        let mut by_cell: BTreeMap<String, Vec<AttemptRecord>> = BTreeMap::new();
-        if !bytes.is_empty() {
-            if !bytes.ends_with(b"\n") {
-                let line_no = bytes.iter().filter(|&&b| b == b'\n').count() + 1;
-                return Err(format!(
-                    "corrupt {}: line {line_no} is missing trailing newline",
-                    path.display()
-                ));
-            }
-            let text = std::str::from_utf8(&bytes)
-                .map_err(|e| format!("corrupt {}: invalid UTF-8: {e}", path.display()))?;
-            for (idx, line) in text.lines().enumerate() {
-                let line_no = idx + 1;
-                let record: AttemptRecord = serde_json::from_str(line)
-                    .map_err(|e| format!("corrupt {} at line {line_no}: {e}", path.display()))?;
-                validate_attempt_record(&record).map_err(|e| {
-                    format!(
-                        "invalid attempt record in {} at line {line_no}: {e}",
+fn load_journal(
+    path: &Path,
+    bytes: &[u8],
+    valid_ids: &BTreeSet<&str>,
+) -> Result<(BTreeMap<String, CellOutcome>, Option<String>), String> {
+    let mut by_cell = BTreeMap::new();
+    let mut pending: Option<String> = None;
+    if bytes.is_empty() {
+        return Ok((by_cell, pending));
+    }
+    if !bytes.ends_with(b"\n") {
+        let line_no = bytes.iter().filter(|&&b| b == b'\n').count() + 1;
+        return Err(format!(
+            "corrupt {}: line {line_no} is missing trailing newline",
+            path.display()
+        ));
+    }
+    let text = std::str::from_utf8(bytes)
+        .map_err(|e| format!("corrupt {}: invalid UTF-8: {e}", path.display()))?;
+    for (idx, line) in text.lines().enumerate() {
+        let line_no = idx + 1;
+        let event: JournalEvent = serde_json::from_str(line)
+            .map_err(|e| format!("corrupt {} at line {line_no}: {e}", path.display()))?;
+        match event {
+            JournalEvent::Started { cell_id } => {
+                if pending.is_some() {
+                    return Err(format!(
+                        "corrupt {} at line {line_no}: started cell while previous cell is still unsettled",
                         path.display()
-                    )
-                })?;
-                let entry = by_cell.entry(record.cell_id.clone()).or_default();
-                let expected = entry.len() as u32 + 1;
-                if record.sequence.get() != expected {
-                    return Err(format!(
-                        "corrupt {} at line {line_no}: cell '{}' expected sequence {expected}, found {}",
-                        path.display(),
-                        record.cell_id,
-                        record.sequence
                     ));
                 }
-                if let Some(prev_label) = entry.last().and_then(|prev| match prev.status {
-                    EvalStatus::InfraFailed => None,
-                    EvalStatus::Completed => Some("completed"),
-                    EvalStatus::SubjectFailed => Some("subject_failed"),
-                    EvalStatus::Indeterminate => Some("indeterminate"),
-                }) {
+                if !valid_ids.contains(cell_id.as_str()) {
                     return Err(format!(
-                        "corrupt {} at line {line_no}: cell '{}' has attempt {} after terminal '{prev_label}' attempt",
-                        path.display(),
-                        record.cell_id,
-                        record.sequence,
+                        "corrupt {} at line {line_no}: unknown cell '{cell_id}'",
+                        path.display()
                     ));
                 }
-                entry.push(record);
-                total_records += 1;
+                if by_cell.contains_key(&cell_id) {
+                    return Err(format!(
+                        "corrupt {} at line {line_no}: duplicate record for cell '{cell_id}'",
+                        path.display()
+                    ));
+                }
+                pending = Some(cell_id);
+            }
+            JournalEvent::Settled { cell_id, outcome } => {
+                if pending.take().as_deref() != Some(cell_id.as_str()) {
+                    return Err(format!(
+                        "corrupt {} at line {line_no}: settled record without matching started cell",
+                        path.display()
+                    ));
+                }
+                by_cell.insert(cell_id, outcome);
             }
         }
-
-        file.seek(SeekFrom::End(0))
-            .map_err(|e| format!("failed seeking {}: {e}", path.display()))?;
-
-        Ok(Self {
-            path: path.to_path_buf(),
-            file,
-            total_records,
-            by_cell,
-        })
     }
-
-    fn for_cell(&self, cell_id: &str) -> &[AttemptRecord] {
-        self.by_cell.get(cell_id).map_or(&[], Vec::as_slice)
-    }
-
-    fn append(&mut self, record: AttemptRecord) -> Result<(), String> {
-        let mut line = serde_json::to_string(&record).map_err(|e| e.to_string())?;
-        line.push('\n');
-        self.file
-            .write_all(line.as_bytes())
-            .and_then(|()| self.file.sync_all())
-            .map_err(|e| format!("failed to persist {}: {e}", self.path.display()))?;
-        self.by_cell
-            .entry(record.cell_id.clone())
-            .or_default()
-            .push(record);
-        self.total_records += 1;
-        Ok(())
-    }
+    Ok((by_cell, pending))
 }
 
-fn build_summary(cells: &[Cell<'_>], store: &AttemptLog) -> BatchSummary {
-    let mut selected = 0usize;
-    let mut blocked = 0usize;
-    let mut exhausted = 0usize;
-    let mut cell_summaries = Vec::with_capacity(cells.len());
-
-    for cell in cells {
-        let attempts = store.for_cell(&cell.id);
-        let last = attempts.last().expect("each cell runs >= 1 attempt");
-        let is_selected = match last.status {
-            EvalStatus::Completed | EvalStatus::SubjectFailed => {
-                selected += 1;
-                true
+fn verify_or_write_experiment(
+    out_dir: &Path,
+    frozen: &BatchSpec,
+    has_existing_journal: bool,
+) -> Result<(), String> {
+    let path = out_dir.join("experiment.json");
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => {
+            let existing: BatchSpec = serde_json::from_str(&raw)
+                .map_err(|e| format!("corrupt {}: {e}", path.display()))?;
+            if existing != *frozen {
+                return Err(format!(
+                    "experiment spec mismatch in {}: --out is bound to a different frozen spec",
+                    path.display()
+                ));
             }
-            EvalStatus::Indeterminate => {
-                blocked += 1;
-                false
-            }
-            EvalStatus::InfraFailed => {
-                exhausted += 1;
-                false
-            }
-        };
-        cell_summaries.push(CellSummary {
-            cell_id: cell.id.clone(),
-            attempts: attempts.len(),
-            selected_sequence: is_selected.then_some(last.sequence),
-            status: last.status,
-            score: is_selected.then_some(last.score).flatten(),
-            metering: is_selected.then_some(last.metering).flatten(),
-            cost_usd: is_selected.then_some(last.cost_usd).flatten(),
-            duration_ms: is_selected.then_some(last.duration_ms),
-            failure_reason: last.failure_reason.clone(),
-            summary_path: last.summary_path.clone(),
-        });
+            return Ok(());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("failed to read {}: {e}", path.display())),
     }
-
-    BatchSummary {
-        attempts_recorded: store.total_records,
-        selected,
-        blocked,
-        exhausted,
-        cells: cell_summaries,
+    if has_existing_journal {
+        return Err(format!(
+            "corrupt {}: missing experiment.json alongside non-empty {RESULTS_FILE}",
+            out_dir.display()
+        ));
     }
+    let encoded = serde_json::to_string_pretty(frozen).map_err(|e| e.to_string())?;
+    write_atomic(&path, format!("{encoded}\n").as_bytes())
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("tmp");
+    let tmp = path.with_file_name(format!(".{name}.tmp"));
+    let mut file =
+        File::create(&tmp).map_err(|e| format!("failed to create {}: {e}", tmp.display()))?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| format!("failed to write {}: {e}", tmp.display()))?;
+    drop(file);
+    std::fs::rename(&tmp, path).map_err(|e| format!("failed to replace {}: {e}", path.display()))
 }

@@ -124,7 +124,10 @@ impl<'de> Deserialize<'de> for GuestRunResult {
             }
             "subjectStopped" => {
                 let stop_reason = match map.remove("stopReason") {
-                    Some(Value::String(s)) => s,
+                    Some(Value::String(s)) if !s.trim().is_empty() => s,
+                    Some(Value::String(_)) => {
+                        return Err(D::Error::custom("stopReason must be non-empty"));
+                    }
                     Some(_) => return Err(D::Error::custom("stopReason must be a string")),
                     None => return Err(D::Error::missing_field("stopReason")),
                 };
@@ -146,7 +149,10 @@ impl<'de> Deserialize<'de> for GuestRunResult {
             }
             "infraFailed" => {
                 let infra_error = match map.remove("infraError") {
-                    Some(Value::String(s)) => s,
+                    Some(Value::String(s)) if !s.trim().is_empty() => s,
+                    Some(Value::String(_)) => {
+                        return Err(D::Error::custom("infraError must be non-empty"));
+                    }
                     Some(_) => return Err(D::Error::custom("infraError must be a string")),
                     None => return Err(D::Error::missing_field("infraError")),
                 };
