@@ -26,7 +26,7 @@ pub mod startup;
 pub mod websocket;
 pub use access::Pairing;
 pub mod protocol;
-pub use client::{CallChannelOpener, Client, LocalCall};
+pub use client::{CallChannelOpener, Channel, Client, LocalCall, OpenChannel};
 pub use discovery::Registration;
 pub use protocol::{Configuration, LifecycleMode, Publication, Status, VERSION};
 

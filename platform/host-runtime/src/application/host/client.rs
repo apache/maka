@@ -21,6 +21,7 @@
 use super::{
     Configuration, Publication, Status, VERSION,
     protocol::{Connected, Opening, Request, Response, SessionControl},
+    websocket::channel_opener,
 };
 use crate::{
     application::{
@@ -34,12 +35,63 @@ use maka_plugin_core::{composition::InstanceId, deployment::DeploymentRef};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
+    io,
     path::{Path, PathBuf},
+    sync::Arc,
 };
-use tokio::io::{AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
 use uuid::Uuid;
 
-pub type LocalCall = Call<ReadHalf<BufReader<LocalStream>>, WriteHalf<BufReader<LocalStream>>>;
+pub trait ChannelIo: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static {}
+impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ChannelIo for S {}
+
+pub type Channel = Box<dyn ChannelIo>;
+pub type LocalCall = Call<ReadHalf<BufReader<Channel>>, WriteHalf<BufReader<Channel>>>;
+pub type OpenChannel =
+    Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, io::Result<Channel>> + Send + Sync>;
+
+#[derive(Clone)]
+enum Target {
+    Local(PathBuf),
+    Supplied {
+        open: OpenChannel,
+        client_instance: Option<Arc<str>>,
+    },
+}
+impl Target {
+    async fn open(&self) -> Result<Channel> {
+        match self {
+            Self::Local(address) => Ok(Box::new(
+                ipc::connect(address).await.map_err(|e| e.to_string())?,
+            )),
+            Self::Supplied { open, .. } => open().await.map_err(|error| error.to_string()),
+        }
+    }
+    fn client_instance(&self) -> Option<String> {
+        match self {
+            Self::Local(_) => None,
+            Self::Supplied {
+                client_instance, ..
+            } => client_instance.as_deref().map(str::to_owned),
+        }
+    }
+    fn is_remote(&self) -> bool {
+        matches!(
+            self,
+            Self::Supplied {
+                client_instance: Some(_),
+                ..
+            }
+        )
+    }
+    async fn owner_control(&self, epoch: Uuid, request: Request) -> Result<Response> {
+        if self.is_remote() {
+            return Err("Host control requires the local owner".into());
+        }
+        control_stream(self.open().await?, Some(epoch), request).await
+    }
+}
+
 #[derive(PartialEq)]
 enum Phase {
     Ready,
@@ -48,9 +100,9 @@ enum Phase {
     Closed,
 }
 pub struct Client {
-    address: PathBuf,
+    target: Target,
     connected: Connected,
-    anchor: wire::Reader<LocalStream>,
+    anchor: wire::Reader<Channel>,
     phase: Phase,
     peer: Option<DeploymentRef>,
 }
@@ -66,7 +118,13 @@ impl Client {
         epoch: Option<Uuid>,
         anchor: LocalStream,
     ) -> Result<Self> {
-        Self::open(address, epoch, anchor, Request::Connect).await
+        Self::open(
+            Target::Local(address.into()),
+            epoch,
+            Box::new(anchor),
+            Request::Connect,
+        )
+        .await
     }
     /// Only a trusted current-account launcher may approve an external UI source.
     pub async fn connect_peer(
@@ -84,12 +142,72 @@ impl Client {
         let anchor = ipc::connect(address)
             .await
             .map_err(|error| error.to_string())?;
-        Self::open(address, epoch, anchor, request).await
+        Self::open(
+            Target::Local(address.into()),
+            epoch,
+            Box::new(anchor),
+            request,
+        )
+        .await
     }
-    async fn open(
-        address: &Path,
+    /// Open Host wire-ready channels. The optional identity binds remote sessions;
+    /// the server independently derives authority from ingress.
+    pub async fn connect_on(
+        open: OpenChannel,
         epoch: Option<Uuid>,
-        mut anchor: LocalStream,
+        client_instance: Option<Arc<str>>,
+    ) -> Result<Self> {
+        let target = Target::Supplied {
+            open,
+            client_instance,
+        };
+        let anchor = target.open().await?;
+        Self::open(target, epoch, anchor, Request::Connect).await
+    }
+
+    /// Connect with an active Bearer credential. Learn the Host epoch when none
+    /// is pinned; subsequent channels use the epoch from this admission.
+    pub async fn connect_websocket(
+        open_stream: OpenChannel,
+        bearer: Arc<str>,
+        client_instance: Arc<str>,
+        epoch: Option<Uuid>,
+    ) -> Result<Self> {
+        Self::connect_on(
+            channel_opener(open_stream, bearer),
+            epoch,
+            Some(client_instance),
+        )
+        .await
+    }
+
+    /// Finalize a pending credential on a wire-ready authenticated channel.
+    pub async fn finalize_access(
+        open: OpenChannel,
+        client_instance: Arc<str>,
+        epoch: Option<Uuid>,
+    ) -> Result<()> {
+        let mut pairing = open().await.map_err(|error| error.to_string())?;
+        wire::write(
+            &mut pairing,
+            &Opening {
+                version: VERSION,
+                epoch,
+                client_instance: Some(client_instance.to_string()),
+                request: Request::FinalizeAccess,
+            },
+        )
+        .await?;
+        match wire::Reader::new(pairing).read::<Response>().await? {
+            Response::Finalized(result) => result,
+            _ => Err("Host pairing response mismatch".into()),
+        }
+    }
+
+    async fn open(
+        target: Target,
+        epoch: Option<Uuid>,
+        mut anchor: Channel,
         request: Request,
     ) -> Result<Self> {
         let peer = match &request {
@@ -104,7 +222,7 @@ impl Client {
         wire::write(
             &mut anchor,
             &Opening {
-                client_instance: None,
+                client_instance: target.client_instance(),
                 version: VERSION,
                 epoch,
                 request,
@@ -128,7 +246,7 @@ impl Client {
             .catalogue
             .check_names(connected.consumers.keys())?;
         Ok(Self {
-            address: address.into(),
+            target,
             connected,
             anchor,
             phase: Phase::Ready,
@@ -156,18 +274,16 @@ impl Client {
     ) -> futures_util::future::BoxFuture<'static, Result<Self>> {
         let ready =
             self.phase == Phase::Ready && self.peer.is_none() && self.connected.ui.is_none();
-        let address = self.address.clone();
+        let target = self.target.clone();
         let epoch = self.connected.epoch;
         let owner = self.connected.session;
         Box::pin(async move {
             if !ready {
                 return Err("UI binding capture requires a ready owner session".into());
             }
-            let anchor = ipc::connect(&address)
-                .await
-                .map_err(|error| error.to_string())?;
+            let anchor = target.open().await?;
             let child = Self::open(
-                &address,
+                target,
                 Some(epoch),
                 anchor,
                 Request::ConnectUi {
@@ -223,7 +339,7 @@ impl Client {
     }
     /// Establish only the authenticated session channel. The native adapter retains
     /// its original checked Source, Call and caller-side RecordedIntent.
-    pub async fn open_call_channel(&self) -> Result<BufReader<LocalStream>> {
+    pub async fn open_call_channel(&self) -> Result<BufReader<Channel>> {
         self.call_channel_opener()?.open().await
     }
     /// Freeze only this already authenticated session's physical target. It owns
@@ -233,7 +349,7 @@ impl Client {
             return Err("Host session control is not ready".into());
         }
         Ok(CallChannelOpener {
-            address: self.address.clone(),
+            target: self.target.clone(),
             epoch: self.connected.epoch,
             session: self.connected.session,
         })
@@ -426,19 +542,23 @@ impl Client {
     }
 
     async fn request_quit(&mut self, ephemeral_only: bool) -> Result<()> {
+        if self.target.is_remote() {
+            return Err("Host control requires the local owner".into());
+        }
         if self.phase == Phase::Closed {
             return Ok(());
         }
         self.phase = Phase::Lost;
-        match control(
-            &self.address,
-            Some(self.connected.epoch),
-            Request::Quit {
-                session: self.connected.session,
-                ephemeral_only,
-            },
-        )
-        .await?
+        match self
+            .target
+            .owner_control(
+                self.connected.epoch,
+                Request::Quit {
+                    session: self.connected.session,
+                    ephemeral_only,
+                },
+            )
+            .await?
         {
             Response::Closed => {
                 self.phase = Phase::Closed;
@@ -452,12 +572,10 @@ impl Client {
         if self.phase != Phase::Ready || self.peer.is_some() {
             return Err("Host publication requires a ready local owner session".into());
         }
-        match control(
-            &self.address,
-            Some(self.connected.epoch),
-            Request::Publication,
-        )
-        .await?
+        match self
+            .target
+            .owner_control(self.connected.epoch, Request::Publication)
+            .await?
         {
             Response::Publication(result) => result,
             _ => Err("Host publication response mismatch".into()),
@@ -476,16 +594,17 @@ impl Client {
         if self.phase != Phase::Ready || self.peer.is_some() {
             return Err("Host configuration requires a ready local owner session".into());
         }
-        match control(
-            &self.address,
-            Some(self.connected.epoch),
-            Request::Configure {
-                source,
-                previous,
-                configuration,
-            },
-        )
-        .await?
+        match self
+            .target
+            .owner_control(
+                self.connected.epoch,
+                Request::Configure {
+                    source,
+                    previous,
+                    configuration,
+                },
+            )
+            .await?
         {
             Response::Configured(result) => result,
             _ => Err("Host configuration response mismatch".into()),
@@ -549,19 +668,17 @@ impl Client {
 /// embedding must fence native calls before detaching that Client's anchor.
 #[derive(Clone)]
 pub struct CallChannelOpener {
-    address: PathBuf,
+    target: Target,
     epoch: Uuid,
     session: Uuid,
 }
 impl CallChannelOpener {
-    pub async fn open(&self) -> Result<BufReader<LocalStream>> {
-        let mut stream = ipc::connect(&self.address)
-            .await
-            .map_err(|error| error.to_string())?;
+    pub async fn open(&self) -> Result<BufReader<Channel>> {
+        let mut stream = self.target.open().await?;
         wire::write(
             &mut stream,
             &Opening {
-                client_instance: None,
+                client_instance: self.target.client_instance(),
                 version: VERSION,
                 epoch: Some(self.epoch),
                 request: Request::Call {
@@ -584,7 +701,7 @@ async fn control(address: &Path, epoch: Option<Uuid>, request: Request) -> Resul
     control_stream(stream, epoch, request).await
 }
 async fn control_stream(
-    mut stream: LocalStream,
+    mut stream: impl AsyncRead + AsyncWrite + Unpin,
     epoch: Option<Uuid>,
     request: Request,
 ) -> Result<Response> {
