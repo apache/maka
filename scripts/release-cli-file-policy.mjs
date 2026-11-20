@@ -211,6 +211,51 @@ export function releaseNpmEnvironment(environment, userConfigPath) {
   };
 }
 
+export const CLI_HIGHLIGHT_JS_LANGUAGE_MODULES = Object.freeze([
+  'bash',
+  'c',
+  'cpp',
+  'csharp',
+  'css',
+  'diff',
+  'go',
+  'java',
+  'javascript',
+  'json',
+  'markdown',
+  'powershell',
+  'python',
+  'rust',
+  'sql',
+  'typescript',
+  'xml',
+  'yaml',
+]);
+
+const HIGHLIGHT_JS_RUNTIME_DIRECTORIES = new Set(['es', 'es/languages', 'lib']);
+const HIGHLIGHT_JS_RUNTIME_FILES = new Set([
+  'LICENSE',
+  'package.json',
+  'es/core.js',
+  'es/package.json',
+  'lib/core.js',
+  ...CLI_HIGHLIGHT_JS_LANGUAGE_MODULES.map((language) => `es/languages/${language}.js`),
+]);
+
+/**
+ * Keep the CLI release's syntax highlighter dependency to its actual ESM
+ * runtime closure. npm publishes every highlight.js grammar and theme in one
+ * package, while Maka deliberately registers a bounded language set.
+ */
+export function isCliThirdPartyReleasePath(packageKey, relativePath) {
+  if (packageKey !== 'highlight.js@11.12.0') return true;
+  const portablePath = relativePath.split(/[\\/]/u).filter(Boolean).join('/');
+  return (
+    HIGHLIGHT_JS_RUNTIME_DIRECTORIES.has(portablePath) ||
+    HIGHLIGHT_JS_RUNTIME_FILES.has(portablePath)
+  );
+}
+
 export function isThirdPartyDevelopmentArtifact(relativePath) {
   const segments = relativePath.split(/[\\/]/).filter(Boolean);
   if (segments.some((segment) => DEVELOPMENT_DIRECTORIES.has(segment))) return true;
