@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use maka_host_runtime::application::host::Client as HostClient;
@@ -63,8 +64,10 @@ impl IsolatedEnv {
         for dir in [&home, &tmp, &workspace, &bundle, &empty_cwd] {
             std::fs::create_dir_all(dir).expect("create isolated subdir");
         }
+        std::fs::write(workspace.join("task.toml"), "[task]\nname = \"ws\"\n")
+            .expect("write task.toml");
 
-        let eval_bin = PathBuf::from(env!("CARGO_BIN_EXE_maka-eval"));
+        let eval_bin = eval_bin_path();
         stage_executable(&eval_bin, &bundle, "maka-eval");
         if link_real_host {
             stage_executable(&find_helper_binary("maka"), &bundle, "maka");
@@ -127,48 +130,82 @@ impl IsolatedEnv {
         (out, req_path, res_path, artifacts)
     }
 
-    async fn run_guest_live(&self, base_url: &str, max_steps: u32) -> (Value, PathBuf, PathBuf) {
+    async fn run_guest_live_status(
+        &self,
+        base_url: &str,
+        max_steps: Option<u32>,
+        timeout_ms: Option<u64>,
+    ) -> (std::process::ExitStatus, String, Value, PathBuf, PathBuf) {
+        self.run_guest_live_with_options(base_url, "deepseek-chat", None, max_steps, timeout_ms)
+            .await
+    }
+
+    async fn run_guest_live_with_options(
+        &self,
+        base_url: &str,
+        model_id: &str,
+        thinking_level: Option<&str>,
+        max_steps: Option<u32>,
+        timeout_ms: Option<u64>,
+    ) -> (std::process::ExitStatus, String, Value, PathBuf, PathBuf) {
         let id = self.seq.fetch_add(1, Ordering::SeqCst);
         let artifacts = self.tmp.join(format!("artifacts-live-{id}"));
         let req_path = self.tmp.join(format!("req-live-{id}.json"));
         let res_path = artifacts.join("guest-result.json");
-        let payload = serde_json::to_vec(&json!({
+        let mut req_obj = json!({
             "instruction": "Execute evaluation task.",
-            "workspaceDir": self.workspace,
             "artifactsDir": artifacts,
             "baseUrl": base_url,
             "apiKey": "sk-eval-key",
             "provider": "deepseek",
-            "modelId": "deepseek-chat",
+            "modelId": model_id,
             "sandboxMode": "danger-full-access",
             "maxSteps": max_steps,
-            "timeoutMs": 30_000,
-        }))
-        .unwrap();
+        });
+        if let Some(level) = thinking_level {
+            req_obj["thinkingLevel"] = json!(level);
+        }
+        let payload = serde_json::to_vec(&req_obj).unwrap();
         std::fs::write(&req_path, payload).unwrap();
 
         let mut cmd = self.eval_command();
+        cmd.current_dir(&self.workspace);
         let req_for_cmd = req_path.clone();
         let res_for_cmd = res_path.clone();
         let out = tokio::task::spawn_blocking(move || {
             cmd.args(["guest-run", "--request-file"])
                 .arg(&req_for_cmd)
                 .arg("--result-file")
-                .arg(&res_for_cmd)
-                .output()
-                .expect("run guest-run")
+                .arg(&res_for_cmd);
+            if let Some(ms) = timeout_ms {
+                cmd.args(["--timeout-ms", &ms.to_string()]);
+            }
+            cmd.output().expect("run guest-run")
         })
         .await
         .unwrap();
-        assert!(
-            out.status.success(),
-            "guest-run failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
         assert!(!req_path.exists());
-        let parsed: Value =
-            serde_json::from_str(&std::fs::read_to_string(&res_path).unwrap()).unwrap();
-        (parsed, res_path, artifacts.join("transcript.json"))
+        let parsed = read_json(&res_path);
+        (
+            out.status,
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+            parsed,
+            res_path,
+            artifacts.join("transcript.json"),
+        )
+    }
+
+    async fn run_guest_live(
+        &self,
+        base_url: &str,
+        max_steps: Option<u32>,
+        timeout_ms: Option<u64>,
+    ) -> (Value, PathBuf, PathBuf) {
+        let (status, stderr, parsed, res_path, transcript_path) = self
+            .run_guest_live_status(base_url, max_steps, timeout_ms)
+            .await;
+        assert!(status.success(), "guest-run failed: {stderr}");
+        (parsed, res_path, transcript_path)
     }
 
     fn run_harbor(
@@ -177,6 +214,28 @@ impl IsolatedEnv {
         transcript: Option<&Path>,
         trial_result_json: &Value,
         exit_code: i32,
+    ) -> (Output, PathBuf) {
+        self.run_harbor_with_args(
+            None,
+            guest_result,
+            transcript,
+            trial_result_json,
+            exit_code,
+            &[],
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_harbor_with_args(
+        &self,
+        task_dir: Option<&Path>,
+        guest_result: Option<&Path>,
+        transcript: Option<&Path>,
+        trial_result_json: &Value,
+        exit_code: i32,
+        extra_args: &[&str],
+        extra_env: &[(&str, &str)],
     ) -> (Output, PathBuf) {
         let id = self.seq.fetch_add(1, Ordering::SeqCst);
         let stub_dir = self.tmp.join(format!("harbor-stub-{id}"));
@@ -189,11 +248,11 @@ impl IsolatedEnv {
             exit_code,
         );
         let out_dir = self.tmp.join(format!("run-out-{id}"));
-        let out = self
-            .eval_command()
-            .env("EVAL_API_KEY", "sk-eval-key")
+        let mut cmd = self.eval_command();
+        cmd.env("EVAL_API_KEY", "sk-eval-key")
+            .envs(extra_env.iter().copied())
             .args(["run", "--task"])
-            .arg(&self.workspace)
+            .arg(task_dir.unwrap_or(&self.workspace))
             .arg("--bundle-dir")
             .arg(&self.bundle)
             .arg("--out")
@@ -208,8 +267,8 @@ impl IsolatedEnv {
                 "--model",
                 "deepseek-chat",
             ])
-            .output()
-            .expect("run maka-eval run");
+            .args(extra_args);
+        let out = cmd.output().expect("run maka-eval run");
         (out, out_dir.join("run-summary.json"))
     }
 
@@ -274,6 +333,16 @@ impl Drop for IsolatedEnv {
     }
 }
 
+fn eval_bin_path() -> PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_maka-eval")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_maka-eval")))
+}
+
+fn read_json(path: &Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
 fn stage_executable(src: &Path, bundle: &Path, stem: &str) {
     let with_ext = bundle.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
     link_or_copy(src, &with_ext);
@@ -285,8 +354,7 @@ fn link_or_copy(src: &Path, dst: &Path) {
     if dst.exists() {
         return;
     }
-    #[cfg(unix)]
-    if std::os::unix::fs::symlink(src, dst).is_ok() {
+    if std::fs::hard_link(src, dst).is_ok() {
         return;
     }
     std::fs::copy(src, dst).expect("copy binary into test bundle");
@@ -299,7 +367,7 @@ fn find_helper_binary(name: &str) -> PathBuf {
     {
         return path;
     }
-    let eval_bin = PathBuf::from(env!("CARGO_BIN_EXE_maka-eval"));
+    let eval_bin = eval_bin_path();
     let exe_name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     if let Some(profile_dir) = eval_bin.parent() {
         let sibling = profile_dir.join(&exe_name);
@@ -336,7 +404,11 @@ fn worktree_common_target_dir() -> Option<PathBuf> {
 enum MockMode {
     Retry429AndDelegateSubagent { workspace_path: String },
     MaxStepsSlowSecondTurn,
+    SlowFirstTurn,
     SingleTurnClean { cached_tokens: Option<u64> },
+    SingleTurnRecord { recorded: Arc<Mutex<Vec<Value>>> },
+    MissingUsage,
+    Unauthorized401,
 }
 
 fn usage_with_cache(input: u64, output: u64, cached: Option<u64>) -> Usage {
@@ -350,7 +422,11 @@ fn usage_with_cache(input: u64, output: u64, cached: Option<u64>) -> Usage {
 async fn start_mock_provider(mode: MockMode) -> MockAiServer {
     MockAiBuilder::new()
         .control(ControlPlaneConfig {
-            models: vec![ModelEntry::simple("deepseek-chat")],
+            models: vec![
+                ModelEntry::simple("deepseek-chat"),
+                ModelEntry::simple("deepseek-flash"),
+                ModelEntry::simple("deepseek-unpriced-eval"),
+            ],
             ..Default::default()
         })
         .handler_fn(move |req: &NormalizedRequest, ctx: &TurnContext| {
@@ -418,10 +494,29 @@ async fn start_mock_provider(mode: MockMode) -> MockAiServer {
                             .push(TurnEvent::TruncateEof)
                     }
                 }
+                MockMode::SlowFirstTurn => TurnPlan::new()
+                    .push_text("Working...")
+                    .push(TurnEvent::Delay { ms: 30_000 })
+                    .push(TurnEvent::TruncateEof),
                 MockMode::SingleTurnClean { cached_tokens } => TurnPlan::new()
                     .push_text("Clean completion.")
                     .with_usage(usage_with_cache(100, 20, *cached_tokens))
                     .finish(FinishReason::Stop),
+                MockMode::SingleTurnRecord { recorded } => {
+                    recorded.lock().unwrap().push(req.raw_body.clone());
+                    TurnPlan::new()
+                        .push_text("Recorded completion.")
+                        .with_usage(usage_with_cache(100, 20, Some(20)))
+                        .finish(FinishReason::Stop)
+                }
+                MockMode::MissingUsage => TurnPlan::new()
+                    .push_text("No usage.")
+                    .finish(FinishReason::Stop),
+                MockMode::Unauthorized401 => TurnPlan::http_error(HttpErrorSpec::new(
+                    401,
+                    "authentication_error",
+                    "invalid api key",
+                )),
             }
         })
         .start()
@@ -453,8 +548,21 @@ fn write_fake_harbor_cli(
         r#"#!/usr/bin/env node
 import {{ copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync }} from "node:fs";
 import {{ delimiter, join }} from "node:path";
-if (process.argv[2] !== "run" || process.argv[3] !== "-c") process.exit(2);
-const cfg = JSON.parse(readFileSync(process.argv[4], "utf8"));
+const args = process.argv.slice(2);
+if (args[0] !== "run") process.exit(2);
+let configPath;
+const verifierEnv = [];
+for (let i = 1; i < args.length; i++) {{
+  if (args[i] === "-c" && i + 1 < args.length) {{
+    configPath = args[++i];
+  }} else if (args[i] === "--verifier-env" && i + 1 < args.length) {{
+    verifierEnv.push(args[++i]);
+  }} else {{
+    process.exit(2);
+  }}
+}}
+if (!configPath) process.exit(2);
+const cfg = JSON.parse(readFileSync(configPath, "utf8"));
 if (cfg.retry?.max_retries !== 0 || cfg.n_attempts !== 1) process.exit(2);
 const mount = cfg.environment?.mounts?.[0];
 if (mount?.target !== "/opt/maka-agent" || mount?.read_only !== true) process.exit(2);
@@ -467,6 +575,7 @@ mkdirSync(makaDir, {{ recursive: true }});
 if (spec.guestResult) copyFileSync(spec.guestResult, join(makaDir, "guest-result.json"));
 if (spec.transcript) copyFileSync(spec.transcript, join(makaDir, "transcript.json"));
 writeFileSync(join(trialDir, "result.json"), JSON.stringify(spec.trialResult) + "\n");
+writeFileSync(join(cfg.jobs_dir, cfg.job_name, "argv-verifier-env.json"), JSON.stringify(verifierEnv) + "\n");
 process.exit(spec.exitCode);
 "#,
         serde_json::to_string(&state_path).unwrap()
@@ -491,36 +600,70 @@ process.exit(spec.exitCode);
 fn guest_run_unlinks_secret_request_and_records_infra_failure() {
     let env = IsolatedEnv::new(false);
 
-    let (out, req, res, _) = env.run_guest_raw(br#"{"apiKey":"sk-top-secret","unknown":1}"#);
+    let (out, req, res, _) = env.run_guest_raw(br#"{"apiKey":"sk-top-secret""#);
     assert!(!out.status.success());
     assert!(!req.exists(), "secret request file must be deleted");
-    let parsed: Value = serde_json::from_str(&std::fs::read_to_string(&res).unwrap()).unwrap();
-    assert_eq!(parsed["status"], "infraFailed");
+    let parsed = read_json(&res);
+    assert!(parsed["infraFailed"].is_object());
     assert!(
-        parsed["infraError"]
+        parsed["infraFailed"]["infraError"]
             .as_str()
             .unwrap()
             .contains("invalid guest request JSON")
     );
 
-    let zero_steps = serde_json::to_vec(&json!({
-        "instruction": "noop",
-        "workspaceDir": env.workspace,
-        "artifactsDir": env.tmp.join("unused"),
-        "apiKey": "sk-top-secret-2",
-        "provider": "deepseek",
-        "modelId": "deepseek-chat",
-        "sandboxMode": "danger-full-access",
-        "maxSteps": 0,
-        "timeoutMs": 5000,
-    }))
-    .unwrap();
-    let (out2, req2, res2, _) = env.run_guest_raw(&zero_steps);
-    assert!(!out2.status.success());
-    assert!(!req2.exists());
-    let parsed2: Value = serde_json::from_str(&std::fs::read_to_string(&res2).unwrap()).unwrap();
-    assert_eq!(parsed2["status"], "infraFailed");
-    assert!(env.host_run_dirs().is_empty());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        struct RestorePerms(PathBuf);
+        impl Drop for RestorePerms {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+
+        let ro_dir = env.tmp.join("ro-req-dir");
+        std::fs::create_dir_all(&ro_dir).unwrap();
+        let ro_req = ro_dir.join("req.json");
+        let sentinel = ro_dir.join("sentinel");
+        let valid_req = serde_json::to_vec(&json!({
+            "instruction": "noop",
+            "artifactsDir": env.tmp.join("ro-artifacts"),
+            "apiKey": "sk-top-secret-ro",
+            "provider": "deepseek",
+            "modelId": "deepseek-chat",
+            "sandboxMode": "danger-full-access",
+        }))
+        .unwrap();
+        std::fs::write(&ro_req, &valid_req).unwrap();
+        std::fs::write(&sentinel, b"").unwrap();
+        std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let _restore = RestorePerms(ro_dir);
+
+        if std::fs::remove_file(&sentinel).is_err() {
+            let ro_res = env.tmp.join("ro-artifacts").join("guest-result.json");
+            let ro_out = env
+                .eval_command()
+                .args(["guest-run", "--request-file"])
+                .arg(&ro_req)
+                .arg("--result-file")
+                .arg(&ro_res)
+                .output()
+                .expect("spawn guest-run with unwritable request dir");
+            assert!(!ro_out.status.success());
+            assert!(ro_req.exists());
+            let ro_parsed = read_json(&ro_res);
+            assert!(ro_parsed["infraFailed"].is_object());
+            assert!(
+                ro_parsed["infraFailed"]["infraError"]
+                    .as_str()
+                    .unwrap()
+                    .contains("failed to remove secret request file")
+            );
+            assert!(env.host_run_dirs().is_empty());
+        }
+    }
 }
 
 #[tokio::test]
@@ -531,12 +674,18 @@ async fn guest_run_completed_accounts_delegated_subagents_retries_429_and_keeps_
     })
     .await;
 
-    let (guest_json, res_path, transcript_path) =
-        env.run_guest_live(&mock_server.base_url(), 5).await;
-    assert_eq!(guest_json["status"], "completed");
-    assert_eq!(guest_json["evidence"]["stepsObserved"], 2);
+    let (guest_json, res_path, transcript_path) = env
+        .run_guest_live(&mock_server.base_url(), Some(5), Some(30_000))
+        .await;
+    let completed = &guest_json["completed"];
+    assert!(completed.is_object());
+    assert_eq!(completed["settlement"]["metering"], "lower_bound");
+    assert!(completed["settlement"].get("inputTokens").is_none());
+    assert!(completed["settlement"].get("cacheTokens").is_none());
+    assert!(completed["settlement"].get("outputTokens").is_none());
+    assert_eq!(completed["evidence"]["stepsObserved"], 2);
 
-    let models = &guest_json["evidence"]["hostUsage"]["summary"]["models"];
+    let models = &completed["evidence"]["hostUsage"]["summary"]["models"];
     assert_eq!(models["calls"], 4);
     assert_eq!(models["success"], 3);
     assert_eq!(models["error"], 1);
@@ -563,8 +712,7 @@ async fn guest_run_completed_accounts_delegated_subagents_retries_429_and_keeps_
         "{}",
         String::from_utf8_lossy(&run_out.stderr)
     );
-    let summary: Value =
-        serde_json::from_str(&std::fs::read_to_string(&summary_path).unwrap()).unwrap();
+    let summary = read_json(&summary_path);
     assert_eq!(summary["reward"], 0.0);
     assert_eq!(summary["guest"]["status"], "completed");
     assert_eq!(summary["guest"]["usage"]["models"]["input"]["known"], 750);
@@ -578,14 +726,26 @@ async fn guest_run_completed_accounts_delegated_subagents_retries_429_and_keeps_
     );
     assert_eq!(summary["guest"]["metering"], "lower_bound");
     assert_eq!(summary["guest"]["costUsd"], Value::Null);
-    assert!(summary["guest"].get("meteringError").is_none());
 
     let clean_server = start_mock_provider(MockMode::SingleTurnClean {
         cached_tokens: Some(20),
     })
     .await;
-    let (_, clean_res_path, clean_transcript_path) =
-        env.run_guest_live(&clean_server.base_url(), 2).await;
+    let (clean_guest_json, clean_res_path, clean_transcript_path) = env
+        .run_guest_live(&clean_server.base_url(), None, None)
+        .await;
+    let clean_settlement = &clean_guest_json["completed"]["settlement"];
+    assert_eq!(clean_settlement["inputTokens"], 100);
+    assert_eq!(clean_settlement["cacheTokens"], 20);
+    assert_eq!(clean_settlement["outputTokens"], 20);
+    assert!(
+        (clean_settlement["metering"]["complete"]["costUsd"]
+            .as_f64()
+            .unwrap()
+            - 0.000045)
+            .abs()
+            < 1e-12
+    );
     assert_eq!(env.retire_live_hosts().await, 1);
 
     let (clean_out, clean_summary_path) = env.run_harbor(
@@ -599,8 +759,7 @@ async fn guest_run_completed_accounts_delegated_subagents_retries_429_and_keeps_
         "{}",
         String::from_utf8_lossy(&clean_out.stderr)
     );
-    let clean_summary: Value =
-        serde_json::from_str(&std::fs::read_to_string(&clean_summary_path).unwrap()).unwrap();
+    let clean_summary = read_json(&clean_summary_path);
     assert_eq!(clean_summary["reward"], 1.0);
     assert_eq!(clean_summary["guest"]["metering"], "complete");
     assert!((clean_summary["guest"]["costUsd"].as_f64().unwrap() - 0.000045).abs() < 1e-12);
@@ -609,34 +768,61 @@ async fn guest_run_completed_accounts_delegated_subagents_retries_429_and_keeps_
         cached_tokens: None,
     })
     .await;
-    let (_, no_cache_res_path, no_cache_transcript_path) =
-        env.run_guest_live(&no_cache_server.base_url(), 2).await;
+    let (no_cache_guest_json, _, _) = env
+        .run_guest_live(&no_cache_server.base_url(), Some(2), Some(30_000))
+        .await;
+    let no_cache_completed = &no_cache_guest_json["completed"];
+    assert_eq!(no_cache_completed["settlement"]["metering"], "lower_bound");
+    assert_eq!(no_cache_completed["settlement"]["inputTokens"], 100);
+    assert_eq!(no_cache_completed["settlement"]["outputTokens"], 20);
+    assert!(
+        no_cache_completed["settlement"]
+            .get("cacheTokens")
+            .is_none()
+    );
+    assert_eq!(
+        no_cache_completed["evidence"]["hostUsage"]["summary"]["models"]["cacheRead"]["missing"],
+        1
+    );
+    assert_eq!(
+        no_cache_completed["evidence"]["hostUsage"]["summary"]["models"]["cost"]["unvalued"],
+        1
+    );
     assert_eq!(env.retire_live_hosts().await, 1);
 
-    let (no_cache_out, no_cache_summary_path) = env.run_harbor(
-        Some(&no_cache_res_path),
-        Some(&no_cache_transcript_path),
-        &json!({ "verifier_result": { "rewards": { "reward": 1.0 } }, "exception_info": Value::Null }),
-        0,
-    );
+    let (unpriced_status, unpriced_stderr, unpriced_guest_json, _, _) = env
+        .run_guest_live_with_options(
+            &clean_server.base_url(),
+            "deepseek-unpriced-eval",
+            None,
+            None,
+            Some(30_000),
+        )
+        .await;
     assert!(
-        no_cache_out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&no_cache_out.stderr)
+        unpriced_status.success(),
+        "guest-run failed: {unpriced_stderr}"
     );
-    let no_cache_summary: Value =
-        serde_json::from_str(&std::fs::read_to_string(&no_cache_summary_path).unwrap()).unwrap();
-    assert_eq!(no_cache_summary["reward"], 1.0);
+    let unpriced_completed = &unpriced_guest_json["completed"];
+    assert!(unpriced_completed.is_object());
+    assert!(unpriced_completed["settlement"]["metering"]["complete"].is_object());
+    assert!(
+        unpriced_completed["settlement"]["metering"]["complete"]
+            .get("costUsd")
+            .is_none()
+    );
+    assert_eq!(unpriced_completed["settlement"]["inputTokens"], 100);
+    assert_eq!(unpriced_completed["settlement"]["cacheTokens"], 20);
+    assert_eq!(unpriced_completed["settlement"]["outputTokens"], 20);
     assert_eq!(
-        no_cache_summary["guest"]["usage"]["models"]["cacheRead"]["missing"],
+        unpriced_completed["evidence"]["hostUsage"]["summary"]["models"]["cost"]["unpriced"],
         1
     );
     assert_eq!(
-        no_cache_summary["guest"]["usage"]["models"]["cost"]["unvalued"],
+        unpriced_completed["evidence"]["hostUsage"]["summary"]["models"]["cost"]["unvalued"],
         1
     );
-    assert_eq!(no_cache_summary["guest"]["metering"], "lower_bound");
-    assert_eq!(no_cache_summary["guest"]["costUsd"], Value::Null);
+    assert_eq!(env.retire_live_hosts().await, 1);
 }
 
 #[tokio::test]
@@ -644,18 +830,24 @@ async fn guest_run_max_steps_stops_in_flight_stream_retires_host_and_passes_vali
     let env = IsolatedEnv::new(true);
     let mock_server = start_mock_provider(MockMode::MaxStepsSlowSecondTurn).await;
 
-    let (guest_json, res_path, transcript_path) =
-        env.run_guest_live(&mock_server.base_url(), 1).await;
-    assert_eq!(guest_json["status"], "subjectStopped");
+    let (guest_json, res_path, transcript_path) = env
+        .run_guest_live(&mock_server.base_url(), Some(1), Some(30_000))
+        .await;
+    let stopped = &guest_json["subjectStopped"];
+    assert!(stopped.is_object());
     assert!(
-        guest_json["stopReason"]
+        stopped["stopReason"]
             .as_str()
             .unwrap()
             .contains("exceeded maxSteps (1)")
     );
-    assert_eq!(guest_json["evidence"]["stepsObserved"], 1);
+    assert_eq!(stopped["settlement"]["metering"], "lower_bound");
+    assert!(stopped["settlement"].get("inputTokens").is_none());
+    assert!(stopped["settlement"].get("cacheTokens").is_none());
+    assert!(stopped["settlement"].get("outputTokens").is_none());
+    assert_eq!(stopped["evidence"]["stepsObserved"], 1);
     assert_eq!(
-        guest_json["evidence"]["hostUsage"]["summary"]["models"]["input"]["known"],
+        stopped["evidence"]["hostUsage"]["summary"]["models"]["input"]["known"],
         80
     );
     assert!(env.host_run_dirs().is_empty());
@@ -672,47 +864,30 @@ async fn guest_run_max_steps_stops_in_flight_stream_retires_host_and_passes_vali
         "{}",
         String::from_utf8_lossy(&run_out.stderr)
     );
-    let stopped_summary: Value =
-        serde_json::from_str(&std::fs::read_to_string(&stopped_summary_path).unwrap()).unwrap();
+    let stopped_summary = read_json(&stopped_summary_path);
     assert_eq!(stopped_summary["reward"], 0.0);
     assert_eq!(stopped_summary["guest"]["status"], "subjectStopped");
     assert_eq!(stopped_summary["guest"]["metering"], "lower_bound");
     assert_eq!(stopped_summary["guest"]["costUsd"], Value::Null);
-    assert!(stopped_summary["guest"].get("meteringError").is_none());
 
-    let mut missing_usage = guest_json;
-    missing_usage["evidence"]["hostUsageAttempts"]["attempts"][0]["attempt"]["usage"]["output_tokens"] =
-        Value::Null;
-    let partial_guest_path = env.tmp.join("partial-guest-result.json");
-    std::fs::write(
-        &partial_guest_path,
-        serde_json::to_vec(&missing_usage).unwrap(),
-    )
-    .unwrap();
-    let (partial_out, partial_summary) = env.run_harbor(
-        Some(&partial_guest_path),
-        Some(&transcript_path),
-        &json!({ "verifier_result": { "rewards": { "reward": 1.0 } }, "exception_info": Value::Null }),
-        0,
-    );
-    assert!(!partial_out.status.success());
+    let missing_usage_server = start_mock_provider(MockMode::MissingUsage).await;
+    let (partial_status, partial_stderr, partial_guest, _, _) = env
+        .run_guest_live_status(&missing_usage_server.base_url(), None, Some(30_000))
+        .await;
+    assert!(!partial_status.success());
+    assert!(partial_stderr.contains("incomplete token usage on successful model call(s)"));
+    let partial_infra = &partial_guest["infraFailed"];
+    assert!(partial_infra.is_object());
     assert!(
-        String::from_utf8_lossy(&partial_out.stderr)
-            .contains("incomplete token usage on successful model call(s)")
-    );
-    assert!(partial_summary.is_file());
-    let partial_summary_json: Value =
-        serde_json::from_str(&std::fs::read_to_string(&partial_summary).unwrap()).unwrap();
-    assert_eq!(partial_summary_json["reward"], 1.0);
-    assert_eq!(partial_summary_json["guest"]["status"], "subjectStopped");
-    assert!(partial_summary_json["guest"].get("metering").is_none());
-    assert!(partial_summary_json["guest"].get("costUsd").is_none());
-    assert!(
-        partial_summary_json["guest"]["meteringError"]
+        partial_infra["infraError"]
             .as_str()
             .unwrap()
             .contains("incomplete token usage on successful model call(s)")
     );
+    assert!(partial_infra["evidence"]["hostUsage"].is_object());
+    assert!(partial_infra.get("settlement").is_none());
+    assert!(env.host_run_dirs().is_empty());
+    assert_eq!(env.retire_live_hosts().await, 0);
 }
 
 #[test]
@@ -722,8 +897,9 @@ fn run_command_persists_summary_and_surfaces_root_cause_on_infra_failure() {
     std::fs::write(
         &infra_guest_path,
         serde_json::to_vec(&json!({
-            "status": "infraFailed",
-            "infraError": "maka host serve exited before printing ready line",
+            "infraFailed": {
+                "infraError": "maka host serve exited before printing ready line",
+            }
         }))
         .unwrap(),
     )
@@ -734,7 +910,7 @@ fn run_command_persists_summary_and_surfaces_root_cause_on_infra_failure() {
         None,
         &json!({
             "verifier_result": Value::Null,
-            "exception_info": { "exception_type": "RuntimeError", "message": "guest-run exited with 1" },
+            "exception_info": { "exception_type": "MakaInfraError", "message": "guest-run exited with 1" },
         }),
         1,
     );
@@ -743,14 +919,231 @@ fn run_command_persists_summary_and_surfaces_root_cause_on_infra_failure() {
         "guest infrastructure failed: maka host serve exited before printing ready line"
     ));
     assert!(summary_path.is_file());
-    let summary: Value =
-        serde_json::from_str(&std::fs::read_to_string(&summary_path).unwrap()).unwrap();
+    let summary = read_json(&summary_path);
     assert_eq!(summary["guest"]["status"], "infraFailed");
     assert!(summary["guest"].get("usage").is_none());
     assert!(summary["guest"].get("metering").is_none());
-    assert!(summary["guest"].get("meteringError").is_none());
     assert_eq!(
         summary["exceptionInfo"]["exception_type"],
-        json!("RuntimeError")
+        json!("MakaInfraError")
     );
+}
+
+#[test]
+fn run_cli_config_contract_and_corrupt_guest_result() {
+    let env = IsolatedEnv::new(false);
+    let trial_ok = json!({ "verifier_result": { "rewards": { "reward": 1.0 } }, "exception_info": Value::Null });
+
+    let task_frac = env.tmp.join("task-frac");
+    std::fs::create_dir_all(&task_frac).unwrap();
+    std::fs::write(
+        task_frac.join("task.toml"),
+        "[task]\nname = \"ws-frac\"\n[agent]\ntimeout_sec = 10.5\n",
+    )
+    .unwrap();
+    let (task_budget_out, task_budget_summary) =
+        env.run_harbor_with_args(Some(&task_frac), None, None, &trial_ok, 0, &[], &[]);
+    assert!(!task_budget_out.status.success());
+    let task_budget_summary_json = read_json(&task_budget_summary);
+    assert_eq!(task_budget_summary_json["reward"], Value::Null);
+    let task_budget_cfg = read_json(
+        &task_budget_summary
+            .parent()
+            .unwrap()
+            .join("harbor-job-config.json"),
+    );
+    assert_eq!(task_budget_cfg["agents"][0]["override_timeout_sec"], 40.5);
+    assert_eq!(task_budget_cfg["agents"][0]["kwargs"]["timeout_ms"], 10_500);
+
+    let (explicit_out, explicit_summary_path) = env.run_harbor_with_args(
+        Some(&task_frac),
+        None,
+        None,
+        &trial_ok,
+        0,
+        &[
+            "--max-steps",
+            "3",
+            "--timeout-ms",
+            "15000",
+            "--thinking-level",
+            "low",
+            "--verifier-env",
+            "HOST_MARKER",
+            "--verifier-env",
+            "JUDGE_API_KEY=${SYNTH_JUDGE_KEY}",
+        ],
+        &[
+            ("HOST_MARKER", "synth-marker-secret"),
+            ("SYNTH_JUDGE_KEY", "sk-synth-judge-secret"),
+        ],
+    );
+    assert!(!explicit_out.status.success());
+    let explicit_cfg_raw = std::fs::read_to_string(
+        explicit_summary_path
+            .parent()
+            .unwrap()
+            .join("harbor-job-config.json"),
+    )
+    .unwrap();
+    assert!(!explicit_cfg_raw.contains("synth-marker-secret"));
+    assert!(!explicit_cfg_raw.contains("sk-synth-judge-secret"));
+    let explicit_cfg: Value = serde_json::from_str(&explicit_cfg_raw).unwrap();
+    assert!(explicit_cfg.get("verifier").is_none());
+    assert_eq!(explicit_cfg["agents"][0]["override_timeout_sec"], 45.0);
+    assert_eq!(explicit_cfg["agents"][0]["kwargs"]["max_steps"], 3);
+    assert_eq!(explicit_cfg["agents"][0]["kwargs"]["timeout_ms"], 15_000);
+    assert_eq!(explicit_cfg["agents"][0]["kwargs"]["thinking_level"], "low");
+    let explicit_summary = read_json(&explicit_summary_path);
+    let argv_verifier_path = Path::new(explicit_summary["harborResultPath"].as_str().unwrap())
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("argv-verifier-env.json");
+    assert_eq!(
+        read_json(&argv_verifier_path),
+        json!([
+            "HOST_MARKER=${HOST_MARKER}",
+            "JUDGE_API_KEY=${SYNTH_JUDGE_KEY}"
+        ])
+    );
+
+    let rejected_out_dir = env.tmp.join("rejected-verifier-env");
+    let rejected = env
+        .eval_command()
+        .env("EVAL_API_KEY", "sk-eval-key")
+        .args(["run", "--task"])
+        .arg(&env.workspace)
+        .arg("--bundle-dir")
+        .arg(&env.bundle)
+        .arg("--out")
+        .arg(&rejected_out_dir)
+        .args([
+            "--api-key-env",
+            "EVAL_API_KEY",
+            "--provider",
+            "deepseek",
+            "--model",
+            "deepseek-chat",
+            "--verifier-env",
+            "JUDGE_KEY=sk-synth-stderr-secret",
+        ])
+        .output()
+        .expect("run invalid verifier-env");
+    assert!(!rejected.status.success());
+    let rejected_stderr = String::from_utf8_lossy(&rejected.stderr);
+    assert!(rejected_stderr.contains("only host env references"));
+    assert!(rejected_stderr.contains("JUDGE_KEY"));
+    assert!(!rejected_stderr.contains("sk-synth-stderr-secret"));
+    assert!(!rejected_out_dir.exists());
+
+    let corrupt_guest = env.tmp.join("corrupt-guest.json");
+    std::fs::write(&corrupt_guest, br"{corrupt").unwrap();
+    let (corrupt_out, corrupt_summary_path) =
+        env.run_harbor(Some(&corrupt_guest), None, &trial_ok, 0);
+    assert!(!corrupt_out.status.success());
+    assert!(String::from_utf8_lossy(&corrupt_out.stderr).contains("invalid guest-result.json"));
+    let corrupt_summary = read_json(&corrupt_summary_path);
+    assert_eq!(corrupt_summary["reward"], Value::Null);
+    assert_eq!(corrupt_summary["guest"]["status"], "infraFailed");
+    assert!(
+        corrupt_summary["guest"]["infraError"]
+            .as_str()
+            .unwrap()
+            .contains("invalid guest-result.json")
+    );
+}
+
+#[tokio::test]
+async fn guest_run_forwards_thinking_level_and_enforces_pre_start_timeout() {
+    let env = IsolatedEnv::new(true);
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mock_server = start_mock_provider(MockMode::SingleTurnRecord {
+        recorded: Arc::clone(&recorded),
+    })
+    .await;
+
+    let warm_start = std::time::Instant::now();
+    let (ok_status, ok_stderr, ok_guest, _, _) = env
+        .run_guest_live_with_options(
+            &mock_server.base_url(),
+            "deepseek-flash",
+            Some("low"),
+            None,
+            Some(30_000),
+        )
+        .await;
+    let baseline_ms = warm_start.elapsed().as_millis() as u64;
+    assert!(ok_status.success(), "guest-run failed: {ok_stderr}");
+    assert!(ok_guest["completed"].is_object());
+    assert_eq!(env.retire_live_hosts().await, 1);
+    {
+        let bodies = recorded.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0]["reasoning"]["effort"], "low");
+    }
+
+    let (t_status, _, t_guest, _, _) = env
+        .run_guest_live_with_options(
+            &mock_server.base_url(),
+            "deepseek-chat",
+            None,
+            None,
+            Some(1),
+        )
+        .await;
+    assert!(!t_status.success());
+    assert!(
+        t_guest["infraFailed"]["infraError"]
+            .as_str()
+            .unwrap()
+            .contains("agent timeout budget (1 ms) exhausted")
+    );
+    assert!(env.host_run_dirs().is_empty());
+    assert_eq!(recorded.lock().unwrap().len(), 1);
+
+    let slow_server = start_mock_provider(MockMode::SlowFirstTurn).await;
+    let mid_run_timeout_ms = baseline_ms.saturating_mul(3).clamp(4_000, 15_000);
+    let (mid_status, mid_stderr, mid_guest, _, _) = env
+        .run_guest_live_with_options(
+            &slow_server.base_url(),
+            "deepseek-chat",
+            None,
+            None,
+            Some(mid_run_timeout_ms),
+        )
+        .await;
+    assert!(mid_status.success(), "guest-run failed: {mid_stderr}");
+    let mid_stopped = &mid_guest["subjectStopped"];
+    assert!(mid_stopped.is_object());
+    assert!(
+        mid_stopped["stopReason"]
+            .as_str()
+            .unwrap()
+            .contains("execution timed out after")
+    );
+    assert_eq!(mid_stopped["settlement"]["metering"], "lower_bound");
+    assert!(mid_stopped["settlement"].get("inputTokens").is_none());
+    assert!(env.host_run_dirs().is_empty());
+    assert_eq!(env.retire_live_hosts().await, 0);
+}
+
+#[tokio::test]
+async fn guest_run_provider_401_fails_as_infra_and_retires_host() {
+    let env = IsolatedEnv::new(true);
+    let mock_server = start_mock_provider(MockMode::Unauthorized401).await;
+
+    let (status, stderr, guest_json, _, _) = env
+        .run_guest_live_status(&mock_server.base_url(), None, Some(30_000))
+        .await;
+    assert!(!status.success());
+    assert!(stderr.contains("401"));
+    let infra = &guest_json["infraFailed"];
+    assert!(infra.is_object());
+    assert!(infra["infraError"].as_str().unwrap().contains("401"));
+    assert_eq!(infra["evidence"]["execution"]["state"]["kind"], "failed");
+    assert!(infra.get("settlement").is_none());
+    assert!(env.host_run_dirs().is_empty());
+    assert_eq!(env.retire_live_hosts().await, 0);
 }

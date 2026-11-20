@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -44,18 +45,30 @@ enum Command {
         request_file: PathBuf,
         #[arg(long)]
         result_file: PathBuf,
+        #[arg(long)]
+        timeout_ms: Option<NonZeroU64>,
     },
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Run(opts) => run_command(*opts).await,
+        Command::Run(opts) => run_command(*opts),
         Command::GuestRun {
             request_file,
             result_file,
-        } => guest::run_from_files(&request_file, &result_file).await,
+            timeout_ms,
+        } => tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("failed to build tokio runtime: {e}"))
+            .and_then(|rt| {
+                rt.block_on(guest::run_from_files(
+                    &request_file,
+                    &result_file,
+                    timeout_ms,
+                ))
+            }),
     };
 
     if let Err(err) = result {
@@ -64,8 +77,8 @@ async fn main() {
     }
 }
 
-async fn run_command(opts: HarborRunOptions) -> Result<(), String> {
-    let outcome = run_trial(&opts).await?;
+fn run_command(opts: HarborRunOptions) -> Result<(), String> {
+    let outcome = run_trial(&opts)?;
     let (summary, validation) = outcome.settle();
     let summary_path = opts.out_dir.join("run-summary.json");
     let encoded = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
