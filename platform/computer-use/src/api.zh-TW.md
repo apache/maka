@@ -25,7 +25,7 @@ nodeRepl.write(await (native.list_windows ? native.list_windows() : native.list_
 
 全新 REPL 沒有綁定目標。以下入口會輸出 API 文件及清單或目標初始狀態。瀏覽器 ID 來自已設定的 CDP 提供者和已連線的 Extension 瀏覽器提供方；精確 ID 優先；沒有精確匹配時，`maka` 和 `chatgpt` 才選擇唯一的目前 Extension 端點。兩者都無法使用時，透過 getApp 操作原生瀏覽器視窗。API 不提供 start_session 等驅動程式管理操作。
 
-ChatGPT 和原版 OpenCLI 依實際能力盡力相容。原版 OpenCLI 目前無法滿足瀏覽器工作階段介面；沒有精確 ID 或擴充功能執行個體選擇時，`getBrowser({id: "opencli"})` 會在建立或認領分頁前選擇唯一可用的既有提供者；沒有候選或有多個候選時拒絕選擇。精確 ID 和既有控制代碼不會切換提供者。
+ChatGPT 依實際能力盡力相容。精確 ID 和既有控制代碼不會切換提供者。
 
 入口（選擇目標時自動輸出初始狀態）：
 - `await cua.getState({emit?})`：應用程式和可用瀏覽器清單，包括清單錯誤。
