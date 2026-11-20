@@ -360,7 +360,7 @@ impl RunView {
             })
     }
 
-    pub(super) fn external_terminal_allowed(&self, terminal: &Terminal) -> bool {
+    pub fn external_terminal_allowed(&self, terminal: &Terminal) -> bool {
         if self.cancelled_by_risk {
             // The adjudicated blocker may already have left the bounded frontier.
             return *terminal == Terminal::Cancelled;

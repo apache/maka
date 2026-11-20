@@ -87,9 +87,10 @@ impl Owner {
             }
             let mut admission_waits = match self.schedule_ready_at(at, cause).await {
                 Ok(waits) => waits,
-                Err(_) => {
+                Err(error) => {
                     tracing::error!(
                         stage = "ready_reconciliation_failed",
+                        %error,
                         "Agent ready reconciliation failed"
                     );
                     AdmissionWaits::new()
@@ -188,7 +189,10 @@ impl Owner {
                         continue;
                     }
                 }
-                self.wake_run(entry.run).await?;
+                // One unreadable Run must not stop admission for every other session.
+                if let Err(error) = self.wake_run(entry.run).await {
+                    tracing::error!(run = %entry.run, %error, "Agent Run could not be scheduled");
+                }
             }
         }
         let mut after = None;
@@ -540,9 +544,8 @@ impl Owner {
             if admitted {
                 let (cleanup, retry_ready) = owner
                     .clone()
-                    .drive_local(claim, target, revision, token)
+                    .drive_local(claim, activity, target, revision, token)
                     .await;
-                drop(activity);
                 owner.physical_availability_changed_after(retry_ready);
                 return cleanup;
             }
@@ -582,11 +585,13 @@ impl Owner {
 
     async fn drive_local(
         self: Arc<Self>,
-        claim: maka_agent_state::DriverClaim,
+        mut claim: maka_agent_state::DriverClaim,
+        activity: super::cleanup_driver::DriverActivity,
         session: String,
         scheduled_revision: u64,
         cancellation: CancellationToken,
     ) -> (OperationCleanup, bool) {
+        let mut activity = Some(activity);
         let run = claim.run();
         let initial = async {
             let root = self
@@ -605,7 +610,7 @@ impl Owner {
             Ok(current) => current,
             Err((stage, error)) => {
                 tracing::error!(%run, %error, stage, "Agent Run capability probe could not start");
-                claim.deactivate();
+                drop(activity.take());
                 let mut runs = self.runs.state().await;
                 if runs
                     .preparing
@@ -623,11 +628,86 @@ impl Owner {
         let mut sources = root.capability_changes();
         sources.borrow_and_update();
         let turn = view.spec.turn_id.clone();
-        let revision = view.revision;
-        let (result, cleanup) = self
-            .run_with_capabilities(view, claim.clone(), cancellation)
+        let mut revision = view.revision;
+        let mut view = Some(view);
+        let mut retries = 0;
+        let mut taken_over = false;
+        let (result, cleanup) = loop {
+            let current = view
+                .take()
+                .expect("driver view is read before each attempt");
+            let (result, cleanup) = self
+                .run_with_capabilities(current, claim.clone(), cancellation.clone())
+                .await;
+            drop(activity.take());
+            let transient = matches!(cleanup, OperationCleanup::Confirmed)
+                && result.as_ref().is_err_and(transient_driver_error);
+            if !transient || retries == DRIVER_RETRY_DELAYS.len() {
+                break (result, cleanup);
+            }
+            let cancelled = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => true,
+                _ = tokio::time::sleep(DRIVER_RETRY_DELAYS[retries]) => false,
+            };
+            if cancelled {
+                break (Err(RunError::Cancelled), cleanup);
+            }
+            retries += 1;
+            let retried = async {
+                let fresh = self
+                    .durable
+                    .reserve_driver(
+                        run,
+                        maka_agent_state::DriverPurpose::Business,
+                        cancellation.clone(),
+                    )
+                    .await?;
+                Ok::<_, maka_event_log::StoreError>(match fresh {
+                    Some(fresh) => Some((fresh, self.durable.frontier(run).await?)),
+                    None => None,
+                })
+            }
             .await;
-        claim.deactivate();
+            match retried {
+                Ok(Some((fresh, current))) => {
+                    activity = Some(super::cleanup_driver::DriverActivity(fresh.clone()));
+                    claim = fresh;
+                    revision = current.revision;
+                    view = Some(current);
+                }
+                Ok(None) => {
+                    taken_over = true;
+                    break (Ok(maka_agent_engine::DriverExit::Retired { run }), cleanup);
+                }
+                Err(error) => break (Err(error.into()), cleanup),
+            }
+        };
+        let result = match result {
+            Err(error)
+                if !taken_over
+                    && matches!(cleanup, OperationCleanup::Confirmed)
+                    && !self.stop.is_cancelled()
+                    && !cancellation.is_cancelled()
+                    && fails_run(&error) =>
+            {
+                let diagnostic = format!("Maka could not continue this turn: {error}");
+                match Engine::new(self.durable.clone())
+                    .fail_after_driver_error(&claim, diagnostic, UnixMillis(now() as i64))
+                    .await
+                {
+                    Ok(exit) => {
+                        tracing::error!(%run, %error, "Agent Run failed after a driver error");
+                        Ok(exit)
+                    }
+                    Err(failure) => {
+                        tracing::error!(%run, %error, %failure, "Agent Run failure could not be recorded");
+                        Err(error)
+                    }
+                }
+            }
+            result => result,
+        };
         if matches!(&cleanup, OperationCleanup::Unconfirmed) {
             tracing::error!(stage = "queue_cleanup_unconfirmed", cause = "cleanup_unconfirmed", consequence = "resources_retained", run_id = %run, session_id = %session, turn_id = %turn, activation = %self.revision.activation, "Agent original Root work remains unconfirmed");
         } else if let Err(error) = &result {
@@ -752,6 +832,37 @@ impl Owner {
     }
 }
 
+const DRIVER_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(4),
+    Duration::from_secs(16),
+];
+
+fn transient_driver_error(error: &RunError) -> bool {
+    use maka_event_log::StoreError;
+    let RunError::Store(error) = error else {
+        return false;
+    };
+    match error.underlying() {
+        StoreError::WriterBusy | StoreError::CommitUnknown(_) | StoreError::OperationUnknown => {
+            true
+        }
+        StoreError::Sqlite(rusqlite::Error::SqliteFailure(failure, _)) => matches!(
+            failure.code,
+            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+        ),
+        _ => false,
+    }
+}
+
+/// Whether a driver error leaves a Run that no driver will advance again.
+fn fails_run(error: &RunError) -> bool {
+    !error.is_cleanup_unconfirmed()
+        && !matches!(error, RunError::Cancelled)
+        && !matches!(error, RunError::Blocked(reason)
+            if matches!(reason.as_ref(), BlockerKind::CurrentAuthorityUnavailable { .. }))
+}
+
 impl Runs {
     fn can_probe(&self, session: &str, run: RunId, revision: u64) -> bool {
         !self.closing
@@ -800,5 +911,49 @@ mod tests {
         assert!(runs.can_probe("conversation", run, 8));
         assert!(runs.can_probe("conversation", RunId::new(), 7));
         assert!(runs.can_probe("another conversation", RunId::new(), 7));
+    }
+
+    #[test]
+    fn transient_driver_error_matches_only_retryable_store_errors() {
+        use maka_event_log::StoreError;
+        assert!(transient_driver_error(&RunError::Store(
+            StoreError::WriterBusy
+        )));
+        assert!(transient_driver_error(&RunError::Store(
+            StoreError::OperationUnknown
+        )));
+        assert!(transient_driver_error(&RunError::Store(
+            StoreError::Sqlite(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                None,
+            ))
+        )));
+        assert!(transient_driver_error(&RunError::Store(
+            StoreError::Sqlite(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_LOCKED),
+                None,
+            ))
+        )));
+        assert!(!transient_driver_error(&RunError::Busy));
+        assert!(!transient_driver_error(&RunError::Store(
+            StoreError::EventConflict
+        )));
+        assert!(!transient_driver_error(&RunError::Internal("boom".into())));
+    }
+
+    #[test]
+    fn fails_run_excludes_cancelled_unconfirmed_cleanup_and_authority_wait() {
+        assert!(!fails_run(&RunError::Cancelled));
+        assert!(!fails_run(&RunError::CleanupUnconfirmed));
+        assert!(!fails_run(&RunError::Blocked(Box::new(
+            BlockerKind::CurrentAuthorityUnavailable {
+                stage: maka_agent_facts::durable::AuthorityStage::BackendScope,
+                diagnostic: "reloading".into(),
+            }
+        ))));
+        assert!(fails_run(&RunError::Internal("driver failed".into())));
+        assert!(fails_run(&RunError::Store(
+            maka_event_log::StoreError::WriterBusy
+        )));
     }
 }

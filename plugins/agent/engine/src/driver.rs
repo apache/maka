@@ -1369,6 +1369,7 @@ impl Engine {
                         | RunError::InvalidImage(_)
                         | RunError::InvalidInput(_)
                         | RunError::Json(_)
+                        | RunError::Model(_)
                         | RunError::ModelUnavailable
                         | RunError::AuthenticationRequired
                         | RunError::Preparation(_)
