@@ -114,6 +114,18 @@ impl Owner {
         self.require_execution(&view.spec.session_id)
             .await
             .map_err(RunError::InvalidInput)?;
+        if let Some(execution) = self.store.checkpoint_execution()
+            && !execution
+                .grant()
+                .permissions
+                .sandbox
+                .contains(&view.spec.approval_ceiling())
+                .map_err(|error| RunError::InvalidInput(error.to_string()))?
+        {
+            return Err(
+                RunError::InvalidInput("restored_run_exceeds_execution_grant".into()).into(),
+            );
+        }
         let current = self
             .mutable_session(&view.spec.session_id)
             .await

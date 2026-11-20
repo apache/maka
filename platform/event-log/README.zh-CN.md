@@ -47,7 +47,7 @@
 
 可信装配层领取 grant、调用 `Execution::attach`，再通过 `Storage::with_execution` 将其传给 `RootStore::open_with_checkpoint_storage`，最后启动 Host。首版绑定原 Root/deployment/namespace 中的一个 native Session，不负责在新 Root 中加载或继续该身份。Root 持久记录执行配置，不能绕过授权按默认本地模式重开。没有本地 checkpoint 身份绑定或发布记录的 Root，或没有未完成发布的既有共享仓库，可以显式启用；更换已登记的 grant 需要后续激活/迁移流程。
 
-Native Owner 在消息/Run 准入及模型、工具实时授权时检查 grant。工具选择和沙箱权限均与 grant 上限取交集；首版拒绝外部执行器后端。Host 每 250 ms 观察一次，每次观察最多等待五秒。撤销、过期或观察失败会不可逆地取消本地工作并启动 Host 关闭。这是对已接收工作的协作式取消，不是瞬时撤销外部副作用。authority 适配器负责调用方认证和可线性化的仲裁，序列化的 grant 字段本身不是访问凭据。
+Native Owner 在消息/Run 准入及模型、工具实时授权时检查 grant。工具选择和沙箱权限（包括单独批准的文件/网络权限）均与 grant 上限取交集；若旧 Run 保存的权限或可批准权限超过该上限，则拒绝恢复。首版拒绝外部执行器后端。Host 每 250 ms 观察一次，每次观察最多等待五秒。撤销、过期或观察失败会不可逆地取消本地工作并启动 Host 关闭。这是对已接收工作的协作式取消，不是瞬时撤销外部副作用。authority 适配器负责调用方认证和可线性化的仲裁，序列化的 grant 字段本身不是访问凭据。
 
 `FileRepository` 同时提供单机持久参考协调器，在同一个 SQL 事务中检查执行代次、执行预期 Head CAS 并保存原始发布回执。Session 一旦受管，普通 Repository 提交就不能绕过执行权检查；撤销后重试已完成的操作只返回原回执，不重新写入。该适配器不是分布式租约服务，不承诺依据墙上时钟的过期时间自动接管。
 
