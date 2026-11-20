@@ -215,8 +215,18 @@ fn searches_match_names_shallow_first_and_skip_hidden_or_unreadable_folders() {
     found.unwrap();
     hidden_found.unwrap();
     visited.unwrap();
-    assert_eq!(paths, [b"Downloads".to_vec(), b"open/download.rs".to_vec()]);
-    assert_eq!(hidden_paths, [b".cache".to_vec()]);
+    assert_eq!(
+        paths,
+        [
+            b"Downloads".to_vec(),
+            b"open/download.rs".to_vec(),
+            b"Downloads/report.pdf".to_vec()
+        ]
+    );
+    assert_eq!(
+        hidden_paths,
+        [b".cache".to_vec(), b".cache/Downloads".to_vec()]
+    );
     let mut children = Vec::new();
     directory
         .child_candidates("down", &AtomicBool::new(false), |entry| {
@@ -391,9 +401,9 @@ fn listing_keeps_hidden_raw_names_and_dangling_links_but_prunes_original_private
             .map(|entry| (entry.path.bytes().unwrap(), entry.kind))
             .collect::<Vec<_>>(),
         vec![
-            (b"visible-link.rs".to_vec(), FileKind::Symlink),
             (b"src/UPPER.RS".to_vec(), FileKind::File),
             (b"src/visible.rs".to_vec(), FileKind::File),
+            (b"visible-link.rs".to_vec(), FileKind::Symlink),
             (b"src/nested/ignored.rs".to_vec(), FileKind::File),
         ]
     );
@@ -441,10 +451,10 @@ fn listing_keeps_hidden_raw_names_and_dangling_links_but_prunes_original_private
             .map(|entry| entry.path.bytes().unwrap())
             .collect::<Vec<_>>(),
         vec![
-            b"visible-link.rs".to_vec(),
             b"src/UPPER.RS".to_vec(),
-            b"src/ignored-by-rg.rs".to_vec(),
             b"src/visible.rs".to_vec(),
+            b"visible-link.rs".to_vec(),
+            b"src/ignored-by-rg.rs".to_vec(),
             b"src/nested/ignored.rs".to_vec(),
         ],
         "an external ignore symlink cannot supply rules"
