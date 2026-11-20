@@ -24,6 +24,7 @@ use cap_std::fs::Dir;
 use gix::bstr::io::BufReadExt;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::{
+    cmp::Reverse,
     io::{BufReader, Read},
     sync::Arc,
 };
@@ -69,9 +70,11 @@ impl Directory {
         self.search_names(&query, descend, cancel, emit)
     }
 
-    /// Breadth-first, so shallow matches stream first, and bounded, so a large
-    /// workspace such as a home directory still finishes. Hidden entries are
-    /// searched only when the query itself starts with a dot.
+    /// Ranks fuzzy matches of the relative path (the name alone for direct
+    /// entries) and emits the best ones, highest first. The walk is
+    /// breadth-first and bounded, so a large workspace such as a home
+    /// directory still finishes. Hidden entries are searched only when the
+    /// query itself starts with a dot.
     fn search_names(
         &self,
         query: &str,
@@ -79,7 +82,7 @@ impl Directory {
         cancel: &AtomicBool,
         emit: &mut impl FnMut(FileEntry) -> io::Result<()>,
     ) -> io::Result<()> {
-        const MATCHES: usize = 200;
+        const SHOWN: usize = 50;
         const VISITS: usize = 200_000;
         interrupted(cancel)?;
         self.validate_inner()?;
@@ -93,7 +96,10 @@ impl Directory {
             load_directory_rules(&mut rules, &anchor.directory, relative, cancel)?;
         }
         let hidden = query.starts_with('.');
-        let (mut matches, mut visits) = (0, 0);
+        let fuzzy = super::fuzzy::Query::new(query);
+        let mut visits = 0;
+        // The lowest-ranked kept match sits on top: score, then shorter, then path order.
+        let mut kept = std::collections::BinaryHeap::new();
         // Directories are opened when dequeued, so the queue holds no descriptors.
         let mut pending = std::collections::VecDeque::from([(PathBuf::new(), Arc::new(rules))]);
         'search: while let Some((inner, inherited)) = pending.pop_front() {
@@ -159,27 +165,27 @@ impl Directory {
                 }
                 children.push((name, path, kind));
             }
-            children.sort_by(|left, right| left.0.cmp(&right.0));
-            // Display matching never becomes the identity of a non-UTF-8 path.
-            let names = children
-                .iter()
-                .map(|(name, ..)| name.to_string_lossy().to_lowercase())
-                .collect::<Vec<_>>();
-            let leading = (0..children.len()).filter(|&i| names[i].starts_with(query));
-            let inside = (0..children.len())
-                .filter(|&i| !names[i].starts_with(query) && names[i].contains(query));
-            for index in leading.chain(inside).collect::<Vec<_>>() {
-                let (_, path, kind) = &children[index];
+            for (name, path, kind) in &children {
+                // Display matching never becomes the identity of a non-UTF-8 path.
+                let shown = if descend {
+                    path.as_os_str()
+                } else {
+                    name.as_os_str()
+                };
+                let Some(score) = fuzzy.score(&shown.to_string_lossy()) else {
+                    continue;
+                };
                 let bytes = gix::path::to_unix_separators_on_windows(
                     gix::path::into_bstr(path.clone()).map_err(|_| error("files_unavailable"))?,
                 )
-                .into_owned();
-                let path =
-                    WorkspacePath::from_bytes(&bytes).map_err(|_| error("files_invalid_path"))?;
-                emit(FileEntry { path, kind: *kind })?;
-                matches += 1;
-                if matches >= MATCHES {
-                    break 'search;
+                .into_owned()
+                .to_vec();
+                let rank = (Reverse(score), bytes.len(), bytes);
+                if kept.len() < SHOWN {
+                    kept.push(Ranked(rank, *kind));
+                } else if kept.peek().is_some_and(|worst: &Ranked| rank < worst.0) {
+                    kept.pop();
+                    kept.push(Ranked(rank, *kind));
                 }
             }
             for (name, _, kind) in &children {
@@ -189,7 +195,13 @@ impl Directory {
             }
         }
         interrupted(cancel)?;
-        self.validate_inner()
+        self.validate_inner()?;
+        for Ranked((_, _, bytes), kind) in kept.into_sorted_vec() {
+            let path =
+                WorkspacePath::from_bytes(&bytes).map_err(|_| error("files_invalid_path"))?;
+            emit(FileEntry { path, kind })?;
+        }
+        Ok(())
     }
 
     /// Visits regular UTF-8 files under the workspace while honoring ignore rules and capability boundaries.
@@ -360,6 +372,25 @@ impl Directory {
         interrupted(cancel)?;
         self.validate_inner()?;
         Ok(())
+    }
+}
+
+/// A kept candidate, ordered by its rank alone.
+struct Ranked((Reverse<i32>, usize, Vec<u8>), FileKind);
+impl PartialEq for Ranked {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+impl Eq for Ranked {}
+impl PartialOrd for Ranked {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Ranked {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.cmp(&other.0)
     }
 }
 
