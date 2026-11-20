@@ -138,7 +138,7 @@ struct Protocol<'a> {
 impl Protocol<'_> {
     async fn converse(mut self, io: &mut Pipe) -> Result<Outcome, Error> {
         let setup = self.prepare(io).await;
-        let (session, prompt, model) = match setup {
+        let (session, mut blocks, model) = match setup {
             Ok(setup) => setup,
             Err(
                 error @ (Error::Cancelled
@@ -150,6 +150,16 @@ impl Protocol<'_> {
             Err(error) => return runtime::preparation_failure(error),
         };
 
+        let instructions = self
+            .journal
+            .instruction_update(self.request["instructions"].as_str());
+        if let Some(update) = &instructions {
+            blocks.insert(
+                0,
+                json!({"type":"text","text":runtime::instruction_message(&update.text)}),
+            );
+        }
+        let prompt = json!({"sessionId":session,"prompt":blocks});
         io.turn_started();
         let clock = crate::model_time::ModelTime::new();
         let prompt_id = io
@@ -176,6 +186,11 @@ impl Protocol<'_> {
             .observe(io, self.output.as_ref(), &self.bridge)
             .await
             .map_err(unconfirmed)?;
+        if matches!(outcome, Outcome::Completed { .. })
+            && let Some(update) = instructions
+        {
+            self.journal.confirm_instructions(update).await?;
+        }
         self.journal.closed(outcome.clone()).await?;
         io.turn_finished();
         self.bridge.close_admission();
@@ -183,7 +198,10 @@ impl Protocol<'_> {
         Ok(outcome)
     }
 
-    async fn prepare(&mut self, io: &mut Pipe) -> Result<(String, Value, Option<String>), Error> {
+    async fn prepare(
+        &mut self,
+        io: &mut Pipe,
+    ) -> Result<(String, Vec<Value>, Option<String>), Error> {
         io.request("initialize", initialize_params()).await?;
         let mut params = json!({
             "cwd":self.cwd,
@@ -215,31 +233,7 @@ impl Protocol<'_> {
         let message = string(self.request, "/message")?;
         let blocks = prompt_blocks(message, &self.request["images"]).await?;
         self.bridge.admit()?;
-        if let Some(update) = self
-            .journal
-            .instruction_update(self.request["instructions"].as_str())
-        {
-            let setup = io
-                .request(
-                    "session/prompt",
-                    json!({
-                        "sessionId":session,
-                        "prompt":[{"type":"text","text":runtime::bootstrap_message(&update.text)}]
-                    }),
-                )
-                .await?;
-            if setup["stopReason"] != "end_turn" {
-                return Err(Error::Provider(
-                    "agy ACP did not complete the instructions turn".into(),
-                ));
-            }
-            self.journal.confirm_instructions(update).await?;
-        }
-        Ok((
-            session.clone(),
-            json!({"sessionId":session, "prompt":blocks}),
-            model,
-        ))
+        Ok((session, blocks, model))
     }
 }
 

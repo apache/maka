@@ -274,17 +274,14 @@ struct Transcript {
     output: Vec<Value>,
 }
 impl Transcript {
-    fn task_prompt_id(&self) -> &Value {
-        &self
+    fn task_prompt(&self) -> &Value {
+        let mut prompts = self
             .input
             .iter()
-            .find(|frame| {
-                frame["method"] == "session/prompt"
-                    && frame["params"]["prompt"][0]["text"]
-                        .as_str()
-                        .is_some_and(|t| t.contains("MAKA_EXTERNAL_CASE "))
-            })
-            .expect("original task prompt")["id"]
+            .filter(|row| row["method"] == "session/prompt");
+        let task = prompts.next().expect("original task prompt");
+        assert!(prompts.next().is_none(), "expected a single ACP prompt");
+        task
     }
 }
 async fn sealed(descriptor: Descriptor) -> Result<Transcript> {
@@ -1377,10 +1374,12 @@ async fn antigravity_can_continue_after_host_restarts_during_a_prompt() {
         let (mut reopened, recovery) = phase("reopen the same Root", rig.start()).await?;
         assert_ne!(reopened.epoch(), anchor.epoch());
         let transcript = phase("original ACP process exited and all streams drained", rig.transcript(pid)).await?;
-        assert!(!transcript.output.iter().any(|row| &row["id"] == transcript.task_prompt_id() && row.get("method").is_none()));
+        assert!(!transcript.output.iter().any(|row| row["id"] == transcript.task_prompt()["id"] && row.get("method").is_none()));
         phase("interrupted Run", terminal_state(&recovery, &session, &run, "cancelled")).await?;
         let after = phase("original partial answer remains", checkpoint(&recovery, &session, &run, &original["checkpoint"])).await?;
         assert_eq!(after["prefix"], before["prefix"]);
+        tokio::fs::write(rig.sandbox.home.join(".maka/AGENTS.md"), "ACP resumed instruction revision")
+            .await.map_err(|e| e.to_string())?;
         let next = phase("send a new message in the original conversation",
             send_native(&recovery, &session, "ACP-followup", "Antigravity restart", false)).await?;
         assert_ne!(next, run);
@@ -1389,17 +1388,26 @@ async fn antigravity_can_continue_after_host_restarts_during_a_prompt() {
         assert_eq!(resumed["thread"], original["thread"]);
         phase("follow-up completes", terminal_state(&recovery, &session, &next, "completed")).await?;
         let resumed_transcript = phase("seal resumed process", rig.transcript(resumed["pid"].as_u64().unwrap())).await?;
-        let task_prompts = |transcript: &Transcript| {
-            transcript.input.iter().filter_map(|row| {
-                (row["method"] == "session/prompt").then(|| {
-                    row["params"]["prompt"][0]["text"].as_str().unwrap_or_default()
-                })
-                .filter(|text| text.contains("MAKA_EXTERNAL_CASE "))
-                .map(str::to_owned)
-            }).collect::<Vec<_>>()
-        };
-        assert!(matches!(&task_prompts(&transcript)[..], [text] if text.contains("ACP-original")));
-        assert!(matches!(&task_prompts(&resumed_transcript)[..], [text] if text.contains("ACP-followup") && !text.contains("ACP-original")));
+        for (wire, label, revised) in [
+            (&transcript, "ACP-original", false),
+            (&resumed_transcript, "ACP-followup", true),
+        ] {
+            let [instructions, user] = wire.task_prompt()["params"]["prompt"]
+                .as_array()
+                .unwrap()
+                .as_slice()
+            else {
+                panic!("expected instructions and task in one ACP prompt");
+            };
+            let text = instructions["text"].as_str().unwrap();
+            assert!(text.starts_with("<maka_system_instructions>"));
+            assert_eq!(text.contains("ACP resumed instruction revision"), revised);
+            let task = user["text"].as_str().unwrap();
+            assert!(task.contains(label));
+            if revised {
+                assert!(!task.contains("ACP-original"));
+            }
+        }
         let events = rig.controller.events();
         assert_eq!(events.iter().filter(|e| e["kind"] == "hello").count(), 2, "{events:?}");
         assert!(events.iter().all(|e| e["kind"] != "failure"), "{events:?}");
@@ -1982,7 +1990,8 @@ async fn antigravity_executor_change_releases_only_undelivered_steering() {
             !transcript
                 .output
                 .iter()
-                .any(|row| &row["id"] == transcript.task_prompt_id() && row.get("method").is_none())
+                .any(|row| row["id"] == transcript.task_prompt()["id"]
+                    && row.get("method").is_none())
         );
         phase(
             "retire old execution",
@@ -2033,15 +2042,13 @@ async fn antigravity_executor_change_releases_only_undelivered_steering() {
             rig.transcript(resumed["pid"].as_u64().unwrap()),
         )
         .await?;
-        let prompts: Vec<_> = resumed_transcript
-            .input
-            .iter()
-            .filter(|row| row["method"] == "session/prompt")
-            .map(|row| &row["params"]["prompt"][0]["text"])
-            .collect();
+        let blocks = resumed_transcript.task_prompt()["params"]["prompt"]
+            .as_array()
+            .unwrap();
+        let task = blocks.last().unwrap()["text"].as_str().unwrap();
         assert!(
-            matches!(prompts.as_slice(), [prompt] if prompt.as_str().is_some_and(|text| text.contains("ACP-wake") && !text.contains("ACP-original"))),
-            "{prompts:?}"
+            task.contains("ACP-wake") && !task.contains("ACP-original"),
+            "{task}"
         );
         phase(
             "follow-up settles before Host quit",
@@ -2142,13 +2149,11 @@ async fn antigravity_resumes_from_a_room_mention_and_replies_in_the_room() {
                 rig.transcript(resumed["pid"].as_u64().unwrap()),
             )
             .await?;
-            let prompt = transcript
-                .input
-                .iter()
-                .find(|row| {
-                    row["method"] == "session/prompt" && &row["id"] == transcript.task_prompt_id()
-                })
-                .and_then(|row| row["params"]["prompt"][0]["text"].as_str())
+            let prompt = transcript.task_prompt()["params"]["prompt"]
+                .as_array()
+                .unwrap()
+                .last()
+                .and_then(|block| block["text"].as_str())
                 .ok_or("ACP mention prompt missing")?;
             let read = json!({"sessionId":room,"messageId":mention["messageId"],"anchor":"before"});
             let reply = json!({"sessionId":room,"replyTo":mention["messageId"]});
@@ -2266,16 +2271,11 @@ async fn antigravity_automation_wakes_the_original_conversation_after_the_turn()
             rig.transcript(wake["pid"].as_u64().unwrap()),
         )
         .await?;
-        let wake_prompts: Vec<_> = transcript
-            .input
-            .iter()
-            .filter(|row| row["method"] == "session/prompt")
-            .map(|row| &row["params"]["prompt"][0]["text"])
-            .collect();
+        let wake_prompts = transcript.task_prompt()["params"]["prompt"].as_array().unwrap();
         assert!(
             matches!(
                 wake_prompts.as_slice(),
-                [prompt] if prompt.as_str().is_some_and(|text| text.contains("ACP-wake") && !text.contains("<maka_system_instructions>"))
+                [prompt] if prompt["text"].as_str().is_some_and(|text| text.contains("ACP-wake") && !text.contains("<maka_system_instructions>"))
             ),
             "wake-up turn must preserve instructions_digest without re-injecting system instructions: {wake_prompts:?}"
         );
@@ -2283,7 +2283,7 @@ async fn antigravity_automation_wakes_the_original_conversation_after_the_turn()
             transcript
                 .output
                 .iter()
-                .any(|row| &row["id"] == transcript.task_prompt_id()
+                .any(|row| row["id"] == transcript.task_prompt()["id"]
                     && row["result"]["stopReason"] == "end_turn")
         );
         assert_eq!(

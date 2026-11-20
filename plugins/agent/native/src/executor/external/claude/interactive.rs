@@ -619,9 +619,9 @@ async fn observe(
     screen: &mut tokio::sync::watch::Receiver<input::Screen>,
     start: &mut Start,
     stop: &CancellationToken,
-    task: Option<(&journal::ProtocolSession, &mut steering::Steering)>,
+    task: Option<(&mut journal::ProtocolSession, &mut steering::Steering)>,
 ) -> Result<Outcome, Error> {
-    let (journal, mut steering) = match task {
+    let (mut journal, mut steering) = match task {
         Some((journal, steering)) => (Some(journal), Some(steering)),
         None => (None, None),
     };
@@ -730,7 +730,7 @@ async fn observe(
             }
             if !admitted
                 && turn.admitted
-                && let Some(journal) = journal
+                && let Some(journal) = journal.take()
             {
                 journal
                     .bind_task(NativeTask::ClaudePty {

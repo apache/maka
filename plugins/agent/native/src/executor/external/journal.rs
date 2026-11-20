@@ -28,7 +28,7 @@ pub(super) struct InstructionUpdate {
     pub text: String,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Session {
     native_session: Option<String>,
@@ -93,7 +93,7 @@ impl ProtocolSession {
     pub async fn closed(&self, outcome: Outcome) -> Result<(), Error> {
         self.observation.closed(outcome).await
     }
-    pub async fn bind_task(&self, task: NativeTask) -> Result<(), Error> {
+    pub async fn bind_task(&mut self, task: NativeTask) -> Result<(), Error> {
         self.observation
             .binding
             .bound(NativeBinding {
@@ -107,9 +107,8 @@ impl ProtocolSession {
                 task,
             })
             .await?;
-        let mut session = self.session.clone();
-        session.last_delivered_run = Some(self.run);
-        self.save(&session).await?;
+        self.session.last_delivered_run = Some(self.run);
+        self.revision = Some(self.save(&self.session).await?);
         Ok(())
     }
     pub fn last_delivered_run(&self) -> Option<RunId> {
