@@ -157,6 +157,16 @@ pub struct Tool {
     pub accepted: Option<ToolAcceptance>,
 }
 
+impl Tool {
+    /// The call ended without a known result, and the model was told so.
+    /// Later evidence never replaces that result.
+    pub fn outcome_unknown_accepted(&self) -> bool {
+        self.accepted
+            .as_ref()
+            .is_some_and(|accepted| accepted.outcome == AcceptedResult::OutcomeUnknown)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApprovalRefusal {
@@ -428,22 +438,31 @@ impl RunView {
                     .get(&tool_key(tool))
                     .and_then(|tool| tool.receipt.as_ref())
                 {
+                    Some(Receipt::Recorded {
+                        outcome: OperationOutcome::Unknown { diagnostic },
+                        cleanup: OperationCleanup::Confirmed,
+                    }) => diagnostic.clone(),
                     Some(
                         Receipt::Recorded {
                             outcome: OperationOutcome::Unknown { diagnostic },
                             ..
                         }
                         | Receipt::Unavailable { diagnostic },
-                    ) => diagnostic.clone(),
+                    ) => format!(
+                        "{}. The call may still be running; its end was not confirmed.",
+                        diagnostic.trim_end_matches('.')
+                    ),
                     _ => format!(
-                        "Could not determine the outcome of {}.{}.",
+                        "Could not determine the outcome of {}.{}; the call may still be running.",
                         reference.export, reference.method
                     ),
                 }
             }
+            BlockerKind::ToolCleanupUnconfirmed { diagnostic, .. } => {
+                format!("A tool call may still be running; its end was not confirmed: {diagnostic}")
+            }
             BlockerKind::ExternalPublicationUnavailable { diagnostic, .. }
             | BlockerKind::CurrentAuthorityUnavailable { diagnostic, .. }
-            | BlockerKind::ToolCleanupUnconfirmed { diagnostic, .. }
             | BlockerKind::ModelCleanupUnconfirmed { diagnostic, .. } => diagnostic.clone(),
             BlockerKind::ExternalPublicationItem { reason, .. } => match reason {
                 ExternalPublicationBlocker::Unknown => {
@@ -650,6 +669,7 @@ impl RunView {
                 let uncertain =
                     unknown || tool.receipt.as_ref().is_some_and(receipt_blocks_effects);
                 !uncertain
+                    || tool.outcome_unknown_accepted()
                     || self.blockers.values().any(|blocker| {
                         let original_risk = matches!(
                             blocker.reason,
@@ -699,6 +719,7 @@ impl RunView {
         require(
             self.tools.values().all(|tool| {
                 !original_effect_unknown(tool)
+                    || tool.outcome_unknown_accepted()
                     || self.blockers.values().any(|blocker| {
                         blocker.decision.as_ref().is_some_and(|decision| {
                             matches!(decision.scope, RiskActionScope::RunCancellation)
@@ -1759,6 +1780,25 @@ impl RunView {
                 } else {
                     let valid = match outcome {
                         AcceptedResult::ProviderOutcomeUnknown => self.provider_outcome_unknown(current),
+                        AcceptedResult::OutcomeUnknown => {
+                            !current.call.provider_executed
+                                && match &current.original {
+                                    Some(_) => matches!(
+                                        &current.receipt,
+                                        Some(Receipt::Recorded {
+                                            outcome: OperationOutcome::Unknown { .. },
+                                            cleanup: OperationCleanup::Confirmed,
+                                        })
+                                    ),
+                                    None => {
+                                        self.original_cell(current).is_none()
+                                            && current.local_returned.as_ref().is_some_and(|returned| {
+                                                returned.settlement
+                                                    == maka_agent_facts::tool_call::ToolSettlement::Unknown
+                                            })
+                                    }
+                                }
+                        }
                         AcceptedResult::Succeeded => {
                             local.is_some_and(|returned| !returned.is_error)
                                 || (current.host_returned.as_ref().is_some_and(|returned|!returned.is_error) && current.receipt.as_ref().is_some_and(|receipt|matches!(receipt,Receipt::Recorded{outcome,..} if known(outcome))))
@@ -1850,6 +1890,18 @@ impl RunView {
                 let success = matches!(outcome, AcceptedResult::Succeeded)
                     || matches!(outcome, AcceptedResult::CellRecovered { cell } if self.cells.get(cell).is_some_and(|cell|matches!(cell.status,maka_agent_facts::cells::CellStatus::Completed{..})));
                 self.finish_requested |= finish_semantics && success;
+                if *outcome == AcceptedResult::OutcomeUnknown {
+                    let current = &self.tools[&tool_key(tool)];
+                    for blocker in self.blockers.values_mut() {
+                        if blocker.decision.is_none()
+                            && blocker.resolved_by.is_none()
+                            && matches!(blocker.reason, BlockerKind::OperationUnknown { .. })
+                            && blocker_covers(&blocker.reason, current)
+                        {
+                            blocker.resolved_by = Some(recorded.id);
+                        }
+                    }
+                }
                 if let AcceptedResult::CellRecovered { cell } = outcome {
                     for blocker in self.blockers.values_mut() {
                         if blocker.decision.is_none()
@@ -2761,7 +2813,7 @@ fn tool_unsettled(tool: &Tool) -> bool {
         && tool.prohibited_before_host.is_none()
         && tool.local_returned.is_none()
         && !cell_context_recovered(tool);
-    original_effect_unknown(tool)
+    (original_effect_unknown(tool) && !tool.outcome_unknown_accepted())
         || cleanup
         || unknown_admission
         || (tool.call.provider_executed

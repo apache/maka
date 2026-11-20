@@ -370,7 +370,7 @@ impl RunCells {
         let source = if name == "wait" {
             super::driver::DispatchSource::CellWait(OwnedCellWait { port })
         } else {
-            super::driver::DispatchSource::Ordinary
+            super::driver::DispatchSource::CellExec
         };
         Ok((effect, source))
     }
