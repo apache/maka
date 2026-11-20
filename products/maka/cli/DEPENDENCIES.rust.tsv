@@ -708,6 +708,7 @@ maka-web@0.2.0		X
 maka-workbench@0.2.0		X																	
 maka-workspace-api@0.2.0		X																	
 maka-workspace-support@0.2.0		X																	
+maka-wsl-bridge@0.2.0		X																	
 manyhow-macros@0.14.1		X										X							
 manyhow@0.14.1		X										X							
 markdown@1.0.0												X							
@@ -1369,6 +1370,7 @@ wayland-protocols@0.32.13												X
 wayland-scanner@0.31.11												X							
 wayland-sys@0.31.11												X							
 web_atoms@0.2.6		X										X							
+web-time@1.1.0		X										X							
 web-transport-proto@0.2.8		X										X							
 webpki-root-certs@1.0.11									X										
 webpki-roots@0.26.11									X										
@@ -1451,6 +1453,7 @@ xmlwriter@0.1.0												X
 xxhash-rust@0.8.19						X													
 yaml_parser@0.2.1												X							
 yaml-rust2@0.13.0		X										X							
+yamux@0.13.10		X										X							
 yansi@1.0.1		X										X							
 yasna@0.5.2		X										X							
 yoke-derive@0.7.5																X			
