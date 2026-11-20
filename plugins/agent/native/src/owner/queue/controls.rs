@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use crate::executor::ActiveDelivery;
+use crate::{executor::ActiveDelivery, owner::send::PreparedAgentSend};
 use maka_agent_facts::durable::{RunSpec, UnixMillis};
 use maka_agent_state::{ContentBlob, Head, queue as durable_queue};
 
@@ -247,33 +247,43 @@ impl Owner {
                     .collect(),
             },
             QueueAction::Promote { .. } => {
-                let Some(control) = promotion else {
+                let Some(view) = self.latest_session_run(&input.session_id).await? else {
                     return rejected(QueueRejection::NotRunning);
                 };
-                if control.compacting {
-                    return rejected(QueueRejection::ExecutionChanged);
-                }
-                let Some(view) = self
-                    .session_run(&input.session_id, control.execution.run_id)
-                    .await?
-                else {
-                    return rejected(QueueRejection::NotRunning);
-                };
-                if view.stopped
-                    || view.terminal.is_some()
+                if view.blocks_followup()
+                    || promotion.as_ref().is_some_and(|control| control.compacting)
                     || !same_execution(&targets[0].0.request.spec, &view.spec)
                 {
                     return rejected(QueueRejection::ExecutionChanged);
                 }
-                match self.active_delivery(&view).await? {
-                    ActiveDelivery::InterruptResume => {
-                        followup = Some(durable_queue::Followup::Interrupt {
-                            run: view.run,
-                            stop: self.control_id(operation, "edit_queue:steering_interrupt"),
-                        });
+                let handoff = self
+                    .durable
+                    .queue()
+                    .interrupt_handoff(&view)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if let Some(handoff) = handoff {
+                    followup = Some(durable_queue::Followup::Resume(handoff));
+                } else {
+                    let Some(control) = promotion else {
+                        return rejected(QueueRejection::NotRunning);
+                    };
+                    if control.execution.run_id != view.run
+                        || view.stopped
+                        || view.terminal.is_some()
+                    {
+                        return rejected(QueueRejection::ExecutionChanged);
                     }
-                    ActiveDelivery::Queue => return rejected(QueueRejection::ExecutionChanged),
-                    ActiveDelivery::Steer => {}
+                    match self.active_delivery(&view).await? {
+                        ActiveDelivery::InterruptResume => {
+                            followup = Some(durable_queue::Followup::Interrupt {
+                                run: view.run,
+                                stop: self.control_id(operation, "edit_queue:steering_interrupt"),
+                            });
+                        }
+                        ActiveDelivery::Queue => return rejected(QueueRejection::ExecutionChanged),
+                        ActiveDelivery::Steer => {}
+                    }
                 }
                 durable_queue::QueueEdit::Promote {
                     request: targets[0].0.request.id.clone(),
@@ -375,7 +385,17 @@ impl Owner {
         };
         let queue = self.durable.queue();
         let change = match followup {
-            Some(fence) => queue.prepare_followup(input.session_id, command, contents, fence),
+            Some(fence) => self.message_writer(parent)?.prepare(PreparedAgentSend {
+                queue: durable_queue::PreparedEnqueue {
+                    session: input.session_id,
+                    command,
+                    contents,
+                    followup: Some(fence),
+                    work_fence: None,
+                },
+                completion: None,
+                order: Some(Arc::new(admission.into_ordered())),
+            }),
             None => queue.prepare(input.session_id, command, contents),
         };
         Ok(NativeMutation::Commit {

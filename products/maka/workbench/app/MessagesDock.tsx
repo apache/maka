@@ -223,7 +223,7 @@ export function createMessagesDock(
           quotes: result.quotes,
         });
       }
-    } else if (request.kind !== 'promote' || queue.running()) {
+    } else {
       await change(request.revision, { kind: request.kind, messageId: row.messageId });
     }
   };
@@ -424,9 +424,7 @@ export function createMessagesDock(
                           number: number(),
                         })}
                         tooltip={textTooltip(() => tr('Steer now · use in the current turn'))}
-                        disabled={
-                          !connected() || busy() !== null || editing() !== null || !queue.running()
-                        }
+                        disabled={!connected() || busy() !== null || editing() !== null}
                         onPress={inputAction(act, request('promote'))}
                         style={actionStyle}
                         hoverStyle={{ backgroundColor: C.cardRaised }}

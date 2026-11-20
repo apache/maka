@@ -304,32 +304,45 @@ fn followup(
             cause: Arc::new(invalid(reason)),
         }
     }
-    // A promotion validates its original live Run and owner in project().
-    if let Event::Command {
-        edit: QueueEdit::Promote { target, .. },
-        resume_after_interrupt: Some(run),
-        ..
-    } = event
-        && *run == original
-        && target.run == original
-    {
-        return Ok(());
-    }
-    let Event::Command {
-        edit:
-            QueueEdit::Enqueue {
-                request,
-                placement: Placement::Followup,
-            },
-        ..
-    } = event
-    else {
-        return Err(rejected("original Run fence requires a follow-up Enqueue"));
+    let promoted;
+    let request_spec = match event {
+        Event::Command {
+            edit:
+                QueueEdit::Enqueue {
+                    request,
+                    placement: Placement::Followup,
+                },
+            ..
+        } => &request.spec,
+        Event::Command {
+            edit:
+                QueueEdit::Promote {
+                    request,
+                    target: steering,
+                },
+            ..
+        } => {
+            promoted = pending(c, session, request)?;
+            match fence {
+                Followup::Interrupt { run, .. } if *run == steering.run => {
+                    return target(c, session, &promoted.request.spec.owner, *run, None);
+                }
+                Followup::Resume(handoff) if handoff.frontier == steering.run => {
+                    &promoted.request.spec
+                }
+                _ => return Err(rejected("promotion does not target the observed Run")),
+            }
+        }
+        _ => {
+            return Err(rejected(
+                "original Run fence requires a follow-up enqueue or promotion",
+            ));
+        }
     };
-    if request.spec.session_id != session {
+    if request_spec.session_id != session {
         return Err(rejected("follow-up request belongs to another session"));
     }
-    let owner = serde_json::to_string(&request.spec.owner)?;
+    let owner = serde_json::to_string(&request_spec.owner)?;
     type OriginalRunRow = (u32, Vec<u8>, u32, String, String, i64, i64);
     let row: Option<OriginalRunRow> = c
         .query_row(
@@ -360,7 +373,7 @@ fn followup(
     {
         return Err(rejected("unsupported original follow-up Run schema"));
     }
-    if spec.owner != request.spec.owner
+    if spec.owner != request_spec.owner
         || spec.session_id != session
         || !matches!(spec.origin, RunOrigin::Local)
         || run_owner != owner
@@ -671,15 +684,16 @@ fn project(
                     if !matches!(entry.placement, Placement::Followup) {
                         return Err(invalid("request is already steering"));
                     }
-                    if check {
-                        // In-place steering targets a specific head. Interrupt/resume
-                        // targets the live Run even if it streamed another event.
-                        let head = resume_after_interrupt
-                            .is_none()
-                            .then_some(steering.expected_head);
-                        target(c, session, &entry.request.spec.owner, steering.run, head)?;
-                    }
                     if resume_after_interrupt.is_none() {
+                        if check {
+                            target(
+                                c,
+                                session,
+                                &entry.request.spec.owner,
+                                steering.run,
+                                Some(steering.expected_head),
+                            )?;
+                        }
                         entry.placement = Placement::Steering {
                             run: steering.run,
                             expected_head: steering.expected_head,
