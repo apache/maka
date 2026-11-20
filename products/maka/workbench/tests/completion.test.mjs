@@ -49,6 +49,14 @@ test('composer completion replaces the caret token while preserving Unicode pros
     '检查 @"docs/Release Notes.md" 然后继续',
   );
 
+  const prose = '统计 @~/Docu下有多少文件';
+  const typed = { start: prose.indexOf('下'), end: prose.indexOf('下') };
+  const folder = referenceEdit(prose, typed, completionToken(prose, typed), '@Documents/');
+  assert.equal(
+    prose.slice(0, folder.start) + folder.text + prose.slice(folder.end),
+    '统计 @Documents/ 下有多少文件',
+  );
+
   assert.deepEqual(referenceEdit('前😀后', { start: 3, end: 3 }, null, '/skill:review'), {
     start: 3,
     end: 3,

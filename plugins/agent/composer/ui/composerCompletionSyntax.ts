@@ -95,8 +95,11 @@ function tokenAt(text: string, caret: number, start: number): CompletionToken | 
     if (caret > end || text[end] === '/') return null;
     query = text.slice(start + 1, caret).replace(/^skill:/, '');
   } else {
-    while (end < text.length && !whitespace(text[end]) && text[end] !== '"') end++;
+    while (end < caret && !whitespace(text[end]) && text[end] !== '"') end++;
     if (caret > end) return null;
+    // Past the caret, only an ASCII path continues the reference: prose written
+    // without a space, as in Chinese, is not replaced with it.
+    while (end < text.length && /[!#-~]/.test(text[end])) end++;
     query = text.slice(start + 1, caret);
   }
   if (query === null) return null;
