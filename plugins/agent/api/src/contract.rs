@@ -1154,7 +1154,7 @@ pub struct ToolSeed {
     pub tool_use_id: String,
     pub start_sequence: u64,
 }
-/// Display-only readings from the latest completed main-model request.
+/// Display-only model readings from the session backend.
 #[derive(Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSessionMetrics")]
@@ -1166,8 +1166,7 @@ pub struct SessionMetrics {
     pub approximate: bool,
     /// The context count is the last completed request's baseline; newer additions are unknown.
     pub context_last_known: bool,
-    /// Provider output tokens divided by the model request's wall time.
-    /// Includes reasoning and time to first token; excludes tool/user waits.
+    /// Output tokens per second of model activity, when measured.
     pub output_tokens_per_second: Option<f64>,
 }
 #[derive(Serialize, JsonSchema, Deserialize)]

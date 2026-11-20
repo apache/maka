@@ -1163,6 +1163,12 @@ export type ExecutorOutput =
       details?: ToolResultDetails | null;
     }
   | {
+      type: 'context_usage';
+      used: number;
+      window: number;
+      model?: string | null;
+    }
+  | {
       type: 'turn_usage';
       usage: ExecutorTurnUsage;
     };
@@ -8517,7 +8523,7 @@ export interface AgentCompactionProgress {
   startedAt: number;
 }
 /**
- * Display-only readings from the latest completed main-model request.
+ * Display-only model readings from the session backend.
  */
 export interface AgentSessionMetrics {
   modelId: string;
@@ -8530,8 +8536,7 @@ export interface AgentSessionMetrics {
    */
   contextLastKnown: boolean;
   /**
-   * Provider output tokens divided by the model request's wall time.
-   * Includes reasoning and time to first token; excludes tool/user waits.
+   * Output tokens per second of model activity, when measured.
    */
   outputTokensPerSecond?: number | null;
 }

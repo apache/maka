@@ -45,6 +45,7 @@ mod steering;
 mod tools;
 const PRESENTATION_VERSION: u32 = 3;
 const AGY_ACP_VERSION: u32 = 5;
+const CONTEXT_VERSION: u32 = 6;
 pub(crate) use history::Inputs;
 pub(crate) use tools::{HostEffects, HostTools};
 
@@ -100,7 +101,7 @@ impl NativeBinding {
     pub(super) fn supported(&self) -> bool {
         matches!(
             self.adapter_version,
-            2 | PRESENTATION_VERSION | AGY_ACP_VERSION
+            2 | PRESENTATION_VERSION | AGY_ACP_VERSION | CONTEXT_VERSION
         )
     }
 }

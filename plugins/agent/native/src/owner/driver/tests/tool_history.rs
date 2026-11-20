@@ -961,6 +961,12 @@ async fn history_exposes_only_reported_prompt_cache_usage() -> TestResult<()> {
                 .find(|chunk| chunk["finalOutput"] == true)
                 .expect("completed reply");
             assert_eq!(reply["text"], "Cached turn.");
+            let observed = query(&rig, "observe", json!({"sessionId":session})).await?;
+            assert!(
+                observed["metrics"]["outputTokensPerSecond"]
+                    .as_f64()
+                    .is_some_and(|rate| rate > 0.0)
+            );
             assert_eq!(
                 reply["timing"].get("promptCache").cloned(),
                 reported.map(|read| json!({"inputTokens":100,"readTokens":read})),
@@ -2069,6 +2075,11 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
                 message_id: message_id.clone(),
                 text: "le.txt` successfully.".into(),
             },
+            Output::ContextUsage(maka_agent_facts::executor::ContextUsage {
+                used: 0,
+                window: 1_048_576u64.try_into().unwrap(),
+                model: Some("test-model".into()),
+            }),
             Output::TurnUsage {
                 usage: TurnUsage {
                     tokens: maka_agent_facts::model::ModelUsage {
@@ -2100,6 +2111,7 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
                 Fact::ExternalTaskObserved {
                     task,
                     index: index as u64,
+                    model_time_ms: matches!(&output, Output::TurnUsage { .. }).then_some(250),
                     output,
                 }
             }));
@@ -2173,6 +2185,10 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
             )
             .await?;
         let observed = query(&rig, "observe", json!({"sessionId":session})).await?;
+        assert_eq!(observed["metrics"]["modelId"], "test-model");
+        assert_eq!(observed["metrics"]["contextTokens"], 0);
+        assert_eq!(observed["metrics"]["contextWindow"], 1_048_576);
+        assert_eq!(observed["metrics"]["outputTokensPerSecond"], 100.0);
         assert_eq!(observed["toolSeeds"], json!([]));
         let page = live(&rig, &session, wire::Position::Tail).await?;
         let mut replies = page["chunks"]

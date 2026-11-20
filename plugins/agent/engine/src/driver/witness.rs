@@ -497,11 +497,15 @@ impl ExternalWitness {
                 }],
                 vec![descriptor],
             ),
-            ExternalObservation::Output(output) => (
+            ExternalObservation::Output {
+                output,
+                model_time_ms,
+            } => (
                 vec![Fact::ExternalTaskObserved {
                     task,
                     index,
                     output,
+                    model_time_ms,
                 }],
                 vec![],
             ),
@@ -1040,6 +1044,7 @@ mod tests {
                         diagnostic: None,
                         usage: Default::default(),
                         protocol: serde_json::to_value(ModelClosureProtocol {
+                            model_time_ms: None,
                             finish_reason: ModelFinishReason::Stop,
                             provider_options: None,
                             cache_read_reported: None,
@@ -1092,6 +1097,7 @@ mod tests {
                         diagnostic: None,
                         usage: Default::default(),
                         protocol: serde_json::to_value(ModelClosureProtocol {
+                            model_time_ms: None,
                             finish_reason: ModelFinishReason::Stop,
                             provider_options: None,
                             cache_read_reported: None,

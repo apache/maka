@@ -648,6 +648,10 @@ fn encoded_bytes(value: &impl serde::Serialize) -> Result<usize, String> {
 
 pub(super) use source::{prompt, source};
 
+fn output_rate(tokens: Option<u64>, millis: Option<u64>) -> Option<f64> {
+    Some(tokens? as f64 * 1000.0 / millis.filter(|ms| *ms > 0)? as f64)
+}
+
 pub(super) async fn observation(
     owner: &Owner,
     scope: &Scope,
@@ -685,6 +689,7 @@ pub(super) async fn observation(
         .await
         .map_err(|e| e.to_string())?;
     let cut = observed.cut;
+    let mut executor = None;
     let mut latest_run_id = None;
     let mut run = None;
     let mut last_completed_turn_id = None;
@@ -746,7 +751,36 @@ pub(super) async fn observation(
         }
         let backend = match &view.spec.backend {
             BackendSpec::Model { .. } => Some(ui::RunBackend::Model),
-            BackendSpec::Executor { .. } => Some(ui::RunBackend::Executor),
+            BackendSpec::Executor { selection, .. } => {
+                let metrics = view.external.as_ref().and_then(|task| {
+                    let speed = output_rate(
+                        task.turn_usage
+                            .as_ref()
+                            .and_then(|usage| usage.tokens.output_tokens),
+                        task.model_time_ms,
+                    );
+                    (task.context_usage.is_some() || speed.is_some()).then(|| ui::SessionMetrics {
+                        model_id: task
+                            .context_usage
+                            .as_ref()
+                            .and_then(|context| context.model.as_ref())
+                            .or(selection.settings.model.as_ref())
+                            .unwrap_or(&selection.executor)
+                            .clone(),
+                        connection_id: None,
+                        context_tokens: task.context_usage.as_ref().map(|context| context.used),
+                        context_window: task
+                            .context_usage
+                            .as_ref()
+                            .map(|context| context.window.get()),
+                        approximate: false,
+                        context_last_known: false,
+                        output_tokens_per_second: speed,
+                    })
+                });
+                executor = Some((selection.clone(), metrics));
+                Some(ui::RunBackend::Executor)
+            }
             BackendSpec::Historical {} => None,
         };
         if backend.is_some() {
@@ -812,18 +846,25 @@ pub(super) async fn observation(
     } else {
         None
     };
-    let metrics = history
-        .metrics(&cut)
-        .await
-        .map_err(|error| error.to_string())?
-        .map(|basis| {
-            let seconds = basis
-                .requested_at
-                .zip(basis.finished_at)
-                .and_then(|(requested, finished)| finished.0.checked_sub(requested.0))
-                .filter(|millis| *millis > 0)
-                .map(|millis| millis as f64 / 1000.0);
-            ui::SessionMetrics {
+    use maka_agent_facts::executor::BackendPreference;
+    let preference = session.backend.as_ref().or(remembered_backend.as_ref());
+    let metrics = if let Some((selection, metrics)) = executor {
+        if run.is_some()
+            || preference.is_none()
+            || matches!(preference, Some(BackendPreference::Executor { selection: current }) if current == &selection)
+        {
+            metrics
+        } else {
+            None
+        }
+    } else if run.is_none() && matches!(preference, Some(BackendPreference::Executor { .. })) {
+        None
+    } else {
+        history
+            .metrics(&cut)
+            .await
+            .map_err(|error| error.to_string())?
+            .map(|basis| ui::SessionMetrics {
                 model_id: basis.model_id,
                 connection_id: Some(basis.binding.connection_id),
                 context_tokens: basis.context_tokens,
@@ -831,14 +872,12 @@ pub(super) async fn observation(
                 approximate: basis.context_tokens.is_some()
                     && basis.usage.output_tokens.is_some_and(|tokens| tokens != 0),
                 context_last_known: basis.context_last_known,
-                output_tokens_per_second: basis
-                    .usage
-                    .output_tokens
-                    .zip(seconds)
-                    .map(|(tokens, seconds)| tokens as f64 / seconds)
-                    .filter(|rate| rate.is_finite()),
-            }
-        });
+                output_tokens_per_second: output_rate(
+                    basis.usage.output_tokens,
+                    basis.model_time_ms,
+                ),
+            })
+    };
     authorize(owner, scope, &input.session_id).await?;
     Ok(ui::Observation {
         session,

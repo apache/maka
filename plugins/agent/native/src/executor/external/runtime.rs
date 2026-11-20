@@ -686,6 +686,7 @@ pub(super) struct Pipe {
     parsing: Option<BoxFuture<'static, Result<Value, Error>>>,
     encoding: Option<BoxFuture<'static, Result<String, Error>>>,
     events: std::collections::VecDeque<(Value, usize)>,
+    pub(super) setup_usage: Option<Value>,
     pub cancellation: CancellationToken,
     pub retired: CancellationToken,
     pub stop: CancellationToken,
@@ -715,6 +716,7 @@ impl Pipe {
             parsing: None,
             encoding: None,
             events: Default::default(),
+            setup_usage: None,
             cancellation: stop.clone(),
             retired: observation.retired.clone(),
             stop,
@@ -896,6 +898,15 @@ impl Pipe {
             }
             // Startup/load notifications may contain historical tools.
             if !matches!(method, "turn/start" | "turn/steer") {
+                if (value["method"] == "session/update"
+                    && value
+                        .pointer("/params/update/sessionUpdate")
+                        .and_then(Value::as_str)
+                        == Some("usage_update"))
+                    || value["method"] == "thread/tokenUsage/updated"
+                {
+                    self.setup_usage = Some(value);
+                }
                 continue;
             }
             let retained = self.line_bytes.max(1024);
@@ -1121,6 +1132,7 @@ async fn pipe_owned<P: PipeProtocol>(
                 parsing: None,
                 encoding: None,
                 events: Default::default(),
+                setup_usage: None,
                 cancellation: cancellation.clone(),
                 retired: retired.clone(),
                 stop: cancellation,
@@ -1357,6 +1369,7 @@ async fn pipe_unowned<P: PipeProtocol>(
                     parsing: None,
                     encoding: None,
                     events: Default::default(),
+                    setup_usage: None,
                     cancellation,
                     retired: retired.clone(),
                     stop: soft_stop.clone(),

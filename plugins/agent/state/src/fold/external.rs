@@ -37,6 +37,10 @@ pub struct ExternalTask {
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub active_tools: std::collections::BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_usage: Option<maka_agent_facts::executor::ContextUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_time_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_usage: Option<maka_agent_facts::executor::TurnUsage>,
     pub closed: Option<ExternalClosure>,
     pub cleanup: OperationCleanup,
@@ -89,6 +93,8 @@ impl RunView {
                         binding: None,
                         observed: 0,
                         active_tools: Default::default(),
+                        context_usage: None,
+                        model_time_ms: None,
                         turn_usage: None,
                         closed: None,
                         cleanup: OperationCleanup::Unconfirmed,
@@ -139,6 +145,7 @@ impl RunView {
                 task,
                 index,
                 output,
+                model_time_ms,
             } => {
                 let current = self.external_task(task)?;
                 require(
@@ -173,7 +180,9 @@ impl RunView {
                     Output::ToolResult { tool_call_id, .. } => {
                         external.active_tools.remove(tool_call_id);
                     }
+                    Output::ContextUsage(context) => external.context_usage = Some(context.clone()),
                     Output::TurnUsage { usage } => {
+                        external.model_time_ms = *model_time_ms;
                         external.turn_usage = Some(usage.clone());
                     }
                     _ => {}

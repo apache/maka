@@ -131,7 +131,7 @@ struct Protocol<'a> {
 impl Protocol<'_> {
     async fn converse(mut self, io: &mut Pipe) -> Result<Outcome, Error> {
         let setup = self.prepare(io).await;
-        let (session, prompt) = match setup {
+        let (session, prompt, model) = match setup {
             Ok(setup) => setup,
             Err(
                 error @ (Error::Cancelled
@@ -150,6 +150,7 @@ impl Protocol<'_> {
         };
 
         io.turn_started();
+        let clock = crate::model_time::ModelTime::new();
         let prompt_id = io
             .begin("session/prompt", prompt)
             .await
@@ -160,7 +161,16 @@ impl Protocol<'_> {
                 prompt_id,
             })
             .await?;
-        let mut turn = Turn::new(session.clone(), prompt_id);
+        let mut turn = Turn::new(session.clone(), prompt_id, true);
+        turn.clock = Some(clock);
+        turn.model = model;
+        if let Some(event) = io
+            .setup_usage
+            .take()
+            .filter(|e| e["params"]["sessionId"] == session)
+        {
+            turn.event(event, self.output.as_ref()).await?;
+        }
         let outcome = turn
             .observe(io, self.output.as_ref(), &self.bridge)
             .await
@@ -172,7 +182,7 @@ impl Protocol<'_> {
         Ok(outcome)
     }
 
-    async fn prepare(&mut self, io: &mut Pipe) -> Result<(String, Value), Error> {
+    async fn prepare(&mut self, io: &mut Pipe) -> Result<(String, Value, Option<String>), Error> {
         io.request("initialize", initialize_params()).await?;
         let mut params = json!({
             "cwd":self.cwd,
@@ -200,7 +210,7 @@ impl Protocol<'_> {
                 "agy ACP did not discover Maka's MCP tools".into(),
             ));
         }
-        select_model(io, &session, opened, self.request).await?;
+        let model = select_model(io, &session, opened, self.request).await?;
         let message = string(self.request, "/message")?;
         let blocks = prompt_blocks(message, &self.request["images"]).await?;
         self.bridge.admit()?;
@@ -227,6 +237,7 @@ impl Protocol<'_> {
         Ok((
             session.clone(),
             json!({"sessionId":session, "prompt":blocks}),
+            model,
         ))
     }
 }
@@ -260,7 +271,8 @@ async fn select_model(
     session: &str,
     mut config: Value,
     request: &Value,
-) -> Result<(), Error> {
+) -> Result<Option<String>, Error> {
+    let mut model_id = active_model(&config);
     if let Some(model) = request["model"]
         .as_str()
         .filter(|&model| model != "default")
@@ -277,6 +289,7 @@ async fn select_model(
                 json!({"sessionId":session,"configId":id,"value":model}),
             )
             .await?;
+        model_id = active_model(&config).or(model_id);
         let selected = config_value(&config, "model").map(|(_, value)| value);
         // agy exposes a combined ID in its model catalog and separate config values.
         let confirmed = selected.is_some_and(|selected| {
@@ -305,6 +318,7 @@ async fn select_model(
                     json!({"sessionId":session,"configId":id,"value":level}),
                 )
                 .await?;
+            model_id = active_model(&updated).or(model_id);
             if config_value(&updated, "thought_level").map(|(_, value)| value) != Some(level) {
                 return Err(Error::Invalid(format!(
                     "agy ACP did not select thinking level {level}"
@@ -312,7 +326,14 @@ async fn select_model(
             }
         }
     }
-    Ok(())
+    Ok(model_id)
+}
+
+fn active_model(config: &Value) -> Option<String> {
+    config_value(config, "model")
+        .map(|(_, current)| current)
+        .or_else(|| config.pointer("/models/currentModelId")?.as_str())
+        .map(str::to_owned)
 }
 
 async fn prompt_blocks(message: &str, images: &Value) -> Result<Vec<Value>, Error> {
@@ -335,12 +356,18 @@ struct Turn {
     session: String,
     prompt_id: u64,
     projection: AcpV1Projection,
+    context: bool,
+    model: Option<String>,
+    clock: Option<crate::model_time::ModelTime>,
     host_calls: std::collections::BTreeSet<String>,
 }
 
 impl Turn {
-    fn new(session: String, prompt_id: u64) -> Self {
+    fn new(session: String, prompt_id: u64, context: bool) -> Self {
         Self {
+            context,
+            model: None,
+            clock: None,
             projection: AcpV1Projection::new(session.clone(), format!("agy:{prompt_id}")),
             session,
             prompt_id,
@@ -411,7 +438,14 @@ impl Turn {
             };
             self.projection.finish(output, completed).await?;
             if let Some(usage) = usage(result) {
-                output.emit(Output::TurnUsage { usage }).await?;
+                output
+                    .turn_usage(
+                        usage,
+                        self.clock
+                            .as_ref()
+                            .and_then(crate::model_time::ModelTime::millis),
+                    )
+                    .await?;
             }
             return Ok(Some(match (reason, failure) {
                 (Some("end_turn"), _) => Outcome::Completed {
@@ -434,11 +468,40 @@ impl Turn {
                 return Err(Error::Unknown);
             }
             let update = &params["update"];
+            if update["sessionUpdate"] == "usage_update" {
+                if self.context
+                    && let (Some(used), Some(window)) = (
+                        update["used"].as_u64(),
+                        update["size"].as_u64().and_then(std::num::NonZeroU64::new),
+                    )
+                {
+                    output
+                        .emit(Output::ContextUsage(
+                            maka_agent_facts::executor::ContextUsage {
+                                used,
+                                window,
+                                model: self.model.clone(),
+                            },
+                        ))
+                        .await?;
+                }
+                return Ok(None);
+            }
             if matches!(
                 update["sessionUpdate"].as_str(),
                 Some("tool_call" | "tool_call_update")
             ) {
                 let id = string(update, "/toolCallId")?;
+                if let Some(clock) = &mut self.clock {
+                    if matches!(
+                        update["status"].as_str(),
+                        Some("completed" | "failed" | "cancelled")
+                    ) {
+                        clock.tool_finished(id);
+                    } else if update["sessionUpdate"] == "tool_call" {
+                        clock.tool_started(id);
+                    }
+                }
                 // The Host bridge already emits the canonical Maka tool card.
                 if update["name"]
                     .as_str()
@@ -549,6 +612,7 @@ fn usage(result: &Value) -> Option<TurnUsage> {
 }
 
 pub(super) async fn replay(
+    context: bool,
     session: &str,
     prompt_id: u64,
     input: &mut replay::Stream,
@@ -583,13 +647,30 @@ pub(super) async fn replay(
 
     // Setup may replay history or a prior instructions-only prompt. Its final RPC
     // acknowledgement precedes the current prompt, which is the only turn projected.
+    let mut setup_usage = None;
+    let mut model = None;
     loop {
         let event = stream.required().await?;
+        if let Some(current) = active_model(&event["result"]) {
+            model = Some(current);
+        }
+        if context
+            && event["method"] == "session/update"
+            && event["params"]["sessionId"] == session
+            && event["params"]["update"]["sessionUpdate"] == "usage_update"
+        {
+            setup_usage = Some(event);
+            continue;
+        }
         if is_response(&event, prompt_id - 1) && event.get("result").is_some() {
             break;
         }
     }
-    let mut turn = Turn::new(session.into(), prompt_id);
+    let mut turn = Turn::new(session.into(), prompt_id, context);
+    turn.model = model;
+    if let Some(event) = setup_usage {
+        turn.event(event, output).await?;
+    }
     loop {
         let event = stream.required().await?;
         if let Some(outcome) = turn.event(event, output).await? {
@@ -632,7 +713,9 @@ mod tests {
     async fn replays_only_the_bound_prompt_with_the_same_activity_as_live() {
         let prior = update(json!({"sessionUpdate":"agent_message_chunk",
             "content":{"type":"text","text":"prior instructions acknowledgement"}}));
+        let setup_context = update(json!({"sessionUpdate":"usage_update","used":0,"size":10000}));
         let events = [
+            update(json!({"sessionUpdate":"usage_update","used":1200,"size":10000})),
             update(
                 json!({"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"checking"}}),
             ),
@@ -660,13 +743,16 @@ mod tests {
             json!({"id":4,"result":{"stopReason":"end_turn","usage":{"cachedReadTokens":50,"totalTokens":70}}}),
         ];
         let live = Sink::default();
-        let mut turn = Turn::new("session".into(), 4);
+        let mut turn = Turn::new("session".into(), 4, true);
+        turn.model = Some("test".into());
+        turn.event(setup_context.clone(), &live).await.unwrap();
         let mut terminal = None;
         for event in &events {
             terminal = turn.event(event.clone(), &live).await.unwrap();
         }
         let replayed = Sink::default();
         let outcome = replay(
+            true,
             "session",
             4,
             &mut spool([
@@ -676,7 +762,7 @@ mod tests {
                 json!({"id":4,"method":"session/prompt","params":{"sessionId":"session","prompt":[{"type":"text","text":"task"}]}}),
                 json!({"id":5,"method":"session/close","params":{"sessionId":"session"}}),
             ]),
-            &mut spool([prior, json!({"id":3,"result":{"stopReason":"end_turn"}})].into_iter().chain(events)),
+            &mut spool([json!({"id":2,"result":{"models":{"currentModelId":"test"}}}),prior,setup_context, json!({"id":3,"result":{"stopReason":"end_turn"}})].into_iter().chain(events)),
             &replayed,
         )
         .await
@@ -685,6 +771,8 @@ mod tests {
         let observations = live.0.into_inner().unwrap();
         assert_eq!(observations, replayed.0.into_inner().unwrap());
         assert!(matches!(&observations[..], [
+            Output::ContextUsage(initial),
+            Output::ContextUsage(current),
             Output::MessageStart { .. },
             Output::ThinkingDelta { text: thought, .. },
             Output::MessageEnd { .. },
@@ -695,6 +783,6 @@ mod tests {
             Output::OutputDelta { text: second, .. },
             Output::MessageEnd { .. },
             Output::TurnUsage { usage: TurnUsage { tokens: ModelUsage { cache_read_tokens: Some(50), .. }, .. } },
-        ] if thought == "checking" && input["toolSummary"] == "Check status" && error == "failed" && first == "Result: " && second == "failed."));
+        ] if initial.used == 0 && current.used == 1200 && current.model.as_deref() == Some("test") && thought == "checking" && input["toolSummary"] == "Check status" && error == "failed" && first == "Result: " && second == "failed."));
     }
 }

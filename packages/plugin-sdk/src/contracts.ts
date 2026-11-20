@@ -31600,7 +31600,7 @@ export const contracts: {
                 required: ['id', 'startedAt'],
               },
               AgentSessionMetrics: {
-                description: 'Display-only readings from the latest completed main-model request.',
+                description: 'Display-only model readings from the session backend.',
                 type: 'object',
                 properties: {
                   modelId: {
@@ -31628,8 +31628,7 @@ export const contracts: {
                     type: 'boolean',
                   },
                   outputTokensPerSecond: {
-                    description:
-                      "Provider output tokens divided by the model request's wall time.\nIncludes reasoning and time to first token; excludes tool/user waits.",
+                    description: 'Output tokens per second of model activity, when measured.',
                     type: ['number', 'null'],
                     format: 'double',
                   },
@@ -56090,6 +56089,30 @@ export const contracts: {
                     properties: {
                       type: {
                         type: 'string',
+                        const: 'context_usage',
+                      },
+                      used: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      window: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 1,
+                      },
+                      model: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    required: ['type', 'used', 'window'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
                         const: 'turn_usage',
                       },
                       usage: {
@@ -56411,6 +56434,30 @@ export const contracts: {
                       },
                     },
                     required: ['type', 'toolCallId', 'text'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'context_usage',
+                      },
+                      used: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      window: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 1,
+                      },
+                      model: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    required: ['type', 'used', 'window'],
                   },
                   {
                     type: 'object',

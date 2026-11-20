@@ -29,6 +29,7 @@ pub mod executor;
 pub use executor::external::agy_front::{FRONT_HELPER, serve_front};
 mod mcp;
 mod model;
+mod model_time;
 mod owner;
 mod service;
 mod source_path;

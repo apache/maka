@@ -3963,7 +3963,7 @@ export function Conversation(props: ConversationProps) {
     metrics: () => metricText(metrics()),
     contextUsage: () => {
       const value = metrics();
-      if (!value?.contextTokens || !value.contextWindow) return null;
+      if (value?.contextTokens == null || !value.contextWindow) return null;
       return {
         tokens: value.contextTokens,
         outputTokensPerSecond: value.outputTokensPerSecond ?? null,
