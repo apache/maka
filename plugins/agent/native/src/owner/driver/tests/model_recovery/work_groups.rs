@@ -103,7 +103,15 @@ async fn chat_history_reads_a_turns_steps_as_one_growing_group() -> TestResult<(
         assert_eq!(grown["position"], group["position"]);
         assert_eq!(grown["work"]["tools"], 2, "{grown}");
 
+        let end = &grown["work"]["end"];
+        let reverse = history(
+            through.clone(),
+            json!({"kind":"row_end", "position":end["position"], "field":end["field"]}),
+            "steps",
+        ).await?;
         let steps = history(through, json!({"kind":"row","position":group["position"],"field":group["field"]}), "steps").await?;
+        assert_eq!(reverse["chunks"], steps["chunks"], "reverse read must include empty tool results");
+        assert_eq!(reverse["after"], Value::Null);
         let mut ids: Vec<_> = steps["chunks"].as_array().unwrap().iter()
             .map(|chunk| chunk["tool"]["toolUseId"].as_str().map(str::to_owned))
             .collect::<Option<_>>().ok_or("a step is not a tool")?;

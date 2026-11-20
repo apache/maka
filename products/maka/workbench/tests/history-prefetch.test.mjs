@@ -193,3 +193,24 @@ test('prepending a partial row preserves later rows and the original tool seat',
   assert.equal(history.byMessage.get('2/body').metadataThrough, 9);
   assert.equal(history.missingAttachments.size, 0);
 });
+
+test('opposite history windows display overlapping UTF-8 fragments once in either order', () => {
+  const at = { kind: 'live', sequence: 5, fact: 'fact', itemIndex: 0 };
+  const row = {
+    position: at,
+    order: { path: [5], itemIndex: 0 },
+    role: 'assistant',
+    field: 'thinking',
+    totalBytes: 11,
+  };
+  const head = { ...row, offset: 0, text: '甲🙂' };
+  const tail = { ...row, offset: 3, text: '🙂乙!' };
+  for (const [initial, next, older] of [
+    [head, tail, false],
+    [tail, head, true],
+  ]) {
+    const [prior] = mergeHistoryPage([initial], () => undefined, false, 9);
+    const [merged] = mergeHistoryPage([next], () => prior, older, 9);
+    assert.equal(merged.text, '甲🙂乙!');
+  }
+});

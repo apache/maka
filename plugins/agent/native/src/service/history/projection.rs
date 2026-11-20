@@ -1028,36 +1028,33 @@ pub(super) async fn project(
             result.push(row);
         }
         Fact::Cell { event } => {
-            let cell = if visible(&item.recorded.fact) {
-                if let Some(projected) = reader
+            let projected;
+            let cell = if !visible(&item.recorded.fact) {
+                None
+            } else if let Some(view) = views.get(&item.recorded.run) {
+                view.cells.get(&event.cell())
+            } else {
+                projected = reader
                     .projected_cell(item.recorded.run, event.cell())
                     .await
-                    .map_err(|error| error.to_string())?
-                {
-                    Some(projected)
-                } else {
-                    if let std::collections::btree_map::Entry::Vacant(e) =
-                        views.entry(item.recorded.run)
-                    {
-                        e.insert(
-                            reader
-                                .view_at(item.recorded.run)
-                                .await
-                                .map_err(|error| error.to_string())?,
-                        );
+                    .map_err(|error| error.to_string())?;
+                match &projected {
+                    Some(cell) => Some(cell),
+                    None => {
+                        let view = reader
+                            .view_at(item.recorded.run)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        views
+                            .entry(item.recorded.run)
+                            .or_insert(view)
+                            .cells
+                            .get(&event.cell())
                     }
-                    views[&item.recorded.run].cells.get(&event.cell()).cloned()
                 }
-            } else {
-                None
             };
             result.push(cells::project(
-                item,
-                turn,
-                address,
-                event,
-                cell.as_ref(),
-                terminated,
+                item, turn, address, event, cell, terminated,
             )?);
         }
         Fact::ContextCompacted { baseline } => {

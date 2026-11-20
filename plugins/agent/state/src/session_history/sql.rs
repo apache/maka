@@ -277,6 +277,106 @@ fn check_cut(
     }
     Ok(owner)
 }
+type HistoryRow = (
+    u64,
+    u64,
+    Option<String>,
+    Option<String>,
+    u32,
+    Vec<u8>,
+    String,
+    String,
+    String,
+    String,
+);
+
+fn history_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryRow> {
+    Ok((
+        read_u64(r, 0)?,
+        read_u64(r, 1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+        r.get(6)?,
+        r.get(7)?,
+        r.get(8)?,
+        r.get(9)?,
+    ))
+}
+fn decode_history_item(
+    c: &Connection,
+    prior: &str,
+    row: HistoryRow,
+) -> Result<(HistoryItem, String), StoreError> {
+    let (sequence, admission_sequence, step, attempt, version, bytes, digest, expected, run, fact) =
+        row;
+    check_bytes(&bytes, &digest)?;
+    let prefix = chain(prior, sequence, &digest)?;
+    if prefix != expected {
+        return Err(invalid(
+            "history projection has a missing or reordered fact; explicit rebuild required",
+        ));
+    }
+    let scope = HistoryScope {
+        step: step.map(identity).transpose()?,
+        attempt: attempt.map(identity).transpose()?,
+    };
+    let recorded = decode_record(version, &bytes)?;
+    validate_source_record(
+        c,
+        identity(run)?,
+        identity(fact)?,
+        admission_sequence,
+        &scope,
+        &recorded,
+    )?;
+    Ok((
+        HistoryItem {
+            sequence,
+            admission_sequence,
+            scope,
+            recorded,
+        },
+        prefix,
+    ))
+}
+
+pub(super) fn window_items(
+    c: &Connection,
+    history: &HistoryNamespace,
+    cut: &HistoryCut,
+    sequences: &[u64],
+) -> Result<std::collections::BTreeMap<u64, HistoryItem>, StoreError> {
+    let owner = check_cut(c, history, cut)?;
+    let seed = seed(&history.owner, &history.session)?;
+    let mut statement = c.prepare_cached(
+        "
+        SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,b.payload,
+               b.content_sha256,h.prefix_digest,h.run,h.fact_id,
+               (SELECT p.prefix_digest FROM agent_session_history p
+                WHERE p.owner=h.owner AND p.session=h.session AND p.sequence<h.sequence
+                ORDER BY p.sequence DESC LIMIT 1)
+        FROM json_each(?1) ids
+        CROSS JOIN agent_session_history h ON h.sequence=ids.value
+        JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
+        WHERE h.owner=?2 AND h.session=?3 AND h.sequence<=?4",
+    )?;
+    let mut rows = statement.query(params![
+        serde_json::to_string(sequences)?,
+        owner,
+        history.session,
+        bind_u64(cut.through_sequence)?
+    ])?;
+    let mut items = std::collections::BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        let prior: Option<String> = row.get(10)?;
+        let (item, _) =
+            decode_history_item(c, prior.as_deref().unwrap_or(&seed), history_row(row)?)?;
+        items.insert(item.sequence, item);
+    }
+    Ok(items)
+}
 pub(super) fn page(
     c: &Connection,
     history: &HistoryNamespace,
@@ -289,19 +389,7 @@ pub(super) fn page(
     if after > cut.through_sequence {
         return Err(invalid("history cursor exceeds captured cut"));
     }
-    type HistoryRow = (
-        u64,
-        u64,
-        Option<String>,
-        Option<String>,
-        u32,
-        Vec<u8>,
-        String,
-        String,
-        String,
-        String,
-    );
-    let rows: Vec<HistoryRow> = c.prepare_cached("SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,b.payload,b.content_sha256,h.prefix_digest,h.run,h.fact_id FROM agent_session_history h LEFT JOIN agent_facts f ON f.sequence=h.sequence LEFT JOIN contents b ON b.id=f.body_content_id WHERE h.owner=? AND h.session=? AND h.sequence>? AND h.sequence<=? ORDER BY h.sequence LIMIT ?")?.query_map(params![owner,history.session,bind_u64(after)?,bind_u64(cut.through_sequence)?,size+1], |r| Ok((read_u64(r,0)?,read_u64(r,1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?)))?.collect::<Result<_,_>>()?;
+    let rows: Vec<HistoryRow> = c.prepare_cached("SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,b.payload,b.content_sha256,h.prefix_digest,h.run,h.fact_id FROM agent_session_history h LEFT JOIN agent_facts f ON f.sequence=h.sequence LEFT JOIN contents b ON b.id=f.body_content_id WHERE h.owner=? AND h.session=? AND h.sequence>? AND h.sequence<=? ORDER BY h.sequence LIMIT ?")?.query_map(params![owner,history.session,bind_u64(after)?,bind_u64(cut.through_sequence)?,size+1], history_row)?.collect::<Result<_,_>>()?;
     let more = rows.len() > size as usize;
     let prior: Option<String> = c.query_row("SELECT prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence<=? ORDER BY sequence DESC LIMIT 1", params![owner,history.session,bind_u64(after)?], |r|r.get(0)).optional()?;
     let mut prefix = match prior {
@@ -309,47 +397,10 @@ pub(super) fn page(
         None => seed(&history.owner, &history.session)?,
     };
     let mut items = Vec::with_capacity(rows.len().min(size as usize));
-    for (
-        sequence,
-        admission_sequence,
-        step,
-        attempt,
-        version,
-        bytes,
-        digest,
-        expected,
-        run,
-        fact,
-    ) in rows.into_iter().take(size as usize)
-    {
-        if content_digest(&bytes) != digest {
-            return Err(invalid("canonical history bytes corrupt"));
-        }
-        prefix = chain(&prefix, sequence, &digest)?;
-        if prefix != expected {
-            return Err(invalid(
-                "history projection has a missing or reordered fact; explicit rebuild required",
-            ));
-        }
-        let scope = HistoryScope {
-            step: step.map(identity).transpose()?,
-            attempt: attempt.map(identity).transpose()?,
-        };
-        let recorded = decode_record(version, &bytes)?;
-        validate_source_record(
-            c,
-            identity(run)?,
-            identity(fact)?,
-            admission_sequence,
-            &scope,
-            &recorded,
-        )?;
-        items.push(HistoryItem {
-            sequence,
-            admission_sequence,
-            scope,
-            recorded,
-        });
+    for row in rows.into_iter().take(size as usize) {
+        let (item, next_prefix) = decode_history_item(c, &prefix, row)?;
+        items.push(item);
+        prefix = next_prefix;
     }
     if !more
         && after < cut.through_sequence
@@ -434,7 +485,7 @@ pub(super) fn validate_source_record(
             "canonical history header scope differs from its original fact",
         ));
     }
-    let (owner,session,actual_owner,actual_session,kind,actual_kind,locator):(String,String,String,String,String,String,Option<String>)=c.query_row("SELECT h.owner,h.session,s.owner,s.session,h.kind,json_extract(b.payload,'$.fact.kind'),h.tool_use_id FROM agent_facts f JOIN agent_session_history h ON h.sequence=f.sequence JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?",params![record.id.to_string(),record.run.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))?;
+    let (owner,session,actual_owner,actual_session,kind,actual_kind,locator):(String,String,String,String,String,String,Option<String>)=c.prepare_cached("SELECT h.owner,h.session,s.owner,s.session,h.kind,json_extract(b.payload,'$.fact.kind'),h.tool_use_id FROM agent_facts f JOIN agent_session_history h ON h.sequence=f.sequence JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?")?.query_row(params![record.id.to_string(),record.run.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))?;
     if owner != actual_owner
         || session != actual_session
         || kind != actual_kind
@@ -478,7 +529,19 @@ fn fact_scope(c: &Connection, record: &RecordedFact) -> Result<HistoryScope, Sto
             use maka_agent_facts::cells::{CellEvent, CellOwner};
             let owner = match event {
                 CellEvent::Started { owner, .. } => owner.clone(),
-                _ => crate::cells::read_cell(c, record.run, event.cell())?.owner,
+                _ => {
+                    let owner: String = c
+                        .prepare_cached(
+                            "SELECT json_extract(c.body,'$.owner') FROM agent_cells c
+                         JOIN agent_run_specs s ON s.run=c.run AND s.session=c.session
+                         WHERE c.cell=? AND c.run=?",
+                        )?
+                        .query_row(
+                            params![event.cell().to_string(), record.run.to_string()],
+                            |row| row.get(0),
+                        )?;
+                    serde_json::from_str(&owner)?
+                }
             };
             if owner.run() != Some(record.run) {
                 return Err(invalid("Cell history belongs to another Run"));

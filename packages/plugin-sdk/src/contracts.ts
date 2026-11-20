@@ -15616,6 +15616,25 @@ export const contracts: {
                     required: ['kind', 'position', 'field'],
                   },
                   {
+                    description:
+                      'Open a reverse window at the end of this field, including an empty tool row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'row_end',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                      field: {
+                        $ref: '#/$defs/HistoryField',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position', 'field'],
+                  },
+                  {
                     type: 'object',
                     properties: {
                       kind: {
@@ -24342,6 +24361,25 @@ export const contracts: {
                       kind: {
                         type: 'string',
                         const: 'row',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                      field: {
+                        $ref: '#/$defs/HistoryField',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position', 'field'],
+                  },
+                  {
+                    description:
+                      'Open a reverse window at the end of this field, including an empty tool row.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'row_end',
                       },
                       position: {
                         $ref: '#/$defs/HistoryRowAddress',

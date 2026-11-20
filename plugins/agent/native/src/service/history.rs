@@ -330,13 +330,18 @@ async fn tree_window(
     } else {
         8
     };
-    let mut reverse = matches!(&position, Position::Tail | Position::Before { .. });
+    let mut reverse = matches!(
+        &position,
+        Position::Tail | Position::Before { .. } | Position::RowEnd { .. }
+    );
     let anchor = match &position {
-        Position::Row { position, field } => Some(wire::Cursor {
-            position: position.clone(),
-            field: *field,
-            offset: 0,
-        }),
+        Position::Row { position, field } | Position::RowEnd { position, field } => {
+            Some(wire::Cursor {
+                position: position.clone(),
+                field: *field,
+                offset: 0,
+            })
+        }
         Position::After { cursor } | Position::Before { cursor } => Some(cursor.clone()),
         Position::Event { sequence } => match tree
             .event_position(*sequence, include_thinking)
@@ -394,8 +399,10 @@ async fn tree_window(
         {
             return Err("agent_cursor_invalid".into());
         }
-        if matches!(&position, Position::Row { .. } | Position::Event { .. })
-            && !selected.row.visible
+        if matches!(
+            &position,
+            Position::Row { .. } | Position::RowEnd { .. } | Position::Event { .. }
+        ) && !selected.row.visible
         {
             reverse = true;
         }

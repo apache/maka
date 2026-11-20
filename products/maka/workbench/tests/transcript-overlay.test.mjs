@@ -394,3 +394,100 @@ test('a row opened during refresh is read at a fence that contains it', () => {
   assert.equal(historyRowThrough(admission, oldFence), 12);
   assert.equal(historyRowThrough(admission, 34), 34);
 });
+
+test('reverse-paging a group whose first tool finishes in the tail page keeps one group key', () => {
+  const rows = new HistoryRows();
+  const chunk = ({ key, ...rest }) => ({ ...rest, offset: 0, totalBytes: rest.text.length });
+  const put = (items, through, prepend = false) =>
+    rows.put(mergeHistoryPage(items, (key) => rows.byKey.get(key), prepend, through));
+
+  const execCallPos = row('', '', 1).position;
+  const childCallPos = row('', '', 80).position;
+  const work = row(undefined, '', 1, {
+    role: 'tool_call',
+    field: 'body',
+    work: {
+      end: { position: row('', '', 101).position, field: 'body', offset: 0 },
+      last: { kind: 'tool', presentation: null },
+      firstToolUseId: 'exec-1',
+      lastCall: null,
+      kinds: [{ kind: 'tool', presentation: null }],
+      thoughts: 0,
+      tools: 100,
+      messages: 0,
+      imageCount: 0,
+      images: [],
+    },
+  });
+  put([chunk(work)], 101);
+  const collapsed = projectProcessGroups({
+    rows: rows.ordered,
+    toolActivity: [],
+    activeTurnId: 'run',
+  });
+  const initialKey = collapsed.entries[0].key;
+
+  const child = row('child-80', '', 80, {
+    role: 'tool_call',
+    field: 'body',
+    tool: {
+      toolUseId: 'child-80',
+      call: {
+        position: childCallPos,
+        name: 'Read',
+        origin: 'code_mode',
+        ancestorToolUseIds: ['exec-1'],
+        presentation: null,
+      },
+      result: { position: row('', '', 81).position, isError: false, image: false },
+    },
+  });
+  const execResult = row('exec-result', '', 101, {
+    role: 'tool_result',
+    field: 'body',
+    tool: {
+      toolUseId: 'exec-1',
+      call: {
+        position: execCallPos,
+        name: 'exec',
+        origin: 'model',
+        ancestorToolUseIds: [],
+        presentation: null,
+      },
+      result: { position: row('', '', 101).position, isError: false, image: false },
+    },
+  });
+  put([chunk(child), chunk(execResult)], 101);
+  const tail = projectProcessGroups({
+    rows: rows.ordered,
+    toolActivity: [],
+    activeTurnId: 'run',
+    previous: collapsed.entries,
+  });
+  assert.equal(tail.entries[0].key, initialKey);
+  assert.deepEqual(tail.entries[0].rowIds, [stableRowId(child)]);
+
+  const execCall = row('exec-call', '', 1, {
+    role: 'tool_call',
+    field: 'body',
+    tool: {
+      toolUseId: 'exec-1',
+      call: {
+        position: execCallPos,
+        name: 'exec',
+        origin: 'model',
+        ancestorToolUseIds: [],
+        presentation: null,
+      },
+      result: { position: row('', '', 101).position, isError: false, image: false },
+    },
+  });
+  put([chunk(execCall)], 101, true);
+  const head = projectProcessGroups({
+    rows: rows.ordered,
+    toolActivity: [],
+    activeTurnId: 'run',
+    previous: tail.entries,
+  });
+  assert.equal(head.entries[0].key, initialKey);
+});
