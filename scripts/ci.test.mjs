@@ -145,6 +145,7 @@ test('an embedded product Markdown change selects its actual runtime consumers',
     assert.ok(plan.suites.root);
     assert.ok(plan.suites.desktop);
     assert.match(plan.suites.root.filter, /package\(=maka-cli\)/);
+    assert.match(plan.suites.root.filter, /package\(=maka-skills\)/);
     assert.match(plan.suites.root.filter, /package\(=maka-skills-native\)/);
     assert.doesNotMatch(plan.suites.root.filter, /package\(=maka-agent-native\)/);
     assert.match(plan.suites.root.reason, /runtime inputs/);
@@ -1001,4 +1002,26 @@ test('memory resolver prompt changes reach native and product consumers', () => 
   assert.equal(plan.full, false);
   assert.match(plan.suites.root.filter, /package\(=maka-agent-native\)/);
   assert.match(plan.suites.root.filter, /package\(=maka-cli\)/);
+});
+
+test('every root suite package reference matches a real workspace crate', () => {
+  const metadata = JSON.parse(
+    execFileSync('cargo', ['metadata', '--no-deps', '--format-version', '1'], {
+      cwd: root,
+      maxBuffer: 50 * 1024 * 1024,
+    }),
+  );
+  const actual = new Set(metadata.packages.map((pkg) => pkg.name));
+  const missing = [];
+  for (const [id, suite] of Object.entries(suites)) {
+    if (suite.workspace !== 'root') continue;
+    const refs = [
+      ...(Array.isArray(suite.packages) ? suite.packages : []),
+      ...(suite.extraInputPackages ?? []).flatMap((entry) => entry.packages),
+    ];
+    for (const pkg of refs) {
+      if (!actual.has(pkg)) missing.push(`${id}:${pkg}`);
+    }
+  }
+  assert.deepEqual(missing, []);
 });
