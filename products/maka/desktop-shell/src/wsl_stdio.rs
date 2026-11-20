@@ -122,10 +122,9 @@ impl Target {
                         .open()
                         .await
                         .map(|stream| Box::new(stream) as Channel)
-                        .map_err(|error| error.to_string())
                 })
             });
-            let host = Client::connect_on(open, Some(ready.epoch)).await?;
+            let host = Client::connect_on(open, Some(ready.epoch), None).await?;
             let connection = Connection::admit_wsl(
                 host,
                 &ready.root,
