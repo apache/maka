@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { formatCount } from './numberFormat';
 import { cleanup, effect, Scroll, signal, Text, untracked, View } from 'nsh';
 import { Button, Popover } from 'nsh/base';
 import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
@@ -449,12 +450,12 @@ export function SessionInspector(props: {
                     <Text
                       style={{ fontSize: 12, lineHeight: 16, color: C.success, fontWeight: '500' }}
                     >
-                      {`+${diffStats()!.added}`}
+                      {`+${formatCount(diffStats()!.added)}`}
                     </Text>
                     <Text
                       style={{ fontSize: 12, lineHeight: 16, color: C.danger, fontWeight: '500' }}
                     >
-                      {`-${diffStats()!.deleted}`}
+                      {`-${formatCount(diffStats()!.deleted)}`}
                     </Text>
                   </View>
                 </If>

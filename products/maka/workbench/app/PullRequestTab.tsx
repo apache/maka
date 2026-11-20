@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { formatCount } from './numberFormat';
 import { Clipboard, cleanup, computed, effect, Scroll, signal, Text, untracked, View } from 'nsh';
 import { Button, Input, Popover, TextView } from 'nsh/base';
 import { ChangesStudio } from './ChangesStudio';
@@ -454,10 +455,10 @@ export function PullRequestTab(props: {
             <If when={detail() !== null}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                 <Text style={{ fontSize: 12, lineHeight: 16, color: C.success, fontWeight: '500' }}>
-                  {`+${detail()!.additions}`}
+                  {`+${formatCount(detail()!.additions)}`}
                 </Text>
                 <Text style={{ fontSize: 12, lineHeight: 16, color: C.danger, fontWeight: '500' }}>
-                  {`-${detail()!.deletions}`}
+                  {`-${formatCount(detail()!.deletions)}`}
                 </Text>
               </View>
             </If>

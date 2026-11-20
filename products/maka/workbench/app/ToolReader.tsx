@@ -17,12 +17,14 @@
  * under the License.
  */
 
+import { formatCount } from './numberFormat';
 import { textTooltip } from './ui';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, platform, Scroll, signal, Text, View } from 'nsh';
 import { Button, DiffView } from 'nsh/base';
 import { Clipboard } from 'nsh';
 import type { ToolSource } from './ToolSource';
+import { TokenCount } from './TokenCount';
 import type { ToolChange, ToolProcess, ToolProjection, ToolRead, ToolSection } from './toolCards';
 import {
   C,
@@ -514,12 +516,12 @@ function Change(props: { value: ToolChange; source: ToolSource; userScroll(): vo
     );
   const summary =
     value.operation === 'write'
-      ? [tr('Recorded write'), tr('{count} bytes', { count: value.bytes })]
+      ? [tr('Recorded write'), tr('{count} bytes', { count: formatCount(value.bytes) })]
       : [
           tr('Recorded edit'),
           value.replacements === 1
             ? tr('1 replacement')
-            : tr('{count} replacements', { count: value.replacements }),
+            : tr('{count} replacements', { count: formatCount(value.replacements) }),
           value.startLine !== null && value.endLine !== null
             ? value.startLine === value.endLine
               ? tr('Recorded line {line}', { line: value.startLine })
@@ -556,34 +558,57 @@ function Sections(props: { items: ToolSection[] }) {
   return (
     <View style={{ gap: 12, minWidth: 0 }}>
       <Each of={props.items} key="index">
-        {(section) => (
-          <View style={{ gap: 4 }}>
-            <Text style={[{ ...captionTextStyle, color: C.secondary }, { userSelect: 'none' }]}>
-              {section().label}
-            </Text>
-            <Text
-              style={[
-                {
-                  ...(section().style === 'code' ? codeTextStyle : bodyTextStyle),
-                  color:
-                    section().tone === 'error' || section().tone === 'removed'
-                      ? C.danger
-                      : section().tone === 'warning'
-                        ? C.warning
-                        : section().tone === 'added'
-                          ? C.success
-                          : // Code reads a step under the reply, as a process's output does.
-                            section().style === 'code' && desktop
-                            ? C.secondary
-                            : C.text,
-                },
-                { userSelect: 'text' },
-              ]}
-            >
-              {section().text || tr('(empty)')}
-            </Text>
-          </View>
-        )}
+        {(section) => {
+          const plainText = () => {
+            const value = section().text;
+            return typeof value === 'string' ? value : '';
+          };
+          const tokens = () => {
+            const value = section().text;
+            return typeof value === 'string' ? undefined : value;
+          };
+          return (
+            <View style={{ gap: 4 }}>
+              <Text style={[{ ...captionTextStyle, color: C.secondary }, { userSelect: 'none' }]}>
+                {section().label}
+              </Text>
+              <If
+                when={tokens()}
+                else={
+                  <Text
+                    style={[
+                      {
+                        ...(section().style === 'code' ? codeTextStyle : bodyTextStyle),
+                        color:
+                          section().tone === 'error' || section().tone === 'removed'
+                            ? C.danger
+                            : section().tone === 'warning'
+                              ? C.warning
+                              : section().tone === 'added'
+                                ? C.success
+                                : // Code reads a step under the reply, as a process's output does.
+                                  section().style === 'code' && desktop
+                                  ? C.secondary
+                                  : C.text,
+                      },
+                      { userSelect: 'text' },
+                    ]}
+                  >
+                    {plainText() || tr('(empty)')}
+                  </Text>
+                }
+              >
+                <View style={{ alignItems: 'flex-start' }}>
+                  <TokenCount
+                    label={section().label}
+                    value={tokens()!.tokens}
+                    prefix={tokens()!.prefix}
+                  />
+                </View>
+              </If>
+            </View>
+          );
+        }}
       </Each>
     </View>
   );

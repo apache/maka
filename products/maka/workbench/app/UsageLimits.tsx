@@ -17,11 +17,13 @@
  * under the License.
  */
 
+import { formatDuration } from './duration';
 import { cleanup, effect, lifecycle, platform, signal, Text, untracked, View } from 'nsh';
 import { usageSeverity } from './composerUsageSummary';
 import { currentLocale, tr } from './locale';
 import { watchUsageLimits, type UsageReading, type UsageResult } from './usageLimitsReading';
 import { C, captionTextStyle } from './ui';
+import { TokenCount } from './TokenCount';
 
 function usageWindow(seconds: number) {
   if (seconds === 604800) return tr('Weekly limit');
@@ -33,6 +35,8 @@ function usageWindow(seconds: number) {
     ['second', 1],
   ] as const;
   const [unit, size] = units.find(([, size]) => seconds % size === 0) ?? units[4];
+  if (unit === 'second' && seconds >= 60)
+    return tr('{duration} limit', { duration: formatDuration(seconds * 1000) });
   return tr('{duration} limit', {
     duration: new Intl.NumberFormat(currentLocale(), { style: 'unit', unit }).format(
       seconds / size,
@@ -148,12 +152,20 @@ export function UsageLimitsList(props: { limits: () => UsageLimit[]; showRemaini
             const value = used();
             return value === null ? null : Math.max(0, Math.min(100, Math.round(100 - value)));
           };
+          const tokenQuantity = () => {
+            const limit = entry();
+            return limit.kind === 'window' && limit.quantity?.unit === 'tokens'
+              ? limit.quantity
+              : undefined;
+          };
           const summary = () => {
             const limit = entry();
             if (props.showRemaining && limit.kind === 'window') {
               return tr('{percent}% remaining', { percent: usageNumber(remaining() ?? 0) });
             }
-            return usageValue(limit);
+            return tokenQuantity() && limit.kind === 'window'
+              ? tr('{percent}% used', { percent: usageNumber(limit.usedPercent) })
+              : usageValue(limit);
           };
           const barColor = () => {
             const tone = usageSeverity(used() ?? 0);
@@ -164,6 +176,24 @@ export function UsageLimitsList(props: { limits: () => UsageLimit[]; showRemaini
               <Text style={{ ...captionTextStyle, color: C.secondary }}>
                 {usageLabel(entry())} · {summary()}
               </Text>
+              <If when={tokenQuantity()}>
+                <View
+                  style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}
+                >
+                  <TokenCount
+                    label={tr('Consumed tokens')}
+                    value={tokenQuantity()!.used}
+                    style={captionTextStyle}
+                  />
+                  <Text style={{ ...captionTextStyle, color: C.muted }}>/</Text>
+                  <TokenCount
+                    label={tr('Token limit')}
+                    value={tokenQuantity()!.limit}
+                    format={(count) => tr('{count} tokens', { count })}
+                    style={captionTextStyle}
+                  />
+                </View>
+              </If>
               <If when={!terminal && used() !== null}>
                 <View style={{ height: 3, borderRadius: 2, backgroundColor: C.line }}>
                   <View

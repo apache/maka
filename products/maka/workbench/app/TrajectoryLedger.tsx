@@ -22,6 +22,7 @@ import { computed, inputAction, PanResponder, platform, Scroll, signal, Text, Vi
 import type { JSX, ViewRef } from 'nsh';
 import { Button, Input } from 'nsh/base';
 import { formatDuration } from './duration';
+import { TokenCount } from './TokenCount';
 import type { Row } from './history';
 import { Icon } from './Icon';
 import type { ImagePreview } from './ImageThumbnail';
@@ -184,11 +185,9 @@ function timelineRangeLabel(range: TrajectoryRange): string {
   );
 }
 
-const requestDuration = (ms: number) => (ms < 1_000 ? ms + ' ms' : formatDuration(ms, true));
-
 function firstTokenLatency(start: number | null | undefined, first: number | null | undefined) {
   if (start == null || first == null || first < start) return undefined;
-  return requestDuration(first - start);
+  return formatDuration(first - start, 'milliseconds');
 }
 
 function TimelineLane(props: {
@@ -592,7 +591,7 @@ export function TrajectoryRequestInspector(props: {
         label: tr('Duration'),
         value:
           startedAt != null && finished
-            ? requestDuration(Math.max(0, finished.at - startedAt))
+            ? formatDuration(Math.max(0, finished.at - startedAt), 'milliseconds')
             : undefined,
       },
       { label: tr('First token latency'), value: firstTokenLatency(startedAt, firstTokenAt) },
@@ -623,7 +622,16 @@ export function TrajectoryRequestInspector(props: {
           {(metric) => (
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
               <Text style={{ ...captionTextStyle, color: C.muted }}>{metric().label}</Text>
-              <Text style={{ ...captionTextStyle, color: C.text }}>{metric().value}</Text>
+              <If
+                when={typeof metric().value === 'number'}
+                else={<Text style={{ ...captionTextStyle, color: C.text }}>{metric().value}</Text>}
+              >
+                <TokenCount
+                  label={metric().label}
+                  value={metric().value as number}
+                  style={captionTextStyle}
+                />
+              </If>
             </View>
           )}
         </Each>

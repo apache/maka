@@ -125,20 +125,21 @@ function goalResult(value: unknown): ToolSection[] | null {
       ? [
           {
             label: tr('Known tokens'),
-            text:
-              (typeof consumed.missing === 'number' && consumed.missing > 0 ? '≥' : '') +
-              numberText(consumed.known),
+            text: {
+              tokens: consumed.known,
+              prefix: typeof consumed.missing === 'number' && consumed.missing > 0 ? '≥' : '',
+            },
           },
         ]
       : []),
     ...(typeof goal.tokenBudget === 'number'
       ? [
-          { label: tr('Goal token budget'), text: numberText(goal.tokenBudget) },
+          { label: tr('Goal token budget'), text: { tokens: goal.tokenBudget } },
           {
             label: tr('Remaining tokens'),
             text:
               typeof goal.remainingTokens === 'number'
-                ? numberText(goal.remainingTokens)
+                ? { tokens: goal.remainingTokens }
                 : tr('Usage incomplete'),
           },
         ]
@@ -358,10 +359,9 @@ export const nativeToolPresentations: Record<string, ActivityPresentation> = {
       if (!input) return null;
       return [
         ...section(tr('Objective'), input.objective),
-        ...section(
-          tr('Goal token budget'),
-          typeof input.token_budget === 'number' ? numberText(input.token_budget) : null,
-        ),
+        ...(typeof input.token_budget === 'number'
+          ? [{ label: tr('Goal token budget'), text: { tokens: input.token_budget } }]
+          : []),
       ];
     },
     result: goalResult,
