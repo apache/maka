@@ -596,6 +596,7 @@ pub enum SelectionType {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Action {
+    BringToFront,
     MoveCursor {
         target: Position,
     },

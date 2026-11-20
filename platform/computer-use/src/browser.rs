@@ -3194,6 +3194,9 @@ impl Tab {
                 )
                 .await?;
             }
+            Action::BringToFront => {
+                unreachable!("native window activation is dispatched before browser actions")
+            }
             Action::Close => {
                 unreachable!("tab closure is admitted by its Host owner")
             }
