@@ -36,7 +36,7 @@ providers. Exact IDs take precedence; only without an exact match do `maka` and 
 
 An installed ChatGPT extension with its original native host is discovered automatically in Chrome or Chromium. `listBrowsers()` reports it as `on_demand`; selecting it takes control until `browser.release()` or turn cleanup restores the original host. No setup command, debug port or ChatGPT desktop launch is needed. Prefer this browser connection for websites before native browser-window input.
 
-ChatGPT and stock OpenCLI compatibility is best effort. Stock OpenCLI currently cannot serve this browser-session contract. Without an exact provider ID or extension-instance selection, `getBrowser({id: "opencli"})` selects a unique usable existing provider before any tab creation or claim; zero or multiple candidates refuses selection. Exact IDs and existing handles never switch providers.
+ChatGPT compatibility is best effort. Exact IDs and existing handles never switch providers.
 
 Entry points (selection emits initial state):
 - `await cua.getState({emit?})`: app and available browser inventory, including inventory errors.

@@ -960,15 +960,9 @@ impl Browsers {
                     normalized_url(&url)?;
                 }
                 let id = options.id.as_deref();
-                let fallback = id == Some("opencli")
-                    && options.extension_instance_id.is_none()
-                    && !self
-                        .providers(None)?
-                        .iter()
-                        .any(|provider| provider.id() == "opencli");
                 let mut matches = Vec::new();
                 let mut failure = None;
-                for provider in self.providers(if fallback { None } else { id })? {
+                for provider in self.providers(id)? {
                     if options.extension_instance_id.as_deref().is_some_and(|id| {
                         provider
                             .extension()
