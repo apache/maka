@@ -356,8 +356,14 @@ impl Owner {
         let scope = context.scope().clone();
         self.resource_work(&scope, move |owner, scope| {
             Box::pin(async move {
+                let mut path = input.directory;
+                if let Some(home) = path.as_ref().filter(|path| path.is_home()) {
+                    let (_, root) = owner.candidate_directory(&input.target, None, &scope).await?;
+                    let home_dir = std::env::home_dir().ok_or("agent_files_invalid_path")?;
+                    path = root.home_path(home, &home_dir).map_err(file_failure)?;
+                }
                 let (original, directory) = owner
-                    .candidate_directory(&input.target, input.directory, &scope)
+                    .candidate_directory(&input.target, path, &scope)
                     .await?;
                 // One batch can wait for the emitter; its consumer's backpressure
                 // stops the filesystem producer without capping the result set.

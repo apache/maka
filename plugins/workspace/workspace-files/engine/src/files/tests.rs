@@ -177,6 +177,44 @@ fn root_rgignore_overrides_nested_gitignore_in_candidate_search() {
 
 #[cfg(unix)]
 #[test]
+fn searches_match_names_shallow_first_and_skip_hidden_or_unreadable_folders() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    fs::create_dir_all(f.root.join("locked/inner")).unwrap();
+    fs::create_dir(f.root.join("open")).unwrap();
+    fs::create_dir_all(f.root.join(".cache/Downloads")).unwrap();
+    fs::create_dir(f.root.join("Downloads")).unwrap();
+    fs::write(f.root.join("Downloads/report.pdf"), "").unwrap();
+    fs::write(f.root.join("open/download.rs"), "fn open() {}").unwrap();
+    fs::write(f.root.join("secret.rs"), "fn secret() {}").unwrap();
+    let mode = |path: &str, mode| {
+        fs::set_permissions(f.root.join(path), fs::Permissions::from_mode(mode)).unwrap()
+    };
+    mode("locked", 0o000);
+    mode("secret.rs", 0o000);
+
+    let directory = f.open(None).unwrap();
+    let mut paths = Vec::new();
+    let found = directory.candidates("down", &AtomicBool::new(false), |entry| {
+        paths.push(entry.path.bytes().unwrap());
+        Ok(())
+    });
+    let mut texts = Vec::new();
+    let visited = directory.visit_text_files(1024, 10, &AtomicBool::new(false), |_, path, _| {
+        texts.push(path);
+        Ok(true)
+    });
+    mode("locked", 0o755);
+    mode("secret.rs", 0o644);
+
+    found.unwrap();
+    visited.unwrap();
+    assert_eq!(paths, [b"Downloads".to_vec(), b"open/download.rs".to_vec()]);
+    assert_eq!(texts, ["open/download.rs"]);
+}
+
+#[cfg(unix)]
+#[test]
 fn listing_keeps_hidden_raw_names_and_dangling_links_but_prunes_original_private_roots() {
     use std::os::unix::{ffi::OsStringExt, fs::symlink};
     let f = Fixture::new();
@@ -277,10 +315,10 @@ fn listing_keeps_hidden_raw_names_and_dangling_links_but_prunes_original_private
             .map(|entry| (entry.path.bytes().unwrap(), entry.kind))
             .collect::<Vec<_>>(),
         vec![
-            (b"src/UPPER.RS".to_vec(), FileKind::File),
-            (b"src/nested/ignored.rs".to_vec(), FileKind::File),
-            (b"src/visible.rs".to_vec(), FileKind::File),
             (b"visible-link.rs".to_vec(), FileKind::Symlink),
+            (b"src/UPPER.RS".to_vec(), FileKind::File),
+            (b"src/visible.rs".to_vec(), FileKind::File),
+            (b"src/nested/ignored.rs".to_vec(), FileKind::File),
         ]
     );
     for (query, expected) in [
@@ -327,11 +365,11 @@ fn listing_keeps_hidden_raw_names_and_dangling_links_but_prunes_original_private
             .map(|entry| entry.path.bytes().unwrap())
             .collect::<Vec<_>>(),
         vec![
+            b"visible-link.rs".to_vec(),
             b"src/UPPER.RS".to_vec(),
             b"src/ignored-by-rg.rs".to_vec(),
-            b"src/nested/ignored.rs".to_vec(),
             b"src/visible.rs".to_vec(),
-            b"visible-link.rs".to_vec(),
+            b"src/nested/ignored.rs".to_vec(),
         ],
         "an external ignore symlink cannot supply rules"
     );
