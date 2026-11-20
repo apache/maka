@@ -32,26 +32,7 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
             "TOOL_OUTPUT_EVIDENCE: verify snap-back threshold on page boundary.\n",
         )?;
 
-        let root = std::env::current_dir()?.join("../../..");
-        let output = tokio::process::Command::new("node")
-            .current_dir(root)
-            .args([
-                "--input-type=module",
-                "-e",
-                "import {installation} from './products/maka/bundle/src/installation.ts'; \
-                 console.log(JSON.stringify(installation({workspace:process.cwd(),helper:'test'}).agent.tools.filter(\
-                   t => (t.target.kind === 'export' && t.target.name === 'agent') || \
-                        (t.target.kind === 'import' && t.target.name === 'files' && t.name === 'Read')\
-                 )))",
-            ])
-            .output()
-            .await?;
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let tools: Value = serde_json::from_slice(&output.stdout)?;
+        let tools = product_agent_tools(true).await?;
         let boot = bootstrap_with(&base, provider.url.clone(), |config| {
             config["tools"] = tools;
             config["toolDiscovery"] = json!(true);
@@ -333,8 +314,33 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
         );
 
         // 7. Self-inspection via SessionRead({}) and lifecycle management via SessionManage without expectedRevision
-        let self_read = tool_round(&rig, &mut provider, parent_id, false, "SessionRead", json!({})).await?;
-        assert!(self_read.contains(parent_id), "{self_read}");
+        let self_read =
+            tool_round(&rig, &mut provider, parent_id, false, "SessionRead", json!({})).await?;
+        let self_read_msgs: Vec<Value> = serde_json::from_str(&self_read)?;
+        let self_read_output: Value = serde_json::from_str(
+            self_read_msgs[0]["content"]
+                .as_str()
+                .ok_or("missing SessionRead tool content")?,
+        )?;
+        assert_eq!(
+            self_read_output["session"]["id"], parent_id,
+            "{self_read_output}"
+        );
+        let self_items = self_read_output["transcript"]["items"]
+            .as_array()
+            .ok_or("missing Agent transcript")?;
+        assert!(
+            self_items
+                .iter()
+                .any(|item| item["role"] == "user" && item["text"] == "Execute Read"),
+            "{self_read_output}"
+        );
+        assert!(
+            self_items
+                .iter()
+                .any(|item| item["toolName"] == "Read" && item["resultPath"].is_string()),
+            "{self_read_output}"
+        );
 
         let updated = tool_round(
             &rig,

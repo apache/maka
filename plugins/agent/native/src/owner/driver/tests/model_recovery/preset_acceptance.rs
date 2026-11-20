@@ -1561,15 +1561,20 @@ async fn product_preset_tools_manage_and_delegate_in_code_mode() -> TestResult<(
     product_preset_tools(true).await
 }
 
-async fn product_agent_tools() -> TestResult<Value> {
+async fn product_agent_tools(include_read: bool) -> TestResult<Value> {
+    let filter = if include_read {
+        "(t.target.kind === 'export' && t.target.name === 'agent') ||          (t.target.kind === 'import' && t.target.name === 'files' && t.name === 'Read')"
+    } else {
+        "t.target.kind === 'export' && t.target.name === 'agent'"
+    };
     let output = tokio::process::Command::new("node")
         .current_dir(std::env::current_dir()?.join("../../.."))
         .args([
             "--input-type=module",
             "-e",
-            "import {installation} from './products/maka/bundle/src/installation.ts';
-             const {tools} = installation({workspace:process.cwd(),helper:'test'}).agent;
-             console.log(JSON.stringify(tools.filter(t => t.target.kind === 'export' && t.target.name === 'agent')))",
+            &format!(
+                "import {{installation}} from './products/maka/bundle/src/installation.ts';                 const {{tools}} = installation({{workspace:process.cwd(),helper:'test'}}).agent;                 console.log(JSON.stringify(tools.filter(t => {filter})))"
+            ),
         ])
         .output()
         .await?;
@@ -1581,68 +1586,13 @@ async fn product_agent_tools() -> TestResult<Value> {
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn registered_session_read_returns_prior_tool_history() -> TestResult<()> {
-    let mut rig = Rig::new()?;
-    let mut provider = Provider::start().await?;
-    let result = tokio::time::timeout(Duration::from_secs(240), async {
-        let base = rig.directory.path().to_path_buf();
-        let tools = product_agent_tools().await?;
-        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
-            config["tools"] = tools;
-            config["toolDiscovery"] = json!(true);
-        })
-        .await?;
-        attach(&mut rig, &boot).await?;
-        let client = rig.client.as_ref().unwrap();
-        let model = model(client, &provider.url, false).await?;
-        let session = create(client, &base, &model, None).await?;
-        let id = session["id"].as_str().ok_or("missing session id")?;
-        tool_round(
-            &rig,
-            &mut provider,
-            id,
-            false,
-            "tool_search",
-            json!({"query":"SessionRead","limit":1}),
-        )
-        .await?;
-        let reply = tool_round(&rig, &mut provider, id, false, "SessionRead", json!({})).await?;
-        let messages: Vec<Value> = serde_json::from_str(&reply)?;
-        let output: Value = serde_json::from_str(
-            messages[0]["content"]
-                .as_str()
-                .ok_or("missing tool content")?,
-        )?;
-        assert_eq!(output["session"]["id"], id, "{output}");
-        let items = output["transcript"]["items"]
-            .as_array()
-            .ok_or("missing Agent transcript")?;
-        assert!(
-            items
-                .iter()
-                .any(|item| item["role"] == "user" && item["text"] == "Execute tool_search")
-        );
-        assert!(
-            items
-                .iter()
-                .any(|item| item["toolName"] == "tool_search" && item["resultPath"].is_string())
-        );
-        Ok::<_, Box<dyn Error + Send + Sync>>(())
-    })
-    .await;
-    let errors = rig.finish().await;
-    result??;
-    assert!(errors.is_empty(), "{errors:?}");
-    Ok(())
-}
-
 async fn product_preset_tools(code: bool) -> TestResult<()> {
     let mut rig = Rig::new()?;
     let mut provider = Provider::start().await?;
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(240), async {
         let base = rig.directory.path().to_path_buf();
-        let tools = product_agent_tools().await?;
+        // Read the product declarations, so a renamed or unregistered tool breaks this route.
+        let tools = product_agent_tools(false).await?;
         let boot = bootstrap_with(&base,provider.url.clone(),|config| {config["tools"] = tools; config["toolDiscovery"] = json!(true);}).await?;
         attach(&mut rig,&boot).await?;
         let client = rig.client.as_ref().unwrap();
