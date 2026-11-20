@@ -206,17 +206,6 @@ impl Store {
             })
             .await
     }
-
-    /// Removed Sessions that finished retirement before their history was released.
-    pub async fn removed_sessions_with_history(
-        &self,
-        owner: RunOwner,
-        after: Option<String>,
-    ) -> Result<Vec<String>, StoreError> {
-        self.data
-            .query(RemovedWithHistory(serde_json::to_string(&owner)?, after))
-            .await
-    }
 }
 
 struct NextRun(String, String, String);
@@ -228,40 +217,6 @@ impl Query for NextRun {
         )?
         .query_row(params![self.0, self.1, self.2], |row| row.get(0))
         .optional()?)
-    }
-}
-
-struct RemovedWithHistory(String, Option<String>);
-impl Query for RemovedWithHistory {
-    type Output = Vec<String>;
-    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        Ok(c.prepare_cached(
-            "SELECT t.session_id FROM session_retirements t
-             WHERE t.remove_session=1 AND t.completed=1 AND (?2 IS NULL OR t.session_id>?2)
-               AND (
-                 EXISTS(
-                   SELECT 1 FROM agent_run_specs r
-                   WHERE r.owner=?1 AND r.session=t.session_id
-                     AND (
-                       EXISTS(SELECT 1 FROM agent_facts f WHERE f.run=r.run)
-                       OR (
-                         NOT EXISTS(SELECT 1 FROM agent_computer_grants g WHERE g.run=r.run AND g.scope='profile')
-                         AND NOT EXISTS(
-                           SELECT 1 FROM agent_computer_facts cf
-                           WHERE cf.run=r.run AND json_extract(cf.fact_json,'$.kind')='profile_grant_revoked'
-                         )
-                       )
-                     )
-                 )
-                 OR EXISTS(SELECT 1 FROM agent_queue_events q WHERE q.session=t.session_id)
-                 OR EXISTS(SELECT 1 FROM agent_queue_items q WHERE q.session=t.session_id)
-                 OR EXISTS(SELECT 1 FROM agent_session_values v WHERE v.session=t.session_id)
-                 OR EXISTS(SELECT 1 FROM agent_cell_notifications n WHERE n.session=t.session_id)
-               )
-             ORDER BY t.session_id LIMIT 32",
-        )?
-        .query_map(params![self.0, self.1], |row| row.get(0))?
-        .collect::<Result<_, _>>()?)
     }
 }
 
@@ -501,13 +456,6 @@ mod tests {
                 .is_err()
         );
         store.data.write(Fence("removed".into())).await.unwrap();
-        assert_eq!(
-            store
-                .removed_sessions_with_history(removed.owner.clone(), None)
-                .await
-                .unwrap(),
-            vec!["removed".to_owned()]
-        );
         for _ in 0..2 {
             store
                 .release_removed_session(removed.owner.clone(), "removed".into())
@@ -539,13 +487,6 @@ mod tests {
         ] {
             assert_eq!(rows(&store, table, "removed").await, vec![0], "{table}");
         }
-        assert!(
-            store
-                .removed_sessions_with_history(removed.owner.clone(), None)
-                .await
-                .unwrap()
-                .is_empty()
-        );
         assert_eq!(
             rows(
                 &store,
@@ -562,13 +503,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backfill_includes_ordinary_interactions_and_preserves_profile_grants_across_rebuilds()
-    {
+    async fn releases_ordinary_interactions_and_preserves_profile_grants_across_rebuilds() {
         let directory = tempfile::tempdir().unwrap();
         let (root, store) = open(directory.path(), true).await;
 
-        // 1. Removed session with an ordinary Question interaction: discovered by
-        //    startup backfill and completely reclaimed.
+        // 1. Removed session with an ordinary Question interaction is completely reclaimed.
         let (mut ordinary_spec, ordinary_contents) = spec();
         ordinary_spec.session_id = "ordinary-removed".into();
         let ordinary = Admission::new(ordinary_spec.clone(), UnixMillis(10), ordinary_contents);
@@ -617,13 +556,6 @@ mod tests {
             .write(Fence(ordinary_spec.session_id.clone()))
             .await
             .unwrap();
-        assert_eq!(
-            store
-                .removed_sessions_with_history(ordinary_spec.owner.clone(), None)
-                .await
-                .unwrap(),
-            vec!["ordinary-removed".to_owned()]
-        );
         store
             .release_removed_session(
                 ordinary_spec.owner.clone(),
@@ -648,13 +580,6 @@ mod tests {
             )
             .await,
             vec![0]
-        );
-        assert!(
-            store
-                .removed_sessions_with_history(ordinary_spec.owner.clone(), None)
-                .await
-                .unwrap()
-                .is_empty()
         );
 
         // 2. Removed session with a profile-scoped computer grant: releases agent_facts
@@ -825,13 +750,6 @@ mod tests {
             .write(Fence(profile_spec.session_id.clone()))
             .await
             .unwrap();
-        assert_eq!(
-            store
-                .removed_sessions_with_history(profile_spec.owner.clone(), None)
-                .await
-                .unwrap(),
-            vec!["profile-removed".to_owned()]
-        );
         store
             .release_removed_session(profile_spec.owner.clone(), profile_spec.session_id.clone())
             .await
@@ -845,13 +763,6 @@ mod tests {
             )
             .await,
             vec![0]
-        );
-        assert!(
-            store
-                .removed_sessions_with_history(profile_spec.owner.clone(), None)
-                .await
-                .unwrap()
-                .is_empty()
         );
         assert_eq!(
             rows(

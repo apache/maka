@@ -253,7 +253,7 @@ impl Owner {
                     }
                 };
                 if sessions.is_empty() {
-                    break;
+                    return;
                 }
                 for session in &sessions {
                     if owner.owns(session) {
@@ -261,38 +261,6 @@ impl Owner {
                             session.clone(),
                             &tokio::runtime::Handle::current(),
                         );
-                    }
-                }
-                after = sessions.last().cloned();
-            }
-            // Removals finished before history release existed still hold their history.
-            let mut after = None;
-            loop {
-                if owner.stop.is_cancelled() {
-                    return;
-                }
-                let sessions = match owner
-                    .durable
-                    .removed_sessions_with_history(owner.run_owner(), after.clone())
-                    .await
-                {
-                    Ok(sessions) => sessions,
-                    Err(error) => {
-                        tracing::error!(%error, "Removed session history release is unavailable");
-                        return;
-                    }
-                };
-                if sessions.is_empty() {
-                    return;
-                }
-                for session in &sessions {
-                    if owner.owns(session)
-                        && let Err(error) = owner
-                            .durable
-                            .release_removed_session(owner.run_owner(), session.clone())
-                            .await
-                    {
-                        tracing::error!(%session, %error, "Removed session history remains unreleased");
                     }
                 }
                 after = sessions.last().cloned();
