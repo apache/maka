@@ -369,6 +369,106 @@ impl EventLog {
             })?
     }
 
+    /// Once a revision has launched, older source revisions of its deployment
+    /// have no live caller. Drop those without open operations, then the
+    /// packages that no remaining source revision installs. Package files
+    /// release their content through the existing delete trigger.
+    pub async fn release_superseded_application_sources(
+        &self,
+        launched: &DeploymentRef,
+    ) -> Result<(), StoreError> {
+        launched.validate().map_err(invalid)?;
+        if launched.state_domain != self.application_domain()? {
+            return Err(invalid("foreign application state domain"));
+        }
+        let deployment = launched.deployment.to_string();
+        let launched = launched.revision as i64;
+        // Skip the write transaction on normal startups when nothing is older.
+        let has_older = self
+            .connection
+            .read({
+                let deployment = deployment.clone();
+                move |connection| {
+                    Ok(connection
+                        .prepare_cached(
+                            "SELECT 1 FROM application_sources WHERE deployment=? AND revision<? LIMIT 1",
+                        )?
+                        .exists(params![&deployment, launched])?)
+                }
+            })
+            .await?;
+        if !has_older {
+            return Ok(());
+        }
+        let commits = self.commits.notice();
+        self.connection
+            .run(move |connection| {
+                let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+                let pending_launch = tx
+                    .prepare_cached(
+                        "SELECT 1 FROM application_launch WHERE singleton=1 AND deployment=? AND pending IS NOT NULL",
+                    )?
+                    .exists(params![&deployment])?;
+                if pending_launch {
+                    return Ok(());
+                }
+                let older: Vec<i64> = tx
+                    .prepare_cached(
+                        "SELECT revision FROM application_sources WHERE deployment=? AND revision<? ORDER BY revision",
+                    )?
+                    .query_map(params![&deployment, launched], |row| row.get(0))?
+                    .collect::<Result<_, _>>()?;
+                if older.is_empty() {
+                    return Ok(());
+                }
+                // Recovery of any non-terminal operation (Unresolved/Unknown outcome or
+                // Unconfirmed/Failed cleanup) or unsettled intent may still read its source.
+                let open: BTreeSet<i64> = tx
+                    .prepare_cached(
+                        "SELECT source_revision FROM application_operations
+                         WHERE deployment=?1 AND source_revision<?2
+                           AND (json_extract(outcome_json,'$.kind') NOT IN ('returned','not_executed')
+                                OR json_extract(cleanup_json,'$.kind')<>'confirmed')
+                         UNION
+                         SELECT i.source_revision FROM application_intents i
+                         WHERE i.deployment=?1 AND i.source_revision<?2
+                           AND i.operation NOT IN (
+                             SELECT o.operation FROM application_operations o
+                             WHERE o.deployment=?1
+                               AND json_extract(o.outcome_json,'$.kind') IN ('returned','not_executed')
+                               AND json_extract(o.cleanup_json,'$.kind')='confirmed'
+                           )",
+                    )?
+                    .query_map(params![&deployment, launched], |row| row.get(0))?
+                    .collect::<Result<_, _>>()?;
+                let mut released = false;
+                for revision in older.into_iter().filter(|revision| !open.contains(revision)) {
+                    tx.execute(
+                        "DELETE FROM application_source_packages WHERE deployment=? AND source_revision=?",
+                        params![&deployment, revision],
+                    )?;
+                    tx.execute(
+                        "DELETE FROM application_sources WHERE deployment=? AND revision=?",
+                        params![&deployment, revision],
+                    )?;
+                    released = true;
+                }
+                if !released {
+                    return Ok(());
+                }
+                tx.execute(
+                    "DELETE FROM application_packages WHERE NOT EXISTS(SELECT 1 FROM application_source_packages s
+                       WHERE s.id=application_packages.id AND s.revision=application_packages.revision)",
+                    [],
+                )?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                commits.metadata();
+                commits.material_released();
+                Ok(())
+            })
+            .await
+    }
+
     async fn read_metadata(
         &self,
         deployment: Uuid,
@@ -549,3 +649,6 @@ fn read_package(connection: &Connection, reference: &PackageRef) -> Result<Packa
     let files = read_package_files(connection, reference)?;
     build_checked_package(files, reference)
 }
+
+#[cfg(test)]
+mod release_tests;

@@ -81,6 +81,15 @@ impl RootStore {
         self.require_open()?;
         self.log.load_application_package_at(source, package).await
     }
+    pub async fn release_superseded_application_sources(
+        &self,
+        launched: &DeploymentRef,
+    ) -> Result<(), StoreError> {
+        self.require_open()?;
+        self.log
+            .release_superseded_application_sources(launched)
+            .await
+    }
     pub async fn read_application_metadata(
         &self,
         deployment: Uuid,
