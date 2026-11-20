@@ -273,74 +273,6 @@ impl Publications {
         }
         Ok(true)
     }
-    async fn close(
-        &self,
-        publication: &mut PublicationState,
-        closure: TaskClosure,
-    ) -> Result<(), Error> {
-        if let Some(original) = publication.closed.as_ref() {
-            return if original == &closure {
-                Ok(())
-            } else {
-                Err(Error::Unknown)
-            };
-        }
-        if self.closed_in_store(&closure).await? {
-            publication.closed = Some(closure);
-            return Ok(());
-        }
-        let pending = if closure.0 == Terminal::Completed {
-            self.publication_source.clone()
-        } else {
-            None
-        };
-        let committed = self
-            .publish_locked(
-                publication,
-                ExternalObservation::Closed {
-                    outcome: closure.0.clone(),
-                    diagnostic: closure.1.clone(),
-                    final_message: closure.2.clone(),
-                    publication: pending,
-                },
-            )
-            .await;
-        if let Err(error) = committed {
-            if !self.closed_in_store(&closure).await? {
-                return Err(error);
-            }
-            tracing::debug!(%error, "Original task closure already committed by its source");
-        }
-        publication.closed = Some(closure);
-        Ok(())
-    }
-    /// Closes the task when a native executor's error is its verdict on the turn.
-    /// A stop or a retiring Host is not the executor's verdict, so the error keeps
-    /// the original recovery path.
-    async fn executor_failed(&self, error: Error, descriptor: ContentRef) -> Result<(), RunError> {
-        let Some(closure) = error_closure(&error) else {
-            return Err(external_error(error, descriptor));
-        };
-        if self.root_observation.is_cancelled()
-            || self.owner_stop.is_cancelled()
-            || !matches!(self.stop_requested().await, Ok(false))
-        {
-            return Err(external_error(error, descriptor));
-        }
-        tracing::warn!(%error, "External agent ended its turn with an error");
-        let mut publication = self.publication.lock().await;
-        self.close(&mut publication, closure)
-            .await
-            .map_err(|error| external_error(error, descriptor))
-    }
-}
-/// `Invalid` and `Provider` mean the executor gave up on its turn, so nothing is
-/// left to observe: the task fails with the executor's own text, and a reply it
-/// already showed stays in history. Any other error, `Unknown` included, does not
-/// say how the turn ended.
-fn error_closure(error: &Error) -> Option<TaskClosure> {
-    matches!(error, Error::Invalid(_) | Error::Provider(_))
-        .then(|| (Terminal::Failed, Some(error.to_string()), None))
 }
 impl OutputSink for Publications {
     fn turn_usage(
@@ -437,7 +369,42 @@ impl TaskBinding for Publications {
                 }
                 Outcome::Failed { message, .. } => (Terminal::Failed, Some(message), None),
             };
-            self.close(&mut publication, closure).await
+            if let Some(original) = publication.closed.as_ref() {
+                return if original == &closure {
+                    Ok(())
+                } else {
+                    Err(Error::Unknown)
+                };
+            }
+            if self.closed_in_store(&closure).await? {
+                publication.closed = Some(closure);
+                return Ok(());
+            }
+            let pending = if closure.0 == Terminal::Completed {
+                self.publication_source.clone()
+            } else {
+                None
+            };
+            let committed = self
+                .publish_locked(
+                    &mut publication,
+                    ExternalObservation::Closed {
+                        outcome: closure.0.clone(),
+                        diagnostic: closure.1.clone(),
+                        final_message: closure.2.clone(),
+                        publication: pending,
+                    },
+                )
+                .await;
+            if let Err(error) = committed {
+                if !self.closed_in_store(&closure).await? {
+                    return Err(error);
+                }
+                tracing::debug!(%error, "Original task closure already committed by its source");
+            }
+            publication.closed = Some(closure);
+            drop(publication);
+            Ok(())
         })
     }
     fn cleanup(&self, cleanup: OperationCleanup) -> BoxFuture<'_, Result<(), Error>> {
@@ -815,8 +782,6 @@ impl DriverExecutor {
             retained: self.retained.clone(),
         });
         let backend = self.backend.clone();
-        // A service executor's job can outlive this call and is observed again.
-        let native = fresh && backend.service_binding().is_none();
         let custody = self.access.custody().clone();
         let inputs = self.inputs.clone();
         let cleanup = self.cleanup.clone();
@@ -865,34 +830,14 @@ impl DriverExecutor {
                         )
                         .await
                 };
-                let result = if publications.accepted().await {
-                    if let Err(error) = &settlement.result {
-                        tracing::error!(%error, "Original executor teardown failed after canonical closure ACK");
-                    }
-                    Ok(())
-                } else { match settlement.result.clone() {
-                    Ok(outcome) => publications
-                        .closed(outcome)
-                        .await
-                        .map_err(|error| external_error(error, descriptor.clone())),
-                    Err(error) if native => {
-                        publications
-                            .executor_failed(error, descriptor.clone())
-                            .await
-                    }
-                    Err(error) => Err(external_error(error, descriptor.clone())),
-                }};
-                if !matches!(settlement.root_cleanup, OperationCleanup::Confirmed) {
-                    let _ = cleanup.unconfirmed();
-                    retained
-                        .lock()
-                        .await
-                        .push(RetainedSource::Resources(settlement));
-                    return Err(RunError::CleanupUnconfirmed);
-                }
-                result?;
-                drop(settlement);
-                Ok(())
+                settle_execution(
+                    publications.as_ref(),
+                    settlement,
+                    descriptor,
+                    &cleanup,
+                    &retained,
+                )
+                .await
             };
             let result = AssertUnwindSafe(work)
                 .catch_unwind()
@@ -1620,36 +1565,175 @@ impl maka_agent_engine::ports::ExternalPublicationPorts for DriverExecutor {
     }
 }
 
+trait SettlementSink: Sync {
+    fn accepted(&self) -> BoxFuture<'_, bool>;
+    fn close(&self, outcome: Outcome) -> BoxFuture<'_, Result<(), Error>>;
+}
+
+impl SettlementSink for Publications {
+    fn accepted(&self) -> BoxFuture<'_, bool> {
+        Box::pin(Publications::accepted(self))
+    }
+    fn close(&self, outcome: Outcome) -> BoxFuture<'_, Result<(), Error>> {
+        TaskBinding::closed(self, outcome)
+    }
+}
+
+async fn settle_execution(
+    publications: &dyn SettlementSink,
+    settlement: Settlement,
+    descriptor: ContentRef,
+    cleanup: &Evidence,
+    retained: &Mutex<Vec<RetainedSource>>,
+) -> Result<(), RunError> {
+    let accepted = publications.accepted().await;
+    if accepted && let Err(error) = &settlement.result {
+        tracing::error!(%error, "Original executor teardown failed after canonical closure ACK");
+    }
+    if !matches!(settlement.root_cleanup, OperationCleanup::Confirmed) {
+        let _ = cleanup.unconfirmed();
+        retained
+            .lock()
+            .await
+            .push(RetainedSource::Resources(settlement));
+        return Err(RunError::CleanupUnconfirmed);
+    }
+    if !accepted {
+        match settlement.result.clone() {
+            Ok(outcome) => publications
+                .close(outcome)
+                .await
+                .map_err(|error| external_error(error, descriptor))?,
+            Err(error) => return Err(external_error(error, descriptor)),
+        }
+    }
+    drop(settlement);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maka_agent_ports::executor::RootSettlementOwner;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    #[test]
-    fn only_an_executor_verdict_closes_the_task_with_its_own_error() {
-        for (error, text) in [
-            (
-                Error::Provider("Claude Code exited (1): usage limit reached".into()),
-                "executor failed: Claude Code exited (1): usage limit reached",
-            ),
-            (
-                Error::Invalid("Claude live transcript rotated".into()),
-                "invalid executor input or output: Claude live transcript rotated",
-            ),
+    struct StubSettlementOwner;
+    impl RootSettlementOwner for StubSettlementOwner {
+        fn original_root_cleanup(&self) -> OperationCleanup {
+            OperationCleanup::Unconfirmed
+        }
+        fn original_root_cleanup_signal(self: Arc<Self>) -> BoxFuture<'static, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingSink {
+        accepted: AtomicBool,
+        closed: std::sync::Mutex<Vec<Outcome>>,
+    }
+
+    impl SettlementSink for RecordingSink {
+        fn accepted(&self) -> BoxFuture<'_, bool> {
+            let value = self.accepted.load(Ordering::Acquire);
+            Box::pin(async move { value })
+        }
+        fn close(&self, outcome: Outcome) -> BoxFuture<'_, Result<(), Error>> {
+            Box::pin(async move {
+                self.closed.lock().unwrap().push(outcome);
+                self.accepted.store(true, Ordering::Release);
+                Ok(())
+            })
+        }
+    }
+
+    fn descriptor() -> ContentRef {
+        ContentBlob::json(&serde_json::json!({"task": "fixture"}))
+            .unwrap()
+            .reference()
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_cleanup_never_commits_closure_and_retains_resources() {
+        for result in [
+            Ok(Outcome::Failed {
+                message: "preparation failed".into(),
+                code: Some("native_preparation_failed".into()),
+                recoverable: false,
+            }),
+            Err(Error::Provider(
+                "agy ACP supervisor exited during admission".into(),
+            )),
         ] {
-            assert_eq!(
-                error_closure(&error),
-                Some((Terminal::Failed, Some(text.into()), None))
+            let sink = RecordingSink::default();
+            let cleanup = Evidence::default();
+            let retained = Mutex::new(Vec::new());
+            let settlement = Settlement::new(
+                result,
+                OperationCleanup::Unconfirmed,
+                Arc::new(StubSettlementOwner),
             );
+            let err = settle_execution(&sink, settlement, descriptor(), &cleanup, &retained)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, RunError::CleanupUnconfirmed), "{err:?}");
+            assert!(
+                sink.closed.lock().unwrap().is_empty(),
+                "unconfirmed cleanup must never commit ExternalTaskClosed"
+            );
+            assert_eq!(retained.lock().await.len(), 1);
         }
-        // These do not say how the turn ended, so the task stays observable.
-        for error in [
-            Error::Unknown,
-            Error::Persistence("disk full".into()),
-            Error::Cancelled,
-            Error::ObservationRetired,
-            Error::CleanupUnconfirmed,
-        ] {
-            assert_eq!(error_closure(&error), None, "{error}");
-        }
+    }
+
+    #[tokio::test]
+    async fn confirmed_cleanup_closes_failed_outcome_and_keeps_observation_errors_on_recovery() {
+        let sink = RecordingSink::default();
+        let cleanup = Evidence::default();
+        let retained = Mutex::new(Vec::new());
+        let settlement = Settlement::new(
+            Ok(Outcome::Failed {
+                message: "executor failed: usage limit reached".into(),
+                code: Some("native_preparation_failed".into()),
+                recoverable: false,
+            }),
+            OperationCleanup::Confirmed,
+            Arc::new(StubSettlementOwner),
+        );
+        settle_execution(&sink, settlement, descriptor(), &cleanup, &retained)
+            .await
+            .unwrap();
+        let closed = sink.closed.lock().unwrap();
+        assert_eq!(closed.len(), 1);
+        assert!(matches!(
+            &closed[0],
+            Outcome::Failed { message, code, recoverable }
+                if message == "executor failed: usage limit reached"
+                    && code.as_deref() == Some("native_preparation_failed")
+                    && !recoverable
+        ));
+        assert!(retained.lock().await.is_empty());
+
+        let sink = RecordingSink::default();
+        let settlement = Settlement::new(
+            Err(Error::Invalid("Claude live transcript rotated".into())),
+            OperationCleanup::Confirmed,
+            Arc::new(StubSettlementOwner),
+        );
+        let err = settle_execution(&sink, settlement, descriptor(), &cleanup, &retained)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RunError::Blocked(ref reason)
+                    if matches!(**reason, BlockerKind::ExternalTaskUnobservable { .. })
+            ),
+            "{err:?}"
+        );
+        assert!(
+            sink.closed.lock().unwrap().is_empty(),
+            "post-submission observation errors must stay on recovery path"
+        );
     }
 }

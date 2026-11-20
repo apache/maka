@@ -83,40 +83,57 @@ pub(in crate::executor::external) async fn execute(
     steering: &mut steering::Steering,
     owner: maka_process::isolated::TaskOwner,
 ) -> Result<Outcome, Error> {
+    let observation = journal.observation();
     let resume = journal.native_session().is_some();
     let session = journal
         .native_session()
         .map(str::to_owned)
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let cwd_path = tokio::fs::canonicalize(cwd)
+    let prepared = async {
+        let cwd_path = tokio::fs::canonicalize(cwd)
+            .await
+            .map_err(|error| Error::Provider(error.to_string()))?;
+        let cwd = cwd_path
+            .to_str()
+            .ok_or_else(|| Error::Invalid("Claude cwd must be UTF-8".into()))?
+            .to_owned();
+        let status = bridge.directory().join("context.json");
+        let mut cursor = Cursor::fence(transcript(config, &cwd_path, &session)?, resume).await?;
+        cursor.status_path = Some(status.clone());
+        let mcp_path = bridge.directory().join("mcp.json");
+        tokio::fs::write(
+            &mcp_path,
+            serde_json::to_vec(&bridge.claude()).expect("MCP configuration is JSON"),
+        )
         .await
-        .map_err(|error| Error::Provider(error.to_string()))?;
-    let cwd = cwd_path
-        .to_str()
-        .ok_or_else(|| Error::Invalid("Claude cwd must be UTF-8".into()))?;
-    let status = bridge.directory().join("context.json");
-    let mut cursor = Cursor::fence(transcript(config, &cwd_path, &session)?, resume).await?;
-    cursor.status_path = Some(status.clone());
-    let mcp_path = bridge.directory().join("mcp.json");
-    tokio::fs::write(
-        &mcp_path,
-        serde_json::to_vec(&bridge.claude()).expect("MCP configuration is JSON"),
-    )
-    .await
-    .map_err(|error| Error::Provider(format!("Claude MCP configuration failed: {error}")))?;
-    let mut command = status_command(config, cwd, &status).await?;
-    command.args(launch_args(&session, resume, &mcp_path, &config.args));
-    if let Some(model) = request["model"]
-        .as_str()
-        .filter(|model| *model != "default")
-    {
-        command.arg("--model").arg(model);
+        .map_err(|error| Error::Provider(format!("Claude MCP configuration failed: {error}")))?;
+        let mut command = status_command(config, &cwd, &status).await?;
+        command.args(launch_args(&session, resume, &mcp_path, &config.args));
+        if let Some(model) = request["model"]
+            .as_str()
+            .filter(|model| *model != "default")
+        {
+            command.arg("--model").arg(model);
+        }
+        if let Some(effort) = request["effort"].as_str() {
+            command.arg("--effort").arg(effort);
+        }
+        journal.opened(session.clone())?;
+        Ok::<_, Error>((cwd, cursor, command))
     }
-    if let Some(effort) = request["effort"].as_str() {
-        command.arg("--effort").arg(effort);
-    }
-    journal.opened(session.clone())?;
-    let observation = journal.observation();
+    .await;
+    let (cwd, mut cursor, command) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let error = if stop.is_cancelled() {
+                Error::Cancelled
+            } else {
+                error
+            };
+            return runtime::fail_without_launch(&observation, owner, error).await;
+        }
+    };
+    let cwd = cwd.as_str();
     let mut ticket = observation
         .resources
         .reserve()
@@ -132,7 +149,17 @@ pub(in crate::executor::external) async fn execute(
         Ok(process) => process,
         Err(maka_process::isolated::SpawnError::Closed(error)) => {
             ticket.complete(Ok(()));
-            return Err(runtime::isolation_error(error));
+            observation
+                .binding
+                .cleanup(OperationCleanup::Confirmed)
+                .await?;
+            return if stop.is_cancelled() {
+                Err(Error::Cancelled)
+            } else if observation.retired.is_cancelled() {
+                Err(Error::ObservationRetired)
+            } else {
+                runtime::preparation_failure(runtime::isolation_error(error))
+            };
         }
         Err(maka_process::isolated::SpawnError::Unconfirmed(failure)) => {
             ticket.unconfirmed(failure.to_string(), failure);
@@ -278,13 +305,8 @@ pub(in crate::executor::external) async fn execute(
             let outcome = Outcome::Cancelled { reason: None };
             journal.closed(outcome.clone()).await.map(|()| outcome)
         }
-        Err(error @ (Error::Provider(_) | Error::Invalid(_))) if start == Start::Interactive => {
-            let outcome = Outcome::Failed {
-                message: error.to_string(),
-                code: Some("native_preparation_failed".into()),
-                recoverable: false,
-            };
-            journal.closed(outcome.clone()).await.map(|()| outcome)
+        Err(error) if start == Start::Interactive && !stop.is_cancelled() => {
+            runtime::preparation_failure(error)
         }
         Err(error) => Err(error),
     };

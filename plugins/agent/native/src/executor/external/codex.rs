@@ -163,7 +163,14 @@ pub(super) async fn execute(
             }
         }
         Custody::Submitted => Err(Error::Unknown),
-        Custody::Preparing | Custody::Settled => result,
+        Custody::Preparing => {
+            if io.stop.is_cancelled() {
+                result
+            } else {
+                result.or_else(runtime::preparation_failure)
+            }
+        }
+        Custody::Settled => result,
     }
 }
 enum Custody {
@@ -265,6 +272,7 @@ async fn run(
     let started = match io.request("turn/start", params).await {
         Ok(started) => started,
         Err(RpcError::Rejected(message)) => {
+            *custody = Custody::Preparing;
             io.turn_finished();
             return Err(Error::Provider(message));
         }
