@@ -69,8 +69,8 @@ impl RunAccess {
         let view = self.fresh().await.map_err(RunError::InvalidInput)?;
         let current = self.live_configuration().await?;
         let owner = self.owner().map_err(RunError::InvalidInput)?;
-        let selection: crate::tools::SelectionSnapshot = owner
-            .run_content(view.run, &view.spec.tool_selection)
+        let selection = owner
+            .selection_snapshot(&owner.durable, view.run, &view.spec.tool_selection)
             .await?;
         let (mcp, mode) = self.current_model_tools(&current.workspace)?;
         let catalog = owner.run_catalog(self.clone(), &mcp, &selection)?;
@@ -91,8 +91,15 @@ impl RunAccess {
                 cancellation.clone(),
             )
             .await?;
-        self.validate_model_tools(request, &catalog, &bound.all(), &mcp, mode)
-            .await
+        self.validate_model_tools_with_selection(
+            request,
+            Some(&selection),
+            &catalog,
+            &bound.all(),
+            &mcp,
+            mode,
+        )
+        .await
     }
 
     pub(in crate::owner) async fn validate_model_tools(
@@ -103,13 +110,33 @@ impl RunAccess {
         mcp: &crate::mcp::Catalog,
         mode: maka_agent_facts::execution::ToolMode,
     ) -> Result<(), RunError> {
+        self.validate_model_tools_with_selection(request, None, raw, bound, mcp, mode)
+            .await
+    }
+
+    async fn validate_model_tools_with_selection(
+        self: &Arc<Self>,
+        request: &RequestSpec,
+        selection: Option<&crate::tools::SelectionSnapshot>,
+        raw: &maka_tools::ToolCatalog,
+        bound: &maka_tools::ToolCatalog,
+        mcp: &crate::mcp::Catalog,
+        mode: maka_agent_facts::execution::ToolMode,
+    ) -> Result<(), RunError> {
         validate_tool_digest(request)?;
         let view = self.fresh().await.map_err(RunError::InvalidInput)?;
         let owner = self.owner().map_err(RunError::InvalidInput)?;
         let current = self.live_configuration().await?;
-        let selection: crate::tools::SelectionSnapshot = owner
-            .run_content(view.run, &view.spec.tool_selection)
-            .await?;
+        let loaded;
+        let selection = match selection {
+            Some(selection) => selection,
+            None => {
+                loaded = owner
+                    .selection_snapshot(&owner.durable, view.run, &view.spec.tool_selection)
+                    .await?;
+                &loaded
+            }
+        };
         let code = mode == maka_agent_facts::execution::ToolMode::CodeMode;
         let contracts: BTreeMap<String, String> = if code {
             let provenance: serde_json::Value =

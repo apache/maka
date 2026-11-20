@@ -137,18 +137,23 @@ impl Catalog {
     ) -> Result<maka_tools::ToolCatalog, String> {
         let mut bindings = BTreeMap::new();
         self.collect_bindings(&mut bindings);
-        let registrations: Vec<_> = bindings
+        let handlers: Vec<_> = bindings
             .values()
             .filter(|binding| self.tools.contains(binding.name()))
-            .map(|binding| binding.for_run(access.clone()))
+            .map(|binding| {
+                (
+                    binding.name().to_owned(),
+                    binding.run_handler(access.clone()),
+                )
+            })
             .collect();
-        let names: Vec<_> = registrations
-            .iter()
-            .map(|registration| registration.definition.name.as_str())
-            .collect();
+        if handlers.is_empty() {
+            return Ok(tools);
+        }
+        let names: Vec<_> = handlers.iter().map(|(name, _)| name.as_str()).collect();
         tools
             .excluding(&names)
-            .with_additional(registrations)
+            .with_rebound_from(self.tools.as_catalog(), handlers)
             .map_err(|error| error.to_string())
     }
     fn collect_bindings<'a>(&'a self, bindings: &mut BTreeMap<&'a str, &'a super::LiveBinding>) {

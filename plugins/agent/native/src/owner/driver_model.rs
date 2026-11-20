@@ -1832,10 +1832,15 @@ impl DriverModel {
                         }
                         let mut base = None;
                         let mut order = std::collections::BTreeMap::<u64, (RunId, u64)>::new();
-                        let mut after = 0;
-                        loop {
-                            let (items, next) = reader.page(after, 256).await?;
-                            for item in items {
+                        let mut before = None;
+                        let mut min_seen = None;
+                        'scan: loop {
+                            let (items, next) = reader.previous_page(before, 256).await?;
+                            for item in items.into_iter().rev() {
+                                min_seen = Some(item.sequence);
+                                order
+                                    .entry(item.admission_sequence)
+                                    .or_insert((item.recorded.run, item.recorded.revision));
                                 match &item.recorded.fact {
                                     Fact::RunAdmitted { .. } => {
                                         let source = reader.run_source(item.recorded.run).await?;
@@ -1852,6 +1857,7 @@ impl DriverModel {
                                                 sequence: item.sequence,
                                                 run: item.recorded.run,
                                             });
+                                            break 'scan;
                                         }
                                     }
                                     Fact::StepPrepared { step, .. } => {
@@ -1863,6 +1869,7 @@ impl DriverModel {
                                                 run: item.recorded.run,
                                                 request: Box::new(request),
                                             });
+                                            break 'scan;
                                         }
                                     }
                                     Fact::ContextCompacted { baseline } => {
@@ -1870,19 +1877,16 @@ impl DriverModel {
                                             id: item.recorded.id,
                                             run: item.recorded.run,
                                             baseline: baseline.clone(),
-                                        })
+                                        });
+                                        break 'scan;
                                     }
                                     _ => {}
                                 }
-                                order
-                                    .entry(item.admission_sequence)
-                                    .and_modify(|entry| entry.1 = item.recorded.revision)
-                                    .or_insert((item.recorded.run, item.recorded.revision));
                             }
                             let Some(next) = next else {
                                 break;
                             };
-                            after = next;
+                            before = Some(next);
                         }
                         let (covered, previous_checkpoint_id) = match base {
                             None => (None, None),
@@ -1904,7 +1908,32 @@ impl DriverModel {
                                         reader, run, &baseline, target, language, messages,
                                     )
                                     .await?;
-                                (Some(capture.current.through_sequence), Some(id.to_string()))
+                                let through = capture.current.through_sequence;
+                                // A proactive summary can cover an earlier sequence than the
+                                // ContextCompacted adoption fact; collect any tail items between.
+                                let mut cursor = min_seen;
+                                while let Some(bound) = cursor {
+                                    if bound <= through.saturating_add(1) {
+                                        break;
+                                    }
+                                    let (items, next) =
+                                        reader.previous_page(Some(bound), 256).await?;
+                                    let mut done = false;
+                                    for item in items.into_iter().rev() {
+                                        if item.sequence <= through {
+                                            done = true;
+                                            break;
+                                        }
+                                        order
+                                            .entry(item.admission_sequence)
+                                            .or_insert((item.recorded.run, item.recorded.revision));
+                                    }
+                                    if done {
+                                        break;
+                                    }
+                                    cursor = next;
+                                }
+                                (Some(through), Some(id.to_string()))
                             }
                             Some(Base::Snapshot { sequence, run }) => {
                                 let nested = reader.nested(run).await?;
@@ -1929,22 +1958,23 @@ impl DriverModel {
                 .await?;
             loop {
                 let reader = current.as_ref();
-                let covered_revisions = match covered {
-                    Some(through) => self.covered_revisions(reader, through).await?,
-                    None => Default::default(),
-                };
                 let mut tail = ReplayedTail::default();
                 for (admission, (run, through)) in order {
+                    let after = match covered {
+                        Some(covered) if admission <= covered => {
+                            reader.run_revision_through(run, covered).await?
+                        }
+                        _ => 0,
+                    };
+                    if after >= through {
+                        continue;
+                    }
                     let source = reader.run_source(run).await?;
                     if matches!(source.spec.backend, BackendSpec::Historical {}) {
                         continue;
                     }
-                    let after = covered_revisions.get(&run).copied().unwrap_or(0);
-                    if after >= through {
-                        continue;
-                    }
                     let view = reader.view(run).await?;
-                    if !covered.is_some_and(|through| admission <= through) {
+                    if !covered.is_some_and(|covered| admission <= covered) {
                         let input: RunInput = reader.decode(run, &view.spec.input).await?;
                         self.project_message_input(reader, &view, &input, vision, false, messages)
                             .await?;
@@ -1977,28 +2007,6 @@ impl DriverModel {
                 order = frame.order;
             }
         })
-    }
-
-    async fn covered_revisions(
-        &self,
-        reader: &HistorySource<'_>,
-        through: u64,
-    ) -> Result<std::collections::BTreeMap<RunId, u64>, RunError> {
-        let mut revisions = std::collections::BTreeMap::new();
-        let mut after = 0;
-        loop {
-            let (items, next) = reader.page(after, 256).await?;
-            for item in items {
-                if item.sequence > through {
-                    return Ok(revisions);
-                }
-                revisions.insert(item.recorded.run, item.recorded.revision);
-            }
-            let Some(next) = next else {
-                return Ok(revisions);
-            };
-            after = next;
-        }
     }
 
     async fn request_checkpoint(
@@ -2120,22 +2128,20 @@ impl DriverModel {
                         )
                     }
                 };
-                let covered_revisions = match covered {
-                    Some(through) => self.covered_revisions(reader, through).await?,
-                    None => Default::default(),
-                };
                 for (position, (prior, input)) in
                     ancestry.into_iter().enumerate().take(index + 1).rev()
                 {
                     merge_input_skills(system, &input)?;
-                    let after = if position == index {
-                        request_after.unwrap_or_else(|| {
-                            covered_revisions.get(&prior.run).copied().unwrap_or(0)
-                        })
-                    } else {
-                        covered_revisions.get(&prior.run).copied().unwrap_or(0)
-                    };
                     let admission = reader.run_source(prior.run).await?.admission_sequence;
+                    let after = match (position == index).then_some(request_after).flatten() {
+                        Some(after) => after,
+                        None => match covered {
+                            Some(through) if admission <= through => {
+                                reader.run_revision_through(prior.run, through).await?
+                            }
+                            _ => 0,
+                        },
+                    };
                     if !(position == index && request_after.is_some())
                         && !covered.is_some_and(|through| admission <= through)
                     {

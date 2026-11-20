@@ -238,11 +238,116 @@ fn records(
     };
     Ok(SnapshotPage { items, next })
 }
+fn previous_records(
+    c: &Connection,
+    snapshot: &Snapshot,
+    before: Option<u64>,
+    size: u32,
+) -> Result<SnapshotPage, StoreError> {
+    authorize(c, snapshot)?;
+    let size = super::super::sql::limit(size)?;
+    let bound = match before {
+        Some(0) => {
+            return Ok(SnapshotPage {
+                items: vec![],
+                next: None,
+            });
+        }
+        Some(before) => before - 1,
+        None => i64::MAX as u64,
+    };
+    let mut query = c.prepare_cached(
+        "SELECT entry_json FROM agent_history_snapshot_entries WHERE snapshot=?1 AND kind='fact' AND sequence<=?2 ORDER BY sequence DESC LIMIT ?3",
+    )?;
+    let raw: Vec<String> = query
+        .query_map(
+            params![snapshot.id.to_string(), bind_u64(bound)?, size + 1],
+            |r| r.get(0),
+        )?
+        .collect::<Result<_, _>>()?;
+    let more = raw.len() > size as usize;
+    let mut items = Vec::with_capacity(raw.len().min(size as usize));
+    for raw in raw.into_iter().take(size as usize) {
+        let Entry::Fact {
+            run,
+            sequence,
+            admission_sequence,
+            revision,
+            step,
+            attempt,
+            id,
+            body,
+            ..
+        } = serde_json::from_str(&raw)?
+        else {
+            return Err(invalid("snapshot fact index has another entry kind"));
+        };
+        let recorded: RecordedFact = decode(c, snapshot, &body, Some(run))?;
+        if recorded.run != run
+            || recorded.id != id
+            || recorded.revision != revision
+            || recorded.schema_version != SCHEMA_VERSION
+        {
+            return Err(invalid(
+                "snapshot original fact identity differs from its index",
+            ));
+        }
+        items.push(HistoryItem {
+            sequence,
+            admission_sequence,
+            scope: HistoryScope { step, attempt },
+            recorded,
+        });
+    }
+    items.reverse();
+    let next = if more {
+        items.first().map(|item| item.sequence)
+    } else {
+        None
+    };
+    Ok(SnapshotPage { items, next })
+}
+
 pub(super) struct Page(pub Snapshot, pub u64, pub u32);
 impl Query for Page {
     type Output = SnapshotPage;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         records(c, &self.0, None, self.1, self.2)
+    }
+}
+pub(super) struct PreviousPage(pub Snapshot, pub Option<u64>, pub u32);
+impl Query for PreviousPage {
+    type Output = SnapshotPage;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        previous_records(c, &self.0, self.1, self.2)
+    }
+}
+pub(super) struct RunRevisionThrough(pub Snapshot, pub RunId, pub u64);
+impl Query for RunRevisionThrough {
+    type Output = u64;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        authorize(c, &self.0)?;
+        if self.2 == 0 {
+            return Ok(0);
+        }
+        let revision: Option<Option<i64>> = c
+            .prepare_cached(
+                "SELECT CAST(json_extract(entry_json,'$.revision') AS INTEGER)
+                 FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_run
+                 WHERE snapshot=?1 AND kind='fact' AND run=?2 AND sequence<=?3
+                 ORDER BY sequence DESC
+                 LIMIT 1",
+            )?
+            .query_row(
+                params![self.0.id.to_string(), self.1.to_string(), bind_u64(self.2)?],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match revision {
+            Some(Some(value)) => u64::try_from(value).map_err(|_| invalid("negative revision")),
+            Some(None) => Err(invalid("snapshot fact missing revision")),
+            None => Ok(0),
+        }
     }
 }
 pub(super) struct History(pub Snapshot, pub RunId, pub u64, pub u32);

@@ -1738,12 +1738,31 @@ async fn discovery_restart_settles_an_interrupted_original_run_without_replay() 
         .await
         .unwrap()
         .unwrap();
+    // Restart resumes the interrupted original run after its frozen-retry delay;
+    // wait for that recovered attempt before stopping so settlement cannot race it.
+    let (_resumed, _) = next(&listener).await;
+    assert_eq!(
+        f.owner()
+            .durable
+            .runs(worker.clone(), None, 10)
+            .await
+            .unwrap(),
+        vec![original]
+    );
     f.query("stop", json!({"sessionId":worker,"runId":original}))
         .await;
     let done = f.settled(&task, 1).await;
     assert_eq!(done["task"]["runs"][0]["outcome"], "failed");
     assert_eq!(done["task"]["runs"][0]["sessionId"], worker);
     assert_eq!(done["task"]["runs"][0]["runId"], json!(original));
+    assert_eq!(
+        f.owner()
+            .durable
+            .runs(worker.clone(), None, 10)
+            .await
+            .unwrap(),
+        vec![original]
+    );
     assert!(
         tokio::time::timeout(Duration::from_millis(100), listener.accept())
             .await

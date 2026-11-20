@@ -233,3 +233,94 @@ fn a_schema_rejection_names_only_the_first_errors() {
     assert_eq!(message.matches("; /").count(), 2, "{message}");
     assert!(message.ends_with("; and 2 more"), "{message}");
 }
+
+#[test]
+fn rebinding_handlers_reuses_compiled_definitions_and_validators() {
+    struct Single(&'static str);
+    impl ToolPreparer for Single {
+        fn names(&self) -> Vec<String> {
+            vec![self.0.to_owned()]
+        }
+        fn prepare(
+            &self,
+            _: String,
+            _: Value,
+            _: ToolCallContext,
+            _: CancellationToken,
+        ) -> PreparationFuture {
+            Box::pin(async { Err(ToolRejection::Unavailable) })
+        }
+    }
+
+    let source = catalog();
+    let replacement: Arc<dyn ToolPreparer> = Arc::new(Single("alpha"));
+    let rebound = source
+        .clone()
+        .with_rebound_handlers([(
+            "alpha".to_owned(),
+            maka_agent_facts::tools::ToolHandler::Prepared(replacement.clone()),
+        )])
+        .unwrap();
+
+    assert!(rebound.is_prepared_by("alpha", &replacement));
+    assert!(rebound.always_visible("alpha"));
+    assert!(Arc::ptr_eq(
+        &source.entries["alpha"].definition,
+        &rebound.entries["alpha"].definition
+    ));
+    assert!(Arc::ptr_eq(
+        &source.entries["alpha"].validator,
+        &rebound.entries["alpha"].validator
+    ));
+    assert!(
+        source
+            .clone()
+            .with_rebound_handlers([(
+                "omega".to_owned(),
+                maka_agent_facts::tools::ToolHandler::Prepared(replacement.clone()),
+            )])
+            .is_err()
+    );
+    assert!(
+        source
+            .clone()
+            .with_rebound_handlers([(
+                "missing".to_owned(),
+                maka_agent_facts::tools::ToolHandler::Declaration("missing".to_owned()),
+            )])
+            .is_err()
+    );
+
+    let extra_preparer: Arc<dyn ToolPreparer> = Arc::new(Single("omega"));
+    let base = source.excluding(&["omega"]);
+    let merged = base
+        .clone()
+        .with_rebound_from(
+            &source,
+            [(
+                "omega".to_owned(),
+                maka_agent_facts::tools::ToolHandler::Prepared(extra_preparer.clone()),
+            )],
+        )
+        .unwrap();
+    assert!(merged.is_prepared_by("omega", &extra_preparer));
+    assert!(Arc::ptr_eq(
+        &source.entries["omega"].definition,
+        &merged.entries["omega"].definition
+    ));
+    assert!(Arc::ptr_eq(
+        &source.entries["omega"].validator,
+        &merged.entries["omega"].validator
+    ));
+    assert!(
+        merged
+            .with_rebound_from(
+                &source,
+                [(
+                    "omega".to_owned(),
+                    maka_agent_facts::tools::ToolHandler::Prepared(extra_preparer),
+                )],
+            )
+            .is_err()
+    );
+}

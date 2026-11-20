@@ -154,6 +154,41 @@ pub(super) fn content(
     spec(c, history, run)?;
     crate::sql::owned_content(c, run, reference)
 }
+fn run_fact_through(
+    c: &Connection,
+    run: &str,
+    bound: u64,
+) -> Result<Option<(u64, u64)>, StoreError> {
+    let mut seek = c.prepare_cached(
+        "SELECT sequence,revision FROM agent_facts INDEXED BY agent_facts_diagnostics_tail WHERE run=? ORDER BY revision DESC LIMIT 1",
+    )?;
+    let Some((sequence, revision)) = seek
+        .query_row([run], |row| Ok((read_u64(row, 0)?, read_u64(row, 1)?)))
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    if sequence <= bound {
+        return Ok(Some((sequence, revision)));
+    }
+    // Revisions are contiguous and their canonical sequences increase.
+    // Old cuts must not scan an arbitrarily long future tail of this Run.
+    let mut point = c.prepare_cached(
+        "SELECT sequence FROM agent_facts INDEXED BY agent_facts_diagnostics_tail WHERE run=? AND revision=?",
+    )?;
+    let (mut low, mut high, mut selected) = (1, revision, None);
+    while low <= high {
+        let middle = low + (high - low) / 2;
+        let sequence = point.query_row(params![run, bind_u64(middle)?], |row| read_u64(row, 0))?;
+        if sequence <= bound {
+            selected = Some((sequence, middle));
+            low = middle + 1;
+        } else {
+            high = middle - 1;
+        }
+    }
+    Ok(selected)
+}
 fn canonical_tail(
     c: &Connection,
     history: &HistoryNamespace,
@@ -166,32 +201,11 @@ fn canonical_tail(
         bind_u64(bound)?
     ])?;
     let mut tail = 0;
-    let mut seek = c.prepare_cached("SELECT sequence,revision FROM agent_facts INDEXED BY agent_facts_diagnostics_tail WHERE run=? ORDER BY revision DESC LIMIT 1")?;
-    let mut point =
-        c.prepare_cached("SELECT sequence FROM agent_facts WHERE run=? AND revision=?")?;
     while let Some(row) = rows.next()? {
         let run: String = row.get(0)?;
-        let (sequence, revision) =
-            seek.query_row([&run], |row| Ok((read_u64(row, 0)?, read_u64(row, 1)?)))?;
-        if sequence <= bound {
+        if let Some((sequence, _)) = run_fact_through(c, &run, bound)? {
             tail = tail.max(sequence);
-            continue;
         }
-        // Revisions are contiguous and their canonical sequences increase.
-        // Old cuts must not scan an arbitrarily long future tail of this Run.
-        let (mut low, mut high, mut selected) = (1, revision, 0);
-        while low <= high {
-            let middle = low + (high - low) / 2;
-            let sequence =
-                point.query_row(params![run, bind_u64(middle)?], |row| read_u64(row, 0))?;
-            if sequence <= bound {
-                selected = sequence;
-                low = middle + 1;
-            } else {
-                high = middle - 1;
-            }
-        }
-        tail = tail.max(selected);
     }
     Ok(tail)
 }
@@ -1233,6 +1247,31 @@ pub(super) fn previous(
         items,
         next: if more { Some(first) } else { None },
     })
+}
+
+pub(super) fn run_revision_through(
+    c: &Connection,
+    history: &HistoryNamespace,
+    cut: &HistoryCut,
+    run: RunId,
+    through: u64,
+) -> Result<u64, StoreError> {
+    let owner = check_cut(c, history, cut)?;
+    if through > cut.through_sequence {
+        return Err(invalid("history cursor exceeds captured cut"));
+    }
+    if through == 0 {
+        return Ok(0);
+    }
+    let run = run.to_string();
+    let owned: Option<i64> = c
+        .prepare_cached("SELECT 1 FROM agent_run_specs WHERE owner=? AND session=? AND run=?")?
+        .query_row(params![owner, history.session, &run], |row| row.get(0))
+        .optional()?;
+    if owned.is_none() {
+        return Ok(0);
+    }
+    Ok(run_fact_through(c, &run, through)?.map_or(0, |(_, revision)| revision))
 }
 
 pub(crate) fn capture_at(

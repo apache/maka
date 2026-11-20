@@ -216,17 +216,25 @@ fn recovery_unavailable(diagnostic: impl Into<String>) -> RunError {
 }
 
 impl OriginalEffects {
-    async fn selection(&self) -> Result<crate::tools::SelectionSnapshot, RunError> {
-        let bytes = self
-            .state
-            .content(
+    async fn selection(&self) -> Result<Arc<crate::tools::SelectionSnapshot>, RunError> {
+        let owner = self
+            .access
+            .owner
+            .upgrade()
+            .ok_or_else(|| recovery_unavailable("original native owner is unavailable"))?;
+        owner
+            .selection_snapshot(
+                &self.state,
                 self.access.execution().run_id,
-                self.access.spec().tool_selection.clone(),
+                &self.access.spec().tool_selection,
             )
-            .await?;
-        serde_json::from_slice(&bytes).map_err(|error| {
-            recovery_unavailable(format!("original tool selection is unavailable: {error}"))
-        })
+            .await
+            .map_err(|error| match error {
+                RunError::InvalidInput(message) => recovery_unavailable(format!(
+                    "original tool selection is unavailable: {message}"
+                )),
+                other => other,
+            })
     }
     pub(super) async fn selected_for_tool(
         &self,

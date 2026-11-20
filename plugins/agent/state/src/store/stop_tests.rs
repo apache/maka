@@ -785,3 +785,163 @@ async fn confirmed_native_exit_unblocks_a_previously_failed_conversation() {
     drop((claim, store));
     root.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn verify_owned_content_and_run_revision_through_respect_pins_and_boundaries() {
+    let directory = tempfile::tempdir().unwrap();
+    let (root, store) = open(directory.path(), true).await;
+    let (spec1, contents1) = spec();
+    let run1_admission = Admission::new(spec1.clone(), UnixMillis(1), contents1);
+    let run1 = run1_admission.run();
+    store.admit(run1_admission).await.unwrap();
+
+    let mut foreign_spec = spec1.clone();
+    foreign_spec.session_id = "other-session".into();
+    foreign_spec.turn_id = "foreign-turn".into();
+    foreign_spec.trigger = Trigger::Message {
+        message_id: "foreign-message".into(),
+    };
+    let foreign_blob = ContentBlob::json(&"foreign-selection").unwrap();
+    foreign_spec.tool_selection = foreign_blob.reference().clone();
+    let foreign_admission = Admission::new(foreign_spec, UnixMillis(1), vec![foreign_blob]);
+    let foreign_run = foreign_admission.run();
+    store.admit(foreign_admission).await.unwrap();
+
+    // Pinned content passes; unpinned digest and wrong length fail.
+    store
+        .verify_owned_content(run1, spec1.tool_selection.clone())
+        .await
+        .unwrap();
+    let mut wrong_len = spec1.tool_selection.clone();
+    wrong_len.bytes += 1;
+    assert!(store.verify_owned_content(run1, wrong_len).await.is_err());
+
+    let extra_blob = ContentBlob::json(&"other-run-only").unwrap();
+    let extra_ref = extra_blob.reference().clone();
+    let mut spec2 = spec1.clone();
+    spec2.turn_id = "second-turn".into();
+    spec2.trigger = Trigger::Message {
+        message_id: "second-message".into(),
+    };
+    spec2.tool_selection = extra_ref.clone();
+    let run2_admission = Admission::new(spec2, UnixMillis(2), vec![extra_blob]);
+    let run2 = run2_admission.run();
+
+    // Append a second fact to run1 before run2 is admitted, then terminate run1 after run2.
+    {
+        let claim1 = store.claim(run1).await.unwrap();
+        let view1 = store.frontier(run1).await.unwrap();
+        store
+            .append(
+                &claim1,
+                Head::from(&view1),
+                vec![Change::new(
+                    Fact::StopRequested {
+                        diagnostic: "mid-run".into(),
+                    },
+                    UnixMillis(2),
+                )],
+                vec![],
+            )
+            .await
+            .unwrap();
+        store.admit(run2_admission).await.unwrap();
+        let view1 = store.frontier(run1).await.unwrap();
+        store
+            .append(
+                &claim1,
+                Head::from(&view1),
+                vec![Change::new(
+                    Fact::RunTerminated {
+                        terminal: Terminal::Cancelled,
+                        diagnostic: None,
+                    },
+                    UnixMillis(3),
+                )],
+                vec![],
+            )
+            .await
+            .unwrap();
+    }
+
+    // Foreign run cannot pass pin check for run2's content.
+    assert!(
+        store
+            .verify_owned_content(run1, extra_ref.clone())
+            .await
+            .is_err()
+    );
+    store.verify_owned_content(run2, extra_ref).await.unwrap();
+
+    let history = store.session_history(spec1.owner.clone(), spec1.session_id.clone());
+    let cut = history.capture().await.unwrap();
+    let items = history.page(&cut, 0, 16).await.unwrap().items;
+    assert_eq!(items.len(), 4);
+    let seq_r1_adm = items[0].sequence;
+    let seq_r1_stop = items[1].sequence;
+    let seq_r2_adm = items[2].sequence;
+    let seq_r1_term = items[3].sequence;
+
+    assert_eq!(
+        history.run_revision_through(&cut, run1, 0).await.unwrap(),
+        0
+    );
+    assert_eq!(
+        history
+            .run_revision_through(&cut, run1, seq_r1_adm)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        history
+            .run_revision_through(&cut, run1, seq_r1_stop)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        history
+            .run_revision_through(&cut, run1, seq_r2_adm)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        history
+            .run_revision_through(&cut, run1, seq_r1_term)
+            .await
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        history
+            .run_revision_through(&cut, run2, seq_r1_stop)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        history
+            .run_revision_through(&cut, run2, seq_r2_adm)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        history
+            .run_revision_through(&cut, foreign_run, cut.through_sequence)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(
+        history
+            .run_revision_through(&cut, run1, cut.through_sequence + 1)
+            .await
+            .is_err()
+    );
+
+    drop(store);
+    root.close().await.unwrap();
+}

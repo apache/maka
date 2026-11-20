@@ -43,7 +43,60 @@ impl From<maka_event_log::StoreError> for RestorationError {
     }
 }
 
+const SELECTION_CACHE_CAPACITY: usize = 16;
+
 impl Owner {
+    pub(super) fn cache_selection_snapshot(
+        &self,
+        reference: ContentRef,
+        snapshot: Arc<crate::tools::SelectionSnapshot>,
+    ) {
+        let mut cache = self
+            .selection_cache
+            .lock()
+            .expect("selection snapshot cache poisoned");
+        if let Some(index) = cache.iter().position(|(key, _)| key == &reference) {
+            cache.remove(index);
+        } else if cache.len() >= SELECTION_CACHE_CAPACITY {
+            cache.remove(0);
+        }
+        cache.push((reference, snapshot));
+    }
+
+    pub(super) async fn selection_snapshot(
+        &self,
+        state: &maka_agent_state::Store,
+        run: RunId,
+        reference: &ContentRef,
+    ) -> Result<Arc<crate::tools::SelectionSnapshot>, RunError> {
+        let cached = {
+            let mut cache = self
+                .selection_cache
+                .lock()
+                .expect("selection snapshot cache poisoned");
+            cache
+                .iter()
+                .position(|(key, _)| key == reference)
+                .map(|index| {
+                    let entry = cache.remove(index);
+                    let snapshot = Arc::clone(&entry.1);
+                    cache.push(entry);
+                    snapshot
+                })
+        };
+        if let Some(snapshot) = cached {
+            state.verify_owned_content(run, reference.clone()).await?;
+            return Ok(snapshot);
+        }
+        let bytes = state.content(run, reference.clone()).await?;
+        let snapshot: Arc<crate::tools::SelectionSnapshot> = Arc::new(
+            serde_json::from_slice(&bytes)
+                .map_err(|error| RunError::InvalidInput(error.to_string()))?,
+        );
+        self.cache_selection_snapshot(reference.clone(), Arc::clone(&snapshot));
+        Ok(snapshot)
+    }
+
     pub(super) async fn run_content<T: DeserializeOwned>(
         &self,
         run: RunId,
@@ -57,7 +110,7 @@ impl Owner {
     pub(super) async fn restored_data(
         &self,
         view: &RunView,
-    ) -> Result<(CapturedRun, crate::tools::SelectionSnapshot), RestorationError> {
+    ) -> Result<(CapturedRun, Arc<crate::tools::SelectionSnapshot>), RestorationError> {
         let current = self
             .mutable_session(&view.spec.session_id)
             .await
@@ -65,8 +118,8 @@ impl Owner {
                 stage: AuthorityStage::CurrentSession,
                 cause: RunError::InvalidInput(error),
             })?;
-        let selection: crate::tools::SelectionSnapshot = self
-            .run_content(view.run, &view.spec.tool_selection)
+        let selection = self
+            .selection_snapshot(&self.durable, view.run, &view.spec.tool_selection)
             .await?;
         let system: Option<SystemPrompt> =
             self.run_content(view.run, &view.spec.system_prompt).await?;
@@ -166,7 +219,6 @@ impl Owner {
             allowed_tools: view.spec.allowed_tools.clone(),
             background: None,
             background_sandbox_ceiling: None,
-            internal_tools: Arc::new(selection.definitions.clone()),
             internal_bindings: Arc::new(selection.internal_bindings.clone()),
             behavior: system,
             model,
@@ -184,38 +236,42 @@ impl Owner {
         mcp: &crate::mcp::Catalog,
         frozen: &crate::tools::SelectionSnapshot,
     ) -> Result<maka_tools::ToolCatalog, RunError> {
-        let mut live = crate::tools::catalog_for_run(
-            self.services.clone(),
-            self.configuration.clone(),
-            &self.settings.tools,
-            self.internal_registrations.clone(),
-            self.workers.clone(),
-            access.clone(),
-        )
-        .map_err(RunError::InvalidInput)?;
+        let mut live = self
+            .tool_catalog
+            .for_run(
+                self.configuration.clone(),
+                self.workers.clone(),
+                access.clone(),
+            )
+            .map_err(RunError::InvalidInput)?;
         // Keep Goal tool visibility static across turns so starting or completing a Goal
         // never mutates the tool catalog or exec.description prefix cache.
         if self.settings.goals {
-            live.tools = live
-                .tools
+            live = live
                 .with_always_visible(super::goal::tools::NAMES)
                 .map_err(|error| RunError::InvalidInput(error.to_string()))?;
         }
-        let live_tools = mcp
-            .for_run(access, live.tools)
-            .map_err(RunError::InvalidInput)?;
+        let live_tools = mcp.for_run(access, live).map_err(RunError::InvalidInput)?;
         // Keep the admitted tool declarations across Host activations.
         let direct_only: std::collections::BTreeSet<_> =
             live_tools.direct_only().names().into_iter().collect();
+        let frozen_by_name: std::collections::BTreeMap<
+            &str,
+            &maka_agent_facts::tools::ToolDefinition,
+        > = frozen
+            .definitions
+            .iter()
+            .map(|definition| (definition.name.as_str(), definition))
+            .collect();
         let excluded: Vec<_> = live_tools
             .definitions()
             .filter(|definition| {
-                !frozen.definitions.iter().any(|original| {
-                    original.name == definition.name
-                        && super::driver::same_tool_contract(original, definition)
-                }) || (direct_only.contains(&definition.name)
-                    != frozen.direct_only.contains(&definition.name))
-                    || !frozen.matches_service(&definition.name, &live.basis)
+                !frozen_by_name
+                    .get(definition.name.as_str())
+                    .is_some_and(|original| super::driver::same_tool_contract(original, definition))
+                    || (direct_only.contains(&definition.name)
+                        != frozen.direct_only.contains(&definition.name))
+                    || !frozen.matches_service(&definition.name, &self.tool_basis)
                     || frozen.internal_bindings.get(&definition.name)
                         != mcp.bindings.get(&definition.name)
             })

@@ -138,7 +138,6 @@ struct CapturedRun {
     allowed_tools: Option<Vec<String>>,
     background: Option<ScheduledTarget>,
     background_sandbox_ceiling: Option<maka_sandbox::Sandbox>,
-    internal_tools: Arc<Vec<maka_agent_facts::tools::ToolDefinition>>,
     internal_bindings: Arc<BTreeMap<String, Option<String>>>,
     behavior: Option<SystemPrompt>,
     model: Option<crate::model::AcceptedModel>,
@@ -250,7 +249,13 @@ pub(crate) struct Owner {
     pub home: Option<std::path::PathBuf>,
     code_executor: maka_tools::CodeExecutor,
     tools: crate::tools::Declarations,
-    internal_registrations: Vec<maka_agent_facts::tools::ToolRegistration>,
+    tool_catalog: crate::tools::PreparedCatalog,
+    selection_cache: std::sync::Mutex<
+        Vec<(
+            maka_agent_facts::durable::ContentRef,
+            Arc<crate::tools::SelectionSnapshot>,
+        )>,
+    >,
     mcp: crate::mcp::Servers,
     mcp_projects: Arc<crate::mcp::Projects>,
     tool_basis: Arc<Vec<crate::tools::SelectedTool>>,
@@ -479,7 +484,6 @@ impl Owner {
         if settings.bot {
             additional.extend(bot.tools());
         }
-        let internal_registrations = additional.clone();
         let mut mcp = match crate::mcp::Servers::open(&settings.mcp_servers, &configuration).await {
             Ok(mcp) => mcp,
             Err(error) => {
@@ -491,15 +495,24 @@ impl Owner {
                 ));
             }
         };
-        additional.append(&mut mcp.registrations);
+        let mcp_registrations = std::mem::take(&mut mcp.registrations);
         internal_bindings.append(&mut mcp.bindings);
         let internal_tools: Vec<_> = additional
             .iter()
+            .chain(mcp_registrations.iter())
             .map(|tool| tool.definition.clone())
             .collect();
-        let prepared_tools = crate::tools::catalog(context.services(), &settings.tools, additional);
+        let prepared_tools = crate::tools::catalog(context.services(), &settings.tools, additional)
+            .and_then(|mut catalog| {
+                catalog.tools = catalog
+                    .tools
+                    .with_additional(mcp_registrations)
+                    .map_err(|_| "agent_tool_catalog_invalid".to_owned())?;
+                Ok(catalog)
+            });
         let crate::tools::Catalog {
             tools,
+            prepared: tool_catalog,
             basis: tool_basis,
             editing: editing_tools,
         } = match prepared_tools {
@@ -595,7 +608,8 @@ impl Owner {
             credentials,
             code_executor,
             tools,
-            internal_registrations,
+            tool_catalog,
+            selection_cache: std::sync::Mutex::new(Vec::new()),
             mcp,
             mcp_projects,
             tool_basis: Arc::new(tool_basis),
