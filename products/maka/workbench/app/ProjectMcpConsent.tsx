@@ -55,7 +55,7 @@ export function ProjectMcp(props: { owner: Owner }) {
             <Text style={[{ color: C.muted }, { userSelect: 'text' }]}>{proposal().path}</Text>
             <Text style={{ color: C.warning }}>
               {tr(
-                'These servers can run commands as your user or contact remote services. They start outside the conversation sandbox. Trust only servers you recognize.',
+                'These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.',
               )}
             </Text>
             <Scroll
@@ -79,14 +79,9 @@ export function ProjectMcp(props: { owner: Owner }) {
                         {tr('HTTP headers')}: {server().headers.join(', ')}
                       </Text>
                     </If>
-                    <If when={server().preapproved}>
-                      <Text style={{ color: C.warning }}>
-                        {tr('Calls run without individual confirmation.')}
-                      </Text>
-                    </If>
                     <If when={server().readOnlyTools.length > 0}>
                       <Text style={{ color: C.warning }}>
-                        {tr('Allowed in read-only sessions')}: {server().readOnlyTools.join(', ')}
+                        {tr('Tools declared read-only')}: {server().readOnlyTools.join(', ')}
                       </Text>
                     </If>
                   </View>

@@ -366,24 +366,15 @@ export const conversationMessages = {
     '信任项目 MCP 配置？',
     '信任專案 MCP 設定？',
   ],
-  'These servers can run commands as your user or contact remote services. They start outside the conversation sandbox. Trust only servers you recognize.':
+  'These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.':
     [
-      'These servers can run commands as your user or contact remote services. They start outside the conversation sandbox. Trust only servers you recognize.',
-      '这些服务器可以以你的用户身份运行命令或连接远程服务，启动时不受会话沙箱限制。请仅信任你认识的服务器。',
-      '這些伺服器可以以你的使用者身分執行命令或連線遠端服務，啟動時不受對話沙箱限制。請僅信任你認識的伺服器。',
+      'These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.',
+      '这些服务器在会话沙箱外运行，可以用你的身份执行命令或访问远程服务。完全访问会话调用其工具时无需再次确认。',
+      '這些伺服器在對話沙箱外執行，可以用你的身分執行命令或連線遠端服務。完整存取對話呼叫其工具時無需再次確認。',
     ],
   'Environment variables': ['Environment variables', '环境变量', '環境變數'],
   'HTTP headers': ['HTTP headers', 'HTTP 请求头', 'HTTP 請求標頭'],
-  'Calls run without individual confirmation.': [
-    'Calls run without individual confirmation.',
-    '工具调用无需逐次确认。',
-    '工具呼叫無需逐次確認。',
-  ],
-  'Allowed in read-only sessions': [
-    'Allowed in read-only sessions',
-    '可在只读会话中调用',
-    '可在唯讀對話中呼叫',
-  ],
+  'Tools declared read-only': ['Tools declared read-only', '声明为只读的工具', '宣告為唯讀的工具'],
   'Disabled servers': ['Disabled servers', '已禁用的服务器', '已停用的伺服器'],
   'Trust is saved for this workspace and configuration. Changes require confirmation again. Your draft has not been sent.':
     [

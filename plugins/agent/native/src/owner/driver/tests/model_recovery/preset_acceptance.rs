@@ -398,7 +398,7 @@ async fn tool_round(
     approved_round(rig, provider, session, code, name, input, "run").await
 }
 
-/// When the Session may request permissions, a Web call, a Shell call with
+/// In a sandboxed Session that may request permissions, a Web call, a Shell call with
 /// additional permissions and a file write in a read-only Session must raise a
 /// request, which this approves at `scope`.
 async fn approved_round(
@@ -445,7 +445,8 @@ async fn approved_round(
         .await?
         .configuration
         .permissions;
-    let approve = (matches!(name, "WebFetch" | "WebSearch")
+    let approve = ((matches!(name, "WebFetch" | "WebSearch")
+        && permissions.access != maka_agent_api::contract::WorkspaceAccess::DangerFullAccess)
         || (name == "Shell" && input.get("additional_permissions").is_some())
         || (name == "Write"
             && permissions.access == maka_agent_api::contract::WorkspaceAccess::ReadOnly))
@@ -589,7 +590,7 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 {"name":"WebFetch","description":"Fetch a URL","target":{"kind":"import","name":"web"},"method":"fetch","input":"web","nestable":true,"result":"json","confirmation":"preapproved"},
                 {"name":"WebSearch","description":"Search the web","target":{"kind":"import","name":"web"},"method":"search","input":"web","nestable":true,"result":"json","confirmation":"preapproved"}
             ]);
-            config["mcpServers"] = json!([{"name":"fixture","transport":{"type":"streamable_http","url":format!("{address}/mcp")},"preapproved":true}]);
+            config["mcpServers"] = json!([{"name":"fixture","transport":{"type":"streamable_http","url":format!("{address}/mcp")}}]);
         }).await?;
         std::fs::write(base.join("workspace/input.txt"),"local-acceptance-marker")?;
         image::RgbImage::from_pixel(17, 13, image::Rgb([19, 23, 31]))
@@ -608,17 +609,24 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
         let preset = preset(client,&model,"Keep the reviewer role.").await?;
         let session = create(client, &base, &model, None).await?;
         let id = session["id"].as_str().unwrap();
-        for requests in [true, false] {
+        for (access, requests) in [("danger_full_access", false), ("workspace_write", true), ("workspace_write", false)] {
             let owner = rig.captured.lock().unwrap().clone().unwrap();
             let revision = owner.mutable_session(id).await?.revision;
             let changed = call(client, "agent", "metadata", json!({
-                "sessionId":id,"expectedRevision":revision,"title":"Sandboxed search","labels":[],
-                "permissions":{"settings":{"access":"workspace_write","requestPermissions":requests},"revokeGrants":true}
+                "sessionId":id,"expectedRevision":revision,"title":"Search permissions","labels":[],
+                "permissions":{"settings":{"access":access,"requestPermissions":requests},"revokeGrants":true}
             })).await?;
             assert_eq!(changed["kind"], "committed", "{changed}");
+            let before = search_calls.load(Ordering::SeqCst);
             let output = tool_round(&rig, &mut provider, id, code, "WebSearch", json!({"query":"Rust","limit":1})).await?;
-            if requests {
+            let allowed = access == "danger_full_access" || requests;
+            assert_eq!(search_calls.load(Ordering::SeqCst) - before, usize::from(allowed), "{output}");
+            if allowed {
                 assert!(output.contains("https://www.rust-lang.org/"), "{output}");
+            } else {
+                assert!(output.contains("WebSearch network access was denied"), "{output}");
+            }
+            if requests {
                 // An HTTP error page is an ordinary result, not an unknown effect.
                 let missing = tool_round(&rig, &mut provider, id, code, "WebFetch", json!({"url":format!("{address}/missing")})).await?;
                 assert!(missing.contains("WebFetch failed with HTTP 404"), "{missing}");
@@ -635,10 +643,7 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 let limited = tool_round(&rig, &mut provider, id, code, "WebSearch", json!({"query":"Rust","limit":1})).await?;
                 assert!(limited.contains("WebSearch rate limit exceeded"), "{limited}");
                 assert!(!limited.contains("outcome unknown"), "{limited}");
-            } else {
-                assert!(output.contains("WebSearch network access was denied"), "{output}");
             }
-            assert_eq!(search_calls.load(Ordering::SeqCst), 1, "{output}");
         }
         for selected in [None,Some(&preset)] {
             std::fs::write(base.join("workspace/output.txt"),"unchanged-before-write")?;

@@ -19,6 +19,7 @@
 
 use super::*;
 use futures_util::FutureExt;
+use maka_agent_api::contract::WorkspaceAccess;
 use maka_agent_authority::computer::NativeCallContext;
 use maka_agent_facts::interaction::{PermissionRequest, PermissionSource};
 use maka_agent_facts::tools::ToolError;
@@ -144,11 +145,7 @@ impl Access {
     ) -> Result<Self, String> {
         Self::new(owner, scope, native, Purpose::Health, failure)
     }
-    async fn current(
-        &self,
-        call: &Scope,
-        destination: &Destination,
-    ) -> Result<(maka_agent_api::session::ResolvedConfiguration, bool), Error> {
+    async fn current(&self, call: &Scope, destination: &Destination) -> Result<bool, Error> {
         let _lease = self.admit(call)?;
         let available = match &self.purpose {
             Purpose::Fetch { basis } => self.owner.fetch_is_current(basis).await,
@@ -175,6 +172,8 @@ impl Access {
             .sandbox_floor()
             .intersect(call.sandbox_floor())
             .map_err(|_| Error::Denied)?;
+        let full_access = configuration.permissions.access == WorkspaceAccess::DangerFullAccess
+            && matches!(floor, Sandbox::Disabled);
         let destination_copy = destination.clone();
         let allowed = tokio::task::spawn_blocking(move || {
             let requested = std::path::PathBuf::from(&workspace.path);
@@ -206,6 +205,9 @@ impl Access {
         if !allowed {
             return Err(Error::Denied);
         }
+        if full_access {
+            return Ok(true);
+        }
         let grants = self
             .native
             .access()
@@ -219,12 +221,9 @@ impl Access {
                 self.failure.observe(&error);
                 Error::Failed(error.to_string())
             })?;
-        Ok((
-            configuration,
-            grants
-                .iter()
-                .any(|grant| grant.permissions.network.allows(destination)),
-        ))
+        Ok(grants
+            .iter()
+            .any(|grant| grant.permissions.network.allows(destination)))
     }
     async fn authorize(
         &self,
@@ -232,8 +231,7 @@ impl Access {
         destination: &Destination,
         origin: String,
     ) -> Result<maka_network::Policy, Error> {
-        let (_, granted) = self.current(call, destination).await?;
-        if !granted {
+        if !self.current(call, destination).await? {
             let cancellation = call.cancellation.child_token();
             let request = maka_agent_authority::permissions::request(
                 self.native.access(),
@@ -334,7 +332,7 @@ impl Authority for Access {
         destination: &'a Destination,
     ) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(async move {
-            if self.current(call, destination).await?.1 {
+            if self.current(call, destination).await? {
                 Ok(())
             } else {
                 Err(Error::Denied)

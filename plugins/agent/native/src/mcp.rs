@@ -178,8 +178,6 @@ impl Servers {
                         remote_name: tool.remote_name.clone(),
                         server: config.name.clone(),
                         generation: generation.clone(),
-                        preapproved: config.preapproved,
-                        read_only: tool.read_only,
                         input_projection,
                     },
                 };
@@ -249,8 +247,6 @@ struct Binding {
     remote_name: String,
     server: String,
     generation: String,
-    preapproved: bool,
-    read_only: bool,
     input_projection: Projection,
 }
 struct RunBinding {
@@ -266,12 +262,12 @@ pub(crate) fn require_compatible_floor(floor: &maka_sandbox::Sandbox) -> Result<
         )
     }
 }
-fn permitted(configuration: &ResolvedConfiguration, name: &str, read_only: bool) -> bool {
-    configuration
-        .tools
-        .as_ref()
-        .is_none_or(|names| names.iter().any(|allowed| allowed == name))
-        && (configuration.permissions.access != WorkspaceAccess::ReadOnly || read_only)
+fn permitted(configuration: &ResolvedConfiguration, name: &str) -> bool {
+    configuration.permissions.access == WorkspaceAccess::DangerFullAccess
+        && configuration
+            .tools
+            .as_ref()
+            .is_none_or(|names| names.iter().any(|allowed| allowed == name))
 }
 impl ToolPreparer for RunBinding {
     fn names(&self) -> Vec<String> {
@@ -288,13 +284,9 @@ impl ToolPreparer for RunBinding {
         let access = self.access.clone();
         let expected = self.binding.name.clone();
         let remote = self.binding.remote_name.clone();
-        let server = self.binding.server.clone();
-        let generation = self.binding.generation.clone();
-        let read_only = self.binding.read_only;
-        let preapproved = self.binding.preapproved;
         let input_projection = self.binding.input_projection;
         Box::pin(async move {
-            let target = access.target_for_context(&context).await.map_err(|error| {
+            access.target_for_context(&context).await.map_err(|error| {
                 ToolRejection::PreparationFailed {
                     message: error.to_string(),
                 }
@@ -314,74 +306,32 @@ impl ToolPreparer for RunBinding {
             require_compatible_floor(&floor).map_err(|message| ToolRejection::PolicyDenied {
                 message: message.into(),
             })?;
-            let approval_input = (!preapproved).then(|| input.clone());
             let input = input_projection.decode(input)?;
             let live = access.live_configuration().await.map_err(|error| {
                 ToolRejection::PreparationFailed {
                     message: error.to_string(),
                 }
             })?;
-            if !permitted(&live, &name, read_only) {
+            if !permitted(&live, &name) {
                 return Err(ToolRejection::PolicyDenied {
                     message: "MCP tool is outside the current session permissions".into(),
                 });
             }
-            let approval = if !preapproved {
-                let service = format!("MCP server {server}");
-                let approval = if matches!(
-                    target,
-                    maka_agent_facts::durable::AuthorizationObligation::Tool { .. }
-                ) {
-                    access
-                        .establish_service(
-                            &context,
-                            &name,
-                            &remote,
-                            &generation,
-                            &service,
-                            approval_input.as_ref().unwrap_or(&input),
-                            &cancellation,
-                        )
-                        .await
-                        .map(|(_, approval)| approval)
-                } else {
-                    access
-                        .confirm_service(
-                            &context,
-                            &name,
-                            &remote,
-                            &generation,
-                            &service,
-                            approval_input.as_ref().unwrap_or(&input),
-                            &cancellation,
-                        )
-                        .await
-                }
-                .map_err(|error| ToolRejection::PreparationFailed {
-                    message: error.to_string(),
-                })?;
-                Some(approval)
-            } else {
-                None
-            };
-            let prepared = PreparedEffect::new(move |cancel| {
+            // MCP dispatch requires an unrestricted Run, which already authorizes the call.
+            Ok(PreparedEffect::new(move |cancel| {
                 Box::pin(async move {
                     access.target_for_context(&context).await?;
                     require_compatible_floor(&access.sandbox_floor(&context.call.origin).await?)
                         .map_err(|message| ToolError::Failed(message.into()))?;
                     let live = access.live_configuration().await?;
-                    if !permitted(&live, &name, read_only) {
+                    if !permitted(&live, &name) {
                         return Err(ToolError::Failed(
                             "MCP permissions changed before dispatch".into(),
                         ));
                     }
                     connection.call(remote, input, cancel).await
                 })
-            });
-            Ok(match approval {
-                Some(id) => prepared.requiring_approval(id),
-                None => prepared,
-            })
+            }))
         })
     }
 }
