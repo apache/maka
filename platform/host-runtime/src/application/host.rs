@@ -21,6 +21,7 @@
 mod access;
 mod client;
 pub mod discovery;
+mod execution;
 mod lifecycle;
 pub mod startup;
 pub mod websocket;
@@ -81,6 +82,7 @@ pub struct Host {
     configuration: Mutex<Configuration>,
     sessions: Mutex<BTreeMap<Uuid, Arc<Session>>>,
     stop: CancellationToken,
+    shutdown: tokio::sync::OnceCell<Result<()>>,
     residency: Mutex<lifecycle::Residency>,
 }
 struct Session {
@@ -151,6 +153,13 @@ impl Host {
         {
             return Err("invalid Host options".into());
         }
+        if let Some(execution) = store.checkpoint_execution() {
+            let grant = execution.grant();
+            if grant.binding.source.scope.deployment != loaded.source().reference.deployment {
+                return Err("execution grant belongs to another deployment".into());
+            }
+            execution.check().await.map_err(|e| e.to_string())?;
+        }
         configuration.validate()?;
         let Configuration::PublicHost {
             endpoints,
@@ -190,7 +199,7 @@ impl Host {
         if let Err(error) = store.release_superseded_application_sources(&source).await {
             tracing::error!(%error, "Superseded application sources remain installed");
         }
-        Ok(Arc::new(Self {
+        let host = Arc::new(Self {
             root,
             options,
             source,
@@ -204,8 +213,11 @@ impl Host {
             configuration: Mutex::new(configuration),
             sessions: Mutex::default(),
             stop: CancellationToken::new(),
+            shutdown: tokio::sync::OnceCell::new(),
             residency: Mutex::new(lifecycle::Residency::default()),
-        }))
+        });
+        host.watch_execution();
+        Ok(host)
     }
 
     async fn publication(&self) -> Result<Publication> {
@@ -938,6 +950,10 @@ impl Host {
     /// Physical transport cleanup precedes Application cleanup and SQL drain.
     /// Errors retain this Host and its original Root for the embedding to hold.
     pub async fn shutdown(&self) -> Result<()> {
+        self.shutdown.get_or_init(|| self.drain()).await.clone()
+    }
+
+    async fn drain(&self) -> Result<()> {
         self.stop.cancel();
         let sessions: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
         let mut errors = Vec::new();

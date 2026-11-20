@@ -171,6 +171,7 @@ impl Owner {
         fingerprint: String,
         parent: &maka_capabilities::call::Scope,
     ) -> Result<CapturedRun, CaptureError> {
+        self.require_execution(id).await?;
         if parent.cancellation.is_cancelled() || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
@@ -223,6 +224,9 @@ impl Owner {
                 (Some(source.accepted), None)
             }
             BackendPreference::Executor { selection } => {
+                if self.store.checkpoint_execution().is_some() {
+                    return Err("execution_grant_requires_native_model_backend".into());
+                }
                 workspace::validate(
                     &self.workspace_roots,
                     &session.configuration.workspace,
@@ -379,6 +383,7 @@ impl Owner {
         operation: &maka_plugin_core::operation::RecoveryRef,
         parent: &maka_capabilities::call::Scope,
     ) -> Result<PreparedSend, String> {
+        self.require_execution(&input.session_id).await?;
         if !self.may_control(parent, &input.session_id).await? {
             return Ok(PreparedSend::Returned(SendResult::NotYourWorker {
                 session_id: input.session_id,

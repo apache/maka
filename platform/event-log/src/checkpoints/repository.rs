@@ -223,6 +223,7 @@ pub struct Storage {
     pub(crate) objects: Arc<dyn ImmutableObjectStore>,
     pub(crate) sessions: Arc<dyn SessionRepository>,
     pub(crate) agent: Uuid,
+    pub(crate) execution: Option<super::execution::Execution>,
 }
 impl Storage {
     pub fn new(
@@ -243,6 +244,7 @@ impl Storage {
             objects,
             sessions,
             agent,
+            execution: None,
         })
     }
 

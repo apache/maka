@@ -19,6 +19,7 @@
 
 //! Immutable history and Workspace checkpoints. Conditional consistency is not an
 //! execution grant; checkpoint revisions are independent of live Session revisions.
+pub mod execution;
 mod load;
 pub mod repository;
 mod restore;

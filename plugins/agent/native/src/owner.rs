@@ -272,6 +272,16 @@ pub(crate) struct Owner {
     stop: CancellationToken,
 }
 impl Owner {
+    pub(super) async fn require_execution(&self, session: &str) -> Result<(), String> {
+        if let Some(execution) = self.store.checkpoint_execution() {
+            execution
+                .check_session(session)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn preview_epoch(&self) -> &str {
         &self.revision.activation
     }
@@ -365,6 +375,16 @@ impl Owner {
             deployment: persistence.source().deployment,
             namespace: context.activation().instance().clone(),
         };
+        if let Some(execution) = persistence.store().checkpoint_execution() {
+            let source = &execution.grant().binding.source;
+            if source.scope.state_domain != data_source.state_domain
+                || source.scope.deployment != data_source.deployment
+                || source.scope.namespace != data_source.namespace
+            {
+                return Err("agent_execution_scope_mismatch".into());
+            }
+            execution.check().await.map_err(|e| e.to_string())?;
+        }
         let prefix = maka_agent_authority::session_namespace(
             &persistence.source().state_domain,
             persistence.source().deployment,
@@ -385,7 +405,11 @@ impl Owner {
         .map_err(|_| "agent_workspace_configuration_worker_failed")??;
         let home = std::env::home_dir();
         let workers = TaskTracker::new();
-        let stop = CancellationToken::new();
+        let stop = persistence
+            .store()
+            .checkpoint_execution()
+            .map(|execution| execution.cancellation().child_token())
+            .unwrap_or_default();
         let revision = SourceRevision {
             kind: SourceKind::ModelProvider,
             name: IMPLEMENTATION.into(),
