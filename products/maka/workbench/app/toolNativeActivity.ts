@@ -322,6 +322,17 @@ function botResult(value: unknown): ToolSection[] | null {
 }
 
 export const nativeToolPresentations: Record<string, ActivityPresentation> = {
+  'maka.agent.Builtin@1/CompactContext': {
+    title: () => tr('Compact context'),
+    icon: 'compaction',
+    arguments: (value) => {
+      const input = record(value);
+      return [
+        ...section(tr('Keep in context'), input?.prompt),
+        ...section(tr('Continue with model'), record(input?.resumeModel)?.modelId),
+      ];
+    },
+  },
   'maka.agent.Builtin@1/Recall': {
     title: () => tr('Search conversation history'),
     icon: 'search',

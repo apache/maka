@@ -51,6 +51,19 @@ hooks.deregister();
 const sendKey = 'maka.agent.Agent@1/send';
 const workKey = 'maka.agent.Agent@1/work';
 
+test('context compaction shows the requested focus and handoff model when present', () => {
+  const key = 'maka.agent.Builtin@1/CompactContext';
+  const card = activityPresentation(key);
+  assert.equal(activityTitle({ name: 'CompactContext', presentation: key }), 'Compact context');
+  assert.equal(card.icon, 'compaction');
+  const sections = (input) => activityProjection(card, 'arguments', input, {}).sections;
+  assert.deepEqual(sections({ prompt: 'Keep CI results', resumeModel: { modelId: 'sol' } }), [
+    { label: 'Keep in context', text: 'Keep CI results' },
+    { label: 'Continue with model', text: 'sol' },
+  ]);
+  assert.deepEqual(sections({}), []);
+});
+
 test('a queued message says what was sent, where it is going and that it is queued', () => {
   assert.equal(
     activityTitle({ name: 'SessionSend', presentation: sendKey }),

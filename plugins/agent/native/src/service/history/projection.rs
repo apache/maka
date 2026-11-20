@@ -696,6 +696,12 @@ pub(super) async fn project(
                     } else {
                         apply_provider_search(call, state);
                     }
+                    if call.presentation.is_none()
+                        && !state.call.provider_executed
+                        && state.call.name == crate::owner::compaction::TOOL
+                    {
+                        call.presentation = Some("maka.agent.Builtin@1/CompactContext".into());
+                    }
                 }
             }
             result.push(row);

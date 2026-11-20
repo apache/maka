@@ -28,7 +28,7 @@ mod assistant;
 mod attachments;
 mod auxiliary;
 mod checkpoints;
-mod compaction;
+pub(crate) mod compaction;
 mod completions;
 mod computer_apps;
 mod context;

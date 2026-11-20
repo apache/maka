@@ -25,7 +25,7 @@ use maka_agent_facts::{
 };
 use maka_capabilities::call::Scope;
 
-pub(super) const TOOL: &str = "CompactContext";
+pub(crate) const TOOL: &str = "CompactContext";
 
 pub(super) fn tool() -> maka_agent_facts::tools::ToolRegistration {
     use maka_agent_facts::tools::*;
