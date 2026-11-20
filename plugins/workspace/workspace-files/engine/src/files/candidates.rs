@@ -58,7 +58,7 @@ impl Directory {
         cancel: &AtomicBool,
         emit: &mut impl FnMut(FileEntry) -> io::Result<()>,
     ) -> io::Result<()> {
-        let query = query.trim().to_lowercase();
+        let query = query.trim();
         if query.is_empty() {
             return self.walk_entries(false, true, cancel, |_dir, _rel, bytes, kind| {
                 let path =
@@ -67,7 +67,7 @@ impl Directory {
                 Ok(true)
             });
         }
-        self.search_names(&query, descend, cancel, emit)
+        self.search_names(query, descend, cancel, emit)
     }
 
     /// Ranks fuzzy matches of the relative path (the name alone for direct
@@ -96,10 +96,10 @@ impl Directory {
             load_directory_rules(&mut rules, &anchor.directory, relative, cancel)?;
         }
         let hidden = query.starts_with('.');
-        let fuzzy = super::fuzzy::Query::new(query);
+        let mut fuzzy = super::fuzzy::Query::new(query);
         let mut visits = 0;
         // The lowest-ranked kept match sits on top: score, then shorter, then path order.
-        let mut kept = std::collections::BinaryHeap::new();
+        let mut kept: std::collections::BinaryHeap<Ranked> = std::collections::BinaryHeap::new();
         // Directories are opened when dequeued, so the queue holds no descriptors.
         let mut pending = std::collections::VecDeque::from([(PathBuf::new(), Arc::new(rules))]);
         'search: while let Some((inner, inherited)) = pending.pop_front() {
@@ -129,7 +129,7 @@ impl Directory {
                 Arc::new(merged)
             };
             let absolute = self.anchors[0].path.join(&relative);
-            let mut children = Vec::new();
+            let mut subdirs = Vec::new();
             for entry in entries {
                 interrupted(cancel)?;
                 visits += 1;
@@ -159,33 +159,42 @@ impl Directory {
                 if excluded(&rules, &path, kind == FileKind::Directory) {
                     continue;
                 }
-                children.push((name, path, kind));
-            }
-            for (name, path, kind) in &children {
-                // Display matching never becomes the identity of a non-UTF-8 path.
-                let shown = if descend {
-                    path.as_os_str()
-                } else {
-                    name.as_os_str()
+                let score = {
+                    // Display matching never becomes the identity of a non-UTF-8 path.
+                    let shown = if descend {
+                        path.as_os_str()
+                    } else {
+                        name.as_os_str()
+                    };
+                    fuzzy.score(&shown.to_string_lossy())
                 };
-                let Some(score) = fuzzy.score(&shown.to_string_lossy()) else {
+                if descend && kind == FileKind::Directory {
+                    subdirs.push(name);
+                }
+                let Some(score) = score else {
                     continue;
                 };
+                if kept.len() >= SHOWN
+                    && kept.peek().is_some_and(|worst| Reverse(score) > worst.0.0)
+                {
+                    continue;
+                }
                 let bytes = gix::path::to_unix_separators_on_windows(
-                    gix::path::into_bstr(path.clone()).map_err(|_| error("files_unavailable"))?,
+                    gix::path::into_bstr(path).map_err(|_| error("files_unavailable"))?,
                 )
                 .into_owned()
                 .to_vec();
                 let rank = (Reverse(score), bytes.len(), bytes);
                 if kept.len() < SHOWN {
-                    kept.push(Ranked(rank, *kind));
-                } else if kept.peek().is_some_and(|worst: &Ranked| rank < worst.0) {
+                    kept.push(Ranked(rank, kind));
+                } else if kept.peek().is_some_and(|worst| rank < worst.0) {
                     kept.pop();
-                    kept.push(Ranked(rank, *kind));
+                    kept.push(Ranked(rank, kind));
                 }
             }
-            for (name, _, kind) in &children {
-                if descend && *kind == FileKind::Directory {
+            if !subdirs.is_empty() {
+                subdirs.sort_unstable();
+                for name in subdirs {
                     pending.push_back((inner.join(name), rules.clone()));
                 }
             }
