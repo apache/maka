@@ -71,13 +71,17 @@ pub(super) async fn native_call(
     owner: &Web,
     context: &Context,
     failure: &Failure,
+    probe: Option<&crate::probe::ProcessProbe>,
 ) -> Result<Option<Arc<NativeCallContext>>, String> {
     let Some(execution) = context.scope().identity.agent() else {
         return Ok(None);
     };
-    let native = context
-        .native_context::<NativeCallContext>()
-        .ok_or("web_requires_native_call")?;
+    let native = match probe {
+        Some(probe) => probe.native.clone(),
+        None => context
+            .native_context::<NativeCallContext>()
+            .ok_or("web_requires_native_call")?,
+    };
     let access = native.access();
     let call = access.call();
     let custody = context.work_custody().ok_or("web_work_custody_missing")?;
@@ -94,7 +98,7 @@ pub(super) async fn native_call(
         .log
         .session_for_work(custody.as_ref(), &call.execution.session_id)
         .map_err(message)?;
-    if context.operation().is_some() {
+    if probe.is_none() && context.operation().is_some() {
         access.bind_original(context).await.map_err(|error| {
             failure.observe(&error);
             message(error)

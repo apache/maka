@@ -162,7 +162,13 @@ impl Handler for Service {
             if context.operation().is_none() {
                 return Err("web_mutation_required".into());
             }
-            let native = network::native_call(&owner, &context, &failure).await?;
+            let probe = context.local_input::<crate::probe::ProcessProbe>();
+            if let Some(probe) = probe
+                && (name != "probe" || input["url"].as_str() != Some(&probe.target))
+            {
+                return Err("web_probe_target_mismatch".into());
+            }
+            let native = network::native_call(&owner, &context, &failure, probe).await?;
             match name.as_str() {
                 "save" => {
                     let input: Set = serde_json::from_value(input).map_err(message)?;

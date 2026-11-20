@@ -580,6 +580,8 @@ pub(super) struct Call {
     resources: OwnedSemaphorePermit,
     parent: Option<Ticket>,
 }
+type LocalInput = Box<dyn std::any::Any + Send + Sync>;
+
 pub(super) enum CallKind {
     PrepareMutation {
         operation: Uuid,
@@ -592,11 +594,13 @@ pub(super) enum CallKind {
     PendingMutation {
         operation: Uuid,
         recovery: Value,
+        local_input: Option<LocalInput>,
         reply: oneshot::Sender<Result<Mutation>>,
     },
     Mutation {
         operation: Uuid,
         confirmation: Option<Confirmation>,
+        local_input: Option<LocalInput>,
         reply: oneshot::Sender<Result<Mutation>>,
     },
 }
@@ -1326,11 +1330,13 @@ impl Client {
         let (reply, result) = oneshot::channel();
         let kind = match admission {
             MutationAdmission::Owned { recovery } => CallKind::PendingMutation {
+                local_input: None,
                 operation: reference.operation,
                 recovery,
                 reply,
             },
             MutationAdmission::Confirmed(confirmation) => CallKind::Mutation {
+                local_input: None,
                 operation: reference.operation,
                 confirmation: Some(confirmation),
                 reply,

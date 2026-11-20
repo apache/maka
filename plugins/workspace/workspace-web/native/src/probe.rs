@@ -18,11 +18,46 @@
  */
 
 //! HEAD, one GET fallback, and no body reads or redirects.
+use maka_agent_authority::computer::NativeCallContext;
 use maka_agent_facts::tools::ToolError;
 use maka_capabilities::{call, http};
+use maka_host_runtime::application::Context;
 use maka_plugin_core::http::Method;
 use maka_web_api::probe::{Endpoint, Input, Readiness};
 use std::{sync::Arc, time::Instant};
+
+/// One local Web probe on behalf of the already bound process health call.
+pub struct ProcessProbe {
+    pub(crate) target: String,
+    pub(crate) native: Arc<NativeCallContext>,
+}
+impl ProcessProbe {
+    pub fn new(context: &Context, target: &str) -> Result<Self, ToolError> {
+        let native = context
+            .native_context::<NativeCallContext>()
+            .ok_or_else(|| {
+                ToolError::Failed("Health check requires its original native call".into())
+            })?;
+        let original = native.access().permission_request_original()?;
+        let Some(original) = original else {
+            return Err(ToolError::Failed(
+                "Health check has no bound process call".into(),
+            ));
+        };
+        if context.operation_scope().map(|scope| scope.reference()) != Some(original)
+            || original.contract.name != "maka.workspace.Processes"
+            || original.method != "health"
+        {
+            return Err(ToolError::Failed(
+                "Health check belongs to another operation".into(),
+            ));
+        }
+        Ok(Self {
+            target: target.to_owned(),
+            native,
+        })
+    }
+}
 
 pub async fn probe(
     client: Arc<dyn http::Client>,
