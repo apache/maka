@@ -84,7 +84,7 @@ describe('tool activity presentation', () => {
 
     const errorMessages = resolveUiMessageCatalog(defineShippedUiMessageCatalog<string>()({
           'zh-CN': '需要“绕过”模式。此操作会直接控制本机应用，无法在沙箱模式下执行。',
-          'zh-TW': '需要“繞過”模式。此操作會直接控制本機應用，無法在沙箱模式下執行。',
+          'zh-TW': '需要「繞過」模式。此操作會直接控制本機應用程式，無法在沙箱模式下執行。',
           en: 'Bypass mode required. This action controls a local app directly and cannot run inside the sandbox.',
         }));
     for (const locale of UI_LOCALES) {
