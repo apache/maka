@@ -383,6 +383,9 @@ impl Fixture {
         client.close().await.unwrap();
         fixture
     }
+    pub fn control_plane_requests(&self) -> u64 {
+        self.provider.metrics().control_plane_requests
+    }
     pub async fn client(&self) -> Client {
         self.client_at(&self.address).await
     }

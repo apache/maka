@@ -4252,6 +4252,13 @@ async fn desktop_composer_toolbar_customizes_layout_and_context_usage() {
     );
     desktop.press("Open settings").await;
     desktop.control("Close settings").await;
+    desktop.control("Edit connection NSH fixture").await;
+    desktop
+        .until("connection usage limits did not fetch in settings", || {
+            (fixture.control_plane_requests() >= 1).then_some(())
+        })
+        .await;
+    desktop.artifact("settings-connection-usage");
     desktop.press("Settings section General").await;
     desktop.control("Language").await;
     desktop.control("70%+").await;
@@ -4278,6 +4285,21 @@ async fn desktop_composer_toolbar_customizes_layout_and_context_usage() {
     assert!(
         usage_indicator.left() > model_after.left(),
         "usage limits indicator should render on the right side after moving model left: usage={usage_indicator:?}, model={model_after:?}"
+    );
+    desktop
+        .press("NSH fixture · API key spending limit · 72% remaining")
+        .await;
+    desktop.artifact("composer-usage-popover");
+    desktop.key("escape", false);
+    let before_new_draft = fixture.control_plane_requests();
+    desktop.new_draft().await;
+    desktop
+        .control("NSH fixture · API key spending limit · 72% remaining")
+        .await;
+    assert_eq!(
+        fixture.control_plane_requests(),
+        before_new_draft,
+        "opening a new session should reuse cached usage limits without refetching"
     );
     desktop.press("Open settings").await;
     desktop.press("Settings section General").await;

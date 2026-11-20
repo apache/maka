@@ -26,7 +26,6 @@ import { ProviderPicker } from './ProviderPicker';
 import { ConnectionModel } from './ConnectionModel';
 import { LoadingIndicator } from './Loading';
 import { tr } from './locale';
-import { useHost } from './host';
 import { UsageLimits } from './UsageLimits';
 import {
   SettingsBody,
@@ -78,7 +77,6 @@ function ConnectionList(props: {
   owner: ModelSettingsOwner;
   externalAgents?: ExternalAgentSettingsOwner;
 }) {
-  const host = useHost();
   const owner = props.owner;
   const unavailable = () => owner.busy() || !owner.pendingKnown() || owner.pending().length > 0;
   const current = () => {
@@ -155,8 +153,12 @@ function ConnectionList(props: {
                 detail={
                   <If when={item().enabled && item().usageLimits}>
                     <UsageLimits
-                      revision={item().basis.revision}
-                      query={() => host.query('settings', 'connectionUsageLimits', item().basis)}
+                      target={() => ({
+                        kind: 'connection',
+                        connectionId: item().basis.connectionId,
+                        basis: item().basis,
+                        sourceName: item().name,
+                      })}
                     />
                   </If>
                 }

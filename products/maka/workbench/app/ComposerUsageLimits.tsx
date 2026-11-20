@@ -17,20 +17,11 @@
  * under the License.
  */
 
-import { Canvas, cleanup, effect, lifecycle, platform, signal, Text, untracked, View } from 'nsh';
+import { Canvas, platform, signal, Text, View } from 'nsh';
 import { Button, Popover } from 'nsh/base';
 import type { ComposerBackend } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { composerToolbar, useToolbarCompact } from './composerToolbar';
-import {
-  isExternalUsageRuntime,
-  summarizeComposerUsage,
-  watchComposerUsage,
-  type ComposerUsageHost,
-  type ComposerUsageObservation,
-  type ComposerUsageSummary,
-  type ComposerUsageTarget,
-} from './composerUsageSummary';
-import { useHost } from './host';
+import { summarizeComposerUsage, type ComposerUsageSummary } from './composerUsageSummary';
 import { tr } from './locale';
 import {
   C,
@@ -40,20 +31,26 @@ import {
   textTooltip,
   toolbarControlStyle,
 } from './ui';
-import { usageLabel, UsageLimitsList, usageNumber, type UsageLimit } from './UsageLimits';
+import {
+  usageLabel,
+  UsageLimitsList,
+  usageNumber,
+  useUsageLimits,
+  type UsageLimit,
+} from './UsageLimits';
+import { isExternalUsageRuntime, type UsageTarget } from './usageLimitsReading';
 
-function targetForBackend(backend: ComposerBackend): ComposerUsageTarget | null {
+function targetForBackend(backend: ComposerBackend): UsageTarget | null {
   if (!backend) return null;
   if (backend.kind === 'model') {
     return {
-      key: `model:${backend.connectionId}`,
       kind: 'connection',
       connectionId: backend.connectionId,
     };
   }
   const runtime = backend.selection.settings.runtime;
   if (isExternalUsageRuntime(runtime)) {
-    return { key: `external:${runtime}`, kind: 'external', runtime };
+    return { kind: 'external', runtime };
   }
   return null;
 }
@@ -211,53 +208,18 @@ function ComposerUsagePopover(props: {
             </If>
           </View>
         </If>
-        <UsageLimitsList limits={props.limits} showRemaining />
+        <UsageLimitsList limits={props.limits} />
       </View>
     </Popover>
   );
 }
 
 export function ComposerUsageLimits(props: { backend: () => ComposerBackend }) {
-  const host = useHost();
-  const observation = signal<ComposerUsageObservation | null>(null);
-
-  let activeKey: string | null = null;
-  let watchId = 0;
-  let stop: (() => void) | undefined;
-  cleanup(() => {
-    watchId++;
-    stop?.();
-  });
-
-  effect(() => {
-    const id = ++watchId;
-    stop?.();
-    stop = undefined;
-    if (platform.idiom === 'terminal' || !composerToolbar.usageLimits()) {
-      activeKey = null;
-      observation.set(null);
-      return;
-    }
-    const target = targetForBackend(props.backend());
-    if (!target) {
-      activeKey = null;
-      observation.set(null);
-      return;
-    }
-    if (target.key !== activeKey) {
-      activeKey = target.key;
-      observation.set(null);
-    }
-    if (lifecycle() !== 'active') return;
-    stop = watchComposerUsage(
-      host as unknown as ComposerUsageHost,
-      target,
-      (next) => {
-        if (watchId === id) observation.set(next);
-      },
-      untracked(observation),
-    );
-  });
+  const observation = useUsageLimits(() =>
+    platform.idiom === 'terminal' || !composerToolbar.usageLimits()
+      ? null
+      : targetForBackend(props.backend()),
+  );
 
   const limits = () => {
     const result = observation()?.reading.result;
