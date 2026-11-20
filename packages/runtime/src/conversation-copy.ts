@@ -629,6 +629,23 @@ export async function cloneConversationRuntimeLedger(
     if (visiting.has(sourceId)) throw new Error('Cyclic copied archive reference');
     visiting.add(sourceId);
     const target = clonedEventBySourceId.get(sourceId);
+    if (target?.content?.kind === 'function_response' && target.content.name === 'Grep') {
+      target.content.result = rewriteGrepResult(
+        target.content.result,
+        references,
+        clonedEventBySourceId,
+      );
+      const projection = target.content.modelProjection;
+      if (projection?.kind === 'json')
+        target.content.modelProjection = {
+          ...projection,
+          value: rewriteGrepResult(
+            projection.value,
+            references,
+            clonedEventBySourceId,
+          ) as typeof projection.value,
+        };
+    }
     if (target?.content?.kind === 'function_response' && target.content.name === 'Read') {
       target.content.result = rewriteReadPage(
         target.content.result,
@@ -692,7 +709,10 @@ export async function cloneConversationRuntimeLedger(
     { sourceArgsHash: string | undefined; rewrittenArgsHash: string | undefined }
   >();
   for (const event of clonedEventBySourceId.values()) {
-    if (event.content?.kind === 'function_call' && event.content.name === 'Read') {
+    if (
+      event.content?.kind === 'function_call' &&
+      (event.content.name === 'Read' || event.content.name === 'Grep')
+    ) {
       const args = event.content.args;
       if (args && typeof args === 'object' && 'path' in args && typeof args.path === 'string') {
         const sourceArgsHash = tryCanonicalToolArgsHash(event.content.name, args);
@@ -780,12 +800,14 @@ export async function cloneConversationRuntimeLedger(
       terminalEvent,
     };
   });
-  const archiveReadCalls = new Set(
+  const archiveReadCalls = new Map(
     flattenedPlans.flatMap((plan) =>
       plan.events.flatMap((event) =>
         event.content?.kind === 'function_response' &&
-        (event.content.name === 'ArchiveRead' || event.content.name === 'Read')
-          ? [`${event.turnId}:${event.content.id}`]
+        (event.content.name === 'ArchiveRead' ||
+          event.content.name === 'Read' ||
+          event.content.name === 'Grep')
+          ? [[`${event.turnId}:${event.content.id}`, event.content.name] as const]
           : [],
       ),
     ),
@@ -800,7 +822,9 @@ export async function cloneConversationRuntimeLedger(
     ) {
       return {
         ...copied,
-        content: rewriteReadPage(
+        content: (archiveReadCalls.get(`${copied.turnId}:${copied.toolUseId}`) === 'Grep'
+          ? rewriteGrepResult
+          : rewriteReadPage)(
           rewriteArchiveReadResult(copied.content, references),
           references,
           clonedEventBySourceId,
@@ -965,6 +989,60 @@ function rewriteReadPage(
     ...(reset
       ? {
           continuationReset: 'The copied resource changed. Use next to read it from the beginning.',
+        }
+      : {}),
+  };
+}
+
+/** Rewrite Grep's generated addresses, leaving matched source text opaque. */
+function rewriteGrepResult(
+  value: unknown,
+  references: ConversationCopyMessageReferenceMap,
+  clonedEvents: ReadonlyMap<string, RuntimeEvent>,
+): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const result = value as Record<string, unknown>;
+  if (result.kind === 'json')
+    return { ...result, value: rewriteGrepResult(result.value, references, clonedEvents) };
+  if (!Array.isArray(result.matches)) return value;
+  return {
+    ...result,
+    matches: result.matches.map((match: unknown) => {
+      if (typeof match !== 'string') return match;
+      const prefix = /^(maka:\/\/runtime\/tool-results\/[^:]+):[1-9]\d*:/.exec(match)?.[1];
+      return prefix
+        ? rewriteReadInput({ path: prefix }, references, clonedEvents).path +
+            match.slice(prefix.length)
+        : match;
+    }),
+    ...(Array.isArray(result.readHints)
+      ? {
+          readHints: result.readHints.map((hint: unknown) => {
+            if (!hint || typeof hint !== 'object' || !('read' in hint)) return hint;
+            const read = hint.read;
+            if (
+              !read ||
+              typeof read !== 'object' ||
+              !('path' in read) ||
+              typeof read.path !== 'string'
+            )
+              return hint;
+            const rewritten = rewriteReadInput(
+              read as Record<string, unknown> & { path: string },
+              references,
+              clonedEvents,
+            );
+            return {
+              ...hint,
+              read: rewritten,
+              ...(read.path.startsWith('maka://read/') && !rewritten.path.startsWith('maka://read/')
+                ? {
+                    continuationReset:
+                      'The copied resource changed. Search it again to locate this match.',
+                  }
+                : {}),
+            };
+          }),
         }
       : {}),
   };

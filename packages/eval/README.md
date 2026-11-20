@@ -197,9 +197,10 @@ and admits only `Bash`, `StopBackgroundTask`, `WriteStdin`, `Read`, `Write`, `Ed
 `Grep`, and `apply_patch` as tool candidates. Bash is the product tool unchanged; because the
 subject runs with Full access, it carries no sandbox boundary declaration and the widening tool
 is absent, as in any Full access root session. Provider-specific routing remains authoritative: DeepSeek Responses exposes `apply_patch` instead of `Write` and
-`Edit`, and `Read` also accepts Session-scoped Maka tool-result paths. A real
-`hosted.execution.start` regression test pins SHA-256 hashes for the first main provider request's
-developer prompt and complete tool schema.
+`Edit`, and both `Read` and `Grep` accept Session-scoped Maka tool-result paths.
+`Grep` searches Read's retained view and returns bounded excerpts with Read hints for clipped lines.
+A real `hosted.execution.start` regression test pins SHA-256 hashes for the first main provider
+request's developer prompt and complete tool schema.
 
 Every benchmark subject removes `WebSearch`, `WebFetch`, and `FetchURL` from the provider-visible
 tool list. Maka enforces that through its Hosted Execution profile; external harnesses pass through
