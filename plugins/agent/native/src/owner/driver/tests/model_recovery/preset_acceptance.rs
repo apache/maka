@@ -1957,3 +1957,82 @@ async fn next_turn_reads_why_the_previous_turn_failed() -> TestResult<()> {
     assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn preparation_model_error_fails_the_run_and_admits_the_next_queued_message() -> TestResult<()>
+{
+    let mut rig = Rig::new()?;
+    let provider = Provider::start().await?;
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        // No request fits the declared size, so model preparation fails before sending.
+        let model = model_options(
+            client,
+            &provider.url,
+            false,
+            json!({"imageInput":{"requestBytes":1}}),
+        )
+        .await?;
+        let session = create(client, &base, &model, None).await?;
+        let id = session["id"].as_str().unwrap();
+        let mut messages = Vec::new();
+        for message in ["First.", "Second."] {
+            let sent = call(
+                client,
+                "agent",
+                "send",
+                json!({"sessionId":id,"message":message,"delivery":"queue"}),
+            )
+            .await?;
+            assert_eq!(sent["kind"], "queued", "{sent}");
+            messages.push(sent["messageId"].clone());
+        }
+        for message in messages {
+            let target = json!({"kind":"message","messageId":message});
+            let work = loop {
+                let work = call(
+                    client,
+                    "agent",
+                    "work",
+                    json!({"sessionId":id,"target":target}),
+                )
+                .await?;
+                match work["execution"]["state"]["kind"].as_str() {
+                    Some("failed") => break work,
+                    Some("completed" | "cancelled") => return Err(format!("{work}").into()),
+                    _ => tokio::time::sleep(Duration::from_millis(30)).await,
+                }
+            };
+            assert!(work["execution"]["state"]["reason"].is_null(), "{work}");
+        }
+        let history = call(
+            client,
+            "agent",
+            "history",
+            json!({
+                "sessionId": id,
+                "position": {"kind": "tail"},
+                "includeThinking": false,
+                "view": "conversation"
+            }),
+        )
+        .await?;
+        assert!(
+            history.to_string().contains("exceeds provider limit"),
+            "{history}"
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}

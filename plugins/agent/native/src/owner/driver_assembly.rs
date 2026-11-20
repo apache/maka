@@ -505,12 +505,13 @@ impl Owner {
                     }
                 };
                 claim.deactivate();
-                if matches!(&driven, Ok(DriverExit::Terminal { .. })) {
+                {
                     let mut runs = self.runs.state().await;
                     if runs.controls.get(&view.spec.session_id).is_some_and(|control| control.execution.run_id == view.run) {
                         runs.controls.remove(&view.spec.session_id);
                     }
-                    drop(runs);
+                }
+                if matches!(&driven, Ok(DriverExit::Terminal { .. })) {
                     self.wake_notify.notify_one();
                 }
                 let cleaned = driver.finish().await;
