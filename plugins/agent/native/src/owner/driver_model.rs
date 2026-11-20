@@ -123,7 +123,7 @@ pub(super) struct PreparedContinuation {
     pub replay: maka_agent_facts::continuation::ReplayEvidence,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FrozenInput {
     continuing: Option<AcceptedModel>,
@@ -142,43 +142,15 @@ struct FrozenInput {
     wire: FrozenWire,
     notifications: Vec<FrozenNotification>,
     recovered_cells: Vec<FrozenCellKnowledge>,
-    /// Inline only in records written before the text became shared content.
-    #[serde(default)]
+    #[serde(skip)]
     instructions: Option<String>,
-    #[serde(default)]
+    #[serde(skip)]
     system: Option<SystemPrompt>,
     tool_choice: ToolChoiceMode,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     instructions_text: Option<ContentRef>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     system_text: Option<FrozenSystem>,
-}
-
-/// Wire form of [FrozenInput]: system texts are always stored as shared content refs.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SealedFrozenInput<'a> {
-    continuing: &'a Option<AcceptedModel>,
-    accepted: &'a AcceptedModel,
-    adapter: &'a SourceRevision,
-    item_acceptance: bool,
-    route_identity: &'a str,
-    operation: ModelOperation,
-    language: maka_agent_facts::language::Language,
-    prompt: &'a ContentRef,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    prompt_chunks: &'a Vec<ContentRef>,
-    layout: &'a preparation::FrozenPromptLayout,
-    covered_prefix: &'a Option<CoveredPrefix>,
-    normalization: &'a Option<maka_model::ProviderKind>,
-    wire: &'a FrozenWire,
-    notifications: &'a Vec<FrozenNotification>,
-    recovered_cells: &'a Vec<FrozenCellKnowledge>,
-    tool_choice: ToolChoiceMode,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    instructions_text: &'a Option<ContentRef>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system_text: &'a Option<FrozenSystem>,
 }
 
 /// Each Step repeats the same system text; storing it as content keeps one copy.
@@ -297,36 +269,11 @@ impl FrozenInput {
                 })
             })
             .transpose()?;
-        let wire = SealedFrozenInput {
-            continuing: &self.continuing,
-            accepted: &self.accepted,
-            adapter: &self.adapter,
-            item_acceptance: self.item_acceptance,
-            route_identity: &self.route_identity,
-            operation: self.operation,
-            language: self.language,
-            prompt: &self.prompt,
-            prompt_chunks: &self.prompt_chunks,
-            layout: &self.layout,
-            covered_prefix: &self.covered_prefix,
-            normalization: &self.normalization,
-            wire: &self.wire,
-            notifications: &self.notifications,
-            recovered_cells: &self.recovered_cells,
-            tool_choice: self.tool_choice,
-            instructions_text: &self.instructions_text,
-            system_text: &self.system_text,
-        };
-        Ok((serde_json::to_vec(&wire).map_err(RunError::Json)?, texts))
+        Ok((serde_json::to_vec(self).map_err(RunError::Json)?, texts))
     }
 
     /// Restore the system text of a sealed record from its resolved content.
     fn hydrate(&mut self, texts: &[(ContentRef, String)]) -> Result<(), RunError> {
-        if (self.instructions_text.is_some() && self.instructions.is_some())
-            || (self.system_text.is_some() && self.system.is_some())
-        {
-            return Err(unsupported("frozen-input-manifest-schema"));
-        }
         let text = |reference: &ContentRef| {
             texts
                 .iter()
@@ -334,8 +281,8 @@ impl FrozenInput {
                 .map(|(_, text)| text.clone())
                 .ok_or_else(|| unsupported("frozen-input-system-text"))
         };
-        let instructions = self.instructions_text.as_ref().map(text).transpose()?;
-        let system = self
+        self.instructions = self.instructions_text.as_ref().map(text).transpose()?;
+        self.system = self
             .system_text
             .as_ref()
             .map(|system| {
@@ -346,12 +293,6 @@ impl FrozenInput {
                 })
             })
             .transpose()?;
-        if instructions.is_some() {
-            self.instructions = instructions;
-        }
-        if system.is_some() {
-            self.system = system;
-        }
         Ok(())
     }
 }
@@ -4330,8 +4271,9 @@ mod withheld_recovery_tests {
 mod frozen_text_tests {
     use super::*;
 
-    fn minimal_inline_value(instructions: &str, system_text: &str) -> Value {
+    fn minimal_wire_value() -> Value {
         json!({
+            "continuing": null,
             "accepted": {
                 "binding": {
                     "connection_id": "00000000-0000-0000-0000-000000000001",
@@ -4405,37 +4347,39 @@ mod frozen_text_tests {
             "wire": { "format": "chat_completions", "codec": "{}", "identity": "0" },
             "notifications": [],
             "recoveredCells": [],
-            "instructions": instructions,
-            "system": {
-                "text": system_text,
-                "policy_revision": 1,
-                "sources": []
-            },
             "toolChoice": "auto"
         })
     }
 
     #[tokio::test]
-    async fn shared_system_text_deduplicates_on_seal_and_supports_legacy_inline() {
+    async fn shared_system_text_deduplicates_on_seal_and_rejects_inline_fields() {
         let shared = "You are a concise coding assistant.";
-        let legacy_json = minimal_inline_value(shared, shared);
+        let base = minimal_wire_value();
 
-        // 1. Legacy inline records remain readable without external refs.
-        let legacy: FrozenInput = serde_json::from_value(legacy_json.clone()).unwrap();
-        assert!(legacy.text_refs().is_empty());
-        let legacy = hydrate_frozen_input(legacy, |_| async {
-            panic!("legacy inline record must not decode external text refs")
-        })
-        .await
-        .unwrap();
-        assert_eq!(legacy.instructions.as_deref(), Some(shared));
-        assert_eq!(
-            legacy.system.as_ref().map(|s| s.text.as_str()),
-            Some(shared)
-        );
+        // 1. Legacy inline fields are rejected directly at deserialization.
+        for (field, value) in [
+            ("instructions", json!(shared)),
+            (
+                "system",
+                json!({ "text": shared, "policy_revision": 1, "sources": [] }),
+            ),
+        ] {
+            let mut legacy = base.clone();
+            legacy[field] = value;
+            assert!(
+                serde_json::from_value::<FrozenInput>(legacy).is_err(),
+                "inline {field} field must be rejected"
+            );
+        }
 
         // 2. Identical instructions and system.text collapse into one shared content blob.
-        let mut to_seal: FrozenInput = serde_json::from_value(legacy_json).unwrap();
+        let mut to_seal: FrozenInput = serde_json::from_value(base).unwrap();
+        to_seal.instructions = Some(shared.to_owned());
+        to_seal.system = Some(SystemPrompt {
+            text: shared.to_owned(),
+            policy_revision: 1,
+            sources: Vec::new(),
+        });
         let (bytes, blobs) = to_seal.seal_bytes().unwrap();
         assert_eq!(
             blobs.len(),
@@ -4473,18 +4417,5 @@ mod frozen_text_tests {
             Some(shared)
         );
         assert_eq!(hydrated.content_refs(), to_seal.content_refs());
-
-        // 4. Records mixing inline text and external ref are rejected.
-        let mut mixed = wire;
-        mixed["instructions"] = json!(shared);
-        let mixed: FrozenInput = serde_json::from_value(mixed).unwrap();
-        let err = hydrate_frozen_input(mixed, |_| async { Ok(shared.to_owned()) })
-            .await
-            .err()
-            .expect("mixed inline and ref must fail");
-        assert!(
-            err.to_string().contains("frozen-input-manifest-schema"),
-            "{err}"
-        );
     }
 }
