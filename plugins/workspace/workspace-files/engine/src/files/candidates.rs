@@ -37,12 +37,23 @@ impl Directory {
         cancel: &AtomicBool,
         mut emit: impl FnMut(FileEntry) -> io::Result<()>,
     ) -> io::Result<()> {
-        expose(self.candidate_files(query, cancel, &mut emit))
+        expose(self.candidate_files(query, true, cancel, &mut emit))
+    }
+
+    /// Like shell completion of a typed path: only direct entries match.
+    pub fn child_candidates(
+        &self,
+        query: &str,
+        cancel: &AtomicBool,
+        mut emit: impl FnMut(FileEntry) -> io::Result<()>,
+    ) -> io::Result<()> {
+        expose(self.candidate_files(query, false, cancel, &mut emit))
     }
 
     fn candidate_files(
         &self,
         query: &str,
+        descend: bool,
         cancel: &AtomicBool,
         emit: &mut impl FnMut(FileEntry) -> io::Result<()>,
     ) -> io::Result<()> {
@@ -55,7 +66,7 @@ impl Directory {
                 Ok(true)
             });
         }
-        self.search_names(&query, cancel, emit)
+        self.search_names(&query, descend, cancel, emit)
     }
 
     /// Breadth-first, so shallow matches stream first, and bounded, so a large
@@ -64,6 +75,7 @@ impl Directory {
     fn search_names(
         &self,
         query: &str,
+        descend: bool,
         cancel: &AtomicBool,
         emit: &mut impl FnMut(FileEntry) -> io::Result<()>,
     ) -> io::Result<()> {
@@ -167,7 +179,7 @@ impl Directory {
                 }
             }
             for (name, _, kind) in &children {
-                if *kind == FileKind::Directory {
+                if descend && *kind == FileKind::Directory {
                     pending.push_back((inner.join(name), rules.clone()));
                 }
             }
