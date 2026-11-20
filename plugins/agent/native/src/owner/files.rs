@@ -356,6 +356,8 @@ impl Owner {
         let scope = context.scope().clone();
         self.resource_work(&scope, move |owner, scope| {
             Box::pin(async move {
+                // A typed path completes like a shell: within that directory only.
+                let typed = input.directory.is_some();
                 let mut path = input.directory;
                 if let Some(home) = path.as_ref().filter(|path| path.is_home()) {
                     let (_, root) = owner.candidate_directory(&input.target, None, &scope).await?;
@@ -371,23 +373,25 @@ impl Owner {
                 let scan = worktrees::blocking(&scope, &owner.stop, move |cancel| {
                     let mut entries = Vec::new();
                     let mut bytes = 0;
-                    directory
-                        .candidates(&input.query, &cancel, |entry| {
-                            bytes += serde_json::to_vec(&entry)
-                                .map_err(io::Error::other)?
-                                .len();
-                            entries.push(entry);
-                            if bytes >= FILE_STREAM_BYTES {
-                                sender
-                                    .blocking_send(FileCandidates {
-                                        entries: std::mem::take(&mut entries),
-                                    })
-                                    .map_err(|_| io::Error::other("files_cancelled"))?;
-                                bytes = 0;
-                            }
-                            Ok(())
-                        })
-                        .map_err(file_failure)?;
+                    let emit = |entry| {
+                        bytes += serde_json::to_vec(&entry).map_err(io::Error::other)?.len();
+                        entries.push(entry);
+                        if bytes >= FILE_STREAM_BYTES {
+                            sender
+                                .blocking_send(FileCandidates {
+                                    entries: std::mem::take(&mut entries),
+                                })
+                                .map_err(|_| io::Error::other("files_cancelled"))?;
+                            bytes = 0;
+                        }
+                        Ok(())
+                    };
+                    if typed {
+                        directory.child_candidates(&input.query, &cancel, emit)
+                    } else {
+                        directory.candidates(&input.query, &cancel, emit)
+                    }
+                    .map_err(file_failure)?;
                     if !entries.is_empty() {
                         sender
                             .blocking_send(FileCandidates { entries })

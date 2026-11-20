@@ -210,6 +210,14 @@ fn searches_match_names_shallow_first_and_skip_hidden_or_unreadable_folders() {
     found.unwrap();
     visited.unwrap();
     assert_eq!(paths, [b"Downloads".to_vec(), b"open/download.rs".to_vec()]);
+    let mut children = Vec::new();
+    directory
+        .child_candidates("down", &AtomicBool::new(false), |entry| {
+            children.push(entry.path.bytes().unwrap());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(children, [b"Downloads".to_vec()]);
     assert_eq!(texts, ["open/download.rs"]);
 }
 
