@@ -670,3 +670,6 @@ mod host_load_stress;
 
 #[path = "mainline_reopen/host_nightmare_stress.rs"]
 mod host_nightmare_stress;
+
+#[path = "mainline_reopen/host_hell_stress.rs"]
+mod host_hell_stress;
