@@ -154,136 +154,173 @@ impl Notice<'_> {
 }
 
 impl Owner {
-    /// The result of a finished run: its last assistant message, and for a failed
-    /// run the failure recorded after that message. A stopped or completed run has
-    /// no failure to report; rows it shows (an interrupted step, a retried error)
-    /// are not why it ended.
+    /// The result of a finished run: its last non-empty assistant message, and for
+    /// a failed run the failures recorded after that message. Reads directly from
+    /// the target run's canonical facts so later runs or tool bursts cannot roll it
+    /// off a session-wide tail page.
     pub(super) async fn run_result(
         &self,
         session_id: &str,
         run: RunId,
         terminal: &Terminal,
     ) -> RunResult {
-        let mut result = self.history_result(session_id, run).await;
-        if *terminal != Terminal::Failed {
-            result.failure = None;
-        } else if result.failure.is_none()
-            && let Ok(Some(view)) = self.session_run(session_id, run).await
-            && let Some(failure) = view.recovery_failure()
-        {
-            result.failure = serde_json::to_value(failure)
-                .ok()
-                .and_then(|v| {
-                    v.get("diagnostic")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .or_else(|| serde_json::to_string(failure).ok())
-                .as_deref()
-                .and_then(excerpt);
-        }
-        // The history tail no longer reaches a run that later runs have pushed out;
-        // the end of its answer is the closest to what it said last.
-        if result.reply.is_none() {
-            result.reply = self.answer_tail(session_id, run).await;
-        }
-        result
-    }
-
-    /// The run's last assistant message on the history tail page, and the failure
-    /// rows recorded after it.
-    pub(super) async fn history_result(&self, session_id: &str, run: RunId) -> RunResult {
-        use maka_agent_ports::session::history as wire;
-        let mut reply: Option<(
-            Option<String>,
-            maka_agent_facts::history::HistoryRowAddress,
-            String,
-        )> = None;
-        let mut failures: Vec<(maka_agent_facts::history::HistoryRowAddress, String)> = Vec::new();
-        let page = match maka_capabilities::call::Issuer::default()
-            .issue(maka_capabilities::call::Identity::Native, self.stop.clone())
-        {
-            Ok(scope) => crate::service::history_read_for_tool(
-                self,
-                &scope,
-                crate::contract::History {
-                    session_id: session_id.to_owned(),
-                    through: None,
-                    position: wire::Position::Tail,
-                    include_thinking: false,
-                    view: wire::HistoryView::Conversation,
-                },
-            )
-            .await
-            .ok(),
-            Err(_) => None,
+        use maka_agent_facts::{
+            context::ModelPurpose,
+            durable::{ExternalTaskId, Fact, StepId},
+            executor::Output,
+            model::{ModelPart, TextKind},
         };
-        if let Some(crate::contract::HistoryPage::Ready { chunks, .. }) = page {
-            for chunk in chunks {
-                if chunk.run_id != Some(run)
-                    || chunk.field != wire::HistoryField::Body
-                    || chunk.text.trim().is_empty()
-                {
-                    continue;
-                }
-                match chunk.role {
-                    wire::Role::Assistant => {
-                        if let Some((id, position, text)) = &mut reply
-                            && ((chunk.message_id.is_some() && *id == chunk.message_id)
-                                || *position == chunk.position)
+        let Ok(Some(view)) = self.session_run(session_id, run).await else {
+            return RunResult::default();
+        };
+        let collect_failures = *terminal == Terminal::Failed;
+        let recovery_diagnostic = if collect_failures {
+            view.recovery_failure_diagnostic()
+        } else {
+            None
+        };
+        let mut reply: Option<String> = None;
+        let mut external_reply: Option<(ExternalTaskId, String, Vec<String>)> = None;
+        let mut external_has_content = false;
+        let mut failures: Vec<String> = Vec::new();
+        let mut step_purposes: std::collections::HashMap<StepId, ModelPurpose> =
+            std::collections::HashMap::new();
+
+        let push_failure = |failures: &mut Vec<String>, text: String| {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return;
+            }
+            if failures.last().is_some_and(|prev| prev == trimmed) {
+                return;
+            }
+            failures.push(trimmed.to_owned());
+        };
+
+        let mut end = view.revision;
+        'scan: while end > 0 {
+            let start = end.saturating_sub(64);
+            let Ok(page) = self.durable.history(run, start, (end - start) as u32).await else {
+                break;
+            };
+            for record in page.into_iter().rev() {
+                match record.fact {
+                    Fact::ModelObserved {
+                        attempt,
+                        part:
+                            ModelPart::Text {
+                                text_kind: TextKind::Text,
+                                text,
+                                ..
+                            },
+                        ..
+                    } => {
+                        if external_reply.is_some() {
+                            if external_has_content {
+                                break 'scan;
+                            }
+                            external_reply = None;
+                        }
+                        if text.chunks().all(|chunk| chunk.trim().is_empty()) {
+                            continue;
+                        }
+                        if let Some(step) = view.attempts.get(&attempt).map(|a| a.step) {
+                            let purpose = match step_purposes.get(&step).copied() {
+                                Some(purpose) => Some(purpose),
+                                None => match self.durable.request(run, step).await {
+                                    Ok(request) => {
+                                        let p = request.accounting.purpose;
+                                        step_purposes.insert(step, p);
+                                        Some(p)
+                                    }
+                                    Err(_) => None,
+                                },
+                            };
+                            if purpose == Some(ModelPurpose::Summary) {
+                                continue;
+                            }
+                        }
+                        reply = Some(text.to_string());
+                        break 'scan;
+                    }
+                    Fact::ExternalTaskObserved {
+                        task,
+                        output: Output::OutputDelta { message_id, text },
+                        ..
+                    } => match &mut external_reply {
+                        Some((current_task, current_id, chunks))
+                            if *current_task == task && *current_id == message_id =>
                         {
-                            text.push_str(&chunk.text);
-                        } else {
-                            reply = Some((chunk.message_id, chunk.position, chunk.text));
-                            failures.clear();
+                            if !text.trim().is_empty() {
+                                external_has_content = true;
+                            }
+                            chunks.push(text);
+                        }
+                        Some(_) => {
+                            if external_has_content {
+                                break 'scan;
+                            }
+                            external_has_content = !text.trim().is_empty();
+                            external_reply = Some((task, message_id, vec![text]));
+                        }
+                        None => {
+                            external_has_content = !text.trim().is_empty();
+                            external_reply = Some((task, message_id, vec![text]));
+                        }
+                    },
+                    Fact::RunTerminated {
+                        terminal: Terminal::Failed,
+                        diagnostic,
+                    } if collect_failures && !external_has_content => {
+                        if let Some(diag) = recovery_diagnostic.clone().or(diagnostic) {
+                            push_failure(&mut failures, diag);
                         }
                     }
-                    wire::Role::Failure => match failures.last_mut() {
-                        Some((position, text)) if *position == chunk.position => {
-                            text.push_str(&chunk.text);
-                        }
-                        Some((_, text)) if *text == chunk.text => {}
-                        _ => failures.push((chunk.position, chunk.text)),
-                    },
+                    Fact::ModelInterrupted { diagnostic, .. }
+                        if collect_failures && !external_has_content =>
+                    {
+                        push_failure(&mut failures, diagnostic);
+                    }
+                    Fact::ExternalTaskClosed {
+                        outcome: Terminal::Failed,
+                        diagnostic: Some(diagnostic),
+                        ..
+                    } if collect_failures && !external_has_content => {
+                        push_failure(&mut failures, diagnostic);
+                    }
                     _ => {}
                 }
             }
+            end = start;
         }
-        RunResult {
-            reply: reply.and_then(|(_, _, text)| excerpt(&text)),
-            failure: excerpt(
-                &failures
-                    .into_iter()
-                    .map(|(_, text)| text)
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ),
-        }
-    }
 
-    async fn answer_tail(&self, session_id: &str, run: RunId) -> Option<String> {
-        const TAIL: u64 = 4096;
-        let head = self.durable.work(run, 0, 4).await.ok().flatten()?;
-        if head.view.spec.session_id != session_id {
-            return None;
+        if reply.is_none()
+            && let Some((_, _, mut chunks)) = external_reply
+            && external_has_content
+        {
+            chunks.reverse();
+            reply = Some(chunks.concat());
         }
-        let start = head.answer.high_water.saturating_sub(TAIL);
-        // A cut inside a UTF-8 character is refused; the next boundary is at most 3 bytes on.
-        for offset in start..(start + 4).min(head.answer.high_water) {
-            if let Ok(Some(work)) = self.durable.work(run, offset, TAIL as u32).await {
-                let text = work.answer.text.trim();
-                let kept: Vec<char> = text.chars().rev().take(1600).collect();
-                if kept.is_empty() {
-                    return None;
-                }
-                let mut tail: String = kept.into_iter().rev().collect();
-                if offset > 0 || text.chars().count() > 1600 {
-                    tail.insert_str(0, "[truncated] …\n");
-                }
-                return Some(tail);
+
+        if collect_failures
+            && failures.is_empty()
+            && let Some(diag) = recovery_diagnostic
+        {
+            push_failure(&mut failures, diag);
+        }
+
+        failures.reverse();
+        let mut deduped: Vec<String> = Vec::with_capacity(failures.len());
+        for item in failures {
+            if deduped.last().is_none_or(|prev| prev != &item) {
+                deduped.push(item);
             }
         }
-        None
+
+        RunResult {
+            reply: reply.as_deref().and_then(excerpt),
+            failure: excerpt(&deduped.join("\n")),
+        }
     }
 
     pub(super) async fn completion_request(

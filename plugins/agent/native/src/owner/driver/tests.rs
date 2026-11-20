@@ -5965,12 +5965,206 @@ async fn a_run_that_did_not_fail_reports_no_failure_reason() {
             vec![],
         )
         .await?;
-        assert_eq!(
-            owner.history_result(&session, run).await.failure.as_deref(),
-            Some(diagnostic)
-        );
         let result = owner.run_result(&session, run, &Terminal::Cancelled).await;
         assert_eq!(result.failure, None);
+        let failed = owner.run_result(&session, run, &Terminal::Failed).await;
+        assert_eq!(failed.failure, None);
+        Ok(())
+    }
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    result.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_result_extracts_last_message_and_failure_without_tail_rolloff_narration_leak_or_middle_slice()
+ {
+    use maka_agent_facts::{
+        durable::ExternalTaskId,
+        executor::Output,
+        model::{ModelPart, TextKind},
+    };
+    let mut rig = Rig::new().unwrap();
+    let result: TestResult<()> = async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let run1 = rig.driver.as_ref().unwrap().access.execution().run_id;
+
+        // 1. Single run with early narration, a 40 KiB final message (with distinct head/tail),
+        //    10 trailing thinking/tool rows (exceeding the 8-chunk tail page), and a failure diagnostic.
+        let (_request, attempt, _at) = rig
+            .record_model_request(maka_agent_engine::ports::Preparation::Initial)
+            .await?;
+        let long_reply = format!("BEGIN_MARKER\n{}\nEND_MARKER", "x".repeat(40_000));
+        let mut facts = vec![
+            Fact::ModelObserved {
+                attempt,
+                index: 0,
+                part: ModelPart::Text {
+                    text_kind: TextKind::Text,
+                    text: "EARLY_NARRATION_SHOULD_NOT_LEAK".into(),
+                    provider_options: None,
+                },
+                continuation: None,
+            },
+            Fact::ModelObserved {
+                attempt,
+                index: 1,
+                part: ModelPart::Text {
+                    text_kind: TextKind::Text,
+                    text: long_reply.into(),
+                    provider_options: None,
+                },
+                continuation: None,
+            },
+        ];
+        for i in 0..10 {
+            facts.push(Fact::ModelObserved {
+                attempt,
+                index: 2 + i,
+                part: ModelPart::Text {
+                    text_kind: TextKind::Thinking,
+                    text: format!("thinking-{i}").into(),
+                    provider_options: None,
+                },
+                continuation: None,
+            });
+        }
+        facts.push(Fact::ModelClosed {
+            attempt,
+            outcome: maka_agent_facts::accounting::Outcome::Error,
+            diagnostic: Some("HTTP 400 bad request".into()),
+            usage: Default::default(),
+            protocol: json!({"finishReason": "error"}),
+        });
+        facts.push(Fact::ModelCleanupObserved {
+            attempt,
+            cleanup: OperationCleanup::Confirmed,
+        });
+        facts.push(Fact::RunTerminated {
+            terminal: Terminal::Failed,
+            diagnostic: Some("HTTP 400 bad request".into()),
+        });
+        rig.append(facts, vec![]).await?;
+
+        // 2. Admit a second external-worker Run in the SAME session to roll run1 off the
+        //    session tail page, with early narration, newline-split deltas, and failure.
+        let view1 = owner.durable.frontier(run1).await?;
+        let mut spec2 = view1.spec.clone();
+        spec2.turn_id = Uuid::new_v4().to_string();
+        spec2.trigger = Trigger::Message {
+            message_id: Uuid::new_v4().to_string(),
+        };
+        let exec_desc = ContentBlob::json(&json!({"executor": "claude"}))?;
+        spec2.backend = BackendSpec::Executor {
+            selection: maka_agent_facts::executor::Selection {
+                executor: "external".into(),
+                settings: Default::default(),
+            },
+            descriptor: exec_desc.reference().clone(),
+        };
+        let admission2 = maka_agent_state::Admission::new(spec2, at(), vec![exec_desc]);
+        let run2 = admission2.run();
+        owner.durable.admit(admission2).await?;
+        let claim2 = owner.durable.claim(run2).await?;
+        let view2 = owner.durable.frontier(run2).await?;
+        let task = ExternalTaskId::new();
+        let desc = ContentBlob::json(&json!({"task": task}))?;
+        let ext_facts = vec![
+            Fact::ExternalTaskPrepared {
+                task,
+                descriptor: desc.reference().clone(),
+                live_workspace: false,
+            },
+            Fact::ExternalTaskAdmitted { task },
+            Fact::ExternalTaskObserved {
+                task,
+                model_time_ms: None,
+                index: 0,
+                output: Output::OutputDelta {
+                    message_id: "m1".into(),
+                    text: "EARLY_EXTERNAL_NARRATION".into(),
+                },
+            },
+            Fact::ExternalTaskObserved {
+                task,
+                model_time_ms: None,
+                index: 1,
+                output: Output::OutputDelta {
+                    message_id: "m2".into(),
+                    text: "Line one".into(),
+                },
+            },
+            Fact::ExternalTaskObserved {
+                task,
+                model_time_ms: None,
+                index: 2,
+                output: Output::OutputDelta {
+                    message_id: "m2".into(),
+                    text: "\n".into(),
+                },
+            },
+            Fact::ExternalTaskObserved {
+                task,
+                model_time_ms: None,
+                index: 3,
+                output: Output::OutputDelta {
+                    message_id: "m2".into(),
+                    text: "Line two".into(),
+                },
+            },
+            Fact::ExternalTaskClosed {
+                task,
+                outcome: Terminal::Failed,
+                diagnostic: Some("usage limit reached".into()),
+                final_message: None,
+            },
+            Fact::ExternalTaskCleanupObserved {
+                task,
+                cleanup: OperationCleanup::Confirmed,
+            },
+            Fact::RunTerminated {
+                terminal: Terminal::Failed,
+                diagnostic: Some("usage limit reached".into()),
+            },
+        ];
+        owner
+            .durable
+            .append(
+                &claim2,
+                (&view2).into(),
+                ext_facts
+                    .into_iter()
+                    .map(|f| Change::new(f, at()))
+                    .collect(),
+                vec![desc],
+            )
+            .await?;
+        drop(claim2);
+
+        // Delayed lookup of run1 (after run2 in the same session) still returns exact head excerpt + failure.
+        let r1 = owner.run_result(&session, run1, &Terminal::Failed).await;
+        let reply = r1.reply.as_deref().expect("reply present");
+        assert!(
+            reply.starts_with("BEGIN_MARKER\n"),
+            "must excerpt from start of last message, not middle: {}",
+            &reply[..reply.len().min(80)]
+        );
+        assert!(
+            reply.ends_with("\n… [truncated]"),
+            "long reply must carry truncation marker"
+        );
+        assert!(
+            !reply.contains("EARLY_NARRATION_SHOULD_NOT_LEAK"),
+            "must not leak early narration"
+        );
+        assert_eq!(r1.failure.as_deref(), Some("HTTP 400 bad request"));
+
+        let r2 = owner.run_result(&session, run2, &Terminal::Failed).await;
+        assert_eq!(r2.reply.as_deref(), Some("Line one\nLine two"));
+        assert_eq!(r2.failure.as_deref(), Some("usage limit reached"));
         Ok(())
     }
     .await;
