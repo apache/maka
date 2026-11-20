@@ -1755,7 +1755,68 @@ async fn desktop_resumes_live_activity_when_scrolling_back_to_latest() {
     desktop
         .control("Thinking · New activity after scrolling")
         .await;
+    reply
+        .packet(json!({"type":"response.output_item.done","item":{
+            "type":"message","id":"final-answer","role":"assistant","phase":"final_answer",
+            "content":[{"type":"output_text","text":"All steps finished."}]
+        }}))
+        .await;
+    reply
+        .packet(json!({"type":"response.completed","response":{
+            "id":"response-1","usage":{"input_tokens":10,"output_tokens":20}
+        }}))
+        .await;
     reply.finish_stream().await;
+    desktop.control("Copy message").await;
+    desktop.close().await;
+    // Reopen cold to read a finished long group downward across page boundaries.
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.press("Turn work details").await;
+    let first = desktop.open_group("Thinking · Activity line 0").await;
+    assert!(
+        desktop
+            .controls("Thinking · New activity after scrolling")
+            .is_empty()
+    );
+    desktop
+        .retry(
+            "read the second page of a closed group without jumping past it",
+            || !desktop.controls("Thinking · Activity line 64").is_empty(),
+            || {
+                desktop
+                    .platform
+                    .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                        position: first.center(),
+                        delta: nsh_terminal::ScrollDelta::Lines(point(0., -12.))
+                    })))
+                    .unwrap();
+            },
+        )
+        .await;
+    assert!(
+        desktop
+            .controls("Thinking · New activity after scrolling")
+            .is_empty()
+    );
+    desktop
+        .retry(
+            "read down to the final activity of the closed group",
+            || {
+                !desktop
+                    .controls("Thinking · New activity after scrolling")
+                    .is_empty()
+            },
+            || {
+                desktop
+                    .platform
+                    .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                        position: first.center(),
+                        delta: nsh_terminal::ScrollDelta::Lines(point(0., -24.))
+                    })))
+                    .unwrap();
+            },
+        )
+        .await;
     desktop.close().await;
     fixture.finish().await;
 }

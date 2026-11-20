@@ -1602,7 +1602,7 @@ export function Conversation(props: ConversationProps) {
     if (entry?.kind !== 'process') return;
     const state = groupState(entry.key);
     state.following.set(true);
-    if (state.open()) loadGroupSteps(() => entry, 'end');
+    if (state.open()) loadGroupSteps(entry.key, 'end');
     if (state.list) state.list.scrollToEnd({ animated: false });
     else state.opening = 'bottom';
   };
@@ -1907,11 +1907,23 @@ export function Conversation(props: ConversationProps) {
       field: 'body',
     });
   };
-  const loadGroupSteps = (group: () => ProcessGroup, request?: ActivityPage): void => {
-    const { workRowId: id, closed, key } = group();
+  const currentProcessGroup = (key: string): ProcessGroup | undefined => {
+    const entry = displayEntry(key);
+    return entry?.kind === 'process' ? entry.group : undefined;
+  };
+  const hasMoreGroupStepsAfter = (group: ProcessGroup) => {
+    const id = group.workRowId;
+    if (!id) return false;
+    const window = stepWindows.get(id);
+    if (!window) return group.closed;
+    return window.after !== null || (window.reading && window.through < 0);
+  };
+  const loadGroupSteps = (key: string, request?: ActivityPage): void => {
+    const current = currentProcessGroup(key);
+    const id = current?.workRowId;
     const owner = historyWindow();
     const row = id && historyRows().byId.get(id);
-    if (!id || !owner || !row || !row.work || !row.position) return;
+    if (!current || !id || !owner || !row || !row.work || !row.position) return;
     const reader = groupState(key);
     if (!reader.open()) return;
     const through = historyRowThrough(row, owner.through);
@@ -1920,10 +1932,10 @@ export function Conversation(props: ConversationProps) {
     const direction = request === 'before' || request === 'after' ? request : edge;
     let position: HistoryPosition;
     if (!state) {
-      const fromStart = edge ? edge === 'before' : closed;
+      const fromStart = edge ? edge === 'before' : current.closed;
       position = fromStart
         ? { kind: 'row', position: row.position, field: row.field as 'body' | 'thinking' }
-        : { kind: 'row_end', position: row.work.end.position, field: row.work.end.field };
+        : { kind: 'row_end', position: row.work.end.position, field: row.work.end.field ?? 'body' };
       state = { before: null, after: null, last: null, through: -1, reading: false };
       stepWindows.set(id, state);
     } else {
@@ -1966,14 +1978,15 @@ export function Conversation(props: ConversationProps) {
         window.reading = false;
         const pending = window.pending;
         window.pending = undefined;
-        if (!reader.open()) {
+        const latest = currentProcessGroup(key);
+        if (!reader.open() || !latest) {
           window.seek = undefined;
           return;
         }
         if (window.seek) {
           const target = window.seek;
           if (window[target]) {
-            loadGroupSteps(group, target);
+            loadGroupSteps(key, target);
             return;
           }
           window.seek = undefined;
@@ -1981,12 +1994,11 @@ export function Conversation(props: ConversationProps) {
           else reader.list?.scrollToEnd({ animated: false });
         }
         // A page of receipts may add no visible rows. Keep looking until the list can scroll.
-        if (pending && window[pending]) loadGroupSteps(group, pending);
-        else if (group().rowIds.length === 0 && (window.before || window.after))
-          loadGroupSteps(group, window.before ? 'before' : 'after');
-        else if (!group().closed && reader.following() && window.after)
-          loadGroupSteps(group, 'after');
-        else loadGroupSteps(group);
+        if (pending && window[pending]) loadGroupSteps(key, pending);
+        else if (latest.rowIds.length === 0 && (window.before || window.after))
+          loadGroupSteps(key, window.before ? 'before' : 'after');
+        else if (!latest.closed && reader.following() && window.after) loadGroupSteps(key, 'after');
+        else loadGroupSteps(key);
       })
       .catch((reason) => {
         if (!alive || stepWindows.get(id) !== window) return;
@@ -4121,7 +4133,7 @@ export function Conversation(props: ConversationProps) {
         state.following.set(!group.closed);
       }
       state.open.set(true);
-      if (opening) loadGroupSteps(() => group, group.closed ? 'start' : 'end');
+      if (opening) loadGroupSteps(group.key, group.closed ? 'start' : 'end');
       const index = displayKeys().indexOf(group.key);
       if (index >= 0) list?.scrollToIndex({ index, viewPosition: 0 });
       state.requestFocus = true;
@@ -4648,7 +4660,7 @@ export function Conversation(props: ConversationProps) {
             effect(() => {
               const id = group().workRowId;
               if (id && groupState(initial.group.key).open() && currentRow(id))
-                loadGroupSteps(group);
+                loadGroupSteps(initial.group.key);
             });
             const liveTools = computed(() =>
               toolActivity().filter((item) =>
@@ -4683,7 +4695,8 @@ export function Conversation(props: ConversationProps) {
                   const window = id && stepWindows.get(id);
                   if (window) window.seek = undefined;
                 }}
-                pageSteps={(direction) => loadGroupSteps(group, direction)}
+                pageSteps={(direction) => loadGroupSteps(group().key, direction)}
+                hasMoreAfter={() => hasMoreGroupStepsAfter(group())}
                 revealTerminalGroup={
                   platform.idiom === 'terminal'
                     ? () =>

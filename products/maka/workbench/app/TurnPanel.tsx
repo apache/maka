@@ -359,6 +359,7 @@ function ActivityLog(props: {
   senders?: MessageSenders;
   inspectTool?(key: string): void;
   pageSteps?(direction: ActivityPage): void;
+  hasMoreAfter?(): boolean;
   userScroll(): void;
   reading(away: boolean): void;
   resumed(): void;
@@ -382,6 +383,7 @@ function ActivityLog(props: {
   let lastOffset = 0;
   let alive = true;
   const resumeFollowing = () => {
+    if (props.group().closed) return;
     const resuming = !state.following();
     state.following.set(true);
     props.reading(false);
@@ -479,7 +481,8 @@ function ActivityLog(props: {
             if (intent === 'start' || intent === 'end') props.pageSteps?.(intent);
             else if ((delta ?? 0) < 0 && nearStart) props.pageSteps?.('before');
             else if ((delta ?? 0) > 0 && nearEnd) props.pageSteps?.('after');
-            if (intent === 'end' || (nearEnd && (delta ?? 0) > 0)) resumeFollowing();
+            if (intent === 'end' || (nearEnd && (delta ?? 0) > 0 && !props.hasMoreAfter?.()))
+              resumeFollowing();
           }}
           onScroll={(event) => {
             if (!alive || lease !== state.lease) return;
@@ -492,16 +495,17 @@ function ActivityLog(props: {
               fadeBottom.set(end > 1 && distance > 1);
             }
             if (end <= 1) props.pageSteps?.(props.group().closed ? 'after' : 'before');
+            const moreAfter = props.hasMoreAfter?.() ?? false;
             nearStart = lastOffset <= activityFollowThreshold;
             nearEnd = distance <= activityFollowThreshold;
-            atEnd = distance <= 1;
+            atEnd = distance <= 1 && !moreAfter;
             props.settled?.(atEnd);
             // Reflow and restoring a saved offset also report scroll geometry.
             if (movement === 0 || scrollInput === 'idle') return;
             if (scrollInput === 'pending') scrollInput = 'idle';
             if (movement < 0 && lastOffset <= event.size.height) props.pageSteps?.('before');
             if (movement > 0 && distance <= event.size.height) props.pageSteps?.('after');
-            if (movement > 0 && nearEnd) resumeFollowing();
+            if (movement > 0 && nearEnd && !moreAfter) resumeFollowing();
             else if (movement < 0 && !nearEnd) {
               state.following.set(false);
               props.reading(true);
@@ -631,6 +635,7 @@ type TurnPanelProps = {
   senders?: MessageSenders;
   inspectTool?(key: string): void;
   pageSteps?(direction: ActivityPage): void;
+  hasMoreAfter?(): boolean;
   userScroll(): void;
   reading(away: boolean): void;
   resumed(): void;
