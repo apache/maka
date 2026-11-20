@@ -21,10 +21,12 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+mod batch;
 mod guest;
 mod harbor;
 
-use crate::harbor::{HarborRunOptions, run_trial};
+use crate::batch::{BatchOptions, run_batch};
+use crate::harbor::{HarborRunOptions, run_single};
 
 #[derive(Parser)]
 #[command(name = "maka-eval", about = "Minimal Maka Host evaluation runner")]
@@ -37,6 +39,8 @@ struct Cli {
 enum Command {
     /// Run a Harbor task with native Maka Host inside Docker.
     Run(Box<HarborRunOptions>),
+    /// Run a repeatable multi-task/multi-subject batch experiment with resume support.
+    Batch(BatchOptions),
     /// Container-side entry executed inside Harbor Docker environments.
     #[command(hide = true)]
     GuestRun {
@@ -47,31 +51,23 @@ enum Command {
     },
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Run(opts) => run_command(*opts).await,
+        Command::Run(opts) => run_single(*opts),
+        Command::Batch(opts) => run_batch(&opts),
         Command::GuestRun {
             request_file,
             result_file,
-        } => guest::run_from_files(&request_file, &result_file).await,
+        } => tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("failed to build tokio runtime: {e}"))
+            .and_then(|rt| rt.block_on(guest::run_from_files(&request_file, &result_file))),
     };
 
     if let Err(err) = result {
         eprintln!("error: {err}");
         std::process::exit(1);
     }
-}
-
-async fn run_command(opts: HarborRunOptions) -> Result<(), String> {
-    let outcome = run_trial(&opts).await?;
-    let (summary, validation) = outcome.settle();
-    let summary_path = opts.out_dir.join("run-summary.json");
-    let encoded = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
-    std::fs::write(&summary_path, format!("{encoded}\n"))
-        .map_err(|e| format!("failed to write {}: {e}", summary_path.display()))?;
-    println!("{encoded}");
-
-    validation
 }

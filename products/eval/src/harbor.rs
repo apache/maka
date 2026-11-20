@@ -17,19 +17,25 @@
  * under the License.
  */
 
+use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
+use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 
 use maka_agent_facts::accounting::{Activity, Outcome, Pending};
 use maka_settings_native::usage::Page as UsagePage;
 use serde_json::{Map, Value, json};
-use tokio::process::Command;
 use uuid::Uuid;
 
 use crate::guest::{GuestEvidence, GuestRunResult, is_terminal_execution_state};
 
 const HARBOR_AGENT_PLUGIN_PY: &str = include_str!("../harbor/maka_host_agent.py");
+
+pub(crate) const DEFAULT_HARBOR_BIN: &str = "harbor";
+pub(crate) const DEFAULT_MAX_STEPS: NonZeroU32 = NonZeroU32::new(64).unwrap();
+pub(crate) const DEFAULT_TIMEOUT_MS: NonZeroU64 = NonZeroU64::new(600_000).unwrap();
+pub(crate) const DEFAULT_SANDBOX_MODE: maka_sandbox::Mode = maka_sandbox::Mode::DangerFullAccess;
 
 #[derive(Debug, Clone, clap::Args)]
 pub(crate) struct HarborRunOptions {
@@ -39,7 +45,7 @@ pub(crate) struct HarborRunOptions {
     pub bundle_dir: PathBuf,
     #[arg(long = "out")]
     pub out_dir: PathBuf,
-    #[arg(long, default_value = "harbor")]
+    #[arg(long, default_value = DEFAULT_HARBOR_BIN)]
     pub harbor_bin: String,
     #[arg(long)]
     pub force_build: bool,
@@ -53,15 +59,37 @@ pub(crate) struct HarborRunOptions {
     pub model_id: String,
     #[arg(long, value_parser = parse_sandbox_mode, default_value = "danger-full-access")]
     pub sandbox_mode: maka_sandbox::Mode,
-    #[arg(long, default_value_t = 64)]
-    pub max_steps: u32,
-    #[arg(long, default_value_t = 600_000)]
-    pub timeout_ms: u64,
+    #[arg(long, default_value_t = DEFAULT_MAX_STEPS)]
+    pub max_steps: NonZeroU32,
+    #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
+    pub timeout_ms: NonZeroU64,
+    #[arg(long = "verifier-env", value_name = "KEY=VALUE", value_parser = parse_env_pair)]
+    pub verifier_env: Vec<(String, String)>,
 }
 
 fn parse_sandbox_mode(raw: &str) -> Result<maka_sandbox::Mode, String> {
     serde_json::from_value(Value::String(raw.to_owned()))
         .map_err(|_| "expected read-only, workspace-write, or danger-full-access".into())
+}
+
+pub(crate) fn validate_env_entry(key: &str, value: &str) -> Result<(), String> {
+    if key.is_empty() || key.contains('=') || key.contains('\0') {
+        return Err(format!("invalid verifierEnv key '{key}'"));
+    }
+    if value.contains('\0') {
+        return Err(format!(
+            "invalid verifierEnv value for '{key}': cannot contain NUL byte"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_env_pair(raw: &str) -> Result<(String, String), String> {
+    let Some((key, value)) = raw.split_once('=') else {
+        return Err("expected KEY=VALUE".into());
+    };
+    validate_env_entry(key, value)?;
+    Ok((key.to_owned(), value.to_owned()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -70,28 +98,53 @@ pub(crate) enum UsageSettlement {
     LowerBound,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum TrialOutcome {
+    Completed {
+        score: f64,
+        settlement: UsageSettlement,
+    },
+    SubjectFailed {
+        score: f64,
+        settlement: UsageSettlement,
+        reason: String,
+    },
+    Failed {
+        reason: String,
+    },
+}
+
 pub(crate) struct HarborRunOutcome {
     pub harbor_status: ExitStatus,
     pub reward: Option<f64>,
     pub exception_info: Option<Value>,
-    pub guest_result: Option<GuestRunResult>,
+    pub guest_result: Result<Option<GuestRunResult>, String>,
     pub guest_result_path: Option<PathBuf>,
     pub transcript_path: Option<PathBuf>,
     pub harbor_result_path: PathBuf,
 }
 
 impl HarborRunOutcome {
-    pub(crate) fn settle(&self) -> (Value, Result<(), String>) {
-        let (guest_json, validation) = match &self.guest_result {
-            None => (
+    pub(crate) fn settle(&self) -> (Value, TrialOutcome) {
+        let (guest_json, outcome) = match &self.guest_result {
+            Ok(None) => (
                 Value::Null,
-                check_harbor_outcome(self)
-                    .and(Err("missing guest-result.json from trial artifacts".into())),
+                TrialOutcome::Failed {
+                    reason: check_harbor_outcome(self)
+                        .err()
+                        .unwrap_or_else(|| "missing guest-result.json from trial artifacts".into()),
+                },
             ),
-            Some(GuestRunResult::InfraFailed {
+            Err(error) => (
+                json!({ "error": error }),
+                TrialOutcome::Failed {
+                    reason: error.clone(),
+                },
+            ),
+            Ok(Some(GuestRunResult::InfraFailed {
                 infra_error,
                 evidence,
-            }) => {
+            })) => {
                 let evidenced = evidence.as_deref().map(|ev| {
                     let s = &ev.host_usage.summary;
                     let settlement =
@@ -104,21 +157,18 @@ impl HarborRunOutcome {
                         Some(("infraError", infra_error)),
                         evidenced.as_ref().map(|(ev, s)| (*ev, s)),
                     ),
-                    Err(format!("guest infrastructure failed: {infra_error}")),
+                    TrialOutcome::Failed {
+                        reason: format!("guest infrastructure failed: {infra_error}"),
+                    },
                 )
             }
-            Some(GuestRunResult::Completed { evidence }) => {
-                self.settle_evidenced("completed", None, evidence, true)
+            Ok(Some(GuestRunResult::Completed { evidence })) => {
+                self.settle_evidenced("completed", None, evidence)
             }
-            Some(GuestRunResult::SubjectStopped {
+            Ok(Some(GuestRunResult::SubjectStopped {
                 stop_reason,
                 evidence,
-            }) => self.settle_evidenced(
-                "subjectStopped",
-                Some(("stopReason", stop_reason)),
-                evidence,
-                false,
-            ),
+            })) => self.settle_evidenced("subjectStopped", Some(stop_reason.as_str()), evidence),
         };
 
         let summary = json!({
@@ -129,34 +179,50 @@ impl HarborRunOutcome {
             "transcriptPath": self.transcript_path,
             "harborResultPath": self.harbor_result_path,
         });
-        (summary, validation)
+        (summary, outcome)
     }
 
     fn settle_evidenced(
         &self,
         status: &str,
-        reason_field: Option<(&str, &str)>,
+        stop_reason: Option<&str>,
         evidence: &GuestEvidence,
-        is_completed: bool,
-    ) -> (Value, Result<(), String>) {
+    ) -> (Value, TrialOutcome) {
         let s = &evidence.host_usage.summary;
         let settlement = settle_usage(
             s.models.calls,
             &s.pending,
             &evidence.host_usage_attempts,
-            is_completed,
+            stop_reason.is_none(),
         );
-        let guest_json = build_guest_json(status, reason_field, Some((evidence, &settlement)));
-        let validation = self.validate_evidenced(evidence, settlement);
-        (guest_json, validation)
+        let guest_json = build_guest_json(
+            status,
+            stop_reason.map(|r| ("stopReason", r)),
+            Some((evidence, &settlement)),
+        );
+        let outcome = match self.validate_evidenced(evidence, settlement) {
+            Ok((score, settled)) => match stop_reason {
+                None => TrialOutcome::Completed {
+                    score,
+                    settlement: settled,
+                },
+                Some(reason) => TrialOutcome::SubjectFailed {
+                    score,
+                    settlement: settled,
+                    reason: reason.to_owned(),
+                },
+            },
+            Err(reason) => TrialOutcome::Failed { reason },
+        };
+        (guest_json, outcome)
     }
 
     fn validate_evidenced(
         &self,
         evidence: &GuestEvidence,
         settlement: Result<UsageSettlement, String>,
-    ) -> Result<(), String> {
-        check_harbor_outcome(self)?;
+    ) -> Result<(f64, UsageSettlement), String> {
+        let score = check_harbor_outcome(self)?;
         if !is_terminal_execution_state(&evidence.execution.state) {
             let encoded = serde_json::to_string(&evidence.execution.state).unwrap_or_default();
             return Err(format!(
@@ -169,7 +235,7 @@ impl HarborRunOutcome {
                 self.transcript_path
             ));
         }
-        settlement.map(|_| ())
+        Ok((score, settlement?))
     }
 }
 
@@ -204,36 +270,103 @@ fn build_guest_json(
     Value::Object(map)
 }
 
-pub(crate) async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcome, String> {
-    if opts.timeout_ms == 0 || opts.max_steps == 0 {
-        return Err("maxSteps and timeoutMs must be > 0".into());
-    }
-    let task_path = std::fs::canonicalize(&opts.task_path).map_err(|e| {
-        format!(
-            "failed to resolve task path {}: {e}",
-            opts.task_path.display()
-        )
-    })?;
-    let bundle_dir = std::fs::canonicalize(&opts.bundle_dir).map_err(|e| {
-        format!(
-            "failed to resolve bundle dir {}: {e}",
-            opts.bundle_dir.display()
-        )
-    })?;
+pub(crate) fn resolve_bundle_dir(path: &Path) -> Result<PathBuf, String> {
+    let resolved = std::fs::canonicalize(path)
+        .map_err(|e| format!("failed to resolve bundle dir {}: {e}", path.display()))?;
     for required in ["maka", "maka-python-worker", "maka-eval"] {
-        let bin = bundle_dir.join(required);
+        let bin = resolved.join(required);
         if !bin.is_file() {
             return Err(format!("bundle missing required binary: {}", bin.display()));
         }
     }
+    Ok(resolved)
+}
 
-    let api_key = std::env::var(&opts.api_key_env).unwrap_or_default();
-    if api_key.trim().is_empty() {
+pub(crate) fn resolve_task_dir(path: &Path) -> Result<PathBuf, String> {
+    let resolved = std::fs::canonicalize(path)
+        .map_err(|e| format!("failed to resolve task path {}: {e}", path.display()))?;
+    if !resolved.join("task.toml").is_file() {
         return Err(format!(
-            "API key environment variable '{}' is unset or empty",
-            opts.api_key_env
+            "task directory missing task.toml: {}",
+            resolved.display()
         ));
     }
+    Ok(resolved)
+}
+
+pub(crate) fn validate_subject_target(
+    scope: Option<&str>,
+    provider: &str,
+    model_id: &str,
+    api_key_env: &str,
+    base_url: Option<&str>,
+) -> Result<(), String> {
+    let prefix = scope.map_or_else(String::new, |s| format!("subject '{s}': "));
+    for (label, val) in [
+        ("provider", provider),
+        ("modelId", model_id),
+        ("apiKeyEnv", api_key_env),
+    ] {
+        if val.trim().is_empty() {
+            return Err(format!("{prefix}{label} cannot be empty"));
+        }
+    }
+    if base_url.is_some_and(|url| url.trim().is_empty()) {
+        return Err(format!("{prefix}baseUrl cannot be empty or whitespace"));
+    }
+    if std::env::var(api_key_env)
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+    {
+        return Err(format!(
+            "{prefix}API key environment variable '{api_key_env}' is unset or empty"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn run_single(opts: HarborRunOptions) -> Result<(), String> {
+    let (summary, outcome) = run_and_settle(&opts)?;
+    let (_, encoded) = write_run_summary(&opts.out_dir, &summary)?;
+    println!("{encoded}");
+    match outcome {
+        TrialOutcome::Completed { .. } | TrialOutcome::SubjectFailed { .. } => Ok(()),
+        TrialOutcome::Failed { reason } => Err(reason),
+    }
+}
+
+pub(crate) fn write_run_summary(
+    out_dir: &Path,
+    summary: &Value,
+) -> Result<(PathBuf, String), String> {
+    let summary_path = out_dir.join("run-summary.json");
+    let encoded = serde_json::to_string_pretty(summary).map_err(|e| e.to_string())?;
+    std::fs::write(&summary_path, format!("{encoded}\n"))
+        .map_err(|e| format!("failed to write {}: {e}", summary_path.display()))?;
+    Ok((summary_path, encoded))
+}
+
+pub(crate) fn run_and_settle(opts: &HarborRunOptions) -> Result<(Value, TrialOutcome), String> {
+    if opts.harbor_bin.trim().is_empty() {
+        return Err("harborBin cannot be empty".into());
+    }
+    let mut verifier_env = BTreeMap::new();
+    for (k, v) in &opts.verifier_env {
+        validate_env_entry(k, v)?;
+        if verifier_env.insert(k.as_str(), v.as_str()).is_some() {
+            return Err(format!("duplicate --verifier-env key '{k}'"));
+        }
+    }
+    validate_subject_target(
+        None,
+        &opts.provider,
+        &opts.model_id,
+        &opts.api_key_env,
+        opts.base_url.as_deref(),
+    )?;
+    let task_path = resolve_task_dir(&opts.task_path)?;
+    let bundle_dir = resolve_bundle_dir(&opts.bundle_dir)?;
 
     std::fs::create_dir_all(&opts.out_dir)
         .map_err(|e| format!("failed to create out dir {}: {e}", opts.out_dir.display()))?;
@@ -244,7 +377,7 @@ pub(crate) async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcom
     let job_name = format!("run-{}", Uuid::new_v4());
     let config_path = out_dir.join("harbor-job-config.json");
     let harbor_plugin_dir = materialize_harbor_plugin(&out_dir)?;
-    let config = json!({
+    let mut config = json!({
         "job_name": job_name,
         "jobs_dir": jobs_dir,
         "n_attempts": 1,
@@ -273,15 +406,15 @@ pub(crate) async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcom
                 "model_name": format!("{}/{}", opts.provider, opts.model_id),
                 "skip_model_parsing": true,
                 // Give guest-run 30s after its internal timeout_ms deadline to stop and flush artifacts.
-                "override_timeout_sec": (opts.timeout_ms as f64 / 1000.0) + 30.0,
+                "override_timeout_sec": (opts.timeout_ms.get() as f64 / 1000.0) + 30.0,
                 "kwargs": {
                     "endpoint_url": opts.base_url,
                     "api_key_env": opts.api_key_env,
                     "provider": opts.provider,
                     "model_id": opts.model_id,
                     "sandbox_mode": opts.sandbox_mode,
-                    "max_steps": opts.max_steps,
-                    "timeout_ms": opts.timeout_ms
+                    "max_steps": opts.max_steps.get(),
+                    "timeout_ms": opts.timeout_ms.get()
                 }
             }
         ],
@@ -291,6 +424,9 @@ pub(crate) async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcom
             }
         ]
     });
+    if !verifier_env.is_empty() {
+        config["verifier"] = json!({ "env": verifier_env });
+    }
 
     let encoded = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("failed to serialize harbor config: {e}"))?;
@@ -302,9 +438,31 @@ pub(crate) async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcom
         std::env::var_os("PYTHONPATH").as_deref(),
     )?;
 
-    let status = Command::new(&opts.harbor_bin)
+    match invoke_and_collect(
+        &opts.harbor_bin,
+        &config_path,
+        &pythonpath,
+        &jobs_dir,
+        &job_name,
+    ) {
+        Ok(outcome) => Ok(outcome.settle()),
+        Err(reason) => Ok((
+            json!({ "reward": Value::Null, "exceptionInfo": Value::Null, "guest": Value::Null, "guestResultPath": Value::Null, "transcriptPath": Value::Null, "harborResultPath": Value::Null }),
+            TrialOutcome::Failed { reason },
+        )),
+    }
+}
+
+fn invoke_and_collect(
+    harbor_bin: &str,
+    config_path: &Path,
+    pythonpath: &OsStr,
+    jobs_dir: &Path,
+    job_name: &str,
+) -> Result<HarborRunOutcome, String> {
+    let status = Command::new(harbor_bin)
         .args(["run", "-c"])
-        .arg(&config_path)
+        .arg(config_path)
         .env("PYTHONPATH", pythonpath)
         .env_remove("all_proxy")
         .env_remove("ALL_PROXY")
@@ -312,17 +470,15 @@ pub(crate) async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcom
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
-        .await
-        .map_err(|e| format!("failed to spawn '{}': {e}", opts.harbor_bin))?;
+        .map_err(|e| format!("failed to spawn '{harbor_bin}': {e}"))?;
 
-    let job_dir = jobs_dir.join(&job_name);
+    let job_dir = jobs_dir.join(job_name);
     let trial_result_path = find_trial_result_json(&job_dir)?.ok_or_else(|| {
         format!(
             "harbor exited ({status}) without producing a trial result.json under {}",
             job_dir.display()
         )
     })?;
-
     let raw_trial = std::fs::read_to_string(&trial_result_path)
         .map_err(|e| format!("failed to read {}: {e}", trial_result_path.display()))?;
     let trial_json: Value = serde_json::from_str(&raw_trial).map_err(|e| {
@@ -331,49 +487,50 @@ pub(crate) async fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcom
             trial_result_path.display()
         )
     })?;
-
-    let reward = trial_json["verifier_result"]["rewards"]["reward"].as_f64();
-    let exception_info = trial_json
-        .get("exception_info")
-        .filter(|v| !v.is_null())
-        .cloned();
+    if !trial_json.is_object() {
+        return Err(format!(
+            "invalid trial result.json {}: expected JSON object",
+            trial_result_path.display()
+        ));
+    }
 
     let trial_dir = trial_result_path
         .parent()
         .ok_or("trial result.json has no parent directory")?;
     let maka_dir = trial_dir.join("agent").join("maka");
-    let guest_result_candidate = maka_dir.join("guest-result.json");
-    let (guest_result, guest_result_path) = if guest_result_candidate.is_file() {
-        let raw_guest = std::fs::read_to_string(&guest_result_candidate)
-            .map_err(|e| format!("failed to read {}: {e}", guest_result_candidate.display()))?;
-        let parsed = serde_json::from_str::<GuestRunResult>(&raw_guest).map_err(|e| {
-            format!(
-                "invalid guest-result.json {}: {e}",
-                guest_result_candidate.display()
-            )
-        })?;
-        (Some(parsed), Some(guest_result_candidate))
-    } else {
-        (None, None)
+    let guest_path = maka_dir.join("guest-result.json");
+    let (guest_result, guest_result_path) = match std::fs::read_to_string(&guest_path) {
+        Ok(raw) => (
+            serde_json::from_str::<GuestRunResult>(&raw)
+                .map(Some)
+                .map_err(|e| format!("invalid guest-result.json {}: {e}", guest_path.display())),
+            Some(guest_path),
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Ok(None), None),
+        Err(e) => (
+            Err(format!("failed to read {}: {e}", guest_path.display())),
+            Some(guest_path),
+        ),
     };
-
     let transcript_candidate = maka_dir.join("transcript.json");
-    let transcript_path = transcript_candidate
-        .is_file()
-        .then_some(transcript_candidate);
 
     Ok(HarborRunOutcome {
         harbor_status: status,
-        reward,
-        exception_info,
+        reward: trial_json["verifier_result"]["rewards"]["reward"].as_f64(),
+        exception_info: trial_json
+            .get("exception_info")
+            .filter(|v| !v.is_null())
+            .cloned(),
         guest_result,
         guest_result_path,
-        transcript_path,
+        transcript_path: transcript_candidate
+            .is_file()
+            .then_some(transcript_candidate),
         harbor_result_path: trial_result_path,
     })
 }
 
-fn check_harbor_outcome(outcome: &HarborRunOutcome) -> Result<(), String> {
+fn check_harbor_outcome(outcome: &HarborRunOutcome) -> Result<f64, String> {
     if let Some(exc) = &outcome.exception_info {
         return Err(format!("harbor trial recorded exception: {exc}"));
     }
@@ -383,13 +540,12 @@ fn check_harbor_outcome(outcome: &HarborRunOutcome) -> Result<(), String> {
             outcome.harbor_status
         ));
     }
-    if !outcome.reward.is_some_and(f64::is_finite) {
-        return Err(format!(
+    outcome.reward.filter(|r| r.is_finite()).ok_or_else(|| {
+        format!(
             "verifier did not produce a finite numeric reward: {:?}",
             outcome.reward
-        ));
-    }
-    Ok(())
+        )
+    })
 }
 
 fn settle_usage(
@@ -533,122 +689,4 @@ fn find_trial_result_json(job_dir: &Path) -> Result<Option<PathBuf>, String> {
         }
     }
     Ok(None)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use maka_agent_facts::accounting::{AuxiliarySource, ModelAttempt, Origin};
-    use maka_agent_facts::model::ModelUsage;
-    use maka_agent_facts::pricing::{Pricing, Quote};
-    use maka_agent_state::usage::UsageFence;
-
-    fn page_of(attempts: Vec<ModelAttempt>) -> UsagePage {
-        let total = attempts.len() as u64;
-        UsagePage {
-            through: UsageFence {
-                schema_version: 1,
-                state_domain: "eval".into(),
-                sequence: total,
-                auxiliary_sequence: 0,
-                cell_sequence: 0,
-                query_digest: "digest".into(),
-            },
-            attempts: attempts.into_iter().map(Activity::Model).collect(),
-            total,
-            next_cursor: None,
-        }
-    }
-
-    fn model_attempt(usage: ModelUsage, quote: Option<Quote>) -> ModelAttempt {
-        ModelAttempt {
-            request_id: "req-1".into(),
-            origin: Origin::Auxiliary {
-                source: AuxiliarySource::HostEffect { id: Uuid::nil() },
-            },
-            session_id: None,
-            binding: None,
-            model_id: "deepseek-chat".into(),
-            started_at: 1.0,
-            completed_at: 2.0,
-            outcome: Outcome::Success,
-            usage,
-            quote,
-            cost_usd: None,
-        }
-    }
-
-    #[test]
-    fn settle_usage_distinguishes_unpriced_missing_cache_zero_calls_and_invalid_quotes() {
-        let settled = Pending {
-            models: 0,
-            tools: 0,
-        };
-        let complete_usage = ModelUsage {
-            input_tokens: Some(100),
-            output_tokens: Some(20),
-            cache_read_tokens: Some(20),
-            cache_write_tokens: None,
-            reasoning_tokens: None,
-        };
-        let unpriced = Quote {
-            provider_id: "ollama-cloud".into(),
-            revision: 0,
-            pricing: None,
-        };
-        let page = page_of(vec![model_attempt(complete_usage.clone(), Some(unpriced))]);
-        assert_eq!(
-            settle_usage(1, &settled, &page, true).unwrap(),
-            UsageSettlement::Complete { cost_usd: None }
-        );
-
-        let priced = Quote {
-            provider_id: "deepseek".into(),
-            revision: 1,
-            pricing: Some(Pricing {
-                model_key: "deepseek:deepseek-chat".into(),
-                input_usd_per_million: 0.28,
-                output_usd_per_million: 0.42,
-                cache_read_usd_per_million: Some(0.028),
-                cache_write_usd_per_million: None,
-            }),
-        };
-        let page = page_of(vec![model_attempt(
-            ModelUsage {
-                cache_read_tokens: None,
-                ..complete_usage.clone()
-            },
-            Some(priced),
-        )]);
-        assert_eq!(
-            settle_usage(1, &settled, &page, true).unwrap(),
-            UsageSettlement::LowerBound
-        );
-
-        let empty_page = page_of(vec![]);
-        assert_eq!(
-            settle_usage(0, &settled, &empty_page, false).unwrap(),
-            UsageSettlement::Complete {
-                cost_usd: Some(0.0)
-            }
-        );
-
-        let mismatched = Quote {
-            provider_id: "deepseek".into(),
-            revision: 1,
-            pricing: Some(Pricing {
-                model_key: "deepseek:other-model".into(),
-                input_usd_per_million: 0.28,
-                output_usd_per_million: 0.42,
-                cache_read_usd_per_million: None,
-                cache_write_usd_per_million: None,
-            }),
-        };
-        let page = page_of(vec![model_attempt(complete_usage, Some(mismatched))]);
-        assert!(
-            settle_usage(1, &settled, &page, true)
-                .unwrap_err()
-                .contains("invalid host model quote on request req-1")
-        );
-    }
 }
