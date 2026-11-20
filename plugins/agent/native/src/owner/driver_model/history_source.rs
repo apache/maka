@@ -111,6 +111,18 @@ impl<'a> HistorySource<'a> {
             Self::Snapshot(snapshot, _) => snapshot.request(run, step).await?,
         })
     }
+    pub(super) async fn compaction_options(
+        &self,
+        run: RunId,
+        key: Option<&maka_agent_facts::durable::ToolKey>,
+    ) -> Result<super::CompactionOptions, RunError> {
+        let Some(key) = key else {
+            return Ok(Default::default());
+        };
+        let call = self.tool_call(run, key).await?;
+        super::CompactionOptions::from_input(&call.input).map_err(RunError::Json)
+    }
+
     pub(super) async fn tool_call(
         &self,
         run: RunId,

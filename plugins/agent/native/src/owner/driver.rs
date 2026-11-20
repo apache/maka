@@ -869,8 +869,17 @@ impl DriverPorts for NativeDriver {
         view: &'a RunView,
         baseline: ContentBlob,
         target: maka_agent_facts::configuration::ModelSelection,
+        candidate: Option<maka_agent_facts::context::SummaryOrigin>,
     ) -> BoxFuture<'a, Result<(), RunError>> {
-        self.resume_after_checkpoint(view, baseline, target).boxed()
+        async move {
+            if let Some(origin) = candidate {
+                self.model()?
+                    .validate_handoff_candidate(view, origin)
+                    .await?;
+            }
+            self.resume_after_checkpoint(view, baseline, target).await
+        }
+        .boxed()
     }
     fn external(&self) -> Option<Arc<dyn ExternalPorts>> {
         match &self.backend {

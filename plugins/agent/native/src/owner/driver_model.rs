@@ -28,7 +28,7 @@ use maka_agent_engine::{
 };
 use maka_agent_facts::{
     composition::{RequestComposition, SourceRevision},
-    context::{ModelOperation, ModelPurpose},
+    context::{CompactionOptions, ModelOperation, ModelPurpose},
     durable::*,
     execution::SystemPrompt,
     input::RunInput,
@@ -99,18 +99,12 @@ struct ReplayedTail {
 }
 type ProjectedHistory = (Option<String>, ReplayedTail);
 
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CompactionOptions {
-    prompt: Option<String>,
-    resume_model: Option<maka_agent_facts::configuration::ModelSelection>,
-}
-
-impl CompactionOptions {
-    fn native(&self, model: &maka_agent_engine::PreparedModel) -> bool {
-        // A checkpoint handed to another backend must be readable without its producer.
-        model.provider.capabilities.native_compaction == Some(true) && self.resume_model.is_none()
-    }
+fn native_compaction(
+    options: &CompactionOptions,
+    model: &maka_agent_engine::PreparedModel,
+) -> bool {
+    // A checkpoint handed to another backend must be readable without its producer.
+    model.provider.capabilities.native_compaction == Some(true) && options.resume_model.is_none()
 }
 
 struct ProjectedStepInput<'a> {
@@ -302,25 +296,6 @@ struct ItemContinuation {
 }
 
 impl DriverModel {
-    async fn compaction_options(
-        &self,
-        reader: &HistorySource<'_>,
-        run: RunId,
-        key: Option<&ToolKey>,
-    ) -> Result<CompactionOptions, RunError> {
-        let Some(key) = key else {
-            return Ok(CompactionOptions::default());
-        };
-        let call = reader.tool_call(run, key).await?;
-        serde_json::from_value(
-            call.input
-                .as_json()
-                .cloned()
-                .ok_or_else(|| unsupported("compaction-tool-input"))?,
-        )
-        .map_err(RunError::Json)
-    }
-
     async fn summary_instruction(
         &self,
         view: &RunView,
@@ -648,7 +623,8 @@ impl DriverModel {
         } else {
             ModelPurpose::Main
         };
-        let native_compaction = purpose == ModelPurpose::Summary && summary_options.native(model);
+        let native_compaction =
+            purpose == ModelPurpose::Summary && native_compaction(&summary_options, model);
         let context = model.context.as_ref();
         validate_native_compaction_producer(native_compaction, context)?;
         let settings = PromptSettings {
@@ -995,12 +971,12 @@ impl DriverModel {
             };
             let captured = HistorySource::live(&self.state, &source_evidence.current);
             let reader = &captured;
-            let summary_options = self
-                .compaction_options(reader, view.run, summary_request.as_ref())
+            let summary_options = reader
+                .compaction_options(view.run, summary_request.as_ref())
                 .await?;
             let target = ReplayTarget::new(
                 model,
-                if summary && summary_options.native(model) {
+                if summary && native_compaction(&summary_options, model) {
                     ModelOperation::CodexCompaction
                 } else {
                     ModelOperation::Inference

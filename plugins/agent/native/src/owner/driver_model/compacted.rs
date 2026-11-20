@@ -99,12 +99,21 @@ impl DriverModel {
         &self,
         reader: &HistorySource<'_>,
         main: &maka_agent_engine::prepared_prompt::PreparedPrompt,
+        main_input: &FrozenInput,
         summary_run: RunId,
         summary: &RequestSpec,
         summary_input: &FrozenInput,
     ) -> Result<Option<usize>, RunError> {
         use maka_agent_facts::model::prompt_source::source::MessageRole;
 
+        if !summary_input
+            .accepted
+            .same_execution_route(&main_input.accepted)
+            || summary_input.route_identity != main_input.route_identity
+            || !same_adapter(&summary_input.adapter, &main_input.adapter)
+        {
+            return Err(RunError::CompactionMismatch);
+        }
         let covered = summary_input
             .covered_prefix
             .as_ref()
@@ -145,6 +154,44 @@ impl DriverModel {
                 Ok(_) => self.cleanup.preparation_failed(close),
                 Err(error) => preparation::preparation_cleanup_error(error, close),
             }),
+        }
+    }
+
+    pub(in crate::owner) async fn validate_handoff_candidate(
+        &self,
+        view: &RunView,
+        origin: maka_agent_facts::context::SummaryOrigin,
+    ) -> Result<(), RunError> {
+        let reader = self.history_reader(view.run).await?;
+        let main = reader
+            .request(
+                view.run,
+                view.current_step.ok_or(RunError::CompactionMismatch)?,
+            )
+            .await?;
+        let main_input = self.frozen_input(&reader, view.run, &main).await?;
+        let attempt = self.state.model_attempt(origin.run, origin.attempt).await?;
+        let summary = reader.request(origin.run, attempt.step).await?;
+        let summary_input = self.frozen_input(&reader, origin.run, &summary).await?;
+        let prompt = self
+            .restore_frozen(&reader, view.run, &main, &main_input)
+            .await?;
+        let result = self
+            .compaction_tail_start(
+                &reader,
+                &prompt,
+                &main_input,
+                origin.run,
+                &summary,
+                &summary_input,
+            )
+            .await;
+        match (result, prompt.close().await) {
+            (Ok(Some(_)), Ok(())) => Ok(()),
+            (Ok(None), Ok(())) => Err(RunError::CompactionMismatch),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(close)) => Err(self.cleanup.preparation_failed(close)),
+            (Err(error), Err(close)) => Err(preparation::preparation_cleanup_error(error, close)),
         }
     }
 
@@ -216,14 +263,6 @@ impl DriverModel {
         if frozen.accepted != self.source.accepted {
             return Err(unsupported("adopted-main-model-changed"));
         }
-        if !summary_input
-            .accepted
-            .same_execution_route(&frozen.accepted)
-            || summary_input.route_identity != frozen.route_identity
-            || !same_adapter(&summary_input.adapter, &frozen.adapter)
-        {
-            return Err(RunError::CompactionMismatch);
-        }
         let model = self.source.capture().await?;
         let adapter = self.executor.binding(&model.provider)?;
         if !same_adapter(adapter.source(), &frozen.adapter)
@@ -293,7 +332,7 @@ impl DriverModel {
             .await?;
         let result=async{
             let start = self
-                .compaction_tail_start(&reader, &original, producer, &summary_request, &summary_input)
+                .compaction_tail_start(&reader, &original, &frozen, producer, &summary_request, &summary_input)
                 .await?
                 .ok_or(RunError::CompactionMismatch)?;
             let bound = driver.bind_step_tools(view, &model, adoption.is_some()).await?;
