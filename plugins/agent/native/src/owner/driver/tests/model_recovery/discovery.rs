@@ -1744,6 +1744,41 @@ async fn discovery_restart_settles_an_interrupted_original_run_without_replay() 
     assert_eq!(done["task"]["runs"][0]["outcome"], "failed");
     assert_eq!(done["task"]["runs"][0]["sessionId"], worker);
     assert_eq!(done["task"]["runs"][0]["runId"], json!(original));
+    assert_eq!(
+        f.owner()
+            .durable
+            .runs(worker.clone(), None, 10)
+            .await
+            .unwrap(),
+        vec![original]
+    );
+    // Reopen can complete the 250ms frozen-retry wait of the same original run before
+    // the explicit stop arrives; drain any already-queued pre-stop retry socket before
+    // asserting that no replay request arrives after settlement.
+    let pre_stop_retries = f
+        .owner()
+        .durable
+        .history(original, 0, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .take_while(|fact| {
+            !matches!(
+                fact.fact,
+                maka_agent_facts::durable::Fact::StopRequested { .. }
+            )
+        })
+        .filter(|fact| {
+            matches!(
+                fact.fact,
+                maka_agent_facts::durable::Fact::ModelAttemptAdmitted { .. }
+            )
+        })
+        .count()
+        .saturating_sub(1);
+    for _ in 0..pre_stop_retries {
+        let _ = tokio::time::timeout(Duration::from_millis(10), listener.accept()).await;
+    }
     assert!(
         tokio::time::timeout(Duration::from_millis(100), listener.accept())
             .await

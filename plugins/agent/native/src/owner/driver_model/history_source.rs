@@ -51,21 +51,33 @@ impl<'a> HistorySource<'a> {
             artifacts: state.artifacts(),
         }
     }
-    pub(super) async fn page(
+    pub(super) async fn previous_page(
         &self,
-        after: u64,
+        before: Option<u64>,
         limit: u32,
     ) -> Result<(Vec<HistoryItem>, Option<u64>), RunError> {
         match self {
             Self::Live { history, cut, .. } => {
-                let page = history.page(cut, after, limit).await?;
+                let page = history.previous_page(cut, before, limit).await?;
                 Ok((page.items, page.next))
             }
             Self::Snapshot(snapshot, _) => {
-                let page = snapshot.page(after, limit).await?;
+                let page = snapshot.previous_page(before, limit).await?;
                 Ok((page.items, page.next))
             }
         }
+    }
+    pub(super) async fn run_revision_through(
+        &self,
+        run: RunId,
+        through: u64,
+    ) -> Result<u64, RunError> {
+        Ok(match self {
+            Self::Live { history, cut, .. } => {
+                history.run_revision_through(cut, run, through).await?
+            }
+            Self::Snapshot(snapshot, _) => snapshot.run_revision_through(run, through).await?,
+        })
     }
     pub(super) async fn run_source(&self, run: RunId) -> Result<RunSource, RunError> {
         Ok(match self {

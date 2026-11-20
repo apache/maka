@@ -1235,6 +1235,37 @@ pub(super) fn previous(
     })
 }
 
+pub(super) fn run_revision_through(
+    c: &Connection,
+    history: &HistoryNamespace,
+    cut: &HistoryCut,
+    run: RunId,
+    through: u64,
+) -> Result<u64, StoreError> {
+    let owner = check_cut(c, history, cut)?;
+    if through > cut.through_sequence {
+        return Err(invalid("history cursor exceeds captured cut"));
+    }
+    if through == 0 {
+        return Ok(0);
+    }
+    let revision: Option<i64> = c
+        .prepare_cached(
+            "SELECT MAX(f.revision)
+             FROM agent_session_history h INDEXED BY agent_session_history_run
+             JOIN agent_facts f ON f.sequence=h.sequence
+             WHERE h.owner=? AND h.session=? AND h.run=? AND h.sequence<=?",
+        )?
+        .query_row(
+            params![owner, history.session, run.to_string(), bind_u64(through)?],
+            |row| row.get(0),
+        )?;
+    match revision {
+        Some(value) => u64::try_from(value).map_err(|_| invalid("negative revision")),
+        None => Ok(0),
+    }
+}
+
 pub(crate) fn capture_at(
     c: &Connection,
     owner: &RunOwner,

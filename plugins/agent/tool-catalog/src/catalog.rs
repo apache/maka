@@ -140,6 +140,69 @@ impl ToolCatalog {
         Ok(self)
     }
 
+    /// Replace handlers on already-validated entries, reusing their pre-inlined
+    /// definitions and compiled JSON Schema validators.
+    pub fn with_rebound_handlers(
+        mut self,
+        handlers: impl IntoIterator<Item = (String, maka_agent_facts::tools::ToolHandler)>,
+    ) -> Result<Self, CatalogError> {
+        let mut iter = handlers.into_iter().peekable();
+        if iter.peek().is_none() {
+            return Ok(self);
+        }
+        let entries = Arc::make_mut(&mut self.entries);
+        for (name, handler) in iter {
+            if !handler.names().contains(&name) {
+                return Err(CatalogError::Invalid(
+                    "rebound handler does not match tool name".into(),
+                ));
+            }
+            let entry = entries.get_mut(&name).ok_or_else(|| {
+                CatalogError::Invalid("rebound handler references absent tool".into())
+            })?;
+            *entry = Arc::new(RegisteredTool {
+                handler,
+                ..(**entry).clone()
+            });
+        }
+        Ok(self)
+    }
+
+    /// Add pre-validated entries from `source` with new per-run handlers,
+    /// reusing their pre-inlined definitions and compiled JSON Schema validators.
+    pub fn with_rebound_from(
+        mut self,
+        source: &Self,
+        handlers: impl IntoIterator<Item = (String, maka_agent_facts::tools::ToolHandler)>,
+    ) -> Result<Self, CatalogError> {
+        let mut iter = handlers.into_iter().peekable();
+        if iter.peek().is_none() {
+            return Ok(self);
+        }
+        let entries = Arc::make_mut(&mut self.entries);
+        for (name, handler) in iter {
+            if !handler.names().contains(&name) {
+                return Err(CatalogError::Invalid(
+                    "rebound handler does not match tool name".into(),
+                ));
+            }
+            let template = source.entries.get(&name).ok_or_else(|| {
+                CatalogError::Invalid("rebound source is missing tool entry".into())
+            })?;
+            let entry = Arc::new(RegisteredTool {
+                always_visible: false,
+                handler,
+                ..(**template).clone()
+            });
+            if entries.insert(name, entry).is_some() {
+                return Err(CatalogError::Invalid(
+                    "duplicate additional tool name".into(),
+                ));
+            }
+        }
+        Ok(self)
+    }
+
     /// Defer non-core schemas until discovered within this Session.
     pub fn with_discovery(mut self) -> Self {
         self.discovery = true;

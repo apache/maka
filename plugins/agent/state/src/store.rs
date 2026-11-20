@@ -979,6 +979,13 @@ impl Store {
     pub async fn content(&self, run: RunId, reference: ContentRef) -> Result<Vec<u8>, StoreError> {
         self.data.query(ReadContent { run, reference }).await
     }
+    pub async fn verify_owned_content(
+        &self,
+        run: RunId,
+        reference: ContentRef,
+    ) -> Result<(), StoreError> {
+        self.data.query(VerifyOwnedContent { run, reference }).await
+    }
     pub async fn due_waits(
         &self,
         at: UnixMillis,
@@ -1267,6 +1274,16 @@ impl Query for ReadContent {
     type Output = Vec<u8>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::owned_content(c, self.run, &self.reference)
+    }
+}
+struct VerifyOwnedContent {
+    run: RunId,
+    reference: ContentRef,
+}
+impl Query for VerifyOwnedContent {
+    type Output = ();
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::verify_owned_content(c, self.run, &self.reference)
     }
 }
 struct ReadDue {

@@ -224,11 +224,11 @@ impl LiveBinding {
     pub(super) fn declaration(&self) -> ToolRegistration {
         self.registration(ToolHandler::Declaration(self.definition.name.clone()))
     }
-    pub(super) fn for_run(&self, access: Arc<RunAccess>) -> ToolRegistration {
-        self.registration(ToolHandler::Prepared(Arc::new(RunBinding {
+    pub(super) fn run_handler(&self, access: Arc<RunAccess>) -> ToolHandler {
+        ToolHandler::Prepared(Arc::new(RunBinding {
             binding: self.binding.clone(),
             access,
-        })))
+        }))
     }
     fn registration(&self, handler: ToolHandler) -> ToolRegistration {
         ToolRegistration {

@@ -70,7 +70,7 @@ pub(super) fn title(input: &Value) -> Option<Text> {
 pub(super) struct Binding {
     pub service: Service,
     pub configuration: Arc<maka_config::ConfigurationStore>,
-    pub input: Value,
+    pub input: Arc<Value>,
 }
 impl RequestBinding for Binding {
     fn bind(&self, _: BindingRequest) -> maka_tools::request::BindingFuture {
@@ -86,7 +86,7 @@ impl RequestBinding for Binding {
                 .shell;
             service.shell = Some(shell.clone());
             let titles = shell.titles;
-            let mut input = schema(input, titles);
+            let mut input = schema((*input).clone(), titles);
             #[cfg(windows)]
             let available = if shell.preference
                 == maka_agent_facts::configuration::policy::ShellPreference::GitBash

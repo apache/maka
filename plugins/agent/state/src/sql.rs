@@ -146,6 +146,27 @@ pub(crate) fn owned_content(
 ) -> Result<Vec<u8>, StoreError> {
     with_owned_content(c, run, reference, |bytes| Ok(bytes.to_vec()))
 }
+pub(crate) fn verify_owned_content(
+    c: &Connection,
+    run: RunId,
+    reference: &ContentRef,
+) -> Result<(), StoreError> {
+    reference.validate().map_err(invalid)?;
+    let owns: bool = c
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM agent_run_content p JOIN contents c ON c.id=p.content_id WHERE p.run=? AND c.content_sha256=? AND length(c.payload)=?)")?
+        .query_row(
+            params![
+                run.to_string(),
+                reference.digest,
+                signed(reference.bytes)?
+            ],
+            |r| r.get(0),
+        )?;
+    if !owns {
+        return Err(invalid("content is not retained by this Run"));
+    }
+    Ok(())
+}
 pub(crate) fn with_owned_content<T>(
     c: &Connection,
     run: RunId,

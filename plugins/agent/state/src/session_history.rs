@@ -383,6 +383,21 @@ impl SessionHistory {
             .query(Previous(self.clone(), cut.clone(), before_sequence, limit))
             .await
     }
+    pub async fn run_revision_through(
+        &self,
+        cut: &HistoryCut,
+        run: RunId,
+        through_sequence: u64,
+    ) -> Result<u64, StoreError> {
+        self.data
+            .query(RunRevisionThrough(
+                self.clone(),
+                cut.clone(),
+                run,
+                through_sequence,
+            ))
+            .await
+    }
     /// Exact queue snapshots consumed by the fact at sequence, in original
     /// source order. Pending/unconsumed follow-ups are never historical input.
     pub async fn sources(
@@ -687,6 +702,13 @@ impl Query for FactSequence {
     type Output = Option<u64>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::fact_sequence(c, &self.0.namespace, &self.1, self.2, self.3)
+    }
+}
+struct RunRevisionThrough(SessionHistory, HistoryCut, RunId, u64);
+impl Query for RunRevisionThrough {
+    type Output = u64;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::run_revision_through(c, &self.0.namespace, &self.1, self.2, self.3)
     }
 }
 

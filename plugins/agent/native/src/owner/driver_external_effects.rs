@@ -1059,9 +1059,9 @@ impl NativeExternalEffects {
                 "Original external effect descriptor differs".into(),
             ));
         }
-        let selection: crate::tools::SelectionSnapshot = self
+        let selection = self
             .owner
-            .run_content(view.run, &view.spec.tool_selection)
+            .selection_snapshot(&self.owner.durable, view.run, &view.spec.tool_selection)
             .await
             .map_err(persistence)?;
         if !selection.definitions.contains(&descriptor.definition) {
