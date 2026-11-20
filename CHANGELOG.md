@@ -85,6 +85,7 @@
 - Stop pipe-mode shell commands when their Runtime Host dies, instead of leaving them running without an owner (#5986).
 - Keep native Anthropic prompt caching effective across steps and turns by placing the cache breakpoint on replayed history (#6041).
 - Update shipped dependencies to clear published advisories in brace-expansion, fast-uri and axios (#5906).
+- Keep the Desktop clipboard export's Markdown shape — bulleted tool rows, one shared Tool calls block per run, and the italic exported-at line — now that it and the CLI transcript export render through the same conversation renderer, which prints redacted secrets as `[redacted]` (#6036).
 
 ### Changed
 

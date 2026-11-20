@@ -13,6 +13,7 @@
     "./model-projection-transition": "./dist/model-projection-transition.js",
     "./canonical-runtime-event": "./dist/canonical-runtime-event.js",
     "./canonical-json": "./dist/canonical-json.js",
+    "./conversation-markdown": "./dist/conversation-markdown.js",
     "./runtime-boundary": "./dist/runtime-boundary.js",
     "./runtime-handoff": "./dist/runtime-handoff.js",
     "./runtime-logical-execution": "./dist/runtime-logical-execution.js",
