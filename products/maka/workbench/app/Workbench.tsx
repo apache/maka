@@ -77,7 +77,39 @@ export function createPreviewDialog(props: {
   return open;
 }
 
+/** The button and the temporary sidebar share one hover region across their gap. */
+export function createSidebarHover(available: () => boolean) {
+  const shown = signal(false);
+  let waitForExit = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cancel = () => clearTimeout(timer);
+  const close = () => {
+    cancel();
+    shown.set(false);
+  };
+  cleanup(cancel);
+  effect(() => {
+    if (!available()) close();
+  });
+  return {
+    shown,
+    close,
+    suppressUntilExit() {
+      waitForExit = true;
+    },
+    hover(inside: boolean) {
+      if (!inside) waitForExit = false;
+      if (waitForExit) return;
+      cancel();
+      if (platform.idiom !== 'desktop' || !available()) return;
+      if (inside) shown.set(true);
+      else timer = setTimeout(close, 180);
+    },
+  };
+}
+
 export function Workbench(props: {
+  sidebarHover?: ReturnType<typeof createSidebarHover>;
   expanded(): boolean;
   previewShown(): boolean;
   previewFullscreen?(): boolean;
@@ -85,7 +117,7 @@ export function Workbench(props: {
   floatingComposer?(): JSX.Element | null;
   previewDialog(): boolean;
   closePreview(): void;
-  navigation(): JSX.Element;
+  navigation(temporary?: boolean): JSX.Element;
   preview(docked: boolean): JSX.Element;
   /** Stable pane objects keep their mounted conversations through reorder and resize. */
   sides?(): readonly { render(): JSX.Element }[];
@@ -211,6 +243,23 @@ export function Workbench(props: {
           </ResizablePanel>
         )}
       </ResizablePanelGroup>
+      <If when={props.sidebarHover?.shown() && !browser() && !fullscreen()}>
+        <View
+          onMouseEnter={() => props.sidebarHover?.hover(true)}
+          onMouseLeave={() => props.sidebarHover?.hover(false)}
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: Math.min(preferredWidth(), available()),
+            backgroundColor: C.chrome,
+            overflow: 'hidden',
+          }}
+        >
+          {props.navigation(true)}
+        </View>
+      </If>
       <If when={props.previewDialog()}>
         <Dialog
           animation="none"

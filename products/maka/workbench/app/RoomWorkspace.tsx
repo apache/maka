@@ -50,7 +50,7 @@ import { Icon } from './Icon';
 import { tr } from './locale';
 import {
   Header,
-  SidebarToggle,
+  SidebarTitleRow,
   C,
   bodyTextStyle,
   captionTextStyle,
@@ -62,7 +62,7 @@ import {
   inputTextStyle,
   type BrowserHeader,
 } from './ui';
-import { TITLE_BAR_HEIGHT, ownTitleBar, windowDrag } from './chrome';
+import { ownTitleBar } from './chrome';
 import { WorkspacePicker } from './WorkspacePicker';
 import { ModalDialog, DialogHeader, DialogFooter } from './ModalDialog';
 import { LoadingIndicator } from './Loading';
@@ -276,7 +276,11 @@ export function createRoomWorkspace(options: {
       />
     </>
   );
-  const navigationView = (modeSwitch: JSX.Element) => (
+  const navigationView = (
+    modeSwitch: JSX.Element,
+    pin?: () => void,
+    suppressHover?: () => void,
+  ) => (
     <HostProvider value={host}>
       <View
         style={{
@@ -288,18 +292,12 @@ export function createRoomWorkspace(options: {
           gap: 8,
         }}
       >
-        <If when={ownTitleBar && options.browser().navigationDocked}>
-          <View
-            desktop={windowDrag}
-            style={{
-              height: TITLE_BAR_HEIGHT,
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'flex-end',
-            }}
-          >
-            <SidebarToggle expanded toggle={options.browser().toggle} />
-          </View>
+        <If when={ownTitleBar && (options.browser().navigationDocked || !!pin)}>
+          <SidebarTitleRow
+            toggle={options.browser().toggle}
+            pin={pin}
+            suppressHover={suppressHover}
+          />
         </If>
         <Button
           accessibilityLabel={tr('New room')}

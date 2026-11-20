@@ -18,7 +18,7 @@
  */
 
 import { LoadingIndicator } from './Loading';
-import { SidebarToggle, textTooltip } from './ui';
+import { SidebarTitleRow, textTooltip } from './ui';
 import { message, renderText, type UiText } from './text';
 import { tr } from './locale';
 import {
@@ -76,6 +76,8 @@ import { ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
 
 export type WorkspaceBrowserProps = {
   navigationMore?(): JSX.Element;
+  pinSidebar?: (() => void) | undefined;
+  suppressSidebarHover?: (() => void) | undefined;
   docked(): boolean;
   connectionLost(): boolean;
   browsing: Browsing;
@@ -158,7 +160,7 @@ function GuideLine(props: { last(): boolean; height(): number }) {
 const botWorkerCap = 5;
 
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
-  const titleBarRow = () => ownTitleBar && props.docked();
+  const titleBarRow = () => ownTitleBar && (props.docked() || !!props.pinSidebar);
   const navIcon = () => (platform.idiom === 'terminal' ? C.secondary : C.muted);
   const navText = () => (platform.idiom === 'terminal' ? C.text : C.secondary);
   const selectedNavText = (selected: boolean) => ({
@@ -515,17 +517,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         </View>
       </If>
       <If when={platform.idiom !== 'terminal' && titleBarRow()}>
-        <View
-          desktop={windowDrag}
-          style={{
-            height: TITLE_BAR_HEIGHT,
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'flex-end',
-          }}
-        >
-          <SidebarToggle expanded toggle={inputAction(props.collapse, props.selected())} />
-        </View>
+        <SidebarTitleRow
+          toggle={inputAction(props.collapse, props.selected())}
+          pin={props.pinSidebar}
+          suppressHover={props.suppressSidebarHover}
+        />
       </If>
       <View style={{ gap: platform.idiom === 'terminal' ? 8 : 2 }}>
         <Button

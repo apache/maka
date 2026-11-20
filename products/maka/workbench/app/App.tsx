@@ -56,6 +56,7 @@ import { createQuickTools, QuickToolsSettings, type QuickTools } from './QuickTo
 import { ownTitleBar, windowTitle } from './chrome';
 import {
   createPreviewDialog,
+  createSidebarHover,
   Workbench,
   canDockBrowser,
   canDockPreview,
@@ -318,6 +319,7 @@ function App(
       });
     },
     sidebarShown: sidebarExpanded,
+    sidebarHover: (inside) => sidebarHover.hover(inside),
     sidebarDocked: () => canDockBrowser(previewShown()),
     previewDocked: () => previewShown() && canDockPreview(),
     showSidebar() {
@@ -337,6 +339,9 @@ function App(
     },
     ...(platform.idiom === 'terminal' ? {} : { besideSessionIds: besides }),
   };
+  const sidebarHover = createSidebarHover(
+    () => !sidebarExpanded() && conversationPaneVisible() && !blocked(),
+  );
   const switchWorkspace = async (mode: 'conversations' | 'rooms') => {
     if (blocked()) return false;
     if (mode === workspaceMode()) return true;
@@ -522,6 +527,7 @@ function App(
       <WorkspaceSurface visible={() => workspaceMode() === 'conversations'}>
         <Workbench
           expanded={sidebarExpanded}
+          sidebarHover={sidebarHover}
           previewShown={previewShown}
           previewFullscreen={previewFullscreen}
           togglePreviewFullscreen={() => {
@@ -532,10 +538,12 @@ function App(
           previewDialog={previewDialog}
           closePreview={closePreview}
           sides={sides}
-          navigation={() =>
+          navigation={(temporary) =>
             runtime.renderView(configuration.navigation, conversationNavigationView, {
               shell,
               navigationMore,
+              suppressSidebarHover: sidebarHover.suppressUntilExit,
+              pinSidebar: temporary ? shell.showSidebar : undefined,
             })
           }
           preview={(docked) =>

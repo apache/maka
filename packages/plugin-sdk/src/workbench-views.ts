@@ -35,6 +35,7 @@ export interface ConversationShell {
   openSession(sessionId: string | null): Promise<boolean>;
   openSettings(model?: ModelSelection, page?: string): void;
   sidebarShown(): boolean;
+  sidebarHover?(inside: boolean): void;
   sidebarDocked(): boolean;
   previewDocked(): boolean;
   showSidebar(): void;
@@ -165,6 +166,8 @@ export interface ConversationPreviewHandle {
 export interface ConversationNavigationInput<Element = unknown> {
   readonly shell: ConversationShell;
   navigationMore(): Element;
+  pinSidebar?: (() => void) | undefined;
+  suppressSidebarHover?: (() => void) | undefined;
 }
 
 /** What a conversation drawn compactly, with its input on top, leaves to its host. */
