@@ -2194,6 +2194,7 @@ struct Driver<M: TextEngine + 'static> {
     last_gc: Instant,
     gc_interval: Duration,
     last_gc_unparented_seq: u64,
+    last_gc_net_hops: u64,
     /// True when the sandbox enforces hard memory or node quotas: retain
     /// post-commit idle GC so cycles cannot exhaust tight limits.
     has_quota: bool,
@@ -2469,6 +2470,7 @@ impl<M: TextEngine + 'static> Driver<M> {
             last_gc: Instant::now(),
             gc_interval: IDLE_GC_INTERVAL,
             last_gc_unparented_seq: 0,
+            last_gc_net_hops: 0,
             has_quota: config.limits.memory_bytes > 0 || config.limits.max_nodes < usize::MAX,
             last_active: Instant::now(),
             posts: posts.clone(),
@@ -2970,7 +2972,8 @@ impl<M: TextEngine + 'static> Driver<M> {
 
     fn effective_gc_interval(&self) -> Duration {
         let new_unparented = self.state.core.unparented_seq() != self.last_gc_unparented_seq;
-        if new_unparented || (self.has_quota && self.state.committed_since_gc) {
+        let new_net = !self.state.net.idle() && self.state.net.hops != self.last_gc_net_hops;
+        if new_unparented || new_net || (self.has_quota && self.state.committed_since_gc) {
             IDLE_GC_INTERVAL
         } else {
             self.gc_interval
@@ -2998,6 +3001,7 @@ impl<M: TextEngine + 'static> Driver<M> {
         let before_unparented = self.state.core.unparented_nodes();
         let before_inflight = self.state.net.inflight.len();
         let seq_before_gc = self.state.core.unparented_seq();
+        let hops_before_gc = self.state.net.hops;
         let start = self.state.trace.then(Instant::now);
         if let Some(script) = &self.script {
             script.collect_garbage();
@@ -3023,6 +3027,7 @@ impl<M: TextEngine + 'static> Driver<M> {
         // Acknowledge only the sequence that existed before the sweep so any
         // unparented nodes created by finalizers still trigger promptly.
         self.last_gc_unparented_seq = seq_before_gc;
+        self.last_gc_net_hops = hops_before_gc;
         let made_progress =
             after_unparented < before_unparented || after_inflight < before_inflight;
         let still_pending = after_unparented > 0 || after_inflight > 0;
@@ -3458,6 +3463,11 @@ impl Net {
         event: FetchEvent,
     ) -> Option<Result<FetchEvent, access::Refused>> {
         if self.network.is_none() {
+            if matches!(event, FetchEvent::End | FetchEvent::Failed(_))
+                && self.inflight.get(&id).is_some_and(|i| i.hop == hop)
+            {
+                self.inflight.remove(&id);
+            }
             return Some(Ok(event));
         }
         let inflight = self.inflight.get_mut(&id).filter(|i| i.hop == hop)?;

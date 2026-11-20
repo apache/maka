@@ -45,6 +45,9 @@ impl<M: TextEngine> Core<M> {
         if seats.is_empty() {
             return None;
         }
+        if seats.len() > 1 {
+            seats.sort_by(|a, b| self.reader_tree_order_cmp(reader, a.key, b.key));
+        }
         #[cfg(test)]
         {
             self.source_geometry_walks += 1;
@@ -251,9 +254,15 @@ impl<M: TextEngine> Core<M> {
             let cross = node.layout.map_or(0.0, |layout| {
                 content_box(&self.rounded_layout(layout)).size.height.0
             });
+            let unit = self.layout.grid().map(|g| g.height);
+            let columns_cross = if unit.is_some() && list.cells_cross.is_finite() {
+                list.cells_cross
+            } else {
+                cross
+            };
             let y = match index {
-                Some(i) => list.column(cross, list.column_of(i), None).0,
-                None => list.full_width(cross).0,
+                Some(i) => list.column(columns_cross, list.column_of(i), unit).0,
+                None => list.full_width(columns_cross).0,
             };
             inset + y
         };
