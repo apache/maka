@@ -94,7 +94,9 @@ pub(in crate::executor::external) async fn execute(
     let cwd = cwd_path
         .to_str()
         .ok_or_else(|| Error::Invalid("Claude cwd must be UTF-8".into()))?;
+    let status = bridge.directory().join("context.json");
     let mut cursor = Cursor::fence(transcript(config, &cwd_path, &session)?, resume).await?;
+    cursor.status_path = Some(status.clone());
     let mcp_path = bridge.directory().join("mcp.json");
     tokio::fs::write(
         &mcp_path,
@@ -102,7 +104,7 @@ pub(in crate::executor::external) async fn execute(
     )
     .await
     .map_err(|error| Error::Provider(format!("Claude MCP configuration failed: {error}")))?;
-    let mut command = runtime::command(config, cwd).await?;
+    let mut command = status_command(config, cwd, &status).await?;
     command.args(launch_args(&session, resume, &mcp_path, &config.args));
     if let Some(model) = request["model"]
         .as_str()
@@ -321,6 +323,92 @@ pub(in crate::executor::external) async fn execute(
     result
 }
 
+async fn status_command(
+    config: &NativeCommand,
+    cwd: &str,
+    status: &Path,
+) -> Result<maka_process::Command, Error> {
+    // Claude accepts one --settings override. Preserve the other invocation settings.
+    let mut config = config.clone();
+    let mut settings = serde_json::Map::new();
+    let mut args = std::mem::take(&mut config.args).into_iter();
+    while let Some(arg) = args.next() {
+        let value = if arg == "--settings" {
+            args.next()
+                .ok_or_else(|| Error::Invalid("Missing Claude --settings value".into()))?
+        } else if let Some(value) = arg.strip_prefix("--settings=") {
+            value.to_owned()
+        } else {
+            config.args.push(arg);
+            continue;
+        };
+        let bytes = if value.trim_start().starts_with('{') {
+            value.into_bytes()
+        } else {
+            tokio::fs::read(Path::new(cwd).join(value))
+                .await
+                .map_err(|e| Error::Provider(format!("Claude settings: {e}")))?
+        };
+        settings = serde_json::from_slice(&bytes)
+            .map_err(|e| Error::Invalid(format!("Claude settings: {e}")))?;
+    }
+    #[cfg(windows)]
+    let capture = "powershell.exe -NoProfile -NonInteractive -Command '$p=$env:MAKA_CLAUDE_STATUS; $t=[IO.Path]::ChangeExtension($p,$PID); [IO.File]::WriteAllText($t,[Console]::In.ReadToEnd()); Move-Item -LiteralPath $t -Destination $p -Force'";
+    #[cfg(not(windows))]
+    let capture =
+        r#"tmp="$MAKA_CLAUDE_STATUS.$$"; cat > "$tmp" && mv -f "$tmp" "$MAKA_CLAUDE_STATUS""#;
+    settings.insert(
+        "statusLine".into(),
+        serde_json::json!({"type":"command","command":capture}),
+    );
+    let mut command = runtime::command(&config, cwd).await?;
+    command
+        .env("MAKA_CLAUDE_STATUS", status.as_os_str())
+        .arg("--settings")
+        .arg(Value::Object(settings).to_string());
+    Ok(command)
+}
+
+async fn context_usage(path: &Path, session: &str, row: &Value) -> Option<Output> {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(%error, "Claude status line unavailable");
+            }
+            return None;
+        }
+    };
+    let status: Value = serde_json::from_slice(&bytes).ok()?;
+    if status["session_id"] != session {
+        return None;
+    }
+    let context = &status["context_window"];
+    let window = std::num::NonZeroU64::new(context["context_window_size"].as_u64()?)?;
+    let usage = if let Some(usage) = row.pointer("/message/usage") {
+        if status.pointer("/model/id")?.as_str()? != row.pointer("/message/model")?.as_str()? {
+            return None;
+        }
+        usage
+    } else {
+        &context["current_usage"]
+    };
+    let used = usage["input_tokens"]
+        .as_u64()?
+        .checked_add(usage["cache_read_input_tokens"].as_u64().unwrap_or(0))?
+        .checked_add(usage["cache_creation_input_tokens"].as_u64().unwrap_or(0))?;
+    Some(Output::ContextUsage(
+        maka_agent_facts::executor::ContextUsage {
+            used,
+            window,
+            model: status
+                .pointer("/model/id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        },
+    ))
+}
+
 fn transcript(config: &NativeCommand, cwd: &Path, session: &str) -> Result<PathBuf, Error> {
     let root = configuration_directory(|key| {
         config
@@ -360,6 +448,7 @@ fn configuration_directory(env: impl Fn(&str) -> Option<String>) -> Result<PathB
 }
 
 struct Cursor {
+    status_path: Option<PathBuf>,
     path: PathBuf,
     opened: Option<OpenedTranscript>,
 }
@@ -397,7 +486,11 @@ impl Cursor {
                 )));
             }
         };
-        Ok(Self { path, opened })
+        Ok(Self {
+            path,
+            opened,
+            status_path: None,
+        })
     }
     async fn next(&mut self) -> Result<Option<Value>, Error> {
         let metadata = match tokio::fs::metadata(&self.path).await {
@@ -484,6 +577,7 @@ impl OutputSink for BootstrapOutput<'_> {
             | Output::MessageEnd { .. }
             | Output::OutputDelta { .. }
             | Output::ThinkingDelta { .. }
+            | Output::ContextUsage(_)
             | Output::TurnUsage { .. } => Box::pin(async { Ok(()) }),
             output => self.0.emit(output),
         }
@@ -509,6 +603,8 @@ async fn observe(
         Some((journal, steering)) => (Some(journal), Some(steering)),
         None => (None, None),
     };
+    let status_path = cursor.status_path.clone();
+    let mut last_context = None;
     let mut deadline = Some(input_deadline(&input.prompt));
     let mut turn = LiveTurn {
         session,
@@ -524,6 +620,7 @@ async fn observe(
         api_failure: None,
         usage: Default::default(),
         duration_ms: 0,
+        waits: Default::default(),
     };
     let result = async {
         loop {
@@ -575,6 +672,15 @@ async fn observe(
                     );
                 }
             };
+            if turn.admitted && row["isSidechain"] != true
+                && (row["type"] == "assistant" || (row["type"] == "system" && last_context.is_none()))
+                && let Some(path) = &status_path
+                && let Some(context) = context_usage(path, session, &row).await
+                && last_context.as_ref() != Some(&context)
+            {
+                output.emit(context.clone()).await?;
+                last_context = Some(context);
+            }
             let terminal = row["type"] == "system"
                 && row["subtype"] == "turn_duration"
                 && row.get("isSidechain").and_then(Value::as_bool) != Some(true);
@@ -708,6 +814,7 @@ struct LiveTurn<'a> {
     api_failure: Option<String>,
     usage: BTreeMap<String, maka_agent_facts::model::ModelUsage>,
     duration_ms: u64,
+    waits: crate::model_time::ToolIntervals,
 }
 struct AssistantMessage {
     id: String,
@@ -739,6 +846,15 @@ impl LiveTurn<'_> {
                 "Claude live transcript session mismatch".into(),
             ));
         }
+        let at = || {
+            row["timestamp"]
+                .as_str()?
+                .parse::<jiff::Timestamp>()
+                .ok()?
+                .as_millisecond()
+                .try_into()
+                .ok()
+        };
         let kind = row.get("type").and_then(Value::as_str).unwrap_or_default();
         if row.get("isSidechain").and_then(Value::as_bool) == Some(true) {
             return Ok(None);
@@ -826,6 +942,7 @@ impl LiveTurn<'_> {
             if let Some(blocks) = content.as_array() {
                 for block in blocks {
                     match block.get("type").and_then(Value::as_str) {
+                        Some("server_tool_use") => self.waits.unmeasured_tool(),
                         Some("text") => {
                             let text = runtime::string(block, "/text")?;
                             if !text.is_empty() {
@@ -846,6 +963,7 @@ impl LiveTurn<'_> {
                             }
                         }
                         Some("tool_use") => {
+                            self.waits.start(runtime::string(block, "/id")?, at());
                             let name = runtime::string(block, "/name")?;
                             if matches!(name, "AskUserQuestion" | "EnterPlanMode" | "ExitPlanMode")
                             {
@@ -908,6 +1026,8 @@ impl LiveTurn<'_> {
             if let Some(blocks) = row.pointer("/message/content").and_then(Value::as_array) {
                 for block in blocks {
                     if block.get("type").and_then(Value::as_str) == Some("tool_result") {
+                        self.waits
+                            .end(runtime::string(block, "/tool_use_id")?, at());
                         if self
                             .host_tool_calls
                             .contains(runtime::string(block, "/tool_use_id")?)
@@ -939,6 +1059,8 @@ impl LiveTurn<'_> {
             }
             if let Some(duration) = row["durationMs"].as_u64() {
                 self.duration_ms = self.duration_ms.saturating_add(duration);
+            } else {
+                self.waits.unmeasured_tool();
             }
             // The old native turn can finish after the next input was journaled.
             // Neither an unconsumed input nor one without its own assistant may settle.
@@ -953,8 +1075,8 @@ impl LiveTurn<'_> {
                     samples.try_fold(first, |total, next| total.checked_add(get(next)?))
                 };
                 output
-                    .emit(Output::TurnUsage {
-                        usage: TurnUsage {
+                    .turn_usage(
+                        TurnUsage {
                             tokens: ModelUsage {
                                 input_tokens: sum(|usage| usage.input_tokens),
                                 output_tokens: sum(|usage| usage.output_tokens),
@@ -965,7 +1087,8 @@ impl LiveTurn<'_> {
                             total_tokens: None,
                             duration_ms: (self.duration_ms != 0).then_some(self.duration_ms),
                         },
-                    })
+                        self.waits.model_ms(self.duration_ms),
+                    )
                     .await?;
             }
             return Ok(Some(match self.api_failure.take() {

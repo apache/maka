@@ -19,7 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 mod output;
-pub use output::{Output, ToolResultDetails, TurnUsage};
+pub use output::{ContextUsage, Output, ToolResultDetails, TurnUsage};
 
 pub fn message_id(
     run: crate::durable::RunId,

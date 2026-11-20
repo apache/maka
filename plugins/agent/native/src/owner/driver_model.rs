@@ -3724,6 +3724,8 @@ async fn receive(
     let mut pending = BTreeMap::new();
     let mut emitted = 0u64;
     let mut saw_token = false;
+    let mut clock = crate::model_time::ModelTime::new();
+    let mut provider_inputs = std::collections::BTreeSet::new();
     let mut can_steer = !private_summary && observation.contract.is_some();
     let steering = pending_steering(log, &observation.state, observation.run);
     tokio::pin!(steering);
@@ -3739,7 +3741,28 @@ async fn receive(
         };
         let Some(next) = next else { break };
         let emission = next?;
+        match &emission.event {
+            ModelEvent::ToolInputStarted {
+                id,
+                provider_executed: true,
+                ..
+            } => {
+                provider_inputs.insert(id.clone());
+            }
+            ModelEvent::ToolCall(call) if call.provider_executed => {
+                // Argument generation belongs to the model. A terminal-only receipt
+                // cannot tell us when the provider actually began running the tool.
+                if provider_inputs.remove(&call.id) {
+                    clock.tool_started(&call.id);
+                } else {
+                    clock.unmeasured_tool();
+                }
+            }
+            ModelEvent::ProviderToolResult { id, .. } => clock.tool_finished(id),
+            _ => {}
+        }
         let finished = matches!(&emission.event, ModelEvent::Finished { .. });
+        let model_time_ms = finished.then(|| clock.millis()).flatten();
         let first_token = !saw_token
             && match &emission.event {
                 ModelEvent::PartDelta { text, .. } | ModelEvent::ToolInputDelta { text, .. } => {
@@ -3808,6 +3831,7 @@ async fn receive(
                 None
             };
             let protocol = serde_json::to_value(maka_agent_facts::context::ModelClosureProtocol {
+                model_time_ms,
                 finish_reason: step.finish_reason,
                 provider_options: step.provider_options.map(Arc::unwrap_or_clone),
                 cache_read_reported: (step.usage.cache_read_tokens == Some(0)).then_some(true),

@@ -33,6 +33,8 @@ pub struct ModelFailureProtocol {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelClosureProtocol {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_time_ms: Option<u64>,
     pub finish_reason: ModelFinishReason,
     pub provider_options: Option<Value>,
     /// Older adapters sometimes filled a missing cache counter with zero.

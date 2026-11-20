@@ -98,7 +98,7 @@ impl ProtocolSession {
             .binding
             .bound(NativeBinding {
                 adapter_version: match task {
-                    NativeTask::AntigravityAcp { .. } => AGY_ACP_VERSION,
+                    NativeTask::AntigravityAcp { .. } | NativeTask::Codex { .. } => CONTEXT_VERSION,
                     _ => PRESENTATION_VERSION,
                 },
                 command_basis: self.command_basis.clone(),

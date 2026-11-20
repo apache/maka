@@ -469,6 +469,9 @@ pub enum Fact {
         task: ExternalTaskId,
         index: u64,
         output: executor::Output,
+        /// Original live measurement, separate from the replayable executor output.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_time_ms: Option<u64>,
     },
     ExternalTaskClosed {
         task: ExternalTaskId,

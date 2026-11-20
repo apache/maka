@@ -203,14 +203,14 @@ impl Publications {
         publication: &mut PublicationState,
         observation: ExternalObservation,
     ) -> Result<(), Error> {
-        let output = matches!(&observation, ExternalObservation::Output(_));
+        let output = matches!(&observation, ExternalObservation::Output { .. });
         if output && publication.closed.is_some() {
             return Err(Error::Invalid(
                 "executor output after canonical closure".into(),
             ));
         }
         let message = match &observation {
-            ExternalObservation::Output(output) => MessageEvent::from_output(output),
+            ExternalObservation::Output { output, .. } => MessageEvent::from_output(output),
             _ => None,
         };
         let next = if output {
@@ -275,12 +275,26 @@ impl Publications {
     }
 }
 impl OutputSink for Publications {
+    fn turn_usage(
+        &self,
+        usage: maka_agent_facts::executor::TurnUsage,
+        model_time_ms: Option<u64>,
+    ) -> BoxFuture<'_, Result<(), Error>> {
+        Box::pin(self.publish(ExternalObservation::Output {
+            output: maka_agent_facts::executor::Output::TurnUsage { usage },
+            model_time_ms,
+        }))
+    }
     fn emit(&self, output: maka_agent_facts::executor::Output) -> BoxFuture<'_, Result<(), Error>> {
         Box::pin(async move {
             output
                 .validate()
                 .map_err(|error| Error::Invalid(error.into()))?;
-            self.publish(ExternalObservation::Output(output)).await
+            self.publish(ExternalObservation::Output {
+                output,
+                model_time_ms: None,
+            })
+            .await
         })
     }
 }
@@ -1192,6 +1206,7 @@ async fn task_prefix(
                 task: original,
                 index: position,
                 output,
+                ..
             } = recorded.fact
             {
                 if original != task || position != index {

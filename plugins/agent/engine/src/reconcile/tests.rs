@@ -356,6 +356,7 @@ pub(crate) fn model_closure(
         );
     }
     let protocol = serde_json::to_value(ModelClosureProtocol {
+        model_time_ms: None,
         finish_reason,
         provider_options: None,
         cache_read_reported: None,
@@ -817,6 +818,8 @@ fn known_publication_failure_only_fences_followup_until_original_cleanup() {
         binding: None,
         observed: 0,
         active_tools: Default::default(),
+        context_usage: None,
+        model_time_ms: None,
         turn_usage: None,
         closed: Some(ExternalClosure {
             outcome: Terminal::Completed,
@@ -891,6 +894,8 @@ fn a_finished_turn_fails_the_run_when_its_external_task_closed_as_failed() {
         binding: None,
         observed: 0,
         active_tools: Default::default(),
+        context_usage: None,
+        model_time_ms: None,
         turn_usage: None,
         closed: None,
         cleanup: OperationCleanup::Confirmed,

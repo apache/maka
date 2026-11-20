@@ -792,6 +792,7 @@ fn validate_external_final_message(
             task: observed_task,
             index,
             output: maka_agent_facts::executor::Output::MessageEnd { message_id },
+            ..
         } if observed_task == *task
             && index < external.observed
             && message_id == final_message.message_id =>

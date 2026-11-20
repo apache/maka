@@ -33,6 +33,8 @@ pub struct SessionModelMetrics {
     pub binding: ModelBinding,
     pub requested_at: Option<UnixMillis>,
     pub finished_at: Option<UnixMillis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_time_ms: Option<u64>,
     pub usage: ModelUsage,
     pub context_tokens: Option<u64>,
     pub context_window: Option<u64>,
@@ -404,7 +406,10 @@ impl Query for ReadRequestTraces {
                             .transpose()?;
                     let finished = copied_closed(c, snapshot, bound, &original, "model_closed")?
                         .map(|(closed, evidence)| {
-                            let ModelMetadata::Closed { at, outcome, usage } = evidence else {
+                            let ModelMetadata::Closed {
+                                at, outcome, usage, ..
+                            } = evidence
+                            else {
                                 return Err(invalid("request trace invalid copied closure"));
                             };
                             let diagnostic = if outcome == Outcome::Success {
@@ -452,6 +457,7 @@ enum Selection {
 struct ReadMetrics(SessionHistory, HistoryCut);
 struct ReadCalibration(SessionHistory, HistoryCut);
 struct Closed {
+    model_time_ms: Option<u64>,
     sequence: u64,
     at: UnixMillis,
     outcome: Outcome,
@@ -511,6 +517,7 @@ impl Query for ReadMetrics {
             binding: sample.accounting.binding,
             requested_at: sample.requested_at,
             finished_at: Some(closed.at),
+            model_time_ms: closed.model_time_ms,
             usage: closed.usage,
             context_tokens,
             context_window: context
@@ -792,8 +799,48 @@ fn live_closed(
         Option<i64>,
         Option<i64>,
         Option<i64>,
+        Option<i64>,
     );
-    let row: Option<ClosedModelRow> = c.query_row("SELECT h.sequence,f.id,f.schema_version,f.at,f.run,r.completed_at,r.outcome,r.input,r.output,r.cache_read,r.cache_write,r.reasoning FROM agent_session_history h INDEXED BY agent_session_history_run LEFT JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id LEFT JOIN agent_usage_results r ON r.request=?1 AND r.sequence=h.sequence WHERE h.owner=?2 AND h.session=?3 AND h.run=?4 AND h.step=?5 AND h.kind='model_closed' AND h.attempt=?6 AND h.sequence<=?7 ORDER BY h.sequence DESC LIMIT 1",params![request,serde_json::to_string(&history.namespace.owner)?,history.namespace.session,run.to_string(),step.to_string(),attempt.to_string(),sql::bind_u64(cut.through_sequence)?],|r|Ok((sql::read_u64(r,0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?))).optional()?;
+    let row: Option<ClosedModelRow> = c
+        .query_row(
+            "SELECT h.sequence, f.id, f.schema_version, f.at, f.run, r.completed_at, r.outcome,
+                r.input, r.output, r.cache_read, r.cache_write, r.reasoning,
+                json_extract(CAST(b.payload AS TEXT), '$.fact.protocol.modelTimeMs')
+         FROM agent_session_history h INDEXED BY agent_session_history_run
+         LEFT JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id
+         LEFT JOIN contents b ON b.id=f.body_content_id
+         LEFT JOIN agent_usage_results r ON r.request=?1 AND r.sequence=h.sequence
+         WHERE h.owner=?2 AND h.session=?3 AND h.run=?4 AND h.step=?5
+           AND h.kind='model_closed' AND h.attempt=?6 AND h.sequence<=?7
+         ORDER BY h.sequence DESC LIMIT 1",
+            params![
+                request,
+                serde_json::to_string(&history.namespace.owner)?,
+                history.namespace.session,
+                run.to_string(),
+                step.to_string(),
+                attempt.to_string(),
+                sql::bind_u64(cut.through_sequence)?
+            ],
+            |r| {
+                Ok((
+                    sql::read_u64(r, 0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
+                    r.get(11)?,
+                    r.get(12)?,
+                ))
+            },
+        )
+        .optional()?;
     let Some((
         sequence,
         id,
@@ -807,6 +854,7 @@ fn live_closed(
         cache_read,
         cache_write,
         reasoning,
+        model_time_ms,
     )) = row
     else {
         return Ok(None);
@@ -822,6 +870,7 @@ fn live_closed(
         outcome.ok_or_else(|| invalid("metrics closure accounting outcome is missing"))?,
     )?;
     Ok(Some(Closed {
+        model_time_ms: counter(model_time_ms)?,
         sequence,
         at: UnixMillis(at),
         outcome,
@@ -1021,7 +1070,13 @@ fn copied(
         let closed = copied_closed(c, snapshot, bound, &original, "model_closed")?;
         let closed = closed
             .map(|(key, model)| match model {
-                ModelMetadata::Closed { outcome, at, usage } if at.0 >= 0 => Ok(Closed {
+                ModelMetadata::Closed {
+                    outcome,
+                    at,
+                    usage,
+                    model_time_ms,
+                } if at.0 >= 0 => Ok(Closed {
+                    model_time_ms,
                     sequence: key.sequence,
                     at,
                     outcome,

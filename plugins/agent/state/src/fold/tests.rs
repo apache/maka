@@ -422,6 +422,7 @@ fn replay_continues_after_an_external_tool_was_rejected_before_execution() {
         Fact::ExternalTaskObserved {
             task,
             index: 0,
+            model_time_ms: None,
             output: Output::MessageEnd {
                 message_id: "response".into(),
             },

@@ -171,9 +171,17 @@ pub(super) async fn parse(
     let outcome = match &binding.task {
         NativeTask::Codex { .. } => codex::replay(request, binding, input, stream, output).await,
         NativeTask::AntigravityAcp { session, prompt_id }
-            if binding.adapter_version == AGY_ACP_VERSION =>
+            if matches!(binding.adapter_version, AGY_ACP_VERSION | CONTEXT_VERSION) =>
         {
-            agy_acp::replay(session, *prompt_id, input, stream, output).await
+            agy_acp::replay(
+                binding.adapter_version >= CONTEXT_VERSION,
+                session,
+                *prompt_id,
+                input,
+                stream,
+                output,
+            )
+            .await
         }
         NativeTask::AntigravityAcp { .. } => Err(Error::Unknown),
         NativeTask::ClaudeStream { .. } => {

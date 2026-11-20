@@ -69,7 +69,9 @@ pub(super) fn visible(fact: &Fact) -> bool {
         }
         Fact::Cell { .. } | Fact::ModelInterrupted { .. } => false,
         Fact::ExternalTaskObserved {
-            output: maka_agent_facts::executor::Output::TurnUsage { .. },
+            output:
+                maka_agent_facts::executor::Output::TurnUsage { .. }
+                | maka_agent_facts::executor::Output::ContextUsage(_),
             ..
         } => false,
         Fact::ExternalEffect { event } => matches!(
@@ -1020,6 +1022,7 @@ pub(super) async fn project(
                 }
                 Output::MessageStart { .. }
                 | Output::MessageEnd { .. }
+                | Output::ContextUsage(_)
                 | Output::TurnUsage { .. } => return Ok(result),
             }
             result.push(row);
