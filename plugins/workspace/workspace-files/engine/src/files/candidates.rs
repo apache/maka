@@ -86,14 +86,10 @@ impl Directory {
         let mut pending = std::collections::VecDeque::from([(PathBuf::new(), Arc::new(rules))]);
         'search: while let Some((inner, inherited)) = pending.pop_front() {
             interrupted(cancel)?;
-            let opened = if inner.as_os_str().is_empty() {
-                target.directory.try_clone()
-            } else {
-                target.directory.open_dir_nofollow(&inner)
-            };
-            let directory = match opened {
+            let directory = match open_descendant_dir(&target.directory, &inner) {
                 Ok(directory) => directory,
-                Err(err) if disappeared(&err) || denied(&err) => continue,
+                Err(err) if disappeared(&err) => continue,
+                Err(err) if !inner.as_os_str().is_empty() && denied(&err) => continue,
                 Err(err) => return Err(err),
             };
             let entries = match directory.entries() {
@@ -124,7 +120,7 @@ impl Directory {
                 }
                 let entry = match entry {
                     Ok(entry) => entry,
-                    Err(err) if disappeared(&err) => continue,
+                    Err(err) if disappeared(&err) || denied(&err) => continue,
                     Err(err) => return Err(err),
                 };
                 let name = entry.file_name();
@@ -138,7 +134,7 @@ impl Directory {
                     Ok(kind) if kind.is_file() => FileKind::File,
                     Ok(kind) if kind.is_symlink() => FileKind::Symlink,
                     Ok(_) => continue,
-                    Err(err) if disappeared(&err) => continue,
+                    Err(err) if disappeared(&err) || denied(&err) => continue,
                     Err(err) => return Err(err),
                 };
                 let path = relative.join(&name);
@@ -156,7 +152,7 @@ impl Directory {
             let leading = (0..children.len()).filter(|&i| names[i].starts_with(query));
             let inside = (0..children.len())
                 .filter(|&i| !names[i].starts_with(query) && names[i].contains(query));
-            for index in leading.chain(inside).collect::<Vec<_>>() {
+            for index in leading.chain(inside) {
                 let (_, path, kind) = &children[index];
                 let bytes = gix::path::to_unix_separators_on_windows(
                     gix::path::into_bstr(path.clone()).map_err(|_| error("files_unavailable"))?,
@@ -292,7 +288,7 @@ impl Directory {
                         interrupted(cancel)?;
                         let entry = match entry {
                             Ok(entry) => entry,
-                            Err(err) if disappeared(&err) => continue,
+                            Err(err) if disappeared(&err) || denied(&err) => continue,
                             Err(err) => return Err(err),
                         };
                         let name = entry.file_name();
@@ -301,7 +297,7 @@ impl Directory {
                         }
                         let kind = match entry.file_type() {
                             Ok(kind) => kind,
-                            Err(err) if disappeared(&err) => continue,
+                            Err(err) if disappeared(&err) || denied(&err) => continue,
                             Err(err) => return Err(err),
                         };
                         let kind = if kind.is_dir() {
@@ -442,6 +438,14 @@ fn read_rules(
 // A search below the workspace root, such as a home directory, leaves out
 // entries the user may not read (including macOS privacy-protected folders)
 // instead of failing the whole search.
+fn open_descendant_dir(root: &Dir, inner: &Path) -> io::Result<Dir> {
+    let mut current = root.try_clone()?;
+    for component in inner.components() {
+        current = current.open_dir_nofollow(component.as_os_str())?;
+    }
+    Ok(current)
+}
+
 fn denied(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::PermissionDenied
 }

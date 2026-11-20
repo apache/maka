@@ -199,6 +199,11 @@ fn searches_match_names_shallow_first_and_skip_hidden_or_unreadable_folders() {
         paths.push(entry.path.bytes().unwrap());
         Ok(())
     });
+    let mut hidden_paths = Vec::new();
+    let hidden_found = directory.candidates(".cac", &AtomicBool::new(false), |entry| {
+        hidden_paths.push(entry.path.bytes().unwrap());
+        Ok(())
+    });
     let mut texts = Vec::new();
     let visited = directory.visit_text_files(1024, 10, &AtomicBool::new(false), |_, path, _| {
         texts.push(path);
@@ -208,9 +213,72 @@ fn searches_match_names_shallow_first_and_skip_hidden_or_unreadable_folders() {
     mode("secret.rs", 0o644);
 
     found.unwrap();
+    hidden_found.unwrap();
     visited.unwrap();
     assert_eq!(paths, [b"Downloads".to_vec(), b"open/download.rs".to_vec()]);
+    assert_eq!(hidden_paths, [b".cache".to_vec()]);
     assert_eq!(texts, ["open/download.rs"]);
+}
+
+#[test]
+fn home_paths_resolve_inside_workspace_and_reject_outside() {
+    let home = Fixture::new();
+    fs::create_dir(home.root.join("Downloads")).unwrap();
+    let home_dir = home.open(None).unwrap();
+
+    let tilde = WorkspacePath::from_bytes(b"~").unwrap();
+    let downloads = WorkspacePath::from_bytes(b"~/Downloads").unwrap();
+    let other_user = WorkspacePath::from_bytes(b"~other").unwrap();
+    let plain = WorkspacePath::from_bytes(b"Downloads").unwrap();
+
+    assert!(tilde.is_home());
+    assert!(downloads.is_home());
+    assert!(!other_user.is_home());
+    assert!(!plain.is_home());
+
+    assert_eq!(home_dir.home_path(&tilde, &home.root).unwrap(), None);
+    assert_eq!(
+        home_dir.home_path(&downloads, &home.root).unwrap(),
+        Some(plain)
+    );
+    assert_eq!(
+        home_dir
+            .home_path(&other_user, &home.root)
+            .unwrap_err()
+            .to_string(),
+        "files_invalid_path"
+    );
+
+    let project_root = home.root.join("project");
+    fs::create_dir_all(project_root.join("src")).unwrap();
+    let (project_root, project_identity) = crate::directory::capture(&project_root).unwrap();
+    let project = Directory::open(
+        &project_root,
+        &project_identity,
+        &home.private,
+        &home.control,
+        None,
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+
+    let project_home = WorkspacePath::from_bytes(b"~/project").unwrap();
+    let project_src = WorkspacePath::from_bytes(b"~/project/src").unwrap();
+    assert_eq!(project.home_path(&project_home, &home.root).unwrap(), None);
+    assert_eq!(
+        project.home_path(&project_src, &home.root).unwrap(),
+        Some(WorkspacePath::from_bytes(b"src").unwrap())
+    );
+    for outside in [&tilde, &downloads] {
+        assert_eq!(
+            project
+                .home_path(outside, &home.root)
+                .unwrap_err()
+                .to_string(),
+            "files_invalid_path"
+        );
+    }
 }
 
 #[cfg(unix)]
