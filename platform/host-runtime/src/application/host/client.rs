@@ -21,7 +21,7 @@
 use super::{
     Configuration, Publication, Status, VERSION,
     protocol::{Connected, Opening, Request, Response, SessionControl},
-    websocket::connect_on_stream,
+    websocket::channel_opener,
 };
 use crate::{
     application::{
@@ -35,6 +35,7 @@ use maka_plugin_core::{composition::InstanceId, deployment::DeploymentRef};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
+    io,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -47,7 +48,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static> ChannelIo for S 
 pub type Channel = Box<dyn ChannelIo>;
 pub type LocalCall = Call<ReadHalf<BufReader<Channel>>, WriteHalf<BufReader<Channel>>>;
 pub type OpenChannel =
-    Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, Result<Channel>> + Send + Sync>;
+    Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, io::Result<Channel>> + Send + Sync>;
 
 #[derive(Clone)]
 enum Target {
@@ -63,7 +64,7 @@ impl Target {
             Self::Local(address) => Ok(Box::new(
                 ipc::connect(address).await.map_err(|e| e.to_string())?,
             )),
-            Self::Supplied { open, .. } => open().await,
+            Self::Supplied { open, .. } => open().await.map_err(|error| error.to_string()),
         }
     }
     fn client_instance(&self) -> Option<String> {
@@ -149,53 +150,58 @@ impl Client {
         )
         .await
     }
-    /// Open independent Host channels over a supplied byte stream. The server
-    /// derives authority from its ingress; this does not grant local ownership.
-    pub async fn connect_on(open: OpenChannel, epoch: Option<Uuid>) -> Result<Self> {
+    /// Open Host wire-ready channels. The optional identity binds remote sessions;
+    /// the server independently derives authority from ingress.
+    pub async fn connect_on(
+        open: OpenChannel,
+        epoch: Option<Uuid>,
+        client_instance: Option<Arc<str>>,
+    ) -> Result<Self> {
         let target = Target::Supplied {
             open,
-            client_instance: None,
+            client_instance,
         };
         let anchor = target.open().await?;
         Self::open(target, epoch, anchor, Request::Connect).await
     }
 
-    /// Each invocation of the opener must return a fresh, authenticated transport
-    /// stream to the same Host. The Host separately authenticates the Bearer.
+    /// Connect with an active Bearer credential. Learn the Host epoch when none
+    /// is pinned; subsequent channels use the epoch from this admission.
     pub async fn connect_websocket(
         open_stream: OpenChannel,
         bearer: Arc<str>,
         client_instance: Arc<str>,
-        epoch: Uuid,
+        epoch: Option<Uuid>,
     ) -> Result<Self> {
-        let open: OpenChannel = Arc::new(move || {
-            let stream = open_stream();
-            let bearer = bearer.clone();
-            Box::pin(async move {
-                Ok(Box::new(connect_on_stream(stream.await?, &bearer).await?) as Channel)
-            })
-        });
-        let target = Target::Supplied {
-            open,
-            client_instance: Some(client_instance),
-        };
-        let mut pairing = target.open().await?;
+        Self::connect_on(
+            channel_opener(open_stream, bearer),
+            epoch,
+            Some(client_instance),
+        )
+        .await
+    }
+
+    /// Finalize a pending credential on a wire-ready authenticated channel.
+    pub async fn finalize_access(
+        open: OpenChannel,
+        client_instance: Arc<str>,
+        epoch: Option<Uuid>,
+    ) -> Result<()> {
+        let mut pairing = open().await.map_err(|error| error.to_string())?;
         wire::write(
             &mut pairing,
             &Opening {
                 version: VERSION,
-                epoch: Some(epoch),
-                client_instance: target.client_instance(),
+                epoch,
+                client_instance: Some(client_instance.to_string()),
                 request: Request::FinalizeAccess,
             },
         )
         .await?;
         match wire::Reader::new(pairing).read::<Response>().await? {
-            Response::Finalized(result) => result?,
-            _ => return Err("Host pairing response mismatch".into()),
+            Response::Finalized(result) => result,
+            _ => Err("Host pairing response mismatch".into()),
         }
-        let anchor = target.open().await?;
-        Self::open(target, Some(epoch), anchor, Request::Connect).await
     }
 
     async fn open(
@@ -537,7 +543,7 @@ impl Client {
 
     async fn request_quit(&mut self, ephemeral_only: bool) -> Result<()> {
         if self.target.is_remote() {
-            return self.close().await;
+            return Err("Host control requires the local owner".into());
         }
         if self.phase == Phase::Closed {
             return Ok(());

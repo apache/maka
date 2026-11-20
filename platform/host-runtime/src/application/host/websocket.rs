@@ -20,8 +20,8 @@
 //! HTTP authentication precedes the ordinary bounded application protocol.
 mod bytes;
 mod upgrade;
-use super::{Host, Result, access::Authority};
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use super::{Channel, Host, OpenChannel, Result, access::Authority};
+use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::net::{TcpListener, TcpStream};
 
 pub struct WebSocketListener {
@@ -69,22 +69,40 @@ pub(super) async fn connection(
         .await
 }
 
+/// Upgrade each fresh transport stream to the authenticated Host WebSocket.
+pub fn channel_opener(open: OpenChannel, bearer: Arc<str>) -> OpenChannel {
+    Arc::new(move || {
+        let stream = open();
+        let bearer = bearer.clone();
+        Box::pin(async move {
+            Ok(Box::new(connect_on_stream(stream.await?, &bearer).await?) as Channel)
+        })
+    })
+}
+
 /// Open the existing application WebSocket on an already connected byte stream.
-pub(super) async fn connect_on_stream<S>(
+async fn connect_on_stream<S>(
     stream: S,
     bearer: &str,
-) -> Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + use<S>>
+) -> io::Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + use<S>>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    use tokio_tungstenite::tungstenite::{Error, client::IntoClientRequest, http::header};
+    use tokio_tungstenite::tungstenite::{
+        Error, client::IntoClientRequest, error::ProtocolError, http::header,
+    };
 
     // The URI selects the existing Host route. It never causes a TCP dial.
     let mut request = "ws://localhost/runtime-host"
         .into_client_request()
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid Host WebSocket request",
+            )
+        })?;
     let mut authorization = header::HeaderValue::from_str(&format!("Bearer {bearer}"))
-        .map_err(|_| "invalid Host Bearer header")?;
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid Host Bearer header"))?;
     authorization.set_sensitive(true);
     request
         .headers_mut()
@@ -94,10 +112,31 @@ where
         tokio_tungstenite::client_async_with_config(request, stream, Some(bytes::config())),
     )
     .await
-    .map_err(|_| "Host WebSocket upgrade timed out")?
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Host WebSocket upgrade timed out"))?
     .map_err(|error| match error {
-        Error::Http(response) => format!("Host WebSocket upgrade rejected: {}", response.status()),
-        _ => "Host WebSocket upgrade failed".into(),
+        Error::Http(response) => io::Error::other(format!(
+            "Host WebSocket upgrade rejected: {}",
+            response.status()
+        )),
+        Error::Io(error) => io::Error::new(
+            error.kind(),
+            format!("Host WebSocket upgrade I/O error: {:?}", error.kind()),
+        ),
+        Error::ConnectionClosed
+        | Error::AlreadyClosed
+        | Error::Protocol(ProtocolError::HandshakeIncomplete) => io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "Host WebSocket closed during upgrade",
+        ),
+        Error::Protocol(_) | Error::HttpFormat(_) => io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid Host WebSocket upgrade response",
+        ),
+        Error::Capacity(_) => io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Host WebSocket upgrade response exceeded its size limit",
+        ),
+        _ => io::Error::other("Host WebSocket upgrade failed"),
     })?;
     Ok(bytes::Channel::new(socket))
 }

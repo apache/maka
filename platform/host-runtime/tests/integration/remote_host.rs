@@ -24,21 +24,18 @@ use maka_event_log::{
 };
 use maka_host_runtime::{
     application::{
-        host::{Channel, Client, Configuration, Host, OpenChannel, websocket::WebSocketListener},
+        host::{
+            Channel, Client, Configuration, Host, LifecycleMode, OpenChannel, Options,
+            websocket::{self, WebSocketListener},
+        },
         logs,
-        transport::GATEWAY,
+        transport::{GATEWAY, Reply},
     },
     ipc::LocalListener,
 };
 use maka_packages::Package;
 use serde_json::{Value, json};
-use std::{
-    collections::BTreeMap,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -94,13 +91,26 @@ async fn host_opens_independent_supplied_channels() {
         }})).unwrap(),
         vec![], vec![logs, gateway],
     ).await.unwrap();
-    let host = Host::open(store, deployment, Default::default(), None, Configuration::PublicHost {
+    let configuration = Configuration::PublicHost {
         endpoints: serde_json::from_value(json!({
             "hostLogs":{"consumer":[consumer],"import":"hostLogs","grant":{"methods":["read"],"recovery":false}}
         })).unwrap(),
         native: Default::default(),
         product_methods: Default::default(),
-    }).await.unwrap();
+    };
+    let host = Host::open_with_options(
+        store,
+        deployment,
+        Default::default(),
+        None,
+        configuration.clone(),
+        Options {
+            lifecycle_mode: LifecycleMode::Ephemeral,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
 
     let pairing = host
         .prepare_access("test-remote-client".into())
@@ -117,43 +127,69 @@ async fn host_opens_independent_supplied_channels() {
         .unwrap();
     let address = websocket.local_addr().unwrap();
     let stop = CancellationToken::new();
-    let server = tokio::spawn({
+    let mut server = tokio::spawn({
         let stop = stop.clone();
         async move { host.serve(local, Some(websocket), stop).await }
     });
-    // Each call returns a fresh transport stream.
-    let opened = Arc::new(AtomicUsize::new(0));
-    let opener: OpenChannel = Arc::new({
-        let opened = opened.clone();
-        move || {
-            opened.fetch_add(1, Ordering::Relaxed);
-            Box::pin(async move {
-                Ok(Box::new(
-                    tokio::net::TcpStream::connect(address)
-                        .await
-                        .map_err(|e| e.to_string())?,
-                ) as Channel)
-            })
-        }
+    let transport: OpenChannel = Arc::new(move || {
+        Box::pin(
+            async move { Ok(Box::new(tokio::net::TcpStream::connect(address).await?) as Channel) },
+        )
     });
     let client_id: Arc<str> = Uuid::new_v4().to_string().into();
     let bad =
-        Client::connect_websocket(opener.clone(), "invalid".into(), client_id.clone(), epoch).await;
+        Client::connect_websocket(transport.clone(), "invalid".into(), client_id.clone(), None)
+            .await;
     assert!(matches!(bad, Err(ref error) if error.contains("401")));
-    let mut client = Client::connect_websocket(opener, pairing.credential.into(), client_id, epoch)
+
+    let bearer: Arc<str> = pairing.credential.into();
+    // A routine connect cannot accidentally activate a pending credential.
+    assert!(
+        Client::connect_websocket(transport.clone(), bearer.clone(), client_id.clone(), None)
+            .await
+            .is_err()
+    );
+    let opener = websocket::channel_opener(transport.clone(), bearer.clone());
+    Client::finalize_access(opener, client_id.clone(), None)
+        .await
+        .unwrap();
+    assert!(
+        Client::connect_websocket(
+            transport.clone(),
+            bearer.clone(),
+            client_id.clone(),
+            Some(Uuid::new_v4())
+        )
+        .await
+        .is_err()
+    );
+    let mut client = Client::connect_websocket(transport, bearer, client_id, None)
         .await
         .unwrap();
     assert_eq!(client.epoch(), epoch);
-    assert!(client.publication().await.is_err());
-    let (first, second) = tokio::join!(client.open_call_channel(), client.open_call_channel());
-    let (first, second) = (first.unwrap(), second.unwrap());
-    assert_eq!(opened.load(Ordering::Relaxed), 5);
-    drop((first, second));
-    client.quit_ephemeral().await.unwrap();
-    assert_eq!(
-        Client::status(&socket, Some(epoch)).await.unwrap().sessions,
-        0
-    );
+    assert_eq!(client.source().state_domain, pairing.root_id);
+    for rejected in [
+        client.quit().await,
+        client.quit_ephemeral().await,
+        client.publication().await.map(|_| ()),
+        client
+            .configure(
+                client.source().clone(),
+                configuration.clone(),
+                configuration,
+            )
+            .await,
+    ] {
+        assert_eq!(
+            rejected.unwrap_err(),
+            "Host control requires the local owner"
+        );
+    }
+    read_logs_on_independent_channels(&client).await;
+    client.close().await.unwrap();
+    let status = Client::status(&socket, Some(epoch)).await.unwrap();
+    assert!(!status.closing && !status.closed);
+    assert_eq!(status.sessions, 0);
 
     let opener: OpenChannel = Arc::new({
         let socket = socket.clone();
@@ -163,22 +199,44 @@ async fn host_opens_independent_supplied_channels() {
                 Ok(Box::new(
                     maka_host_runtime::ipc::connect(&socket)
                         .await
-                        .map_err(|err| err.to_string())?,
+                        .map_err(io::Error::other)?,
                 ) as Channel)
             })
         }
     });
-    let mut supplied = Client::connect_on(opener, Some(epoch)).await.unwrap();
+    let mut supplied = Client::connect_on(opener, Some(epoch), None).await.unwrap();
     assert_eq!(supplied.epoch(), epoch);
     supplied.publication().await.unwrap();
-    let (first, second) = tokio::join!(supplied.open_call_channel(), supplied.open_call_channel());
-    drop((first.unwrap(), second.unwrap()));
+    read_logs_on_independent_channels(&supplied).await;
     supplied.quit_ephemeral().await.unwrap();
-    assert_eq!(
-        Client::status(&socket, Some(epoch)).await.unwrap().sessions,
-        0
-    );
+    tokio::time::timeout(Duration::from_secs(5), &mut server)
+        .await
+        .expect("the last local owner can quit an ephemeral Host")
+        .unwrap()
+        .unwrap();
+}
 
-    stop.cancel();
-    server.await.unwrap().unwrap();
+async fn read_logs_on_independent_channels(client: &Client) {
+    let read = || {
+        client.call(
+            "hostLogs",
+            "read".into(),
+            json!({"position":{"kind":"tail"}}),
+            Default::default(),
+        )
+    };
+    let (first, second) = tokio::join!(read(), read());
+    for mut call in [first.unwrap(), second.unwrap()] {
+        call.start().await.unwrap();
+        match call.receive().await.unwrap() {
+            Reply::Finished { result, cleanup } => {
+                cleanup.unwrap();
+                let page: maka_host_runtime::logs::HostLogPage =
+                    serde_json::from_value(result.unwrap()).unwrap();
+                assert_eq!(page, maka_host_runtime::logs::HostLogPage::Missing);
+            }
+            _ => panic!("HostLogs.read did not finish"),
+        }
+        call.close().await.unwrap();
+    }
 }
