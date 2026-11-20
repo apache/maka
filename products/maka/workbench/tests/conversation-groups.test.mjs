@@ -181,7 +181,7 @@ test('a conversation that created three or more can fold them', () => {
   assert.deepEqual(browserOrder([group], new Set(), null), group.sessions);
 });
 
-test('a project counts only unfolded conversations toward its limit', () => {
+test('a folded family stays hidden within a project limit', () => {
   const groups = groupConversations(
     [
       session('p', '/a', { project: 'x' }),
@@ -194,4 +194,30 @@ test('a project counts only unfolded conversations toward its limit', () => {
     false,
   );
   assert.deepEqual(browserOrder(groups, new Set(), null, new Set(), new Set(['p'])), ['p', 'q']);
+});
+
+test('an open family does not use up its project limit', () => {
+  const tops = ['t1', 't2', 't3', 't4', 't5', 't6', 't7'];
+  const groups = groupConversations(
+    [
+      session('t0', '/a', { project: 'x' }),
+      ...['c1', 'c2', 'c3', 'c4'].map((id) => session(id, '/a', { project: 'x', parent: 't0' })),
+      ...tops.map((id) => session(id, '/a', { project: 'x' })),
+    ],
+    [project('x')],
+    false,
+  );
+  // Six top-level conversations show, each with what it created.
+  assert.deepEqual(browserOrder(groups, new Set(), null, new Set(), new Set()), [
+    't0',
+    'c1',
+    'c2',
+    'c3',
+    'c4',
+    't1',
+    't2',
+    't3',
+    't4',
+    't5',
+  ]);
 });

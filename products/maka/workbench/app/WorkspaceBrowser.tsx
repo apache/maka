@@ -60,6 +60,8 @@ import {
   groupConversations,
   foldableFamilies,
   projectSessionLimit,
+  topLevelCount,
+  withinLimit,
   unfoldedSessions,
   type ConversationGroup,
 } from './conversationGroups';
@@ -321,11 +323,12 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           if (collapsed().has(group.key)) return [heading];
           const all = shownSessions(group);
           const limit = projectSessionLimit(group);
+          const more = topLevelCount(group) > limit;
           const sessions =
-            all.length <= limit || expanded().has(group.key) ? all : all.slice(0, limit);
+            !more || expanded().has(group.key) ? all : withinLimit(group, all, limit);
           // A folding family's row sits right under its creator, open or not.
           const rows = sessions.flatMap((id) => (families().has(id) ? [id, `family:${id}`] : [id]));
-          return [heading, ...rows, ...(all.length > limit ? [`show-more:${group.key}`] : [])];
+          return [heading, ...rows, ...(more ? [`show-more:${group.key}`] : [])];
         }),
   );
   const toggleGroup = (key: string) => {
@@ -436,7 +439,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         (group) =>
           !collapsed().has(group.key) &&
           !expanded().has(group.key) &&
-          shownSessions(group).length > projectSessionLimit(group),
+          topLevelCount(group) > projectSessionLimit(group),
       )
     );
   };
