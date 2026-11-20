@@ -96,6 +96,7 @@ pub(super) struct DriverModel {
 struct ReplayedTail {
     cells: Vec<FrozenCellKnowledge>,
     compaction_request: Option<ToolKey>,
+    last_emitted_attempt: Option<ModelAttemptId>,
 }
 type ProjectedHistory = (Option<String>, ReplayedTail);
 
@@ -584,6 +585,7 @@ impl DriverModel {
                 ReplayedTail {
                     cells: recovered_cells,
                     compaction_request,
+                    last_emitted_attempt,
                 },
         } = self
             .project_step_input(
@@ -739,6 +741,31 @@ impl DriverModel {
                     )))
                     .await?;
             } else {
+                append_continuation_cue(view.spec.language, &mut messages).await?;
+            }
+        } else if !summary && let Preparation::ToolContinuation { attempt } = mode {
+            let truncated_without_tools = view.attempts.get(&attempt).is_some_and(|state| {
+                !state.has_tools
+                    && state.closed.as_ref().is_some_and(|closed| {
+                        closed.outcome == maka_agent_facts::accounting::Outcome::Success
+                            && serde_json::from_value::<
+                                maka_agent_facts::context::ModelClosureProtocol,
+                            >(closed.protocol.clone())
+                            .is_ok_and(|protocol| {
+                                protocol.summary.is_none()
+                                    && protocol.compaction.is_none()
+                                    && protocol.finish_reason
+                                        == maka_agent_facts::model::ModelFinishReason::Length
+                            })
+                    })
+            });
+            if truncated_without_tools && last_emitted_attempt != Some(attempt) {
+                messages
+                    .append(maka_model::prompt::Message::user(
+                        length_limit_no_output_cue(view.spec.language),
+                    ))
+                    .await?;
+            } else if messages.needs_continuation_cue() {
                 append_continuation_cue(view.spec.language, &mut messages).await?;
             }
         }
@@ -4120,6 +4147,20 @@ pub(crate) async fn append_continuation_cue(
             .await?;
     }
     Ok(())
+}
+
+fn length_limit_no_output_cue(language: maka_agent_facts::language::Language) -> &'static str {
+    match language {
+        maka_agent_facts::language::Language::En => {
+            "Your previous response reached the output length limit before producing a visible answer or tool call. Keep reasoning brief and respond directly or break the work into smaller steps."
+        }
+        maka_agent_facts::language::Language::ZhCn => {
+            "你上一次回复在输出可见内容或工具调用前就达到了输出长度上限。请精简思考过程，直接作答或拆分成更小的步骤。"
+        }
+        maka_agent_facts::language::Language::ZhTw => {
+            "你上一次回覆在輸出可見內容或工具呼叫前就達到了輸出長度上限。請精簡思考過程，直接作答或拆分成更小的步驟。"
+        }
+    }
 }
 
 /// The longest provider-requested wait a Run sleeps through before ending instead.

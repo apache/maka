@@ -2186,19 +2186,26 @@ pub(super) fn termination_facts(
                 }),
         );
     }
-    let diagnostic = diagnostic.or_else(|| {
-        let attempt = view
-            .current_attempt
-            .filter(|_| terminal == Terminal::Failed)
-            .and_then(|id| view.attempts.get(&id))
-            .filter(|attempt| Some(attempt.step) == view.current_step)?;
-        attempt
-            .closed
-            .as_ref()
-            .filter(|closed| closed.outcome == maka_agent_facts::accounting::Outcome::Error)
-            .and_then(|closed| closed.diagnostic.clone())
-            .or_else(|| attempt.interrupted.clone())
-    });
+    let diagnostic = diagnostic
+        .or_else(|| {
+            let attempt = view
+                .current_attempt
+                .filter(|_| terminal == Terminal::Failed)
+                .and_then(|id| view.attempts.get(&id))
+                .filter(|attempt| Some(attempt.step) == view.current_step)?;
+            attempt
+                .closed
+                .as_ref()
+                .filter(|closed| closed.outcome == maka_agent_facts::accounting::Outcome::Error)
+                .and_then(|closed| closed.diagnostic.clone())
+                .or_else(|| attempt.interrupted.clone())
+        })
+        .or_else(|| {
+            (terminal == Terminal::Failed
+                && !reconcile::budget_exhausted(view)
+                && reconcile::output_limit_exhausted(view))
+            .then(|| reconcile::OUTPUT_LIMIT_DIAGNOSTIC.into())
+        });
     facts.push(Fact::RunTerminated {
         terminal,
         diagnostic,

@@ -56,6 +56,7 @@ pub struct RunView {
     pub terminal: Option<Terminal>,
     pub tokens: u64,
     pub retries: u32,
+    pub output_limit_continuations: u32,
     pub retry_phase: RetryTransportPhase,
     pub(crate) finish_requested: bool,
     pub retry_due_at: Option<UnixMillis>,
@@ -284,6 +285,7 @@ impl RunView {
             terminal: None,
             tokens: 0,
             retries: 0,
+            output_limit_continuations: 0,
             retry_phase: RetryTransportPhase::Primary,
             finish_requested: false,
             retry_due_at: None,
@@ -1472,6 +1474,22 @@ impl RunView {
                         .get_mut(attempt)
                         .expect("validated attempt")
                         .closed = Some(closure);
+                    if self.proactive_summary != Some(*attempt)
+                        && diagnostic.is_none()
+                        && *outcome == maka_agent_facts::accounting::Outcome::Success
+                        && serde_json::from_value::<maka_agent_facts::context::ModelClosureProtocol>(
+                            protocol.clone(),
+                        )
+                        .is_ok_and(|protocol| {
+                            protocol.summary.is_none()
+                                && protocol.compaction.is_none()
+                                && protocol.finish_reason
+                                    == maka_agent_facts::model::ModelFinishReason::Length
+                        })
+                    {
+                        self.output_limit_continuations =
+                            self.output_limit_continuations.saturating_add(1);
+                    }
                     if diagnostic.is_some()
                         && self.current_attempt == Some(*attempt)
                         && self.current_step == Some(original_step)

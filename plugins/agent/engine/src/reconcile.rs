@@ -113,6 +113,18 @@ fn closure_protocol(
     })
 }
 
+const OUTPUT_LIMIT_TOOL_REJECTION: &str = "your output reached the output length limit, so the arguments of this tool call may be cut off. The call was not run. Retry with smaller calls, for example by splitting a large write into several edits";
+/// A Run keeps going after this many outputs cut off at the length limit; the
+/// next one ends it, so a reply that never fits cannot loop forever.
+const MAX_OUTPUT_LIMIT_CONTINUATIONS: u32 = 3;
+pub(crate) const OUTPUT_LIMIT_DIAGNOSTIC: &str = "The model's output reached its length limit again after being asked to continue, so the turn stopped. Ask for a shorter answer or smaller steps.";
+
+/// Whether this Run's main-model outputs ended at the output length limit more
+/// often than it continues them.
+pub(crate) fn output_limit_exhausted(view: &RunView) -> bool {
+    view.output_limit_continuations > MAX_OUTPUT_LIMIT_CONTINUATIONS
+}
+
 pub(crate) fn tool_incomplete(view: &RunView, key: &ToolKey) -> Result<bool, Box<BlockerKind>> {
     let closed = view
         .attempts
@@ -1209,7 +1221,7 @@ fn next_action(
                     return Action::Reject(
                         tool.key.clone(),
                         ToolRejection::PreparationFailed {
-                            message: "model output was incomplete".into(),
+                            message: OUTPUT_LIMIT_TOOL_REJECTION.into(),
                         },
                     );
                 }
@@ -1449,7 +1461,11 @@ fn next_action(
                 Ok(protocol) => protocol,
                 Err(reason) => return Action::Block(*reason),
             };
-        if protocol.finish_reason == maka_agent_facts::model::ModelFinishReason::Length {
+        // Output cut off at the length limit goes back to the model: its tool calls
+        // were rejected above, and a cut-off reply is continued.
+        let truncated =
+            protocol.finish_reason == maka_agent_facts::model::ModelFinishReason::Length;
+        if truncated && output_limit_exhausted(view) {
             return Action::Terminate(Terminal::Failed);
         }
         if view
@@ -1459,8 +1475,8 @@ fn next_action(
         {
             return Action::Prepare(Preparation::Notifications { attempt: id });
         }
-        let needs_continuation = protocol.finish_reason
-            == maka_agent_facts::model::ModelFinishReason::ToolCalls
+        let needs_continuation = truncated
+            || protocol.finish_reason == maka_agent_facts::model::ModelFinishReason::ToolCalls
             || (attempt.has_tools && has_local_tool_calls(view, id));
         if let Some(cell) = view
             .cells
