@@ -9187,6 +9187,7 @@ dependencies = [
  "maka-presentation",
  "maka-process",
  "maka-sandbox",
+ "maka-web",
  "maka-web-api",
  "maka-workspace-api",
  "maka-workspace-support",

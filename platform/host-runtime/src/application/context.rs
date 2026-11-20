@@ -28,6 +28,7 @@ pub struct Context {
     pub(super) stream: Option<subscriptions::Emitter>,
     pub(super) caller: Option<Caller>,
     pub(super) native_context: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    pub(super) local_input: Option<LocalInput>,
     pub(super) scope: Scope,
     pub(super) consumer: Activation,
     pub(super) requester: Activation,
@@ -78,6 +79,11 @@ impl Context {
             return None;
         }
         self.native_context.as_ref()?.clone().downcast::<T>().ok()
+    }
+
+    /// Input supplied by this mutation's immediate local caller. Child calls never inherit it.
+    pub fn local_input<T: std::any::Any + Send + Sync>(&self) -> Option<&T> {
+        self.local_input.as_ref()?.downcast_ref()
     }
 
     pub fn scope(&self) -> &Scope {
@@ -283,6 +289,35 @@ impl Context {
         )?;
         Ok(Box::pin(async move { Ok(result.await?.result().await) }))
     }
+    /// Deliver a typed input to this one local dispatch under the current caller's grant.
+    /// The input cannot be serialized or recreated by receipt recovery.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn begin_local_mutation<T: std::any::Any + Send + Sync>(
+        &self,
+        import: &str,
+        provider: usize,
+        method: String,
+        input: Value,
+        operation: Uuid,
+        recovery: Value,
+        local_input: T,
+    ) -> Result<Mutation> {
+        let binding = self.import_binding(import, provider)?;
+        if binding.provider().remote_target().is_some() {
+            return Err("Local mutation input requires a local provider".into());
+        }
+        self.begin_mutation_binding(
+            binding,
+            method,
+            input,
+            operation,
+            recovery,
+            CallResources::default(),
+            Some(Box::new(local_input)),
+        )?
+        .await
+    }
+
     /// Enqueues the same durable mutation and exposes its original progress
     /// reader. Final receipt and physical cleanup remain independent; dropping
     /// this observer cannot release the accepted request's parent Ticket.
@@ -304,6 +339,7 @@ impl Context {
             operation,
             recovery,
             attachments.into(),
+            None,
         )
     }
     /// Mutate an imported service or own export with the original operation receipt.
@@ -337,8 +373,10 @@ impl Context {
             operation,
             recovery,
             attachments.into(),
+            None,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn begin_mutation_binding(
         &self,
         binding: Binding,
@@ -347,6 +385,7 @@ impl Context {
         operation: Uuid,
         recovery: Value,
         attachments: CallResources,
+        local_input: Option<LocalInput>,
     ) -> Result<BoxFuture<'static, Result<Mutation>>> {
         let (reply, result) = oneshot::channel();
         self.enqueue_binding(
@@ -358,6 +397,7 @@ impl Context {
             CallKind::PendingMutation {
                 operation,
                 recovery,
+                local_input,
                 reply,
             },
         )?;

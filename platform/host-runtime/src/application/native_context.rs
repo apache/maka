@@ -247,6 +247,7 @@ impl NativeServices {
             stream: None,
             caller: None,
             native_context: None,
+            local_input: None,
             scope,
             consumer: self.activation.clone(),
             requester: self.activation.clone(),

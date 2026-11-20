@@ -625,14 +625,25 @@ impl Rig {
                 .await?
                 .ok_or("deployment missing")?;
             let instances = &loaded.source().input.instances;
-            vec![maka_host_runtime::application::transport::NativeGrant {
+            let mut grants = vec![NativeGrant {
                 origin: InstanceId(vec![instances["agent"].key]),
                 consumer: InstanceId(vec![instances["agent"].key]),
                 provider: InstanceId(vec![instances["web"].key]),
                 export: "web".into(),
                 methods: ["capture".into()].into(),
                 recovery: true,
-            }]
+            }];
+            if let Some(processes) = instances.get("processes") {
+                grants.push(NativeGrant {
+                    origin: InstanceId(vec![instances["agent"].key]),
+                    consumer: InstanceId(vec![processes.key]),
+                    provider: InstanceId(vec![instances["web"].key]),
+                    export: "web".into(),
+                    methods: ["probe".into()].into(),
+                    recovery: true,
+                });
+            }
+            grants
         } else {
             vec![]
         };
@@ -3575,7 +3586,13 @@ mod model_recovery {
             let processes = package(
                 "maka.tests.processes",
                 maka_workspace_api::processes::native(),
-                BTreeMap::new(),
+                BTreeMap::from([(
+                    "web".into(),
+                    Import {
+                        contract: maka_web_api::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                )]),
             )?;
             input.instances.insert(
                 "processes".into(),
@@ -3588,7 +3605,13 @@ mod model_recovery {
                         "network":"allowed",
                         "sessionOwner":InstanceId(vec![boot.agent]),
                     }),
-                    BTreeMap::new(),
+                    BTreeMap::from([(
+                        "web".into(),
+                        vec![Target::Instance {
+                            path: vec!["web".into()],
+                            export: "web".into(),
+                        }],
+                    )]),
                 ),
             );
             packages.push(processes);

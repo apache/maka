@@ -1563,12 +1563,14 @@ impl Owner {
                             return;
                         }
                         if let CallKind::PendingMutation {
+                            local_input,
                             operation,
                             recovery,
                             reply,
                         } = kind
                         {
                             let kind = CallKind::Mutation {
+                                local_input,
                                 operation,
                                 confirmation: None,
                                 reply,
@@ -1665,6 +1667,10 @@ impl Owner {
                         if let Some(ticket) = &mut parent {
                             ticket.start();
                         }
+                        let local_input = match &mut kind {
+                            CallKind::Mutation { local_input, .. } => local_input.take(),
+                            _ => None,
+                        };
                         let (mut output, stream) = kind.accept(
                             execution.id(),
                             reference.clone(),
@@ -1675,6 +1681,7 @@ impl Owner {
                         let mut context = Context {
                             stream: stream.clone(),
                             caller: authenticated_caller,
+                            local_input,
                             native_context: self
                                 .issuer
                                 .evidence::<native_context::NativeOrigin>(&scope)
