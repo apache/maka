@@ -700,6 +700,13 @@ fn receipt_value(reply: &OperationReply) -> Result<Value> {
                 },
             cleanup: OperationCleanup::Confirmed,
         } => Ok(value.clone()),
+        Receipt::Recorded {
+            outcome:
+                OperationOutcome::Returned {
+                    result: OperationResult::Failure { diagnostic },
+                },
+            cleanup: OperationCleanup::Confirmed,
+        } => Err(diagnostic.clone()),
         _ => Err(
             "actual provider mutation did not return known success with independent cleanup".into(),
         ),
@@ -1571,6 +1578,162 @@ async fn antigravity_steers_new_and_queued_messages_before_older_followups() {
         Ok::<_, String>(())
     };
     let outcome = AssertUnwindSafe(phase("AGY steering order", work))
+        .catch_unwind()
+        .await;
+    let cleanup = rig.cleanup().await;
+    match outcome {
+        Err(panic) => std::panic::resume_unwind(panic),
+        Ok(Err(error)) => panic!("{error}; cleanup={cleanup:?}"),
+        Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn antigravity_accepts_steers_through_cancel_and_resume() {
+    let mut rig = Rig::new().await.expect("isolated Host and ACP fixture");
+    let work = async {
+        let (mut anchor, bootstrap) = rig.start().await?;
+        rig.configure(&mut anchor, &bootstrap, "antigravity")
+            .await?;
+        bootstrap.close().await?;
+        rig.clients.pop();
+        let sdk = connect_sdk(&mut rig, &anchor).await?;
+        let (session, parent) = launch(
+            &sdk,
+            &rig.sandbox.workspace,
+            "ACP-parent",
+            "Handoff",
+            true,
+            "antigravity",
+        )
+        .await?;
+        let child = rig.controller.event("ACP-child", "ready").await?;
+        terminal_state(&sdk, &session, &parent, "completed").await?;
+        let original = send_native(&sdk, &session, "ACP-handoff", "Handoff", true).await?;
+        let original_prompt = rig.controller.event("ACP-handoff", "ready").await?;
+        rig.controller.send(
+            child["pid"].as_u64().unwrap(),
+            json!({"action":"complete","promptId":child["promptId"]}),
+        )?;
+        let receipt = loop {
+            let queue = query(&sdk, "agent", "queue", json!({"sessionId":session})).await?;
+            if let Some(item) = queue["entries"]
+                .as_array()
+                .and_then(|entries| entries.first())
+            {
+                assert_eq!(item["origin"]["kind"], "session_completion", "{item}");
+                break item["messageId"].clone();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+
+        let steer = |label: &str, expected: Option<&Value>| {
+            let mut input = json!({"sessionId":session, "message":format!("MAKA_EXTERNAL_CASE {}", json!({"label":label}))});
+            if let Some(run) = expected {
+                input["expectedRunId"] = run.clone();
+            }
+            mutate(&sdk, "agent", "send", input)
+        };
+        let gate = rig.sandbox.workspace.join("hold-acp-resume");
+        std::fs::write(&gate, []).map_err(|e| e.to_string())?;
+        let first = steer("ACP-steer-1", Some(&original)).await?;
+        assert_eq!(first["kind"], "queued", "{first}");
+        let cancel = rig
+            .controller
+            .event("ACP-handoff", "cancel_pending")
+            .await?;
+        for (label, expected) in [("ACP-steer-2", Some(&original)), ("ACP-steer-3", None)] {
+            let sent = steer(label, expected).await?;
+            assert_eq!(sent["kind"], "queued", "{sent}");
+        }
+        rig.controller.send(
+            cancel["pid"].as_u64().unwrap(),
+            json!({"action":"release_cancel"}),
+        )?;
+        let resume = rig
+            .controller
+            .event("ACP-handoff", "resume_pending")
+            .await?;
+        assert_eq!(original_prompt["thread"], resume["thread"]);
+        for (label, expected) in [("ACP-steer-4", None), ("ACP-steer-5", Some(&original))] {
+            let sent = steer(label, expected).await?;
+            assert_eq!(sent["kind"], "queued", "{sent}");
+        }
+        let stale = steer("unexpected", Some(&parent)).await?;
+        assert_eq!(stale["reason"], "turn_stopped", "{stale}");
+        std::fs::remove_file(gate).map_err(|e| e.to_string())?;
+        rig.controller.send(
+            resume["pid"].as_u64().unwrap(),
+            json!({"action":"release_resume"}),
+        )?;
+        let receipt_run = loop {
+            let work = query(
+                &sdk,
+                "agent",
+                "work",
+                json!({"sessionId":session,"target":{"kind":"message","messageId":receipt}}),
+            )
+            .await?;
+            if work["kind"] == "delivered" {
+                break work["execution"]["runId"].clone();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        terminal_state(&sdk, &session, &receipt_run, "completed").await?;
+        let events = rig.controller.events();
+        let jobs: Vec<_> = events
+            .iter()
+            .filter(|e| e["kind"] == "ready" && e["thread"] == resume["thread"])
+            .map(|e| e["job"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            jobs,
+            [
+                "ACP-parent",
+                "ACP-handoff",
+                "ACP-steer-1",
+                "ACP-steer-2",
+                "ACP-steer-3",
+                "ACP-steer-4",
+                "ACP-steer-5",
+                "ACP-receipt"
+            ]
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e["method"] == "session/cancel")
+                .count(),
+            1
+        );
+        let manual = send_native(&sdk, &session, "ACP-manual", "Manual stop", true).await?;
+        rig.controller.event("ACP-manual", "ready").await?;
+        let stopped = mutate(
+            &sdk,
+            "agent",
+            "stop",
+            json!({"sessionId":session, "runId":manual}),
+        )
+        .await?;
+        assert_eq!(stopped["requested"], true);
+        let cancel = rig.controller.event("ACP-manual", "cancel_pending").await?;
+        let rejected = steer("unexpected", Some(&manual)).await?;
+        assert_eq!(rejected["reason"], "turn_stopped", "{rejected}");
+        let error = steer("unexpected", None)
+            .await
+            .expect_err("manual stop still owns the session");
+        assert!(error.contains("agent_admission_failed"), "{error}");
+        rig.controller.send(
+            cancel["pid"].as_u64().unwrap(),
+            json!({"action":"release_cancel"}),
+        )?;
+        terminal_state(&sdk, &session, &manual, "cancelled").await?;
+        sdk.close().await?;
+        rig.clients.pop();
+        rig.hosts[0].quit(&mut anchor).await?;
+        Ok::<_, String>(())
+    };
+    let outcome = AssertUnwindSafe(phase("ACP steering handoff", work))
         .catch_unwind()
         .await;
     let cleanup = rig.cleanup().await;

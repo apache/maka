@@ -173,6 +173,7 @@ impl Owner {
             .as_ref()
             .map(|_| CompletionRegistration::Registered);
         let statement = PreparedAgentSend {
+            order: None,
             queue: durable_queue::PreparedEnqueue {
                 session: session.into(),
                 command,

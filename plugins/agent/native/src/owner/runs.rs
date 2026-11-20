@@ -125,6 +125,9 @@ pub(super) struct Session {
     _activity: OwnedRwLockReadGuard<()>,
 }
 impl Session {
+    pub(super) fn into_ordered(self) -> Ordered {
+        self.ordered
+    }
     pub(super) async fn state(&self) -> MutexGuard<'_, Runs> {
         self.ordered.state().await
     }

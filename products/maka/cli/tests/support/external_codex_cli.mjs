@@ -18,6 +18,7 @@
  */
 
 import net from 'node:net';
+import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -77,6 +78,7 @@ await new Promise((resolve, reject) => {
   socket.once('connect', resolve);
   socket.once('error', reject);
 });
+let resumeRequest;
 let job = null,
   thread = null,
   turn = null,
@@ -340,6 +342,10 @@ async function acp(id, method, params) {
       http_headers: Object.fromEntries(server.headers.map(({ name, value }) => [name, value])),
     };
     await hostEffect();
+    if (method === 'session/resume' && existsSync('hold-acp-resume')) {
+      resumeRequest = id;
+      return record('resume_pending', { job: 'ACP-handoff', thread });
+    }
     return reply(id, method === 'session/resume' ? {} : { sessionId: thread });
   }
   if (method === 'session/prompt' && params.sessionId === thread) {
@@ -349,7 +355,10 @@ async function acp(id, method, params) {
     if (job) throw Error('Duplicate ACP task prompt');
     job = JSON.parse(text.slice(start + 'MAKA_EXTERNAL_CASE '.length).split('\n')[0]);
     turn = id;
-    const checkpoint = `ACP checkpoint ${job.label}`;
+    const checkpoint =
+      job.label === 'ACP-child'
+        ? 'MAKA_EXTERNAL_CASE {"label":"ACP-receipt"}'
+        : `ACP checkpoint ${job.label}`;
     if (job.label !== 'ACP-followup') {
       await event('session/update', {
         sessionId: thread,
@@ -360,6 +369,39 @@ async function acp(id, method, params) {
       });
     }
     await record('ready', { thread, checkpoint, promptId: id, front: process.ppid });
+    if (job.label === 'ACP-parent') {
+      const child = await codeResult(
+        'text(await tools.SessionCreate(' +
+          JSON.stringify({
+            title: 'Receipt worker',
+            automaticTitle: false,
+            labels: [],
+            workspace: { kind: 'session', sessionId: job.session },
+            backend: {
+              kind: 'executor',
+              selection: {
+                executor: 'external',
+                settings: { runtime: 'antigravity', model: 'default' },
+              },
+            },
+          }) +
+          '))',
+      );
+      const sent = await codeResult(
+        'text(await tools.SessionSend(' +
+          JSON.stringify({
+            sessionId: child.session.id,
+            onComplete: 'notify_caller',
+            message: 'MAKA_EXTERNAL_CASE ' + JSON.stringify({ label: 'ACP-child' }),
+          }) +
+          '))',
+      );
+      if (sent.kind !== 'queued' || sent.completion !== 'registered')
+        throw Error('Missing worker completion registration');
+      return reply(id, { stopReason: 'end_turn' });
+    }
+    if (job.label.startsWith('ACP-steer-') || job.label === 'ACP-receipt')
+      return reply(id, { stopReason: 'end_turn' });
     if (job.label === 'ACP-room') {
       const [header] = text.split('\n');
       if (header === text || !header.endsWith(']'))
@@ -433,8 +475,11 @@ async function acp(id, method, params) {
       return reply(id, { stopReason: 'end_turn' });
     return;
   }
-  if (method === 'session/cancel' && params.sessionId === thread)
+  if (method === 'session/cancel' && params.sessionId === thread) {
+    if (['ACP-handoff', 'ACP-manual'].includes(job.label))
+      return record('cancel_pending', { thread });
     return reply(turn, { stopReason: 'cancelled' });
+  }
   if (method === 'session/close' && params.sessionId === thread) {
     if (job?.label === 'ACP-stuck-close') return record('close_pending');
     await reply(id, {});
@@ -525,9 +570,16 @@ createInterface({ input: socket }).on('line', (line) => {
         socket.end(() => process.exit(0));
         return;
       }
+      if (command.action === 'release_resume' && resumeRequest !== undefined)
+        return reply(resumeRequest, {});
+      if (command.action === 'release_cancel' && ['ACP-handoff', 'ACP-manual'].includes(job?.label))
+        return reply(turn, { stopReason: 'cancelled' });
       if (command.action === 'challenge' && job && !finished)
         return record('challenge', { nonce: command.nonce, thread, turn });
-      if (command.action === 'complete' && ['ACP-schedule', 'ACP-peer'].includes(job?.label))
+      if (
+        command.action === 'complete' &&
+        ['ACP-schedule', 'ACP-peer', 'ACP-child'].includes(job?.label)
+      )
         return reply(command.promptId, { stopReason: 'end_turn' });
       if (command.action === 'complete' && ['B', 'D'].includes(job?.label))
         return terminal('completed');
