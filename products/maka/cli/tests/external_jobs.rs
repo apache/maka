@@ -1458,6 +1458,130 @@ async fn antigravity_can_continue_after_host_restarts_during_a_prompt() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn antigravity_steers_new_and_queued_messages_before_older_followups() {
+    let mut rig = Rig::new().await.expect("isolated Host and ACP fixture");
+    let work = async {
+        let (mut anchor, bootstrap) = rig.start().await?;
+        rig.configure(&mut anchor, &bootstrap, "antigravity")
+            .await?;
+        bootstrap.close().await?;
+        rig.clients.pop();
+        let sdk = connect_sdk(&mut rig, &anchor).await?;
+        let (session, _) = launch(
+            &sdk,
+            &rig.sandbox.workspace,
+            "ACP-original",
+            "Steering",
+            true,
+            "antigravity",
+        )
+        .await?;
+        let original = rig.controller.event("ACP-original", "ready").await?;
+        let message = |label: &str| {
+            format!(
+                "MAKA_EXTERNAL_CASE {}",
+                json!({"label":label, "session":session})
+            )
+        };
+        let backlog = mutate(
+            &sdk,
+            "agent",
+            "send",
+            json!({"sessionId":session, "message":message("ACP-wake"), "delivery":"queue"}),
+        )
+        .await?;
+        let queued = mutate(
+            &sdk,
+            "agent",
+            "send",
+            json!({"sessionId":session, "message":message("ACP-promoted"), "delivery":"queue"}),
+        )
+        .await?;
+        let promoted = mutate(
+            &sdk,
+            "agent",
+            "editQueue",
+            json!({
+                "sessionId": session, "expectedRevision":queued["revision"],
+                "edit":{"kind":"promote", "messageId":queued["messageId"]}
+            }),
+        )
+        .await?;
+        assert_eq!(promoted["kind"], "committed", "{promoted}");
+        let first = rig.controller.event("ACP-promoted", "ready").await?;
+        assert_eq!(first["thread"], original["thread"]);
+
+        let direct = mutate(
+            &sdk,
+            "agent",
+            "send",
+            json!({"sessionId":session, "message":message("ACP-peer")}),
+        )
+        .await?;
+        assert_eq!(direct["kind"], "queued", "{direct}");
+        let second = rig.controller.event("ACP-peer", "ready").await?;
+        assert_eq!(second["thread"], original["thread"]);
+        let pending = query(&sdk, "agent", "queue", json!({"sessionId":session})).await?;
+        let entries = pending["entries"]
+            .as_array()
+            .ok_or("queue entries missing")?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["messageId"], backlog["messageId"]);
+        for id in [&queued["messageId"], &direct["messageId"]] {
+            let work = query(
+                &sdk,
+                "agent",
+                "work",
+                json!({"sessionId":session,"target":{"kind":"message","messageId":id}}),
+            )
+            .await?;
+            assert_eq!(work["kind"], "delivered", "{work}");
+        }
+        rig.controller.send(
+            second["pid"].as_u64().unwrap(),
+            json!({"action":"complete","promptId":second["promptId"]}),
+        )?;
+        let wake = rig.controller.event("ACP-wake", "ready").await?;
+        let delivered = query(
+            &sdk,
+            "agent",
+            "work",
+            json!({
+                "sessionId":session,"target":{"kind":"message","messageId":backlog["messageId"]}
+            }),
+        )
+        .await?;
+        let run = &delivered["execution"]["runId"];
+        terminal_state(&sdk, &session, run, "completed").await?;
+        rig.transcript(wake["pid"].as_u64().unwrap()).await?;
+        let jobs: Vec<_> = rig
+            .controller
+            .events()
+            .into_iter()
+            .filter(|event| event["kind"] == "ready")
+            .map(|event| event["job"].clone())
+            .collect();
+        assert_eq!(
+            jobs,
+            ["ACP-original", "ACP-promoted", "ACP-peer", "ACP-wake"]
+        );
+        sdk.close().await?;
+        rig.clients.pop();
+        rig.hosts[0].quit(&mut anchor).await?;
+        Ok::<_, String>(())
+    };
+    let outcome = AssertUnwindSafe(phase("AGY steering order", work))
+        .catch_unwind()
+        .await;
+    let cleanup = rig.cleanup().await;
+    match outcome {
+        Err(panic) => std::panic::resume_unwind(panic),
+        Ok(Err(error)) => panic!("{error}; cleanup={cleanup:?}"),
+        Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn antigravity_executor_change_releases_only_undelivered_steering() {
     let mut rig = Rig::new().await.expect("isolated Host and ACP fixture");
     let work = async {

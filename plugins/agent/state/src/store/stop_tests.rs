@@ -126,6 +126,33 @@ async fn enqueue(
     message: &str,
     origin: Option<MessageOrigin>,
 ) -> PreparedRequest {
+    let (request, contents) = prepare_message(basis, message, origin);
+    let queue = store.queue().read(basis.session_id.clone()).await.unwrap();
+    store
+        .queue()
+        .execute(
+            basis.session_id.clone(),
+            QueueCommand {
+                id: FactId::new(),
+                at: UnixMillis(1),
+                expected_revision: queue.revision,
+                edit: QueueEdit::Enqueue {
+                    request: Box::new(request.clone()),
+                    placement: Placement::Followup,
+                },
+            },
+            contents,
+        )
+        .await
+        .unwrap();
+    request
+}
+
+fn prepare_message(
+    basis: &RunSpec,
+    message: &str,
+    origin: Option<MessageOrigin>,
+) -> (PreparedRequest, Vec<ContentBlob>) {
     let content = MessageInput::from(message);
     let schedule = match &origin {
         Some(MessageOrigin::Automation { automation_id, .. }) => Some(automation_id.clone()),
@@ -163,25 +190,7 @@ async fn enqueue(
         resources: resources.reference().clone(),
         required_tools: Default::default(),
     };
-    let queue = store.queue().read(basis.session_id.clone()).await.unwrap();
-    store
-        .queue()
-        .execute(
-            basis.session_id.clone(),
-            QueueCommand {
-                id: FactId::new(),
-                at: UnixMillis(1),
-                expected_revision: queue.revision,
-                edit: QueueEdit::Enqueue {
-                    request: Box::new(request.clone()),
-                    placement: Placement::Followup,
-                },
-            },
-            vec![source, resources],
-        )
-        .await
-        .unwrap();
-    request
+    (request, vec![source, resources])
 }
 
 async fn resolution(store: &Store, message: &str) -> MessageResolution {
@@ -190,6 +199,77 @@ async fn resolution(store: &Store, message: &str) -> MessageResolution {
         .resolve_message("stop-queue".into(), message.into())
         .await
         .unwrap()
+}
+
+#[tokio::test]
+async fn interrupted_steer_precedes_worker_completions_after_queue_rebuild() {
+    use crate::queue::{Followup, PreparedEnqueue};
+    let directory = tempfile::tempdir().unwrap();
+    let (_root, store) = open(directory.path(), true).await;
+    let (spec, contents) = spec();
+    let caller = Admission::new(spec.clone(), UnixMillis(1), contents.clone());
+    store.admit(caller.clone()).await.unwrap();
+    let mut current = spec.clone();
+    current.turn_id = "busy".into();
+    current.trigger = Trigger::Message {
+        message_id: "busy-message".into(),
+    };
+    let run = Admission::new(current, UnixMillis(2), contents);
+    store.admit(run.clone()).await.unwrap();
+    let queue = store.queue();
+    for (index, msg) in ["worker-1", "worker-2", "steer"].into_iter().enumerate() {
+        let interrupt = msg == "steer";
+        let origin = (!interrupt).then(|| MessageOrigin::SessionCompletion {
+            session_id: "worker".into(),
+            message_id: msg.into(),
+        });
+        let (request, contents) = prepare_message(&spec, msg, origin);
+        store
+            .data
+            .write(PreparedEnqueue {
+                session: spec.session_id.clone(),
+                contents,
+                work_fence: None,
+                followup: interrupt.then(|| Followup::Interrupt {
+                    run: run.run(),
+                    stop: FactId::new(),
+                }),
+                command: QueueCommand {
+                    id: FactId::new(),
+                    at: UnixMillis(3),
+                    expected_revision: index as u64,
+                    edit: QueueEdit::Enqueue {
+                        request: Box::new(request),
+                        placement: if interrupt {
+                            Placement::Followup
+                        } else {
+                            Placement::Completion {
+                                caller: caller.run(),
+                            }
+                        },
+                    },
+                },
+            })
+            .await
+            .unwrap();
+    }
+    assert!(store.frontier(run.run()).await.unwrap().stopped);
+    queue.rebuild(spec.session_id.clone()).await.unwrap();
+    let entries = queue.read(spec.session_id.clone()).await.unwrap().entries;
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| e.request.message_id.as_str())
+            .collect::<Vec<_>>(),
+        ["steer", "worker-1", "worker-2"]
+    );
+    let first = queue.ready(spec.owner.clone(), None, 1).await.unwrap();
+    assert_eq!(first[0].entry, entries[0]);
+    let rest = queue
+        .ready(spec.owner, Some(first[0].cursor.clone()), 2)
+        .await
+        .unwrap();
+    assert!(rest.iter().map(|e| &e.entry).eq(&entries[1..]));
 }
 
 #[tokio::test]

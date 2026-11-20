@@ -138,7 +138,7 @@ pub struct Consume {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadyCursor {
     pub session: String,
-    pub position: u64,
+    pub position: i64,
     pub request: RequestId,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -382,7 +382,7 @@ impl Statement for PreparedEnqueue {
             &self.session,
             self.command,
             self.contents,
-            self.followup.as_ref().map(Followup::original),
+            self.followup.as_ref(),
         )?;
         if changed && let Some(Followup::Interrupt { run, stop }) = self.followup {
             // The queue entry and Stop share the same Root receipt transaction.
