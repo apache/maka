@@ -18,6 +18,7 @@
  */
 
 use super::{Owner, SubscriptionEvent, execute};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use maka_packages::Package;
 use maka_plugin_core::{
     composition::InstanceId,
@@ -172,12 +173,13 @@ struct Asset {
 }
 
 fn asset_base(module: &Module) -> Result<String, String> {
-    let selector = serde_json::to_string(&Asset {
+    let selector = serde_json::to_vec(&Asset {
         source: module.source.clone(),
         package: module.package.clone(),
     })
     .map_err(|error| error.to_string())?;
-    let selector = percent_encoding::utf8_percent_encode(&selector, URI_COMPONENT);
+    // Keep the package identity in one valid bundled-asset path segment.
+    let selector = URL_SAFE_NO_PAD.encode(selector);
     let directory = module
         .path
         .rsplit_once('/')
@@ -198,10 +200,10 @@ fn asset_base(module: &Module) -> Result<String, String> {
 
 pub(super) fn asset(owner: &Arc<Owner>, encoded: &str) -> Result<Vec<u8>, String> {
     let (selector, path) = encoded.split_once('/').ok_or("Plugin asset has no path")?;
-    let decoded = percent_encoding::percent_decode_str(selector)
-        .decode_utf8()
+    let decoded = URL_SAFE_NO_PAD
+        .decode(selector)
         .map_err(|error| error.to_string())?;
-    let asset: Asset = serde_json::from_str(&decoded).map_err(|error| error.to_string())?;
+    let asset: Asset = serde_json::from_slice(&decoded).map_err(|error| error.to_string())?;
     let path = percent_encoding::percent_decode_str(path)
         .decode_utf8()
         .map_err(|error| error.to_string())?
@@ -310,4 +312,32 @@ async fn load_package(
         })
         .await
         .cloned()
+}
+
+#[cfg(test)]
+mod asset_url_tests {
+    use super::*;
+
+    #[test]
+    fn imported_plugin_image_is_a_valid_bundled_asset() {
+        let module = Module {
+            source: serde_json::from_value(json!({
+                "stateDomain": "1ed344c4ccf82403a883813a21f3241b087fc867e8312ca24088fe6b24647316",
+                "deployment": "b0684512-e9cb-4806-8bf9-10480786b142",
+                "revision": 7
+            }))
+            .unwrap(),
+            package: serde_json::from_value(json!({
+                "id": "maka.composer",
+                "revision": format!("sha256-{}", "a".repeat(64))
+            }))
+            .unwrap(),
+            path: "ui/index.js".into(),
+        };
+        let uri = format!(
+            "{}products/maka/workbench/app/assets/maka.png",
+            asset_base(&module).unwrap()
+        );
+        assert!(nsh_core::access::is_inside_assets(&uri));
+    }
 }
