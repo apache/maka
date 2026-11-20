@@ -443,6 +443,7 @@ test('a transcript read surfaces the terminal error, not the dead-state mask', (
       throw new Error('unexpected read');
     },
   );
+
   const failure = new RuntimeHostSubscriptionError('sequence_gap', 'test gap');
   subscription.fail(failure);
   assert.equal(subscription.deathCause, failure);
@@ -457,6 +458,63 @@ test('a transcript read surfaces the terminal error, not the dead-state mask', (
       }),
     (error: unknown) => error === failure,
   );
+});
+
+test('blocks transcript page reads after a subscription.closed frame', async () => {
+  let readCalls = 0;
+
+  const subscription = clientSubscription(
+    openResult('host-1', 'subscription-closed', transcriptBootstrap(Buffer.from('{}'))),
+    async () => undefined,
+    async (input) => {
+      readCalls += 1;
+      return {
+        ...transcriptPage(),
+        throughSequence: input.throughSequence,
+      };
+    },
+  );
+
+  // A pending iterator receives the terminal frame directly.
+  const pendingNext = subscription.next();
+
+  subscription.accept({
+    kind: 'subscription.closed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-closed',
+    sequence: 1,
+    reason: 'access_revoked',
+  });
+
+  const closedFrame = await pendingNext;
+  assert.equal(closedFrame.done, false);
+
+  if (!closedFrame.done) {
+    assert.equal(closedFrame.value.kind, 'subscription.closed');
+  }
+
+  assert.ok(subscription.deathCause instanceof SessionRemovedSubscriptionError);
+
+  let readError: unknown;
+
+  try {
+    await subscription.loadTranscriptPage({
+      direction: 'older',
+      throughSequence: null,
+      cursor: null,
+      anchorSequence: null,
+      maxBytes: 1024,
+    });
+  } catch (error) {
+    readError = error;
+  }
+
+  assert.ok(
+    readError instanceof RuntimeHostSubscriptionError && readError.reason === 'connection_closed',
+    'a closed subscription should reject new transcript reads',
+  );
+
+  assert.equal(readCalls, 0);
 });
 
 test('loads a canonical transcript while live frames continue on the same connection', async () => {

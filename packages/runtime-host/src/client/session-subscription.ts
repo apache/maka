@@ -568,6 +568,11 @@ export class ClientSessionSubscription
     if (this.#waiting) {
       const waiting = this.#waiting;
       this.#waiting = undefined;
+
+      if (this.#doneAfterQueue && this.#queue.length === 0) {
+        this.#done = true;
+      }
+
       waiting.resolve({ done: false, value: frame });
       return;
     }
