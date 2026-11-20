@@ -29,8 +29,9 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, RwLock, TryLockError, Weak},
+    sync::{Arc, Mutex, Weak},
 };
+use tokio::sync::RwLock;
 
 pub(crate) fn invalid(reason: impl Into<String>) -> StoreError {
     StoreError::InvalidTransition(reason.into())
@@ -283,7 +284,7 @@ impl Domain {
         Ok(slot)
     }
 
-    fn current_ticket(&self, run: RunId) -> Result<Option<Arc<Ticket>>, StoreError> {
+    async fn current_ticket(&self, run: RunId) -> Result<Option<Arc<Ticket>>, StoreError> {
         let slot = {
             let slots = self
                 .slots
@@ -294,18 +295,16 @@ impl Domain {
         let Some(slot) = slot else {
             return Ok(None);
         };
-        let current = slot
-            .current
-            .read()
-            .map_err(|_| invalid("poisoned driver slot"))?;
-        Ok(current.upgrade())
+        Ok(slot.current.read().await.upgrade())
     }
 }
 struct RunSlot {
     run: RunId,
     domain: Arc<Domain>,
-    /// Shared-locked during SQL work under the current driver claim;
-    /// exclusively locked during takeover so superseded SQL work drains first.
+    /// Shared-locked during SQL work on dedicated event-log worker threads;
+    /// exclusively locked asynchronously during takeover so cancellation before
+    /// acquiring the lock leaves the prior driver intact and acquiring the lock
+    /// swaps and retires the prior driver within the same poll.
     current: RwLock<Weak<Ticket>>,
 }
 impl Drop for RunSlot {
@@ -321,44 +320,27 @@ impl Drop for RunSlot {
 }
 impl RunSlot {
     async fn install(
-        self: &Arc<Self>,
+        &self,
         ticket: &Arc<Ticket>,
         check_blocks: Option<DriverPurpose>,
-    ) -> Result<(Option<Arc<Ticket>>, bool), StoreError> {
-        let apply = move |guard: &mut Weak<Ticket>, ticket: &Arc<Ticket>| {
-            let previous = guard.upgrade();
-            let allowed = match check_blocks {
-                Some(purpose) => !previous.as_ref().is_some_and(|old| old.blocks(purpose)),
-                None => true,
-            };
-            if allowed {
-                *guard = Arc::downgrade(ticket);
-            }
-            (previous, allowed)
+    ) -> Option<DriverClaim> {
+        let mut guard = self.current.write().await;
+        let previous = guard.upgrade();
+        let allowed = match check_blocks {
+            Some(purpose) => !previous.as_ref().is_some_and(|old| old.blocks(purpose)),
+            None => true,
         };
-        let immediate = match self.current.try_write() {
-            Ok(mut guard) => Some(Ok(apply(&mut guard, ticket))),
-            Err(TryLockError::Poisoned(_)) => Some(Err(invalid("poisoned driver slot"))),
-            Err(TryLockError::WouldBlock) => None,
-        };
-        if let Some(result) = immediate {
-            return result;
+        if !allowed {
+            return None;
         }
-        let slot = self.clone();
-        let ticket = ticket.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut guard = slot
-                .current
-                .write()
-                .map_err(|_| invalid("poisoned driver slot"))?;
-            // If the caller dropped the future while waiting, leave the prior driver intact.
-            if Arc::strong_count(&ticket) == 1 {
-                return Ok((None, false));
-            }
-            Ok(apply(&mut guard, &ticket))
+        *guard = Arc::downgrade(ticket);
+        drop(guard);
+        if let Some(previous) = previous {
+            previous.retirement.cancel();
+        }
+        Some(DriverClaim {
+            ticket: ticket.clone(),
         })
-        .await
-        .map_err(|_| StoreError::OperationUnknown)?
     }
 }
 struct Ticket {
@@ -410,12 +392,7 @@ impl DriverClaim {
         if !data.same_root(&self.ticket.domain().data) {
             return Err(invalid("driver claim belongs to another Root owner"));
         }
-        let current = self
-            .ticket
-            .slot
-            .current
-            .read()
-            .map_err(|_| invalid("poisoned driver slot"))?;
+        let current = self.ticket.slot.current.blocking_read();
         if !Weak::ptr_eq(&current, &Arc::downgrade(&self.ticket)) {
             return Err(invalid("superseded driver claim"));
         }
@@ -825,11 +802,10 @@ impl Store {
             retirement: tokio_util::sync::CancellationToken::new(),
             active: std::sync::atomic::AtomicBool::new(true),
         });
-        let (previous, _) = slot.install(&ticket, None).await?;
-        if let Some(previous) = previous {
-            previous.retirement.cancel();
-        }
-        Ok(DriverClaim { ticket })
+        Ok(slot
+            .install(&ticket, None)
+            .await
+            .expect("unconditional claim install always succeeds"))
     }
     pub async fn reserve_driver(
         &self,
@@ -840,7 +816,8 @@ impl Store {
         if self
             .domain
             .inner
-            .current_ticket(run)?
+            .current_ticket(run)
+            .await?
             .is_some_and(|old| old.blocks(purpose))
         {
             return Ok(None);
@@ -877,14 +854,7 @@ impl Store {
             retirement: retirement.child_token(),
             active: std::sync::atomic::AtomicBool::new(true),
         });
-        let (previous, reserved) = slot.install(&ticket, Some(purpose)).await?;
-        if !reserved {
-            return Ok(None);
-        }
-        if let Some(previous) = previous {
-            previous.retirement.cancel();
-        }
-        Ok(Some(DriverClaim { ticket }))
+        Ok(slot.install(&ticket, Some(purpose)).await)
     }
     pub async fn cleanup_frontier(
         &self,
@@ -1222,12 +1192,7 @@ impl Statement for Append {
         // The per-Run slot lock orders takeover with SQL admission without serializing other Runs.
         let _current_guard = match &self.mode {
             Mode::Driver(claim) => {
-                let current = claim
-                    .ticket
-                    .slot
-                    .current
-                    .read()
-                    .map_err(|_| invalid("poisoned driver slot"))?;
+                let current = claim.ticket.slot.current.blocking_read();
                 if !Weak::ptr_eq(&current, &Arc::downgrade(&claim.ticket)) {
                     return Err(invalid("superseded driver claim"));
                 }
@@ -1480,13 +1445,7 @@ struct ReadDriver {
 impl Query for ReadDriver {
     type Output = RunView;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        let current = self
-            .claim
-            .ticket
-            .slot
-            .current
-            .read()
-            .map_err(|_| invalid("poisoned driver slot"))?;
+        let current = self.claim.ticket.slot.current.blocking_read();
         if !Weak::ptr_eq(&current, &Arc::downgrade(&self.claim.ticket)) {
             return Err(invalid("superseded driver claim"));
         }

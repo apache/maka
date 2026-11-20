@@ -51,22 +51,39 @@ impl Evidence {
             error,
             ToolError::CleanupUnconfirmed(_) | ToolError::OperationCleanupUnconfirmed { .. }
         ) {
-            self.mark();
+            self.mark_with(Some(error));
         }
     }
 
     #[track_caller]
     fn mark(&self) {
+        self.mark_with(None);
+    }
+
+    #[track_caller]
+    fn mark_with(&self, detail: Option<&dyn std::fmt::Display>) {
         let caller = std::panic::Location::caller();
         if !self.0.swap(true, Ordering::AcqRel) {
-            tracing::error!(
-                stage = "execution_cleanup_evidence",
-                outcome = "cleanup_unconfirmed",
-                file = caller.file(),
-                line = caller.line(),
-                column = caller.column(),
-                "cleanup unconfirmed"
-            );
+            if let Some(detail) = detail {
+                tracing::error!(
+                    stage = "execution_cleanup_evidence",
+                    outcome = "cleanup_unconfirmed",
+                    file = caller.file(),
+                    line = caller.line(),
+                    column = caller.column(),
+                    %detail,
+                    "cleanup unconfirmed"
+                );
+            } else {
+                tracing::error!(
+                    stage = "execution_cleanup_evidence",
+                    outcome = "cleanup_unconfirmed",
+                    file = caller.file(),
+                    line = caller.line(),
+                    column = caller.column(),
+                    "cleanup unconfirmed"
+                );
+            }
         }
     }
 

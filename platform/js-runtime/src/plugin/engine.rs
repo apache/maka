@@ -49,6 +49,7 @@ fn runtime_base(health: &Arc<Health>, limits: &Limits, realm: super::Realm) -> R
         ..Default::default()
     })
     .map_err(failed)?;
+    crate::disable_resizable_array_buffers(&mut runtime).map_err(failed)?;
     let _ = health
         .isolate
         .set(runtime.v8_isolate().thread_safe_handle());

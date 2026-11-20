@@ -197,6 +197,7 @@ async fn serve(
         ..Default::default()
     })
     .map_err(|e| CellAbort::Internal(e.to_string()))?;
+    crate::disable_resizable_array_buffers(&mut runtime).map_err(CellAbort::Internal)?;
     runtime
         .execute_script(
             "maka:repl/bootstrap",

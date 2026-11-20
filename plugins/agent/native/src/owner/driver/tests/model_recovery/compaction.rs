@@ -265,8 +265,9 @@ async fn summary_repair_recovers_from_rejected_tool_content_and_preserves_frozen
                     "llama3.2": {
                         "codeMode": false,
                         "apiProtocol": "openai-chat-completions",
-                        "contextWindow": 128000,
-                        "inputLimit": 128000
+                        "contextWindow": 32000,
+                        "inputLimit": 32000,
+                        "maxOutputTokens": 4096
                     }
                 }
             }
@@ -308,15 +309,30 @@ async fn summary_repair_recovers_from_rejected_tool_content_and_preserves_frozen
         })).await?;
         assert_eq!(compact["kind"], "started");
 
+        let req_output_limit = |req: &Value| {
+            req["max_tokens"]
+                .as_u64()
+                .or_else(|| req["max_completion_tokens"].as_u64())
+        };
         let (summary_req, summary_reply) = observed.recv().await.ok_or("initial summary missing")?;
         assert!(summary_req["tools"].as_array().is_none_or(Vec::is_empty));
+        assert_eq!(
+            req_output_limit(&summary_req),
+            Some(4096),
+            "initial summary must preserve frozen 4096 output cap instead of inflating to 8000: {summary_req}"
+        );
         summary_reply
             .send(tool_response("Write", json!({"path":"nope.txt","content":"bad"})))
             .map_err(|_| "provider closed")?;
 
-        // Engine must issue a SummaryRepair request preserving the original frozen cut.
+        // Engine must issue a SummaryRepair request preserving both the original frozen cut and output budget.
         let (repair_req, repair_reply) = observed.recv().await.ok_or("summary repair request missing")?;
         assert!(repair_req["tools"].as_array().is_none_or(Vec::is_empty));
+        assert_eq!(
+            req_output_limit(&repair_req),
+            Some(4096),
+            "summary repair must preserve frozen 4096 output cap instead of inflating to 8000: {repair_req}"
+        );
         repair_reply
             .send(text("Repaired compaction checkpoint."))
             .map_err(|_| "provider closed")?;
@@ -493,5 +509,117 @@ async fn cell_notifications_deduplicate_child_knowledge_per_step_cut() -> TestRe
     let errors = rig.finish().await;
     result??;
     assert!(errors.is_empty(), "{errors:?}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopping_run_during_cell_child_admission_settles_without_cleanup_unconfirmed()
+-> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let base = rig.directory.path().to_path_buf();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let boot = bootstrap_with(
+        &base,
+        format!("http://{}/v1", listener.local_addr()?),
+        |config| {
+            config["tools"] = json!([{
+                "name":"Write",
+                "description":"write",
+                "target":{"kind":"import","name":"files"},
+                "method":"write",
+                "nestable":true,
+                "result":"json",
+                "confirmation":"preapproved"
+            }]);
+        },
+    )
+    .await?;
+    let (mut observed, provider) = observed_provider(listener);
+    let result: Result<TestResult<()>, _> = tokio::time::timeout(Duration::from_secs(60), async {
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+        let connection = call(client, "settings", "create", json!({
+            "expectedCatalogRevision": catalog["revision"],
+            "connection": {
+                "slug": "cell-stop",
+                "name": "Cell stop fixture",
+                "provider": {"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                "configuration": {"baseUrl": boot.base_url},
+                "enabled": true,
+                "enabledModelIds": ["code-source"],
+                "modelOverrides": {
+                    "code-source": {
+                        "codeMode": true,
+                        "codeModeLanguage": "javascript",
+                        "apiProtocol": "openai-chat-completions",
+                        "contextWindow": 128000,
+                        "inputLimit": 128000
+                    }
+                }
+            }
+        })).await?;
+        let backend = json!({
+            "kind": "model",
+            "connectionId": connection["connection"]["connectionId"],
+            "modelId": "code-source",
+            "thinkingLevel": null
+        });
+        let created = call(client, "agent", "create", json!({
+            "title": "CellStop",
+            "automaticTitle": false,
+            "labels": [],
+            "workspace": {"kind":"directory","path": base.join("workspace")}
+        })).await?;
+        let session = created["session"]["id"].as_str().ok_or("Session missing")?;
+
+        let _sent = call(client, "agent", "send", json!({
+            "sessionId": session,
+            "message": "Run a burst of nested Write calls while stopped.",
+            "backend": backend
+        })).await?;
+        let (_req1, reply1) = observed.recv().await.ok_or("first request missing")?;
+        let code = r#"
+            for (let i = 0; i < 40; i++) {
+                await tools.Write({ path: "stop_" + i + ".txt", content: "payload-" + i });
+            }
+            text("done");
+        "#;
+        reply1
+            .send(tool_response("exec", json!({ "code": code, "yield_time_ms": 30000 })))
+            .map_err(|_| "provider closed")?;
+
+        // Wait until at least one child write starts, then stop the active run mid-cell.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let run_id = loop {
+            let obs = call(client, "agent", "observe", json!({"sessionId": session})).await?;
+            if let Some(id) = obs["run"]["runId"].as_str()
+                && base.join("workspace").join("stop_0.txt").exists()
+            {
+                break id.to_owned();
+            }
+            assert!(tokio::time::Instant::now() < deadline, "cell never started writing: {obs}");
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        };
+        call(client, "agent", "stop", json!({"sessionId": session, "runId": run_id})).await?;
+
+        let settle_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let obs = call(client, "agent", "observe", json!({"sessionId": session})).await?;
+            if obs["session"]["activity"].as_str() == Some("idle") {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < settle_deadline, "stopped cell run did not settle: {obs}");
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        Ok(())
+    }).await;
+    provider.abort();
+    let errors = rig.finish().await;
+    result??;
+    assert!(
+        errors.is_empty(),
+        "stopped cell must close without cleanup_unconfirmed: {errors:?}"
+    );
     Ok(())
 }

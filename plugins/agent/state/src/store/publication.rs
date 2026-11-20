@@ -82,15 +82,7 @@ impl Query for ReadPublication {
         let current_guard = self
             .claim
             .as_ref()
-            .map(|claim| {
-                claim
-                    .ticket
-                    .slot
-                    .current
-                    .read()
-                    .map_err(|_| invalid("poisoned driver slot"))
-            })
-            .transpose()?;
+            .map(|claim| claim.ticket.slot.current.blocking_read());
         let claim_current = self
             .claim
             .as_ref()

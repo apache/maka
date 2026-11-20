@@ -220,6 +220,7 @@ async fn run_cell(
         ..Default::default()
     })
     .map_err(|error| CellAbort::Internal(error.to_string()))?;
+    disable_resizable_array_buffers(&mut runtime).map_err(CellAbort::Internal)?;
     runtime.op_state().borrow_mut().put(scope.clone());
     runtime.op_state().borrow_mut().put(context.clone());
 
@@ -429,6 +430,59 @@ pub(crate) fn bounded_create_params(heap_bytes: usize) -> v8::CreateParams {
         .array_buffer_allocator(allocator)
 }
 
+/// Disables resizable `ArrayBuffer` and growable `SharedArrayBuffer` allocations.
+/// V8 allocates resizable backing stores via its page allocator rather than
+/// `ArrayBuffer::Allocator`, which would bypass `ArrayBufferBudget`.
+pub(crate) fn disable_resizable_array_buffers(runtime: &mut JsRuntime) -> Result<(), String> {
+    runtime
+        .execute_script(
+            "maka:runtime/disable-resizable-array-buffers",
+            r#"(() => {
+    const RangeErrorClass = RangeError;
+    const ReflectConstruct = Reflect.construct;
+    const ObjectDefineProperty = Object.defineProperty;
+    const guard = (name, protoMethod) => {
+        const RawCtor = globalThis[name];
+        if (typeof RawCtor !== "function") return;
+        if (RawCtor.prototype && protoMethod in RawCtor.prototype) {
+            delete RawCtor.prototype[protoMethod];
+        }
+        const Bounded = new Proxy(RawCtor, {
+            construct(target, args, newTarget) {
+                if (args.length > 1 && args[1] !== undefined && args[1] !== null) {
+                    const opts = args[1];
+                    if (
+                        (typeof opts === "object" || typeof opts === "function") &&
+                        opts.maxByteLength !== undefined
+                    ) {
+                        throw new RangeErrorClass("Resizable " + name + " is disabled");
+                    }
+                }
+                const forwardTarget = newTarget === Bounded ? target : newTarget;
+                return ReflectConstruct(target, args.length > 0 ? [args[0]] : [], forwardTarget);
+            },
+        });
+        ObjectDefineProperty(RawCtor.prototype, "constructor", {
+            value: Bounded,
+            writable: true,
+            enumerable: false,
+            configurable: true,
+        });
+        ObjectDefineProperty(globalThis, name, {
+            value: Bounded,
+            writable: true,
+            enumerable: false,
+            configurable: true,
+        });
+    };
+    guard("ArrayBuffer", "resize");
+    guard("SharedArrayBuffer", "grow");
+})();"#,
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 fn initialize_platform() {
     static INIT: Once = Once::new();
     INIT.call_once(|| JsRuntime::init_platform(None));
@@ -449,4 +503,64 @@ pub fn tool_identifier(name: &str) -> String {
         })
         .collect();
     if name.is_empty() { "_".into() } else { name }
+}
+
+#[cfg(test)]
+mod array_buffer_budget_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn bounded_allocator_rejects_over_budget_and_disables_resizable_buffers() {
+        initialize_platform();
+        let mut runtime = JsRuntime::try_new(RuntimeOptions {
+            create_params: Some(bounded_create_params(16 * 1024 * 1024)),
+            ..Default::default()
+        })
+        .unwrap();
+        disable_resizable_array_buffers(&mut runtime).unwrap();
+
+        let result = runtime
+            .execute_script(
+                "budget-check",
+                r#"(() => {
+                    const ok = new Uint8Array(8 * 1024 * 1024);
+                    let single = "allowed";
+                    try { new ArrayBuffer(17 * 1024 * 1024); } catch (e) { single = e.name; }
+                    let cumulative = "allowed";
+                    try { new Uint8Array(9 * 1024 * 1024); } catch (e) { cumulative = e.name; }
+                    let resizable = "allowed";
+                    try { new ArrayBuffer(64, { maxByteLength: 32 * 1024 * 1024 }); } catch (e) { resizable = e.name; }
+                    let growable = "allowed";
+                    if (typeof SharedArrayBuffer === "function") {
+                        try { new SharedArrayBuffer(64, { maxByteLength: 32 * 1024 * 1024 }); } catch (e) { growable = e.name; }
+                    } else {
+                        growable = "RangeError";
+                    }
+                    return JSON.stringify({
+                        okLen: ok.byteLength,
+                        single,
+                        cumulative,
+                        resizable,
+                        growable,
+                        hasResize: "resize" in ArrayBuffer.prototype,
+                    });
+                })()"#,
+            )
+            .unwrap();
+        deno_core::scope!(scope, runtime);
+        let local = v8::Local::new(scope, result);
+        let json: serde_json::Value =
+            serde_json::from_str(&local.to_rust_string_lossy(scope)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "okLen": 8 * 1024 * 1024,
+                "single": "RangeError",
+                "cumulative": "RangeError",
+                "resizable": "RangeError",
+                "growable": "RangeError",
+                "hasResize": false,
+            })
+        );
+    }
 }

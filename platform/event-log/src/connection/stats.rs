@@ -141,6 +141,7 @@ impl OwnedConnection {
             let (reply, result) = oneshot::channel();
             jobs.push(ReadJob {
                 open: false,
+                cancelled: None,
                 _custody: self.custody.clone(),
                 run: Box::new(move |connection, valid| {
                     let stats = catch_unwind(AssertUnwindSafe(|| {

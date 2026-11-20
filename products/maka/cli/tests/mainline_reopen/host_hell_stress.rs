@@ -413,6 +413,10 @@ impl LatencyHistogram {
             .push(d.as_millis().min(u64::MAX as u128) as u64);
     }
 
+    fn count(&self) -> usize {
+        self.samples_ms.lock().unwrap().len()
+    }
+
     fn summary(&self) -> String {
         let mut v = self.samples_ms.lock().unwrap().clone();
         if v.is_empty() {
@@ -839,7 +843,8 @@ text("H_PY_CELL_DONE:" + str(load("py_tag")) + ":" + r["kind"] + ":" + s["kind"]
         });
     }
 
-    // Fire ALL 100 sessions simultaneously!
+    // Fire ALL 100 sessions simultaneously and record accepted/queued message IDs.
+    let mut wave1_message_ids: Vec<(String, String)> = Vec::with_capacity(sessions.len());
     {
         let mut sends = JoinSet::new();
         for (sid, prompt, _) in &sessions {
@@ -847,7 +852,7 @@ text("H_PY_CELL_DONE:" + str(load("py_tag")) + ":" + r["kind"] + ":" + s["kind"]
             let sid = sid.clone();
             let prompt = prompt.clone();
             sends.spawn(async move {
-                let _ = try_call(
+                let res = try_call(
                     &c,
                     "agent",
                     "send",
@@ -855,10 +860,30 @@ text("H_PY_CELL_DONE:" + str(load("py_tag")) + ":" + r["kind"] + ":" + s["kind"]
                     Duration::from_secs(30),
                 )
                 .await;
+                (sid, res)
             });
         }
-        while sends.join_next().await.is_some() {}
+        while let Some(joined) = sends.join_next().await {
+            let (sid, res) = joined.expect("wave-1 send task panicked");
+            let val = res.unwrap_or_else(|e| panic!("wave-1 send failed for {sid}: {e}"));
+            let kind = val["kind"].as_str().unwrap_or("");
+            assert!(
+                kind == "accepted" || kind == "queued",
+                "wave-1 send for {sid} was not accepted/queued: {val}"
+            );
+            let mid = val["messageId"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| panic!("wave-1 send for {sid} missing messageId: {val}"))
+                .to_string();
+            wave1_message_ids.push((sid, mid));
+        }
     }
+    assert_eq!(
+        wave1_message_ids.len(),
+        sessions.len(),
+        "all 100 first-wave messages must be accepted/queued before SIGKILL"
+    );
 
     // Wait until a massive wave is actively in flight (model calls + shell/V8/Monty executing).
     let wait_start = Instant::now();
@@ -867,6 +892,11 @@ text("H_PY_CELL_DONE:" + str(load("py_tag")) + ":" + r["kind"] + ":" + s["kind"]
     {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    assert!(
+        wave_model_reqs.load(Ordering::Relaxed) >= 60,
+        "expected >= 60 in-flight model requests before SIGKILL #1, got {}",
+        wave_model_reqs.load(Ordering::Relaxed)
+    );
     tokio::time::sleep(Duration::from_millis(600)).await;
 
     // =========================================================================
@@ -1009,7 +1039,7 @@ text("H_PY_CELL_DONE:" + str(load("py_tag")) + ":" + r["kind"] + ":" + s["kind"]
                             )
                             .await;
                             if let Ok(ref o) = obs
-                                && let Some(run_id) = o["run"]["id"].as_str()
+                                && let Some(run_id) = o["run"]["runId"].as_str()
                             {
                                 let _ = try_call(
                                     &c,
@@ -1893,6 +1923,7 @@ text("ROOT_ALL_MGRS_OK:" + ",".join(ids) if done else "ROOT_TIMEOUT")
             .collect();
         let cancel = ui_cancel.clone();
         let frames = watch_frames.clone();
+        let errs = ui_errors.clone();
         let hostile_slow = w >= 4;
         ui_tasks.spawn(async move {
             let mut idx = 0usize;
@@ -1900,6 +1931,9 @@ text("ROOT_ALL_MGRS_OK:" + ",".join(ids) if done else "ROOT_TIMEOUT")
                 let sid = &targets[idx % targets.len()];
                 idx += 1;
                 let Ok(c) = Client::connect(&addr, None).await else {
+                    if !cancel.is_cancelled() {
+                        errs.fetch_add(1, Ordering::Relaxed);
+                    }
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     continue;
                 };
@@ -1953,6 +1987,7 @@ text("ROOT_ALL_MGRS_OK:" + ",".join(ids) if done else "ROOT_TIMEOUT")
         let _ui_err_samples = ui_err_samples.clone();
         ui_tasks.spawn(async move {
             let Ok(c) = Client::connect(&addr, None).await else {
+                errs.fetch_add(1, Ordering::Relaxed);
                 return;
             };
             let mut tick = 0u64;
@@ -2020,6 +2055,7 @@ text("ROOT_ALL_MGRS_OK:" + ",".join(ids) if done else "ROOT_TIMEOUT")
         let errs = ui_errors.clone();
         ui_tasks.spawn(async move {
             let Ok(c) = Client::connect(&addr, None).await else {
+                errs.fetch_add(1, Ordering::Relaxed);
                 return;
             };
             let mut tick = 0usize;
@@ -2062,6 +2098,7 @@ text("ROOT_ALL_MGRS_OK:" + ",".join(ids) if done else "ROOT_TIMEOUT")
         let errs = ui_errors.clone();
         ui_tasks.spawn(async move {
             let Ok(c) = Client::connect(&addr, None).await else {
+                errs.fetch_add(1, Ordering::Relaxed);
                 return;
             };
             let mut tick = 0usize;
@@ -2265,7 +2302,7 @@ text("ROOT_ALL_MGRS_OK:" + ",".join(ids) if done else "ROOT_TIMEOUT")
                 )
                 .await
                 {
-                    if let Some(run_id) = obs["run"]["id"].as_str() {
+                    if let Some(run_id) = obs["run"]["runId"].as_str() {
                         let _ = try_call(
                             &c,
                             "agent",
@@ -2354,8 +2391,10 @@ text("ROOT_ALL_MGRS_OK:" + ",".join(ids) if done else "ROOT_TIMEOUT")
 
     // Stop UI storm & sample post-idle telemetry
     ui_cancel.cancel();
-    let _ = sampler.await;
-    while ui_tasks.join_next().await.is_some() {}
+    sampler.await.expect("resource sampler task panicked");
+    while let Some(joined) = ui_tasks.join_next().await {
+        joined.expect("UI storm worker task panicked");
+    }
 
     tokio::time::sleep(Duration::from_secs(2)).await;
     let post_rss = sample_rss_kib(host_pid).unwrap_or(0);
@@ -2454,6 +2493,18 @@ text("ROOT_ALL_MGRS_OK:" + ",".join(ids) if done else "ROOT_TIMEOUT")
         "expected >= 180 leaf workers to complete across surviving trees, got {}",
         leaf_done.load(Ordering::Relaxed)
     );
+    assert_eq!(
+        ui_errors.load(Ordering::Relaxed),
+        0,
+        "UI storm recorded errors"
+    );
+    assert!(
+        watch_frames.load(Ordering::Relaxed) > 0,
+        "UI watch clients must observe live frames"
+    );
+    assert!(list_lat.count() > 0, "UI list/observe pollers must run");
+    assert!(history_lat.count() > 0, "UI history readers must run");
+    assert!(search_lat.count() > 0, "UI search readers must run");
 
     mock.shutdown().await;
 }
@@ -2658,6 +2709,7 @@ async fn real_host_200_turn_mega_session_huge_payloads_5level_fork_and_queue_gri
         let errs = reader_errs.clone();
         tokio::spawn(async move {
             let Ok(c) = Client::connect(&addr, None).await else {
+                errs.fetch_add(1, Ordering::Relaxed);
                 return;
             };
             let mut tick = 0u64;
@@ -3026,7 +3078,9 @@ async fn real_host_200_turn_mega_session_huge_payloads_5level_fork_and_queue_gri
     assert_eq!(fork_chain.len(), 5);
 
     reader_cancel.cancel();
-    let _ = reader_task.await;
+    reader_task
+        .await
+        .expect("background history/search reader task panicked");
 
     let early: Vec<f64> = turn_latencies[10..50]
         .iter()
@@ -3094,6 +3148,14 @@ async fn real_host_200_turn_mega_session_huge_payloads_5level_fork_and_queue_gri
         reader_errs.load(Ordering::Relaxed),
         0,
         "background history/search errors"
+    );
+    assert!(
+        hist_lat.count() > 0,
+        "background history reader must observe reads"
+    );
+    assert!(
+        search_lat.count() > 0,
+        "background search reader must observe reads"
     );
     assert!(
         ratio < 3.5 || late_avg < 250.0,
@@ -3174,12 +3236,20 @@ async fn real_host_tri_runtime_80x_fanout_bombs_pty_flood_and_canary_isolation()
                 }
             };
 
-            // 1. Innocent Canary sessions (must always pass fast!)
+            // 1. Innocent Canary sessions (must read actual fixture_0.txt payload!)
             if all.contains("HELL_K_CANARY_") {
-                if all.contains("CANARY_READ_OK") || req.messages.len() > 2 {
-                    canary_done_cb.fetch_add(1, Ordering::Relaxed);
+                if tool_turns > 0 {
+                    if last_tool_text.contains("Synthetic workspace fixture 0")
+                        && last_tool_text.contains("line_00: maka real-host stress fixture payload")
+                    {
+                        canary_done_cb.fetch_add(1, Ordering::Relaxed);
+                        return TurnPlan::new()
+                            .push_text("CANARY_HEALTHY_OK")
+                            .with_usage(usage)
+                            .finish(FinishReason::Stop);
+                    }
                     return TurnPlan::new()
-                        .push_text("CANARY_HEALTHY_OK")
+                        .push_text("CANARY_READ_MISMATCH")
                         .with_usage(usage)
                         .finish(FinishReason::Stop);
                 }
@@ -3221,7 +3291,10 @@ async fn real_host_tri_runtime_80x_fanout_bombs_pty_flood_and_canary_isolation()
                             .collect();
                         let code = format!(
                             r#"const page = await tools.Read({{ path: "{aref}" }});
-text("READBACK_ATTEMPTED:" + page.kind + ":" + (page.kind === "completed" && (page.value.content.includes("FANOUT80_DONE") || page.value.content.includes("MEGA_ARCHIVE_BLOCK")) ? "ARCHIVE_READBACK_OK" : "MISSING"));"#
+const ok = page.kind === "completed"
+    && page.value.content.includes("FANOUT80_DONE:v8-80x:ok=80")
+    && page.value.content.includes("MEGA_ARCHIVE_BLOCK_");
+text("READBACK_ATTEMPTED:" + page.kind + ":" + (ok ? "ARCHIVE_READBACK_OK" : "MISSING"));"#
                         );
                         return TurnPlan::new()
                             .push_tool_call(
@@ -3232,12 +3305,9 @@ text("READBACK_ATTEMPTED:" + page.kind + ":" + (page.kind === "completed" && (pa
                             .with_usage(usage)
                             .finish(FinishReason::ToolCalls);
                     }
-                if last_tool_text.contains("FANOUT80_DONE") || tool_turns > 16 {
-                    if last_tool_text.contains("FANOUT80_DONE") || all.contains("FANOUT80_DONE") {
-                        fanout_archive_cb.fetch_add(1, Ordering::Relaxed);
-                    }
+                if last_tool_text.contains("READBACK_ATTEMPTED:") || tool_turns > 16 {
                     return TurnPlan::new()
-                        .push_text("JS_80X_FANOUT_DONE")
+                        .push_text("JS_80X_FANOUT_INCOMPLETE")
                         .with_usage(usage)
                         .finish(FinishReason::Stop);
                 }
@@ -3698,12 +3768,10 @@ async fn real_host_10_wave_600_session_churn_gc_goals_schedules_memory_soak() {
     .expect("write churn_32k.txt");
 
     let total_reqs = Arc::new(AtomicU64::new(0));
-    let goals_achieved = Arc::new(AtomicUsize::new(0));
     let schedules_created = Arc::new(AtomicUsize::new(0));
     let schedule_fires = Arc::new(AtomicUsize::new(0));
 
     let total_reqs_cb = total_reqs.clone();
-    let goals_achieved_cb = goals_achieved.clone();
     let schedules_created_cb = schedules_created.clone();
     let schedule_fires_cb = schedule_fires.clone();
     let marker_cb = marker.clone();
@@ -3749,7 +3817,6 @@ async fn real_host_10_wave_600_session_churn_gc_goals_schedules_memory_soak() {
                         .finish(FinishReason::Stop);
                 }
                 if all.contains("GOAL_PROGRESS_OK") {
-                    goals_achieved_cb.fetch_add(1, Ordering::Relaxed);
                     return TurnPlan::new()
                         .push_tool_call(
                             format!("goal_ach_{}", req.sequence),
@@ -3961,11 +4028,15 @@ text((r && !r.error ? "SCHED_CREATED_OK:" : "SCHED_CREATED_ERR:") + JSON.stringi
             for i in 0..60usize {
                 let c = client.clone();
                 let ws = sandbox.workspace.clone();
-                let kind = match i % 4 {
-                    0 => "js",
-                    1 => "py",
-                    2 => "ws",
-                    _ => "anthropic",
+                let kind = if i < 15 {
+                    if i % 2 == 0 { "ws" } else { "anthropic" }
+                } else {
+                    match i % 4 {
+                        0 => "js",
+                        1 => "py",
+                        2 => "ws",
+                        _ => "anthropic",
+                    }
                 };
                 let b = backend_for(&conns, kind);
                 set.spawn(async move {
@@ -4061,7 +4132,7 @@ text((r && !r.error ? "SCHED_CREATED_OK:" : "SCHED_CREATED_ERR:") + JSON.stringi
             })
         };
 
-        // MID-RUN ACTIVE DELETES (0..15)
+        // MID-RUN ACTIVE DELETES (0..15): confirm target run is live, stop it, wait for quiescence, then remove.
         tokio::time::sleep(Duration::from_millis(350)).await;
         {
             let mut del_set = JoinSet::new();
@@ -4069,38 +4140,65 @@ text((r && !r.error ? "SCHED_CREATED_OK:" : "SCHED_CREATED_ERR:") + JSON.stringi
                 let c = client.clone();
                 let sid = sid.clone();
                 del_set.spawn(async move {
-                    if let Ok(obs) = try_call(&c, "agent", "observe", json!({ "sessionId": sid }), Duration::from_secs(10)).await {
-                        if let Some(run_id) = obs["run"]["id"].as_str() {
-                            let _ = try_call(
-                                &c,
-                                "agent",
-                                "stop",
-                                json!({ "sessionId": sid, "runId": run_id }),
-                                Duration::from_secs(10),
-                            )
-                            .await;
-                        }
-                        if let Some(rev) = obs["session"]["revision"].as_u64()
-                            && try_call(
-                                &c,
-                                "agent",
-                                "changeSession",
-                                json!({ "sessionId": sid, "expectedRevision": rev, "action": "remove" }),
-                                Duration::from_secs(15),
-                            )
-                            .await
-                            .is_ok()
-                            {
-                                return true;
-                            }
+                    let Ok(obs) = try_call(
+                        &c,
+                        "agent",
+                        "observe",
+                        json!({ "sessionId": sid }),
+                        Duration::from_secs(10),
+                    )
+                    .await
+                    else {
+                        return (false, false);
+                    };
+                    let was_active = obs["session"]["activity"].as_str() == Some("working")
+                        && obs["run"]["runId"].as_str().is_some();
+                    if let Some(run_id) = obs["run"]["runId"].as_str() {
+                        let _ = try_call(
+                            &c,
+                            "agent",
+                            "stop",
+                            json!({ "sessionId": sid, "runId": run_id }),
+                            Duration::from_secs(10),
+                        )
+                        .await;
                     }
-                    false
+                    let _ = wait_session_settled(&c, &sid, Duration::from_secs(20)).await;
+                    let Ok(settled) = try_call(
+                        &c,
+                        "agent",
+                        "observe",
+                        json!({ "sessionId": sid }),
+                        Duration::from_secs(10),
+                    )
+                    .await
+                    else {
+                        return (was_active, false);
+                    };
+                    let Some(rev) = settled["session"]["revision"].as_u64() else {
+                        return (was_active, false);
+                    };
+                    let Ok(res) = try_call(
+                        &c,
+                        "agent",
+                        "changeSession",
+                        json!({ "sessionId": sid, "expectedRevision": rev, "action": "remove" }),
+                        Duration::from_secs(15),
+                    )
+                    .await
+                    else {
+                        return (was_active, false);
+                    };
+                    (was_active, res["kind"] == "removed")
                 });
             }
             while let Some(r) = del_set.join_next().await {
-                if r.unwrap() {
-                    total_active_deleted += 1;
+                let (was_active, removed) = r.unwrap();
+                if removed {
                     total_deleted += 1;
+                    if was_active {
+                        total_active_deleted += 1;
+                    }
                 }
             }
         }
@@ -4150,7 +4248,7 @@ text((r && !r.error ? "SCHED_CREATED_OK:" : "SCHED_CREATED_ERR:") + JSON.stringi
                     )
                     .await
                     .ok()?;
-                    Some(res["kind"] == "updated" || res["kind"] == "removed")
+                    Some(res["kind"] == "removed")
                 });
             }
             while let Some(r) = dset.join_next().await {
@@ -4191,13 +4289,12 @@ text((r && !r.error ? "SCHED_CREATED_OK:" : "SCHED_CREATED_ERR:") + JSON.stringi
             sql_m.contents_rows,
         ));
         eprintln!(
-            "[SCEN L] WAVE {wave_idx:02}/10 | rss={:.1}MiB fds={fds} db={:.1}MiB wal={:.1}MiB facts={} contents={} | del={total_deleted} (active={total_active_deleted}) goals={} sched_fires={} mem_ops={total_mem_ops}",
+            "[SCEN L] WAVE {wave_idx:02}/10 | rss={:.1}MiB fds={fds} db={:.1}MiB wal={:.1}MiB facts={} contents={} | del={total_deleted} (active={total_active_deleted}) sched_fires={} mem_ops={total_mem_ops}",
             rss as f64 / 1024.0,
             sql_m.total_db_bytes as f64 / (1024.0 * 1024.0),
             sql_m.total_wal_bytes as f64 / (1024.0 * 1024.0),
             sql_m.facts_rows,
             sql_m.contents_rows,
-            goals_achieved.load(Ordering::Relaxed),
             schedule_fires.load(Ordering::Relaxed),
         );
     }
@@ -4207,15 +4304,31 @@ text((r && !r.error ? "SCHED_CREATED_OK:" : "SCHED_CREATED_ERR:") + JSON.stringi
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
 
+    // Verify durable Goal status per distinct session via agent/goal RPC.
+    let mut goals_achieved_verified = 0usize;
+    for sid in &goal_sids {
+        if let Ok(view) = try_call(
+            &client,
+            "agent",
+            "goal",
+            json!({ "sessionId": sid }),
+            Duration::from_secs(10),
+        )
+        .await
+            && view["current"]["status"].as_str() == Some("achieved")
+        {
+            goals_achieved_verified += 1;
+        }
+    }
+
     let post_rss = sample_rss_kib(host_pid).unwrap_or(0);
     let post_fds = sample_open_fds(host_pid).unwrap_or(0);
     let w3 = wave_metrics[2];
     let w10 = wave_metrics[9];
 
     eprintln!(
-        "[SCEN L] COMPLETE in {:.2}s | 600 sessions churned, deleted={total_deleted} (mid-run={total_active_deleted}) | goals={}/16 sched_created={}/16 sched_fires={} mem_ops={total_mem_ops} ({}) list({}) total_reqs={}",
+        "[SCEN L] COMPLETE in {:.2}s | 600 sessions churned, deleted={total_deleted} (mid-run={total_active_deleted}) | goals={goals_achieved_verified}/16 sched_created={}/16 sched_fires={} mem_ops={total_mem_ops} ({}) list({}) total_reqs={}",
         started.elapsed().as_secs_f64(),
-        goals_achieved.load(Ordering::Relaxed),
         schedules_created.load(Ordering::Relaxed),
         schedule_fires.load(Ordering::Relaxed),
         mem_lat.summary(),
@@ -4248,13 +4361,16 @@ text((r && !r.error ? "SCHED_CREATED_OK:" : "SCHED_CREATED_ERR:") + JSON.stringi
         orphans
     );
     assert!(
+        total_active_deleted >= 120,
+        "expected >= 120 mid-run active sessions stopped and removed across 10 waves, got {total_active_deleted}"
+    );
+    assert!(
         total_deleted >= 480,
         "expected >= 480 deleted sessions across 10 waves, got {total_deleted}"
     );
     assert!(
-        goals_achieved.load(Ordering::Relaxed) >= 14,
-        "expected >= 14/16 Goals achieved, got {}",
-        goals_achieved.load(Ordering::Relaxed)
+        goals_achieved_verified >= 14,
+        "expected >= 14/16 Goals verified achieved via agent/goal, got {goals_achieved_verified}"
     );
     assert!(
         schedule_fires.load(Ordering::Relaxed) >= 10,

@@ -264,11 +264,16 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
+            let output_budget = if repair {
+                preparation::OutputBudget::Frozen(request.composition.max_output_tokens)
+            } else {
+                preparation::OutputBudget::Compute(model.main_output_limit)
+            };
             let prepared = preparation::prepare_request(
                 &settings,
                 prompt.clone(),
                 request.composition.tools.clone(),
-                output,
+                output_budget,
                 ModelPurpose::Summary,
                 None,
             )?;

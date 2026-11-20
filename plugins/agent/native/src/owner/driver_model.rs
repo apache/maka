@@ -873,7 +873,7 @@ impl DriverModel {
                 &settings,
                 prompt.clone(),
                 definitions.clone(),
-                model.main_output_limit,
+                preparation::OutputBudget::Compute(model.main_output_limit),
                 purpose,
                 calibration,
             )?;

@@ -55,25 +55,6 @@ pub trait Query: Send + 'static {
 
 const WRITE_CAPACITY: usize = 32;
 
-static SQLITE_CONFIGURED: std::sync::Once = std::sync::Once::new();
-
-/// Disable SQLite's global MEMSTATUS allocator mutex before initialization so
-/// concurrent WAL readers and the writer do not serialize on `sqlite3Malloc`.
-pub fn configure_sqlite() {
-    SQLITE_CONFIGURED.call_once(|| {
-        // SAFETY: `SQLITE_CONFIG_MEMSTATUS` takes a single `c_int` boolean (0 = off).
-        // Calling before `sqlite3_initialize` disables the global `SQLITE_MUTEX_STATIC_MEM`
-        // lock; if SQLite is already initialized in a shared test process, SQLite safely
-        // returns `SQLITE_MISUSE` without side effects.
-        unsafe {
-            let _ = rusqlite::ffi::sqlite3_config(
-                rusqlite::ffi::SQLITE_CONFIG_MEMSTATUS,
-                0 as std::ffi::c_int,
-            );
-        }
-    });
-}
-
 fn pure_reader_count() -> usize {
     std::thread::available_parallelism().map_or(4, |count| count.get().clamp(4, 8))
 }
@@ -135,7 +116,6 @@ impl OpenOptions {
         self.path.as_os_str().is_empty() || self.path == Path::new(":memory:")
     }
     fn open(&self) -> Result<Connection, StoreError> {
-        configure_sqlite();
         let mut flags = if self.read_only {
             OpenFlags::SQLITE_OPEN_READ_ONLY
         } else {
@@ -214,7 +194,9 @@ type ReadOperation =
 struct ReadQueue {
     closed: bool,
     active_readers: usize,
-    shared: VecDeque<ReadJob>,
+    next_id: u64,
+    shared_order: VecDeque<u64>,
+    shared_pending: std::collections::HashMap<u64, ReadJob>,
     targeted: Vec<VecDeque<ReadJob>>,
 }
 
@@ -234,7 +216,9 @@ impl ReadDispatcher {
             queue: Mutex::new(ReadQueue {
                 closed: false,
                 active_readers: 0,
-                shared: VecDeque::new(),
+                next_id: 0,
+                shared_order: VecDeque::new(),
+                shared_pending: std::collections::HashMap::new(),
                 targeted: (0..readers).map(|_| VecDeque::new()).collect(),
             }),
             available: Condvar::new(),
@@ -249,15 +233,30 @@ impl ReadDispatcher {
         self.queue.lock().unwrap().active_readers += 1;
     }
 
-    fn enqueue(&self, job: ReadJob) -> Result<(), StoreError> {
+    fn enqueue(&self, job: ReadJob) -> Result<u64, StoreError> {
         let mut queue = self.queue.lock().unwrap();
         if queue.closed {
             return Err(StoreError::ConnectionClosed);
         }
-        queue.shared.push_back(job);
+        let id = queue.next_id;
+        queue.next_id = queue.next_id.wrapping_add(1);
+        queue.shared_order.push_back(id);
+        queue.shared_pending.insert(id, job);
         drop(queue);
         self.available.notify_one();
-        Ok(())
+        Ok(id)
+    }
+
+    fn cancel(&self, id: u64) {
+        let removed = {
+            let mut queue = self.queue.lock().unwrap();
+            let removed = queue.shared_pending.remove(&id);
+            if queue.shared_pending.is_empty() {
+                queue.shared_order.clear();
+            }
+            removed
+        };
+        drop(removed);
     }
 
     fn enqueue_targeted_all(&self, jobs: Vec<ReadJob>) -> Result<(), StoreError> {
@@ -280,8 +279,10 @@ impl ReadDispatcher {
             if let Some(job) = queue.targeted[index].pop_front() {
                 return Some(job);
             }
-            if let Some(job) = queue.shared.pop_front() {
-                return Some(job);
+            while let Some(id) = queue.shared_order.pop_front() {
+                if let Some(job) = queue.shared_pending.remove(&id) {
+                    return Some(job);
+                }
             }
             if queue.closed {
                 return None;
@@ -299,11 +300,34 @@ impl ReadDispatcher {
     }
 
     fn reader_exited(&self, index: usize) {
-        let mut queue = self.queue.lock().unwrap();
-        queue.targeted[index].clear();
-        queue.active_readers = queue.active_readers.saturating_sub(1);
-        if queue.active_readers == 0 {
-            queue.shared.clear();
+        let mut drained_targeted = VecDeque::new();
+        let mut drained_shared = std::collections::HashMap::new();
+        {
+            let mut queue = self.queue.lock().unwrap();
+            std::mem::swap(&mut queue.targeted[index], &mut drained_targeted);
+            queue.active_readers = queue.active_readers.saturating_sub(1);
+            if queue.active_readers == 0 {
+                queue.shared_order.clear();
+                std::mem::swap(&mut queue.shared_pending, &mut drained_shared);
+            }
+        }
+        drop(drained_targeted);
+        drop(drained_shared);
+    }
+}
+
+struct ReadCancelGuard {
+    dispatcher: Arc<ReadDispatcher>,
+    id: u64,
+    cancelled: Arc<AtomicBool>,
+    active: bool,
+}
+
+impl Drop for ReadCancelGuard {
+    fn drop(&mut self) {
+        if self.active {
+            self.cancelled.store(true, Ordering::Release);
+            self.dispatcher.cancel(self.id);
         }
     }
 }
@@ -509,10 +533,112 @@ mod tests {
         assert!(stats.readers.iter().any(Option::is_some));
         conn.shutdown().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn bundled_sqlite_disables_memstatus() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("PRAGMA compile_options").unwrap();
+        let options: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            options.iter().any(|opt| opt == "DEFAULT_MEMSTATUS=0"),
+            "expected compile-time DEFAULT_MEMSTATUS=0, got: {options:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_queued_read_drops_payload_and_skips_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cancel_read.sqlite");
+        let conn = Arc::new(
+            OwnedConnection::open(
+                OpenOptions::file(&path).create(true).worker_pool(true),
+                ConnectionAuthority::Temporary,
+                |c| {
+                    c.execute_batch(
+                        "PRAGMA journal_mode = WAL; CREATE TABLE items(v INTEGER NOT NULL); INSERT INTO items VALUES (7);",
+                    )?;
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap(),
+        );
+
+        let readers = pure_reader_count();
+        let entered = Arc::new(Barrier::new(readers + 1));
+        let release = Arc::new(Barrier::new(readers + 1));
+        let mut blockers = Vec::with_capacity(readers);
+        for _ in 0..readers {
+            let c = conn.clone();
+            let entered = entered.clone();
+            let release = release.clone();
+            blockers.push(tokio::spawn(async move {
+                c.read(move |db| {
+                    entered.wait();
+                    release.wait();
+                    Ok(db.query_row("SELECT v FROM items", [], |r| r.get::<_, i64>(0))?)
+                })
+                .await
+                .unwrap()
+            }));
+        }
+        // Wait until every reader thread is occupied.
+        tokio::task::spawn_blocking({
+            let entered = entered.clone();
+            move || entered.wait()
+        })
+        .await
+        .unwrap();
+
+        let payload_dropped = Arc::new(AtomicBool::new(false));
+        let executed = Arc::new(AtomicBool::new(false));
+        struct DropSignal(Arc<AtomicBool>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let signal = DropSignal(payload_dropped.clone());
+        let exec_flag = executed.clone();
+        let mut queued = Box::pin(conn.read(move |_db| {
+            let _keep = &signal;
+            exec_flag.store(true, Ordering::Release);
+            Ok(1i64)
+        }));
+        let wake = Arc::new(WakeFlag::default());
+        let waker = Waker::from(wake);
+        let mut cx = Context::from_waker(&waker);
+        assert!(matches!(queued.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(!payload_dropped.load(Ordering::Acquire));
+
+        // Dropping the pending future must drop the queued closure immediately while readers are still busy.
+        drop(queued);
+        assert!(
+            payload_dropped.load(Ordering::Acquire),
+            "cancelled queued read must release its closure/custody immediately"
+        );
+
+        tokio::task::spawn_blocking(move || release.wait())
+            .await
+            .unwrap();
+        for blocker in blockers {
+            assert_eq!(blocker.await.unwrap(), 7);
+        }
+        assert!(
+            !executed.load(Ordering::Acquire),
+            "cancelled queued read must not execute after readers become free"
+        );
+        conn.shutdown().await.unwrap();
+    }
 }
 
 struct ReadJob {
     open: bool,
+    cancelled: Option<Arc<AtomicBool>>,
     run: ReadOperation,
     _custody: Option<Custody>,
 }
@@ -1168,8 +1294,10 @@ impl OwnedConnection {
             return self.run(operation).await;
         }
         let (reply, result) = oneshot::channel();
-        self.admission.reads.enqueue(ReadJob {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let job_id = self.admission.reads.enqueue(ReadJob {
             open: true,
+            cancelled: Some(cancelled.clone()),
             _custody: self.custody.clone(),
             run: Box::new(move |db, valid| {
                 if reply.is_closed() {
@@ -1196,7 +1324,15 @@ impl OwnedConnection {
                 )
             }),
         })?;
-        result.await.map_err(|_| StoreError::OperationUnknown)?
+        let mut cancel_guard = ReadCancelGuard {
+            dispatcher: self.admission.reads.clone(),
+            id: job_id,
+            cancelled,
+            active: true,
+        };
+        let outcome = result.await.map_err(|_| StoreError::OperationUnknown)?;
+        cancel_guard.active = false;
+        outcome
     }
 }
 fn read_loop(
@@ -1210,10 +1346,19 @@ fn read_loop(
     let mut connection = None;
     while let Some(ReadJob {
         open,
+        cancelled,
         run,
         _custody,
     }) = dispatcher.pop(index)
     {
+        if cancelled
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            drop(run);
+            drop(_custody);
+            continue;
+        }
         let mut valid = authority.validate();
         if valid.is_ok() && open && connection.is_none() {
             valid = (|| {

@@ -227,11 +227,19 @@ pub struct PreparedRequest {
     pub route_identity: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputBudget {
+    /// Compute the effective output cap from configured model limits and context window.
+    Compute(Option<u64>),
+    /// Preserve an already-frozen effective output cap without recomputing floors or clamps.
+    Frozen(Option<u64>),
+}
+
 pub fn prepare_request(
     settings: &PromptSettings<'_>,
     prompt: PreparedPrompt,
     definitions: Vec<Arc<ToolDefinition>>,
-    max_output_tokens: Option<u64>,
+    output_budget: OutputBudget,
     purpose: ModelPurpose,
     calibration: Option<Calibration>,
 ) -> Result<PreparedRequest, RunError> {
@@ -263,25 +271,30 @@ pub fn prepare_request(
             || context_breakdown.estimated_tokens(),
             |baseline| baseline.estimate(context_breakdown.estimated_tokens()),
         );
-    let requested_output = maka_agent_facts::context::effective_output_limit(max_output_tokens);
-    let requested_output = if purpose == ModelPurpose::Summary {
-        requested_output.max(
-            settings
-                .context_window
-                .unwrap_or(200_000)
-                .saturating_mul(4)
-                .div_ceil(100)
-                .max(1),
-        )
-    } else {
-        requested_output
+    let max_output_tokens = match output_budget {
+        OutputBudget::Frozen(limit) => limit,
+        OutputBudget::Compute(configured) => {
+            let requested_output = maka_agent_facts::context::effective_output_limit(configured);
+            let requested_output = if purpose == ModelPurpose::Summary {
+                requested_output.max(
+                    settings
+                        .context_window
+                        .unwrap_or(200_000)
+                        .saturating_mul(4)
+                        .div_ceil(100)
+                        .max(1),
+                )
+            } else {
+                requested_output
+            };
+            Some(crate::context_input::output_limit(
+                settings.context_window,
+                estimated_input_tokens,
+                requested_output,
+                purpose,
+            ))
+        }
     };
-    let max_output_tokens = Some(crate::context_input::output_limit(
-        settings.context_window,
-        estimated_input_tokens,
-        requested_output,
-        purpose,
-    ));
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Evidence<'a> {

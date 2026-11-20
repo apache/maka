@@ -1211,6 +1211,7 @@ async fn distinct_runs_do_not_block_and_takeover_fences_prior_claim() {
                     vec![Change::new(
                         Fact::StopRequested {
                             diagnostic: "r1".into(),
+                            requester: StopRequester::Internal,
                         },
                         UnixMillis(2),
                     )],
@@ -1227,6 +1228,7 @@ async fn distinct_runs_do_not_block_and_takeover_fences_prior_claim() {
                     vec![Change::new(
                         Fact::StopRequested {
                             diagnostic: "r2".into(),
+                            requester: StopRequester::Internal,
                         },
                         UnixMillis(2),
                     )],
@@ -1306,5 +1308,78 @@ async fn distinct_runs_do_not_block_and_takeover_fences_prior_claim() {
         .unwrap();
 
     drop(store);
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelled_contested_takeover_preserves_prior_claim() {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+
+    let directory = tempfile::tempdir().unwrap();
+    let (root, store) = open(directory.path(), true).await;
+    let (spec1, contents1) = spec();
+    let run1_admission = Admission::new(spec1, UnixMillis(1), contents1);
+    let run1 = run1_admission.run();
+    store.admit(run1_admission).await.unwrap();
+
+    let claim1 = store.claim(run1).await.unwrap();
+    let slot_read = claim1.ticket.slot.current.read().await;
+
+    let mut pending_takeover = Box::pin(store.claim(run1));
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(
+        matches!(pending_takeover.as_mut().poll(&mut cx), Poll::Pending),
+        "takeover must wait while prior claim holds slot read lock"
+    );
+
+    // Cancel the contested takeover before releasing the read lock.
+    drop(pending_takeover);
+    drop(slot_read);
+
+    // Prior claim must neither be retired nor superseded.
+    assert!(
+        !claim1.retirement().is_cancelled(),
+        "cancelled takeover must not retire prior claim"
+    );
+    let view1 = store.frontier(run1).await.unwrap();
+    store
+        .append(
+            &claim1,
+            Head::from(&view1),
+            vec![Change::new(
+                Fact::StopRequested {
+                    diagnostic: "still-current".into(),
+                    requester: StopRequester::Internal,
+                },
+                UnixMillis(2),
+            )],
+            vec![],
+        )
+        .await
+        .expect("prior claim must still own SQL writes after cancelled takeover");
+
+    // A non-cancelled takeover must retire and fence claim1 atomically.
+    let claim2 = store.claim(run1).await.unwrap();
+    assert!(claim1.retirement().is_cancelled());
+    let view2 = store.frontier(run1).await.unwrap();
+    assert!(
+        store
+            .append(
+                &claim1,
+                Head::from(&view2),
+                vec![Change::new(
+                    Fact::RunTerminated {
+                        terminal: Terminal::Cancelled,
+                        diagnostic: None,
+                    },
+                    UnixMillis(3),
+                )],
+                vec![],
+            )
+            .await
+            .is_err()
+    );
+    drop((claim1, claim2, store));
     root.close().await.unwrap();
 }
