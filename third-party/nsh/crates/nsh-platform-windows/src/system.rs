@@ -2305,20 +2305,39 @@ fn set_clipboard_formats(formats: &[(u32, &[u8])]) -> bool {
     }
 }
 
-/// True when the clipboard has an image (a PNG or a bitmap).
+fn registered_image_formats() -> [u32; 6] {
+    use windows::{Win32::System::DataExchange::RegisterClipboardFormatW, core::w};
+    // SAFETY: plain registrations of constant format names.
+    unsafe {
+        [
+            png_format(),
+            RegisterClipboardFormatW(w!("image/png")),
+            RegisterClipboardFormatW(w!("JPEG")),
+            RegisterClipboardFormatW(w!("image/jpeg")),
+            RegisterClipboardFormatW(w!("image/gif")),
+            RegisterClipboardFormatW(w!("image/webp")),
+        ]
+    }
+}
+
+/// True when the clipboard has an image (an encoded image format or a bitmap).
 pub(crate) fn clipboard_has_image() -> bool {
     use windows::Win32::System::{DataExchange::IsClipboardFormatAvailable, Ole::CF_DIB};
     // SAFETY: plain queries.
     unsafe {
-        IsClipboardFormatAvailable(png_format()).is_ok()
+        registered_image_formats()
+            .into_iter()
+            .any(|format| IsClipboardFormatAvailable(format).is_ok())
             || IsClipboardFormatAvailable(u32::from(CF_DIB.0)).is_ok()
     }
 }
 
-/// The clipboard's image: its PNG, else its bitmap as a BMP file.
+/// The clipboard's image: an encoded image format, else its bitmap as a BMP file.
 pub(crate) fn clipboard_image() -> Option<Vec<u8>> {
     use windows::Win32::System::Ole::CF_DIB;
-    clipboard_bytes(png_format())
+    registered_image_formats()
+        .into_iter()
+        .find_map(clipboard_bytes)
         .or_else(|| clipboard_bytes(u32::from(CF_DIB.0)).and_then(|dib| bmp_file(&dib)))
 }
 
