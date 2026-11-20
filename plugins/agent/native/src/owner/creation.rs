@@ -130,14 +130,20 @@ impl Owner {
             None => self.store.data_writer(),
         }
         .map_err(|error| error.to_string())?;
-        let creation = self
+        let mut selected = workspace.clone();
+        let creation = match self
             .store
             .prepare_session_creation(
                 maka_event_log::root_store::SessionCreationRequest {
                     id,
                     fingerprint: &operation.fingerprint,
                     owner_scope: &self.prefix,
-                    workspace,
+                    workspace: move |project_id| {
+                        if let Some(project_id) = project_id {
+                            selected.project_id = Some(project_id);
+                        }
+                        selected
+                    },
                     project,
                     now: now(),
                 },
@@ -145,7 +151,15 @@ impl Owner {
                 move |binding| Ok(serde_json::to_value(configuration(binding))?),
             )
             .await
-            .map_err(|error| error.to_string())?;
+        {
+            Ok(creation) => creation,
+            Err(error) => {
+                if let Some(reason) = creation_rejection(&error) {
+                    return Ok(PreparedCreation::Rejected(reason));
+                }
+                return Err(error.to_string());
+            }
+        };
         let planned = self
             .canonical_catalog()?
             .planned_empty(id)

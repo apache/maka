@@ -309,7 +309,7 @@ impl Owner {
         };
         let (candidate, workspace_statement) = self
             .store
-            .prepare_creation_workspace(&self.prefix, &parent.workspace, None, &writer)
+            .prepare_creation_workspace(&self.prefix, |_| &parent.workspace, None, &writer)
             .await
             .map_err(fork_failure)?;
         let workspace = candidate.reference();

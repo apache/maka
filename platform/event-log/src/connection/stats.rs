@@ -129,16 +129,17 @@ impl OwnedConnection {
     /// Byte counts include every database attached to each connection.
     pub async fn resource_stats(&self) -> Result<ConnectionResourceStats, StoreError> {
         self.require_open()?;
+        let reader_count = self.admission.reads.reader_count();
         if self.read_on_owner {
             let writer = self.run(|connection| observe(connection)).await?;
-            let readers = (0..self.admission.reads.len()).map(|_| None).collect();
+            let readers = (0..reader_count).map(|_| None).collect();
             return Ok(ConnectionResourceStats { writer, readers });
         }
-        let mut pending = Vec::with_capacity(self.admission.reads.len());
-        for jobs in &self.admission.reads {
+        let mut pending = Vec::with_capacity(reader_count);
+        let mut jobs = Vec::with_capacity(reader_count);
+        for _ in 0..reader_count {
             let (reply, result) = oneshot::channel();
-            jobs.send(ReadJob {
-                _slot: None,
+            jobs.push(ReadJob {
                 open: false,
                 _custody: self.custody.clone(),
                 run: Box::new(move |connection, valid| {
@@ -153,11 +154,10 @@ impl OwnedConnection {
                         }),
                     )
                 }),
-            })
-            .await
-            .map_err(|_| StoreError::ConnectionClosed)?;
+            });
             pending.push(result);
         }
+        self.admission.reads.enqueue_targeted_all(jobs)?;
         let mut readers = Vec::with_capacity(pending.len());
         for result in pending {
             readers.push(result.await.map_err(|_| StoreError::OperationUnknown)??);

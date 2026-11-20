@@ -132,11 +132,17 @@ impl Owner {
             .await
             .map_err(|_| Failure::Unknown)?
             .ok_or(Failure::Unavailable)?;
+        let mut selected = workspace.workspace;
         let (candidate, workspace_statement) = self
             .store
             .prepare_creation_workspace(
                 &self.prefix,
-                &workspace.workspace,
+                move |project_id| {
+                    if let Some(project_id) = project_id {
+                        selected.project_id = Some(project_id);
+                    }
+                    selected
+                },
                 Some(workspace.project),
                 &writer,
             )

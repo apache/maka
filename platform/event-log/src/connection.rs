@@ -18,7 +18,7 @@
  */
 
 use crate::StoreError;
-use async_channel::{Receiver, Sender};
+use async_channel::Sender;
 use futures_util::{FutureExt, future::Shared};
 use rusqlite::{Connection, OpenFlags};
 use std::{
@@ -28,11 +28,11 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
-use tokio::sync::{Notify, Semaphore, oneshot, watch};
+use tokio::sync::{Semaphore, oneshot, watch};
 
 mod authority;
 pub use authority::ConnectionAuthority;
@@ -54,7 +54,29 @@ pub trait Query: Send + 'static {
 }
 
 const WRITE_CAPACITY: usize = 32;
-const PURE_READERS: usize = 2;
+
+static SQLITE_CONFIGURED: std::sync::Once = std::sync::Once::new();
+
+/// Disable SQLite's global MEMSTATUS allocator mutex before initialization so
+/// concurrent WAL readers and the writer do not serialize on `sqlite3Malloc`.
+pub fn configure_sqlite() {
+    SQLITE_CONFIGURED.call_once(|| {
+        // SAFETY: `SQLITE_CONFIG_MEMSTATUS` takes a single `c_int` boolean (0 = off).
+        // Calling before `sqlite3_initialize` disables the global `SQLITE_MUTEX_STATIC_MEM`
+        // lock; if SQLite is already initialized in a shared test process, SQLite safely
+        // returns `SQLITE_MISUSE` without side effects.
+        unsafe {
+            let _ = rusqlite::ffi::sqlite3_config(
+                rusqlite::ffi::SQLITE_CONFIG_MEMSTATUS,
+                0 as std::ffi::c_int,
+            );
+        }
+    });
+}
+
+fn pure_reader_count() -> usize {
+    std::thread::available_parallelism().map_or(4, |count| count.get().clamp(4, 8))
+}
 
 /// Physical SQLite opening policy. Anonymous databases stay on their own actor.
 #[derive(Clone)]
@@ -113,6 +135,7 @@ impl OpenOptions {
         self.path.as_os_str().is_empty() || self.path == Path::new(":memory:")
     }
     fn open(&self) -> Result<Connection, StoreError> {
+        configure_sqlite();
         let mut flags = if self.read_only {
             OpenFlags::SQLITE_OPEN_READ_ONLY
         } else {
@@ -188,60 +211,99 @@ impl PreparedWrite {
 }
 type ReadOperation =
     Box<dyn FnOnce(&mut Option<Connection>, Result<(), StoreError>) -> (bool, Reply) + Send>;
-struct ReadSlots {
-    idle: Mutex<Option<VecDeque<usize>>>,
-    changed: Notify,
+struct ReadQueue {
+    closed: bool,
+    active_readers: usize,
+    shared: VecDeque<ReadJob>,
+    targeted: Vec<VecDeque<ReadJob>>,
 }
-impl ReadSlots {
-    fn new() -> Self {
+
+/// Fair MPMC read queue shared by the SQLite reader threads.
+/// Callers enqueue synchronously without awaiting a reader slot, avoiding both
+/// wake-all thundering herds and deadlocks when a dormant child future queued first.
+struct ReadDispatcher {
+    readers: usize,
+    queue: Mutex<ReadQueue>,
+    available: Condvar,
+}
+
+impl ReadDispatcher {
+    fn new(readers: usize) -> Self {
         Self {
-            idle: Mutex::new(Some((0..PURE_READERS).collect())),
-            changed: Notify::new(),
+            readers,
+            queue: Mutex::new(ReadQueue {
+                closed: false,
+                active_readers: 0,
+                shared: VecDeque::new(),
+                targeted: (0..readers).map(|_| VecDeque::new()).collect(),
+            }),
+            available: Condvar::new(),
         }
     }
-    async fn acquire(self: &Arc<Self>) -> Result<ReadSlot, StoreError> {
+
+    fn reader_count(&self) -> usize {
+        self.readers
+    }
+
+    fn register_reader(&self) {
+        self.queue.lock().unwrap().active_readers += 1;
+    }
+
+    fn enqueue(&self, job: ReadJob) -> Result<(), StoreError> {
+        let mut queue = self.queue.lock().unwrap();
+        if queue.closed {
+            return Err(StoreError::ConnectionClosed);
+        }
+        queue.shared.push_back(job);
+        drop(queue);
+        self.available.notify_one();
+        Ok(())
+    }
+
+    fn enqueue_targeted_all(&self, jobs: Vec<ReadJob>) -> Result<(), StoreError> {
+        debug_assert_eq!(jobs.len(), self.readers);
+        let mut queue = self.queue.lock().unwrap();
+        if queue.closed || queue.active_readers < self.readers {
+            return Err(StoreError::ConnectionClosed);
+        }
+        for (index, job) in jobs.into_iter().enumerate() {
+            queue.targeted[index].push_back(job);
+        }
+        drop(queue);
+        self.available.notify_all();
+        Ok(())
+    }
+
+    fn pop(&self, index: usize) -> Option<ReadJob> {
+        let mut queue = self.queue.lock().unwrap();
         loop {
-            let changed = self.changed.notified();
-            let index = self
-                .idle
-                .lock()
-                .unwrap()
-                .as_mut()
-                .ok_or(StoreError::ConnectionClosed)?
-                .pop_front();
-            if let Some(index) = index {
-                return Ok(ReadSlot {
-                    index,
-                    slots: self.clone(),
-                });
+            if let Some(job) = queue.targeted[index].pop_front() {
+                return Some(job);
             }
-            changed.await;
+            if let Some(job) = queue.shared.pop_front() {
+                return Some(job);
+            }
+            if queue.closed {
+                return None;
+            }
+            queue = self.available.wait(queue).unwrap();
         }
     }
+
     fn close(&self) {
-        let was_open = self.idle.lock().unwrap().take().is_some();
-        if was_open {
-            self.changed.notify_waiters();
+        let mut queue = self.queue.lock().unwrap();
+        if !queue.closed {
+            queue.closed = true;
+            self.available.notify_all();
         }
     }
-}
-struct ReadSlot {
-    index: usize,
-    slots: Arc<ReadSlots>,
-}
-impl Drop for ReadSlot {
-    fn drop(&mut self) {
-        let was_empty = {
-            let mut idle = self.slots.idle.lock().unwrap();
-            let Some(idle) = idle.as_mut() else { return };
-            let was_empty = idle.is_empty();
-            idle.push_back(self.index);
-            was_empty
-        };
-        // A waiting query can belong to a child future whose driver is
-        // waiting for a slot itself. Every waiter can recheck availability.
-        if was_empty {
-            self.slots.changed.notify_waiters();
+
+    fn reader_exited(&self, index: usize) {
+        let mut queue = self.queue.lock().unwrap();
+        queue.targeted[index].clear();
+        queue.active_readers = queue.active_readers.saturating_sub(1);
+        if queue.active_readers == 0 {
+            queue.shared.clear();
         }
     }
 }
@@ -249,7 +311,9 @@ impl Drop for ReadSlot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Barrier;
     use std::task::{Context, Poll, Wake, Waker};
+    use std::time::Duration;
 
     #[derive(Default)]
     struct WakeFlag(AtomicBool);
@@ -262,14 +326,57 @@ mod tests {
 
     #[tokio::test]
     async fn returned_reader_wakes_a_driver_behind_its_children() {
-        let slots = Arc::new(ReadSlots::new());
-        let first = slots.acquire().await.unwrap();
-        let _second = slots.acquire().await.unwrap();
-        let first_index = first.index;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("driver-behind-child.sqlite");
+        let conn = Arc::new(
+            OwnedConnection::open(
+                OpenOptions::file(&db_path).create(true).worker_pool(true),
+                ConnectionAuthority::Temporary,
+                |c| {
+                    c.execute_batch(
+                        "PRAGMA journal_mode = WAL; CREATE TABLE items(v INTEGER NOT NULL); INSERT INTO items(v) VALUES (42);",
+                    )?;
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap(),
+        );
 
-        // Older child reads cannot be polled again until their driver resumes.
-        let mut child = std::pin::pin!(slots.acquire());
-        let mut driver = std::pin::pin!(slots.acquire());
+        let reader_count = pure_reader_count();
+        let entered = Arc::new(Barrier::new(reader_count + 1));
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let mut blockers = Vec::with_capacity(reader_count);
+        for _ in 0..reader_count {
+            let conn = conn.clone();
+            let entered = entered.clone();
+            let release = release.clone();
+            blockers.push(tokio::spawn(async move {
+                conn.read(move |_| {
+                    entered.wait();
+                    let (lock, cv) = &*release;
+                    let mut go = lock.lock().unwrap();
+                    while !*go {
+                        go = cv.wait(go).unwrap();
+                    }
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            }));
+        }
+        // Wait until every SQLite reader thread is occupied.
+        tokio::task::spawn_blocking(move || entered.wait())
+            .await
+            .unwrap();
+
+        // Older child read is polled once and then left parked without being polled again.
+        let mut child = std::pin::pin!(
+            conn.read(|c| { Ok(c.query_row("SELECT v FROM items", [], |r| r.get::<_, i64>(0))?) })
+        );
+        let mut driver = std::pin::pin!(
+            conn.read(|c| { Ok(c.query_row("SELECT v FROM items", [], |r| r.get::<_, i64>(0))?) })
+        );
         let wake = Arc::new(WakeFlag::default());
         let waker = Waker::from(wake.clone());
         assert!(
@@ -285,12 +392,28 @@ mod tests {
                 .is_pending()
         );
 
-        drop(first);
-        assert!(wake.0.load(Ordering::Relaxed));
-        let Poll::Ready(Ok(slot)) = driver.as_mut().poll(&mut Context::from_waker(&waker)) else {
-            panic!("driver must acquire the returned slot while the older child is parked");
+        {
+            let (lock, cv) = &*release;
+            *lock.lock().unwrap() = true;
+            cv.notify_all();
+        }
+        for blocker in blockers {
+            blocker.await.unwrap();
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !wake.0.load(Ordering::Acquire) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "driver was not woken while older child stayed parked"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let Poll::Ready(Ok(value)) = driver.as_mut().poll(&mut Context::from_waker(&waker)) else {
+            panic!("driver must complete while the older child is parked");
         };
-        assert_eq!(slot.index, first_index);
+        assert_eq!(value, 42);
+        conn.shutdown().await.unwrap();
     }
 
     struct OffThreadInsert(i64);
@@ -382,31 +505,26 @@ mod tests {
         assert_eq!(value, 9);
 
         let stats = conn.resource_stats().await.unwrap();
-        assert_eq!(stats.readers.len(), PURE_READERS);
+        assert_eq!(stats.readers.len(), pure_reader_count());
         assert!(stats.readers.iter().any(Option::is_some));
         conn.shutdown().await.unwrap();
     }
 }
 
 struct ReadJob {
-    _slot: Option<ReadSlot>,
     open: bool,
     run: ReadOperation,
     _custody: Option<Custody>,
 }
 struct Admission {
     accepting: Arc<AtomicBool>,
-    reads: Vec<Sender<ReadJob>>,
+    reads: Arc<ReadDispatcher>,
     writer: Sender<Envelope>,
-    read_slots: Arc<ReadSlots>,
 }
 impl Admission {
     fn stop(&self) {
         self.accepting.store(false, Ordering::Release);
-        self.read_slots.close();
-        for lane in &self.reads {
-            lane.close();
-        }
+        self.reads.close();
         let _ = self.writer.try_send(Envelope {
             command: Command::Wake,
             _custody: None,
@@ -685,12 +803,12 @@ impl OwnedConnection {
         } else {
             (None, None)
         };
-        let (reads, read_receivers): (Vec<_>, Vec<_>) = if read_on_owner {
-            (Vec::new(), Vec::new())
+        let reader_count = if read_on_owner {
+            0
         } else {
-            (0..PURE_READERS).map(|_| async_channel::bounded(1)).unzip()
+            pure_reader_count()
         };
-        let read_slots = Arc::new(ReadSlots::new());
+        let reads = Arc::new(ReadDispatcher::new(reader_count));
         let accepting = Arc::new(AtomicBool::new(true));
         let physical_released = Arc::new(AtomicBool::new(false));
         let writer_physical_released = physical_released.clone();
@@ -703,7 +821,6 @@ impl OwnedConnection {
             accepting: accepting.clone(),
             reads: reads.clone(),
             writer: jobs.clone(),
-            read_slots: read_slots.clone(),
         });
         let writer = WriterIngress {
             jobs: jobs.clone(),
@@ -772,38 +889,31 @@ impl OwnedConnection {
                             Err(error) => {
                                 startup_error.get_or_insert(StoreError::Io(error));
                                 accepting.store(false, Ordering::Release);
-                                read_slots.close();
-                                for lane in &reads {
-                                    lane.close();
-                                }
+                                reads.close();
                             }
                         }
                     }
                 }
                 if !read_on_owner {
-                    for input in read_receivers {
-                        let input = input.clone();
+                    for index in 0..reader_count {
+                        let dispatcher = reads.clone();
                         let output = jobs.clone();
                         let authority = authority.clone();
                         let options = options.clone();
                         let read_accepting = accepting.clone();
-                        let reader_slots = read_slots.clone();
-                        let read_lanes = reads.clone();
 
                         match std::thread::Builder::new()
                             .name("runtime-sqlite-reader".into())
                             .spawn(move || {
                                 let result = catch_unwind(AssertUnwindSafe(|| {
-                                    read_loop(input, options, authority)
+                                    read_loop(index, &dispatcher, options, authority)
                                 }))
                                 .unwrap_or_else(|_| Err("database reader panicked".into()));
                                 if result.is_err() {
                                     read_accepting.store(false, Ordering::Release);
-                                    reader_slots.close();
-                                    for lane in read_lanes {
-                                        lane.close();
-                                    }
+                                    dispatcher.close();
                                 }
+                                dispatcher.reader_exited(index);
                                 let _ = output.send_blocking(Envelope {
                                     command: Command::ReaderClosed(result),
                                     _custody: None,
@@ -811,16 +921,14 @@ impl OwnedConnection {
                                 });
                             }) {
                             Ok(reader) => {
+                                reads.register_reader();
                                 remaining_readers += 1;
                                 readers.push(reader);
                             }
                             Err(error) => {
                                 startup_error.get_or_insert(StoreError::Io(error));
                                 accepting.store(false, Ordering::Release);
-                                read_slots.close();
-                                for lane in &reads {
-                                    lane.close();
-                                }
+                                reads.close();
                             }
                         }
                     }
@@ -905,19 +1013,13 @@ impl OwnedConnection {
                                 if let Err(error) = result {
                                     failure.get_or_insert(error);
                                     accepting.store(false, Ordering::Release);
-                                    read_slots.close();
-                                    for lane in &reads {
-                                        lane.close();
-                                    }
+                                    reads.close();
                                 }
                                 (true, None)
                             }
                             Command::Take(reply) => {
                                 accepting.store(false, Ordering::Release);
-                                read_slots.close();
-                                for lane in &reads {
-                                    lane.close();
-                                }
+                                reads.close();
                                 transfer = Some(reply);
                                 (true, None)
                             }
@@ -940,12 +1042,9 @@ impl OwnedConnection {
                     } else {
                         retained.extend(active);
                         drop(permits);
-                        read_slots.close();
                         failure.get_or_insert("database transaction cleanup failed".into());
                         accepting.store(false, Ordering::Release);
-                        for lane in &reads {
-                            lane.close();
-                        }
+                        reads.close();
                         receiver.close();
                         if let Some(notify) = notify {
                             notify();
@@ -954,9 +1053,7 @@ impl OwnedConnection {
                     }
                 }
                 // Stop all producers before joining readers; writer never waits for a live read job.
-                for lane in &reads {
-                    lane.close();
-                }
+                reads.close();
                 drop(pending.take());
                 while let Ok(envelope) = receiver.try_recv() {
                     drop(envelope);
@@ -1071,13 +1168,13 @@ impl OwnedConnection {
             return self.run(operation).await;
         }
         let (reply, result) = oneshot::channel();
-        let slot = self.admission.read_slots.acquire().await?;
-        let jobs = &self.admission.reads[slot.index];
-        jobs.send(ReadJob {
-            _slot: Some(slot),
+        self.admission.reads.enqueue(ReadJob {
             open: true,
             _custody: self.custody.clone(),
             run: Box::new(move |db, valid| {
+                if reply.is_closed() {
+                    return (true, Box::new(|| {}));
+                }
                 let connection = match db {
                     Some(connection) => connection,
                     None => {
@@ -1098,26 +1195,24 @@ impl OwnedConnection {
                     }),
                 )
             }),
-        })
-        .await
-        .map_err(|_| StoreError::ConnectionClosed)?;
+        })?;
         result.await.map_err(|_| StoreError::OperationUnknown)?
     }
 }
 fn read_loop(
-    input: Receiver<ReadJob>,
+    index: usize,
+    dispatcher: &ReadDispatcher,
     mut options: OpenOptions,
     authority: Arc<ConnectionAuthority>,
 ) -> Result<(), String> {
     options.create = false;
     options.read_only = true;
     let mut connection = None;
-    while let Ok(ReadJob {
-        _slot,
+    while let Some(ReadJob {
         open,
         run,
         _custody,
-    }) = input.recv_blocking()
+    }) = dispatcher.pop(index)
     {
         let mut valid = authority.validate();
         if valid.is_ok() && open && connection.is_none() {
@@ -1133,7 +1228,6 @@ fn read_loop(
         };
         if !clean && let Some(db) = connection.take() {
             let result = close(db, &authority, _custody.into_iter().collect());
-            drop(_slot);
             if let Some(notify) = notify {
                 notify();
             }
@@ -1141,7 +1235,6 @@ fn read_loop(
             continue;
         }
         drop(_custody);
-        drop(_slot);
         if let Some(notify) = notify {
             notify();
         }

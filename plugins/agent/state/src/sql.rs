@@ -1090,24 +1090,40 @@ fn record(c: &Connection, fact: &RecordedFact) -> Result<(), StoreError> {
     crate::session_history::index(c, fact)?;
     Ok(())
 }
-fn index_usage(c: &Connection, spec: &RunSpec, fact: &RecordedFact) -> Result<(), StoreError> {
-    let sequence = c
-        .prepare_cached("SELECT sequence FROM agent_facts WHERE id=? AND run=?")?
+fn fact_sequence(c: &Connection, fact: &RecordedFact) -> Result<u64, StoreError> {
+    c.prepare_cached("SELECT sequence FROM agent_facts WHERE id=? AND run=?")?
         .query_row(params![fact.id.to_string(), fact.run.to_string()], |row| {
             column_u64(row, 0)
-        })?;
-    crate::usage::index_fact(c, spec, fact, sequence)
+        })
+        .map_err(StoreError::from)
 }
-fn index_derived(c: &Connection, spec: &RunSpec, fact: &RecordedFact) -> Result<(), StoreError> {
-    let sequence = c
-        .prepare_cached("SELECT sequence FROM agent_facts WHERE id=? AND run=?")?
-        .query_row(params![fact.id.to_string(), fact.run.to_string()], |row| {
-            column_u64(row, 0)
-        })?;
+
+fn index_non_recall(
+    c: &Connection,
+    spec: &RunSpec,
+    fact: &RecordedFact,
+    sequence: u64,
+) -> Result<(), StoreError> {
     crate::session_catalog::index_fact(c, spec, fact, sequence)?;
+    crate::diagnostics::index_fact(c, spec, fact, sequence)?;
+    Ok(())
+}
+
+fn index_recall(
+    c: &Connection,
+    spec: &RunSpec,
+    fact: &RecordedFact,
+    sequence: u64,
+) -> Result<(), StoreError> {
     crate::recall::index_fact(c, spec, fact, sequence)?;
     crate::recall::index_sources(c, spec, sequence)?;
-    crate::diagnostics::index_fact(c, spec, fact, sequence)?;
+    Ok(())
+}
+
+fn index_derived(c: &Connection, spec: &RunSpec, fact: &RecordedFact) -> Result<(), StoreError> {
+    let sequence = fact_sequence(c, fact)?;
+    index_non_recall(c, spec, fact, sequence)?;
+    index_recall(c, spec, fact, sequence)?;
     Ok(())
 }
 pub(crate) fn fact(
@@ -1215,9 +1231,10 @@ pub(crate) fn admit(c: &Connection, admission: Admission) -> Result<(Commit, boo
             admission.at,
         )?;
     }
-    index_derived(c, &view.spec, &recorded)?;
+    let sequence = fact_sequence(c, &recorded)?;
+    index_non_recall(c, &view.spec, &recorded, sequence)?;
     persist(c, &view)?;
-    index_usage(c, &view.spec, &recorded)?;
+    crate::usage::index_fact(c, &view.spec, &recorded, sequence)?;
     // A compaction or handoff continues earlier work; what waits after a user
     // Stop waits for a Run that starts new work.
     if matches!(view.spec.origin, RunOrigin::Local)
@@ -1231,6 +1248,9 @@ pub(crate) fn admit(c: &Connection, admission: Admission) -> Result<(Commit, boo
     {
         crate::queue::deliver_held(c, &view, admission.id, admission.at)?;
     }
+    // Keep Recall FTS5 writes last so preceding ON CONFLICT upserts do not
+    // open implicit statement savepoints that force mid-statement fts5IndexFlush.
+    index_recall(c, &view.spec, &recorded, sequence)?;
     Ok((
         Commit {
             head: Head::from(&view),
@@ -1597,13 +1617,21 @@ pub(crate) fn append(
         return Err(invalid("steering consumption requires StepPrepared"));
     }
     crate::artifacts::append(c, run, &facts, artifacts)?;
+    let mut indexed = Vec::with_capacity(facts.len());
     for fact in &facts {
         crate::session_history::index_retained(c, fact)?;
-        index_derived(c, &view.spec, fact)?;
+        let sequence = fact_sequence(c, fact)?;
+        index_non_recall(c, &view.spec, fact, sequence)?;
+        indexed.push((fact, sequence));
     }
     persist(c, &view)?;
-    for fact in &facts {
-        index_usage(c, &view.spec, fact)?;
+    for &(fact, sequence) in &indexed {
+        crate::usage::index_fact(c, &view.spec, fact, sequence)?;
+    }
+    // Keep Recall FTS5 writes last so preceding ON CONFLICT / INSERT OR IGNORE
+    // statements do not trigger redundant fts5SavepointMethod -> fts5IndexFlush.
+    for &(fact, sequence) in &indexed {
+        index_recall(c, &view.spec, fact, sequence)?;
     }
     Ok((
         Commit {
