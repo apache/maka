@@ -19,15 +19,16 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Output};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use maka_host_runtime::application::host::Client as HostClient;
 use maka_host_runtime::application::host::discovery;
+use maka_mock_ai::{
+    ControlPlaneConfig, FinishReason, HttpErrorSpec, MockAiBuilder, MockAiServer, ModelEntry,
+    NormalizedRequest, TurnContext, TurnEvent, TurnPlan, Usage,
+};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, TcpStream};
 
 struct IsolatedEnv {
     _root: tempfile::TempDir,
@@ -338,120 +339,31 @@ enum MockMode {
     SingleTurnClean { cached_tokens: Option<u64> },
 }
 
-async fn start_mock_provider(mode: MockMode) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind loopback");
-    let addr = listener.local_addr().expect("local addr");
-    let counter = Arc::new(AtomicUsize::new(0));
-    let mode = Arc::new(mode);
-    tokio::spawn(async move {
-        while let Ok((stream, _)) = listener.accept().await {
-            let counter = Arc::clone(&counter);
-            let mode = Arc::clone(&mode);
-            tokio::spawn(async move {
-                let _ = handle_http(stream, counter, mode).await;
-            });
-        }
-    });
-    format!("http://{addr}/v1")
+fn usage_with_cache(input: u64, output: u64, cached: Option<u64>) -> Usage {
+    let mut u = Usage::new(input, output);
+    if let Some(c) = cached {
+        u = u.with_cache_read(c);
+    }
+    u
 }
 
-async fn handle_http(
-    stream: TcpStream,
-    counter: Arc<AtomicUsize>,
-    mode: Arc<MockMode>,
-) -> std::io::Result<()> {
-    let mut reader = BufReader::new(stream);
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line).await? == 0 {
-        return Ok(());
-    }
-    let is_get = request_line.starts_with("GET ");
-    let mut content_length = 0usize;
-    let mut chunked = false;
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line).await?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            break;
-        }
-        if let Some((k, v)) = trimmed.split_once(':') {
-            if k.eq_ignore_ascii_case("content-length") {
-                content_length = v.trim().parse().unwrap_or(0);
-            } else if k.eq_ignore_ascii_case("transfer-encoding")
-                && v.to_ascii_lowercase().contains("chunked")
-            {
-                chunked = true;
+async fn start_mock_provider(mode: MockMode) -> MockAiServer {
+    MockAiBuilder::new()
+        .control(ControlPlaneConfig {
+            models: vec![ModelEntry::simple("deepseek-chat")],
+            ..Default::default()
+        })
+        .handler_fn(move |req: &NormalizedRequest, ctx: &TurnContext| {
+            let call_idx = ctx.global_turn;
+            if matches!(mode, MockMode::Retry429AndDelegateSubagent { .. }) && call_idx == 1 {
+                return TurnPlan::http_error(HttpErrorSpec::rate_limit(Some(0), "rate limit"));
             }
-        }
-    }
-
-    let body_bytes = if chunked {
-        let mut buf = Vec::new();
-        loop {
-            let mut size_line = String::new();
-            reader.read_line(&mut size_line).await?;
-            let hex = size_line.trim().split(';').next().unwrap_or("0");
-            let size = usize::from_str_radix(hex, 16).unwrap_or(0);
-            if size == 0 {
-                let mut trailer = String::new();
-                reader.read_line(&mut trailer).await?;
-                break;
-            }
-            let start = buf.len();
-            buf.resize(start + size, 0);
-            reader.read_exact(&mut buf[start..]).await?;
-            let mut crlf = [0u8; 2];
-            reader.read_exact(&mut crlf).await?;
-        }
-        buf
-    } else {
-        let mut buf = vec![0u8; content_length];
-        if content_length > 0 {
-            reader.read_exact(&mut buf).await?;
-        }
-        buf
-    };
-
-    let mut stream = reader.into_inner();
-    if is_get {
-        let payload = br#"{"data":[{"id":"deepseek-chat"}]}"#;
-        let header = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            payload.len()
-        );
-        stream.write_all(header.as_bytes()).await?;
-        stream.write_all(payload).await?;
-        return stream.flush().await;
-    }
-
-    let req: Value = serde_json::from_slice(&body_bytes).unwrap_or(Value::Null);
-    let call_idx = counter.fetch_add(1, Ordering::SeqCst) + 1;
-    if matches!(*mode, MockMode::Retry429AndDelegateSubagent { .. }) && call_idx == 1 {
-        let err = br#"{"error":{"message":"rate limit","type":"rate_limit_error"}}"#;
-        let header = format!(
-            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 0\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            err.len()
-        );
-        stream.write_all(header.as_bytes()).await?;
-        stream.write_all(err).await?;
-        return stream.flush().await;
-    }
-
-    stream
-        .write_all(
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
-        )
-        .await?;
-
-    match &*mode {
-        MockMode::Retry429AndDelegateSubagent { workspace_path } => {
-            let msgs = req["messages"].to_string();
-            if call_idx == 2 {
-                let code = format!(
-                    r#"
+            match &mode {
+                MockMode::Retry429AndDelegateSubagent { workspace_path } => {
+                    let msgs = req.raw_body["messages"].to_string();
+                    if call_idx == 2 {
+                        let code = format!(
+                            r#"
                     const ml = await tools.ModelList({{ request: {{ kind: "start" }} }});
                     const backend = ml.choices.find(c => c.selection.kind === "model").selection;
                     const created = await tools.SessionCreate({{
@@ -469,157 +381,53 @@ async fn handle_http(
                     }}
                     text("DELEGATION_COMPLETE:" + cid);
                     "#,
-                    serde_json::to_string(workspace_path).unwrap()
-                );
-                write_sse_tool_call(
-                    &mut stream,
-                    "call_1",
-                    "exec",
-                    &json!({ "code": code }),
-                    100,
-                    20,
-                    Some(20),
-                )
-                .await?;
-            } else if msgs.contains("DELEGATED_CHILD_PROMPT")
-                && !msgs.contains("DELEGATION_COMPLETE:")
-            {
-                write_sse_text(&mut stream, "CHILD_DONE_TOKEN", 500, 100, Some(20)).await?;
-            } else {
-                write_sse_text(&mut stream, "Parent task completed.", 150, 30, Some(20)).await?;
+                            serde_json::to_string(workspace_path).unwrap()
+                        );
+                        TurnPlan::new()
+                            .push_tool_call("call_1", "exec", json!({ "code": code }))
+                            .with_usage(usage_with_cache(100, 20, Some(20)))
+                            .finish(FinishReason::ToolCalls)
+                    } else if msgs.contains("DELEGATED_CHILD_PROMPT")
+                        && !msgs.contains("DELEGATION_COMPLETE:")
+                    {
+                        TurnPlan::new()
+                            .push_text("CHILD_DONE_TOKEN")
+                            .with_usage(usage_with_cache(500, 100, Some(20)))
+                            .finish(FinishReason::Stop)
+                    } else {
+                        TurnPlan::new()
+                            .push_text("Parent task completed.")
+                            .with_usage(usage_with_cache(150, 30, Some(20)))
+                            .finish(FinishReason::Stop)
+                    }
+                }
+                MockMode::MaxStepsSlowSecondTurn => {
+                    if call_idx == 1 {
+                        TurnPlan::new()
+                            .push_tool_call(
+                                "call_step1",
+                                "exec",
+                                json!({ "code": "text('step-1-ok');" }),
+                            )
+                            .with_usage(usage_with_cache(80, 20, Some(20)))
+                            .finish(FinishReason::ToolCalls)
+                    } else {
+                        TurnPlan::new()
+                            .push_text("Continuing step 2...")
+                            .push(TurnEvent::Delay { ms: 2000 })
+                            .push(TurnEvent::TruncateEof)
+                    }
+                }
+                MockMode::SingleTurnClean { cached_tokens } => TurnPlan::new()
+                    .push_text("Clean completion.")
+                    .with_usage(usage_with_cache(100, 20, *cached_tokens))
+                    .finish(FinishReason::Stop),
             }
-        }
-        MockMode::MaxStepsSlowSecondTurn => {
-            if call_idx == 1 {
-                write_sse_tool_call(
-                    &mut stream,
-                    "call_step1",
-                    "exec",
-                    &json!({ "code": "text('step-1-ok');" }),
-                    80,
-                    20,
-                    Some(20),
-                )
-                .await?;
-            } else {
-                let first_chunk = json!({
-                    "id": "c_slow",
-                    "object": "chat.completion.chunk",
-                    "choices": [{
-                        "index": 0,
-                        "delta": { "role": "assistant", "content": "Continuing step 2..." },
-                        "finish_reason": Value::Null,
-                    }]
-                });
-                stream
-                    .write_all(format!("data: {first_chunk}\n\n").as_bytes())
-                    .await?;
-                stream.flush().await?;
-                tokio::time::sleep(Duration::from_secs(2)).await;
-            }
-        }
-        MockMode::SingleTurnClean { cached_tokens } => {
-            write_sse_text(&mut stream, "Clean completion.", 100, 20, *cached_tokens).await?;
-        }
-    }
-    Ok(())
+        })
+        .start()
+        .await
+        .expect("start mock-ai server")
 }
-
-async fn write_sse_tool_call(
-    stream: &mut TcpStream,
-    call_id: &str,
-    name: &str,
-    args: &Value,
-    prompt_tokens: u64,
-    completion_tokens: u64,
-    cached_tokens: Option<u64>,
-) -> std::io::Result<()> {
-    let delta = json!({
-        "id": "c_tool",
-        "object": "chat.completion.chunk",
-        "choices": [{
-            "index": 0,
-            "delta": {
-                "role": "assistant",
-                "tool_calls": [{
-                    "index": 0,
-                    "id": call_id,
-                    "type": "function",
-                    "function": { "name": name, "arguments": args.to_string() }
-                }]
-            },
-            "finish_reason": Value::Null,
-        }]
-    });
-    write_sse_final(
-        stream,
-        "c_tool",
-        &delta,
-        "tool_calls",
-        prompt_tokens,
-        completion_tokens,
-        cached_tokens,
-    )
-    .await
-}
-
-async fn write_sse_text(
-    stream: &mut TcpStream,
-    content: &str,
-    prompt_tokens: u64,
-    completion_tokens: u64,
-    cached_tokens: Option<u64>,
-) -> std::io::Result<()> {
-    let delta = json!({
-        "id": "c_txt",
-        "object": "chat.completion.chunk",
-        "choices": [{
-            "index": 0,
-            "delta": { "role": "assistant", "content": content },
-            "finish_reason": Value::Null,
-        }]
-    });
-    write_sse_final(
-        stream,
-        "c_txt",
-        &delta,
-        "stop",
-        prompt_tokens,
-        completion_tokens,
-        cached_tokens,
-    )
-    .await
-}
-
-async fn write_sse_final(
-    stream: &mut TcpStream,
-    id: &str,
-    delta: &Value,
-    finish_reason: &str,
-    prompt_tokens: u64,
-    completion_tokens: u64,
-    cached_tokens: Option<u64>,
-) -> std::io::Result<()> {
-    let mut usage = json!({
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": prompt_tokens + completion_tokens,
-    });
-    if let Some(cached) = cached_tokens {
-        usage["prompt_tokens_details"] = json!({ "cached_tokens": cached });
-    }
-    let fin = json!({
-        "id": id,
-        "object": "chat.completion.chunk",
-        "choices": [{ "index": 0, "delta": {}, "finish_reason": finish_reason }],
-        "usage": usage,
-    });
-    stream
-        .write_all(format!("data: {delta}\n\ndata: {fin}\n\ndata: [DONE]\n\n").as_bytes())
-        .await?;
-    stream.flush().await
-}
-
 fn write_fake_harbor_cli(
     dir: &Path,
     guest_result: Option<&Path>,
@@ -718,12 +526,13 @@ fn guest_run_unlinks_secret_request_and_records_infra_failure() {
 #[tokio::test]
 async fn guest_run_completed_accounts_delegated_subagents_retries_429_and_keeps_host_alive() {
     let env = IsolatedEnv::new(true);
-    let base_url = start_mock_provider(MockMode::Retry429AndDelegateSubagent {
+    let mock_server = start_mock_provider(MockMode::Retry429AndDelegateSubagent {
         workspace_path: env.workspace.to_string_lossy().into_owned(),
     })
     .await;
 
-    let (guest_json, res_path, transcript_path) = env.run_guest_live(&base_url, 5).await;
+    let (guest_json, res_path, transcript_path) =
+        env.run_guest_live(&mock_server.base_url(), 5).await;
     assert_eq!(guest_json["status"], "completed");
     assert_eq!(guest_json["evidence"]["stepsObserved"], 2);
 
@@ -771,11 +580,12 @@ async fn guest_run_completed_accounts_delegated_subagents_retries_429_and_keeps_
     assert_eq!(summary["guest"]["costUsd"], Value::Null);
     assert!(summary["guest"].get("meteringError").is_none());
 
-    let clean_url = start_mock_provider(MockMode::SingleTurnClean {
+    let clean_server = start_mock_provider(MockMode::SingleTurnClean {
         cached_tokens: Some(20),
     })
     .await;
-    let (_, clean_res_path, clean_transcript_path) = env.run_guest_live(&clean_url, 2).await;
+    let (_, clean_res_path, clean_transcript_path) =
+        env.run_guest_live(&clean_server.base_url(), 2).await;
     assert_eq!(env.retire_live_hosts().await, 1);
 
     let (clean_out, clean_summary_path) = env.run_harbor(
@@ -795,12 +605,12 @@ async fn guest_run_completed_accounts_delegated_subagents_retries_429_and_keeps_
     assert_eq!(clean_summary["guest"]["metering"], "complete");
     assert!((clean_summary["guest"]["costUsd"].as_f64().unwrap() - 0.000045).abs() < 1e-12);
 
-    let no_cache_url = start_mock_provider(MockMode::SingleTurnClean {
+    let no_cache_server = start_mock_provider(MockMode::SingleTurnClean {
         cached_tokens: None,
     })
     .await;
     let (_, no_cache_res_path, no_cache_transcript_path) =
-        env.run_guest_live(&no_cache_url, 2).await;
+        env.run_guest_live(&no_cache_server.base_url(), 2).await;
     assert_eq!(env.retire_live_hosts().await, 1);
 
     let (no_cache_out, no_cache_summary_path) = env.run_harbor(
@@ -832,9 +642,10 @@ async fn guest_run_completed_accounts_delegated_subagents_retries_429_and_keeps_
 #[tokio::test]
 async fn guest_run_max_steps_stops_in_flight_stream_retires_host_and_passes_validation() {
     let env = IsolatedEnv::new(true);
-    let base_url = start_mock_provider(MockMode::MaxStepsSlowSecondTurn).await;
+    let mock_server = start_mock_provider(MockMode::MaxStepsSlowSecondTurn).await;
 
-    let (guest_json, res_path, transcript_path) = env.run_guest_live(&base_url, 1).await;
+    let (guest_json, res_path, transcript_path) =
+        env.run_guest_live(&mock_server.base_url(), 1).await;
     assert_eq!(guest_json["status"], "subjectStopped");
     assert!(
         guest_json["stopReason"]

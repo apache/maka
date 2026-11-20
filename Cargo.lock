@@ -8488,6 +8488,7 @@ dependencies = [
  "maka-host-js",
  "maka-host-runtime",
  "maka-js-runtime",
+ "maka-mock-ai",
  "maka-packages",
  "maka-plugin-core",
  "maka-process",
@@ -8723,6 +8724,7 @@ dependencies = [
  "maka-app-client",
  "maka-capabilities",
  "maka-host-runtime",
+ "maka-mock-ai",
  "maka-plugin-core",
  "maka-sandbox",
  "maka-settings-native",
@@ -9032,6 +9034,36 @@ dependencies = [
  "tokio",
  "tokio-util",
  "which 8.0.6",
+]
+
+[[package]]
+name = "maka-mock-ai"
+version = "0.2.0"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "clap",
+ "fastrand",
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "maka-provider-protocol",
+ "regex",
+ "reqwest",
+ "rustls-pemfile",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite 0.30.0",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "yaml-rust2",
 ]
 
 [[package]]
