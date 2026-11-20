@@ -35,7 +35,7 @@ use maka_sandbox::workspace::{BindingStamp, PermissionBasis};
 use std::{path::Path, sync::Arc};
 use uuid::Uuid;
 
-async fn open(base: &Path, initialize: bool) -> (RootStore, Store) {
+pub(super) async fn open(base: &Path, initialize: bool) -> (RootStore, Store) {
     let namespaces = RootNamespaces {
         ownership: base.join("owners"),
         control: base.join("control"),
@@ -59,7 +59,7 @@ async fn open(base: &Path, initialize: bool) -> (RootStore, Store) {
     (root, store)
 }
 
-fn spec() -> (RunSpec, Vec<ContentBlob>) {
+pub(super) fn spec() -> (RunSpec, Vec<ContentBlob>) {
     let blob = ContentBlob::json(&RunInput::Message {
         content: MessageInput::from("fixture"),
         request_fingerprint: None,
@@ -120,7 +120,7 @@ fn spec() -> (RunSpec, Vec<ContentBlob>) {
     (spec, vec![blob])
 }
 
-async fn enqueue(
+pub(super) async fn enqueue(
     store: &Store,
     basis: &RunSpec,
     message: &str,

@@ -90,6 +90,7 @@ mod metadata;
 pub use metadata::{NotificationAttention, NotificationState};
 mod publication;
 mod quiescence;
+mod removal;
 pub use content::{ContentBlob, ImmutableContentBody};
 pub use publication::PublicationRead;
 pub use quiescence::{SessionObligation, SessionQuiescence, SessionQuiescenceGuard};
