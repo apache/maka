@@ -123,7 +123,15 @@ export function createComposerPaste<Owner extends PasteOwner>(options: {
       if (!node || !owner || !options.active() || !editable(owner) || options.composing()) return;
       // Pixel terminals render natively but retain Control-key shortcuts.
       const controlKeys = keymap.label('mod+v') === keymap.label('ctrl+v');
-      const keys = controlKeys ? ['mod+v', 'alt+v', 'ctrl+alt+v'] : ['mod+v'];
+      const keys =
+        platform.idiom === 'terminal'
+          ? controlKeys
+            ? ['mod+v', 'alt+v', 'ctrl+alt+v']
+            : ['mod+v']
+          : platform.os === 'macos' && controlKeys
+            ? ['alt+v', 'ctrl+alt+v']
+            : [];
+      if (!keys.length) return;
       const unbind = keys.map((key) =>
         node.bindKey(key, () => {
           const target = capture(owner);

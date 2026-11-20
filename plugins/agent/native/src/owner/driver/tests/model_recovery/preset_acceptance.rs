@@ -398,7 +398,7 @@ async fn tool_round(
     approved_round(rig, provider, session, code, name, input, "run").await
 }
 
-/// When the Session may request permissions, a Web call, a Shell call with
+/// In a sandboxed Session that may request permissions, a Web call, a Shell call with
 /// additional permissions and a file write in a read-only Session must raise a
 /// request, which this approves at `scope`.
 async fn approved_round(
@@ -445,7 +445,9 @@ async fn approved_round(
         .await?
         .configuration
         .permissions;
-    let approve = (matches!(name, "WebFetch" | "WebSearch")
+    let approve = (((matches!(name, "WebFetch" | "WebSearch")
+        || (name == "BackgroundTaskHealth" && input.get("url").is_some()))
+        && permissions.access != maka_agent_api::contract::WorkspaceAccess::DangerFullAccess)
         || (name == "Shell" && input.get("additional_permissions").is_some())
         || (name == "Write"
             && permissions.access == maka_agent_api::contract::WorkspaceAccess::ReadOnly))
@@ -589,7 +591,7 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 {"name":"WebFetch","description":"Fetch a URL","target":{"kind":"import","name":"web"},"method":"fetch","input":"web","nestable":true,"result":"json","confirmation":"preapproved"},
                 {"name":"WebSearch","description":"Search the web","target":{"kind":"import","name":"web"},"method":"search","input":"web","nestable":true,"result":"json","confirmation":"preapproved"}
             ]);
-            config["mcpServers"] = json!([{"name":"fixture","transport":{"type":"streamable_http","url":format!("{address}/mcp")},"preapproved":true}]);
+            config["mcpServers"] = json!([{"name":"fixture","transport":{"type":"streamable_http","url":format!("{address}/mcp")}}]);
         }).await?;
         std::fs::write(base.join("workspace/input.txt"),"local-acceptance-marker")?;
         image::RgbImage::from_pixel(17, 13, image::Rgb([19, 23, 31]))
@@ -608,17 +610,24 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
         let preset = preset(client,&model,"Keep the reviewer role.").await?;
         let session = create(client, &base, &model, None).await?;
         let id = session["id"].as_str().unwrap();
-        for requests in [true, false] {
+        for (access, requests) in [("danger_full_access", false), ("workspace_write", true), ("workspace_write", false)] {
             let owner = rig.captured.lock().unwrap().clone().unwrap();
             let revision = owner.mutable_session(id).await?.revision;
             let changed = call(client, "agent", "metadata", json!({
-                "sessionId":id,"expectedRevision":revision,"title":"Sandboxed search","labels":[],
-                "permissions":{"settings":{"access":"workspace_write","requestPermissions":requests},"revokeGrants":true}
+                "sessionId":id,"expectedRevision":revision,"title":"Search permissions","labels":[],
+                "permissions":{"settings":{"access":access,"requestPermissions":requests},"revokeGrants":true}
             })).await?;
             assert_eq!(changed["kind"], "committed", "{changed}");
+            let before = search_calls.load(Ordering::SeqCst);
             let output = tool_round(&rig, &mut provider, id, code, "WebSearch", json!({"query":"Rust","limit":1})).await?;
-            if requests {
+            let allowed = access == "danger_full_access" || requests;
+            assert_eq!(search_calls.load(Ordering::SeqCst) - before, usize::from(allowed), "{output}");
+            if allowed {
                 assert!(output.contains("https://www.rust-lang.org/"), "{output}");
+            } else {
+                assert!(output.contains("WebSearch network access was denied"), "{output}");
+            }
+            if requests {
                 // An HTTP error page is an ordinary result, not an unknown effect.
                 let missing = tool_round(&rig, &mut provider, id, code, "WebFetch", json!({"url":format!("{address}/missing")})).await?;
                 assert!(missing.contains("WebFetch failed with HTTP 404"), "{missing}");
@@ -635,10 +644,7 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 let limited = tool_round(&rig, &mut provider, id, code, "WebSearch", json!({"query":"Rust","limit":1})).await?;
                 assert!(limited.contains("WebSearch rate limit exceeded"), "{limited}");
                 assert!(!limited.contains("outcome unknown"), "{limited}");
-            } else {
-                assert!(output.contains("WebSearch network access was denied"), "{output}");
             }
-            assert_eq!(search_calls.load(Ordering::SeqCst), 1, "{output}");
         }
         for selected in [None,Some(&preset)] {
             std::fs::write(base.join("workspace/output.txt"),"unchanged-before-write")?;
@@ -746,6 +752,7 @@ async fn shell_and_web_network_grants_stay_with_their_tools() -> TestResult<()> 
         let boot = bootstrap_with(&base, provider.url.clone(), |config| {
             config["tools"] = json!([
                 {"name":"Shell","description":"Run a command","target":{"kind":"import","name":"processes"},"method":"execute","input":"shell","nestable":true,"result":"json","confirmation":"preapproved"},
+                {"name":"BackgroundTaskHealth","description":"Probe a running service","target":{"kind":"import","name":"processes"},"method":"health","result":"json","confirmation":"preapproved"},
                 {"name":"ProcessInput","description":"Write to a background process","target":{"kind":"import","name":"processes"},"method":"writeStdin","nestable":true,"result":"json","confirmation":"preapproved"},
                 {"name":"WebFetch","description":"Fetch a URL","target":{"kind":"import","name":"web"},"method":"fetch","input":"web","nestable":true,"result":"json","confirmation":"preapproved"}
             ]);
@@ -777,6 +784,13 @@ async fn shell_and_web_network_grants_stay_with_their_tools() -> TestResult<()> 
         let input = tool_round(&rig, &mut provider, id, false, "ProcessInput", json!({"ref":reference,"input":"ready\n"})).await?;
         assert!(input.contains(r#"\"kind\":\"completed\""#), "{input}");
 
+        let status = tool_round(&rig, &mut provider, id, false, "BackgroundTaskHealth",
+            json!({"ref":reference})).await?;
+        assert!(status.contains(r#"\"state\":\"not_checked\""#), "{status}");
+        let probe = approved_round(&rig, &mut provider, id, false, "BackgroundTaskHealth",
+            json!({"ref":reference,"url":format!("{first}/page")}), "once").await?;
+        assert!(probe.contains(r#"\"httpStatus\":200"#), "{probe}");
+
         // A Web grant does not reach Shell. The proxy a leaked Web grant installs
         // would carry this request, so it runs without `--noproxy`.
         let web = approved_round(&rig, &mut provider, id, false, "WebFetch", json!({"url":format!("{first}/page")}), "session").await?;
@@ -807,6 +821,23 @@ async fn shell_and_web_network_grants_stay_with_their_tools() -> TestResult<()> 
         assert_eq!(calls.load(Ordering::SeqCst), before + 2, "{shell}");
         let web = approved_round(&rig, &mut provider, id, false, "WebFetch", json!({"url":format!("{second}/page")}), "session").await?;
         assert!(web.contains("network-grant-marker"), "{web}");
+        for (access, may_request, expected) in [
+            ("workspace_write", false, r#"\"state\":\"unknown\""#),
+            ("danger_full_access", false, r#"\"httpStatus\":200"#),
+            ("danger_full_access", true, r#"\"httpStatus\":200"#),
+        ] {
+            let revision = owner.mutable_session(id).await?.revision;
+            let changed = call(client, "agent", "metadata", json!({
+                "sessionId":id,"expectedRevision":revision,"title":"Network grants","labels":[],
+                "permissions":{"settings":{"access":access,"requestPermissions":may_request},"revokeGrants":true}
+            })).await?;
+            assert_eq!(changed["kind"], "committed", "{changed}");
+            let before = calls.load(Ordering::SeqCst);
+            let probe = tool_round(&rig, &mut provider, id, false, "BackgroundTaskHealth",
+                json!({"ref":reference,"url":format!("{first}/page")})).await?;
+            assert!(probe.contains(expected), "{probe}");
+            assert_eq!(calls.load(Ordering::SeqCst) - before, usize::from(access == "danger_full_access"), "{probe}");
+        }
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     })).catch_unwind().await;
     let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;

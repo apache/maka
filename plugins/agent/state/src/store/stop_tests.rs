@@ -254,7 +254,7 @@ async fn interrupted_steer_precedes_worker_completions_after_queue_rebuild() {
             .unwrap();
     }
     assert!(store.frontier(run.run()).await.unwrap().stopped);
-    queue.rebuild(spec.session_id.clone()).await.unwrap();
+    let rebuilt = queue.rebuild(spec.session_id.clone()).await.unwrap();
     let entries = queue.read(spec.session_id.clone()).await.unwrap().entries;
     assert_eq!(
         entries
@@ -263,6 +263,15 @@ async fn interrupted_steer_precedes_worker_completions_after_queue_rebuild() {
             .collect::<Vec<_>>(),
         ["steer", "worker-1", "worker-2"]
     );
+    let pending = queue
+        .pending_steer_revision(
+            spec.session_id.clone(),
+            entries[0].request.id.clone(),
+            run.run(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pending, Some(rebuilt.revision));
     let first = queue.ready(spec.owner.clone(), None, 1).await.unwrap();
     assert_eq!(first[0].entry, entries[0]);
     let rest = queue
@@ -309,6 +318,12 @@ async fn pausing_a_goal_preserves_pending_steering_as_an_independent_turn() {
         )
         .await
         .unwrap();
+    let steering_revision =
+        || queue.pending_steer_revision(spec.session_id.clone(), request.id.clone(), goal.run());
+    assert_eq!(
+        steering_revision().await.unwrap(),
+        Some(before.revision + 1)
+    );
     let stop = Change::new(
         Fact::StopRequested {
             diagnostic: GOAL_CONTROL_STOP.into(),
@@ -333,6 +348,7 @@ async fn pausing_a_goal_preserves_pending_steering_as_an_independent_turn() {
         }]
     );
     queue.rebuild(spec.session_id.clone()).await.unwrap();
+    assert_eq!(steering_revision().await.unwrap(), None);
     assert_eq!(queue.read(spec.session_id.clone()).await.unwrap(), pending);
 
     // Before the handoff existed, the Stop fact was committed without the last queue event.

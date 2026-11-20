@@ -238,6 +238,35 @@ impl Directory {
         &self.anchors[0].path
     }
 
+    /// The workspace path that a home-relative path (`~` or `~/…`) names, or `None`
+    /// for the workspace root. A path outside this workspace stays invalid.
+    pub fn home_path(
+        &self,
+        path: &WorkspacePath,
+        home: &Path,
+    ) -> io::Result<Option<WorkspacePath>> {
+        expose((|| {
+            let bytes = path.bytes().map_err(|_| error("files_invalid_path"))?;
+            let rest = if bytes == b"~" {
+                &[][..]
+            } else {
+                bytes
+                    .strip_prefix(b"~/")
+                    .ok_or_else(|| error("files_invalid_path"))?
+            };
+            let rest =
+                gix::path::from_bstr(rest.as_bstr()).map_err(|_| error("files_invalid_path"))?;
+            let full = dunce::canonicalize(home)?.join(rest);
+            let relative = full
+                .strip_prefix(&self.anchors[0].path)
+                .map_err(|_| error("files_invalid_path"))?;
+            if relative.as_os_str().is_empty() {
+                return Ok(None);
+            }
+            WorkspacePath::from_path(relative).map(Some)
+        })())
+    }
+
     /// All paths and the Binding are trusted Owner authority; path alone is caller data.
     pub fn open(
         workspace: &Path,

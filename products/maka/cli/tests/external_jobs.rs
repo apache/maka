@@ -1647,37 +1647,43 @@ async fn antigravity_accepts_steers_through_cancel_and_resume() {
         };
         let during_cancel = enqueue("ACP-steer-promote-cancel").await?;
         let during_resume = enqueue("ACP-steer-promote-resume").await?;
-        let promote = |message_id: Value| {
-            let sdk = &sdk;
-            let session = &session;
-            async move {
-                let queue = query(sdk, "agent", "queue", json!({"sessionId":session})).await?;
-                mutate(
-                    sdk,
-                    "agent",
-                    "editQueue",
-                    json!({
-                        "sessionId":session, "expectedRevision":queue["revision"],
-                        "edit":{"kind":"promote", "messageId":message_id}
-                    }),
-                )
-                .await
-            }
+        let snapshot = || query(&sdk, "agent", "queue", json!({"sessionId":session}));
+        let promote = |message: &Value, snapshot: &Value| {
+            mutate(
+                &sdk,
+                "agent",
+                "editQueue",
+                json!({
+                    "sessionId":session, "expectedRevision":snapshot["revision"],
+                    "edit":{"kind":"promote", "messageId":message["messageId"]}
+                }),
+            )
         };
         let gate = rig.sandbox.workspace.join("hold-acp-resume");
         std::fs::write(&gate, []).map_err(|e| e.to_string())?;
-        let first = steer("ACP-steer-1", Some(&original)).await?;
+        let first = steer("ACP-peer", Some(&original)).await?;
         assert_eq!(first["kind"], "queued", "{first}");
         let cancel = rig
             .controller
             .event("ACP-handoff", "cancel_pending")
             .await?;
-        let promoted = promote(during_cancel["messageId"].clone()).await?;
-        assert_eq!(promoted["kind"], "committed", "{promoted}");
+        let initial = snapshot().await?;
+        let (one, two) = tokio::try_join!(
+            promote(&during_cancel, &initial),
+            promote(&during_cancel, &initial),
+        )?;
+        let mut outcomes = [one["kind"].as_str(), two["kind"].as_str()];
+        outcomes.sort();
+        assert_eq!(outcomes, [Some("committed"), Some("revision_conflict")]);
         for (label, expected) in [("ACP-steer-2", Some(&original)), ("ACP-steer-3", None)] {
             let sent = steer(label, expected).await?;
             assert_eq!(sent["kind"], "queued", "{sent}");
         }
+        let queue = snapshot().await?;
+        assert_eq!(
+            promote(&during_cancel, &queue).await?,
+            json!({"kind":"committed","revision":queue["revision"]})
+        );
         rig.controller.send(
             cancel["pid"].as_u64().unwrap(),
             json!({"action":"release_cancel"}),
@@ -1687,18 +1693,39 @@ async fn antigravity_accepts_steers_through_cancel_and_resume() {
             .event("ACP-handoff", "resume_pending")
             .await?;
         assert_eq!(original_prompt["thread"], resume["thread"]);
-        let promoted = promote(during_resume["messageId"].clone()).await?;
+        let promoted = promote(&during_resume, &snapshot().await?).await?;
         assert_eq!(promoted["kind"], "committed", "{promoted}");
         for (label, expected) in [("ACP-steer-4", None), ("ACP-steer-5", Some(&original))] {
             let sent = steer(label, expected).await?;
             assert_eq!(sent["kind"], "queued", "{sent}");
         }
+        let queue = snapshot().await?;
+        let (repeat, concurrent) = tokio::try_join!(
+            promote(&during_resume, &queue),
+            promote(&during_resume, &queue),
+        )?;
+        assert_eq!(
+            repeat,
+            json!({"kind":"committed","revision":queue["revision"]})
+        );
+        assert_eq!(concurrent, repeat);
         let stale = steer("unexpected", Some(&parent)).await?;
         assert_eq!(stale["reason"], "turn_stopped", "{stale}");
         std::fs::remove_file(gate).map_err(|e| e.to_string())?;
         rig.controller.send(
             resume["pid"].as_u64().unwrap(),
             json!({"action":"release_resume"}),
+        )?;
+        let peer = rig.controller.event("ACP-peer", "ready").await?;
+        let queue = snapshot().await?;
+        assert_eq!(
+            promote(&during_cancel, &queue).await?,
+            json!({"kind":"committed","revision":queue["revision"]})
+        );
+        assert_eq!(promote(&first, &queue).await?["reason"], "missing");
+        rig.controller.send(
+            peer["pid"].as_u64().unwrap(),
+            json!({"action":"complete","promptId":peer["promptId"]}),
         )?;
         let receipt_run = loop {
             let work = query(
@@ -1725,7 +1752,7 @@ async fn antigravity_accepts_steers_through_cancel_and_resume() {
             [
                 "ACP-parent",
                 "ACP-handoff",
-                "ACP-steer-1",
+                "ACP-peer",
                 "ACP-steer-promote-cancel",
                 "ACP-steer-2",
                 "ACP-steer-3",

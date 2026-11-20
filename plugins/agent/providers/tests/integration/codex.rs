@@ -17,7 +17,80 @@
  * under the License.
  */
 
-use super::*;
+use futures_util::future::BoxFuture;
+use maka_agent_ports::model::{Connect, Error as ModelError, Socket, TextStream, Transport};
+use maka_agent_ports::provider::authentication::Credential;
+use maka_agent_ports::provider::{Connection, Context, Error, Provider, Resolve};
+use maka_capabilities::http;
+use maka_providers::codex::Codex;
+use serde_json::json;
+use std::sync::{Arc, Mutex};
+use tokio_util::sync::CancellationToken;
+
+struct DiscoveryTransport {
+    requests: Mutex<Vec<String>>,
+    response: serde_json::Value,
+}
+
+impl Transport for DiscoveryTransport {
+    fn identity(&self) -> u64 {
+        1
+    }
+
+    fn request(
+        &self,
+        request: http::Request,
+        _cancellation: CancellationToken,
+    ) -> BoxFuture<'_, Result<http::Response, ModelError>> {
+        let url = request.url;
+        self.requests.lock().unwrap().push(url.clone());
+        let payload = serde_json::to_vec(&self.response).unwrap();
+        Box::pin(async move {
+            Ok(http::Response {
+                head: http::Head {
+                    status: 200,
+                    url,
+                    headers: vec![],
+                },
+                body: Arc::new(Body(Mutex::new(Some(payload)))),
+            })
+        })
+    }
+
+    fn connect(&self, _: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, ModelError>> {
+        Box::pin(async { Err(ModelError::Adapter("unexpected WebSocket".into())) })
+    }
+
+    fn send_text(
+        &self,
+        _: Arc<dyn Socket>,
+        _: TextStream,
+    ) -> BoxFuture<'_, Result<(), ModelError>> {
+        Box::pin(async { Err(ModelError::Adapter("unexpected WebSocket".into())) })
+    }
+}
+
+struct Body(Mutex<Option<Vec<u8>>>);
+
+impl http::Body for Body {
+    fn next(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>, http::Error>> {
+        Box::pin(async { Ok(self.0.lock().unwrap().take()) })
+    }
+
+    fn cancel(&self) {}
+
+    fn close(&self) -> BoxFuture<'_, Result<(), http::Error>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+fn connection() -> Connection {
+    Connection {
+        id: "connection".into(),
+        revision: 1,
+        configuration: json!({"baseUrl":"https://chatgpt.com/backend-api/codex"}),
+    }
+}
 
 #[tokio::test]
 async fn server_side_compaction_requires_connection_opt_in() {
@@ -88,15 +161,12 @@ async fn subscription_discovery_preserves_capacity_and_compaction_hash() {
 
 #[tokio::test]
 async fn discovery_and_preparation_share_account_facts_and_explicit_policy() {
-    use maka_agent_facts::configuration::ModelInfo;
-    use maka_agent_facts::configuration::ModelOverride;
+    use base64::Engine;
+    use maka_agent_facts::configuration::{ModelInfo, ModelOverride};
     use maka_agent_facts::execution::ThinkingLevel::*;
-    let transport = Arc::new(Exchange {
-        started: Notify::new(),
-        release: Notify::new(),
+
+    let transport = Arc::new(DiscoveryTransport {
         requests: Mutex::new(vec![]),
-        fail: false,
-        status: 200,
         response: json!({"models":[{
             "slug":"future-model", "context_window":272000,
             "supported_reasoning_levels":[{"effort":"medium"},{"effort":"high"},{"effort":"max"},{"effort":"ultra"}],
@@ -104,11 +174,9 @@ async fn discovery_and_preparation_share_account_facts_and_explicit_policy() {
             "input_modalities":["text"], "supports_parallel_tool_calls":false
         }]}),
     });
-    transport.release.notify_one();
     let provider = Codex::new(Arc::new(
         maka_providers::catalog::Snapshot::bundled().unwrap(),
     ));
-    use base64::Engine;
     let access = format!(
         "header.{}.signature",
         base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -148,7 +216,7 @@ async fn discovery_and_preparation_share_account_facts_and_explicit_policy() {
                 Context {
                     transport: transport.clone(),
                     cancellation: CancellationToken::new(),
-                    interaction: None
+                    interaction: None,
                 }
             )
             .await,
@@ -231,7 +299,7 @@ async fn discovery_and_preparation_share_account_facts_and_explicit_policy() {
     assert_eq!(wire(&model)["reasoning"], json!({"summary":"auto"}));
     let requests = transport.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].url.ends_with("/models?client_version=1.0.0"));
+    assert!(requests[0].ends_with("/models?client_version=1.0.0"));
 }
 
 fn wire(model: &maka_agent_ports::provider::Model) -> serde_json::Value {

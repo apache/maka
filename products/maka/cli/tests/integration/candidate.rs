@@ -413,24 +413,6 @@ impl CandidateFixture {
         }
     }
 
-    pub fn adopt_existing(root: PathBuf) -> Self {
-        let namespaces = RootNamespaces::for_current_account().unwrap();
-        let location = maka_event_log::root::resolve(&root).unwrap();
-        Self {
-            child: None,
-            root,
-            root_id: location.root_id().to_owned(),
-            registration: namespaces
-                .control
-                .join(location.root_id())
-                .join("registration.json"),
-            lock: namespaces
-                .ownership
-                .join(format!("{}.lock", location.root_id())),
-            cleanup: FixtureCleanup::Pending,
-        }
-    }
-
     pub fn wait_for_registration(&mut self) -> Value {
         let deadline = Instant::now() + STARTUP_WAIT;
         loop {
@@ -575,73 +557,5 @@ impl CandidateFixture {
 impl Drop for CandidateFixture {
     fn drop(&mut self) {
         self.cleanup();
-    }
-}
-
-pub(super) struct RootStartupFixture {
-    directory: Option<tempfile::TempDir>,
-    pub(super) root: PathBuf,
-    initialized: Option<CandidateFixture>,
-    admission_pending: bool,
-}
-
-impl RootStartupFixture {
-    fn new() -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root");
-        Self {
-            directory: Some(directory),
-            root,
-            initialized: None,
-            admission_pending: true,
-        }
-    }
-
-    fn directory(&self) -> &Path {
-        self.directory.as_ref().unwrap().path()
-    }
-
-    pub(super) fn initialized(directory: tempfile::TempDir, fixture: CandidateFixture) -> Self {
-        Self {
-            root: fixture.root.clone(),
-            directory: Some(directory),
-            initialized: Some(fixture),
-            admission_pending: false,
-        }
-    }
-
-    pub(super) fn adopt(&mut self) -> &CandidateFixture {
-        let fixture = self
-            .initialized
-            .get_or_insert_with(|| CandidateFixture::adopt_existing(self.root.clone()));
-        self.admission_pending = false;
-        fixture
-    }
-
-    pub(super) fn begin_admission(&mut self) {
-        self.admission_pending = true;
-    }
-}
-
-impl Drop for RootStartupFixture {
-    fn drop(&mut self) {
-        let settled = if self.admission_pending {
-            if let Some(fixture) = &mut self.initialized {
-                fixture.cleanup = FixtureCleanup::Unconfirmed;
-            }
-            false
-        } else {
-            self.initialized
-                .as_mut()
-                .is_some_and(CandidateFixture::cleanup)
-        };
-        if !settled && let Some(directory) = self.directory.take() {
-            // A failed admission exposes no helper handle. It may still be
-            // initializing this Root, even before publishing its identity.
-            eprintln!(
-                "startup fixture cleanup unconfirmed; retaining {}",
-                directory.keep().display()
-            );
-        }
     }
 }

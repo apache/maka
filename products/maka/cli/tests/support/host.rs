@@ -113,6 +113,11 @@ impl Host {
         })
     }
 
+    #[allow(dead_code)]
+    pub fn pid(&self) -> Option<u32> {
+        self.child.id()
+    }
+
     pub async fn ready(&mut self) -> Result<(Client, PathBuf)> {
         let mut line = String::new();
         if self

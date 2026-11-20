@@ -556,11 +556,20 @@ fn select(input: IntakeInput) -> Result<Selection<SelectedFile>, String> {
             paths.into_iter().map(SelectedFile::Path).collect(),
         )),
         IntakeInput::Paste { uris, files } => {
-            if !uris.is_empty() {
-                pasted_paths(uris)
-            } else {
+            if uris.is_empty() {
                 Ok(Selection::Files(
                     files.into_iter().map(SelectedFile::Bytes).collect(),
+                ))
+            } else if files.is_empty() {
+                pasted_paths(uris)
+            } else if let Some(text) = crate::attachment_paths::pasted_directories(&uris)? {
+                Ok(Selection::Text(text))
+            } else {
+                Ok(Selection::Files(
+                    uris.into_iter()
+                        .map(SelectedFile::Path)
+                        .chain(files.into_iter().map(SelectedFile::Bytes))
+                        .collect(),
                 ))
             }
         }
@@ -845,6 +854,23 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].metadata()["name"], "截图.png");
         assert_eq!(files[0].contents(), bytes);
+
+        let local = directory.path().join("note.txt");
+        std::fs::write(&local, b"note").unwrap();
+        let mut fallback = RichEditorFile::default();
+        fallback.name = "image.png".into();
+        fallback.mime = "image/png".into();
+        fallback.data = bytes.to_vec();
+        let Selection::Files(mixed) = stage_selection(IntakeInput::Paste {
+            uris: vec![local.to_string_lossy().into_owned()],
+            files: vec![fallback],
+        })
+        .unwrap() else {
+            panic!("a mixed paste must preserve both file paths and inline images");
+        };
+        assert_eq!(mixed.len(), 2);
+        assert_eq!(mixed[0].metadata()["name"], "note.txt");
+        assert_eq!(mixed[1].metadata()["name"], "image.png");
     }
 
     #[test]

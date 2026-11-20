@@ -19,6 +19,7 @@
 
 use super::*;
 use futures_util::FutureExt;
+use maka_agent_api::contract::WorkspaceAccess;
 use maka_agent_authority::computer::NativeCallContext;
 use maka_agent_facts::interaction::{PermissionRequest, PermissionSource};
 use maka_agent_facts::tools::ToolError;
@@ -70,13 +71,17 @@ pub(super) async fn native_call(
     owner: &Web,
     context: &Context,
     failure: &Failure,
+    probe: Option<&crate::probe::ProcessProbe>,
 ) -> Result<Option<Arc<NativeCallContext>>, String> {
     let Some(execution) = context.scope().identity.agent() else {
         return Ok(None);
     };
-    let native = context
-        .native_context::<NativeCallContext>()
-        .ok_or("web_requires_native_call")?;
+    let native = match probe {
+        Some(probe) => probe.native.clone(),
+        None => context
+            .native_context::<NativeCallContext>()
+            .ok_or("web_requires_native_call")?,
+    };
     let access = native.access();
     let call = access.call();
     let custody = context.work_custody().ok_or("web_work_custody_missing")?;
@@ -93,7 +98,7 @@ pub(super) async fn native_call(
         .log
         .session_for_work(custody.as_ref(), &call.execution.session_id)
         .map_err(message)?;
-    if context.operation().is_some() {
+    if probe.is_none() && context.operation().is_some() {
         access.bind_original(context).await.map_err(|error| {
             failure.observe(&error);
             message(error)
@@ -144,11 +149,7 @@ impl Access {
     ) -> Result<Self, String> {
         Self::new(owner, scope, native, Purpose::Health, failure)
     }
-    async fn current(
-        &self,
-        call: &Scope,
-        destination: &Destination,
-    ) -> Result<(maka_agent_api::session::ResolvedConfiguration, bool), Error> {
+    async fn current(&self, call: &Scope, destination: &Destination) -> Result<bool, Error> {
         let _lease = self.admit(call)?;
         let available = match &self.purpose {
             Purpose::Fetch { basis } => self.owner.fetch_is_current(basis).await,
@@ -175,6 +176,8 @@ impl Access {
             .sandbox_floor()
             .intersect(call.sandbox_floor())
             .map_err(|_| Error::Denied)?;
+        let full_access = configuration.permissions.access == WorkspaceAccess::DangerFullAccess
+            && matches!(floor, Sandbox::Disabled);
         let destination_copy = destination.clone();
         let allowed = tokio::task::spawn_blocking(move || {
             let requested = std::path::PathBuf::from(&workspace.path);
@@ -206,6 +209,9 @@ impl Access {
         if !allowed {
             return Err(Error::Denied);
         }
+        if full_access {
+            return Ok(true);
+        }
         let grants = self
             .native
             .access()
@@ -219,12 +225,9 @@ impl Access {
                 self.failure.observe(&error);
                 Error::Failed(error.to_string())
             })?;
-        Ok((
-            configuration,
-            grants
-                .iter()
-                .any(|grant| grant.permissions.network.allows(destination)),
-        ))
+        Ok(grants
+            .iter()
+            .any(|grant| grant.permissions.network.allows(destination)))
     }
     async fn authorize(
         &self,
@@ -232,8 +235,7 @@ impl Access {
         destination: &Destination,
         origin: String,
     ) -> Result<maka_network::Policy, Error> {
-        let (_, granted) = self.current(call, destination).await?;
-        if !granted {
+        if !self.current(call, destination).await? {
             let cancellation = call.cancellation.child_token();
             let request = maka_agent_authority::permissions::request(
                 self.native.access(),
@@ -334,7 +336,7 @@ impl Authority for Access {
         destination: &'a Destination,
     ) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(async move {
-            if self.current(call, destination).await?.1 {
+            if self.current(call, destination).await? {
                 Ok(())
             } else {
                 Err(Error::Denied)

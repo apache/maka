@@ -81,6 +81,7 @@ members = [
     "plugins/workspace/workspace-web/native",
     "plugins/workspace/workspace-computer/native",
     "products/eval",
+    "tools/mock-ai",
     "tools/ui-build",
 ]
 resolver = "3"
@@ -109,6 +110,7 @@ nsh-platform-windows = { path = "third-party/nsh/crates/nsh-platform-windows", d
 nsh-platform-macos = { path = "third-party/nsh/crates/nsh-platform-macos", default-features = false, features = ["js", "svg", "updater", "websocket", "zlib", "crypto", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term"] }
 nsh-bundler = { path = "third-party/nsh/crates/nsh-bundler", default-features = false }
 nsh-base = { path = "third-party/nsh/crates/nsh-base", features = ["math", "emoji-picker", "plot"] }
+maka-mock-ai = { path = "tools/mock-ai" }
 maka-ui-build = { path = "tools/ui-build" }
 maka-agent-facts = { path = "plugins/agent/facts" }
 maka-agent-state = { path = "plugins/agent/state" }
@@ -132,8 +134,8 @@ maka-agent-authority = { path = "plugins/agent/authority" }
 maka-web-api = { path = "plugins/workspace/workspace-web/api" }
 maka-agent-api = { path = "plugins/agent/api" }
 maka-transport = { path = "platform/transport" }
-cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "86364e5f49b8c7c0e512f584f3062c2410d851b7" }
-cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "86364e5f49b8c7c0e512f584f3062c2410d851b7" }
+cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0" }
+cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0" }
 agent-client-protocol = { version = "5.0.0", default-features = false, features = ["unstable_protocol_v2"] }
 apply-patch = { path = "plugins/workspace/workspace-files/patch" }
 cap-fs-ext = "4.0.3"
@@ -255,8 +257,8 @@ opt-level = 3
 opt-level = 3
 
 [patch.crates-io]
-zbus = { git = "https://github.com/maka-agent/cua", rev = "86364e5f49b8c7c0e512f584f3062c2410d851b7" }
-nom = { git = "https://github.com/maka-agent/cua", rev = "86364e5f49b8c7c0e512f584f3062c2410d851b7" }
+zbus = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0" }
+nom = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0" }
 reqwest = { path = "third-party/reqwest" }
 gix-index = { path = "third-party/gix-index" }
 gix-discover = { path = "third-party/gix-discover" }

@@ -99,9 +99,10 @@ use objc2_app_kit::{
     NSAttributedStringDocumentFormats, NSBitmapImageFileType, NSBitmapImageRep,
     NSDocumentTypeDocumentAttribute, NSEvent, NSEventModifierFlags, NSEventType,
     NSExcludedElementsDocumentAttribute, NSHTMLTextDocumentType, NSModalPanelRunLoopMode,
-    NSModalResponse, NSModalResponseAbort, NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypeRTF,
-    NSPasteboardTypeRTFD, NSPasteboardTypeString, NSScreen, NSTextField, NSWorkspace,
-    NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification, NSWorkspaceDidWakeNotification,
+    NSModalResponse, NSModalResponseAbort, NSPasteboard, NSPasteboardItem, NSPasteboardTypeHTML,
+    NSPasteboardTypeRTF, NSPasteboardTypeRTFD, NSPasteboardTypeString, NSScreen, NSTextField,
+    NSWorkspace, NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
+    NSWorkspaceDidWakeNotification,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSCalendar, NSCurrentLocaleDidChangeNotification, NSData,
@@ -1369,23 +1370,59 @@ pub(crate) fn pasted(pasteboard: &NSPasteboard) -> nsh_core::PasteEvent {
         .unwrap_or_default()
     {
         if let Some(uri) = item.stringForType(&file_url) {
-            paste.uris.extend(crate::file_drop::local_file_uri(&uri));
+            let Some((path, resolved)) = crate::file_drop::local_file_path_and_uri(&uri) else {
+                continue;
+            };
+            if has_fallback_inline_image(&item)
+                && is_unreadable_file_url(&path)
+                && let Some(bytes) = pasted_inline_image(&item, false)
+            {
+                paste.files.push(nsh_core::PastedFile::image(bytes));
+                continue;
+            }
+            paste.uris.push(resolved);
             continue;
         }
-        let image = IMAGE_TYPES.iter().find_map(|(mime, kind)| {
-            item.dataForType(&NSString::from_str(kind))
-                .map(|data| (*mime, data.to_vec()))
-        });
-        let Some((mime, bytes)) = image else {
-            continue;
-        };
-        let bytes = match mime {
-            "image/tiff" | "image/bmp" => to_png(&bytes).unwrap_or(bytes),
-            _ => bytes,
-        };
-        paste.files.push(nsh_core::PastedFile::image(bytes));
+        if let Some(bytes) = pasted_inline_image(&item, true) {
+            paste.files.push(nsh_core::PastedFile::image(bytes));
+        }
     }
     paste
+}
+
+fn is_unreadable_file_url(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).custom_flags(libc::O_NONBLOCK);
+    matches!(
+        options.open(path),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+            )
+    )
+}
+
+fn has_fallback_inline_image(item: &NSPasteboardItem) -> bool {
+    let types = item.types();
+    IMAGE_TYPES.iter().any(|(mime, kind)| {
+        *mime != "image/tiff" && types.containsObject(&NSString::from_str(kind))
+    })
+}
+
+fn pasted_inline_image(item: &NSPasteboardItem, allow_tiff: bool) -> Option<Vec<u8>> {
+    let (mime, bytes) = IMAGE_TYPES.iter().find_map(|(mime, kind)| {
+        if !allow_tiff && *mime == "image/tiff" {
+            return None;
+        }
+        item.dataForType(&NSString::from_str(kind))
+            .map(|data| (*mime, data.to_vec()))
+    })?;
+    Some(match mime {
+        "image/tiff" | "image/bmp" => to_png(&bytes).unwrap_or(bytes),
+        _ => bytes,
+    })
 }
 
 /// The pasteboard's formatted content as HTML: `public.html` as browsers,
@@ -1609,13 +1646,14 @@ fn read_clipboard(surface: &Rc<Surface>, id: u32, has_only: bool) {
 
 #[cfg(test)]
 mod tests {
-    use objc2::runtime::AnyObject;
-    use objc2_app_kit::NSPasteboard;
+    use objc2::runtime::{AnyObject, ProtocolObject};
+    use objc2_app_kit::{NSPasteboard, NSPasteboardItem, NSPasteboardWriting};
     use objc2_foundation::{
-        NSData, NSDictionary, NSPropertyListFormat, NSPropertyListSerialization, NSString,
+        NSArray, NSData, NSDictionary, NSPropertyListFormat, NSPropertyListSerialization, NSString,
+        NSURL,
     };
 
-    use super::{Shows, answered_index, next_alone, pasted_html};
+    use super::{Shows, answered_index, next_alone, pasted, pasted_html};
 
     #[test]
     fn alerts_on_their_own_show_one_at_a_time_oldest_first() {
@@ -1715,5 +1753,58 @@ mod tests {
     fn no_formatted_content() {
         let board = board("public.utf8-plain-text", b"plain");
         assert_eq!(pasted_html(&board), None);
+    }
+
+    #[test]
+    fn pasted_falls_back_to_inline_image_when_file_url_is_unreadable() {
+        let board_of = |entries: &[(&str, &[u8])]| {
+            let board = NSPasteboard::pasteboardWithUniqueName();
+            board.clearContents();
+            let item = NSPasteboardItem::new();
+            for (kind, bytes) in entries {
+                let _ = item.setData_forType(&NSData::with_bytes(bytes), &NSString::from_str(kind));
+            }
+            let objects = NSArray::from_retained_slice(&[
+                ProtocolObject::<dyn NSPasteboardWriting>::from_retained(item),
+            ]);
+            let _ = board.writeObjects(&objects);
+            board
+        };
+        let uri_of = |path: &std::path::Path| {
+            NSURL::fileURLWithPath(&NSString::from_str(path.to_str().unwrap()))
+                .absoluteString()
+                .unwrap()
+                .to_string()
+        };
+
+        let existing =
+            std::env::temp_dir().join(format!("nsh-paste-ok-{}.png", std::process::id()));
+        std::fs::write(&existing, b"png").unwrap();
+        let existing_uri = uri_of(&existing);
+        let missing_uri = uri_of(&std::env::temp_dir().join("nsh-paste-missing-image.png"));
+
+        let ok = pasted(&board_of(&[
+            ("public.file-url", existing_uri.as_bytes()),
+            ("public.png", b"inline"),
+        ]));
+        assert_eq!(ok.uris, vec![existing_uri]);
+        assert!(ok.files.is_empty());
+
+        let fallback = pasted(&board_of(&[
+            ("public.file-url", missing_uri.as_bytes()),
+            ("public.png", b"inline"),
+        ]));
+        assert!(fallback.uris.is_empty());
+        assert_eq!(fallback.files.len(), 1);
+        assert_eq!(fallback.files[0].data, b"inline");
+
+        let icon_only = pasted(&board_of(&[
+            ("public.file-url", missing_uri.as_bytes()),
+            ("public.tiff", b"icon"),
+        ]));
+        assert_eq!(icon_only.uris, vec![missing_uri]);
+        assert!(icon_only.files.is_empty());
+
+        let _ = std::fs::remove_file(existing);
     }
 }
