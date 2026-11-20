@@ -1591,8 +1591,9 @@ pub(super) fn retained_image() {
             }
             let color = match frame {
                 0 => "red",
+                1 => "lime",
                 3 => "blue",
-                _ => "lime",
+                _ => "yellow",
             };
             Ok(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="{color}"/></svg>"#).into_bytes())
         }
@@ -1674,6 +1675,16 @@ pub(super) fn retained_image() {
                 );
             }
         };
+        let settle_input = || {
+            let settled = Rc::new(Cell::new(false));
+            let done = settled.clone();
+            surface.pause_input(Box::new(move |result| {
+                result.expect("image input fence");
+                done.set(true);
+            }));
+            pump(&|| settled.get());
+            surface.resume_input();
+        };
         pump(&|| pixel.get() == [255, 0, 0, 255]);
         if retain {
             phase.set(1);
@@ -1696,6 +1707,8 @@ pub(super) fn retained_image() {
         pump(&|| *assets.requested.lock().unwrap() == 2);
         phase.set(0);
         key(&surface, "f5");
+        // Without retention the pending replacement already draws black.
+        settle_input();
         pump(&|| pixel.get() == [0, 0, 0, 255]);
         phase.set(2);
         assets.release(2);
@@ -1711,14 +1724,7 @@ pub(super) fn retained_image() {
         pump(&|| *assets.requested.lock().unwrap() == 7);
         key(&surface, "f6");
         // Black predates removal; fence the input before releasing the decode.
-        let removed = Rc::new(Cell::new(false));
-        let done = removed.clone();
-        surface.pause_input(Box::new(move |result| {
-            result.expect("remove input fence");
-            done.set(true);
-        }));
-        pump(&|| removed.get());
-        surface.resume_input();
+        settle_input();
         pump(&|| pixel.get() == [0, 0, 0, 255]);
         phase.set(3);
         assets.release(7);

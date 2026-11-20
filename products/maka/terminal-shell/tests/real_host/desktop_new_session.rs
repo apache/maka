@@ -2029,20 +2029,40 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
             },
         )
         .await;
+    // The inner group can keep its expansion across the turn's outer fold.
+    desktop.press("Process group").await;
+    desktop
+        .until("the process group did not close", || {
+            desktop
+                .controls("Toggle tool Read goal")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
     answer.delta("The goal is unchanged.").await;
     answer.finish().await;
     fixture.idle(&desktop.client, session).await;
     desktop.control("Copy message").await;
     desktop
         .until("completed answer did not fold the turn's work", || {
-            (desktop.controls("Toggle tool Read goal").is_empty()
+            (desktop.controls("Process group").is_empty()
+                && desktop.controls("Toggle tool Read goal").is_empty()
                 && desktop.controls("Thinking · Checking the log").is_empty())
             .then_some(())
         })
         .await;
     desktop.artifact("completed-answer-folded-work");
     desktop.press("Turn work details").await;
-    desktop.open_group("Toggle tool Read goal").await;
+    let group = desktop
+        .until("the reopened work group did not settle", || {
+            let [group] = desktop.controls("Process group")[..] else {
+                return None;
+            };
+            (!desktop.platform.has_pending()).then_some(group)
+        })
+        .await;
+    desktop.press_at(group.center());
+    desktop.control("Toggle tool Read goal").await;
     let observed = desktop
         .client
         .query("agent", "observe", json!({"sessionId":session}))
