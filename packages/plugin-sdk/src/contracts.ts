@@ -35054,6 +35054,7 @@ export const contracts: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
+                    maximum: 9007199254740991,
                   },
                   excerpt: {
                     description:

@@ -1647,7 +1647,7 @@ async fn desktop_history_anchors_keep_the_reader_off_live_output_until_latest() 
     fixture.finish().await;
 }
 
-async fn desktop_recall_opens_the_selected_passage(within: bool) {
+async fn desktop_recall_opens_passages_at_their_history_boundaries() {
     let mut fixture = Fixture::open().await;
     let client = fixture.client().await;
     let backend = json!({
@@ -1711,43 +1711,42 @@ async fn desktop_recall_opens_the_selected_passage(within: bool) {
     assert_eq!(passages.len(), 2);
     for (index, passage) in passages.iter().enumerate() {
         assert_eq!(passage["session"]["id"], sessions[index]);
+        assert_eq!(passage["through"], fences[index]);
     }
     // Using the first result's fence for the second must fail the Host's exact row read.
     assert!(passages[1]["anchorPosition"]["sequence"].as_u64().unwrap() > fences[0]);
 
     let desktop = Desktop::open(&fixture, &fixture.address).await;
-    let composer = desktop.platform.text_input_target();
-    desktop.key("o", true);
-    desktop.target_after(composer).await;
-    desktop.paste("needle").await;
-    if within {
-        desktop.press("This conversation").await;
-    }
-    let selected = if within { 0 } else { 1 };
-    let title = passages[selected]["session"]["title"].as_str().unwrap();
-    desktop
-        .press(&format!("Open matching passage in {title}"))
-        .await;
-    desktop
-        .until("the passage search did not close", || {
-            desktop
-                .controls("All conversations")
-                .is_empty()
-                .then_some(())
-        })
-        .await;
-    let copy = desktop.control("Copy user message").await;
-    desktop.hover_at(copy.center());
-    let _ = desktop.platform.take_clipboard_write();
-    desktop.press("Copy user message").await;
-    let original = desktop
-        .until("the original message was not available to copy", || {
-            desktop.platform.take_clipboard_write()
-        })
-        .await;
-    assert_eq!(original, prompts[selected]);
-    for (index, passage) in passages.iter().enumerate() {
-        assert_eq!(passage["through"], fences[index]);
+    for (within, selected) in [(true, 0), (false, 1)] {
+        let previous = desktop.platform.text_input_target();
+        desktop.key("o", true);
+        desktop.target_after(previous).await;
+        desktop.paste("needle").await;
+        if within {
+            desktop.press("This conversation").await;
+        }
+        let title = passages[selected]["session"]["title"].as_str().unwrap();
+        desktop
+            .press(&format!("Open matching passage in {title}"))
+            .await;
+        desktop
+            .until("the passage search did not close", || {
+                desktop
+                    .controls("All conversations")
+                    .is_empty()
+                    .then_some(())
+            })
+            .await;
+        let copy = desktop.control("Copy user message").await;
+        desktop.hover_at(copy.center());
+        let _ = desktop.platform.take_clipboard_write();
+        desktop.press("Copy user message").await;
+        let original = desktop
+            .until("the original message was not available to copy", || {
+                desktop.platform.take_clipboard_write()
+            })
+            .await;
+        assert_eq!(original, prompts[selected]);
     }
     desktop.close().await;
     fixture.finish().await;
@@ -4771,8 +4770,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
     "desktop_continues_a_failed_run_without_duplicating_the_user_message",
     "desktop_history_anchors_keep_the_reader_off_live_output_until_latest",
-    "desktop_recall_opens_a_passage_in_the_current_conversation",
-    "desktop_recall_opens_a_passage_in_another_conversation",
+    "desktop_recall_opens_passages_at_their_history_boundaries",
     #[cfg(target_os = "macos")]
     "desktop_resumes_live_activity_when_scrolling_back_to_latest",
     "history_pages_return_each_prompt_once_from_tail_to_start",
@@ -4851,11 +4849,8 @@ pub(crate) fn run(name: &str) {
         "desktop_history_anchors_keep_the_reader_off_live_output_until_latest" => {
             runtime.block_on(desktop_history_anchors_keep_the_reader_off_live_output_until_latest())
         }
-        "desktop_recall_opens_a_passage_in_the_current_conversation" => {
-            runtime.block_on(desktop_recall_opens_the_selected_passage(true))
-        }
-        "desktop_recall_opens_a_passage_in_another_conversation" => {
-            runtime.block_on(desktop_recall_opens_the_selected_passage(false))
+        "desktop_recall_opens_passages_at_their_history_boundaries" => {
+            runtime.block_on(desktop_recall_opens_passages_at_their_history_boundaries())
         }
         "history_pages_return_each_prompt_once_from_tail_to_start" => {
             runtime.block_on(history_pages_return_each_prompt_once_from_tail_to_start())
