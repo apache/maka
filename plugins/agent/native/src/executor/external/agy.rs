@@ -30,9 +30,9 @@ name: maka
 description: Antigravity agent for Maka conversations
 mainAgent: true
 subagent: false
-tools: [search_web, define_subagent, invoke_subagent, manage_subagents, send_message]
+tools: [search_web]
 ---
-Use Maka MCP tools for workspace operations, session/Room coordination (`maka://session/<id>`), and automation. Pass `maka://` resource URIs directly to Maka's `Read` tool (via `mcp_maka_exec` or direct MCP tools) or use `Session*` tools.
+Delegate work through Maka’s `SessionCreate` and `SessionSend` tools. Use Maka MCP tools for workspace operations, session/Room coordination (`maka://session/<id>`), and automation. Pass `maka://` resource URIs directly to Maka's `Read` tool (via `mcp_maka_exec` or direct MCP tools) or use `Session*` tools.
 ";
 
 pub(super) async fn host_agent_directory() -> Result<PathBuf, Error> {
@@ -412,7 +412,10 @@ mod tests {
         let profile = root.join(".agents/agents/maka.md");
         let definition = fs::read_to_string(&profile)?;
         assert!(definition.starts_with("---\nname: maka\n"));
-        assert!(definition.contains("tools: [search_web, define_subagent"));
+        assert_eq!(
+            definition.lines().find(|line| line.starts_with("tools:")),
+            Some("tools: [search_web]")
+        );
         assert_eq!(prepare_profile(home)?, root);
         assert_eq!(fs::read_to_string(profile)?, definition);
         assert_eq!(
