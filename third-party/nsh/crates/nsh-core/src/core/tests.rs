@@ -45038,6 +45038,632 @@ fn source_reading_survives_prepend_and_rich_replacement(delayed_ready: bool) {
 }
 
 #[test]
+fn on_demand_reading_skips_walks_and_preserves_syntax_gap_and_committed_capture() {
+    let mut c = core();
+    let shift = |batch: Option<MountBatch>| -> f32 {
+        batch.map_or(0.0, |batch| {
+            batch
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    MountItem::ScrollBy { id: 2, dy, .. } => Some(dy.0),
+                    _ => None,
+                })
+                .sum()
+        })
+    };
+    let src = |id: &str, offset: u64| {
+        Prop::TextSource(Some(Arc::new(crate::TextSource::Literal {
+            id: id.into(),
+            offset,
+        })))
+    };
+
+    // Main sourced reader (2) + sourceless sidebar list (3) + external sourced text (10)
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 10,
+                tag: Tag::Text,
+            },
+            Op::SetProp {
+                id: 10,
+                prop: src("outside/keep", 0),
+            },
+            Op::CreateText {
+                id: 11,
+                text: "outside".into(),
+            },
+            Op::Insert {
+                parent: 10,
+                child: 11,
+                before: None,
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 10,
+                before: None,
+            },
+            Op::Create {
+                id: 2,
+                tag: Tag::List,
+            },
+            style_op(2, &[("height", StyleValue::Number(200.0))]),
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Count(2),
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::FollowEnd(Some(px(24.0))),
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 2,
+                before: None,
+            },
+            Op::Create {
+                id: 3,
+                tag: Tag::List,
+            },
+            style_op(3, &[("height", StyleValue::Number(200.0))]),
+            Op::SetProp {
+                id: 3,
+                prop: Prop::Count(1),
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 3,
+                before: None,
+            },
+        ],
+    );
+    c.commit();
+
+    // Reader cell 0 (timer), reader cell 1 (two sourced blocks A at y=50, B at y=130),
+    // and sourceless sidebar cell 300.
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 100,
+                tag: Tag::Cell,
+            },
+            Op::SetProp {
+                id: 100,
+                prop: Prop::Slot(CellSlot::Item(0)),
+            },
+            Op::Insert {
+                parent: 2,
+                child: 100,
+                before: None,
+            },
+            Op::Create {
+                id: 101,
+                tag: Tag::View,
+            },
+            style_op(101, &[("height", StyleValue::Number(40.0))]),
+            Op::Insert {
+                parent: 100,
+                child: 101,
+                before: None,
+            },
+            Op::Create {
+                id: 102,
+                tag: Tag::Text,
+            },
+            Op::CreateText {
+                id: 103,
+                text: "Working for 1s".into(),
+            },
+            Op::Insert {
+                parent: 102,
+                child: 103,
+                before: None,
+            },
+            Op::Insert {
+                parent: 101,
+                child: 102,
+                before: None,
+            },
+            Op::SetProp {
+                id: 100,
+                prop: Prop::CellIndex(0),
+            },
+            Op::Create {
+                id: 200,
+                tag: Tag::Cell,
+            },
+            Op::SetProp {
+                id: 200,
+                prop: Prop::Slot(CellSlot::Item(1)),
+            },
+            Op::Insert {
+                parent: 2,
+                child: 200,
+                before: None,
+            },
+            Op::Create {
+                id: 201,
+                tag: Tag::View,
+            },
+            style_op(201, &[("height", StyleValue::Number(10.0))]),
+            Op::Insert {
+                parent: 200,
+                child: 201,
+                before: None,
+            },
+            Op::Create {
+                id: 202,
+                tag: Tag::Text,
+            },
+            Op::SetProp {
+                id: 202,
+                prop: src("session/msg", 0),
+            },
+            Op::CreateText {
+                id: 203,
+                text: "**bold**".into(),
+            },
+            Op::Insert {
+                parent: 202,
+                child: 203,
+                before: None,
+            },
+            Op::Insert {
+                parent: 200,
+                child: 202,
+                before: None,
+            },
+            Op::Create {
+                id: 204,
+                tag: Tag::View,
+            },
+            style_op(204, &[("height", StyleValue::Number(64.0))]),
+            Op::Insert {
+                parent: 200,
+                child: 204,
+                before: None,
+            },
+            Op::Create {
+                id: 205,
+                tag: Tag::Text,
+            },
+            Op::SetProp {
+                id: 205,
+                prop: src("session/other", 0),
+            },
+            Op::CreateText {
+                id: 206,
+                text: "second line".into(),
+            },
+            Op::Insert {
+                parent: 205,
+                child: 206,
+                before: None,
+            },
+            Op::Insert {
+                parent: 200,
+                child: 205,
+                before: None,
+            },
+            Op::Create {
+                id: 207,
+                tag: Tag::View,
+            },
+            style_op(207, &[("height", StyleValue::Number(400.0))]),
+            Op::Insert {
+                parent: 200,
+                child: 207,
+                before: None,
+            },
+            Op::SetProp {
+                id: 200,
+                prop: Prop::CellIndex(1),
+            },
+            Op::Create {
+                id: 300,
+                tag: Tag::Cell,
+            },
+            Op::SetProp {
+                id: 300,
+                prop: Prop::Slot(CellSlot::Item(0)),
+            },
+            Op::Insert {
+                parent: 3,
+                child: 300,
+                before: None,
+            },
+            Op::Create {
+                id: 301,
+                tag: Tag::View,
+            },
+            style_op(301, &[("height", StyleValue::Number(500.0))]),
+            Op::Insert {
+                parent: 300,
+                child: 301,
+                before: None,
+            },
+            Op::SetProp {
+                id: 300,
+                prop: Prop::CellIndex(0),
+            },
+        ],
+    );
+    c.commit();
+
+    // 1. Following end: timer updates + scrolling a sourceless sibling list do 0 walks.
+    c.set_scroll_offset(2, point(px(0.0), px(340.0)), u32::MAX);
+    c.commit();
+    c.source_geometry_walks = 0;
+    apply(
+        &mut c,
+        vec![Op::SetText {
+            id: 103,
+            text: "Working for 2s".into(),
+        }],
+    );
+    c.commit();
+    c.set_scroll_offset(3, point(px(0.0), px(60.0)), u32::MAX);
+    c.commit();
+    assert_eq!(c.source_geometry_walks, 0);
+
+    // 2. Pin at "**bold**" (byte 0, y=50). Then render rich text that omits leading "**"
+    // (offset=2) while shifting it down by +30: literal lookup must project forward
+    // across the syntax gap instead of dropping the pin.
+    c.set_scroll_offset(2, point(px(0.0), px(45.0)), u32::MAX);
+    c.commit();
+    assert_eq!(c.source_geometry_walks, 1);
+    c.source_geometry_walks = 0;
+    apply(
+        &mut c,
+        vec![
+            style_op(201, &[("height", StyleValue::Number(40.0))]),
+            Op::SetProp {
+                id: 202,
+                prop: src("session/msg", 2),
+            },
+            Op::SetText {
+                id: 203,
+                text: "bold".into(),
+            },
+        ],
+    );
+    assert_eq!(shift(c.commit()), 30.0);
+    assert_eq!(c.source_geometry_walks, 0);
+
+    // 3. Pre-commit ListContent padding change + scroll report must capture against
+    // the committed frame (showing "second line" at y=160), not the uncommitted shifted A.
+    let pad_top = |top: f32| {
+        Prop::ListContent(crate::ListContentStyle {
+            padding: EdgeInsets {
+                top: px(top),
+                ..EdgeInsets::default()
+            },
+            ..crate::ListContentStyle::default()
+        })
+    };
+    apply(
+        &mut c,
+        vec![Op::SetProp {
+            id: 2,
+            prop: pad_top(80.0),
+        }],
+    );
+    c.set_scroll_offset(2, point(px(0.0), px(155.0)), u32::MAX);
+    assert_eq!(shift(c.commit()), 80.0);
+}
+
+#[test]
+fn on_demand_reading_tracks_nested_parent_list_scroll_toggle_and_pending_splice() {
+    let mut c = core();
+    let shift = |batch: Option<MountBatch>| -> f32 {
+        batch.map_or(0.0, |batch| {
+            batch
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    MountItem::ScrollBy { id: 2, dy, .. } => Some(dy.0),
+                    _ => None,
+                })
+                .sum()
+        })
+    };
+    let src = |id: &str| {
+        Prop::TextSource(Some(Arc::new(crate::TextSource::Literal {
+            id: id.into(),
+            offset: 0,
+        })))
+    };
+    let content_pad = |top: f32, bottom: f32| {
+        Prop::ListContent(crate::ListContentStyle {
+            padding: EdgeInsets {
+                top: px(top),
+                bottom: px(bottom),
+                ..EdgeInsets::default()
+            },
+            ..crate::ListContentStyle::default()
+        })
+    };
+
+    // Outer reader (2) -> cell (100) -> disabled Scroll (110) -> parent list (120) -> cell (130)
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 2,
+                tag: Tag::List,
+            },
+            style_op(2, &[("height", StyleValue::Number(200.0))]),
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Count(1),
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::FollowEnd(Some(px(24.0))),
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 2,
+                before: None,
+            },
+        ],
+    );
+    c.commit();
+
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 100,
+                tag: Tag::Cell,
+            },
+            Op::SetProp {
+                id: 100,
+                prop: Prop::Slot(CellSlot::Item(0)),
+            },
+            Op::Insert {
+                parent: 2,
+                child: 100,
+                before: None,
+            },
+            Op::Create {
+                id: 110,
+                tag: Tag::Scroll,
+            },
+            style_op(110, &[("height", StyleValue::Number(490.0))]),
+            Op::SetProp {
+                id: 110,
+                prop: Prop::Native(NativeProp::Scrollable(false)),
+            },
+            Op::Insert {
+                parent: 100,
+                child: 110,
+                before: None,
+            },
+            Op::SetProp {
+                id: 100,
+                prop: Prop::CellIndex(0),
+            },
+        ],
+    );
+    c.commit();
+
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 120,
+                tag: Tag::List,
+            },
+            Op::SetProp {
+                id: 120,
+                prop: Prop::ListViewport(crate::ListViewport::Parent),
+            },
+            Op::SetProp {
+                id: 120,
+                prop: Prop::EstimatedItemSize(px(50.0)),
+            },
+            Op::SetProp {
+                id: 120,
+                prop: Prop::Count(1),
+            },
+            Op::SetProp {
+                id: 120,
+                prop: content_pad(30.0, 10.0),
+            },
+            Op::Insert {
+                parent: 110,
+                child: 120,
+                before: None,
+            },
+        ],
+    );
+    c.commit();
+
+    let mut binds = Vec::new();
+    c.take_list_binds(&mut binds);
+    let inner_slot = binds
+        .iter()
+        .find(|b| b.list == 120)
+        .and_then(|b| b.binds.iter().find_map(|&(s, i)| (i == 0).then_some(s)))
+        .expect("nested parent list should bind item 0");
+
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 130,
+                tag: Tag::Cell,
+            },
+            Op::SetProp {
+                id: 130,
+                prop: Prop::Slot(CellSlot::Item(inner_slot)),
+            },
+            Op::Insert {
+                parent: 120,
+                child: 130,
+                before: None,
+            },
+            Op::Create {
+                id: 131,
+                tag: Tag::View,
+            },
+            style_op(131, &[("height", StyleValue::Number(30.0))]),
+            Op::Insert {
+                parent: 130,
+                child: 131,
+                before: None,
+            },
+            Op::Create {
+                id: 132,
+                tag: Tag::Text,
+            },
+            Op::SetProp {
+                id: 132,
+                prop: src("nested/msg"),
+            },
+            Op::CreateText {
+                id: 133,
+                text: "nested anchored text".into(),
+            },
+            Op::Insert {
+                parent: 132,
+                child: 133,
+                before: None,
+            },
+            Op::Insert {
+                parent: 130,
+                child: 132,
+                before: None,
+            },
+            Op::Create {
+                id: 134,
+                tag: Tag::View,
+            },
+            style_op(134, &[("height", StyleValue::Number(400.0))]),
+            Op::Insert {
+                parent: 130,
+                child: 134,
+                before: None,
+            },
+        ],
+    );
+    c.commit();
+    apply(
+        &mut c,
+        vec![Op::SetProp {
+            id: 130,
+            prop: Prop::CellIndex(0),
+        }],
+    );
+    c.commit();
+
+    // Establish reading pin.
+    c.set_scroll_offset(2, point(px(0.0), px(40.0)), u32::MAX);
+    assert_eq!(shift(c.commit()), 0.0);
+
+    // 1. Constant-height contentStyle padding + internal reflow on nested parent list.
+    apply(
+        &mut c,
+        vec![Op::SetProp {
+            id: 120,
+            prop: content_pad(10.0, 30.0),
+        }],
+    );
+    assert_eq!(shift(c.commit()), -20.0);
+    apply(
+        &mut c,
+        vec![
+            style_op(131, &[("height", StyleValue::Number(45.0))]),
+            style_op(134, &[("height", StyleValue::Number(385.0))]),
+        ],
+    );
+    assert_eq!(shift(c.commit()), 15.0);
+
+    // 2. Enabling scrollable on nested vertical Scroll without layout change must drop
+    // the outer reader's pin immediately.
+    apply(
+        &mut c,
+        vec![Op::SetProp {
+            id: 110,
+            prop: Prop::Native(NativeProp::Scrollable(true)),
+        }],
+    );
+    assert_eq!(shift(c.commit()), 0.0);
+    let k2 = c.key(2).unwrap();
+    assert!(
+        c.nodes[k2 as usize]
+            .list
+            .as_ref()
+            .unwrap()
+            .reading_point()
+            .is_none(),
+        "enabling nested vertical Scroll must close outer reader pin"
+    );
+    apply(
+        &mut c,
+        vec![Op::SetProp {
+            id: 110,
+            prop: Prop::Native(NativeProp::Scrollable(false)),
+        }],
+    );
+    c.commit();
+
+    // 3. Inverted toggle clears reading pin so intervening reflow does not snap on return.
+    c.set_scroll_offset(2, point(px(0.0), px(40.0)), u32::MAX);
+    c.commit();
+    apply(
+        &mut c,
+        vec![
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Inverted(true),
+            },
+            style_op(131, &[("height", StyleValue::Number(75.0))]),
+            style_op(134, &[("height", StyleValue::Number(355.0))]),
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Inverted(false),
+            },
+        ],
+    );
+    assert_eq!(shift(c.commit()), 0.0);
+
+    // 4. Collapsing the outer viewport to zero and restoring it reclaims the nested
+    // parent list's ready slot and re-establishes the outer reading pin in the same commit.
+    apply(
+        &mut c,
+        vec![style_op(2, &[("height", StyleValue::Number(0.0))])],
+    );
+    c.commit();
+    apply(
+        &mut c,
+        vec![style_op(2, &[("height", StyleValue::Number(200.0))])],
+    );
+    c.commit();
+    assert!(
+        c.nodes[k2 as usize]
+            .list
+            .as_ref()
+            .unwrap()
+            .reading_point()
+            .is_some(),
+        "restoring viewport must reacquire reading pin when nested ready slot is reclaimed"
+    );
+    apply(
+        &mut c,
+        vec![
+            style_op(131, &[("height", StyleValue::Number(95.0))]),
+            style_op(134, &[("height", StyleValue::Number(335.0))]),
+        ],
+    );
+    assert_eq!(shift(c.commit()), 20.0);
+}
+
+#[test]
 fn automatic_list_targets_wait_for_native_idle_and_resume_only_the_latest() {
     use crate::tailwind::state::{FOCUS_WITHIN, FOCUSED, HOVERED};
     let mut c = core();

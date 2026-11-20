@@ -1,5 +1,9 @@
 //! Reading anchors use the final shaped source lines, not recycled node ids.
-//! The list keeps the one pin; this module only derives its geometry index.
+//! The list keeps the one pin; this module resolves positions on demand from
+//! Core's authoritative `source_texts` and `source_providers` indexes without
+//! maintaining a per-list eager geometry cache.
+
+use std::cmp::Ordering;
 
 use super::{Core, Key, Kind, LeafContext, NO_KEY, Node, TextEngine, content_box};
 use crate::text_source::{SourceGeometry, SourcePoint, SourcePosition, SourceRow};
@@ -11,52 +15,77 @@ struct Seat {
 }
 
 impl<M: TextEngine> Core<M> {
-    /// Rebuilt on source/layout/cell changes. Wheel reports use the resulting
-    /// line index and do not walk text nodes or reconstruct line geometry.
-    pub(super) fn list_source_geometry(&mut self, key: Key) -> SourceGeometry {
-        let list = self.nodes[key as usize].list.as_ref().expect("list");
-        // A parent-viewport list contributes its texts to the existing outer
-        // list's index; it must not become another reader/scroll owner.
+    /// Finds the first visible source line inside `reader`'s viewport
+    /// `[start, end)` to establish a new reading pin.
+    ///
+    /// Pass `flush: false` outside `commit()` (during `set_scroll_offset`) to
+    /// read only the already-committed frames and text geometry submitted to
+    /// the platform without queuing mounts or mixing uncommitted layout.
+    pub(super) fn first_visible_source(
+        &mut self,
+        reader: Key,
+        start: f32,
+        end: f32,
+        flush: bool,
+    ) -> Option<(SourcePoint, f32)> {
+        if self.source_texts.is_empty() || start >= end {
+            return None;
+        }
+        let list = self.nodes[reader as usize].list.as_ref().expect("list");
         if list.horizontal || list.inverted || list.parent {
-            return SourceGeometry::default();
+            return None;
         }
-        let point = list.reading_point().cloned();
+        let committed = !flush;
         let mut seats = Vec::new();
-        for (cell, y) in self.source_cells(key) {
-            self.source_seats(
-                cell,
-                y,
-                (f32::NEG_INFINITY, f32::INFINITY),
-                None,
-                &mut seats,
-            );
-        }
-        self.source_geometry(seats, point.as_ref())
-    }
-
-    fn source_geometry(&mut self, seats: Vec<Seat>, point: Option<&SourcePoint>) -> SourceGeometry {
-        let keys: Vec<_> = seats.iter().map(|seat| seat.key).collect();
-        if let Some(point) = point {
-            for &key in &keys {
-                let node = &self.nodes[key as usize];
-                let holds_point = node
-                    .layout
-                    .and_then(|layout| self.layout.get_node_context(layout))
-                    .is_some_and(
-                        |cx| matches!(cx, LeafContext::Text(cx) if cx.sources.contains(point)),
-                    );
-                // Reflow can move the anchored glyph outside the old native
-                // viewport. Its text must be realized before deciding the
-                // source disappeared, just as a focus command realizes its target.
-                if !node.created && holds_point {
-                    self.uncull(key);
-                }
+        for &text_key in &self.source_texts {
+            if let Some(seat) = self.seat_in_reader(reader, text_key, None, committed) {
+                seats.push(seat);
             }
         }
-        // This is the same cached text layout used by the final mount flush.
-        // Taffy's final content box is already available even when a resized
-        // cell has not yet queued descendant frame notifications.
-        self.flush_texts(&keys, false);
+        if seats.is_empty() {
+            return None;
+        }
+        if seats.len() > 1 {
+            seats.sort_by(|a, b| self.reader_tree_order_cmp(reader, a.key, b.key));
+        }
+        #[cfg(test)]
+        {
+            self.source_geometry_walks += 1;
+        }
+        self.source_geometry(seats, None, flush)
+            .first_visible(start, end)
+    }
+
+    fn source_geometry(
+        &mut self,
+        seats: Vec<Seat>,
+        point: Option<&SourcePoint>,
+        flush: bool,
+    ) -> SourceGeometry {
+        if flush {
+            let keys: Vec<_> = seats.iter().map(|seat| seat.key).collect();
+            if let Some(point) = point {
+                for &key in &keys {
+                    let node = &self.nodes[key as usize];
+                    let matches_doc = node
+                        .layout
+                        .and_then(|layout| self.layout.get_node_context(layout))
+                        .is_some_and(|cx| {
+                            matches!(cx, LeafContext::Text(cx) if cx.sources.has_document(&point.id))
+                        });
+                    // Reflow can move the anchored glyph outside the old native
+                    // viewport. Its text must be realized before deciding the
+                    // source disappeared, just as a focus command realizes its target.
+                    if !node.created && matches_doc {
+                        self.uncull(key);
+                    }
+                }
+            }
+            // This is the same cached text layout used by the final mount flush.
+            // Taffy's final content box is already available even when a resized
+            // cell has not yet queued descendant frame notifications.
+            self.flush_texts(&keys, false);
+        }
         let mut geometry = SourceGeometry::default();
         for seat in seats {
             let Some(layout) = self.nodes[seat.key as usize].layout else {
@@ -74,11 +103,94 @@ impl<M: TextEngine> Core<M> {
     }
 
     /// A provider exists independently of its virtual rows' materialization.
-    /// Traverse only source-live cells, so recycled leftovers cannot retain a source.
+    /// Walk up from registered providers and break ties in reader tree order.
     fn source_provider(&self, reader: Key, point: &SourcePoint) -> Option<Key> {
-        self.source_cells(reader)
-            .into_iter()
-            .find_map(|(cell, _)| self.source_provider_in(cell, point))
+        let mut best: Option<Key> = None;
+        for &provider in &self.source_providers {
+            let Some(list) = self
+                .nodes
+                .get(provider as usize)
+                .and_then(|n| n.list.as_ref())
+            else {
+                continue;
+            };
+            if list
+                .source_rows
+                .as_ref()
+                .is_some_and(|source| source.id == point.id)
+                && self.node_in_reader(reader, provider)
+            {
+                best = match best {
+                    None => Some(provider),
+                    Some(prev)
+                        if self.reader_tree_order_cmp(reader, provider, prev) == Ordering::Less =>
+                    {
+                        Some(provider)
+                    }
+                    Some(prev) => Some(prev),
+                };
+            }
+        }
+        best
+    }
+
+    fn reader_tree_order_cmp(&self, reader: Key, a: Key, b: Key) -> Ordering {
+        if a == b {
+            return Ordering::Equal;
+        }
+        let path_from_reader = |mut k: Key| -> Vec<Key> {
+            let mut path = Vec::with_capacity(8);
+            while k != NO_KEY {
+                path.push(k);
+                if k == reader {
+                    break;
+                }
+                k = self.nodes[k as usize].parent;
+            }
+            path.reverse();
+            path
+        };
+        let pa = path_from_reader(a);
+        let pb = path_from_reader(b);
+        let common = pa.len().min(pb.len());
+        for i in 1..common {
+            if pa[i] != pb[i] {
+                let parent = pa[i - 1];
+                let pnode = &self.nodes[parent as usize];
+                if let Some(list) = pnode.list.as_ref() {
+                    let rank = |cell: Key| -> (u8, u32) {
+                        if list.extras[0].cell == cell {
+                            return (0, 0);
+                        }
+                        if let Some(index) = list
+                            .slots
+                            .iter()
+                            .find(|s| s.cell == cell)
+                            .and_then(|s| s.ready())
+                        {
+                            return (1, index);
+                        }
+                        if list.count == 0 && list.extras[2].cell == cell {
+                            return (2, 0);
+                        }
+                        if list.extras[1].cell == cell {
+                            return (3, 0);
+                        }
+                        (4, cell)
+                    };
+                    return rank(pa[i]).cmp(&rank(pb[i]));
+                }
+                let pos = |child: Key| {
+                    pnode
+                        .children
+                        .iter()
+                        .position(|&c| c == child)
+                        .unwrap_or(usize::MAX)
+                };
+                return pos(pa[i]).cmp(&pos(pb[i]));
+            }
+        }
+        pa.len().cmp(&pb.len())
     }
 
     /// Source ownership does not require a provider's layout to be ready.
@@ -103,31 +215,281 @@ impl<M: TextEngine> Core<M> {
         Some(node)
     }
 
-    fn source_provider_in(&self, key: Key, point: &SourcePoint) -> Option<Key> {
-        let node = self.source_node(key)?;
-        if let Some(list) = &node.list {
-            if list
-                .source_rows
-                .as_ref()
-                .is_some_and(|source| source.id == point.id)
-            {
-                return Some(key);
+    fn is_text_leaf(&self, node: &Node) -> bool {
+        node.layout
+            .and_then(|layout| self.layout.get_node_context(layout))
+            .is_some_and(|cx| matches!(cx, LeafContext::Text(_)))
+    }
+
+    /// Whether `cell` is a currently active source cell of `list_key`,
+    /// returning its natural Y offset inside `list_key` when `compute_y` is
+    /// requested (or `0.0` for membership checks without requiring layout).
+    fn list_cell_y(
+        &self,
+        list_key: Key,
+        cell: Key,
+        required_index: Option<u32>,
+        compute_y: bool,
+    ) -> Option<f32> {
+        let node = self.nodes.get(list_key as usize)?;
+        let list = node.list.as_ref()?;
+        let inset = if compute_y && list.parent {
+            node.layout.map_or(0.0, |layout| {
+                content_box(&self.rounded_layout(layout)).origin.y.0
+            })
+        } else {
+            0.0
+        };
+        let cross_y = |index: Option<u32>| -> f32 {
+            if !compute_y {
+                return 0.0;
             }
-            return self
-                .source_cells(key)
-                .into_iter()
-                .find_map(|(cell, _)| self.source_provider_in(cell, point));
+            if !list.horizontal {
+                return inset
+                    + match index {
+                        Some(i) => list.item_at(i),
+                        None => 0.0,
+                    };
+            }
+            let cross = node.layout.map_or(0.0, |layout| {
+                content_box(&self.rounded_layout(layout)).size.height.0
+            });
+            let unit = self.layout.grid().map(|g| g.height);
+            let columns_cross = if unit.is_some() && list.cells_cross.is_finite() {
+                list.cells_cross
+            } else {
+                cross
+            };
+            let y = match index {
+                Some(i) => list.column(columns_cross, list.column_of(i), unit).0,
+                None => list.full_width(columns_cross).0,
+            };
+            inset + y
+        };
+        if let Some(index) = required_index {
+            let matches = list
+                .slots
+                .iter()
+                .any(|slot| slot.cell == cell && slot.ready() == Some(index));
+            return matches.then(|| cross_y(Some(index)));
         }
-        node.children
+        if list.extras[0].cell == cell {
+            return Some(if compute_y && !list.horizontal {
+                inset + list.blocks().header
+            } else {
+                cross_y(None)
+            });
+        }
+        if list.count == 0 && list.extras[2].cell == cell {
+            return Some(if compute_y && !list.horizontal {
+                inset + list.blocks().body
+            } else {
+                cross_y(None)
+            });
+        }
+        if list.extras[1].cell == cell {
+            return Some(if compute_y && !list.horizontal {
+                inset + list.blocks().footer
+            } else {
+                cross_y(None)
+            });
+        }
+        let index = list
+            .slots
             .iter()
-            .find_map(|&child| self.source_provider_in(child, point))
+            .find(|slot| slot.cell == cell)
+            .and_then(|slot| slot.ready())?;
+        Some(cross_y(Some(index)))
+    }
+
+    /// Whether `key` belongs to `reader`'s source subtree (without requiring
+    /// layout readiness).
+    fn node_in_reader(&self, reader: Key, key: Key) -> bool {
+        if key == reader {
+            return !self.displays_none(reader);
+        }
+        let mut curr = key;
+        loop {
+            if self.source_node(curr).is_none() {
+                return false;
+            }
+            let parent = self.nodes[curr as usize].parent;
+            if parent == NO_KEY {
+                return false;
+            }
+            if parent == reader {
+                return self.list_cell_y(reader, curr, None, false).is_some();
+            }
+            let Some(parent_node) = self.source_node(parent) else {
+                return false;
+            };
+            if self.is_text_leaf(parent_node) {
+                return false;
+            }
+            if parent_node.list.is_some() && self.list_cell_y(parent, curr, None, false).is_none() {
+                return false;
+            }
+            curr = parent;
+        }
+    }
+
+    /// Computes `key`'s seat (content-space Y and clip interval) within
+    /// `reader` by walking only its ancestor chain.
+    ///
+    /// When `committed` is `true` (pre-commit `set_scroll_offset`), reads the
+    /// committed `node.frame` coordinates last submitted to the platform so
+    /// uncommitted `Splice` / `ListContent` mutations never skew capture.
+    fn seat_in_reader(
+        &self,
+        reader: Key,
+        key: Key,
+        target: Option<(Key, u32)>,
+        committed: bool,
+    ) -> Option<Seat> {
+        let leaf = self.source_node(key)?;
+        if committed {
+            if !leaf.created
+                || !leaf.frame.origin.y.0.is_finite()
+                || !leaf.frame.size.height.0.is_finite()
+            {
+                return None;
+            }
+        } else {
+            leaf.layout?;
+        }
+        let mut path: Vec<(Key, f32)> = Vec::with_capacity(12);
+        let mut curr = key;
+        let mut hit_target = target.is_none();
+        loop {
+            let curr_node = &self.nodes[curr as usize];
+            let parent = curr_node.parent;
+            if parent == NO_KEY {
+                return None;
+            }
+            if parent == reader {
+                let dy = if committed {
+                    if !curr_node.created
+                        || curr_node.spare
+                        || curr_node.left_behind
+                        || !curr_node.frame.origin.y.0.is_finite()
+                        || !curr_node.frame.size.height.0.is_finite()
+                    {
+                        return None;
+                    }
+                    curr_node.frame.origin.y.0
+                } else {
+                    let required = target.and_then(|(p, i)| (p == parent).then_some(i));
+                    if required.is_some() {
+                        hit_target = true;
+                    }
+                    self.list_cell_y(reader, curr, required, true)?
+                };
+                path.push((curr, dy));
+                break;
+            }
+            let parent_node = self.source_node(parent)?;
+            if self.is_text_leaf(parent_node) {
+                return None;
+            }
+            let dy = if committed {
+                if !curr_node.created
+                    || !curr_node.frame.origin.y.0.is_finite()
+                    || !curr_node.frame.size.height.0.is_finite()
+                {
+                    return None;
+                }
+                if parent_node.list.as_ref().is_some_and(|list| list.parent)
+                    && (curr_node.spare || curr_node.left_behind)
+                {
+                    return None;
+                }
+                curr_node.frame.origin.y.0
+            } else if parent_node.list.as_ref().is_some_and(|list| list.parent) {
+                let required = target.and_then(|(p, i)| (p == parent).then_some(i));
+                if required.is_some() {
+                    hit_target = true;
+                }
+                self.list_cell_y(parent, curr, required, true)?
+            } else {
+                let curr_layout = curr_node.layout?;
+                self.rounded_layout(curr_layout).location.y
+            };
+            path.push((curr, dy));
+            curr = parent;
+        }
+        if !hit_target {
+            return None;
+        }
+        let mut y = 0.0f32;
+        let mut clip = (f32::NEG_INFINITY, f32::INFINITY);
+        for &(step, dy) in path.iter().rev() {
+            y += dy;
+            let node = &self.nodes[step as usize];
+            if node.view_style.overflow_hidden || node.scroll.is_some() {
+                let height = if committed {
+                    let h = node.frame.size.height.0;
+                    if !h.is_finite() {
+                        return None;
+                    }
+                    h
+                } else {
+                    self.rounded_layout(node.layout?).size.height
+                };
+                clip = (clip.0.max(y), clip.1.min(y + height));
+                if clip.0 >= clip.1 {
+                    return None;
+                }
+            }
+        }
+        Some(Seat { key, y, clip })
+    }
+
+    /// Finds the enclosing vertical reader list (walking past `parent` lists
+    /// and disabled scroll wrappers, stopping at independent vertical scroll
+    /// containers or `display: none`).
+    pub(super) fn enclosing_reader(&self, mut key: Key) -> Option<Key> {
+        while key != NO_KEY {
+            let node = self.nodes.get(key as usize)?;
+            if let Some(list) = node.list.as_ref()
+                && !list.parent
+                && !list.horizontal
+                && !list.inverted
+            {
+                return (!self.displays_none(key)).then_some(key);
+            }
+            self.source_node(key)?;
+            key = node.parent;
+        }
+        None
+    }
+
+    /// Marks the enclosing vertical reader list dirty so it re-evaluates its
+    /// reading pin in this commit. Returns `true` if a reader was marked.
+    pub(super) fn mark_enclosing_reader_dirty(&mut self, key: Key, only_if_active: bool) -> bool {
+        let Some(reader) = self.enclosing_reader(key) else {
+            return false;
+        };
+        let list = self.nodes[reader as usize].list.as_mut().expect("reader");
+        if only_if_active
+            && list.reading_point().is_none()
+            && list.wants_reading_pin(false, list.content_len()).is_none()
+        {
+            return false;
+        }
+        list.dirty = true;
+        true
     }
 
     /// One required cell is derived from the outer reader's existing source pin.
     /// It uses the ordinary window and urgent-binding path, never a second pin.
     pub(super) fn reading_row(&self, key: Key) -> Option<u32> {
-        let list = self.nodes[key as usize].list.as_ref()?;
-        let reader = if list.parent { list.outer?.view } else { key };
+        let node = &self.nodes[key as usize];
+        let list = node.list.as_ref()?;
+        let reader = if list.parent {
+            self.enclosing_reader(node.parent)?
+        } else {
+            key
+        };
         let point = self.nodes[reader as usize].list.as_ref()?.reading_point()?;
         let provider = self.source_provider(reader, point)?;
         if provider == key {
@@ -154,170 +516,112 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
-    /// Resolve within the addressed logical row. Other mounted rows are not
-    /// evidence of this document's beginning or end.
+    /// Resolve within the addressed logical row (when backed by a provider) or
+    /// directly via the ancestor chain of sourced text blocks for `point.id`.
     pub(super) fn reading_position(&mut self, reader: Key, point: &SourcePoint) -> SourcePosition {
-        let Some(provider) = self.source_provider(reader, point) else {
-            return self.nodes[reader as usize]
-                .list
-                .as_ref()
-                .expect("reader")
-                .source_geometry
-                .position(point)
-                .map_or(SourcePosition::Closed, SourcePosition::Ready);
-        };
-        let node = &self.nodes[provider as usize];
-        let list = node.list.as_ref().expect("source provider");
-        let source = list.source_rows.as_ref().expect("source rows");
-        let index = match source.row(point.byte) {
-            SourceRow::Pending => return SourcePosition::Pending,
-            SourceRow::Closed => return SourcePosition::Closed,
-            SourceRow::Row(index) => index,
-        };
-        let Some(cell) = list
-            .slots
-            .iter()
-            .find_map(|slot| (slot.ready() == Some(index)).then_some(slot.cell))
-        else {
-            return SourcePosition::Pending;
-        };
-        let Some(cell_layout) = self.nodes.get(cell as usize).and_then(|node| node.layout) else {
-            return SourcePosition::Pending;
-        };
-        let measured = self.rounded_layout(cell_layout).size.height;
-        if self.layout.dirty(cell_layout)
-            || !list.source_row_matches_layout(index, measured)
-            || list
-                .spacer
-                .is_some_and(|(_, length)| length != list.content_len())
-        {
-            return SourcePosition::Pending;
+        if self.source_texts.is_empty() && self.source_providers.is_empty() {
+            return SourcePosition::Closed;
         }
-        // A newly measured row may still have its parent's old spacer layout.
-        // An unstyled holder gets its frame from the child laid out in its place.
-        let mut ancestor = cell;
-        while ancestor != reader {
-            let node = &self.nodes[ancestor as usize];
-            if node
-                .layout
-                .is_none_or(|layout| self.layout.dirty(self.layout.laid_out(layout)))
+        if let Some(provider) = self.source_provider(reader, point) {
+            let node = &self.nodes[provider as usize];
+            let list = node.list.as_ref().expect("source provider");
+            let source = list.source_rows.as_ref().expect("source rows");
+            let index = match source.row(point.byte) {
+                SourceRow::Pending => return SourcePosition::Pending,
+                SourceRow::Closed => return SourcePosition::Closed,
+                SourceRow::Row(index) => index,
+            };
+            let Some(cell) = list
+                .slots
+                .iter()
+                .find_map(|slot| (slot.ready() == Some(index)).then_some(slot.cell))
+            else {
+                return SourcePosition::Pending;
+            };
+            let Some(cell_layout) = self.nodes.get(cell as usize).and_then(|node| node.layout)
+            else {
+                return SourcePosition::Pending;
+            };
+            let measured_size = self.rounded_layout(cell_layout).size;
+            let measured = if list.horizontal {
+                measured_size.width
+            } else {
+                measured_size.height
+            };
+            if self.layout.dirty(cell_layout)
+                || !list.source_row_matches_layout(index, measured)
+                || list
+                    .spacer
+                    .is_some_and(|(_, length)| length != list.content_len())
             {
                 return SourcePosition::Pending;
             }
-            ancestor = node.parent;
-            if ancestor == NO_KEY {
+            // A newly measured row may still have its parent's old spacer layout.
+            // An unstyled holder gets its frame from the child laid out in its place.
+            let mut ancestor = cell;
+            while ancestor != reader {
+                let node = &self.nodes[ancestor as usize];
+                if node
+                    .layout
+                    .is_none_or(|layout| self.layout.dirty(self.layout.laid_out(layout)))
+                {
+                    return SourcePosition::Pending;
+                }
+                ancestor = node.parent;
+                if ancestor == NO_KEY {
+                    return SourcePosition::Closed;
+                }
+            }
+            if self
+                .seat_in_reader(reader, cell, Some((provider, index)), false)
+                .is_none()
+            {
                 return SourcePosition::Closed;
             }
+            let seats = self.document_seats(reader, point, Some((provider, index)));
+            if seats.is_empty() {
+                return SourcePosition::Closed;
+            }
+            return self
+                .source_geometry(seats, Some(point), true)
+                .position(point)
+                .map_or(SourcePosition::Closed, SourcePosition::Ready);
         }
-        let mut seats = Vec::new();
-        for (cell, y) in self.source_cells(reader) {
-            self.source_seats(
-                cell,
-                y,
-                (f32::NEG_INFINITY, f32::INFINITY),
-                Some((provider, index)),
-                &mut seats,
-            );
+
+        let seats = self.document_seats(reader, point, None);
+        if seats.is_empty() {
+            return SourcePosition::Closed;
         }
-        self.source_geometry(seats, Some(point))
+        self.source_geometry(seats, Some(point), true)
             .position(point)
             .map_or(SourcePosition::Closed, SourcePosition::Ready)
     }
 
-    /// Current ready cells in the same natural positions `update_list` uses.
-    fn source_cells(&self, key: Key) -> Vec<(Key, f32)> {
-        let node = &self.nodes[key as usize];
-        let list = node.list.as_ref().expect("list");
-        let inset = if list.parent {
-            node.layout.map_or(0.0, |layout| {
-                content_box(&self.rounded_layout(layout)).origin.y.0
-            })
-        } else {
-            0.0
-        };
-        let mut rows: Vec<_> = list
-            .slots
-            .iter()
-            .filter_map(|slot| slot.ready().map(|index| (index, slot.cell)))
-            .collect();
-        rows.sort_unstable_by_key(|&(index, _)| index);
-        let blocks = list.blocks();
-        let mut out = Vec::with_capacity(rows.len() + 3);
-        let header = list.extras[0].cell;
-        if header != u32::MAX {
-            out.push((header, inset + blocks.header));
-        }
-        out.extend(
-            rows.into_iter()
-                .map(|(index, cell)| (cell, inset + list.item_at(index))),
-        );
-        let empty = list.extras[2].cell;
-        if list.count == 0 && empty != u32::MAX {
-            out.push((empty, inset + blocks.body));
-        }
-        let footer = list.extras[1].cell;
-        if footer != u32::MAX {
-            out.push((footer, inset + blocks.footer));
-        }
-        out
-    }
-
-    fn source_seats(
+    /// Locates all sourced text blocks carrying `point.id` inside `reader`
+    /// (preserving syntax-gap forward projection and tail fallback in
+    /// `SourceGeometry::position`).
+    fn document_seats(
         &self,
-        key: Key,
-        y: f32,
-        mut clip: (f32, f32),
+        reader: Key,
+        point: &SourcePoint,
         target: Option<(Key, u32)>,
-        out: &mut Vec<Seat>,
-    ) {
-        let Some(node) = self.source_node(key) else {
-            return;
-        };
-        let Some(layout) = node.layout else { return };
-        let frame = self.rounded_layout(layout);
-        let parent_list = node.list.as_ref().is_some_and(|list| list.parent);
-        if node.view_style.overflow_hidden || node.scroll.is_some() {
-            clip = (clip.0.max(y), clip.1.min(y + frame.size.height));
-            if clip.0 >= clip.1 {
-                return;
-            }
-        }
-        if let Some(LeafContext::Text(cx)) = self.layout.get_node_context(layout) {
-            if target.is_none() && !cx.sources.is_empty() {
-                out.push(Seat { key, y, clip });
-            }
-            // Styled nested texts belong to this flattened text block.
-            // Inline view attachments have their own glyph placement rather
-            // than a normal child-layout position.
-            return;
-        }
-        if parent_list {
-            if let Some((provider, index)) = target
-                && provider == key
+    ) -> Vec<Seat> {
+        let mut seats = Vec::new();
+        for &text_key in &self.source_texts {
+            let Some(node) = self.nodes.get(text_key as usize) else {
+                continue;
+            };
+            let matches_doc = node
+                .layout
+                .and_then(|layout| self.layout.get_node_context(layout))
+                .is_some_and(
+                    |cx| matches!(cx, LeafContext::Text(cx) if cx.sources.has_document(&point.id)),
+                );
+            if matches_doc && let Some(seat) = self.seat_in_reader(reader, text_key, target, false)
             {
-                let list = node.list.as_ref().expect("parent list");
-                let cell = list
-                    .slots
-                    .iter()
-                    .find_map(|slot| (slot.ready() == Some(index)).then_some(slot.cell));
-                for (ready, at) in self.source_cells(key) {
-                    if Some(ready) == cell {
-                        self.source_seats(ready, y + at, clip, None, out);
-                    }
-                }
-            } else {
-                for (cell, at) in self.source_cells(key) {
-                    self.source_seats(cell, y + at, clip, target, out);
-                }
-            }
-            return;
-        }
-        for &child in &node.children {
-            let child_node = &self.nodes[child as usize];
-            if let Some(child_layout) = child_node.layout {
-                let child_y = self.rounded_layout(child_layout).location.y;
-                self.source_seats(child, y + child_y, clip, target, out);
+                seats.push(seat);
             }
         }
+        seats
     }
 }

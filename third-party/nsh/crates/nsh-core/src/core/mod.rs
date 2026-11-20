@@ -1291,8 +1291,12 @@ pub struct Core<M: TextEngine> {
     resize_settling: bool,
     /// Text blocks whose final layout must be (re)made after layout.
     pending_text: Vec<Key>,
-    /// Text source membership changed, independently of shaping and layout.
-    reading_dirty: bool,
+    /// Text blocks with non-empty `textSource`, for on-demand reading lookup.
+    source_texts: Vec<Key>,
+    /// Lists carrying `ListSourceRows`, for on-demand provider lookup.
+    source_providers: Vec<Key>,
+    #[cfg(test)]
+    pub(super) source_geometry_walks: usize,
     /// Text blocks with attachments (checked for attachments laid out
     /// again).
     attachment_blocks: Vec<Key>,
@@ -1592,6 +1596,12 @@ pub struct Core<M: TextEngine> {
     /// The windows' attribute records, by root node (the main window's is
     /// the root's): what was sent the platform and what was set since.
     windows: rustc_hash::FxHashMap<NodeId, crate::desktop::window::WindowRecord>,
+    /// Live non-root nodes with `parent == NO_KEY` (detached or never linked).
+    unparented_nodes: usize,
+    /// Monotonic counter incremented when a commit leaves newly unparented nodes.
+    unparented_seq: u64,
+    /// Nodes that entered `parent == NO_KEY` since the last commit settlement.
+    newly_unparented: Vec<(Key, NodeId)>,
     /// The windows of the app's own, by the app's id: their root nodes,
     /// and whether their placement is kept.
     window_ids: rustc_hash::FxHashMap<String, (NodeId, bool)>,
@@ -1675,7 +1685,10 @@ impl<M: TextEngine> Core<M> {
             resizing_commit: 0,
             resize_settling: false,
             pending_text: Vec::new(),
-            reading_dirty: false,
+            source_texts: Vec::new(),
+            source_providers: Vec::new(),
+            #[cfg(test)]
+            source_geometry_walks: 0,
             attachment_blocks: Vec::new(),
             max_nodes: usize::MAX,
             fold_runs: true,
@@ -1684,6 +1697,9 @@ impl<M: TextEngine> Core<M> {
             media_files: Arc::default(),
             canvas_images: Default::default(),
             denied: Default::default(),
+            unparented_nodes: 0,
+            unparented_seq: 0,
+            newly_unparented: Vec::new(),
             windows: Default::default(),
             window_ids: Default::default(),
             runs: Default::default(),
@@ -2195,12 +2211,35 @@ impl<M: TextEngine> Core<M> {
                 dependents = true;
             }
         }
-        if let Some(list) = node.list.as_mut() {
-            list.reported(if horizontal { x } else { y }, applied);
-        }
+        let reported_moved = node
+            .list
+            .as_mut()
+            .is_some_and(|list| list.reported(if horizontal { x } else { y }, applied));
         self.cull_moved(key);
         if dependents {
             self.dependents_dirty(key);
+        }
+        if reported_moved && !self.source_texts.is_empty() {
+            let range = {
+                let node = &self.nodes[key as usize];
+                node.list.as_ref().and_then(|list| {
+                    let committed_len = node
+                        .scroll
+                        .as_ref()
+                        .and_then(|s| s.content)
+                        .map_or_else(|| list.content_len(), |c| c.height.0);
+                    list.wants_reading_pin(false, committed_len)
+                })
+            };
+            if let Some((start, end)) = range
+                && let Some((point, y)) = self.first_visible_source(key, start, end, false)
+            {
+                self.nodes[key as usize]
+                    .list
+                    .as_mut()
+                    .expect("list")
+                    .set_reading_pin(point, y);
+            }
         }
         // A link's hint placed where the pointer came over it would be left
         // behind by the content (`Core::overlay_scrolled`).
@@ -3335,15 +3374,43 @@ impl<M: TextEngine> Core<M> {
                 !matches!(item, MountItem::ScrollBy { dx, dy, .. } if dx.0 == 0.0 && dy.0 == 0.0)
             });
         }
-        if self.mount.is_empty() || matches!(self.mount[..], [MountItem::LayoutAnimation(_)]) {
-            self.mount.clear();
-            None
-        } else {
-            self.batches += 1;
-            Some(MountBatch {
-                items: std::mem::take(&mut self.mount),
-            })
+        let out =
+            if self.mount.is_empty() || matches!(self.mount[..], [MountItem::LayoutAnimation(_)]) {
+                self.mount.clear();
+                None
+            } else {
+                self.batches += 1;
+                Some(MountBatch {
+                    items: std::mem::take(&mut self.mount),
+                })
+            };
+        self.settle_unparented();
+        out
+    }
+
+    fn settle_unparented(&mut self) {
+        if self.newly_unparented.is_empty() {
+            return;
         }
+        let persisted = self.newly_unparented.drain(..).any(|(key, id)| {
+            self.nodes
+                .get(key as usize)
+                .is_some_and(|n| n.id == id && n.parent == NO_KEY)
+        });
+        if persisted {
+            self.unparented_seq = self.unparented_seq.wrapping_add(1);
+        }
+    }
+
+    /// Number of live non-root nodes currently unattached to the tree
+    /// (either unlinked or never inserted).
+    pub fn unparented_nodes(&self) -> usize {
+        self.unparented_nodes
+    }
+
+    /// Monotonic counter advanced whenever a commit leaves newly unparented nodes.
+    pub fn unparented_seq(&self) -> u64 {
+        self.unparented_seq
     }
 
     /// Include logical document order in mount batches for a platform's focus traversal.
@@ -3468,7 +3535,6 @@ impl<M: TextEngine> Core<M> {
             self.sync_culled();
         }
         self.update_lists(relayout);
-        self.reading_dirty = false;
         if !self.slop_moved.is_empty() {
             self.update_slop_overflow();
         }
@@ -3865,6 +3931,8 @@ impl<M: TextEngine> Core<M> {
         }
         let key = self.nodes.insert(Node::new(id, kind)) as Key;
         self.slots.insert(idx, key);
+        self.unparented_nodes += 1;
+        self.newly_unparented.push((key, id));
         Ok(key)
     }
 
@@ -4244,6 +4312,9 @@ impl<M: TextEngine> Core<M> {
         node.control = fresh.control;
         node.component = fresh.component;
         let layout = node.layout.expect("a view has a layout");
+        if let Some(pos) = self.source_texts.iter().position(|&k| k == key) {
+            self.source_texts.swap_remove(pos);
+        }
         self.layout.set_node_context(layout, leaf_context(kind));
         let style = self.layout.style(layout).clone();
         self.became(key, style);
@@ -5736,11 +5807,18 @@ impl<M: TextEngine> Core<M> {
                 }
             }
             Prop::Horizontal(horizontal) => {
-                if let Some(scroll) = node.scroll.as_mut()
-                    && scroll.horizontal != horizontal
+                if self.nodes[key as usize]
+                    .scroll
+                    .as_ref()
+                    .is_some_and(|scroll| scroll.horizontal != horizontal)
                 {
-                    scroll.horizontal = horizontal;
-                    self.reading_dirty = true;
+                    let has_sources =
+                        !self.source_texts.is_empty() || !self.source_providers.is_empty();
+                    if has_sources {
+                        self.mark_enclosing_reader_dirty(key, false);
+                    }
+                    let node = &mut self.nodes[key as usize];
+                    node.scroll.as_mut().expect("scroll").horizontal = horizontal;
                     flags |= dirty::SCROLL;
                     let rtl = node.rtl;
                     if let Some(list) = node.list.as_mut() {
@@ -5751,6 +5829,9 @@ impl<M: TextEngine> Core<M> {
                     self.sync_layout_style(key);
                     for child in children {
                         self.sync_layout_style(child);
+                    }
+                    if has_sources {
+                        self.mark_enclosing_reader_dirty(key, false);
                     }
                     if self.nodes[key as usize]
                         .list
@@ -5958,10 +6039,19 @@ impl<M: TextEngine> Core<M> {
             }
             Prop::ListSourceRows(source) => {
                 if let Some(list) = node.list.as_mut() {
+                    let had = list.source_rows.is_some();
+                    let has = source.is_some();
                     list.source_rows = source;
-                    list.source_dirty = true;
                     list.dirty = true;
-                    self.reading_dirty = true;
+                    if !had && has {
+                        self.source_providers.push(key);
+                    } else if had
+                        && !has
+                        && let Some(pos) = self.source_providers.iter().position(|&k| k == key)
+                    {
+                        self.source_providers.swap_remove(pos);
+                    }
+                    self.mark_enclosing_reader_dirty(key, false);
                 }
             }
             Prop::ListContent(content) => {
@@ -5997,8 +6087,6 @@ impl<M: TextEngine> Core<M> {
                     .and_then(|p| p.list.as_mut())
                 {
                     list.rendered(key, index);
-                    // Parent cells contribute to the outer reader's source index.
-                    self.reading_dirty |= list.parent;
                 }
             }
             Prop::PanValues(x, y) => {
@@ -6516,10 +6604,21 @@ impl<M: TextEngine> Core<M> {
             }
             // `scrollable` of scroll views and lists.
             Prop::Native(NativeProp::Scrollable(on)) if node.scroll.is_some() => {
-                if let Some(scroll) = node.scroll.as_mut() {
-                    self.reading_dirty |= scroll.behavior.enabled != on;
+                let changed = self.nodes[key as usize]
+                    .scroll
+                    .as_ref()
+                    .is_some_and(|scroll| scroll.behavior.enabled != on);
+                let has_sources =
+                    !self.source_texts.is_empty() || !self.source_providers.is_empty();
+                if changed && has_sources {
+                    self.mark_enclosing_reader_dirty(key, false);
+                }
+                if let Some(scroll) = self.nodes[key as usize].scroll.as_mut() {
                     scroll.behavior.enabled = on;
                     flags |= dirty::SCROLL_BEHAVIOR;
+                }
+                if changed && has_sources {
+                    self.mark_enclosing_reader_dirty(key, false);
                 }
             }
             Prop::Component(name) => {
@@ -6936,6 +7035,7 @@ impl<M: TextEngine> Core<M> {
             self.set_hidden_in_text(child, false);
         }
         self.nodes[child as usize].parent = parent;
+        self.unparented_nodes -= 1;
         if self.nodes[child as usize].kind == Kind::Overlay {
             // Its logical parent changed: find its keyboard override again.
             self.key_ancestry_dirty = true;
@@ -7068,6 +7168,22 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
+    fn remove_layout(
+        layout_tree: &mut layout_tree::LayoutTree<LeafContext<M::Prepared>>,
+        source_texts: &mut Vec<Key>,
+        key: Key,
+        layout: taffy::NodeId,
+    ) {
+        if matches!(
+            layout_tree.get_node_context(layout),
+            Some(LeafContext::Text(cx)) if !cx.sources.is_empty()
+        ) && let Some(pos) = source_texts.iter().position(|&k| k == key)
+        {
+            source_texts.swap_remove(pos);
+        }
+        layout_tree.remove(layout);
+    }
+
     /// Unlinks `key` from its parent's children, layout and (optionally)
     /// native hierarchy.
     fn unlink(&mut self, key: Key, emit_remove: bool) {
@@ -7083,13 +7199,19 @@ impl<M: TextEngine> Core<M> {
         siblings.remove(pos);
         self.tree_order_changed |= self.track_tree_order;
         self.tab_places_stale = true;
+        if !self.source_texts.is_empty() || !self.source_providers.is_empty() {
+            self.mark_enclosing_reader_dirty(parent, true);
+        }
         if let Some(list) = self.nodes[parent as usize].list.as_mut() {
             list.remove_cell(key);
         }
         if self.nodes[parent as usize].positional_children {
             self.positions_changed(parent);
         }
+        let unlinked_id = self.nodes[key as usize].id;
         self.nodes[key as usize].parent = NO_KEY;
+        self.unparented_nodes += 1;
+        self.newly_unparented.push((key, unlinked_id));
         if self.nodes[key as usize].states & crate::tailwind::state::FOCUS_WITHIN != 0 {
             // The focus left the views around it with it.
             self.focus_moved = true;
@@ -7246,6 +7368,7 @@ impl<M: TextEngine> Core<M> {
             self.parent_lists.retain(|&k| k != key);
         }
         let node = self.nodes.remove(key as usize);
+        self.unparented_nodes -= 1;
         self.ch_readers -= usize::from(node.reads_ch);
         self.slots.remove(id as usize);
         if node.class_props.as_ref().and_then(|c| c.pointer_events)
@@ -7276,6 +7399,11 @@ impl<M: TextEngine> Core<M> {
             self.sticky_views.retain(|&k| k != key);
             self.sticky_scrollers.retain(|&k| k != key);
         }
+        if node.list.as_ref().is_some_and(|l| l.source_rows.is_some())
+            && let Some(pos) = self.source_providers.iter().position(|&k| k == key)
+        {
+            self.source_providers.swap_remove(pos);
+        }
         if let Some((spacer, _)) = node.list.as_ref().and_then(|l| l.spacer) {
             self.layout.remove(spacer);
         }
@@ -7302,6 +7430,9 @@ impl<M: TextEngine> Core<M> {
         for &c in &node.children {
             if let Some(child) = self.nodes.get_mut(c as usize) {
                 child.parent = NO_KEY;
+                let child_id = child.id;
+                self.unparented_nodes += 1;
+                self.newly_unparented.push((c, child_id));
             }
         }
         if node.states & crate::tailwind::state::FOCUS_WITHIN != 0 {
@@ -7310,7 +7441,7 @@ impl<M: TextEngine> Core<M> {
             self.focus_moved = true;
         }
         if let Some(layout) = node.layout {
-            self.layout.remove(layout);
+            Self::remove_layout(&mut self.layout, &mut self.source_texts, key, layout);
         }
         if node.created || (node.inline && node.kind == Kind::Text) {
             // A virtual press target still has a native lifetime. Releasing
@@ -7520,7 +7651,7 @@ impl<M: TextEngine> Core<M> {
                 if node.base_layout.is_none() {
                     node.base_layout = Some(Box::new(self.layout.style(l).clone()));
                 }
-                self.layout.remove(l);
+                Self::remove_layout(&mut self.layout, &mut self.source_texts, key, l);
             }
             if node.created {
                 node.created = false;
@@ -8416,8 +8547,22 @@ impl<M: TextEngine> Core<M> {
         let layout = self.nodes[key as usize]
             .layout
             .expect("text block has layout");
-        let sources_changed = matches!(self.layout.get_node_context(layout), Some(LeafContext::Text(cx)) if cx.sources != sources);
-        self.reading_dirty |= sources_changed;
+        let (had_sources, sources_changed) = match self.layout.get_node_context(layout) {
+            Some(LeafContext::Text(cx)) => (!cx.sources.is_empty(), cx.sources != sources),
+            _ => (false, false),
+        };
+        if sources_changed {
+            let has_sources = !sources.is_empty();
+            if !had_sources && has_sources {
+                self.source_texts.push(key);
+            } else if had_sources
+                && !has_sources
+                && let Some(pos) = self.source_texts.iter().position(|&k| k == key)
+            {
+                self.source_texts.swap_remove(pos);
+            }
+            self.mark_enclosing_reader_dirty(key, false);
+        }
         let colors_at_draw = self.text_engine.draws_colors_from_text();
         let cx = self.text_cx(layout);
         cx.deferred = deferred;
@@ -10446,12 +10591,7 @@ impl<M: TextEngine> Core<M> {
             return;
         }
         let list = node.list.as_ref().expect("list");
-        if !(relayout
-            || moved
-            || list.dirty
-            || self.reading_dirty
-            || self.commands.iter().any(|c| c.0 == node.id))
-        {
+        if !(relayout || moved || list.dirty || self.commands.iter().any(|c| c.0 == node.id)) {
             return;
         }
         let list_hidden = self.displays_none(key);
@@ -10563,13 +10703,17 @@ impl<M: TextEngine> Core<M> {
         // Inverted lists keep their distance from the end instead;
         // `maintainVisibleContentPosition` follows the end near it.
         anchor += list.anchor_end(kept);
-        let rebuild_sources = self.reading_dirty || list.source_dirty || relayout;
-        if rebuild_sources {
-            let geometry = self.list_source_geometry(key);
-            let list = self.nodes[key as usize].list.as_mut().expect("list");
-            list.source_geometry = geometry;
-            list.source_dirty = false;
-        }
+        let parent_cell_relaid = outer.is_some()
+            && !self.source_texts.is_empty()
+            && extras
+                .iter()
+                .filter_map(|e| (e.cell != NO_KEY).then_some(e.cell))
+                .chain(ready.iter().map(|&(_, cell)| cell))
+                .any(|cell| {
+                    self.nodes
+                        .get(cell as usize)
+                        .is_some_and(|node| node.relaid)
+                });
         let explicit = self.nodes[key as usize]
             .scroll
             .as_ref()
@@ -10739,6 +10883,29 @@ impl<M: TextEngine> Core<M> {
                         ("last", PayloadValue::Number(last)),
                     ]),
                 ));
+            }
+        }
+
+        let parent_offsets_changed = std::mem::take(
+            &mut self.nodes[key as usize]
+                .list
+                .as_mut()
+                .expect("list")
+                .parent_offsets_changed,
+        );
+        if !self.source_texts.is_empty() {
+            let range = {
+                let list = self.nodes[key as usize].list.as_ref().expect("list");
+                list.wants_reading_pin(explicit, list.content_len())
+            };
+            if let Some((start, end)) = range
+                && let Some((point, y)) = self.first_visible_source(key, start, end, true)
+            {
+                self.nodes[key as usize]
+                    .list
+                    .as_mut()
+                    .expect("list")
+                    .set_reading_pin(point, y);
             }
         }
 
@@ -10963,9 +11130,18 @@ impl<M: TextEngine> Core<M> {
             // The owner was indexed before these rows were measured. Opposite
             // extent changes can move its source lines without resizing the
             // spacer; reconcile that geometry in the same settling round.
-            if extents_changed && let Some(owner) = self.nodes[o.view as usize].list.as_mut() {
-                owner.source_dirty = true;
-                owner.dirty = true;
+            let parent = self.nodes[key as usize].parent;
+            if extents_changed {
+                if let Some(owner) = self.nodes[o.view as usize].list.as_mut() {
+                    owner.dirty = true;
+                    self.extent_changed = true;
+                } else if self.mark_enclosing_reader_dirty(parent, true) {
+                    self.extent_changed = true;
+                }
+            } else if (parent_offsets_changed || parent_cell_relaid)
+                && (!self.source_texts.is_empty() || !self.source_providers.is_empty())
+                && self.mark_enclosing_reader_dirty(parent, true)
+            {
                 self.extent_changed = true;
             }
             // The view around the list scrolls (the commit sends it at
