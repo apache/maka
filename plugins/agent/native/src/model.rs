@@ -794,7 +794,8 @@ pub(crate) fn inference_outcome(
         ModelError::Provider(failure) => match failure.reason() {
             ProviderFailureReason::RateLimit
             | ProviderFailureReason::QuotaExhausted
-            | ProviderFailureReason::ProviderUnavailable => Outcome::Error,
+            | ProviderFailureReason::ProviderUnavailable
+            | ProviderFailureReason::Withheld => Outcome::Error,
             ProviderFailureReason::Network
             | ProviderFailureReason::TimedOut
             | ProviderFailureReason::StreamTruncated => Outcome::Unknown,

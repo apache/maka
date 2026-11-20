@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { formatCount } from './numberFormat';
 import { cleanup, computed, effect, inputAction, keymap, Scroll, signal, Text, View } from 'nsh';
 import {
   Button,
@@ -539,8 +540,12 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
           </Text>
         </View>
         <If when={renderableState() !== null}>
-          <Text style={{ ...captionTextStyle, color: C.success }}>+{stats().added}</Text>
-          <Text style={{ ...captionTextStyle, color: C.danger }}>−{stats().deleted}</Text>
+          <Text style={{ ...captionTextStyle, color: C.success }}>
+            +{formatCount(stats().added)}
+          </Text>
+          <Text style={{ ...captionTextStyle, color: C.danger }}>
+            −{formatCount(stats().deleted)}
+          </Text>
         </If>
         <If when={navContext() !== null}>
           <View

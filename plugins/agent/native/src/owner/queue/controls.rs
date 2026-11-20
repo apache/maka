@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use crate::{executor::ActiveDelivery, owner::send::PreparedAgentSend};
 use maka_agent_facts::durable::{RunSpec, UnixMillis};
 use maka_agent_state::{ContentBlob, Head, queue as durable_queue};
 
@@ -234,6 +235,7 @@ impl Owner {
             targets.push((entry, source));
         }
         let mut contents = Vec::new();
+        let mut followup = None;
         let edit = match input.edit {
             QueueAction::Retract { .. } => durable_queue::QueueEdit::Retract {
                 request: targets[0].0.request.id.clone(),
@@ -245,30 +247,43 @@ impl Owner {
                     .collect(),
             },
             QueueAction::Promote { .. } => {
-                let Some(control) = promotion else {
+                let Some(view) = self.latest_session_run(&input.session_id).await? else {
                     return rejected(QueueRejection::NotRunning);
                 };
-                if control.compacting
-                    || control.basis.executor.as_ref().is_some_and(|executor| {
-                        !matches!(
-                            self.executors.active_delivery(executor),
-                            crate::executor::ActiveDelivery::Steer
-                        )
-                    })
-                {
-                    return rejected(QueueRejection::ExecutionChanged);
-                }
-                let Some(view) = self
-                    .session_run(&input.session_id, control.execution.run_id)
-                    .await?
-                else {
-                    return rejected(QueueRejection::NotRunning);
-                };
-                if view.stopped
-                    || view.terminal.is_some()
+                if view.blocks_followup()
+                    || promotion.as_ref().is_some_and(|control| control.compacting)
                     || !same_execution(&targets[0].0.request.spec, &view.spec)
                 {
                     return rejected(QueueRejection::ExecutionChanged);
+                }
+                let handoff = self
+                    .durable
+                    .queue()
+                    .interrupt_handoff(&view)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if let Some(handoff) = handoff {
+                    followup = Some(durable_queue::Followup::Resume(handoff));
+                } else {
+                    let Some(control) = promotion else {
+                        return rejected(QueueRejection::NotRunning);
+                    };
+                    if control.execution.run_id != view.run
+                        || view.stopped
+                        || view.terminal.is_some()
+                    {
+                        return rejected(QueueRejection::ExecutionChanged);
+                    }
+                    match self.active_delivery(&view).await? {
+                        ActiveDelivery::InterruptResume => {
+                            followup = Some(durable_queue::Followup::Interrupt {
+                                run: view.run,
+                                stop: self.control_id(operation, "edit_queue:steering_interrupt"),
+                            });
+                        }
+                        ActiveDelivery::Queue => return rejected(QueueRejection::ExecutionChanged),
+                        ActiveDelivery::Steer => {}
+                    }
                 }
                 durable_queue::QueueEdit::Promote {
                     request: targets[0].0.request.id.clone(),
@@ -368,6 +383,21 @@ impl Owner {
             expected_revision: input.expected_revision,
             edit,
         };
+        let queue = self.durable.queue();
+        let change = match followup {
+            Some(fence) => self.message_writer(parent)?.prepare(PreparedAgentSend {
+                queue: durable_queue::PreparedEnqueue {
+                    session: input.session_id,
+                    command,
+                    contents,
+                    followup: Some(fence),
+                    work_fence: None,
+                },
+                completion: None,
+                order: Some(Arc::new(admission.into_ordered())),
+            }),
+            None => queue.prepare(input.session_id, command, contents),
+        };
         Ok(NativeMutation::Commit {
             value: QueueMutationResult::Committed {
                 revision: input
@@ -375,10 +405,7 @@ impl Owner {
                     .checked_add(1)
                     .ok_or("agent_queue_revision_exhausted")?,
             },
-            change: self
-                .durable
-                .queue()
-                .prepare(input.session_id, command, contents),
+            change,
         })
     }
 }

@@ -40,7 +40,7 @@ mod sql;
 pub mod tool_result_source;
 pub use continuation::ContinuationSource;
 pub(crate) use continuation::admit_continuation;
-pub(crate) use sql::{capture_at, source_content_at, sources_at, validate_cut};
+pub(crate) use sql::{capture_at, captured_tool_call, source_content_at, sources_at, validate_cut};
 pub(crate) use sql::{index, index_queue, index_retained};
 
 pub use maka_agent_facts::history_snapshot::HistoryCut;

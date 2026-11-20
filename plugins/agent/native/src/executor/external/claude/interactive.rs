@@ -24,6 +24,50 @@ use maka_plugin_core::{operation::OperationCleanup, terminal::TerminalSize};
 use std::{path::Path, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
+/// The Host ends the Claude process when a turn settles, so work Claude
+/// leaves in the background loses its completion notice.
+const TURN_END_NOTE: &str = "Maka ends this Claude Code process as soon as your turn ends. \
+After that, nothing watches background work you leave running (background shell commands, \
+background agents, monitors, scheduled wake-ups): background agents stop, and you are not \
+notified when a background command finishes. If you need the result of background work, wait \
+for it before you end the turn. If you start something that must keep running after the turn, \
+such as a server, say so in your reply.";
+
+/// Whether the user's launch arguments already append to Claude's system
+/// prompt; the turn-end note then stays out so it cannot replace that text.
+fn appends_system_prompt(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        matches!(
+            arg.split('=').next(),
+            Some("--append-system-prompt" | "--append-system-prompt-file")
+        )
+    })
+}
+
+fn launch_args(
+    session: &str,
+    resume: bool,
+    mcp_config: &Path,
+    user_args: &[String],
+) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "--dangerously-skip-permissions".into(),
+        "--ax-screen-reader".into(),
+        if resume { "--resume" } else { "--session-id" }.into(),
+        session.into(),
+        "--mcp-config".into(),
+        mcp_config.into(),
+        // These tools wait for an answer in Claude's own terminal UI, which the
+        // Host never shows. Questions go through the Host's AskUserQuestion tool.
+        "--disallowedTools".into(),
+        "AskUserQuestion,EnterPlanMode,ExitPlanMode".into(),
+    ];
+    if !appends_system_prompt(user_args) {
+        args.extend(["--append-system-prompt".into(), TURN_END_NOTE.into()]);
+    }
+    args
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "one terminal owns the native session, tool bridge and active user input"
@@ -59,17 +103,7 @@ pub(in crate::executor::external) async fn execute(
     .await
     .map_err(|error| Error::Provider(format!("Claude MCP configuration failed: {error}")))?;
     let mut command = runtime::command(config, cwd).await?;
-    command
-        .arg("--dangerously-skip-permissions")
-        .arg("--ax-screen-reader")
-        .arg(if resume { "--resume" } else { "--session-id" })
-        .arg(&session)
-        .arg("--mcp-config")
-        .arg(mcp_path)
-        // These tools wait for an answer in Claude's own terminal UI, which the
-        // Host never shows. Questions go through the Host's AskUserQuestion tool.
-        .arg("--disallowedTools")
-        .arg("AskUserQuestion,EnterPlanMode,ExitPlanMode");
+    command.args(launch_args(&session, resume, &mcp_path, &config.args));
     if let Some(model) = request["model"]
         .as_str()
         .filter(|model| *model != "default")
@@ -965,6 +999,37 @@ mod tests {
         let mut blocks = vec![json!({"type":"text","text":text})];
         blocks.resize(images + 1, json!({"type":"image","source":{}}));
         Value::Array(blocks)
+    }
+
+    #[test]
+    fn launch_args_appends_turn_end_note_unless_user_appends_system_prompt() {
+        let unrelated = ["--model".to_owned(), "opus".to_owned()];
+        for (resume, user_args) in [(false, &[][..]), (true, &unrelated[..])] {
+            let args = launch_args("session", resume, Path::new("mcp.json"), user_args);
+            let note = args
+                .iter()
+                .position(|arg| arg == "--append-system-prompt")
+                .and_then(|index| args.get(index + 1));
+            assert_eq!(note.and_then(|value| value.to_str()), Some(TURN_END_NOTE));
+        }
+        for user_args in [
+            vec![
+                "--append-system-prompt".to_owned(),
+                "Answer in French.".to_owned(),
+            ],
+            vec!["--append-system-prompt=Answer in French.".to_owned()],
+            vec![
+                "--append-system-prompt-file".to_owned(),
+                "notes.md".to_owned(),
+            ],
+            vec!["--append-system-prompt-file=notes.md".to_owned()],
+        ] {
+            let args = launch_args("session", false, Path::new("mcp.json"), &user_args);
+            assert!(
+                !args.iter().any(|arg| arg == "--append-system-prompt"),
+                "{user_args:?}"
+            );
+        }
     }
 
     // Shapes recorded by Claude Code 2.1.327 and 2.1.328.

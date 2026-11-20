@@ -103,6 +103,25 @@ export function projectSessionLimit(group: ConversationGroup<unknown>): number {
   return group.key.startsWith('project:') ? PROJECT_SESSION_LIMIT : group.sessions.length;
 }
 
+/** Top-level conversations in `group`; the limit counts only these. */
+export function topLevelCount(group: ConversationGroup<unknown>): number {
+  return group.sessions.length - group.nested.size;
+}
+
+/** The first `limit` top-level conversations, each with those nested under it. */
+export function withinLimit(
+  group: ConversationGroup<unknown>,
+  sessions: readonly string[],
+  limit: number,
+): string[] {
+  let top = 0;
+  let open = false;
+  return sessions.filter((id) => {
+    if (!group.nested.has(id)) open = ++top <= limit;
+    return open;
+  });
+}
+
 // A family this large folds behind one row; folding a smaller one would save
 // at most a row.
 const FOLDED_FAMILY_SIZE = 3;
@@ -162,7 +181,8 @@ export function browserOrder(
       : expandedProjects && !expandedProjects.has(group.key)
         ? projectSessionLimit(group)
         : sessions.length;
-    return sessions.filter((id, index) => index < limit || id === current);
+    const shown = new Set(withinLimit(group, sessions, limit));
+    return sessions.filter((id) => shown.has(id) || id === current);
   });
 }
 

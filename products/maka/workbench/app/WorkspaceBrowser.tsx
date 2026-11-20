@@ -18,7 +18,7 @@
  */
 
 import { LoadingIndicator } from './Loading';
-import { SidebarToggle, textTooltip } from './ui';
+import { SidebarTitleRow, textTooltip } from './ui';
 import { message, renderText, type UiText } from './text';
 import { tr } from './locale';
 import {
@@ -60,6 +60,8 @@ import {
   groupConversations,
   foldableFamilies,
   projectSessionLimit,
+  topLevelCount,
+  withinLimit,
   unfoldedSessions,
   type ConversationGroup,
 } from './conversationGroups';
@@ -76,6 +78,8 @@ import { ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
 
 export type WorkspaceBrowserProps = {
   navigationMore?(): JSX.Element;
+  pinSidebar?: (() => void) | undefined;
+  suppressSidebarHover?: (() => void) | undefined;
   docked(): boolean;
   connectionLost(): boolean;
   browsing: Browsing;
@@ -158,7 +162,7 @@ function GuideLine(props: { last(): boolean; height(): number }) {
 const botWorkerCap = 5;
 
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
-  const titleBarRow = () => ownTitleBar && props.docked();
+  const titleBarRow = () => ownTitleBar && (props.docked() || !!props.pinSidebar);
   const navIcon = () => (platform.idiom === 'terminal' ? C.secondary : C.muted);
   const navText = () => (platform.idiom === 'terminal' ? C.text : C.secondary);
   const selectedNavText = (selected: boolean) => ({
@@ -319,11 +323,12 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           if (collapsed().has(group.key)) return [heading];
           const all = shownSessions(group);
           const limit = projectSessionLimit(group);
+          const more = topLevelCount(group) > limit;
           const sessions =
-            all.length <= limit || expanded().has(group.key) ? all : all.slice(0, limit);
+            !more || expanded().has(group.key) ? all : withinLimit(group, all, limit);
           // A folding family's row sits right under its creator, open or not.
           const rows = sessions.flatMap((id) => (families().has(id) ? [id, `family:${id}`] : [id]));
-          return [heading, ...rows, ...(all.length > limit ? [`show-more:${group.key}`] : [])];
+          return [heading, ...rows, ...(more ? [`show-more:${group.key}`] : [])];
         }),
   );
   const toggleGroup = (key: string) => {
@@ -434,7 +439,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         (group) =>
           !collapsed().has(group.key) &&
           !expanded().has(group.key) &&
-          shownSessions(group).length > projectSessionLimit(group),
+          topLevelCount(group) > projectSessionLimit(group),
       )
     );
   };
@@ -515,17 +520,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         </View>
       </If>
       <If when={platform.idiom !== 'terminal' && titleBarRow()}>
-        <View
-          desktop={windowDrag}
-          style={{
-            height: TITLE_BAR_HEIGHT,
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'flex-end',
-          }}
-        >
-          <SidebarToggle expanded toggle={inputAction(props.collapse, props.selected())} />
-        </View>
+        <SidebarTitleRow
+          toggle={inputAction(props.collapse, props.selected())}
+          pin={props.pinSidebar}
+          suppressHover={props.suppressSidebarHover}
+        />
       </If>
       <View style={{ gap: platform.idiom === 'terminal' ? 8 : 2 }}>
         <Button
@@ -1398,7 +1397,6 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                                 disabled={props.switching() || !session()}
                                 style={{
                                   width: 32,
-                                  flexGrow: 1,
                                   alignItems: 'center',
                                   justifyContent: 'center',
                                   borderRadius: 8,

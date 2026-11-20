@@ -623,3 +623,103 @@ mod tests {
         ));
     }
 }
+
+#[cfg(target_os = "macos")]
+fn bundle_matches(app: &objc2_app_kit::NSRunningApplication, path: &Path) -> bool {
+    app.bundleURL()
+        .and_then(|url| url.path())
+        .and_then(|name| std::fs::canonicalize(name.to_string()).ok())
+        .as_deref()
+        == Some(path)
+}
+
+pub async fn application_instance(path: String) -> Result<Option<i32>, String> {
+    #[cfg(target_os = "macos")]
+    return blocking(move || {
+        let path = std::fs::canonicalize(path).ok()?;
+        let apps = objc2_app_kit::NSWorkspace::sharedWorkspace().runningApplications();
+        let mut matches = apps
+            .iter()
+            .filter(|app| !app.isTerminated() && bundle_matches(app, &path));
+        let pid = matches.next()?.processIdentifier();
+        (pid > 0 && pid as u32 != std::process::id() && matches.next().is_none()).then_some(pid)
+    })
+    .await;
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+
+pub async fn application_action(path: String, pid: i32, action: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let target = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+        if target.extension().is_none_or(|ext| ext != "app") {
+            return Err("Invalid application path".into());
+        }
+        if action == "reveal" {
+            let status = Command::new("/usr/bin/open")
+                .arg("-R")
+                .arg(target)
+                .status()
+                .await
+                .map_err(|e| e.to_string())?;
+            return status
+                .success()
+                .then_some(())
+                .ok_or_else(|| "Finder could not reveal the application".into());
+        }
+        let restart = action == "restart";
+        blocking(move || -> Result<(), String> {
+            use objc2_app_kit::NSRunningApplication;
+            if pid <= 0 || pid as u32 == std::process::id() {
+                return Err("Invalid application instance".into());
+            }
+            let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+                .filter(|app| !app.isTerminated() && bundle_matches(app, &target))
+                .ok_or("Application is no longer running")?;
+            if action == "hide" {
+                let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                while !app.isHidden() && !app.isTerminated() && std::time::Instant::now() < deadline
+                {
+                    if app.isFinishedLaunching() {
+                        app.hide();
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                return app
+                    .isHidden()
+                    .then_some(())
+                    .ok_or_else(|| "Application could not be hidden".into());
+            }
+            let accepted = match action.as_str() {
+                "quit" | "restart" => app.terminate(),
+                "forceQuit" => app.forceTerminate(),
+                _ => return Err("Unknown application action".into()),
+            };
+            if !accepted {
+                return Err("Application declined the request".into());
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            while !app.isTerminated() {
+                if std::time::Instant::now() >= deadline {
+                    return Err("Application is still running. Check for unsaved documents.".into());
+                }
+                std::thread::sleep(Duration::from_millis(80));
+            }
+            Ok(())
+        })
+        .await??;
+        if restart {
+            open_local_path(path).await?;
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (path, pid, action);
+        Err("Application actions require macOS".into())
+    }
+}

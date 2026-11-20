@@ -36,6 +36,7 @@ use cua_driver_core::{
     background_input::{
         BackgroundAction, BackgroundInputDecision, ExactWindowTarget, decide_background_input,
     },
+    security_prompt::PromptInput,
     walk_budget::WalkBudget,
 };
 use maka_agent_facts::tools::{NativeToolError, ToolError};
@@ -166,7 +167,11 @@ impl Target {
                         .map_err(|e| std::io::Error::other(e.to_string()))?;
                 }
                 check_cancelled(cancellation)?;
-                platform_macos::input::keyboard::press_key_global("v", &["cmd"])
+                platform_macos::input::keyboard::press_key_global(
+                    PromptInput::Refuse,
+                    "v",
+                    &["cmd"],
+                )
             },
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -384,7 +389,7 @@ impl Target {
         ) {
             return Err(failed(format!("{}: {}", refusal.code, refusal.reason)));
         }
-        if unsafe { element_window_id(element) } != Some(self.window_id) {
+        if !unsafe { element_window_id(element) }.is_some_and(|id| id.is(self.window_id)) {
             return Err(failed("element no longer belongs to this window"));
         }
         if unsafe { copy_bool_attr(element, "AXEnabled") } == Some(false) {
@@ -573,7 +578,8 @@ impl Target {
         // Menu commands belong to the application, but their context is this
         // exact bound window. Keep that context active while a menu is open.
         let focused = || {
-            platform_macos::ax::bindings::focused_window_id_of_pid(self.pid) == Some(self.window_id)
+            platform_macos::ax::bindings::focused_window_id_of_pid(self.pid)
+                .is_some_and(|id| id.is(self.window_id))
                 && platform_macos::input::skylight::front_process_matches(self.pid, self.window_id)
                     == Some(true)
         };

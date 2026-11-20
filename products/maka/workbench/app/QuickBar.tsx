@@ -17,11 +17,10 @@
  * under the License.
  */
 
-import { Canvas, Image, keymap, Path2D, Text, View } from 'nsh';
+import { Canvas, Image, Path2D, Text, View, type JSX } from 'nsh';
 import { Button } from 'nsh/base';
 import type { QuickIcon } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { Icon } from './Icon';
-import { tr } from './locale';
 import { C, bodyTextStyle, controlFocusStyle, controlHoverStyle } from './ui';
 
 /** The height controls in the bar center on, however tall its input grows. */
@@ -170,7 +169,9 @@ export function QuickRow(props: {
 
 export function QuickFooter(props: {
   action: string;
-  settings: boolean;
+  title: string;
+  menu: JSX.Element;
+  menuOpen?: boolean;
   onAction?: (() => void) | undefined;
 }) {
   // Read when drawn: the theme can change while the launcher is open.
@@ -183,23 +184,25 @@ export function QuickFooter(props: {
         alignItems: 'center',
         gap: 16,
         height: 32,
-        paddingHorizontal: 16,
+        paddingLeft: 16,
+        paddingRight: props.menuOpen ? 0 : 16,
         borderTopWidth: 1,
         borderTopColor: C.line,
       }}
     >
-      <If when={props.settings}>
-        <Text style={hint()}>{`${tr('Settings')} ${keymap.label('mod+,')}`}</Text>
-      </If>
+      <Text style={{ ...hint(), flex: 1, minWidth: 0, numberOfLines: 1, textOverflow: 'ellipsis' }}>
+        {props.title}
+      </Text>
       <If when={props.onAction} else={<Text style={hint()}>{`${props.action} ↵`}</Text>}>
         <Button
           accessibilityLabel={props.action}
           onPress={() => props.onAction?.()}
           style={{ paddingHorizontal: 8, height: 26, justifyContent: 'center' }}
         >
-          <Text style={{ ...hint(), color: C.accent }}>{`${props.action} ↵`}</Text>
+          <Text style={{ ...hint(), color: C.secondary }}>{`${props.action} ↵`}</Text>
         </Button>
       </If>
+      {props.menu}
     </View>
   );
 }
@@ -216,12 +219,14 @@ export const quickInputStyle = () =>
 
 const mark = new Path2D('M6.1 1.3h3.8 M1.35 14.35 8 3.55l6.65 10.8 M4.95 8.5 8 13.6l3.05-5.1');
 
-export function MakaMark() {
+export function MakaMark(props: { size?: number }) {
+  const size = () => props.size ?? 16;
   return (
     <Canvas
       accessibilityElementsHidden
-      style={[{ width: 16, height: 16, flexShrink: 0 }, { pointerEvents: 'none' }]}
+      style={[{ width: size(), height: size(), flexShrink: 0 }, { pointerEvents: 'none' }]}
       draw={(context) => {
+        context.scale(size() / 16, size() / 16);
         context.strokeStyle = '#47A3E2';
         context.lineWidth = 1.45;
         context.lineCap = 'round';

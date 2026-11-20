@@ -38,12 +38,17 @@ import {
   type ScrollRef,
   type Signal,
 } from 'nsh';
-import { Button, Input } from 'nsh/base';
+import { Button, Input, Menu, MenuItem, MenuSeparator } from 'nsh/base';
+import { createQuickQuestion } from './quickQuestion';
+import { quickQuestionIcon } from './quick-question-icon';
+import { QuickQuestionPanel } from './QuickQuestionPanel';
+import { rememberInput, historyAtSelection } from './quick-input-history';
 import { GlobalShortcut, Window, currentWindow } from 'nsh/desktop';
 import type { UiContributionRef } from '../../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
   type QuickIcon,
+  type QuickAction,
   type QuickPreview,
   type QuickTextEditor,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
@@ -77,7 +82,18 @@ import {
   type Usage,
 } from './quick-results';
 import { errorText, renderText } from './text';
-import { C, bodyTextStyle, controlHoverStyle, textTooltip } from './ui';
+import {
+  C,
+  bodyTextStyle,
+  controlHoverStyle,
+  floatingStyle,
+  menuDetailTextStyle,
+  menuRowHoverStyle,
+  menuRowStyle,
+  menuSeparatorStyle,
+  menuLabelStyle,
+  textTooltip,
+} from './ui';
 
 const MAX_HEIGHT = 560;
 const MAX_LIST_HEIGHT = 360;
@@ -176,6 +192,7 @@ function createUsageStore(): UsageStore {
 }
 
 type Row = {
+  actions?: (() => Promise<readonly QuickAction[]>) | undefined;
   itemId?: string;
   key: string;
   icon: QuickIcon | 'maka';
@@ -199,6 +216,7 @@ function LauncherRow(props: {
   selected: boolean;
   select?: (() => void) | undefined;
   pressed(): void;
+  activate(row: Row): void;
 }) {
   return (
     <QuickRow
@@ -214,7 +232,7 @@ function LauncherRow(props: {
       previewRow={props.select !== undefined}
       onPress={() => {
         if (props.select) props.select();
-        else props.row.run();
+        else props.activate(props.row);
         // A press takes the keyboard to the row; typing goes on in the query.
         props.pressed();
       }}
@@ -341,6 +359,10 @@ function Launcher(
   props: Navigation & {
     quick: QuickTools;
     usage: UsageStore;
+    history(): string[];
+    remember(text: string): void;
+    question: ReturnType<typeof createQuickQuestion>;
+    openQuestion(resume: boolean, text?: string): void;
     query: Signal<string>;
     failure: Signal<ReturnType<typeof errorText> | null>;
     /** The tool whose settings show in place of the results. */
@@ -390,6 +412,7 @@ function Launcher(
           return {
             key,
             itemId: item.id,
+            actions: item.actions,
             icon: item.icon,
             image: item.image,
             title: item.title,
@@ -455,6 +478,15 @@ function Launcher(
     action: tr('Ask Maka'),
     run: () => void run(),
   });
+  const questionRow = (resume: boolean): Row => ({
+    key: resume ? 'resume-question' : 'quick-question',
+    icon: 'maka',
+    image: () => quickQuestionIcon,
+    title: resume ? tr('Continue last question') : tr('Quick question'),
+    detail: resume ? props.question.turns()[0]?.question : undefined,
+    action: tr('Open'),
+    run: () => props.openQuestion(resume),
+  });
   const results = (): Row[] => {
     const text = query();
     // Inside an entered tool only its results are offered.
@@ -464,7 +496,13 @@ function Launcher(
         matchOf([row.entry.title, ...row.entry.keywords], text);
       return match === null ? [] : [{ ...row, match }];
     });
-    return ranked([...candidates(), ...found], props.usage.current());
+    if (props.scope() !== null) return ranked([...candidates(), ...found], props.usage.current());
+    const question = questionRow(false);
+    const match = matchOf([question.title, 'quick question', '快问'], text);
+    return ranked(
+      [...candidates(), ...found, ...(match === null ? [] : [{ ...question, match }])],
+      props.usage.current(),
+    );
   };
   const recommendations = (): Row[] => {
     const usage = props.usage.current();
@@ -476,7 +514,15 @@ function Launcher(
   const sections = computed(() => {
     const groups: { key: string; title: string | null; rows: readonly Row[] }[] = home()
       ? [
-          { key: 'bot', title: null, rows: [botRow()] },
+          {
+            key: 'bot',
+            title: null,
+            rows: [
+              botRow(),
+              questionRow(false),
+              ...(props.question.turns().length ? [questionRow(true)] : []),
+            ],
+          },
           { key: 'recommended', title: tr('Recommended'), rows: recommendations() },
           { key: 'tools', title: tr('Tools'), rows: entries() },
         ]
@@ -588,8 +634,27 @@ function Launcher(
       running = false;
     }
   };
+  let cursor = { index: -1, draft: '', text: '' };
+  const navigate = (direction: -1 | 1) => {
+    const index = selected();
+    const next = props.scope()
+      ? null
+      : historyAtSelection(props.history(), index, cursor, query(), direction);
+    if (next) {
+      cursor = next;
+      query.set(next.text);
+    } else {
+      cursor = { index: -1, draft: '', text: '' };
+      selection.set(Math.max(0, Math.min(rows().length - 1, index + direction)));
+    }
+  };
+  const executeRow = (row: Row) => {
+    if (!props.scope()) props.remember(query());
+    row.run();
+  };
   const activate = () => {
-    rows()[selected()]?.run();
+    const row = rows()[selected()];
+    if (row) executeRow(row);
     refocus();
   };
   /** Cmd+1 to Cmd+9 run the row with that number, counting from the top. */
@@ -597,9 +662,72 @@ function Launcher(
     const row = rows()[index];
     if (!row) return;
     selection.set(index);
-    row.run();
+    executeRow(row);
     refocus();
   };
+  const menuOpen = signal(false);
+  const menuIndex = signal(-1);
+  const choices = signal<readonly QuickAction[]>([]);
+  const confirm = signal<QuickAction | null>(null);
+  let menuRequest = 0;
+  const setMenu = (open: boolean, keyboard = false) => {
+    menuIndex.set(keyboard ? 0 : -1);
+    const ticket = ++menuRequest;
+    menuOpen.set(open);
+    if (!open) return;
+    const row = rows()[selected()];
+    if (!row) return;
+    const first: QuickAction = {
+      icon: row.icon === 'maka' ? 'command' : row.icon,
+      title: row.action,
+      run: () => executeRow(row),
+    };
+    const settings: QuickAction[] = row.tool
+      ? [
+          {
+            title: tr('{tool} settings', { tool: quick.title(row.tool) }),
+            icon: 'settings',
+            startsGroup: true,
+            run: () => openSettings(row.tool!),
+          },
+        ]
+      : [];
+    choices.set([first, ...settings]);
+    if (row.actions)
+      void row.actions().then(
+        (extra) => {
+          if (ticket === menuRequest) choices.set([first, ...extra, ...settings]);
+        },
+        (reason) => failure.set(errorText(reason, 'Could not run {tool}.', { tool: row.title })),
+      );
+  };
+  const selectAction = (action: QuickAction | undefined) => {
+    if (!action) return;
+    setMenu(false);
+    if (action.confirm) confirm.set(action);
+    else action.run();
+  };
+  const moveSelection = (direction: -1 | 1) => {
+    if (!menuOpen()) return navigate(direction);
+    menuIndex.set(Math.max(0, Math.min(choices().length - 1, menuIndex() + direction)));
+  };
+  effect(() => {
+    const node = input();
+    if (!node) return;
+    const inMenu = menuOpen();
+    for (let index = 0; index < 9; index++) {
+      cleanup(
+        keymap.bind(
+          `mod+${index + 1}`,
+          () => (inMenu ? selectAction(choices()[index]) : runNumbered(index)),
+          inMenu ? { when: 'always' } : { when: 'always', within: node },
+        ),
+      );
+    }
+    if (inMenu) {
+      cleanup(keymap.bind('escape', () => setMenu(false), { when: 'always', within: node }));
+    }
+  });
   const placeholder = () =>
     props.scope() !== null
       ? tr('Search {tool}', { tool: props.scope()!.entry.title })
@@ -644,25 +772,27 @@ function Launcher(
                   input.set(node);
                   removeKeys();
                   const unbind = [
-                    ...Array.from({ length: 9 }, (_, index) =>
-                      keymap.bind(`mod+${index + 1}`, () => runNumbered(index), {
-                        when: 'always',
-                        within: node,
-                      }),
-                    ),
-                    keymap.bind('up', () => selection.set(Math.max(0, selected() - 1)), {
+                    keymap.bind('up', () => moveSelection(-1), {
                       when: 'always',
                       repeat: true,
                       within: node,
                     }),
+                    keymap.bind('down', () => moveSelection(1), {
+                      when: 'always',
+                      repeat: true,
+                      within: node,
+                    }),
+                    keymap.bind('mod+k', () => setMenu(!menuOpen(), true), {
+                      when: 'always',
+                      within: node,
+                    }),
                     keymap.bind(
-                      'down',
-                      () => selection.set(Math.min(rows().length - 1, selected() + 1)),
-                      {
-                        when: 'always',
-                        repeat: true,
-                        within: node,
+                      'mod+enter',
+                      () => {
+                        if (!props.scope() && query().trim())
+                          props.openQuestion(false, query().trim());
                       },
+                      { when: 'always', within: node },
                     ),
                     keymap.bind(
                       'mod+,',
@@ -680,6 +810,8 @@ function Launcher(
                 placeholder={placeholder()}
                 value={query()}
                 onChange={({ value }) => {
+                  if (menuOpen()) setMenu(false);
+                  cursor = { index: -1, draft: '', text: '' };
                   failure.set(null);
                   if (!props.scope()) {
                     const prefix = /^\s*(\S+)\s([\s\S]*)$/u.exec(value);
@@ -700,14 +832,34 @@ function Launcher(
                   selection.set(0);
                   query.set(value);
                 }}
-                onSubmit={activate}
+                onSubmit={() => (menuOpen() ? selectAction(choices()[menuIndex()]) : activate())}
                 style={{ ...quickInputStyle(), flex: 1, minWidth: 0, marginTop: 8 }}
               />
             )}
           </Each>
+          <If when={props.scope() === null && !!query().trim()}>
+            <Button
+              accessibilityLabel={tr('Quick question')}
+              onPress={() => props.openQuestion(false, query().trim())}
+              style={{ height: QUICK_BAR_SLOT, justifyContent: 'center', paddingHorizontal: 8 }}
+            >
+              <Text style={{ color: C.secondary, fontSize: 12 }}>
+                {keymap.label('mod+enter')} {tr('Quick question')}
+              </Text>
+            </Button>
+          </If>
         </View>
         <View
           style={{
+            // A content-sized launcher must also fit the overlay above its footer.
+            minHeight: menuOpen()
+              ? Math.min(
+                  MAX_LIST_HEIGHT,
+                  choices().length * menuRowStyle().minHeight +
+                    32 +
+                    choices().filter((item) => item.startsGroup).length * 9,
+                )
+              : 0,
             borderTopWidth: 1,
             borderTopColor: C.line,
             flexDirection: previewer() ? 'row' : 'column',
@@ -733,12 +885,13 @@ function Launcher(
                       {(row, index) => (
                         <LauncherRow
                           row={row()}
-                          shortcut={shortcut(section().start + index())}
+                          shortcut={menuOpen() ? undefined : shortcut(section().start + index())}
                           selected={selected() === section().start + index()}
                           select={
                             previewer() ? () => selection.set(section().start + index()) : undefined
                           }
                           pressed={refocus}
+                          activate={executeRow}
                         />
                       )}
                     </Each>
@@ -749,9 +902,10 @@ function Launcher(
             <If when={pinned() !== null}>
               <LauncherRow
                 row={pinned()!}
-                shortcut={shortcut(listed().length)}
+                shortcut={menuOpen() ? undefined : shortcut(listed().length)}
                 selected={selected() === listed().length}
                 pressed={refocus}
+                activate={executeRow}
               />
             </If>
           </View>
@@ -787,10 +941,84 @@ function Launcher(
             </Text>
           }
         >
+          <If when={confirm() !== null}>
+            <View style={{ padding: 12, gap: 8 }}>
+              <Text style={{ ...bodyTextStyle, color: C.text }}>{confirm()?.confirm}</Text>
+              <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
+                <SettingsButton label={tr('Cancel')} onPress={() => confirm.set(null)} />
+                <SettingsButton
+                  label={tr('Confirm')}
+                  tone="danger"
+                  onPress={() => {
+                    const action = confirm();
+                    confirm.set(null);
+                    action?.run();
+                  }}
+                />
+              </View>
+            </View>
+          </If>
           <QuickFooter
-            onAction={previewer() ? activate : undefined}
+            menuOpen={menuOpen()}
+            title={rows()[selected()]?.title ?? ''}
+            onAction={activate}
             action={rows()[selected()]?.action ?? ''}
-            settings={rows()[selected()]?.tool !== undefined}
+            menu={
+              <Menu
+                open={menuOpen()}
+                onOpenChange={({ open }) => setMenu(open)}
+                popupStyle={{ ...floatingStyle(), width: 224 }}
+                offset={-30}
+                margin={0}
+                placement="top"
+                align="end"
+                trigger={
+                  <Button
+                    accessibilityLabel={tr('Launcher actions')}
+                    style={{ paddingHorizontal: 8, justifyContent: 'center', height: 28 }}
+                  >
+                    <Text style={{ color: C.secondary, fontSize: 12 }}>
+                      {tr('Launcher actions')} {keymap.label('mod+k')}
+                    </Text>
+                  </Button>
+                }
+              >
+                <Text style={{ ...menuLabelStyle(), numberOfLines: 1, textOverflow: 'ellipsis' }}>
+                  {rows()[selected()]?.title}
+                </Text>
+                <Each of={choices()} key={(item) => item.title}>
+                  {(item, index) => (
+                    <>
+                      <If when={item().startsGroup}>
+                        <MenuSeparator style={menuSeparatorStyle()} />
+                      </If>
+                      <MenuItem
+                        accessibilityLabel={item().title}
+                        style={{
+                          ...menuRowStyle(),
+                          minWidth: 184,
+                          ...(menuIndex() === index() ? menuRowHoverStyle() : {}),
+                        }}
+                        hoverStyle={menuRowHoverStyle()}
+                        focusStyle={menuRowHoverStyle()}
+                        onSelect={() => selectAction(item())}
+                      >
+                        <Icon name={item().icon ?? 'command'} size={16} color={C.secondary} />
+                        <Text style={{ ...menuDetailTextStyle, color: C.text, flex: 1 }}>
+                          {item().title}
+                          {item().confirm ? '…' : ''}
+                        </Text>
+                        <If when={index() === 0 || shortcut(index()) !== undefined}>
+                          <Text style={{ ...menuDetailTextStyle, color: C.muted }}>
+                            {shortcut(index()) ?? '↵'}
+                          </Text>
+                        </If>
+                      </MenuItem>
+                    </>
+                  )}
+                </Each>
+              </Menu>
+            }
           />
         </If>
       </If>
@@ -833,11 +1061,36 @@ export function QuickLauncher(
 ) {
   const { quick } = props;
   const { commands, handles } = quick;
+  const failure = signal<ReturnType<typeof errorText> | null>(null);
   const usage = createUsageStore();
+  const question = createQuickQuestion(props.openBot);
+  const asking = signal(false);
+  const inputs = signal<string[]>([]);
+  const historyKey = 'maka.quick-launcher.search-history';
+  let saves = Storage.getItem(historyKey)
+    .then((raw) => {
+      const saved: unknown = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(saved))
+        inputs.set(
+          [
+            ...new Set([...saved.filter((x): x is string => typeof x === 'string'), ...inputs()]),
+          ].slice(-50),
+        );
+    })
+    .catch((reason) => failure.set(errorText(reason, 'Could not load or save launcher history.')));
+  const remember = (text: string) => {
+    if (!text.trim()) return;
+    inputs.set(rememberInput(inputs(), text));
+    saves = saves
+      .then(() => Storage.setItem(historyKey, JSON.stringify(inputs())))
+      .catch((reason) =>
+        failure.set(errorText(reason, 'Could not load or save launcher history.')),
+      );
+  };
   const page = signal<UiContributionRef | null>(null);
   const query = signal('');
   const selection = signal(0);
-  const failure = signal<ReturnType<typeof errorText> | null>(null);
+
   // Tools live as long as the app, not the popup, so their commands run from shortcuts too.
   const tools = computed(() => quick.tools().filter(quick.toolEnabled));
   const tool = signal<ToolScope | null>(null);
@@ -891,6 +1144,7 @@ export function QuickLauncher(
       selection.set(0);
       tool.set(null);
       editor.set(null);
+      asking.set(false);
       failure.set(null);
       page.set(null);
       if (entered !== null) enter(entered, '');
@@ -965,7 +1219,11 @@ export function QuickLauncher(
         // Escape stops a running reply, and every way out has to save the draft first. In a tool's
         // settings Escape goes back, and a picker the page opens must not close it.
         closeOnEscape={
-          !props.conversing() && page() === null && scope() === null && editor() === null
+          !asking() &&
+          !props.conversing() &&
+          page() === null &&
+          scope() === null &&
+          editor() === null
         }
         closeOnBlur={!props.conversing() && page() === null}
         onFocusChange={({ focused }) => {
@@ -978,6 +1236,7 @@ export function QuickLauncher(
         onOpenChange={({ open }) => {
           if (open) return;
           editor.set(null);
+          asking.set(false);
           page.set(null);
           tool.set(null);
           props.closed();
@@ -989,20 +1248,42 @@ export function QuickLauncher(
             <If
               when={editor() !== null}
               else={
-                <Launcher
-                  openBot={props.openBot}
-                  vacate={props.vacate}
-                  open={props.open}
-                  quick={quick}
-                  usage={usage}
-                  query={query}
-                  failure={failure}
-                  page={page}
-                  scope={scope}
-                  selection={selection}
-                  enter={enter}
-                  leave={leave}
-                />
+                <If
+                  when={asking()}
+                  else={
+                    <Launcher
+                      question={question}
+                      history={inputs}
+                      remember={remember}
+                      openQuestion={(resume, text) => {
+                        if (!resume && question.running()) {
+                          asking.set(true);
+                          return;
+                        }
+                        if (!resume) question.reset();
+                        asking.set(true);
+                        if (!resume && text) {
+                          remember(text);
+                          void question.ask(text, false);
+                        }
+                      }}
+                      openBot={props.openBot}
+                      vacate={props.vacate}
+                      open={props.open}
+                      quick={quick}
+                      usage={usage}
+                      query={query}
+                      failure={failure}
+                      page={page}
+                      scope={scope}
+                      selection={selection}
+                      enter={enter}
+                      leave={leave}
+                    />
+                  }
+                >
+                  <QuickQuestionPanel question={question} back={() => asking.set(false)} />
+                </If>
               }
             >
               <QuickEditor editor={editor()!} back={() => editor.set(null)} />

@@ -174,6 +174,21 @@ async fn requested_compaction_resumes_from_checkpoint_with_optional_focus_and_mo
                 assert!(observed.try_recv().is_err(), "caller received an early completion");
             }
             assert!(!resumed["messages"].to_string().contains("Keep the release checksum."));
+            let reply = if focused && !switch {
+                // A second checkpoint in the same Run must resume without another user message.
+                reply.send(completion(json!({"role":"assistant","tool_calls":[{
+                    "index":0,"id":"find-again","type":"function","function":{"name":"tool_search","arguments":r#"{"query":"CompactContext"}"#}
+                }]}), "tool_calls")).map_err(|_| "provider closed")?;
+                let (loaded, reply) = observed.recv().await.ok_or("second lookup missing")?;
+                assert!(has_tool(&loaded, "CompactContext"));
+                reply.send(tool_response("CompactContext", json!({}))).map_err(|_| "provider closed")?;
+                let (summary, reply) = observed.recv().await.ok_or("second summary missing")?;
+                assert!(summary["tools"].as_array().is_none_or(Vec::is_empty));
+                reply.send(text("Second checkpoint.")).map_err(|_| "provider closed")?;
+                let (next, reply) = observed.recv().await.ok_or("second continuation missing")?;
+                assert!(next["messages"].to_string().contains("Second checkpoint."));
+                reply
+            } else { reply };
             reply.send(text("Done.")).map_err(|_| "provider closed")?;
             quiescent_message(client, session, &sent["messageId"]).await?;
             let finished = call(client,"agent","work",target).await?;

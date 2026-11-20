@@ -35,6 +35,7 @@ export interface ConversationShell {
   openSession(sessionId: string | null): Promise<boolean>;
   openSettings(model?: ModelSelection, page?: string): void;
   sidebarShown(): boolean;
+  sidebarHover?(inside: boolean): void;
   sidebarDocked(): boolean;
   previewDocked(): boolean;
   showSidebar(): void;
@@ -69,8 +70,26 @@ export type QuickIcon =
   | 'snippet'
   | 'symbol';
 
+export interface QuickAction {
+  icon?:
+    | QuickIcon
+    | 'folder'
+    | 'copy'
+    | 'minus'
+    | 'refresh'
+    | 'close'
+    | 'stop'
+    | 'settings'
+    | 'command';
+  startsGroup?: boolean;
+  title: string;
+  confirm?: string;
+  run(): void;
+}
 /** A result the launcher ranks among every tool's results and draws itself. */
 export interface QuickItem {
+  /** Additional actions are resolved for the selected instance when the menu opens. */
+  actions?(): Promise<readonly QuickAction[]>;
   /** Stable across runs when `remembered`, and unique within the tool. */
   readonly id: string;
   readonly title: string;
@@ -147,6 +166,8 @@ export interface ConversationPreviewHandle {
 export interface ConversationNavigationInput<Element = unknown> {
   readonly shell: ConversationShell;
   navigationMore(): Element;
+  pinSidebar?: (() => void) | undefined;
+  suppressSidebarHover?: (() => void) | undefined;
 }
 
 /** What a conversation drawn compactly, with its input on top, leaves to its host. */

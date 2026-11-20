@@ -344,6 +344,34 @@ mod tests {
         assert!(!app.screen().matches("role:button[Remove quote]").unwrap());
     }
 
+    #[test]
+    fn request_metrics_toggle_token_counts_independently() {
+        let mut app = headless_fixture(
+            "tests/fixtures/request-metrics.tsx",
+            Size::new(px(460.0), px(420.0)),
+            false,
+        );
+        app.wait_for("text:1h 43m 4s").unwrap();
+        app.wait_for("text:325 ms").unwrap();
+        app.wait_for("text:984").unwrap();
+        app.wait_for("role:button[Context window (tokens): 4m · Show exact token count]")
+            .unwrap();
+
+        app.press("role:button[Estimated input tokens: 3.1k · Show exact token count]")
+            .unwrap();
+        app.wait_for("role:button[Estimated input tokens: 3,125 · Show compact token count]")
+            .unwrap();
+        assert!(app.shows("4m"));
+        app.press("role:button[Context window (tokens): 4m · Show exact token count]")
+            .unwrap();
+        app.wait_for("text:4,000,000").unwrap();
+        app.press("role:button[Estimated input tokens: 3,125 · Show compact token count]")
+            .unwrap();
+        app.wait_for("role:button[Estimated input tokens: 3.1k · Show exact token count]")
+            .unwrap();
+        assert!(app.shows("4,000,000"));
+    }
+
     fn headless_fixture(
         entry: &str,
         viewport: Size<Points>,
@@ -463,6 +491,26 @@ mod tests {
             .unwrap();
         app.wait_for("text:The original tool source could not be verified.")
             .unwrap();
+    }
+
+    #[test]
+    fn steering_warning_follows_the_original_queued_message() {
+        let mut app = fixture("messages-dock.tsx");
+        let steer = "label:Steer queued message 1 now";
+        let warning = "text:This turn cannot accept this message right now. It remains queued.";
+        app.wait_for(steer).unwrap();
+        app.press(steer).unwrap();
+        app.press("label:Release receipt").unwrap();
+        app.wait_for(warning).unwrap();
+        app.press("label:Deliver first").unwrap();
+        app.wait_for("text:second").unwrap();
+        assert!(!app.screen().matches(warning).unwrap());
+
+        app.press(steer).unwrap();
+        app.press("label:Deliver first").unwrap();
+        app.press("label:Release receipt").unwrap();
+        app.wait_for("text:Empty dock").unwrap();
+        assert!(!app.screen().matches(warning).unwrap());
     }
 
     #[test]

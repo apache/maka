@@ -62,6 +62,7 @@ function SearchPlaceholder() {
               animationDuration: 1500,
               animationTimingFunction: 'ease-in-out',
               animationIterationCount: 'infinite',
+              animationFrameRate: 30,
             }}
           >
             <View style={{ flex: 1, minWidth: 0, gap: 7 }}>

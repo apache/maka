@@ -36,6 +36,7 @@ export function ModalDialog(props: {
   size: keyof typeof WIDTHS;
   height?: number;
   launcher?: boolean;
+  onOpen?(): void;
   onCancel(): void;
   style?: ViewStyle;
   /** In the modal's scope but outside the card: menus its rows open. */
@@ -48,6 +49,7 @@ export function ModalDialog(props: {
       closeOnEscape={false}
       closeOnBackdropPress={false}
       closeOnSwipe={false}
+      onOpen={props.onOpen}
       onCancel={props.onCancel}
       backdropStyle={props.launcher ? { backgroundColor: C.scrim } : undefined}
       style={{

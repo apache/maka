@@ -73,6 +73,7 @@ import {
 import { createComposerPaste } from '../../../../products/maka/workbench/app/composerPaste';
 import { SkillInput } from '../../../../products/maka/workbench/app/SkillInput';
 import type { ComposerEditor } from '../../../../products/maka/workbench/app/ComposerEditor';
+import { MakaMark } from '../../../../products/maka/workbench/app/QuickBar';
 import logo from '../../../../products/maka/workbench/app/assets/maka.png';
 
 export function Composer(props: ComposerViewInput<JSX.Element>) {
@@ -470,7 +471,11 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             }}
           >
             <If when={windowSize().height >= 336}>
-              <Image src={logo} style={[{ width: 32, height: 32 }, { objectFit: 'contain' }]} />
+              {platform.idiom === 'terminal' ? (
+                <Image src={logo} style={[{ width: 32, height: 32 }, { objectFit: 'contain' }]} />
+              ) : (
+                <MakaMark size={compact() ? 20 : 26} />
+              )}
             </If>
             <Text
               style={{

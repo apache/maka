@@ -448,6 +448,35 @@ impl Handler for Agent {
                         .await?,
                 ),
                 "recap" => encode(owner.recap(decode(input)?, context.scope()).await?),
+                "askQuickQuestion" => {
+                    let operation = context.operation().ok_or("agent_mutation_required")?;
+                    let (progress, mut updates) = tokio::sync::watch::channel(String::new());
+                    let generation = owner.ask_quick_question(
+                        decode(input)?,
+                        context.scope(),
+                        operation,
+                        context
+                            .operation_scope()
+                            .ok_or("agent_mutation_required")?
+                            .clone(),
+                        progress,
+                    );
+                    tokio::pin!(generation);
+                    loop {
+                        tokio::select! {
+                            result = &mut generation => {
+                                result?;
+                                let answer = updates.borrow().clone();
+                                context.emit(encode(answer)?).await?;
+                                return encode(());
+                            }
+                            Ok(()) = updates.changed() => {
+                                let answer = updates.borrow_and_update().clone();
+                                context.emit(encode(answer)?).await?;
+                            }
+                        }
+                    }
+                }
                 "predictNextMessage" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     encode(

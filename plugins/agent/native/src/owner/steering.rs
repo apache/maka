@@ -19,10 +19,38 @@
 
 use super::send::{PreparedAgentSend, PreparedSend};
 use super::*;
-use maka_agent_facts::durable::{ExecutionIdentity, UnixMillis};
+use crate::executor::ActiveDelivery;
+use maka_agent_facts::durable::{BackendSpec, ExecutionIdentity, UnixMillis};
 use maka_agent_state::{Head, queue as durable_queue};
 
 impl Owner {
+    pub(super) async fn active_delivery(
+        &self,
+        view: &maka_agent_state::fold::RunView,
+    ) -> Result<ActiveDelivery, String> {
+        let BackendSpec::Executor {
+            selection,
+            descriptor,
+        } = &view.spec.backend
+        else {
+            return Ok(ActiveDelivery::Steer);
+        };
+        if let Some(control) = self.runs.state().await.controls.get(&view.spec.session_id)
+            && control.execution.run_id == view.run
+            && let Some(executor) = &control.basis.executor
+        {
+            return Ok(self.executors.active_delivery(executor));
+        }
+        let executor: crate::executor::Accepted = self
+            .run_content(view.run, descriptor)
+            .await
+            .map_err(public_error)?;
+        if &executor.selection != selection {
+            return Err("agent_executor_descriptor_changed".into());
+        }
+        Ok(self.executors.active_delivery(&executor))
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "steering keeps message input, target execution, captured policy and original call authority explicit"
@@ -145,6 +173,7 @@ impl Owner {
             .as_ref()
             .map(|_| CompletionRegistration::Registered);
         let statement = PreparedAgentSend {
+            order: None,
             queue: durable_queue::PreparedEnqueue {
                 session: session.into(),
                 command,

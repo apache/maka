@@ -23,7 +23,10 @@ use serde_json::Value;
 /// A reading aid generated from the authoritative schema, not a validator.
 /// Bounds apply to traversal as well as output: recursive refs and wide DAGs
 /// cannot turn a small catalog into an unbounded prompt.
-const READ_RETURN_TS: &str = r#"({ "kind": "completed"; "value": { "content": string; "offset": number; "returnedLines": number; "totalLines": number; "next": { "path": string } | null } | { "type": "image"; [k: string]: unknown } }) | ({ "kind": "failed"; "message": string })"#;
+const READ_RETURN_TS: &str = r#"
+  | { kind: "completed"; value: { content: string; offset: number; returnedLines: number; totalLines: number; partialLine?: boolean; next: { path: string } | null; metadata?: Record<string, unknown> } }
+  | { kind: "image"; mimeType: string; ref: { kind: "session_file"; sessionId: string; relativePath: string }; detail?: "auto" | "low" | "high" | "original" }
+  | { kind: "failed"; message: string }"#;
 const SHELL_RETURN_TS: &str = r#"({ "kind": "completed"; "value": { "kind": string; "status": string; "exitCode"?: number | null; "ref"?: string; "output"?: { "stdout": string; "stderr": string; "stdoutTruncated": boolean; "stderrTruncated": boolean } } }) | ({ "kind": "failed"; "message": string })"#;
 
 fn render_js_member(
@@ -331,8 +334,9 @@ mod tests {
             output_schema: None,
         };
         let read_entry = render_entry(&read_tool);
+        assert!(read_entry.contains("returnedLines: number"), "{read_entry}");
         assert!(
-            read_entry.contains(r#""returnedLines": number"#),
+            read_entry.contains(r#"| { kind: "image"; mimeType: string; ref:"#),
             "{read_entry}"
         );
     }

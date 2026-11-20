@@ -30,6 +30,7 @@ import {
   Text,
   untracked,
   View,
+  type InputRef,
   type JSX,
   type ScrollRef,
 } from 'nsh';
@@ -50,7 +51,7 @@ import { Icon } from './Icon';
 import { tr } from './locale';
 import {
   Header,
-  SidebarToggle,
+  SidebarTitleRow,
   C,
   bodyTextStyle,
   captionTextStyle,
@@ -62,7 +63,7 @@ import {
   inputTextStyle,
   type BrowserHeader,
 } from './ui';
-import { TITLE_BAR_HEIGHT, ownTitleBar, windowDrag } from './chrome';
+import { ownTitleBar } from './chrome';
 import { WorkspacePicker } from './WorkspacePicker';
 import { ModalDialog, DialogHeader, DialogFooter } from './ModalDialog';
 import { LoadingIndicator } from './Loading';
@@ -135,6 +136,7 @@ export function createRoomWorkspace(options: {
   const choosingWorkspace = signal(false);
   const createBusy = signal(false);
   const renaming = signal<AgentSession | null>(null);
+  let renameInput: InputRef | undefined;
   const renameTitle = signal('');
   const removing = signal<AgentSession | null>(null);
   let composer: RoomComposerHandle | null = null;
@@ -276,7 +278,11 @@ export function createRoomWorkspace(options: {
       />
     </>
   );
-  const navigationView = (modeSwitch: JSX.Element) => (
+  const navigationView = (
+    modeSwitch: JSX.Element,
+    pin?: () => void,
+    suppressHover?: () => void,
+  ) => (
     <HostProvider value={host}>
       <View
         style={{
@@ -288,18 +294,12 @@ export function createRoomWorkspace(options: {
           gap: 8,
         }}
       >
-        <If when={ownTitleBar && options.browser().navigationDocked}>
-          <View
-            desktop={windowDrag}
-            style={{
-              height: TITLE_BAR_HEIGHT,
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'flex-end',
-            }}
-          >
-            <SidebarToggle expanded toggle={options.browser().toggle} />
-          </View>
+        <If when={ownTitleBar && (options.browser().navigationDocked || !!pin)}>
+          <SidebarTitleRow
+            toggle={options.browser().toggle}
+            pin={pin}
+            suppressHover={suppressHover}
+          />
         </If>
         <Button
           accessibilityLabel={tr('New room')}
@@ -524,6 +524,7 @@ export function createRoomWorkspace(options: {
       <If when={renaming()}>
         <ModalDialog
           size="form"
+          onOpen={() => renameInput?.focus()}
           onCancel={() => {
             if (!createBusy()) renaming.set(null);
           }}
@@ -531,8 +532,10 @@ export function createRoomWorkspace(options: {
           <DialogHeader title={tr('Rename room')} />
           <Input
             accessibilityLabel={tr('Room name')}
+            ref={(node) => {
+              renameInput = node;
+            }}
             value={renameTitle()}
-            autoFocus
             onChange={({ value }) => renameTitle.set(value)}
             onSubmit={() => void rename()}
             style={{

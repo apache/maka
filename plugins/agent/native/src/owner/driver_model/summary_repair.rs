@@ -146,13 +146,13 @@ impl DriverModel {
         }
         let evidence: maka_agent_facts::context::RequestContextEvidence =
             reader.decode(view.run, &request.provenance).await?;
-        let options = self
-            .compaction_options(&reader, view.run, evidence.compaction_request.as_ref())
+        let options = reader
+            .compaction_options(view.run, evidence.compaction_request.as_ref())
             .await?;
         let original_prompt = self
             .restore_frozen(&reader, view.run, &request, &frozen)
             .await?;
-        let native_compaction = !repair && options.native(&model);
+        let native_compaction = !repair && native_compaction(&options, &model);
         let context = model.context.as_ref();
         let operation = if native_compaction {
             ModelOperation::CodexCompaction
@@ -330,7 +330,7 @@ impl DriverModel {
             frozen.instructions = prepared.request.prompt.instructions().map(str::to_owned);
             frozen.normalization = prepared.request.prompt.normalization().cloned();
             frozen.wire = FrozenWire::capture(&prepared.request.prompt)?;
-            let body = ContentBlob::json(&frozen)?;
+            let (body, texts) = frozen.seal()?;
             let recovery = ContentBlob::json(&FrozenRecovery {
                 protocol: format!("{PROTOCOL}/recovery"),
                 version: VERSION,
@@ -350,6 +350,7 @@ impl DriverModel {
             request.request_contents = frozen.content_refs();
             request.recovery_contract = recovery.reference().clone();
             contents.extend([body, recovery]);
+            contents.extend(texts);
             Ok(PreparedStep {
                 request,
                 contents,

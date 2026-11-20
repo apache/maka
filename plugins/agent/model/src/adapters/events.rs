@@ -59,11 +59,27 @@ impl Events {
         if self.finished {
             return Err(ModelError::Adapter("event after model finish".into()));
         }
-        if matches!(&event, Event::Finish(finish) if finish.reason == Stop::Interrupted) {
-            return Err(self.evidence.interrupted(
-                crate::ProviderFailureReason::StreamTruncated,
-                "model stream ended without finish",
-            ));
+        if let Event::Finish(finish) = &event {
+            match finish.reason {
+                Stop::Interrupted => {
+                    return Err(self.evidence.interrupted(
+                        crate::ProviderFailureReason::StreamTruncated,
+                        "model stream ended without finish",
+                    ));
+                }
+                Stop::ContentFilter | Stop::Other => {
+                    let raw = finish.raw_reason.as_deref().unwrap_or("no provider reason");
+                    return Err(self.evidence.interrupted(
+                        crate::ProviderFailureReason::Withheld,
+                        if finish.reason == Stop::ContentFilter {
+                            format!("the model provider refused to return this response ({raw})")
+                        } else {
+                            format!("the model provider ended this response with an unrecognized finish reason ({raw})")
+                        },
+                    ));
+                }
+                _ => {}
+            }
         }
         let extension = match &event {
             Event::TextStart { extensions, .. }
@@ -302,10 +318,19 @@ impl Events {
                             "model stream ended without finish",
                         ));
                     }
-                    other => {
-                        return Err(ModelError::Adapter(format!(
-                            "model did not complete: {other:?}"
-                        )));
+                    Stop::ContentFilter | Stop::Other => {
+                        let raw = finish.raw_reason.as_deref().unwrap_or("no provider reason");
+                        return Err(self.evidence.interrupted(
+                            crate::ProviderFailureReason::Withheld,
+                            if finish.reason == Stop::ContentFilter {
+                                format!("the model provider refused to return this response ({raw})")
+                            } else {
+                                format!("the model provider ended this response with an unrecognized finish reason ({raw})")
+                            },
+                        ));
+                    }
+                    Stop::Error => {
+                        return Err(ModelError::Adapter("model did not complete: Error".into()));
                     }
                 };
                 let usage = finish.usage.unwrap_or_default();
@@ -353,4 +378,41 @@ impl Events {
 }
 fn options(extensions: Extensions) -> Option<Value> {
     extensions.map(|v| Value::Object(v.into_iter().collect()))
+}
+
+#[cfg(test)]
+mod withheld_tests {
+    use super::*;
+    use maka_provider_protocol::output::{Finish, Stop, TextKind};
+
+    #[test]
+    fn unclosed_block_with_content_filter_reports_withheld() {
+        let mut events = Events::new();
+        events
+            .push(Event::TextStart {
+                id: "0".into(),
+                kind: TextKind::Text,
+                extensions: None,
+            })
+            .unwrap();
+        let err = events
+            .push(Event::Finish(Finish {
+                reason: Stop::ContentFilter,
+                raw_reason: Some("refusal".into()),
+                usage: None,
+                extensions: None,
+            }))
+            .unwrap_err();
+        match err {
+            ModelError::Provider(failure) => {
+                assert_eq!(failure.reason(), crate::ProviderFailureReason::Withheld);
+                assert!(
+                    failure.message().contains("refusal"),
+                    "{}",
+                    failure.message()
+                );
+            }
+            other => panic!("expected Provider(Withheld), got {other:?}"),
+        }
+    }
 }

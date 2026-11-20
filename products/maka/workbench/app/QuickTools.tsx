@@ -66,7 +66,7 @@ const builtInNames: Partial<Record<string, Parameters<typeof tr>[0]>> = {
   'maka.calculator': 'Calculator',
   'maka.symbols': 'Symbols',
   'maka.file-search': 'Search files',
-  'maka.applications': 'Search applications',
+  'maka.applications': 'Applications',
 };
 
 export type QuickTools = {

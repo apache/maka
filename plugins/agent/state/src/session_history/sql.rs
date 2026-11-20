@@ -1510,6 +1510,19 @@ fn tool_locator(
         start,
     )))
 }
+pub(crate) fn captured_tool_call(
+    c: &Connection,
+    cut: &HistoryCut,
+    run: RunId,
+    key: &ToolKey,
+) -> Result<maka_agent_facts::model::ModelToolCall, StoreError> {
+    let history = HistoryNamespace {
+        owner: cut.owner.clone(),
+        session: cut.session.clone(),
+    };
+    tool_call(c, &history, cut, run, key)
+}
+
 pub(super) fn tool_call(
     c: &Connection,
     history: &HistoryNamespace,

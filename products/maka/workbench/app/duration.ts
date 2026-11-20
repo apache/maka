@@ -17,12 +17,16 @@
  * under the License.
  */
 
-export function formatDuration(milliseconds: number, fractionalSeconds = false): string {
+export function formatDuration(
+  milliseconds: number,
+  precision: 'seconds' | 'tenths' | 'milliseconds' = 'seconds',
+): string {
+  if (precision === 'milliseconds' && milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
   const seconds =
-    fractionalSeconds && milliseconds < 60_000
+    precision !== 'seconds' && milliseconds < 60_000
       ? Math.round(milliseconds / 100) / 10
       : Math.floor(milliseconds / 1000);
-  if (seconds < 60) return fractionalSeconds ? `${seconds.toFixed(1)}s` : `${seconds}s`;
+  if (seconds < 60) return precision === 'seconds' ? `${seconds}s` : `${seconds.toFixed(1)}s`;
   const minutes = Math.floor(seconds / 60);
   const remainderSeconds = Math.floor(seconds % 60);
   if (minutes < 60) return `${minutes}m ${remainderSeconds}s`;

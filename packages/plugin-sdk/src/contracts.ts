@@ -143,6 +143,41 @@ export const contracts: {
     interface: {
       kind: 'service',
       methods: {
+        askQuickQuestion: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'QuickQuestion',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              question: {
+                type: 'string',
+              },
+              requestId: {
+                type: 'string',
+              },
+              continueFrom: {
+                type: ['string', 'null'],
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'question', 'requestId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'null',
+            type: 'null',
+          },
+          progress: {
+            type: 'string',
+            title: 'string',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          resources: {},
+        },
         attachmentImage: {
           mode: 'query',
           input: {
@@ -9173,6 +9208,7 @@ export const contracts: {
                   'quota_exhausted',
                   'provider_unavailable',
                   'stream_truncated',
+                  'withheld',
                 ],
               },
               StepId: {

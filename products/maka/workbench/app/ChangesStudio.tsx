@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { formatCount } from './numberFormat';
 import { cleanup, computed, effect, Scroll, signal, Text, untracked, View, windowSize } from 'nsh';
 import {
   Button,
@@ -1185,7 +1186,7 @@ export function ChangesStudio(props: {
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}>
           <If when={file.added > 0 || file.deleted > 0}>
             <Text style={{ fontSize: 12, lineHeight: 16, color: C.success, fontWeight: '500' }}>
-              {`+${file.added}`}
+              {`+${formatCount(file.added)}`}
             </Text>
             <Text
               style={{
@@ -1196,7 +1197,7 @@ export function ChangesStudio(props: {
                 marginRight: 4,
               }}
             >
-              {`-${file.deleted}`}
+              {`-${formatCount(file.deleted)}`}
             </Text>
           </If>
 
@@ -1463,10 +1464,10 @@ export function ChangesStudio(props: {
             <If when={totalStats().added > 0 || totalStats().deleted > 0}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}>
                 <Text style={{ fontSize: 12, lineHeight: 16, color: C.success, fontWeight: '500' }}>
-                  {`+${totalStats().added}`}
+                  {`+${formatCount(totalStats().added)}`}
                 </Text>
                 <Text style={{ fontSize: 12, lineHeight: 16, color: C.danger, fontWeight: '500' }}>
-                  {`-${totalStats().deleted}`}
+                  {`-${formatCount(totalStats().deleted)}`}
                 </Text>
               </View>
             </If>

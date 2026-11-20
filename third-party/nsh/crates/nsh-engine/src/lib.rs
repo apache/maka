@@ -118,6 +118,9 @@ const IDLE_GC_QUIET: Duration = Duration::from_millis(300);
 /// The longest time between idle collections, quiet or not.
 const IDLE_GC_LONGEST: Duration = Duration::from_secs(5);
 
+/// Maximum backoff when repeated collections cannot free cached unparented nodes.
+const IDLE_GC_MAX_BACKOFF: Duration = Duration::from_secs(60);
+
 /// The shortest time between two deliveries of mouse motion: a frame at
 /// 120 Hz. Mice report moves far more often (up to 1000 Hz), and a handler
 /// that redraws a crosshair needs no more than one per frame.
@@ -2189,6 +2192,12 @@ struct Driver<M: TextEngine + 'static> {
     /// once; its views stay as they were and no JS runs any more.
     stopped: bool,
     last_gc: Instant,
+    gc_interval: Duration,
+    last_gc_unparented_seq: u64,
+    last_gc_net_hops: u64,
+    /// True when the sandbox enforces hard memory or node quotas: retain
+    /// post-commit idle GC so cycles cannot exhaust tight limits.
+    has_quota: bool,
     /// When a message or a due timer last gave the engine work
     /// ([`IDLE_GC_QUIET`]).
     last_active: Instant,
@@ -2402,6 +2411,7 @@ impl<M: TextEngine + 'static> Driver<M> {
             trace: config.trace,
             perf: None,
             perf_stats_at: None,
+            perf_memory_at: None,
             perf_commit: perf::CommitTiming::default(),
             committed_since_gc: false,
             hot: Vec::new(),
@@ -2458,6 +2468,10 @@ impl<M: TextEngine + 'static> Driver<M> {
             assets: config.assets.clone(),
             stopped: false,
             last_gc: Instant::now(),
+            gc_interval: IDLE_GC_INTERVAL,
+            last_gc_unparented_seq: 0,
+            last_gc_net_hops: 0,
+            has_quota: config.limits.memory_bytes > 0 || config.limits.max_nodes < usize::MAX,
             last_active: Instant::now(),
             posts: posts.clone(),
             clock: config.clock.clone(),
@@ -2568,30 +2582,40 @@ impl<M: TextEngine + 'static> Driver<M> {
             sink.resized(size);
         }
         state.report_handled(&**sink);
-        state.net.pump(script, &mut state.core);
-        state.load_chunks(script, &**sink);
-        state.request_frame(script, &**sink);
+        driver.pump_net_and_commit();
+        driver
+            .state
+            .load_chunks(driver.script.as_ref(), &*driver.sink);
+        driver
+            .state
+            .request_frame(driver.script.as_ref(), &*driver.sink);
         driver.check_stopped();
         for message in moves {
             if !driver.handle(message, rx) {
                 return None;
             }
         }
+        driver
+            .state
+            .maybe_record_memory_sample(driver.script.as_ref(), true);
         Some(driver)
+    }
+
+    /// When the loop wakes next for timers or throttled work (excluding idle GC).
+    fn work_deadline(&self) -> Option<Instant> {
+        if self.clock.is_manual() {
+            None
+        } else {
+            self.due()
+        }
     }
 
     /// When the loop wakes next: for the next timer or throttled event
     /// (on the system's clock; a manual one moves only when told), or the
     /// idle collection (the system's time, whatever the clock).
     fn deadline(&self) -> Option<Instant> {
-        let gc_deadline =
-            (self.script.is_some() && self.state.committed_since_gc).then(|| self.next_gc());
-        let due = if self.clock.is_manual() {
-            None
-        } else {
-            self.due()
-        };
-        [due, gc_deadline, self.state.perf_stats_at]
+        let gc_deadline = self.needs_gc().then(|| self.next_gc());
+        [self.work_deadline(), gc_deadline, self.state.perf_stats_at]
             .into_iter()
             .flatten()
             .min()
@@ -2608,6 +2632,7 @@ impl<M: TextEngine + 'static> Driver<M> {
             return;
         }
         self.state.perf_stats_at = Some(now + PERF_STATS_INTERVAL);
+        self.state.record_memory_sample(self.script.as_ref());
         let Some(stats) = self.state.perf.as_ref().map(|m| m.snapshot().stats()) else {
             return;
         };
@@ -2845,15 +2870,44 @@ impl<M: TextEngine + 'static> Driver<M> {
             }
         }
         state.run_on_main_thread(&**sink);
+        state.maybe_record_memory_sample(script, false);
         if let Some(size) = state.resized.take() {
             sink.resized(size);
         }
         state.report_handled(&**sink);
-        state.net.pump(script, &mut state.core);
-        state.load_chunks(script, &**sink);
-        state.request_frame(script, &**sink);
+        self.pump_net_and_commit();
+        self.state.load_chunks(self.script.as_ref(), &*self.sink);
+        self.state.request_frame(self.script.as_ref(), &*self.sink);
         self.check_stopped();
         self.sync_quit_listeners();
+    }
+
+    /// Pumps network ops and commits any UI ops queued synchronously by
+    /// refused requests so they never wait for an unrelated wake.
+    fn pump_net_and_commit(&mut self) {
+        for round in 0..4 {
+            if !self
+                .state
+                .net
+                .pump(self.script.as_ref(), &mut self.state.core)
+            {
+                return;
+            }
+            self.state
+                .load_fonts(self.script.as_ref(), self.assets.as_deref(), &*self.sink);
+            if let Some(batch) = self
+                .state
+                .commit(self.script.as_ref())
+                .filter(|_| !self.quitting)
+            {
+                self.sink.submit(batch);
+            }
+            self.state.run_on_main_thread(&*self.sink);
+            if round == 3 {
+                // Keep draining any follow-up requests queued by the 4th refusal.
+                let _ = self.state.net.tx.send(Message::Wake);
+            }
+        }
     }
 
     /// Tells the [`Engine`] whether the app has quit listeners now.
@@ -2882,7 +2936,7 @@ impl<M: TextEngine + 'static> Driver<M> {
             if !self.state.core.quit_pending() || self.stopped {
                 break;
             }
-            let wake = self.deadline().map_or(deadline, |at| at.min(deadline));
+            let wake = self.work_deadline().map_or(deadline, |at| at.min(deadline));
             match rx.recv_deadline(wake) {
                 Ok(Message::Shutdown) => {}
                 Ok(message @ Message::HostEvent(..)) => kept.push(message),
@@ -2905,44 +2959,84 @@ impl<M: TextEngine + 'static> Driver<M> {
         }
     }
 
-    /// When the next idle collection may run: a second after the last, once
-    /// the engine has been quiet for [`IDLE_GC_QUIET`] (or at the latest
-    /// [`IDLE_GC_LONGEST`] after the last).
-    fn next_gc(&self) -> Instant {
-        let quiet = (self.last_active + IDLE_GC_QUIET).min(self.last_gc + IDLE_GC_LONGEST);
-        (self.last_gc + IDLE_GC_INTERVAL).max(quiet)
+    fn can_collect_gc(&self) -> bool {
+        !self.stopped && self.script.as_ref().is_some_and(Script::supports_gc)
     }
 
-    /// Collects cycles when the engine has been idle long enough, so
-    /// released nodes free their views.
-    fn collect_if_idle(&mut self) {
-        if let Some(script) = &self.script
-            && self.state.committed_since_gc
-            && Instant::now() >= self.next_gc()
-        {
-            let start = self.state.trace.then(Instant::now);
-            script.collect_garbage();
-            if let Some(start) = start {
-                log::info!(target: "nsh::perf", "gc: {}µs", start.elapsed().as_micros());
-            }
-            // What the app holds, for the performance monitor: read here,
-            // when the heap was just walked and nothing waits.
-            if let Some(monitor) = &self.state.perf {
-                let (js_heap, js_objects) = script.heap_usage();
-                monitor.set_memory(perf::MemorySample {
-                    js_heap,
-                    js_objects,
-                    nodes: self.state.core.node_count() as u64,
-                    node_ids: self.state.core.node_id_room() as u64,
-                });
-            }
-            self.last_gc = Instant::now();
-            self.state.committed_since_gc = false;
-            if let Some(batch) = self.state.commit(Some(script)) {
-                self.sink.submit(batch);
-            }
-            self.state.run_on_main_thread(&*self.sink);
+    fn needs_gc(&self) -> bool {
+        self.can_collect_gc()
+            && (self.state.core.unparented_nodes() > 0
+                || !self.state.net.idle()
+                || (self.has_quota && self.state.committed_since_gc))
+    }
+
+    fn effective_gc_interval(&self) -> Duration {
+        let new_unparented = self.state.core.unparented_seq() != self.last_gc_unparented_seq;
+        let new_net = !self.state.net.idle() && self.state.net.hops != self.last_gc_net_hops;
+        if new_unparented || new_net || (self.has_quota && self.state.committed_since_gc) {
+            IDLE_GC_INTERVAL
+        } else {
+            self.gc_interval
         }
+    }
+
+    /// When the next idle collection may run: after the current interval
+    /// (backed off when cached unparented nodes stay live), once the engine
+    /// has been quiet for [`IDLE_GC_QUIET`].
+    fn next_gc(&self) -> Instant {
+        let interval = self.effective_gc_interval();
+        let longest = IDLE_GC_LONGEST.max(interval);
+        let quiet = (self.last_active + IDLE_GC_QUIET).min(self.last_gc + longest);
+        (self.last_gc + interval).max(quiet)
+    }
+
+    /// Collects cycles when unparented host nodes exist (or after commits under
+    /// hard sandbox quotas), so released nodes free their views without running
+    /// on steady-state text updates in standalone desktop sessions.
+    fn collect_if_idle(&mut self) {
+        if !self.needs_gc() || Instant::now() < self.next_gc() {
+            return;
+        }
+        let effective = self.effective_gc_interval();
+        let before_unparented = self.state.core.unparented_nodes();
+        let before_inflight = self.state.net.inflight.len();
+        let seq_before_gc = self.state.core.unparented_seq();
+        let hops_before_gc = self.state.net.hops;
+        let start = self.state.trace.then(Instant::now);
+        if let Some(script) = &self.script {
+            script.collect_garbage();
+        }
+        if let Some(start) = start {
+            log::info!(target: "nsh::perf", "gc: {}µs", start.elapsed().as_micros());
+        }
+        self.last_gc = Instant::now();
+        self.state.committed_since_gc = false;
+        self.state
+            .load_fonts(self.script.as_ref(), self.assets.as_deref(), &*self.sink);
+        if let Some(batch) = self.state.commit(self.script.as_ref()) {
+            self.sink.submit(batch);
+        }
+        self.state.run_on_main_thread(&*self.sink);
+        self.pump_net_and_commit();
+        self.state.load_chunks(self.script.as_ref(), &*self.sink);
+        self.state.request_frame(self.script.as_ref(), &*self.sink);
+        self.check_stopped();
+        self.sync_quit_listeners();
+        let after_unparented = self.state.core.unparented_nodes();
+        let after_inflight = self.state.net.inflight.len();
+        // Acknowledge only the sequence that existed before the sweep so any
+        // unparented nodes created by finalizers still trigger promptly.
+        self.last_gc_unparented_seq = seq_before_gc;
+        self.last_gc_net_hops = hops_before_gc;
+        let made_progress =
+            after_unparented < before_unparented || after_inflight < before_inflight;
+        let still_pending = after_unparented > 0 || after_inflight > 0;
+        self.gc_interval = if made_progress || !still_pending {
+            IDLE_GC_INTERVAL
+        } else {
+            (effective * 4).min(IDLE_GC_MAX_BACKOFF)
+        };
+        self.state.record_memory_sample(self.script.as_ref());
     }
 
     fn check_stopped(&mut self) {
@@ -2997,6 +3091,8 @@ struct State<M: TextEngine> {
     /// When the monitor is read next for `perfStats()` (while there is a
     /// monitor), on the system's time.
     perf_stats_at: Option<Instant>,
+    /// When the last PerfMonitor memory sample was taken (None = pending initial sample).
+    perf_memory_at: Option<Instant>,
     /// The core's share of the wake-up being measured (`layout`, `ops`,
     /// `items`; `js` is the rest of the wake-up).
     perf_commit: perf::CommitTiming,
@@ -3130,7 +3226,8 @@ impl Net {
 
     /// Hands what JS and the components' tasks asked of their requests to
     /// the network.
-    fn pump<M: TextEngine>(&mut self, script: Option<&Script>, core: &mut Core<M>) {
+    fn pump<M: TextEngine>(&mut self, script: Option<&Script>, core: &mut Core<M>) -> bool {
+        let mut refused_any = false;
         let mut abandoned = std::mem::take(&mut self.abandoned);
         core.take_fetches(&mut self.tasks, &mut abandoned);
         for id in abandoned.drain(..) {
@@ -3141,10 +3238,13 @@ impl Net {
         for (id, request) in tasks.drain(..) {
             if let Err(refused) = self.request(Requester::Task(id), request) {
                 core.fetch_refused(id, refused.message, refused.url);
+                refused_any = true;
             }
         }
         self.tasks = tasks;
-        let Some(script) = script else { return };
+        let Some(script) = script else {
+            return refused_any;
+        };
         script.take_network(&mut self.queue);
         for (id, op) in std::mem::take(&mut self.queue.ops) {
             let who = Requester::Js(id);
@@ -3152,6 +3252,7 @@ impl Net {
                 FetchOp::Start(request) => {
                     if let Err(refused) = self.request(who, request) {
                         script.fetch_refused(id, &refused.message, &refused.url);
+                        refused_any = true;
                     }
                 }
                 FetchOp::Send(chunk) => {
@@ -3172,6 +3273,7 @@ impl Net {
                 FetchOp::Cancel => self.cancel(who),
             }
         }
+        refused_any
     }
 
     /// Aborts `who`'s request.
@@ -3361,6 +3463,11 @@ impl Net {
         event: FetchEvent,
     ) -> Option<Result<FetchEvent, access::Refused>> {
         if self.network.is_none() {
+            if matches!(event, FetchEvent::End | FetchEvent::Failed(_))
+                && self.inflight.get(&id).is_some_and(|i| i.hop == hop)
+            {
+                self.inflight.remove(&id);
+            }
             return Some(Ok(event));
         }
         let inflight = self.inflight.get_mut(&id).filter(|i| i.hop == hop)?;
@@ -3818,6 +3925,7 @@ impl<M: TextEngine> State<M> {
         {
             keep_last_sets(&mut batch.items, &mut self.sets_seen);
         }
+
         self.committed_since_gc |= op_count > 0;
         if self.perf.is_some() && (op_count > 0 || merged.is_some()) {
             let c = &mut self.perf_commit;
@@ -3836,6 +3944,32 @@ impl<M: TextEngine> State<M> {
             );
         }
         merged
+    }
+
+    fn maybe_record_memory_sample(&mut self, script: Option<&Script>, force: bool) {
+        if self.perf.is_none() {
+            return;
+        }
+        let due = force
+            || self
+                .perf_memory_at
+                .is_none_or(|at| at.elapsed() >= IDLE_GC_INTERVAL);
+        if due {
+            self.record_memory_sample(script);
+        }
+    }
+
+    fn record_memory_sample(&mut self, script: Option<&Script>) {
+        if let Some(monitor) = &self.perf {
+            let (js_heap, js_objects) = script.map_or((0, 0), Script::heap_usage);
+            monitor.set_memory(perf::MemorySample {
+                js_heap,
+                js_objects,
+                nodes: self.core.node_count() as u64,
+                node_ids: self.core.node_id_room() as u64,
+            });
+            self.perf_memory_at = Some(Instant::now());
+        }
     }
 }
 
@@ -4336,6 +4470,7 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
             state.perf_stats_at = monitor
                 .as_ref()
                 .map(|_| Instant::now() + PERF_STATS_INTERVAL);
+            state.perf_memory_at = None;
             if monitor.is_none() {
                 state.core.set_perf_stats(None);
                 if let Some(script) = script {

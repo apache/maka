@@ -1091,6 +1091,7 @@ const bind = async (method, args, document = true) => {
       });
     }
     Object.assign(target, {
+      bringToFront: () => action('bringToFront', {}),
       typeText: (text, options = {}) =>
         action('typeText', { text, deliveryMode: options.deliveryMode }),
       paste: (text, options = {}) => action('paste', { text, options }),

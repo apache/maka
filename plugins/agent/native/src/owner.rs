@@ -28,7 +28,7 @@ mod assistant;
 mod attachments;
 mod auxiliary;
 mod checkpoints;
-mod compaction;
+pub(crate) mod compaction;
 mod completions;
 mod computer_apps;
 mod context;
@@ -78,6 +78,7 @@ mod preferences;
 mod presets;
 mod projects;
 mod queue;
+mod quick_question;
 mod recall;
 mod recap;
 mod runs;
@@ -228,6 +229,7 @@ pub(crate) struct Owner {
     bot: Arc<bot::Bot>,
     goals: Arc<goal::Goals>,
     recap_storage: Arc<maka_host_runtime::storage::Storage>,
+    quick_answer: Mutex<quick_question::QuickHistory>,
     auxiliary: auxiliary::Auxiliary,
     titles: title::Registry,
     pub settings: Configuration,
@@ -565,6 +567,7 @@ impl Owner {
             pricing,
             goals,
             auxiliary,
+            quick_answer: Mutex::default(),
             todo,
             bot,
             recap_storage,
