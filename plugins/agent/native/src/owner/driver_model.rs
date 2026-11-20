@@ -3928,12 +3928,28 @@ fn merge_skill(
     }
     Ok(())
 }
+fn has_skill_section(system_text: &str, skill_text: &str) -> bool {
+    system_text == skill_text
+        || system_text
+            .strip_suffix(skill_text)
+            .is_some_and(|prefix| prefix.ends_with("\n\n"))
+        || system_text
+            .strip_prefix(skill_text)
+            .is_some_and(|rest| rest.starts_with("\n\n"))
+        || system_text.contains(&format!("\n\n{skill_text}\n\n"))
+}
 fn append_skill(system: &mut Option<SystemPrompt>, skill: SystemPrompt) {
     match system {
         Some(system) => {
-            system.text.push_str("\n\n");
-            system.text.push_str(&skill.text);
-            system.sources.extend(skill.sources);
+            if !has_skill_section(&system.text, &skill.text) {
+                system.text.push_str("\n\n");
+                system.text.push_str(&skill.text);
+            }
+            for source in skill.sources {
+                if !system.sources.contains(&source) {
+                    system.sources.push(source);
+                }
+            }
         }
         None => *system = Some(skill),
     }
@@ -4491,5 +4507,57 @@ mod frozen_text_tests {
             Some(shared)
         );
         assert_eq!(hydrated.content_refs(), to_seal.content_refs());
+    }
+
+    #[test]
+    fn append_skill_deduplicates_identical_catalog_sections() {
+        let source = |rev: &str| SourceRevision {
+            kind: maka_agent_facts::composition::SourceKind::Input,
+            name: "maka.agent.skills".into(),
+            package_id: "maka.skills".into(),
+            entry_id: "skills".into(),
+            activation: "act".into(),
+            revision: rev.into(),
+        };
+        let mut system = Some(SystemPrompt {
+            text: "Base instructions".into(),
+            policy_revision: 1,
+            sources: Vec::new(),
+        });
+        append_skill(
+            &mut system,
+            SystemPrompt {
+                text: "Available skills: alpha".into(),
+                policy_revision: 0,
+                sources: vec![source("rev-1")],
+            },
+        );
+        // Repeated merge (e.g. steering or ancestry replay) with the same catalog text
+        // must not mutate system.text and invalidate the prompt cache prefix.
+        append_skill(
+            &mut system,
+            SystemPrompt {
+                text: "Available skills: alpha".into(),
+                policy_revision: 0,
+                sources: vec![source("rev-1"), source("rev-2")],
+            },
+        );
+        let merged = system.as_ref().unwrap();
+        assert_eq!(merged.text, "Base instructions\n\nAvailable skills: alpha");
+        assert_eq!(merged.sources, vec![source("rev-1"), source("rev-2")]);
+
+        // A genuinely updated catalog still appends once.
+        append_skill(
+            &mut system,
+            SystemPrompt {
+                text: "Available skills: alpha, beta".into(),
+                policy_revision: 0,
+                sources: vec![source("rev-3")],
+            },
+        );
+        assert_eq!(
+            system.as_ref().unwrap().text,
+            "Base instructions\n\nAvailable skills: alpha\n\nAvailable skills: alpha, beta"
+        );
     }
 }

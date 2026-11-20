@@ -265,7 +265,13 @@ async fn account_metadata_and_reply_capacity_survive_plugin_policy_resolution() 
     );
     assert_eq!(explicit.provider_options, inherited.provider_options);
     let openai = binding("openai");
-    for (id, label) in [("gpt-6-sol", "GPT-6 Sol"), ("gpt-6-luna", "GPT-6 Luna")] {
+    for (id, label) in [
+        ("gpt-6-sol", "GPT-6 Sol"),
+        ("gpt-6-luna", "GPT-6 Luna"),
+        ("gpt-6.1-sol", "GPT-6.1 Sol"),
+        ("gpt-6.2-sol", "GPT-6.2 Sol"),
+        ("gpt-6.2-astra", "GPT-6.2 Astra"),
+    ] {
         let mut input = request(&openai, id, ModelOverride::default());
         input.thinking_level = Some(Max);
         let model = openai.prepare(input).await.unwrap();
