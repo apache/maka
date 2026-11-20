@@ -344,6 +344,9 @@ impl Script {
     pub(crate) fn fetch_refused(&self, id: u32, message: &str, url: &str) {
         self.0.fetch_refused(id, message, url);
     }
+    pub(crate) fn supports_gc(&self) -> bool {
+        false
+    }
     pub(crate) fn collect_garbage(&self) {}
     pub(crate) fn heap_usage(&self) -> (u64, u64) {
         (0, 0)
