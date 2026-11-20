@@ -1666,7 +1666,8 @@ test('only explicitly linked replies to delivered discoveries reach the notebook
         if (prompt.includes('Phase: discovery')) {
           round++;
           if (round === 1) {
-            assert.match(notebook, /暂无用户反馈/);
+            const seed = JSON.parse(notebook.slice(notebook.indexOf('\n') + 1));
+            assert.deepEqual(seed.pendingFeedback.items, []);
             draft = {
               notes: [
                 {
@@ -1679,8 +1680,13 @@ test('only explicitly linked replies to delivered discoveries reach the notebook
             };
           } else {
             assert.match(notebook, /我不喝茶了/);
-            assert.match(notebook, /主题：tea/);
-            feedbackId = /｜(feedback:[^｜\n]+)｜待理解/.exec(notebook)![1];
+            const pending: any = await invoke('DiscoveryNotebook', { view: 'feedback' });
+            feedbackId = pending.items[0].id;
+            const delivered: any = await invoke('DiscoveryNotebook', {
+              view: 'event',
+              eventId: pending.items[0].replyTo,
+            });
+            assert.deepEqual(JSON.parse(delivered.text).payload.topicIds, ['tea']);
             // Leave the second discovery in flight so the wait cannot rely on round alone.
             await new Promise((resolve) => setTimeout(resolve, 50));
           }

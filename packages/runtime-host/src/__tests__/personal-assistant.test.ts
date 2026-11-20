@@ -299,6 +299,17 @@ test('adopting all three stores preserves coverage, references, unfinished group
   initiative.bind({ sessionId: 'old-assistant', cwd: f.root });
   const savedBinding = initiative.get();
   initiative.close();
+  const quick = new InitiativeStore(
+    join(directories['index-initiative'], 'quick-discovery'),
+    'old-quick-owner',
+  );
+  quick.lease();
+  quick.bind({ sessionId: 'old-assistant', cwd: f.root });
+  quick.update((s) => {
+    s.workerSession = 'old-quick';
+  });
+  quick.bindWorker('old-quick', 'quick', 'legacy', 'legacy');
+  quick.close();
 
   for (const [name, directory] of Object.entries(directories))
     await f.legacy.mutate({ extensionId: 'dev.maka.' + name, scopeId: 'profile' }, 'storage', [
@@ -316,7 +327,17 @@ test('adopting all three stores preserves coverage, references, unfinished group
       pass === 0 ? f.service : new PersonalAssistantService(f.directory, f.dependencies);
     try {
       await service.recover(f.legacy, entries as any);
-      assert.deepEqual([...f.marked.at(-1)!].sort(), ['old-task', 'old-worker']);
+      assert.deepEqual([...f.marked.at(-1)!].sort(), ['old-quick', 'old-task', 'old-worker']);
+      assert.deepEqual(
+        service
+          .filterTools('old-quick', [
+            { name: 'Edit', categoryHint: 'file_write' },
+            { name: 'Read', categoryHint: 'read' },
+          ] as any)
+          .map((tool) => tool.name),
+        ['Read'],
+        'legacy quick role stays restricted before lease takeover',
+      );
       for (const sessionId of ['old-assistant', 'old-task', 'old-worker'])
         assert.ok(service.filterTools(sessionId, service.tools).length > 0, sessionId);
       assert.deepEqual(service.filterTools('ordinary', service.tools), []);

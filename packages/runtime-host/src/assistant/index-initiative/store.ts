@@ -21,31 +21,67 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { BroadActivation } from './work-types.js';
+export type DiscoveryContextMode = 'legacy' | 'scoped';
 
 /** Scheduler metadata only. Conversation history belongs to the ordinary Session. */
 export class InitiativeStore {
   db: DatabaseSync;
+  private projection?: { read: (state: any) => any; write: (state: any) => any };
   constructor(
     readonly directory: string,
     readonly owner: string,
+    private readonly parent?: InitiativeStore,
+    private readonly namespace?: string,
   ) {
+    if (parent) {
+      this.db = parent.db;
+      return;
+    }
     mkdirSync(directory, { recursive: true });
     this.db = new DatabaseSync(join(directory, 'initiative.sqlite'));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS state(id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS journal(seq INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS context_workers(session_id TEXT PRIMARY KEY, role TEXT NOT NULL, mode TEXT NOT NULL, context_key TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS lease(id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT NOT NULL, until_at INTEGER NOT NULL);`);
   }
+  /** Merges configuration with the attached job view; use configuration() for raw settings. */
   get(): any {
+    const state = this.configuration();
+    return this.projection ? this.projection.read(state) : state;
+  }
+  /** Configuration views share the scheduler transaction; intake keeps its own DB. */
+  scope(namespace: string, directory = this.directory) {
+    return new InitiativeStore(directory, this.owner, this, namespace);
+  }
+  /** Runner attaches the working-state projection here. update()/save() split fields such
+   * as active and pendingDraft into discovery_jobs.work in the same DB transaction as
+   * configuration. A Runner job must already exist before non-empty work is written. */
+  project(projection: { read: (state: any) => any; write: (state: any) => any }) {
+    this.projection = projection;
+  }
+  configuration(): any {
     const row = this.db.prepare('SELECT payload FROM state WHERE id=1').get();
-    return row ? JSON.parse(String(row.payload)) : null;
+    const raw = row ? JSON.parse(String(row.payload)) : {};
+    if (this.namespace) return raw.scopes?.[this.namespace] ?? null;
+    delete raw.scopes;
+    return Object.keys(raw).length ? raw : null;
   }
   save(s: any) {
+    this.transaction(() => this.saveConfiguration(this.projection ? this.projection.write(s) : s));
+  }
+  saveConfiguration(s: any) {
+    const row = this.db.prepare('SELECT payload FROM state WHERE id=1').get();
+    const raw = row ? JSON.parse(String(row.payload)) : {};
+    const payload = this.namespace
+      ? { ...raw, scopes: { ...raw.scopes, [this.namespace]: s } }
+      : { ...s, ...(raw.scopes ? { scopes: raw.scopes } : {}) };
     this.db
       .prepare(
         'INSERT INTO state VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload',
       )
-      .run(JSON.stringify(s));
+      .run(JSON.stringify(payload));
   }
   log(kind: string, payload: any) {
     this.db
@@ -53,6 +89,7 @@ export class InitiativeStore {
       .run(Date.now(), kind, JSON.stringify(payload));
   }
   transaction<T>(fn: () => T): T {
+    if (this.db.isTransaction) return fn();
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const value = fn();
@@ -76,10 +113,12 @@ export class InitiativeStore {
       return true;
     });
   }
+  ownsLease() {
+    const lease = this.db.prepare('SELECT * FROM lease WHERE id=1').get();
+    return !!lease && lease.owner === this.owner && Number(lease.until_at) > Date.now();
+  }
   fence() {
-    const l = this.db.prepare('SELECT * FROM lease WHERE id=1').get();
-    if (!l || l.owner !== this.owner || Number(l.until_at) <= Date.now())
-      throw Error('Initiative ownership changed');
+    if (!this.ownsLease()) throw Error('Initiative ownership changed');
   }
   update(fn: (s: any) => void) {
     return this.transaction(() => {
@@ -90,15 +129,27 @@ export class InitiativeStore {
       return s;
     });
   }
-  configure(binding: { sessionId: string; cwd: string }, intervalMs: number, enabled = true) {
+  configure(
+    binding: { sessionId: string; cwd: string },
+    intervalMs: number,
+    enabled = true,
+    contextMode?: DiscoveryContextMode,
+  ) {
     return this.transaction(() => {
       this.fence();
       const old = this.get();
       if (old && old.sessionId !== binding.sessionId)
         throw Error('Initiative belongs to another conversation');
       if (old?.active) throw Error('A heartbeat is still running');
+      if (
+        contextMode &&
+        contextMode !== (old?.contextMode ?? 'legacy') &&
+        (old?.pendingDraft || old?.pendingJudgement || old?.contextWake)
+      )
+        throw Error('Finish or recover the pending discovery before changing context mode');
       const s = {
         version: 2,
+        ...(old?.runnerSchema ? { runnerSchema: old.runnerSchema } : {}),
         ...binding,
         discoverySession: old?.discoverySession,
         judgementSession: old?.judgementSession,
@@ -106,10 +157,18 @@ export class InitiativeStore {
         pendingJudgement: old?.pendingJudgement,
         pendingDraft: old?.pendingDraft,
         promptVersions: old?.promptVersions,
+        legacyWorkerKey: old?.legacyWorkerKey,
+        contextMode: contextMode ?? old?.contextMode ?? 'legacy',
+        contextWake: old?.contextWake,
         intervalMs,
         enabled,
         revision: (old?.revision ?? 0) + 1,
-        nextAt: enabled ? Date.now() + intervalMs : null,
+        nextAt:
+          contextMode !== undefined && old?.intervalMs === intervalMs
+            ? old.nextAt
+            : enabled
+              ? Date.now() + intervalMs
+              : null,
         active: null,
         lastError: null,
         lastCheckedAt: old?.lastCheckedAt ?? null,
@@ -140,7 +199,7 @@ export class InitiativeStore {
       return s;
     });
   }
-  recover() {
+  recover(preserveActive = false) {
     return this.update((s) => {
       if (!s) return;
       if (s.version !== 2) {
@@ -161,7 +220,7 @@ export class InitiativeStore {
         };
         for (const key of Object.keys(s)) delete s[key];
         Object.assign(s, replacement);
-      } else if (s.active) {
+      } else if (s.active && !preserveActive) {
         s.checkRequested = false;
         s.active = null;
         s.nextAt = Date.now() + s.intervalMs;
@@ -174,18 +233,33 @@ export class InitiativeStore {
       delete s.instructions;
     });
   }
-  claim() {
+  claim(id?: string, startedAt?: number) {
     return this.update((s) => {
       if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) return;
+      // A new cycle is where an unconfirmed recovery is retried, so its old bound ends here.
+      delete s.recovery;
+      // A retried submission is the same logical cycle: keep the identity the Host may
+      // already know instead of presenting it as a second investigation.
+      const retried = s.retry;
+      delete s.retry;
+      // With a Runner projection, this claim updates its pre-created job, not the settings row.
       s.active = {
-        id: randomUUID(),
-        startedAt: Date.now(),
+        id: id ?? retried?.id ?? randomUUID(),
+        startedAt: startedAt ?? retried?.startedAt ?? Date.now(),
         phase:
           s.pendingDraft?.phase ??
           (s.pendingJudgement || s.candidateReport ? 'judgement' : 'discovery'),
-      };
+      } satisfies BroadActivation;
       s.revision++;
       this.log('heartbeat', { id: s.active.id });
+    });
+  }
+  /** Remember the cycle whose submission the Host proved absent, so the retry keeps the
+   * same activation identity instead of arriving as a second investigation. */
+  retry(id: string) {
+    return this.update((s) => {
+      if (s?.active?.id !== id) return;
+      s.retry = { id, startedAt: s.active.startedAt ?? Date.now() };
     });
   }
   reported(id: string) {
@@ -200,12 +274,14 @@ export class InitiativeStore {
         id,
         finishedAt: Date.now(),
         outcome: error ? 'error' : s.active.reported ? 'reported' : 'quiet',
+        contextMode: s.contextWake?.mode ?? s.contextMode ?? 'legacy',
       };
       s.active = null;
       if (!error) {
         delete s.candidateReport;
         delete s.pendingJudgement;
         delete s.pendingDraft;
+        delete s.contextWake;
       }
       s.revision++;
       s.lastError = error ?? null;
@@ -221,6 +297,54 @@ export class InitiativeStore {
       s.checkRequested = false;
       this.log(error ? 'interrupted' : 'finished', { id, error });
     });
+  }
+  worker(
+    sessionId: string,
+  ):
+    | { role: 'discovery' | 'judgement' | 'quick'; mode: DiscoveryContextMode; contextKey: string }
+    | undefined {
+    if (!sessionId) return undefined;
+    const row = this.db
+      .prepare('SELECT role,mode,context_key FROM context_workers WHERE session_id=?')
+      .get(sessionId);
+    if (row)
+      return {
+        role: row.role as any,
+        mode: row.mode as DiscoveryContextMode,
+        contextKey: String(row.context_key),
+      };
+    const state = this.get();
+    const role =
+      state?.discoverySession === sessionId
+        ? 'discovery'
+        : state?.judgementSession === sessionId
+          ? 'judgement'
+          : state?.workerSession === sessionId
+            ? 'quick'
+            : undefined;
+    return role ? { role, mode: 'legacy', contextKey: 'legacy' } : undefined;
+  }
+  bindWorker(
+    sessionId: string,
+    role: 'discovery' | 'judgement' | 'quick',
+    mode: DiscoveryContextMode,
+    contextKey: string,
+  ) {
+    this.transaction(() => {
+      this.fence();
+      const old = this.worker(sessionId);
+      if (old && (old.role !== role || old.mode !== mode || old.contextKey !== contextKey))
+        throw Error('Discovery worker identity conflict');
+      this.db
+        .prepare('INSERT OR IGNORE INTO context_workers VALUES(?,?,?,?)')
+        .run(sessionId, role, mode, contextKey);
+    });
+  }
+  prepareContext(mode: DiscoveryContextMode) {
+    return this.update((state) => {
+      if (state.contextWake) return;
+      state.contextWake = { id: randomUUID(), mode };
+    }).contextWake;
   }
   control(action: string) {
     return this.update((s) => {
@@ -242,9 +366,11 @@ export class InitiativeStore {
     });
   }
   release() {
+    if (this.parent) return;
     this.db.prepare('DELETE FROM lease WHERE owner=?').run(this.owner);
   }
   close() {
+    if (this.parent) return;
     this.db.close();
   }
 }

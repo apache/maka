@@ -62,6 +62,7 @@ export const DISCOVERY_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
   'InitiativeControl',
   // Bot-only coordination tools.
   'SendUser',
+  'ReplyDiscovery',
   'InboxCheck',
   'InboxList',
   'InboxRead',

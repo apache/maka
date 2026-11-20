@@ -18,11 +18,14 @@
  */
 
 import test from 'node:test';
+import { laneFixture } from './runner-fixture.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { QuickDiscoveryController } from '../../../../src/assistant/index-initiative/quick.js';
+import { InitiativeStore } from '../../../../src/assistant/index-initiative/store.js';
+import { DiscoveryRunner } from '../../../../src/assistant/index-initiative/runner.js';
 import { InitiativeController } from '../../../../src/assistant/index-initiative/controller.js';
 import { RunCostLedger } from '../../../../src/assistant/run-cost.js';
 import { fixture, until } from './fixture.js';
@@ -38,28 +41,40 @@ async function setup() {
   const delivered = new Map<string, any>(),
     prompts: string[] = [];
   const sessions: any[] = [];
+  const admitted = new Set<string>();
   const agent = {
     sessionId: 'worker',
-    snapshot: async () => ({ agent: { status: 'idle' } }),
-    followup: async (text: string) => {
+    snapshot: async () => ({
+      agent: { status: fail ? 'blocked' : 'idle' },
+      pendingInteractions: 0,
+    }),
+    followup: async (text: string, options: { messageId: string }) => {
+      admitted.add(options.messageId);
       calls++;
       assert.equal(notebookRefreshes, calls, 'refresh receipts before every quick wake');
       prompts.push(text);
       return { disposition: 'turn_started' };
     },
-    messageExecution: async () => ({ state: 'owned' }),
+    messageExecution: async (messageId: string) => ({
+      state: admitted.has(messageId) ? 'owned' : 'not_admitted',
+    }),
     whenIdle: async () => {
       if (fail) throw Error('network failure');
     },
     cancel: async () => {},
   };
+  const parentStore = new InitiativeStore(root, 'parent');
+  parentStore.lease();
+  parentStore.bind({ sessionId: 'owner', cwd: root });
   const parent = {
+    runner: new DiscoveryRunner(parentStore, () => 0),
     abort: new AbortController(),
     bindingReady: Promise.resolve(),
+    notebook: { continuation: () => [] },
     refreshNotebook: () => {
       notebookRefreshes++;
     },
-    store: { get: () => ({ sessionId: 'owner', cwd: root }) },
+    store: parentStore,
     asOwner: (_: any, fn: any) => fn(),
   };
   const ctx = {
@@ -118,6 +133,8 @@ async function setup() {
     close: async () => {
       await q.close();
       q.store.close();
+      parentStore.release();
+      parentStore.close();
       await rm(root, { recursive: true, force: true });
     },
   };
@@ -210,12 +227,18 @@ test('reports are idempotent Bot handoffs, not notebook edits or delegated tasks
     await f.q.control({ action: 'check' });
     await f.q.tick();
     await until(() => !!release);
-    const report = { key: 'expense', messages: ['这笔材料已经交了，要不要我帮你盯回复？'] };
-    f.q.report(report, 'worker');
-    f.q.report(report, 'worker');
+    const report = {
+      key: 'expense',
+      messages: ['这笔材料已经交了，要不要我帮你盯回复？'],
+    };
+    await f.q.report(report, 'worker');
+    await f.q.report(report, 'worker');
     assert.equal(f.delivered.size, 1);
-    assert.throws(() => f.q.report({ ...report, messages: ['different'] }, 'worker'), /different/);
-    assert.throws(() => f.q.report(report, 'owner'), /active/);
+    await assert.rejects(
+      () => f.q.report({ ...report, messages: ['different'] }, 'worker'),
+      /different/,
+    );
+    await assert.rejects(() => f.q.report(report, 'owner'), /active/);
     release();
     await f.q.running;
   } finally {
@@ -421,7 +444,11 @@ test('new activity and explicit checks bypass quiet hours; changing cadence pres
     await f.q.control({ action: 'check' });
     await f.run();
     assert.equal(f.calls(), 3);
-    await f.q.control({ action: 'configure', intervalMinutes: 20, idleMinutes: 90 });
+    await f.q.control({
+      action: 'configure',
+      intervalMinutes: 20,
+      idleMinutes: 90,
+    });
     assert.deepEqual(f.q.state().quietHours, hours);
     f.advance(90 * 60000);
     await f.run();
@@ -464,8 +491,15 @@ test('quiet window validation rejects ambiguous times and invalid zones without 
   const f = await fixture();
   try {
     await f.remote('assistant.bind', { sessionId: 'owner' });
-    const quietHours = { start: '01:00', end: '08:30', timeZone: 'Asia/Shanghai' };
-    await f.remote('assistant.quick-discovery', { action: 'configure', quietHours });
+    const quietHours = {
+      start: '01:00',
+      end: '08:30',
+      timeZone: 'Asia/Shanghai',
+    };
+    await f.remote('assistant.quick-discovery', {
+      action: 'configure',
+      quietHours,
+    });
     for (const invalid of [
       { ...quietHours, start: '25:00' },
       { ...quietHours, start: '1:00' },
@@ -473,7 +507,10 @@ test('quiet window validation rejects ambiguous times and invalid zones without 
       { ...quietHours, timeZone: 'Invalid/Zone' },
     ]) {
       await assert.rejects(
-        f.remote('assistant.quick-discovery', { action: 'configure', quietHours: invalid }),
+        f.remote('assistant.quick-discovery', {
+          action: 'configure',
+          quietHours: invalid,
+        }),
       );
     }
     assert.deepEqual(
@@ -613,7 +650,8 @@ for (const phase of ['list', 'historyList', 'activityToken']) {
       let closing: Promise<void> | undefined;
       try {
         f.advance(15 * 60000);
-        const tick = f.q.tick();
+        // The shared dispatch may have been entered by the broad controller.
+        const tick = parent.runner.tick().catch(() => {});
         await until(() => !!observed);
         const reason = Error(`${cancel} stopped`);
         if (cancel === 'quick') closing = f.q.close();
@@ -689,7 +727,7 @@ test('a quick run that hands a report to the Bot is recorded as reported', async
   try {
     await withCostLedger(f, async (ledger) => {
       f.agent.whenIdle = async () => {
-        f.q.report({ key: 'offer', messages: ['我可以帮你对比这两项。'] }, 'worker');
+        await f.q.report({ key: 'offer', messages: ['我可以帮你对比这两项。'] }, 'worker');
       };
       await f.q.control({ action: 'check' });
       await f.run();
@@ -719,6 +757,90 @@ test('a failed quick run is recorded as failed and its retry as a separate run',
         ['no_report', 'failed'],
       );
     });
+  } finally {
+    await f.close();
+  }
+});
+
+test('activity already waiting for broad discovery does not wait for another polling interval', async () => {
+  const f = await setup();
+  try {
+    const coordinator = f.q.parent.runner;
+    const broad = laneFixture(coordinator, f.q.parent.store, 'broad');
+    await broad.start();
+    f.advance(15 * 60000);
+    await f.run();
+    assert.equal(coordinator.waiting('quick'), true);
+    f.advance(5000);
+    await f.run();
+    assert.equal(coordinator.waiting('quick'), true);
+    assert.equal(f.calls(), 0);
+    await broad.finish();
+    await f.run();
+    assert.equal(f.calls(), 1);
+    assert.equal(coordinator.status().running, null);
+  } finally {
+    await f.close();
+  }
+});
+
+test('a paused quick check still runs once and never reports a disabled intake', async () => {
+  const f = await setup();
+  try {
+    // Event intake stays on; only quick discovery is paused. The panel's "check once"
+    // button is not gated on enabled, so this is the ordinary paused-then-check path.
+    await f.q.control({ action: 'configure', eventIntake: true });
+    await f.q.control({ action: 'pause' });
+    assert.equal(f.q.state().enabled, false);
+    assert.equal(f.q.state().intakeEnabled, true);
+    await f.q.control({ action: 'check' });
+    assert.equal(f.q.state().checkRequested, true);
+    await f.run();
+    assert.equal(f.calls(), 1, 'the paused check reaches the worker exactly once');
+    assert.equal(f.q.state().lastError, null);
+    assert.equal(f.q.state().checkRequested, false, 'a successful check clears the request');
+    // The old failure persisted: every later tick retried the same rejected guard.
+    f.advance(15 * 60000);
+    await f.run();
+    assert.equal(f.calls(), 1);
+    assert.equal(f.q.state().lastError, null);
+  } finally {
+    await f.close();
+  }
+});
+
+test('a completed business commit survives lease expiry before Runner settlement', async () => {
+  const f = await setup();
+  try {
+    const update = f.q.store.update.bind(f.q.store);
+    let expired = false;
+    f.q.store.update = (change) => {
+      const state = update(change);
+      if (!expired && state.lastFinishedAt && !state.active) {
+        expired = true;
+        f.q.parent.store.db.exec('UPDATE lease SET until_at=0');
+      }
+      return state;
+    };
+    f.advance(15 * 60000);
+    await f.q.dispatch();
+    await f.q.running;
+    const id = f.q.parent.runner.job('quick').id;
+    assert.equal(f.calls(), 1);
+    assert.equal(f.q.parent.runner.job('quick').state, 'settling');
+    f.q.store.update = update;
+    assert.equal(f.q.parent.store.lease(), true);
+    await f.q.dispatch();
+    assert.equal(f.q.parent.runner.job('quick'), undefined);
+    assert.equal(f.q.parent.runner.previous().outcome, 'completed');
+    assert.equal(f.calls(), 1, 'settlement recovery never invokes the model');
+    await f.q.control({ action: 'check' });
+    await f.q.dispatch();
+    await f.q.running;
+    const jobs = f.q.parent.store.db.prepare('SELECT id FROM discovery_jobs').all();
+    assert.equal(jobs.length, 2);
+    assert.ok(jobs.some((job: any) => job.id !== id));
+    assert.equal(f.calls(), 2);
   } finally {
     await f.close();
   }

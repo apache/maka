@@ -44,7 +44,9 @@ test('two persistent workers share append-only knowledge, not a fixed candidate 
         await output(prompt, { notes: discoveries.length === 1 ? [note] : [] });
       } else {
         judgements.push(id);
-        assert.match(await readFile(path, 'utf8'), /用户曾关注摄影展/);
+        assert.match(await readFile(path, 'utf8'), /exhibition/);
+        const memory = await invoke('DiscoveryNotebook', { view: 'topic', topicId: note.topicId });
+        assert.equal(memory.items[0].text, note.text);
         assert.ok(!prompt.includes(note.text), 'the notebook is read from file');
         await invoke('DiscoveryContext', {});
         await output(prompt);
@@ -72,13 +74,15 @@ test('judgement failure resumes shared notebook without repeating discovery', as
     judgements = 0;
   try {
     await f.remote('assistant.bind', { sessionId: 'owner' });
-    f.setRunner(async ({ prompt }: any) => {
+    f.setRunner(async ({ prompt, invoke }: any) => {
       if (prompt.includes('Phase: discovery')) {
         discoveries++;
         await output(prompt, { notes: [note] });
       } else {
         judgements++;
-        assert.match(await readFile(view(prompt), 'utf8'), /用户曾关注摄影展/);
+        assert.match(await readFile(view(prompt), 'utf8'), /exhibition/);
+        const memory = await invoke('DiscoveryNotebook', { view: 'topic', topicId: note.topicId });
+        assert.equal(memory.items[0].text, note.text);
         if (judgements === 1) throw Error('provider unavailable');
         await output(prompt);
       }

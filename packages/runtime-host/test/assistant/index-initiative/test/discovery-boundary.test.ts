@@ -66,6 +66,7 @@ test('discovery catalog omits conversation-mutating tools and keeps context read
       'MemoryIndexWrite',
       'MemoryIndexControl',
       'SendUser',
+      'ReplyDiscovery',
     ])
       assert.ok(!visible.includes(name), `catalog still exposes ${name}`);
     // The two-stage worker submits a notebook draft, not the retired DiscoveryReport tool.

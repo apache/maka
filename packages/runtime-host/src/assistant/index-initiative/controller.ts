@@ -19,7 +19,6 @@
 
 import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 import { randomUUID } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
 import { InitiativeStore } from './store.js';
 import { awaitingUser } from '../execution-outcome.js';
 import { wakeInput, DISCOVERY_TASK, JUDGEMENT_TASK, NOTEBOOK_RULES } from './prompt.js';
@@ -28,14 +27,24 @@ import type { AssistantRunOutcome, RunSegment } from '../run-cost.js';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
+import {
+  DiscoveryRunner,
+  DiscoveryExecutionEnded,
+  type DiscoveryJob,
+  type DiscoveryAgent,
+} from './runner.js';
+import type { BroadDraft, BroadSubmission } from './work-types.js';
 
 export class InitiativeController {
   readonly notebook: Notebook;
+  readonly runner: DiscoveryRunner;
   abort = new AbortController();
   timer: any;
   heartbeat: any;
   owned = false;
-  running?: Promise<void>;
+  get running() {
+    return this.runner.running('broad');
+  }
   private activeAgent?: any;
   ticking?: Promise<void>;
   enabling = false;
@@ -55,6 +64,92 @@ export class InitiativeController {
   ) {
     const path = join(store.directory, 'notebook.sqlite');
     this.notebook = new Notebook(path);
+    this.runner = new DiscoveryRunner(store, () => this.notebook.sequence());
+    this.runner.register('broad', {
+      store,
+      signal: this.abort.signal,
+      ready: () => this.ready(),
+      request: async () => {
+        const state = store.get();
+        return (
+          !!state &&
+          !!(state.enabled || state.checkRequested) &&
+          !state.active &&
+          state.nextAt <= Date.now()
+        );
+      },
+      prepare: (job) => this.prepareRun(job),
+      recovery: (job) => this.recoverSubmission(job),
+      reattach: () =>
+        store.update((state) => {
+          const job = this.runner.job('broad')!;
+          state.active ??= {
+            id: job.id,
+            startedAt: job.startedAt,
+            phase: state.pendingDraft?.phase ?? 'discovery',
+          };
+          delete state.recovery;
+        }),
+      defer: (cancelled) => {
+        const state = store.get();
+        if (state?.active) store.retry(state.active.id);
+        if (state?.pendingDraft && (cancelled || !state.pendingDraft.submission?.input))
+          store.update((s) => {
+            delete s.pendingDraft.submission;
+          });
+        store.recover();
+      },
+      abandon: (job) => {
+        const state = store.get();
+        const sessionId =
+          state.pendingDraft?.submission?.sessionId ??
+          (state.pendingDraft?.phase === 'discovery'
+            ? state.discoverySession
+            : state.judgementSession);
+        store.update((s) => {
+          // Keep history and worker roles, but never reuse an uncertain execution's Session.
+          delete s.discoverySession;
+          delete s.judgementSession;
+          s.legacyWorkerKey = job.id;
+          s.checkRequested = false;
+          s.nextAt = Date.now() + s.intervalMs;
+          s.lastError = 'Discovery recovery timed out; this investigation was abandoned';
+          s.failures = (s.failures ?? 0) + 1;
+          s.lastRun = {
+            id: job.id,
+            finishedAt: Date.now(),
+            outcome: 'error',
+            contextMode: s.contextMode,
+          };
+          store.log('discovery-abandoned', { id: job.id });
+        });
+        return async () => {
+          if (sessionId)
+            await this.asOwner(state, async () => {
+              const agent = await this.ctx.agents.resume({ sessionId });
+              this.ready();
+              await agent.cancel();
+            });
+        };
+      },
+      unfinished: () => {
+        const state = store.get();
+        return !!(
+          state?.active ||
+          state?.pendingDraft ||
+          state?.pendingJudgement ||
+          state?.candidateReport
+        );
+      },
+      run: (agent) => this.run(agent, store.get()),
+      error: (error) =>
+        store.update((state) => {
+          if (state && !state.active) {
+            state.lastError = String(error);
+            state.nextAt = Date.now() + 30000;
+          }
+        }),
+    });
     chmodSync(path, 0o600);
   }
   refreshNotebook(state = this.store.get()) {
@@ -92,8 +187,11 @@ export class InitiativeController {
     for (const feedback of context.feedback) {
       const replyTo = `delivery:${feedback.messageId}`;
       if (!this.notebook.event(replyTo)) continue;
+      const id = `feedback:${JSON.stringify([feedback.id, feedback.messageId])}`;
+      // Preserve already imported feedback when the source projection gains fields.
+      if (this.notebook.event(id)?.kind === 'feedback') continue;
       this.notebook.recordFeedback({
-        id: `feedback:${JSON.stringify([feedback.id, feedback.messageId])}`,
+        id,
         text: feedback.text,
         at: feedback.at,
         replyTo,
@@ -104,6 +202,9 @@ export class InitiativeController {
     for (const event of this.notebook.events('prepared')) {
       const id = `${event.id}:reported`;
       if (this.notebook.event(id)) continue;
+      // Draft message IDs start with their investigation ID. Keep the draft as
+      // history, but never deliver an abandoned investigation on a later cycle.
+      if (this.runner.abandoned(event.id.split(':')[0])) continue;
       // A new user message must be considered before an old recommendation is handed off.
       if (
         event.payload.feedbackRevision !== this.notebook.revision() ||
@@ -125,7 +226,10 @@ export class InitiativeController {
   start() {
     const acquire = () => {
       const owned = this.store.lease();
-      if (owned && !this.owned) this.store.recover();
+      if (owned && !this.owned) {
+        // A durable Root may resume before our first tick, including while scheduling is paused.
+        this.store.recover(true);
+      }
       if (!owned && this.owned) this.abort.abort(Error('Initiative ownership lost'));
       this.owned = owned;
     };
@@ -167,83 +271,121 @@ export class InitiativeController {
     );
   }
   tick(): Promise<void> {
-    if (this.ticking || this.running || !this.owned || this.abort.signal.aborted)
-      return this.ticking ?? Promise.resolve();
-    this.ticking = this.dispatch()
-      .catch((error) => {
-        try {
-          this.store.update((s) => {
-            if ((s?.enabled || s?.checkRequested) && !s.active) {
-              s.lastError = String(error);
-              s.nextAt = Date.now() + 30000;
-            }
-          });
-        } catch {
-          /* Lease lost. */
-        }
-      })
+    if (!this.owned || this.abort.signal.aborted) return Promise.resolve();
+    this.ticking = this.runner
+      .tick()
+      .catch(() => {})
       .finally(() => {
         this.ticking = undefined;
       });
     return this.ticking;
   }
-  async dispatch() {
-    const s = this.store.get();
-    if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) return;
+  dispatch() {
+    return this.runner.tick();
+  }
+  private async recoverSubmission(job: DiscoveryJob) {
+    const state = this.store.get();
+    const pending = state?.pendingDraft;
+    const sessionId =
+      pending?.phase === 'discovery' ? state.discoverySession : state?.judgementSession;
+    if (!pending || !sessionId) return;
+    const sessions = await this.asOwner(state, () => this.ctx.sessionQuery.list());
+    if (this.runner.job('broad')?.id !== job.id) return;
+    if (!sessions.some((session: any) => session.id === sessionId)) {
+      this.store.update((s) => {
+        delete s.pendingDraft.submission;
+      });
+      return;
+    }
+    const agent = await this.asOwner(state, () => this.ctx.agents.resume({ sessionId }));
+    const snapshot = await agent.snapshot();
+    if (snapshot.root?.kind === 'reserved') throw Error('Discovery Host is still recovering');
+    const submission = pending.submission;
+    if (!submission) {
+      if (
+        snapshot.root?.kind === 'active' ||
+        snapshot.agent?.status === 'running' ||
+        awaitingUser(snapshot)
+      )
+        throw Error(
+          'Running discovery has no saved submission identity; finish it before switching versions',
+        );
+      return;
+    }
+    return { agent, messageId: submission.messageId };
+  }
+  private async prepareRun(job: DiscoveryJob) {
+    // Runner creates the job before worker selection or claim writes its projected work.
+    const state = this.store.get();
     const agent = await this.worker(
-      s,
-      s.pendingDraft?.phase ??
-        (s.pendingJudgement || s.candidateReport ? 'judgement' : 'discovery'),
+      state,
+      state.pendingDraft?.phase ??
+        (state.pendingJudgement || state.candidateReport ? 'judgement' : 'discovery'),
     );
     const snapshot = await agent.snapshot();
-    if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
+    if (
+      snapshot.root?.kind === 'reserved' ||
+      snapshot?.agent?.status === 'running' ||
+      awaitingUser(snapshot)
+    )
+      return;
     this.ready();
-    const current = this.store.claim();
-    if (!current?.active) return;
-    this.running = this.run(agent, current).finally(() => {
-      this.running = undefined;
-    });
+    return this.store.claim(job.id, job.startedAt)?.active ? agent : undefined;
   }
   private async worker(s: any, phase: 'discovery' | 'judgement') {
     return this.asOwner(s, async () => {
       const field = phase === 'discovery' ? 'discoverySession' : 'judgementSession';
+      // Pin even legacy admission before the first await: configuration must not
+      // switch modes between selecting the worker and claiming the cycle.
+      const context = this.store.prepareContext(s.contextMode ?? 'legacy');
+      const mode = context.mode;
+      const key = mode === 'scoped' ? context.id : (s.legacyWorkerKey ?? 'legacy');
+      const label = `assistant-${phase}:${s.sessionId}${key === 'legacy' ? '' : ':' + key}`;
       const sessions = await this.ctx.sessionQuery.list();
-      const bound = sessions.find((item: any) => item.id === s[field]);
-      let sessionId = bound && !bound.isArchived ? bound.id : undefined;
-      if (!sessionId) {
-        const label = `assistant-${phase}:${s.sessionId}`;
-        const matches = sessions.filter(
-          (item: any) => !item.isArchived && item.labels?.includes(label),
-        );
-        if (matches.length > 1) throw Error(`Multiple ${phase} workers found`);
-        sessionId =
-          matches[0]?.id ??
-          (
-            await this.ctx.agents.create({
-              background: true,
-              name: phase === 'discovery' ? '个人助手 · 主动发现' : '个人助手 · 发现判断',
-              labels: [label, ASSISTANT_BACKGROUND_SESSION_LABEL],
-            })
-          ).sessionId;
-        this.store.update((current) => {
-          current[field] = sessionId;
-          // A replacement worker has no role instructions in its conversation yet.
-          if (current.promptVersions)
-            delete current.promptVersions[phase === 'discovery' ? 'exploration' : 'judgement'];
-        });
-      }
+      const matches = sessions.filter(
+        (item: any) => !item.isArchived && item.labels?.includes(label),
+      );
+      const previous = this.store.worker(s[field]);
+      const bound =
+        previous && previous.mode === mode && previous.contextKey === key
+          ? sessions.find((item: any) => item.id === s[field] && !item.isArchived)
+          : undefined;
+      if (!bound && matches.length > 1) throw Error(`Multiple ${phase} workers found`);
+      const sessionId =
+        bound?.id ??
+        matches[0]?.id ??
+        (
+          await this.ctx.agents.create({
+            background: true,
+            name: phase === 'discovery' ? '个人助手 · 主动发现' : '个人助手 · 发现判断',
+            labels: [label, ASSISTANT_BACKGROUND_SESSION_LABEL],
+          })
+        ).sessionId;
+      // Keep old worker roles durable so replacing a worker never restores write tools.
+      if (previous)
+        this.store.bindWorker(s[field], previous.role, previous.mode, previous.contextKey);
+      this.store.bindWorker(sessionId, phase, mode, key);
+      this.store.update((current) => {
+        if (current[field] !== sessionId && current.promptVersions)
+          delete current.promptVersions[phase === 'discovery' ? 'exploration' : 'judgement'];
+        current[field] = sessionId;
+      });
       return this.ctx.agents.resume({ sessionId });
     });
   }
-  private async execute(agent: any, state: any) {
+  private async execute(agent: DiscoveryAgent, state: any) {
     this.ready();
     this.activeAgent = agent;
     await this.refreshNotebook(state);
     const role = state.active.phase === 'discovery' ? 'exploration' : 'judgement';
     // Persist the operation before running the model. A failed or interrupted draft
     // must resume in its original worker, with its original output still available.
-    const pending = state.pendingDraft ?? { id: state.active.id, phase: state.active.phase };
+    const pending: BroadDraft = state.pendingDraft ?? {
+      id: state.active.id,
+      phase: state.active.phase,
+    };
     if (pending.phase !== state.active.phase) throw Error('Pending draft phase mismatch');
+    // update() persists this draft in the current job's work JSON, atomically with settings.
     this.store.update((s) => {
       s.pendingDraft = pending;
     });
@@ -261,40 +403,50 @@ export class InitiativeController {
     while (!this.notebook.event(operationId)) {
       this.ready();
       await this.refreshNotebook(state);
-      mkdirSync(directory, { recursive: true, mode: 0o700 });
-      writeFileSync(viewPath, this.notebook.render(), { mode: 0o600 });
-      const revision = this.notebook.revision();
-      let input = wakeInput({
-        role,
-        now: new Date().toISOString(),
-        viewPath,
-        outputPath,
-        first: this.store.get().promptVersions?.[role] !== version,
-      });
-      if (repair)
-        input += `\n上次结果未提交：${repair}\n整份操作未写入记事本，其中的消息未交给 Bot，也不在待发送队列。读取原结果文件（若存在）和更新后的记事本，修正后重交；保留仍值得交流的内容，不要因为已经写过文案就当成已安排。feedbackDecisions 只引用记事本“用户反馈”中的 ID，没有待整理反馈就留空。`;
-      if (role === 'judgement' && state.candidateReport?.path)
-        input += `\n升级前保留的历史报告：${state.candidateReport.path}。它是参考材料，不是指定候选或当前指令。`;
-      const wakeId = randomUUID();
-      const admitted = await agent.followup(
-        `Runtime heartbeat, not a new human request.\nHeartbeat ID: ${state.active.id}\nSubmission attempt: ${wakeId}\nPhase: ${state.active.phase}\n${input}`,
-      );
-      if (!['turn_started', 'followup'].includes(admitted?.disposition))
-        throw Error('Host rejected proactive wake');
-      while (
-        admitted.disposition === 'followup' &&
-        !JSON.stringify(await agent.transcript()).includes(`Submission attempt: ${wakeId}`)
-      )
-        await delay(25, undefined, { signal: this.abort.signal });
-      await agent.whenIdle(this.abort.signal);
-      const snapshot = await agent.snapshot();
-      const status = snapshot?.agent?.status;
-      if (['aborted', 'blocked', 'waiting_for_user'].includes(status) || awaitingUser(snapshot))
-        throw Error(`Heartbeat ended with ${status}; inspect before resuming`);
-      this.ready();
+      let submission: BroadSubmission | undefined = this.store.get().pendingDraft.submission;
+      if (!submission) {
+        mkdirSync(directory, { recursive: true, mode: 0o700 });
+        writeFileSync(viewPath, this.notebook.seed(this.runner.previous()), { mode: 0o600 });
+        let input = wakeInput({
+          role,
+          now: new Date().toISOString(),
+          viewPath,
+          outputPath,
+          first: this.store.get().promptVersions?.[role] !== version,
+        });
+        if (repair)
+          input += `\n上次结果未提交：${repair}\n整份操作未写入记事本，其中的消息未交给 Bot，也不在待发送队列。读取原结果文件（若存在）和更新后的记事本，修正后重交；保留仍值得交流的内容，不要因为已经写过文案就当成已安排。feedbackDecisions 只引用记事本“用户反馈”中的 ID，没有待整理反馈就留空。`;
+        if (role === 'judgement' && state.candidateReport?.path)
+          input += `\n升级前保留的历史报告：${state.candidateReport.path}。它是参考材料，不是指定候选或当前指令。`;
+        const messageId = randomUUID();
+        submission = {
+          messageId,
+          sessionId: agent.sessionId,
+          revision: this.notebook.revision(),
+          version,
+          input: `Runtime heartbeat, not a new human request.\nHeartbeat ID: ${state.active.id}\nSubmission attempt: ${messageId}\nPhase: ${state.active.phase}\n${input}`,
+        };
+        this.store.update((s) => {
+          s.pendingDraft.submission = submission;
+        });
+      }
+      try {
+        await this.runner.execute('broad', agent, submission, this.abort.signal);
+      } catch (error) {
+        if (error instanceof DiscoveryExecutionEnded)
+          this.store.update((s) => {
+            delete s.pendingDraft.submission;
+          });
+        throw error;
+      }
+      if (this.runner.job('broad')?.id !== state.active.id) return;
       this.store.update((s) => {
-        (s.promptVersions ??= {})[role] = version;
+        delete s.pendingDraft.submission;
       });
+      if (submission.version)
+        this.store.update((s) => {
+          (s.promptVersions ??= {})[role] = submission.version;
+        });
       await this.refreshNotebook(state);
       // I/O / provider failures remain execution failures. Only fixable draft errors
       // go back to the same agent immediately; never silently drop an invalid field.
@@ -303,7 +455,7 @@ export class InitiativeController {
         this.notebook.commitDraft({
           role,
           operationId,
-          expectedFeedbackRevision: revision,
+          expectedFeedbackRevision: submission.revision,
           draft: JSON.parse(raw),
         });
       } catch (error) {
@@ -322,7 +474,7 @@ export class InitiativeController {
     rmSync(directory, { recursive: true, force: true });
   }
 
-  async run(agent: any, state: any) {
+  async run(agent: DiscoveryAgent, state: any) {
     const id = state.active.id;
     const startedAt = state.active.startedAt ?? Date.now();
     // Each Session the heartbeat drives and the window it was driven in, so the
@@ -364,7 +516,12 @@ export class InitiativeController {
           this.store.update((s) => {
             if (s.pendingDraft && !s.pendingDraft.error) s.pendingDraft.error = message;
           });
-          this.store.finish(id, message);
+          if (this.abort.signal.aborted || this.store.get()?.pendingDraft?.submission) {
+            // Preserve the activation until the Host proves the original execution settled.
+            this.store.update((s) => {
+              s.lastError = message;
+            });
+          } else this.store.finish(id, message);
         }
       } catch {
         /* A newer owner fences writes and cancellation. */
@@ -404,7 +561,10 @@ export class InitiativeController {
       this.enabling = false;
     }
   }
-  async configure(input: { intervalMinutes: number }, call: any) {
+  async configure(
+    input: { intervalMinutes?: number; contextMode?: 'legacy' | 'scoped' },
+    call: any,
+  ) {
     await this.bindingReady;
     this.ready();
     const old = this.store.get();
@@ -412,8 +572,9 @@ export class InitiativeController {
       throw Error('Only the assistant conversation may configure heartbeats');
     return this.store.configure(
       { sessionId: old.sessionId, cwd: old.cwd },
-      input.intervalMinutes * 60000,
+      input.intervalMinutes === undefined ? old.intervalMs : input.intervalMinutes * 60000,
       old?.enabled ?? false,
+      input.contextMode,
     );
   }
   async control(action: string, call: any) {
@@ -422,6 +583,7 @@ export class InitiativeController {
     if (!old || old.sessionId !== call.sessionId)
       throw Error('Only the assistant conversation controls heartbeats');
     const s = this.store.control(action);
+    if (action === 'pause') this.runner.withdraw('broad');
     if (action !== 'pause') void this.tick();
     return s;
   }
@@ -439,7 +601,7 @@ export class InitiativeController {
       failure = error;
     }
     this.abort.abort(Error('Initiative service stopped'));
-    await Promise.allSettled([this.ticking, this.running].filter(Boolean));
+    await Promise.allSettled([this.runner.dispatching, this.running].filter(Boolean));
     if (this.owned) this.store.release();
     if (failure) throw failure;
   }

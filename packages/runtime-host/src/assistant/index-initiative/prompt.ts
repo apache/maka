@@ -19,12 +19,12 @@
 
 export const NOTEBOOK_RULES = `共同维护一份关于用户相关世界的联想记事本，积累可供以后探索的认识和方向。历史、索引、本机和外部世界中遇到的用户相关事实、兴趣、经历、资源、变化、未知和可能的联系，都可以记录；不要求它现在有用、被选为候选或值得通知。符合这些要求的新认识都留下，不只记录本轮调查的线索。
 围绕同一主题在已有条目下追加认识，不同主题可以通过 related 关联，形成以后可以继续探索的方向。不要为了归类强行建立联系。分清事实、推测和未知，保留相关时间，不把资料存在当成用户当前意图，也不把联想当成已确认的偏好。
-每次只追加简短的新认识。可以新增条目，也可以在已有条目下追加补充、修正或新联系；不修改、删除或合并旧条目及旧记录。阅读时结合后续修正理解，不因本轮不推荐就封死整个方向。没有新认识就不写，不重复抄旧内容。
+每次只提交简短的知识增量。notes 新增独立认识；明确纠正已有认识时用 updates 指定 entryId、已读 expectedRevision、修正后完整 text、kind、sources、occurredAt 和 reason。旧版本保留在历史中。证据不足时保留推测或分歧，不因为来源较新就认定正确。只复查但没有新认识时，用 checkpoints 记录实际检查结论与相关 entryIds，不新增同义笔记。没有调查也不伪造检查点。
 笔记高度摘要化，保留以后能理解和联想到的意思；必要时留简短回查入口。SQL结果、文件哈希、源码片段、文件清单、工具输出和完整调查过程留在执行记录，不搬进记事本。
 记事本保留值得以后想起的要点，不收集完整资料。写入前对照已有内容，保留新增的认识、可能性或会影响判断的信息。同一件事的相关细节概括成一条，不拆开堆积，不换个例子重复已有认识。故事、知识和资源都可以记，只留下值得记住的部分。
 区分事情发生的时间与记录时间，发生时间未知就留空。既有来源和条目关联保留，新记录写信息来源即可，不要求提供链接。
 用户反馈可以修正认识；只有明确用户反馈可以关闭、暂缓或重新开放方向，写明依据和范围。暂缓须有原因或恢复时间，关闭须有原因。自己的本轮判断不能给线索判生死，用户沉默也不表示拒绝。实际发送记录用于理解已经交流过什么；是否交流仍由你结合内容判断。
-写法更新：记事本直接记简短的事实、变化、联系和未知，不写防错声明，不在每条后面堆“不能据此认定”“不代表”“未授权”等尾巴。确实影响理解的未知，简短写“待核实”或具体缺什么。推荐文案同样直接说有用的内容，必要的不确定性用一句话说清，不写调查免责声明。已有笔记仍只追加，不改旧文。`;
+写法更新：记事本直接记简短的事实、变化、联系和未知，不写防错声明，不在每条后面堆“不能据此认定”“不代表”“未授权”等尾巴。确实影响理解的未知，简短写“待核实”或具体缺什么。推荐文案同样直接说有用的内容，必要的不确定性用一句话说清，不写调查免责声明。历史记录始终保留；修正只更新当前条目视图。`;
 
 export const DISCOVERY_TASK = `你是用户的主动个人助手，负责广泛发现可能对用户有价值的方向，交给判断会话深入调查。
 基于用户的全局信息探索和判断，不能只看新内容或本轮增量。
@@ -61,8 +61,9 @@ export function wakeInput({
 }) {
   if (!['exploration', 'judgement'].includes(role)) throw Error('Unknown role');
   const contract = `${role === 'judgement' ? '基于用户的全局信息和整份记事本自主调查并判断，不只看新内容或本轮增量。' : '基于用户的全局信息探索，用工具读取笔记并按需自主调查，不只看新内容或本轮增量。'}完成后把增量操作写入 ${outputPath}，格式：
-{"notes":[{"topicId":"已有主题ID或新ID","title":"主题名","text":"简短认识","occurredAt":null,"sources":["信息来源"],"tags":["方向标签"],"related":["可选的相关主题ID"]}],"feedbackDecisions":[{"feedbackId":"用户反馈ID","understanding":"对反馈的理解","rules":[{"quote":"反馈原话中的依据","status":"open|deferred|closed","reason":"原因","resumeAt":null,"topicIds":["作用主题"],"tags":["作用方向"]}]}],"messages":[{"text":"完整消息","topicIds":["涉及主题"]}],"withheld":[{"topicId":"已调查但决定不告知用户的主题ID","reason":"不告知的原因"}],"reopened":[{"topicId":"用户已关闭或暂缓的主题ID","reason":"信息出现了什么重大变化"}]}。
-occurredAt可写已知的发生时间或范围，不知道就null。无需填满各数组；输出只包含本次增量，不复制整本笔记。主题和方向标签可按内容新增，相关用户反馈仍需考虑。${role === 'exploration' ? '只填写notes，其余数组留空。' : '没有待整理反馈时feedbackDecisions留空；只有用户明确表达状态变化才写rules，否则记理解和有价值的信息即可。关闭方向可能涉及多个主题，方向标签可同时作用于以后相关主题。调查过某主题但决定不告知时写withheld，与已告知分开记录；只有当用户已关闭或暂缓的主题出现重大变化（先把变化按记事本规则追加为该主题的新笔记）时才写reopened，没有重大变化就保持用户的决定。'}
+{"notes":[{"topicId":"已有主题ID或新ID","title":"主题名","text":"简短认识","occurredAt":null,"sources":["信息来源"],"tags":["方向标签"],"related":["可选的相关主题ID"]}],"updates":[{"entryId":"原条目ID","expectedRevision":1,"text":"修正后完整认识","kind":"observation|hypothesis|question|connection","sources":["信息来源"],"occurredAt":null,"reason":"修正依据"}],"checkpoints":[{"topicId":"主题ID","text":"实际调查结果或尚缺什么","entryIds":["相关条目ID"]}],"feedbackDecisions":[{"feedbackId":"用户反馈ID","understanding":"对反馈的理解","rules":[{"quote":"反馈原话中的依据","status":"open|deferred|closed","reason":"原因","resumeAt":null,"topicIds":["作用主题"],"tags":["作用方向"]}]}],"messages":[{"text":"完整消息","topicIds":["涉及主题"]}],"withheld":[{"topicId":"已调查但决定不告知用户的主题ID","reason":"不告知的原因"}],"reopened":[{"topicId":"用户已关闭或暂缓的主题ID","reason":"信息出现了什么重大变化"}]}。
+occurredAt可写已知的发生时间或范围，不知道就null。无需填满各数组；输出只包含本次增量，不复制整本笔记。主题和方向标签可按内容新增，相关用户反馈仍需考虑。${role === 'exploration' ? '只填写notes、updates和checkpoints，其余数组留空。' : '没有待整理反馈时feedbackDecisions留空；只有用户明确表达状态变化才写rules，否则记理解和有价值的信息即可。关闭方向可能涉及多个主题，方向标签可同时作用于以后相关主题。调查过某主题但决定不告知时写withheld，与已告知分开记录；只有当用户已关闭或暂缓的主题出现重大变化（先把变化按记事本规则追加为该主题的新笔记）时才写reopened，没有重大变化就保持用户的决定。'}
+初始记事本文件是有界目录与反馈，不是全部正文。previousInvestigation 若存在，用其中 memory 请求读取上一轮已提交的记忆变化，再判断是否需要重复核验；这些记录不是完整调查覆盖或已经告知用户的证明。用 DiscoveryNotebook 的 topic 读取当前条目，history/entry/event 回查原文；pending feedback 在 feedback 视图，规则在 rules 视图。nextCursor 非空时，保留查询条件并传 cursor 继续。调查旧主题和告知前必须读取适用反馈与真实 deliveries。也可用 DiscoveryNotebookRemember 提交中途知识增量；先读取 executionId 和 feedbackRevision，同一成功提交重试保持 key 和内容不变，最终文件不要重复写已提交的增量。
 提交与送达以当前记事本记录为准，写过结果文件不代表已提交或已发送。最终回复结果文件路径。`;
   return `${first ? (role === 'exploration' ? DISCOVERY_TASK : JUDGEMENT_TASK) + '\n\n' + NOTEBOOK_RULES + '\n\n' : ''}当前 UTC 时间：${now}\n记事本：${viewPath}\n${contract}`;
 }

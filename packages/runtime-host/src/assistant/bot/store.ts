@@ -26,7 +26,7 @@ import {
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
-import type { StoredMessage } from '@maka/core/session';
+import type { StoredMessage, UserMessage } from '@maka/core/session';
 import {
   assistantInputTurnId,
   assistantBatchOutputTurnId,
@@ -402,14 +402,18 @@ export class BotStore {
       )
       .all()
       .map((row) => {
-        const m = JSON.parse(String(row.payload));
+        const m = JSON.parse(String(row.payload)) as UserMessage;
         return {
           id: String(row.user_id),
           messageId: String(row.message_id),
-          text: m.displayText ?? m.text,
+          // Only the owner's words are feedback; quoted excerpts are context.
+          text: [m.displayText ?? m.text, ...(m.quotes ?? []).map((quote) => quote.comment ?? '')]
+            .filter((text) => text.trim().length > 0)
+            .join('\n\n'),
           at: new Date(Number(row.at)).toISOString(),
         };
-      });
+      })
+      .filter((feedback) => feedback.text.length > 0);
   }
   pendingVisible() {
     return this.db

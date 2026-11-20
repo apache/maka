@@ -1,0 +1,348 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import test from 'node:test';
+import { restoreJob } from './runner-fixture.js';
+import assert from 'node:assert/strict';
+import { intakeFixture } from './intake-fixture.js';
+import { initializeQuickDiscovery } from '../../../../src/assistant/index-initiative/quick.js';
+
+async function hint(f: any, id: string, direction: string) {
+  f.add(id);
+  await f.q.intake.collect();
+  const screened = f.q.intakeStore.db
+    .prepare("SELECT count(*) n FROM intake_meta WHERE key LIKE 'screening:%'")
+    .get().n;
+  f.advance(screened ? 15 * 60000 : 3 * 60000);
+  f.ctx.llm.generate = async () => ({ text: JSON.stringify(direction) });
+  await f.q.intake.judge();
+}
+
+test('pending hints coalesce into one wake, exact directions deduplicate, quiet completion consumes only captured hints', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.intake.collect();
+  await hint(f, 'one', '卡片可能没生效');
+  await hint(f, 'two', '卡片可能没生效');
+  await hint(f, 'three', '明天安排可能有冲突');
+  const wake = await f.q.intake.next();
+  assert.equal(wake?.ids.length, 3);
+  assert.deepEqual(await f.q.intake.directions(wake!), ['卡片可能没生效', '明天安排可能有冲突']);
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(f.counts().workerCalls, 1);
+  assert.equal(f.delivered.size, 0);
+  assert.equal(await f.q.intake.next(), undefined);
+  assert.equal(f.q.state().lastError, null);
+  assert.equal(
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='delivered'").get()
+      ?.n,
+    3,
+  );
+  assert.equal(
+    f.q.intakeStore.db
+      .prepare("SELECT COUNT(*) n FROM intake_events WHERE status='investigated'")
+      .get()?.n,
+    0,
+  );
+});
+
+test('hints survive restart and failed worker execution; retry uses the same activation without rescreening', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.intake.collect();
+  await hint(f, 'one', '卡片可能没生效');
+  const wake = await f.q.intake.next();
+  await f.restart();
+  assert.deepEqual(await f.q.intake.next(), wake);
+  const follow = f.agent.followup;
+  f.agent.followup = async () => {
+    throw Error('worker unavailable');
+  };
+  await f.q.dispatch();
+  await f.q.running;
+  assert.match(f.q.state().lastError, /worker unavailable/);
+  assert.deepEqual(f.q.state().pending.eventWake, wake);
+  assert.deepEqual(await f.q.intake.next(), wake);
+  f.agent.followup = follow;
+  f.advance(3600000);
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(await f.q.intake.next(), undefined);
+  assert.equal(
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()
+      ?.n,
+    1,
+  );
+});
+
+test('disabling new intake lets a captured wake recover and periodic discovery continue', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.intake.collect();
+  await hint(f, 'one', '会议时间有变化');
+  const wake = await f.q.intake.next();
+  f.failIdle('temporary provider failure');
+  await f.q.dispatch();
+  await f.q.running;
+  assert.deepEqual(f.q.state().pending.eventWake, wake);
+
+  await f.q.control({ action: 'configure', eventIntake: false });
+  f.idle();
+  f.advance(3600000);
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(f.q.state().lastError, null);
+  assert.equal(f.q.state().pending, null);
+  assert.match(f.prompts[1], /会议时间有变化/);
+  assert.equal(f.q.intake.status().wakes[0].status, 'delivered');
+
+  f.advance(3600000);
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(f.counts().workerCalls, 3);
+  assert.doesNotMatch(f.prompts[2], /模型概述/);
+  assert.equal(f.q.state().intakeEnabled, false);
+});
+
+test('hint permissions are rechecked; authorization outages retry and revocation drops a hint', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.intake.collect();
+  await hint(f, 'one', '敏感变化');
+  const wake = await f.q.intake.next();
+  const authorize = f.ctx.sources.authorize;
+  f.ctx.sources.authorize = async () => {
+    throw Error('offline');
+  };
+  assert.equal(await f.q.intake.next(), undefined);
+  assert.equal(
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='pending'").get()
+      ?.n,
+    1,
+  );
+  f.ctx.sources.authorize = authorize;
+  f.advance(31000);
+  assert.deepEqual(await f.q.intake.next(), wake);
+  f.allow(false);
+  assert.deepEqual(await f.q.intake.directions(wake!), []);
+  assert.equal(
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='discarded'").get()
+      ?.n,
+    1,
+  );
+});
+
+test('a transient authorization failure between admission and hints keeps the wake pending', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.intake.collect();
+  await hint(f, 'one', '卡片可能没生效');
+  const authorize = f.ctx.sources.authorize;
+  const take = f.q.intake.next.bind(f.q.intake);
+  let wake: any,
+    outage = false;
+  f.q.intake.next = async () => {
+    wake = await take();
+    if (!outage && wake) {
+      outage = true;
+      // The source fails after admission, before prompt preparation re-authorizes the hint.
+      f.ctx.sources.authorize = async () => {
+        throw Error('offline');
+      };
+    }
+    return wake;
+  };
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(f.q.state().lastError, null);
+  assert.equal(f.q.state().pending, null, 'deferred hints cannot own a failed activation');
+  assert.equal(f.counts().workerCalls, 0);
+  assert.equal(
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='pending'").get()
+      ?.n,
+    1,
+  );
+  assert.equal(
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='delivered'").get()
+      ?.n,
+    0,
+  );
+  f.ctx.sources.authorize = authorize;
+  f.advance(3600000);
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(f.q.state().lastError, null);
+  assert.equal(f.prompts.length, 1);
+  assert.match(f.prompts[0], /卡片可能没生效/);
+  assert.equal(
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='pending'").get()
+      ?.n,
+    0,
+  );
+  assert.equal(
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='delivered'").get()
+      ?.n,
+    1,
+  );
+});
+
+test('new events arriving during a wake are not consumed by that activation', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.intake.collect();
+  await hint(f, 'one', '卡片可能没生效');
+  const follow = f.agent.followup;
+  f.agent.followup = async (text: string, options?: { messageId?: string }) => {
+    await hint(f, 'two', '明天安排有变化');
+    return follow(text, options);
+  };
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(await f.q.intake.next(), undefined);
+  assert.equal(f.q.intake.status().counts.find((row) => row.status === 'pending')?.count, 1);
+  f.advance(15 * 60000);
+  await f.q.intake.judge();
+  const next = await f.q.intake.next();
+  assert.equal(next?.ids.length, 1);
+  assert.deepEqual(await f.q.intake.directions(next!), ['明天安排有变化']);
+  assert.doesNotMatch(f.prompts[0], /明天安排有变化/);
+});
+
+test('a committed intake receipt survives scheduler rollback without repeating the model', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.intake.collect();
+  await hint(f, 'one', '卡片可能没生效');
+  const complete = f.q.intake.complete.bind(f.q.intake);
+  f.q.intake.complete = (wake: any) => {
+    f.q.intakeStore.db.exec('UPDATE lease SET until_at=0');
+    complete(wake);
+  };
+  await f.q.dispatch();
+  await f.q.running;
+  assert.match(f.q.state().lastError, /ownership changed/);
+  assert.equal(f.q.state().pending.executionCompleted, true);
+  assert.equal(f.q.intakeStore.lease(), true);
+  assert.ok(await f.q.intake.next(), 'an expired intake owner cannot acknowledge receipts');
+  f.advance(3600000);
+  f.q.intake.complete = (wake: any) => {
+    complete(wake);
+    throw Error('commit failure');
+  };
+  await f.q.dispatch();
+  await f.q.running;
+  assert.match(f.q.state().lastError, /commit failure/);
+  assert.equal(await f.q.intake.next(), undefined, 'intake already committed its receipt');
+  assert.equal(f.q.state().pending.executionCompleted, true);
+  assert.equal(f.counts().workerCalls, 1);
+  f.q.intake.complete = complete;
+  f.advance(3600000);
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(await f.q.intake.next(), undefined);
+  assert.equal(f.q.state().pending, null);
+  assert.equal(f.counts().workerCalls, 1, 'only settlement was retried');
+});
+
+test('legacy unfinished event queues rescreen without resetting sources or restoring a checklist', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.intake.collect();
+  f.add('one');
+  await f.q.intake.collect();
+  f.q.intakeStore.db
+    .prepare("UPDATE intake_events SET status='investigate',reason='old selected record'")
+    .run();
+  const cursor = f.q.intakeStore.db
+    .prepare("SELECT cursor FROM intake_sources WHERE id='mail'")
+    .get()?.cursor;
+  restoreJob(f.q.store, 'quick', (s: any) => {
+    s.workerSession = 'worker';
+    s.active = {
+      id: 'old',
+      eventBatch: { id: 'old-batch', ids: ['one'] },
+      reports: [],
+      messageId: 'old-message',
+    };
+  });
+  await f.restart();
+  assert.equal(
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='pending'").get()
+      ?.n,
+    1,
+  );
+  assert.equal(
+    f.q.intakeStore.db.prepare("SELECT cursor FROM intake_sources WHERE id='mail'").get()?.cursor,
+    cursor,
+  );
+  const unfinished = f.q.state().active ?? f.q.state().pending;
+  assert.equal(unfinished.eventBatch, undefined);
+  assert.deepEqual(unfinished.eventWake, { ids: [] });
+});
+
+test('worker tools expose no event reader, per-event report fields or mandatory finish hook', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.close();
+  const registered: any[] = [];
+  let hooks = 0;
+  const q = initializeQuickDiscovery(
+    {
+      ...f.ctx,
+      onStart: () => {},
+      onClose: () => {},
+      backgroundSessions: { register: () => {} },
+      api: { register: () => {} },
+      tools: { register: (tool: any) => registered.push(tool) },
+      systemPrompt: { section: () => {} },
+      turns: {
+        beforeFinish: () => {
+          hooks++;
+        },
+      },
+    },
+    f.parent,
+    f.root + '/tools',
+    3600000,
+  );
+  t.after(() => q.store.close());
+  assert.equal(hooks, 0);
+  assert.ok(!registered.some((t) => t.name === 'QuickDiscoveryEvents'));
+  const report = registered.find((t) => t.name === 'QuickDiscoveryReport');
+  assert.deepEqual(report.parameters.parse({ key: 'quiet', messages: [] }), {
+    key: 'quiet',
+    messages: [],
+  });
+  assert.throws(() =>
+    report.parameters.parse({ key: 'old', messages: [], processedEventIds: ['a'] }),
+  );
+});
+
+test('quick cutover rejects unfinished old work before copying its configuration', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  f.q.intakeStore.saveConfiguration({ ...f.q.state(), active: { id: 'old-unfinished' } });
+  f.parent.store.db.exec("UPDATE state SET payload=json_remove(payload,'$.scopes.quick')");
+  await assert.rejects(f.restart(), /Finish pending discovery work/);
+  assert.equal(f.q.intakeStore.get().active.id, 'old-unfinished');
+  assert.equal(f.q.store.configuration(), null);
+  assert.equal(f.parent.runner.job('quick'), undefined);
+  assert.equal(f.counts().workerCalls, 0);
+});

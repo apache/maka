@@ -118,10 +118,13 @@ export async function fixture(options: any = {}) {
     }),
     inbox: async () => [],
     transcript: async (id: string) => workers.get(id)?.transcript ?? [],
-    snapshot: async (id: string) => ({
-      agent: { status: workers.get(id)?.status ?? 'idle' },
-      pendingInteractions: workers.get(id)?.pendingInteractions ?? 0,
-    }),
+    snapshot: async (id: string) => {
+      await options.beforeSnapshot?.(id);
+      return {
+        agent: { status: workers.get(id)?.status ?? 'idle' },
+        pendingInteractions: workers.get(id)?.pendingInteractions ?? 0,
+      };
+    },
     cancel: async (id: string) => {
       cancels++;
       workers.get(id).status = 'idle';
@@ -207,9 +210,16 @@ export async function fixture(options: any = {}) {
             currentPrompt = `${prompt}\n${decision.feedback}`;
           }
         }
-      })().finally(() => {
-        w.status = w.endStatus ?? 'idle';
-      });
+      })().then(
+        () => {
+          w.status = w.endStatus ?? 'idle';
+        },
+        (error) => {
+          // A runtime failure is terminal/blocked, not a successful idle execution.
+          w.status = w.endStatus ?? 'blocked';
+          throw error;
+        },
+      );
       void w.task.catch(() => {});
       return { disposition: queued ? 'followup' : 'turn_started', turnId };
     },
