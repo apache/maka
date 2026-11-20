@@ -212,6 +212,21 @@ async fn exercise(
     driver.state.admit(later).await?;
     let claim = driver.state.claim(run).await?;
     drop(runs);
+    // A worker notice queued before the user's Stop waits for the next Run.
+    let source = driver.access.execution().clone();
+    let route = owner.return_route(&source).await?;
+    let notice = owner
+        .prepare_notification(
+            &source,
+            &route,
+            "held-worker-notice",
+            |_| "WORKER_NOTICE_WHILE_STOPPED".into(),
+            maka_agent_facts::message::MessageOrigin::BotWorker {
+                session_id: "worker".into(),
+            },
+        )
+        .await?
+        .ok_or("worker notice was not queued")?;
     assert_eq!(
         stop(&rig, &session, older_run).await?,
         json!({"requested":true})
@@ -273,6 +288,14 @@ async fn exercise(
     }
     assert_eq!(driver.state.latest_run(session.clone()).await?, Some(run));
     assert_eq!(posts.load(Ordering::SeqCst), 0);
+    let queue = owner.durable.queue();
+    assert_eq!(
+        queue.read(session.clone()).await?.entries,
+        [maka_agent_state::queue::QueueEntry {
+            request: notice,
+            placement: maka_agent_state::queue::Placement::Held,
+        }]
+    );
 
     let goal = current(rig, &session).await?;
     let resumed = model_recovery::call(
@@ -296,6 +319,12 @@ async fn exercise(
                     .is_some_and(|content| content.contains("keep working"))),
         "resumed request lacks the Goal objective: {request:#}"
     );
+    // Resuming the Goal is not blocked by the held notice; its Run reads it.
+    assert!(
+        request.to_string().contains("WORKER_NOTICE_WHILE_STOPPED"),
+        "resumed request lacks the held notice: {request:#}"
+    );
+    assert!(queue.read(session.clone()).await?.entries.is_empty());
     let continued = driver
         .state
         .latest_run(session.clone())

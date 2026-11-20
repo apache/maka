@@ -468,6 +468,8 @@ export function Conversation(props: ConversationProps) {
   const parts = computed(() => transient().parts);
   const pendingMessages = signal<Row[]>([]);
   const queued = signal<AgentQueue | null>(null);
+  // Held messages wait for the user's next message; they do not keep the Session busy.
+  const runnableQueued = () => queued()?.entries.some((entry) => entry.kind !== 'held') ?? false;
   const title = signal(sessionId);
   const archived = signal(false);
   const run = signal<ConversationStatus>('loading');
@@ -2887,7 +2889,7 @@ export function Conversation(props: ConversationProps) {
       archived() ||
       transcriptStatus() !== 'live' ||
       props.connectionLost() ||
-      (queued()?.entries.length ?? 0) !== 0 ||
+      runnableQueued() ||
       runId() !== null ||
       backend()?.kind !== 'model' ||
       source === null ||
@@ -3800,7 +3802,7 @@ export function Conversation(props: ConversationProps) {
       connected() &&
       !archived() &&
       runId() === null &&
-      (queued()?.entries.length ?? 0) === 0 &&
+      !runnableQueued() &&
       !sending() &&
       !recovering() &&
       !confirmingContinuation();

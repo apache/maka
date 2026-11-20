@@ -3181,6 +3181,7 @@ mod source_recovery {
                 .append(
                     vec![Fact::StopRequested {
                         diagnostic: "fixture explicit Stop".into(),
+                        requester: maka_agent_facts::durable::StopRequester::Internal,
                     }],
                     vec![],
                 )
@@ -6244,6 +6245,7 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
         rig.append(
             vec![Fact::StopRequested {
                 diagnostic: "user_requested_stop".into(),
+                requester: maka_agent_facts::durable::StopRequester::User,
             }],
             vec![],
         )
@@ -7000,7 +7002,7 @@ async fn compaction_checkpoint_survives_stop_and_is_used_by_the_next_message() {
             None,
         ).await?;
         assert!(driver.state.frontier(run).await?.baseline.is_none());
-        rig.append(vec![Fact::StopRequested { diagnostic: "user_requested_stop".into() }], vec![]).await?;
+        rig.append(vec![Fact::StopRequested { diagnostic: "user_requested_stop".into(), requester: maka_agent_facts::durable::StopRequester::User }], vec![]).await?;
         let exit = Engine::new(driver.state.clone())
             .drive(driver.access.claim().clone(), driver.clone(), CancellationToken::new())
             .await?;

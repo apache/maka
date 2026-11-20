@@ -551,11 +551,29 @@ impl Store {
         })
     }
     /// Stop this exact Run at its current head. The first Stop while latest also
-    /// retracts pending interactive requests and reports that Session fence.
-    pub fn stop_run_statement(&self, run: RunId, change: Change) -> StopRun {
+    /// settles what is queued for the Session and reports that Session fence.
+    pub fn stop_run_statement(
+        &self,
+        run: RunId,
+        id: FactId,
+        at: UnixMillis,
+        requester: StopRequester,
+    ) -> StopRun {
         StopRun {
             run,
-            change,
+            change: Change {
+                id,
+                at,
+                fact: Fact::StopRequested {
+                    diagnostic: match requester {
+                        StopRequester::User => crate::queue::USER_STOP,
+                        StopRequester::Session { .. } => crate::queue::SESSION_STOP,
+                        StopRequester::Internal => "internal_stop",
+                    }
+                    .into(),
+                    requester,
+                },
+            },
             retract_pending: true,
         }
     }
@@ -1498,8 +1516,11 @@ impl Statement for StopRun {
         }
         let latest =
             self.retract_pending && sql::latest(c, view.spec.session_id.clone())? == Some(self.run);
-        if latest {
-            crate::queue::retract_interactive(c, &view.spec.session_id, &self.change)?;
+        if latest
+            && let Fact::StopRequested { requester, .. } = &self.change.fact
+            && !matches!(requester, StopRequester::Internal)
+        {
+            crate::queue::stop_queue(c, &view.spec.session_id, self.run, &self.change, requester)?;
         }
         let (_, changed) = sql::append(
             c,

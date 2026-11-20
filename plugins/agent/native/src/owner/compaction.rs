@@ -176,7 +176,8 @@ impl Owner {
                 .await
                 .map_err(|error| error.to_string())?
                 .entries
-                .is_empty()
+                .iter()
+                .all(|entry| matches!(entry.placement, maka_agent_state::queue::Placement::Held))
         {
             return rejected(CompactRejection::Busy);
         }

@@ -1240,7 +1240,7 @@ impl Owner {
                 run_id: None,
             }));
         };
-        self.prepare_session_stop(&input.session_id, run_id, operation)
+        self.prepare_session_stop(&input.session_id, run_id, operation, scope)
             .await
             .map_err(humanize_agent_error)
     }

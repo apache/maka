@@ -20,6 +20,7 @@
 use super::*;
 mod ax_session_tools;
 mod rooms;
+mod stop_queue;
 enum ModelReply {
     Stream(String),
     RateLimited,

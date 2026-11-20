@@ -476,6 +476,7 @@ impl Owner {
                 vec![Change::new(
                     Fact::StopRequested {
                         diagnostic: "discovery_cancelled".into(),
+                        requester: maka_agent_facts::durable::StopRequester::Internal,
                     },
                     UnixMillis(now() as i64),
                 )],

@@ -18,8 +18,8 @@
  */
 
 use super::*;
-use maka_agent_facts::durable::{self, Fact, FactId, RunId, Terminal, UnixMillis};
-use maka_agent_state::{Change, fold::RunView};
+use maka_agent_facts::durable::{self, FactId, RunId, StopRequester, Terminal, UnixMillis};
+use maka_agent_state::{StopRun, fold::RunView};
 
 pub(super) fn project(view: &RunView) -> Execution {
     let state = match &view.terminal {
@@ -142,7 +142,7 @@ impl Owner {
             .session_quiescence(self.run_owner(), input.session_id)
             .await
             .map_err(|error| error.to_string())?;
-        Ok(if canonical.is_quiescent() {
+        Ok(if canonical.admits_run() {
             WorkReadiness::Ready
         } else {
             WorkReadiness::Pending
@@ -265,6 +265,7 @@ impl Owner {
         session: &str,
         run: RunId,
         operation: &maka_plugin_core::operation::RecoveryRef,
+        scope: &maka_capabilities::call::Scope,
     ) -> Result<NativeMutation<Stopped>, String> {
         let Some(view) = self.session_run(session, run).await? else {
             return Ok(NativeMutation::Returned(Stopped { requested: false }));
@@ -275,14 +276,8 @@ impl Owner {
         if view.terminal.is_some() {
             return Ok(NativeMutation::Returned(Stopped { requested: false }));
         }
-        let change = self.control_change(
-            operation,
-            "stop",
-            Fact::StopRequested {
-                diagnostic: "user_requested_stop".into(),
-            },
-        );
-        self.prepare_stop_with_goal(session, run, change).await
+        let stop = self.stop_statement(run, operation, scope);
+        self.prepare_stop_with_goal(session, stop).await
     }
 
     pub(super) async fn prepare_session_stop(
@@ -290,6 +285,7 @@ impl Owner {
         session: &str,
         run: RunId,
         operation: &maka_plugin_core::operation::RecoveryRef,
+        scope: &maka_capabilities::call::Scope,
     ) -> Result<NativeMutation<SessionStopOutput>, String> {
         let Some(view) = self.session_run(session, run).await? else {
             return Ok(NativeMutation::Returned(SessionStopOutput {
@@ -309,31 +305,33 @@ impl Owner {
                 run_id: None,
             }));
         }
-        let change = self.control_change(
-            operation,
-            "stop",
-            Fact::StopRequested {
-                diagnostic: "user_requested_stop".into(),
-            },
-        );
-        self.prepare_stop_with_goal_mapped(session, run, change, move |stopped| SessionStopOutput {
+        let stop = self.stop_statement(run, operation, scope);
+        self.prepare_stop_with_goal_mapped(session, stop, move |stopped| SessionStopOutput {
             requested: stopped.requested,
             run_id: stopped.requested.then_some(run),
         })
         .await
     }
 
-    fn control_change(
+    /// An Agent caller stops as its own Session; anyone else is the user.
+    fn stop_statement(
         &self,
+        run: RunId,
         operation: &maka_plugin_core::operation::RecoveryRef,
-        action: &str,
-        fact: Fact,
-    ) -> Change {
-        Change {
-            id: self.control_id(operation, action),
-            at: UnixMillis(now().try_into().expect("Unix milliseconds")),
-            fact,
-        }
+        scope: &maka_capabilities::call::Scope,
+    ) -> StopRun {
+        let requester = match scope.identity.agent() {
+            Some(caller) => StopRequester::Session {
+                session_id: caller.session_id.clone(),
+            },
+            None => StopRequester::User,
+        };
+        self.durable.stop_run_statement(
+            run,
+            self.control_id(operation, "stop"),
+            UnixMillis(now().try_into().expect("Unix milliseconds")),
+            requester,
+        )
     }
 
     pub(super) fn control_id(

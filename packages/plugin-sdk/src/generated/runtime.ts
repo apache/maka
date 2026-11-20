@@ -4583,7 +4583,7 @@ export type AgentPreviewField =
       name: string;
       providerExecuted: boolean;
     };
-export type AgentQueueKind = 'in_flight' | 'steering' | 'followup';
+export type AgentQueueKind = 'in_flight' | 'steering' | 'followup' | 'held';
 export type AgentQueueMessageResult =
   | {
       kind: 'ready';

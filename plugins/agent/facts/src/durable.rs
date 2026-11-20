@@ -411,6 +411,15 @@ pub struct ExternalFinalMessage {
     pub end: FactId,
 }
 
+/// Who asked for a Stop. A Stop takes back only what that party queued.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StopRequester {
+    User,
+    Session { session_id: String },
+    Internal,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Fact {
@@ -582,6 +591,7 @@ pub enum Fact {
     },
     StopRequested {
         diagnostic: String,
+        requester: StopRequester,
     },
     ApprovalRecorded {
         approval: ApprovalId,
@@ -794,6 +804,24 @@ impl RunSpec {
             },
             unmanaged => unmanaged.clone(),
         }
+    }
+
+    /// A message frozen under `request` may be read inside this Run only when
+    /// the Run can do nothing the message's own Run could not.
+    pub fn accepts_steering_from(&self, request: &RunSpec) -> Result<bool, maka_sandbox::Error> {
+        Ok(self.permission_basis == request.permission_basis
+            && self.workspace == request.workspace
+            && request
+                .permission_ceiling
+                .sandbox
+                .contains(&self.permission_ceiling.sandbox)?
+            && request
+                .approval_ceiling()
+                .contains(&self.approval_ceiling())?
+            && self
+                .permission_ceiling
+                .approval
+                .is_subset_of(request.permission_ceiling.approval))
     }
 
     pub fn content_refs(&self) -> Vec<&ContentRef> {

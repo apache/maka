@@ -1218,6 +1218,19 @@ pub(crate) fn admit(c: &Connection, admission: Admission) -> Result<(Commit, boo
     index_derived(c, &view.spec, &recorded)?;
     persist(c, &view)?;
     index_usage(c, &view.spec, &recorded)?;
+    // A compaction or handoff continues earlier work; what waits after a user
+    // Stop waits for a Run that starts new work.
+    if matches!(view.spec.origin, RunOrigin::Local)
+        && matches!(
+            view.spec.trigger,
+            Trigger::Message { .. }
+                | Trigger::Goal { .. }
+                | Trigger::Schedule { .. }
+                | Trigger::Continuation { .. }
+        )
+    {
+        crate::queue::deliver_held(c, &view, admission.id, admission.at)?;
+    }
     Ok((
         Commit {
             head: Head::from(&view),
@@ -1547,7 +1560,7 @@ pub(crate) fn append(
         view.apply(&recorded)?;
         record(c, &recorded)?;
         match &recorded.fact {
-            Fact::StopRequested { diagnostic } => {
+            Fact::StopRequested { diagnostic, .. } => {
                 crate::queue::stop_completions(c, &view.spec.session_id, run, recorded.at)?;
                 if diagnostic == crate::queue::GOAL_CONTROL_STOP {
                     crate::queue::release_steering(c, &view.spec.session_id, run, recorded.at)?;

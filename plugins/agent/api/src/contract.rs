@@ -1324,6 +1324,7 @@ pub enum QueueKind {
     InFlight,
     Steering,
     Followup,
+    Held,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

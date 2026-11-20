@@ -21,7 +21,10 @@ use maka_agent_facts::{
     durable::{RunId, Terminal, UnixMillis},
     message::MessageOrigin,
 };
-use maka_agent_state::{NotificationAttention, NotificationState, queue::MessageResolution};
+use maka_agent_state::{
+    NotificationAttention, NotificationState,
+    queue::{MessageResolution, Placement as QueuePlacement},
+};
 use maka_event_log::root_store::completions::{Completion, RegisterCompletion};
 
 /// The longest a delegated task waits for its caller to answer a question or approval.
@@ -496,9 +499,23 @@ impl Owner {
         else {
             return self.retire_completion(&entry).await;
         };
-        if source.stopped {
+        // After a user Stop the result stays with the Session; any other Stop
+        // withdraws it.
+        let placement = if !source.stopped {
+            QueuePlacement::Completion {
+                caller: request.source.run_id,
+            }
+        } else if self
+            .durable
+            .queue()
+            .stopped_by_user(request.source.run_id)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            QueuePlacement::Followup
+        } else {
             return self.retire_completion(&entry).await;
-        }
+        };
         let notification: maka_agent_state::queue::PreparedRequest = if let Some(notification) =
             entry.notification
         {
@@ -585,8 +602,8 @@ impl Owner {
                 )
                 .await?;
             let Some(notification) = self
-                .prepare_notification_at(
-                    &request.source,
+                .prepare_notification_checked(
+                    &request.source.session_id,
                     &route,
                     &identity,
                     |language| notice.message(&entry, language),
@@ -594,9 +611,12 @@ impl Owner {
                         session_id: entry.session_id.clone(),
                         message_id: entry.message_id.clone(),
                     },
+                    placement,
+                    None,
                     UnixMillis(now as i64),
                 )
-                .await?
+                .await
+                .map_err(String::from)?
             else {
                 return Ok(());
             };

@@ -33,11 +33,13 @@ use std::{collections::BTreeSet, sync::Arc};
 
 mod sql;
 pub(crate) use sql::{
-    DeliveryTarget, Event, consume, consume_external_steering, consume_steering, release_steering,
-    retract_interactive, stop_completions,
+    DeliveryTarget, Event, consume, consume_external_steering, consume_steering, deliver_held,
+    release_steering, stop_completions, stop_queue,
 };
 
 pub const GOAL_CONTROL_STOP: &str = "goal_control";
+pub const USER_STOP: &str = "user_requested_stop";
+pub const SESSION_STOP: &str = "session_requested_stop";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -64,8 +66,16 @@ pub struct SteeringTarget {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Placement {
     Followup,
-    Steering { run: RunId, expected_head: Head },
-    Completion { caller: RunId },
+    Steering {
+        run: RunId,
+        expected_head: Head,
+    },
+    Completion {
+        caller: RunId,
+    },
+    /// Queued by someone other than the user after the user stopped the
+    /// Session. It waits for the Session's next Run instead of starting one.
+    Held,
 }
 impl Placement {
     pub fn is_followup(&self) -> bool {
@@ -358,6 +368,9 @@ impl QueueStore {
             .query(ReadHandoff(view.spec.session_id.clone(), view.run, message))
             .await
     }
+    pub async fn stopped_by_user(&self, run: RunId) -> Result<bool, StoreError> {
+        self.data.query(StoppedByUser(run)).await
+    }
     pub async fn steering(&self, session: String, run: RunId) -> Result<Queue, StoreError> {
         self.data.query(Steering(session, run)).await
     }
@@ -437,6 +450,7 @@ impl Statement for PreparedEnqueue {
                     at,
                     fact: Fact::StopRequested {
                         diagnostic: "steering_interrupt".into(),
+                        requester: StopRequester::Internal,
                     },
                 },
                 retract_pending: false,
@@ -597,6 +611,13 @@ impl Query for ReadContent {
     type Output = Vec<u8>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::owned_content(c, &self.0, &self.1, &self.2)
+    }
+}
+struct StoppedByUser(RunId);
+impl Query for StoppedByUser {
+    type Output = bool;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::stopped_by_user(c, self.0)
     }
 }
 struct Ready(RunOwner, Option<ReadyCursor>, u32);
