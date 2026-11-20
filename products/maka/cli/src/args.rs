@@ -43,6 +43,8 @@ enum Command {
     Desktop(crate::desktop::Args),
     /// Open the NSH terminal shell (connects to or starts the selected Host).
     TerminalShell(maka_terminal_shell::entry::Args),
+    /// Execute a single headless Agent prompt to completion.
+    Run(crate::run::Args),
     /// Author, inspect and serve plugin applications.
     #[command(subcommand)]
     Application(crate::application::Command),
@@ -156,6 +158,7 @@ impl Cli {
                     | Command::Application(crate::application::Command::Serve(_))
                     | Command::Code(_)
                     | Command::Acp(_)
+                    | Command::Run(_)
             )
         )
     }
@@ -222,6 +225,17 @@ impl Cli {
             Command::Desktop(args) => Box::pin(args.run()),
             Command::TerminalShell(args) => {
                 command_exit(async move { args.run().await.map_err(Into::into) })
+            }
+            Command::Run(args) => {
+                if self.timeout_ms.is_some() {
+                    return command_exit(async {
+                        Err(
+                            "--timeout-ms is only supported by finite Host and sandbox commands"
+                                .into(),
+                        )
+                    });
+                }
+                command_exit(args.run())
             }
             Command::Application(args) => command_exit(args.run()),
             Command::Sandbox(args) => Box::pin(args.run(self.timeout_ms)),

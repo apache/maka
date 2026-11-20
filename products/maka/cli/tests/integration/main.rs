@@ -45,6 +45,7 @@ mod local_fixture;
 #[cfg(target_os = "linux")]
 mod network_sandbox;
 
+mod run;
 mod sandbox;
 mod startup;
 mod terminal_shell;
