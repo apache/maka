@@ -235,15 +235,7 @@ fn proactive_summary(
         && attempt.step == main.step
     {
         attempt.admission.is_some()
-            && attempt.interrupted.is_some()
-            && !attempt.semantic
-            && !attempt.has_tools
-            && matches!(
-                attempt.recovery,
-                Some(AttemptRecovery::ContextOverflow {
-                    observed_output: false
-                })
-            )
+            && attempt.compactable_overflow()
             && !attempt
                 .closed
                 .as_ref()

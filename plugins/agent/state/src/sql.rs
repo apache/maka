@@ -935,17 +935,10 @@ fn validate_request_lineage(
             if !resumed_summary
                 && (previous != Some((original.step, ModelPurpose::Main, None))
                     || incoming.accounting.purpose != ModelPurpose::Summary
-                    || original.semantic
-                    || original.has_tools
-                    || !matches!(
-                        original.recovery,
-                        Some(AttemptRecovery::ContextOverflow {
-                            observed_output: false
-                        })
-                    ))
+                    || !original.compactable_overflow())
             {
                 return Err(invalid(
-                    "compaction recovery requires the original no-output Main overflow",
+                    "compaction recovery requires the original compactable Main overflow",
                 ));
             }
         }

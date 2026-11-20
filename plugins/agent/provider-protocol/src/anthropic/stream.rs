@@ -339,17 +339,29 @@ impl Stream {
             }
             Chunk::MessageStop => {
                 self.lifecycle = Lifecycle::Idle;
-                let finish = response::finish::from_usage(
-                    &self.usage,
-                    self.raw_usage.clone(),
-                    self.end.clone(),
-                    self.transformations.clone(),
-                    self.context.clone(),
-                    self.decoder.json_answer,
-                    self.decoder.options.metadata_namespace.as_deref(),
-                )?;
-                self.last_finish = Some(finish.clone());
-                events.push(Event::Finish(finish));
+                if self.end.stop_reason.as_deref() == Some("model_context_window_exceeded") {
+                    // Input and output filled the context window: an overflow, not an output limit.
+                    events.push(Event::ProviderError(output::ProviderError {
+                        message: Some("The response filled the model context window.".into()),
+                        kind: Some("model_context_window_exceeded".into()),
+                        code: None,
+                        status: None,
+                        retryable: None,
+                        data: Value::Null,
+                    }));
+                } else {
+                    let finish = response::finish::from_usage(
+                        &self.usage,
+                        self.raw_usage.clone(),
+                        self.end.clone(),
+                        self.transformations.clone(),
+                        self.context.clone(),
+                        self.decoder.json_answer,
+                        self.decoder.options.metadata_namespace.as_deref(),
+                    )?;
+                    self.last_finish = Some(finish.clone());
+                    events.push(Event::Finish(finish));
+                }
             }
             Chunk::ContentBlockStart {
                 index,

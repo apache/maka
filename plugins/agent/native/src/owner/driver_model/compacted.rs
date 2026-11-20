@@ -238,6 +238,15 @@ impl DriverModel {
             .current_step
             .ok_or_else(|| RunError::InvalidInput("adoption lost its pending request".into()))?;
         let current_request = reader.request(view.run, current).await?;
+        // An adopted background candidate leaves the overflowed Main current;
+        // the overflow's own Summary names it in its recovery link.
+        let overflowed = if current_request.accounting.purpose == ModelPurpose::Main {
+            view.current_attempt
+        } else {
+            summary_request
+                .compaction_recovery
+                .filter(|_| producer == view.run)
+        };
         let mut request = if current_request.accounting.purpose == ModelPurpose::Main {
             current_request
         } else {
@@ -330,6 +339,19 @@ impl DriverModel {
         let original = self
             .restore_frozen(&reader, view.run, &request, &frozen)
             .await?;
+        let cut_off = match overflowed {
+            Some(id) => {
+                let attempt = self.state.model_attempt(view.run, id).await?;
+                attempt.step == request.step
+                    && matches!(
+                        attempt.recovery,
+                        Some(AttemptRecovery::ContextOverflow {
+                            observed_output: true
+                        })
+                    )
+            }
+            None => false,
+        };
         let result=async{
             let start = self
                 .compaction_tail_start(&reader, &original, &frozen, producer, &summary_request, &summary_input)
@@ -350,6 +372,7 @@ impl DriverModel {
                 self.append_compacted_material(&reader,view.run,compacted,ReplayTarget::new(&model, frozen.operation),frozen.language,&mut builder).await?;
                 let mut tail=directory.open(start);
                 while let Some(recipe)=tail.next().await?{if !matches!(recipe,MessageRecipe::System{..})&& let Some(recipe)=ReplayTarget::new(&model,frozen.operation).recipe(recipe).await?{builder.append_recipe(&recipe).await?;}}
+                if cut_off{builder.append(maka_model::prompt::Message::user(cut_off_note(frozen.language))).await?;}
                 Ok::<(),RunError>(())
             }.await;
             if let Err(error)=built{return Err(match builder.close().await{Ok(())=>error,Err(close)=>preparation::preparation_cleanup_error(error,close)});}
@@ -518,5 +541,19 @@ impl DriverModel {
             }
         }
         Ok(capture)
+    }
+}
+
+fn cut_off_note(language: Language) -> &'static str {
+    match language {
+        Language::En => {
+            "[Host] Your previous response was cut off because the context window was full. Earlier history is now summarized; continue the task without assuming the cut-off text was delivered."
+        }
+        Language::ZhCn => {
+            "[Host] 你上一次的回复因上下文已满被截断。较早的历史已整理成摘要；请继续完成任务，不要假设被截断的内容已经送达。"
+        }
+        Language::ZhTw => {
+            "[Host] 你上一次的回覆因上下文已滿被截斷。較早的歷史已整理成摘要；請繼續完成任務，不要假設被截斷的內容已經送達。"
+        }
     }
 }

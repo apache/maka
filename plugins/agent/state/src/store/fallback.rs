@@ -680,22 +680,14 @@ pub(crate) fn deferred_summary(
             .ok_or_else(|| invalid("deferred compaction Main has no actual current attempt"))?;
         if main.step != current.request.step
             || main.admission.is_none()
-            || main.interrupted.is_none()
-            || main.semantic
-            || main.has_tools
             || main
                 .closed
                 .as_ref()
                 .is_some_and(|closed| closed.outcome == Outcome::Unknown)
-            || !matches!(
-                main.recovery,
-                Some(AttemptRecovery::ContextOverflow {
-                    observed_output: false
-                })
-            )
+            || !main.compactable_overflow()
         {
             return Err(invalid(
-                "deferred compaction requires original recoverable no-output Main overflow",
+                "deferred compaction requires original compactable Main overflow",
             ));
         }
     } else {
@@ -977,7 +969,7 @@ pub(crate) fn progress_in_snapshot(
                 return Ok(None);
             };
             let recovery = indexed_fact(c, &scope, sequence, &id)?;
-            if !matches!(recovery.fact,Fact::AttemptRecoveryRecorded{attempt,recovery:AttemptRecovery::ContextOverflow{observed_output:false}} if attempt==marker)
+            if !matches!(recovery.fact,Fact::AttemptRecoveryRecorded{attempt,recovery:AttemptRecovery::ContextOverflow{..}} if attempt==marker)
             {
                 return Ok(None);
             }
@@ -1203,19 +1195,11 @@ pub(crate) fn rearm_in_snapshot(
         };
         if attempt.step != main
             || attempt.admission.is_none()
-            || attempt.interrupted.is_none()
-            || attempt.semantic
-            || attempt.has_tools
             || attempt
                 .closed
                 .as_ref()
                 .is_some_and(|closed| closed.outcome == Outcome::Unknown)
-            || !matches!(
-                attempt.recovery,
-                Some(AttemptRecovery::ContextOverflow {
-                    observed_output: false
-                })
-            )
+            || !attempt.compactable_overflow()
         {
             return Ok(false);
         }
