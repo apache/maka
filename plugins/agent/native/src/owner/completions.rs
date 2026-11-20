@@ -32,10 +32,38 @@ pub(super) struct CompletionRequest {
     workspace: Workspace,
     binding: maka_sandbox::workspace::BindingStamp,
 }
+/// What the recipient of a finished run needs to decide its next step: the last
+/// thing the worker said, and why the run failed when it did.
+#[derive(Default)]
+pub(super) struct RunResult {
+    pub reply: Option<String>,
+    pub failure: Option<String>,
+}
+impl RunResult {
+    pub(super) fn inline(&self) -> String {
+        let block = |tag: &str, body: &Option<String>| {
+            body.as_deref()
+                .map(|body| format!("\n\n<{tag}>\n{body}\n</{tag}>"))
+                .unwrap_or_default()
+        };
+        block("worker_result", &self.reply) + block("failure_reason", &self.failure).as_str()
+    }
+}
+fn excerpt(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut out: String = trimmed.chars().take(1600).collect();
+    if trimmed.chars().count() > 1600 {
+        out.push_str("\n… [truncated]");
+    }
+    Some(out)
+}
 enum Notice<'a> {
     Finished {
         terminal: Terminal,
-        snippet: Option<String>,
+        result: RunResult,
     },
     Unavailable,
     Attention {
@@ -65,20 +93,16 @@ impl Notice<'_> {
             "Read({})",
             serde_json::json!({"path": format!("maka://session/{}", task.session_id)})
         );
-        let (status, snippet) = match self {
-            Self::Finished {
-                terminal: Terminal::Completed,
-                snippet,
-            } => ("completed", snippet.as_deref()),
-            Self::Finished {
-                terminal: Terminal::Failed,
-                snippet,
-            } => ("failed", snippet.as_deref()),
-            Self::Finished {
-                terminal: Terminal::Cancelled,
-                snippet,
-            } => ("cancelled", snippet.as_deref()),
-            Self::Unavailable => ("unavailable", None),
+        let (status, inline_result) = match self {
+            Self::Finished { terminal, result } => (
+                match terminal {
+                    Terminal::Completed => "completed",
+                    Terminal::Failed => "failed",
+                    Terminal::Cancelled => "cancelled",
+                },
+                result.inline(),
+            ),
+            Self::Unavailable => ("unavailable", String::new()),
             Self::Attention { reason, .. } => {
                 let status_only = format!(
                     "SessionRead({})",
@@ -112,9 +136,6 @@ impl Notice<'_> {
                 };
             }
         };
-        let inline_result = snippet
-            .map(|body| format!("\n\n<worker_result>\n{body}\n</worker_result>"))
-            .unwrap_or_default();
         match language {
             Language::ZhCn => format!(
                 "你派发的任务（messageId: {}）已结束，状态：{status}。如需完整记录可调用 {read_uri} 或 {session_read}。{inline_result}",
@@ -133,97 +154,173 @@ impl Notice<'_> {
 }
 
 impl Owner {
-    pub(super) async fn history_run_snippet(
+    /// The result of a finished run: its last non-empty assistant message, and for
+    /// a failed run the failures recorded after that message. Reads directly from
+    /// the target run's canonical facts so later runs or tool bursts cannot roll it
+    /// off a session-wide tail page.
+    pub(super) async fn run_result(
         &self,
         session_id: &str,
         run: RunId,
         terminal: &Terminal,
-    ) -> Option<String> {
-        use maka_agent_ports::session::history as wire;
-        let native_scope = maka_capabilities::call::Issuer::default()
-            .issue(maka_capabilities::call::Identity::Native, self.stop.clone())
-            .ok()?;
-        let page = crate::service::history_read_for_tool(
-            self,
-            &native_scope,
-            crate::contract::History {
-                session_id: session_id.to_owned(),
-                through: None,
-                position: wire::Position::Tail,
-                include_thinking: false,
-                view: wire::HistoryView::Conversation,
-            },
-        )
-        .await
-        .ok()?;
-        let crate::contract::HistoryPage::Ready { chunks, .. } = page else {
-            return None;
+    ) -> RunResult {
+        use maka_agent_facts::{
+            context::ModelPurpose,
+            durable::{ExternalTaskId, Fact, StepId},
+            executor::Output,
+            model::{ModelPart, TextKind},
         };
-        let target_role = if matches!(terminal, Terminal::Failed) {
-            wire::Role::Failure
+        let Ok(Some(view)) = self.session_run(session_id, run).await else {
+            return RunResult::default();
+        };
+        let collect_failures = *terminal == Terminal::Failed;
+        let recovery_diagnostic = if collect_failures {
+            view.recovery_failure_diagnostic()
         } else {
-            wire::Role::Assistant
+            None
         };
-        let mut messages: Vec<(
-            Option<String>,
-            maka_agent_facts::history::HistoryRowAddress,
-            String,
-        )> = Vec::new();
-        for chunk in chunks {
-            if chunk.run_id == Some(run)
-                && chunk.field == wire::HistoryField::Body
-                && chunk.role == target_role
-                && !chunk.text.is_empty()
-            {
-                if let Some((last_id, last_pos, last_text)) = messages.last_mut()
-                    && ((chunk.message_id.is_some() && *last_id == chunk.message_id)
-                        || *last_pos == chunk.position)
-                {
-                    last_text.push_str(&chunk.text);
-                } else {
-                    messages.push((chunk.message_id, chunk.position, chunk.text));
+        let mut reply: Option<String> = None;
+        let mut external_reply: Option<(ExternalTaskId, String, Vec<String>)> = None;
+        let mut external_has_content = false;
+        let mut failures: Vec<String> = Vec::new();
+        let mut step_purposes: std::collections::HashMap<StepId, ModelPurpose> =
+            std::collections::HashMap::new();
+
+        let push_failure = |failures: &mut Vec<String>, text: String| {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return;
+            }
+            if failures.last().is_some_and(|prev| prev == trimmed) {
+                return;
+            }
+            failures.push(trimmed.to_owned());
+        };
+
+        let mut end = view.revision;
+        'scan: while end > 0 {
+            let start = end.saturating_sub(64);
+            let Ok(page) = self.durable.history(run, start, (end - start) as u32).await else {
+                break;
+            };
+            for record in page.into_iter().rev() {
+                match record.fact {
+                    Fact::ModelObserved {
+                        attempt,
+                        part:
+                            ModelPart::Text {
+                                text_kind: TextKind::Text,
+                                text,
+                                ..
+                            },
+                        ..
+                    } => {
+                        if external_reply.is_some() {
+                            if external_has_content {
+                                break 'scan;
+                            }
+                            external_reply = None;
+                        }
+                        if text.chunks().all(|chunk| chunk.trim().is_empty()) {
+                            continue;
+                        }
+                        if let Some(step) = view.attempts.get(&attempt).map(|a| a.step) {
+                            let purpose = match step_purposes.get(&step).copied() {
+                                Some(purpose) => Some(purpose),
+                                None => match self.durable.request(run, step).await {
+                                    Ok(request) => {
+                                        let p = request.accounting.purpose;
+                                        step_purposes.insert(step, p);
+                                        Some(p)
+                                    }
+                                    Err(_) => None,
+                                },
+                            };
+                            if purpose == Some(ModelPurpose::Summary) {
+                                continue;
+                            }
+                        }
+                        reply = Some(text.to_string());
+                        break 'scan;
+                    }
+                    Fact::ExternalTaskObserved {
+                        task,
+                        output: Output::OutputDelta { message_id, text },
+                        ..
+                    } => match &mut external_reply {
+                        Some((current_task, current_id, chunks))
+                            if *current_task == task && *current_id == message_id =>
+                        {
+                            if !text.trim().is_empty() {
+                                external_has_content = true;
+                            }
+                            chunks.push(text);
+                        }
+                        Some(_) => {
+                            if external_has_content {
+                                break 'scan;
+                            }
+                            external_has_content = !text.trim().is_empty();
+                            external_reply = Some((task, message_id, vec![text]));
+                        }
+                        None => {
+                            external_has_content = !text.trim().is_empty();
+                            external_reply = Some((task, message_id, vec![text]));
+                        }
+                    },
+                    Fact::RunTerminated {
+                        terminal: Terminal::Failed,
+                        diagnostic,
+                    } if collect_failures && !external_has_content => {
+                        if let Some(diag) = recovery_diagnostic.clone().or(diagnostic) {
+                            push_failure(&mut failures, diag);
+                        }
+                    }
+                    Fact::ModelInterrupted { diagnostic, .. }
+                        if collect_failures && !external_has_content =>
+                    {
+                        push_failure(&mut failures, diagnostic);
+                    }
+                    Fact::ExternalTaskClosed {
+                        outcome: Terminal::Failed,
+                        diagnostic: Some(diagnostic),
+                        ..
+                    } if collect_failures && !external_has_content => {
+                        push_failure(&mut failures, diagnostic);
+                    }
+                    _ => {}
                 }
             }
+            end = start;
         }
-        let mut combined = if matches!(terminal, Terminal::Failed) {
-            messages
-                .into_iter()
-                .map(|(_, _, text)| text)
-                .filter(|t| !t.trim().is_empty())
-                .collect::<Vec<_>>()
-                .join("\n")
-        } else {
-            messages
-                .into_iter()
-                .rev()
-                .map(|(_, _, text)| text)
-                .find(|t| !t.trim().is_empty())
-                .unwrap_or_default()
-        };
-        if combined.trim().is_empty()
-            && matches!(terminal, Terminal::Failed)
-            && let Ok(Some(view)) = self.session_run(session_id, run).await
-            && let Some(failure) = view.recovery_failure()
+
+        if reply.is_none()
+            && let Some((_, _, mut chunks)) = external_reply
+            && external_has_content
         {
-            combined = serde_json::to_value(failure)
-                .ok()
-                .and_then(|v| {
-                    v.get("diagnostic")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .or_else(|| serde_json::to_string(failure).ok())
-                .unwrap_or_default();
+            chunks.reverse();
+            reply = Some(chunks.concat());
         }
-        let trimmed = combined.trim();
-        if trimmed.is_empty() {
-            return None;
+
+        if collect_failures
+            && failures.is_empty()
+            && let Some(diag) = recovery_diagnostic
+        {
+            push_failure(&mut failures, diag);
         }
-        let mut out: String = trimmed.chars().take(1600).collect();
-        if trimmed.chars().count() > 1600 {
-            out.push_str("\n… [truncated]");
+
+        failures.reverse();
+        let mut deduped: Vec<String> = Vec::with_capacity(failures.len());
+        for item in failures {
+            if deduped.last().is_none_or(|prev| prev != &item) {
+                deduped.push(item);
+            }
         }
-        Some(out)
+
+        RunResult {
+            reply: reply.as_deref().and_then(excerpt),
+            failure: excerpt(&deduped.join("\n")),
+        }
     }
 
     pub(super) async fn completion_request(
@@ -411,7 +508,7 @@ impl Owner {
                 match resolution {
                     MessageResolution::Cancelled => Notice::Finished {
                         terminal: Terminal::Cancelled,
-                        snippet: None,
+                        result: RunResult::default(),
                     },
                     MessageResolution::Delivered { run, .. } => {
                         let state = states
@@ -421,14 +518,12 @@ impl Owner {
                         match (&state.terminal, &state.attention) {
                             (Some(terminal), _) => {
                                 // The worker may have handed off since the batch read its resolution.
-                                let (latest, work) = self
+                                let latest = self
                                     .durable
                                     .queue()
-                                    .message_work(
+                                    .resolve_message(
                                         entry.session_id.clone(),
                                         entry.message_id.clone(),
-                                        Some((run, 0)),
-                                        4096,
                                     )
                                     .await
                                     .map_err(|error| error.to_string())?;
@@ -436,28 +531,9 @@ impl Owner {
                                 {
                                     return Ok(());
                                 }
-                                let mut snippet = work
-                                    .filter(|w| {
-                                        w.view.spec.session_id == entry.session_id
-                                            && !w.answer.text.trim().is_empty()
-                                    })
-                                    .map(|w| {
-                                        let trimmed = w.answer.text.trim();
-                                        let mut out: String = trimmed.chars().take(1600).collect();
-                                        if w.answer.next.is_some() || trimmed.chars().count() > 1600
-                                        {
-                                            out.push_str("\n… [truncated]");
-                                        }
-                                        out
-                                    });
-                                if snippet.is_none() {
-                                    snippet = self
-                                        .history_run_snippet(&entry.session_id, run, terminal)
-                                        .await;
-                                }
                                 Notice::Finished {
                                     terminal: terminal.clone(),
-                                    snippet,
+                                    result: self.run_result(&entry.session_id, run, terminal).await,
                                 }
                             }
                             (None, Some(reason)) if !state.stopped => {

@@ -288,11 +288,13 @@ impl Owner {
                 .frontier(run)
                 .await
                 .map_err(|e| e.to_string())?;
-            let result = match view.terminal {
-                Some(Terminal::Completed) => WorkerResult::Completed,
-                Some(Terminal::Failed) => WorkerResult::Failed,
-                Some(Terminal::Cancelled) => WorkerResult::Cancelled,
-                None => continue,
+            let Some(terminal) = view.terminal else {
+                continue;
+            };
+            let result = match terminal {
+                Terminal::Completed => WorkerResult::Completed,
+                Terminal::Failed => WorkerResult::Failed,
+                Terminal::Cancelled => WorkerResult::Cancelled,
             };
             if watch.notified == Some(run) {
                 continue;
@@ -337,12 +339,16 @@ impl Owner {
                     continue;
                 }
             };
+            let inline = self.run_result(&worker, run, &terminal).await.inline();
             let Some(admission) = self
                 .prepare_notification(
                     &source,
                     &route,
                     &identity,
-                    |language| worker_message(language, &worker, &title, &run_label, result),
+                    |language| {
+                        worker_message(language, &worker, &title, &run_label, result)
+                            + inline.as_str()
+                    },
                     MessageOrigin::BotWorker {
                         session_id: worker.clone(),
                     },
@@ -404,7 +410,7 @@ fn worker_message(
                 WorkerResult::Cancelled => "被停止了",
             };
             format!(
-                "你派出的会话「{title}」（{worker}）这一轮{what}（执行编号 {invocation}）。先用会话读取工具看它的实际结果，再决定是否告诉用户、是否继续派活；不要凭这条通知转述结果。"
+                "你派出的会话「{title}」（{worker}）这一轮{what}（执行编号 {invocation}）。它最后说的话和失败原因（如有）附在下面。据此决定是否告诉用户、是否继续派活；需要更多内容时再用会话读取工具查看。"
             )
         }
         Language::ZhTw => {
@@ -414,7 +420,7 @@ fn worker_message(
                 WorkerResult::Cancelled => "被停止了",
             };
             format!(
-                "你派出的會話「{title}」（{worker}）這一輪{what}（執行編號 {invocation}）。先用會話讀取工具看它的實際結果，再決定是否告訴使用者、是否繼續派活；不要憑這則通知轉述結果。"
+                "你派出的會話「{title}」（{worker}）這一輪{what}（執行編號 {invocation}）。它最後說的話和失敗原因（如有）附在下面。據此決定是否告訴使用者、是否繼續派活；需要更多內容時再用會話讀取工具查看。"
             )
         }
         _ => {
@@ -424,7 +430,7 @@ fn worker_message(
                 WorkerResult::Cancelled => "was stopped",
             };
             format!(
-                "The conversation you delegated to, \"{title}\" ({worker}), {what} its latest run (invocation {invocation}). Read its actual result with the conversation read tools before deciding whether to tell the user or hand out more work; do not relay a result from this notice alone."
+                "The conversation you delegated to, \"{title}\" ({worker}), {what} its latest run (invocation {invocation}). Its last message and, if it failed, the reason are attached below when present. Decide from them whether to tell the user or hand out more work; read the conversation with the conversation read tools only when you need more."
             )
         }
     }

@@ -527,8 +527,9 @@ impl Owner {
                 });
                 if error.is_none() && matches!(view.terminal, Some(Terminal::Failed)) {
                     error = self
-                        .history_run_snippet(&session_id, latest_id, &Terminal::Failed)
-                        .await;
+                        .run_result(&session_id, latest_id, &Terminal::Failed)
+                        .await
+                        .failure;
                 }
                 run_overview = Some(SessionRunOverview {
                     run_id: latest_id,

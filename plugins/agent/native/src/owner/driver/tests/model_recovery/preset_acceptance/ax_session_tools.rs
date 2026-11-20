@@ -220,6 +220,10 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
                     msgs.contains("WORKER_FINAL_SUMMARY: snap-back check passed."),
                     "Parent wake-up must inline <worker_result>: {msgs}"
                 );
+                assert!(
+                    !msgs.contains("WORKER_EARLY_NARRATION"),
+                    "Only the worker's last message is its result: {msgs}"
+                );
                 saw_inline_worker_result = true;
                 reply
                     .send(completion(
@@ -233,7 +237,11 @@ async fn universal_read_and_human_symmetric_session_tools_coordinate_rooms_and_w
                 if !child_tool_step_done {
                     child_tool_step_done = true;
                     reply
-                        .send(tool_response("Read", json!({"path": "checklist.txt"})))
+                        .send(narrated_tool_response(
+                            "WORKER_EARLY_NARRATION: opening the checklist.",
+                            "Read",
+                            json!({"path": "checklist.txt"}),
+                        ))
                         .map_err(|_| "child Read lost")?;
                 } else if !child_finished {
                     child_finished = true;
@@ -727,10 +735,17 @@ async fn run_session_tools_edge_cases() -> TestResult<()> {
 
         let mut parent_closed = false;
         let mut saw_failed_wakeup = false;
+        let mut worker_reported = false;
         while !saw_failed_wakeup {
             let (req, reply) = provider.next().await?;
             let msgs = text_messages(&req);
             if msgs.contains("<worker_result>") && msgs.contains("FATAL_UPSTREAM_DIAGNOSTIC_400") {
+                // A failed worker's notice keeps what it said last beside why it failed.
+                assert!(
+                    msgs.contains("WORKER_PARTIAL_FINDINGS: two of three checks passed.")
+                        && msgs.contains("<failure_reason>"),
+                    "{msgs}"
+                );
                 saw_failed_wakeup = true;
                 reply
                     .send(completion(
@@ -738,6 +753,18 @@ async fn run_session_tools_edge_cases() -> TestResult<()> {
                         "stop",
                     ))
                     .map_err(|_| "fail wakeup")?;
+            } else if msgs.contains("Trigger fatal error")
+                && !msgs.contains("Dispatch failing worker")
+                && !worker_reported
+            {
+                worker_reported = true;
+                reply
+                    .send(narrated_tool_response(
+                        "WORKER_PARTIAL_FINDINGS: two of three checks passed.",
+                        "Read",
+                        json!({"path": "checklist.txt"}),
+                    ))
+                    .map_err(|_| "worker report")?;
             } else if msgs.contains("Trigger fatal error") && !msgs.contains("Dispatch failing worker") {
                 reply
                     .send(ModelReply::Fatal(
@@ -917,4 +944,14 @@ async fn run_session_tools_edge_cases() -> TestResult<()> {
     assert!(matches!(outcome, Ok(Ok(Ok(())))), "{outcome:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
+}
+
+fn narrated_tool_response(text: &str, name: &str, input: Value) -> ModelReply {
+    ModelReply::Stream(super::super::bot_tools::completion(
+        json!({"role":"assistant","content":text,"tool_calls":[{
+            "index":0,"id":format!("call-{name}"),"type":"function",
+            "function":{"name":name,"arguments":input.to_string()}
+        }]}),
+        "tool_calls",
+    ))
 }
