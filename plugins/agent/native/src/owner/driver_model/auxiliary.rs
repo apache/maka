@@ -84,6 +84,10 @@ pub(in crate::owner) async fn prepare_completed(
         return Err(unsupported("auxiliary-original-main-request"));
     }
     let frozen: FrozenInput = decode(history, cut, run, &request.request).await?;
+    let frozen = super::hydrate_frozen_input(frozen, |reference| async move {
+        decode(history, cut, run, &reference).await
+    })
+    .await?;
     let recovery: FrozenRecovery = decode(history, cut, run, &request.recovery_contract).await?;
     let BackendSpec::Model {
         descriptor,

@@ -330,7 +330,7 @@ impl DriverModel {
             frozen.instructions = prepared.request.prompt.instructions().map(str::to_owned);
             frozen.normalization = prepared.request.prompt.normalization().cloned();
             frozen.wire = FrozenWire::capture(&prepared.request.prompt)?;
-            let body = ContentBlob::json(&frozen)?;
+            let (body, texts) = frozen.seal()?;
             let recovery = ContentBlob::json(&FrozenRecovery {
                 protocol: format!("{PROTOCOL}/recovery"),
                 version: VERSION,
@@ -350,6 +350,7 @@ impl DriverModel {
             request.request_contents = frozen.content_refs();
             request.recovery_contract = recovery.reference().clone();
             contents.extend([body, recovery]);
+            contents.extend(texts);
             Ok(PreparedStep {
                 request,
                 contents,
