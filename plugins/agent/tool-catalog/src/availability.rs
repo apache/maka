@@ -45,7 +45,7 @@ impl LoadedTools {
                 .session("tools"),
         ))
     }
-    pub async fn snapshot(&self) -> Result<BTreeSet<String>, ToolError> {
+    pub async fn snapshot(&self) -> Result<Vec<String>, ToolError> {
         // Ignore any private staging on the supplied Session. Only accepted
         // canonical facts can affect a subsequent model request.
         let session = self.0.fork_draft();
@@ -154,8 +154,39 @@ impl Availability {
         if !self.enabled() {
             return Ok(self.catalog.clone());
         }
-        let active = self.loaded.snapshot().await?;
+        let active: BTreeSet<String> = self.loaded.snapshot().await?.into_iter().collect();
         Ok(self.select(&active))
+    }
+    /// Ordered wire tool definitions with a cache-stable prefix:
+    /// direct tools, `tool_search`, then deferred tools appended in activation order.
+    pub async fn definitions(
+        &self,
+        include_loaded: bool,
+    ) -> Result<Vec<ToolDefinition>, ToolError> {
+        if !self.enabled() {
+            return Ok(self.catalog.definitions().cloned().collect());
+        }
+        let mut definitions: Vec<ToolDefinition> = self
+            .catalog
+            .definitions()
+            .filter(|definition| self.direct(&definition.name))
+            .cloned()
+            .collect();
+        if let Some(search) = self.definition() {
+            definitions.push(search);
+        }
+        if include_loaded {
+            let mut seen = BTreeSet::new();
+            for name in self.loaded.snapshot().await? {
+                if self.direct(&name) || !seen.insert(name.clone()) {
+                    continue;
+                }
+                if let Some(entry) = self.catalog.entries.get(&name) {
+                    definitions.push(entry.definition.as_ref().clone());
+                }
+            }
+        }
+        Ok(definitions)
     }
     pub fn select(&self, active: &BTreeSet<String>) -> ToolCatalog {
         if !self.enabled() {
@@ -282,4 +313,94 @@ fn direct(name: &str) -> bool {
         name,
         "Shell" | "Read" | "AskUserQuestion" | "ProcessStop" | "ProcessInput"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ToolHandler, ToolNesting, ToolRegistration};
+    use maka_agent_facts::tools::{ToolExecutor, ToolFuture, ToolSemantics};
+    use serde_json::json;
+    use std::sync::Mutex;
+    use tokio_util::sync::CancellationToken;
+
+    struct Dummy(&'static str);
+    impl ToolExecutor for Dummy {
+        fn names(&self) -> Vec<String> {
+            vec![self.0.into()]
+        }
+        fn invoke(&self, _: String, _: Value, _: CancellationToken) -> ToolFuture {
+            Box::pin(async { Ok(json!({})) })
+        }
+    }
+
+    struct OrderedReader(Mutex<Vec<String>>);
+    impl maka_session_state::SessionDataReader for OrderedReader {
+        fn load(&self, _: &str) -> maka_session_state::Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        fn loaded(&self) -> maka_session_state::Result<Vec<String>> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+    }
+
+    fn registration(name: &'static str) -> ToolRegistration {
+        ToolRegistration {
+            definition: ToolDefinition {
+                name: name.into(),
+                description: format!("Tool {name}"),
+                input_schema: json!({"type":"object"}),
+                provider: None,
+                freeform: None,
+                output_schema: None,
+            },
+            handler: ToolHandler::Immediate(Arc::new(Dummy(name))),
+            semantics: ToolSemantics::Parallel,
+            nesting: ToolNesting::Nestable,
+        }
+    }
+
+    #[tokio::test]
+    async fn definitions_keep_static_prefix_and_append_loaded_tools_in_activation_order() {
+        let reader = Arc::new(OrderedReader(Mutex::new(Vec::new())));
+        let catalog = ToolCatalog::new([
+            registration("Read"),
+            registration("Zeta"),
+            registration("Alpha"),
+        ])
+        .unwrap()
+        .with_discovery();
+        let availability = Availability::new(
+            catalog,
+            LoadedTools::new(maka_session_state::Session::new(reader.clone())),
+        );
+
+        let names =
+            |defs: Vec<ToolDefinition>| defs.into_iter().map(|d| d.name).collect::<Vec<_>>();
+
+        assert_eq!(
+            names(availability.definitions(true).await.unwrap()),
+            vec!["Read", SEARCH]
+        );
+
+        reader.0.lock().unwrap().push("Zeta".into());
+        assert_eq!(
+            names(availability.definitions(true).await.unwrap()),
+            vec!["Read", SEARCH, "Zeta"]
+        );
+
+        // Activating an alphabetically earlier name must append at the tail, not
+        // shift earlier definitions in the cached prefix.
+        reader.0.lock().unwrap().push("Alpha".into());
+        reader.0.lock().unwrap().push("Zeta".into());
+        reader.0.lock().unwrap().push("Read".into());
+        assert_eq!(
+            names(availability.definitions(true).await.unwrap()),
+            vec!["Read", SEARCH, "Zeta", "Alpha"]
+        );
+        assert_eq!(
+            names(availability.definitions(false).await.unwrap()),
+            vec!["Read", SEARCH]
+        );
+    }
 }

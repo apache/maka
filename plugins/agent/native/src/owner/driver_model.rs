@@ -1073,7 +1073,7 @@ impl DriverModel {
         Box::pin(async move {
             let mut system: Option<SystemPrompt> =
                 self.decode(view.run, &view.spec.system_prompt).await?;
-            merge_input_skills(&mut system, input)?;
+            resolve_input_skills(&self.state, view, input, &mut system).await?;
             let history = self
                 .state
                 .session_history(view.spec.owner.clone(), view.spec.session_id.clone());
@@ -3893,6 +3893,57 @@ fn terminal_outcome(
         .then_some(maka_agent_facts::accounting::Outcome::Error)
 }
 
+fn input_has_skill_preparation(input: &RunInput) -> bool {
+    let RunInput::Message {
+        content,
+        source_messages,
+        ..
+    } = input
+    else {
+        return false;
+    };
+    if source_messages.is_empty() {
+        super::skills::has_receipt(content)
+    } else {
+        source_messages
+            .iter()
+            .any(|source| super::skills::has_receipt(&source.message.content))
+    }
+}
+
+/// Background wake-ups (`SessionCompletion`, `ScheduledTask`, `Goal`,
+/// `CheckpointHandoff`, `ContextCompact`) bypass `prepare_skills`, so inherit
+/// the most recent prepared Run's skill catalog to keep `system.text` stable
+/// across turns and preserve prompt caches.
+pub(super) async fn resolve_input_skills(
+    state: &maka_agent_state::Store,
+    view: &RunView,
+    input: &RunInput,
+    system: &mut Option<SystemPrompt>,
+) -> Result<(), RunError> {
+    merge_input_skills(system, input)?;
+    if input_has_skill_preparation(input) {
+        return Ok(());
+    }
+    let history = state.session_history(view.spec.owner.clone(), view.spec.session_id.clone());
+    let mut before = history.capture_before(view.run).await?;
+    for _ in 0..16 {
+        let Some(prior) = history.latest(&before).await? else {
+            break;
+        };
+        let prior_view = history.view_at(&before, prior.run).await?;
+        if let Ok(prior_input) = serde_json::from_slice::<RunInput>(
+            &state.content(prior.run, prior_view.spec.input).await?,
+        ) && input_has_skill_preparation(&prior_input)
+        {
+            merge_input_skills(system, &prior_input)?;
+            break;
+        }
+        before = history.capture_before(prior.run).await?;
+    }
+    Ok(())
+}
+
 pub(super) fn merge_input_skills(
     system: &mut Option<SystemPrompt>,
     input: &RunInput,
@@ -4559,5 +4610,52 @@ mod frozen_text_tests {
             system.as_ref().unwrap().text,
             "Base instructions\n\nAvailable skills: alpha\n\nAvailable skills: alpha, beta"
         );
+    }
+
+    #[test]
+    fn input_has_skill_preparation_distinguishes_prepared_messages_from_background_wakeups() {
+        let bare = RunInput::Message {
+            content: maka_agent_facts::input::MessageInput {
+                text: "Goal wakeup".into(),
+                display_text: None,
+                inline_references: None,
+                directory_references: None,
+                quotes: None,
+                attachments: None,
+                preparation: Vec::new(),
+            },
+            request_fingerprint: None,
+            source_messages: Vec::new(),
+        };
+        assert!(!input_has_skill_preparation(&bare));
+
+        let prepared = RunInput::Message {
+            content: maka_agent_facts::input::MessageInput {
+                text: "User message".into(),
+                display_text: None,
+                inline_references: None,
+                directory_references: None,
+                quotes: None,
+                attachments: None,
+                preparation: vec![maka_agent_facts::input::InputReceipt {
+                    source: SourceRevision {
+                        kind: maka_agent_facts::composition::SourceKind::Input,
+                        name: "maka.agent.skills".into(),
+                        package_id: "maka.skills".into(),
+                        entry_id: "skills".into(),
+                        activation: "act".into(),
+                        revision: "rev-empty".into(),
+                    },
+                    receipt: json!({
+                        "revision": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                        "metadataPrompt": "",
+                        "invocation": {}
+                    }),
+                }],
+            },
+            request_fingerprint: None,
+            source_messages: Vec::new(),
+        };
+        assert!(input_has_skill_preparation(&prepared));
     }
 }

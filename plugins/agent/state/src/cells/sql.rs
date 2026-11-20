@@ -79,7 +79,7 @@ pub(super) fn value(
 ) -> Result<Option<Vec<u8>>, StoreError> {
     Ok(c.query_row("SELECT c.payload FROM agent_session_values v JOIN contents c ON c.id=v.value_content_id WHERE v.session=? AND v.key=?",params![session,key],|r|r.get(0)).optional()?)
 }
-pub(super) fn loaded(c: &Connection, session: &str) -> Result<BTreeSet<String>, StoreError> {
+pub(super) fn loaded(c: &Connection, session: &str) -> Result<Vec<String>, StoreError> {
     let body: Option<String> = c
         .query_row(
             "SELECT body FROM agent_session_loaded_tools WHERE session=?",
@@ -89,7 +89,7 @@ pub(super) fn loaded(c: &Connection, session: &str) -> Result<BTreeSet<String>, 
         .optional()?;
     Ok(match body {
         Some(body) => serde_json::from_str(&body)?,
-        None => BTreeSet::new(),
+        None => Vec::new(),
     })
 }
 pub(super) fn owned_content(
@@ -716,7 +716,39 @@ pub(super) fn merge_loaded(
     names: &BTreeSet<String>,
 ) -> Result<(), StoreError> {
     let mut all = loaded(c, session)?;
-    all.extend(names.iter().cloned());
+    for name in names {
+        if !all.contains(name) {
+            all.push(name.clone());
+        }
+    }
     c.execute("INSERT INTO agent_session_loaded_tools(session,body,fact_id) VALUES(?,?,?) ON CONFLICT(session) DO UPDATE SET body=excluded.body,fact_id=excluded.fact_id",params![session,serde_json::to_string(&all)?,id.to_string()])?;
     Ok(())
+}
+
+#[cfg(test)]
+mod loaded_order_tests {
+    use super::*;
+
+    #[test]
+    fn merge_loaded_preserves_activation_order_without_duplicates() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute(
+            "CREATE TABLE agent_session_loaded_tools(session TEXT PRIMARY KEY, body TEXT NOT NULL, fact_id TEXT NOT NULL)",
+            [],
+        )
+        .unwrap();
+        merge_loaded(&c, "s1", FactId::new(), &BTreeSet::from(["Zeta".into()])).unwrap();
+        merge_loaded(
+            &c,
+            "s1",
+            FactId::new(),
+            &BTreeSet::from(["Alpha".into(), "Zeta".into()]),
+        )
+        .unwrap();
+        merge_loaded(&c, "s1", FactId::new(), &BTreeSet::from(["Middle".into()])).unwrap();
+        assert_eq!(
+            loaded(&c, "s1").unwrap(),
+            vec!["Zeta".to_owned(), "Alpha".to_owned(), "Middle".to_owned()]
+        );
+    }
 }

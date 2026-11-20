@@ -43,7 +43,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// blocking threads, not on async executor workers.
 pub trait SessionDataReader: Send + Sync {
     fn load(&self, key: &str) -> Result<Option<Vec<u8>>>;
-    fn loaded(&self) -> Result<BTreeSet<String>>;
+    /// Canonical loaded tool names in activation order.
+    fn loaded(&self) -> Result<Vec<String>>;
 }
 
 #[derive(Clone)]
@@ -109,10 +110,10 @@ impl Session {
         }
     }
 
-    pub fn loaded(&self) -> Result<BTreeSet<String>> {
+    pub fn loaded(&self) -> Result<Vec<String>> {
         let loaded = lock(&self.0.loaded)?;
         match loaded.as_ref() {
-            Some(names) => Ok(names.clone()),
+            Some(names) => Ok(names.iter().cloned().collect()),
             None => self.0.reader.loaded(),
         }
     }
@@ -126,7 +127,7 @@ impl Session {
     pub fn update_loaded(&self, update: impl FnOnce(&mut BTreeSet<String>)) -> Result<()> {
         let mut loaded = lock(&self.0.loaded)?;
         if loaded.is_none() {
-            *loaded = Some(self.0.reader.loaded()?);
+            *loaded = Some(self.0.reader.loaded()?.into_iter().collect());
         }
         update(loaded.as_mut().expect("loaded draft initialized"));
         Ok(())
@@ -203,8 +204,8 @@ impl SessionDataReader for EphemeralReader {
         Ok(None)
     }
 
-    fn loaded(&self) -> Result<BTreeSet<String>> {
-        Ok(BTreeSet::new())
+    fn loaded(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
     }
 }
 
