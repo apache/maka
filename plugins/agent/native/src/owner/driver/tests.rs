@@ -5144,7 +5144,7 @@ mod model_recovery {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_delegated_permission_no_one_answers_counts_as_denied() {
+    async fn a_delegated_permission_no_one_answers_times_out() {
         delegated_notifications("stop", Waits::Permission).await;
     }
 
@@ -5391,7 +5391,11 @@ mod model_recovery {
                     let (continued, worker_reply) = observed.recv().await.ok_or("the delegated task did not continue")?;
                     let result = continued["messages"].as_array().unwrap().iter().rev()
                         .find(|message| message["role"] == "tool").ok_or("tool result missing")?.to_string();
-                    assert!(result.contains("denied"), "{result}");
+                    assert!(
+                        result.contains(r#"\"kind\":\"failed\""#)
+                            && result.contains("No one approved this request in time"),
+                        "{result}"
+                    );
                     worker_reply
                 }
             };

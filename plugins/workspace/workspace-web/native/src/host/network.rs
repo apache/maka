@@ -29,8 +29,14 @@ use maka_host_runtime::http::{Authority, Worker};
 use maka_sandbox::{Destination, Network, Sandbox};
 use std::panic::AssertUnwindSafe;
 
+#[derive(Default)]
+struct FailureState {
+    uncertain: Option<ToolError>,
+    permission_error: Option<String>,
+}
+
 #[derive(Clone, Default)]
-pub(super) struct Failure(Arc<std::sync::Mutex<Option<ToolError>>>);
+pub(super) struct Failure(Arc<std::sync::Mutex<FailureState>>);
 impl Failure {
     pub(super) fn observe(&self, error: &ToolError) {
         if matches!(
@@ -42,8 +48,23 @@ impl Failure {
             self.0
                 .lock()
                 .expect("Web call failure")
+                .uncertain
                 .get_or_insert_with(|| error.clone());
         }
+    }
+    pub(super) fn observe_permission_error(&self, message: String) {
+        self.0
+            .lock()
+            .expect("Web call failure")
+            .permission_error
+            .get_or_insert(message);
+    }
+    pub(super) fn take_permission_error(&self) -> Option<String> {
+        self.0
+            .lock()
+            .expect("Web call failure")
+            .permission_error
+            .take()
     }
     /// Every request this plugin sends (fetch, search, probe, key check) is a
     /// query that changes nothing remote. Losing its response (an error page
@@ -55,10 +76,10 @@ impl Failure {
         }
     }
     pub(super) fn is_uncertain(&self) -> bool {
-        self.0.lock().expect("Web call failure").is_some()
+        self.0.lock().expect("Web call failure").uncertain.is_some()
     }
     pub(super) fn returned(&self, diagnostic: String) -> HandlerError {
-        match self.0.lock().expect("Web call failure").as_ref() {
+        match self.0.lock().expect("Web call failure").uncertain.as_ref() {
             Some(error) => HandlerError::Unknown {
                 diagnostic: format!("{diagnostic}; {error}"),
             },
@@ -265,6 +286,10 @@ impl Access {
                 self.failure.observe(&error);
                 match error {
                     ToolError::CleanupUnconfirmed(_) => Error::CleanupUnconfirmed,
+                    ToolError::Failed(reason) => {
+                        self.failure.observe_permission_error(reason);
+                        Error::Denied
+                    }
                     _ => Error::Denied,
                 }
             })?;

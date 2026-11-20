@@ -308,6 +308,13 @@ impl Handler for Service {
                             })
                             .map_err(|error| match error {
                                 crate::search::Error::Settlement(error) => error,
+                                crate::search::Error::Denied => {
+                                    maka_agent_facts::tools::ToolError::Failed(
+                                        failure
+                                            .take_permission_error()
+                                            .unwrap_or_else(|| message(error)),
+                                    )
+                                }
                                 error => maka_agent_facts::tools::ToolError::Failed(message(error)),
                             })
                     } else {
@@ -322,6 +329,13 @@ impl Handler for Service {
                                     maka_capabilities::http::Error::CleanupUnconfirmed,
                                 ) => maka_agent_facts::tools::ToolError::CleanupUnconfirmed(
                                     "Web HTTP cleanup unconfirmed".into(),
+                                ),
+                                crate::fetch::Error::Http(
+                                    maka_capabilities::http::Error::Denied,
+                                ) => maka_agent_facts::tools::ToolError::Failed(
+                                    failure
+                                        .take_permission_error()
+                                        .unwrap_or_else(|| message(error)),
                                 ),
                                 error => maka_agent_facts::tools::ToolError::Failed(message(error)),
                             })

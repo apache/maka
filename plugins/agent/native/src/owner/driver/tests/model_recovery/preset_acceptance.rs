@@ -411,6 +411,29 @@ async fn approved_round(
     input: Value,
     scope: &str,
 ) -> TestResult<String> {
+    permission_round(rig, provider, session, code, name, input, Some(scope)).await
+}
+
+async fn denied_round(
+    rig: &Rig,
+    provider: &mut Provider,
+    session: &str,
+    code: bool,
+    name: &str,
+    input: Value,
+) -> TestResult<String> {
+    permission_round(rig, provider, session, code, name, input, None).await
+}
+
+async fn permission_round(
+    rig: &Rig,
+    provider: &mut Provider,
+    session: &str,
+    code: bool,
+    name: &str,
+    input: Value,
+    approval_scope: Option<&str>,
+) -> TestResult<String> {
     let client = rig.client.as_ref().unwrap();
     let sent = call(
         client,
@@ -470,10 +493,15 @@ async fn approved_round(
                 let pending = call(client,"agent","pendingInteractions",json!({"sessionId":session})).await?;
                 if let Some(entry) = pending["entries"].as_array().unwrap().first() {
                     assert_eq!(entry["kind"],"permissions","{entry}");
-                    let record = call(client,"agent","interaction",json!({"sessionId":session,"requestId":entry["requestId"]})).await?;
-                    let approved = call(client,"agent","respond",json!({"sessionId":session,"requestId":entry["requestId"],
-                        "answer":{"kind":"permissions","decision":{"decision":"allow","permissions":record["request"]["request"]["permissions"],"scope":scope}}})).await?;
-                    assert_eq!(approved["kind"],"recorded","{approved}; {record}");
+                    let answer = match approval_scope {
+                        Some(scope) => {
+                            let record = call(client,"agent","interaction",json!({"sessionId":session,"requestId":entry["requestId"]})).await?;
+                            json!({"kind":"permissions","decision":{"decision":"allow","permissions":record["request"]["request"]["permissions"],"scope":scope}})
+                        }
+                        None => json!({"kind":"permissions","decision":{"decision":"deny"}}),
+                    };
+                    let responded = call(client,"agent","respond",json!({"sessionId":session,"requestId":entry["requestId"],"answer":answer})).await?;
+                    assert_eq!(responded["kind"],"recorded","{responded}; {entry}");
                     return Ok::<_,Box<dyn Error + Send + Sync>>(());
                 }
                 tokio::task::yield_now().await;
@@ -626,7 +654,7 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
             if allowed {
                 assert!(output.contains("https://www.rust-lang.org/"), "{output}");
             } else {
-                assert!(output.contains("WebSearch network access was denied"), "{output}");
+                assert!(output.contains("Workspace policy does not allow requesting additional permissions"), "{output}");
             }
             if requests {
                 // An HTTP error page is an ordinary result, not an unknown effect.
@@ -696,7 +724,7 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 } else {
                     for (output,reason) in [
                         (&write,"Workspace policy does not allow requesting additional permissions"),
-                        (&web,"HTTP call authority is retired or denied"),
+                        (&web,"Workspace policy does not allow requesting additional permissions"),
                         (&mcp,"IsolationUnavailable: this MCP server cannot prove compatibility with the Run's sandbox floor"),
                     ] {assert!(output.contains(reason),"{output}");}
                 }
@@ -794,6 +822,11 @@ async fn shell_and_web_network_grants_stay_with_their_tools() -> TestResult<()> 
 
         // A Web grant does not reach Shell. The proxy a leaked Web grant installs
         // would carry this request, so it runs without `--noproxy`.
+        let before_denied_web = calls.load(Ordering::SeqCst);
+        let denied_web = denied_round(&rig, &mut provider, id, false, "WebFetch", json!({"url":format!("{first}/page")})).await?;
+        assert!(denied_web.contains(r#"\"kind\":\"failed\""#) && denied_web.contains("Permission request was denied"), "{denied_web}");
+        assert_eq!(calls.load(Ordering::SeqCst), before_denied_web, "{denied_web}");
+
         let web = approved_round(&rig, &mut provider, id, false, "WebFetch", json!({"url":format!("{first}/page")}), "session").await?;
         assert!(web.contains("network-grant-marker"), "{web}");
         let before = calls.load(Ordering::SeqCst);
@@ -883,6 +916,11 @@ async fn read_only_writes_ask_for_permission() -> TestResult<()> {
         assert_eq!(changed["kind"], "committed", "{changed}");
         let workspace = std::fs::canonicalize(base.join("workspace"))?;
 
+        let denied_write = denied_round(&rig, &mut provider, id, false, "Write",
+            json!({"path":"denied.md","content":"blocked"})).await?;
+        assert!(denied_write.contains(r#"\"kind\":\"failed\""#) && denied_write.contains("Permission request was denied"), "{denied_write}");
+        assert!(!tokio::fs::try_exists(workspace.join("denied.md")).await?, "{denied_write}");
+
         let write = approved_round(&rig, &mut provider, id, false, "Write",
             json!({"path":"notes.md","content":"approved"}), "once").await?;
         let notes = std::fs::read_to_string(workspace.join("notes.md"))
@@ -892,6 +930,14 @@ async fn read_only_writes_ask_for_permission() -> TestResult<()> {
         // On Linux the sandbox must mount an existing target for an exact writable path.
         let shell_file = workspace.join("shell.txt");
         std::fs::File::create(&shell_file)?;
+        let denied_shell = denied_round(&rig, &mut provider, id, false, "Shell", json!({
+            "command":"echo denied > shell.txt","login":false,
+            "additional_permissions":{"filesystem":[{"path":shell_file,"scope":"exact","access":"write"}],"network":"denied"},
+            "justification":"Record the result"
+        })).await?;
+        assert!(denied_shell.contains(r#"\"kind\":\"failed\""#) && denied_shell.contains("Permission request was denied"), "{denied_shell}");
+        assert_eq!(tokio::fs::read_to_string(&shell_file).await?, "", "{denied_shell}");
+
         let shell = approved_round(&rig, &mut provider, id, false, "Shell", json!({
             "command":"echo approved > shell.txt","login":false,
             "additional_permissions":{"filesystem":[{"path":shell_file,"scope":"exact","access":"write"}],"network":"denied"},
