@@ -256,6 +256,28 @@ impl Owner {
                 {
                     return rejected(QueueRejection::ExecutionChanged);
                 }
+                if let Some(revision) = self
+                    .durable
+                    .queue()
+                    .pending_steer_revision(
+                        input.session_id.clone(),
+                        targets[0].0.request.id.clone(),
+                        view.run,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    return Ok(NativeMutation::Returned(
+                        if revision == input.expected_revision {
+                            QueueMutationResult::Committed { revision }
+                        } else {
+                            QueueMutationResult::RevisionConflict {
+                                expected: input.expected_revision,
+                                actual: revision,
+                            }
+                        },
+                    ));
+                }
                 let handoff = self
                     .durable
                     .queue()
