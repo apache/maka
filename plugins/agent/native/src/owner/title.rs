@@ -426,6 +426,7 @@ impl Owner {
             .map_or(content.text.as_str(), |source| {
                 source.unprepared_content.text.as_str()
             });
+        let _cancel = cancellation.clone().drop_guard();
         let title = match &first.spec.backend {
             BackendSpec::Historical {} => return Ok(()),
             BackendSpec::Executor { .. } => {
@@ -451,7 +452,6 @@ impl Owner {
                 let Some(input) = maka_session_title::Title.prepare(text, language) else {
                     return Ok(());
                 };
-                let _cancel = cancellation.clone().drop_guard();
                 let operation = async {
                     input
                         .validate()
