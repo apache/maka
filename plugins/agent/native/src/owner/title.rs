@@ -407,15 +407,6 @@ impl Owner {
         if first.execution() != execution {
             return Ok(());
         }
-        let BackendSpec::Model { descriptor, .. } = &first.spec.backend else {
-            return Ok(());
-        };
-        let descriptor = history
-            .content(first.run, descriptor)
-            .await
-            .map_err(persistence)?;
-        let model = crate::model::AcceptedModel::from_backend(&first.spec.backend, &descriptor)
-            .map_err(failed)?;
         let input = history
             .content(first.run, &first.spec.input)
             .await
@@ -435,131 +426,155 @@ impl Owner {
             .map_or(content.text.as_str(), |source| {
                 source.unprepared_content.text.as_str()
             });
-        let snapshot = self
-            .configuration
-            .runtime_policy()
-            .await
-            .map_err(persistence)?;
-        let language = self.resolve_language(&snapshot);
-        let Some(input) = maka_session_title::Title.prepare(text, language) else {
-            return Ok(());
-        };
-        let _cancel = cancellation.clone().drop_guard();
-        let operation = async {
-            input
-                .validate()
-                .map_err(|_| GenerationError::Failure(TitleFailureCause::Preparation))?;
-            let source = crate::model::Source::restore(
-                self.configuration.clone(),
-                self.credentials.clone(),
-                model,
-                execution.session_id.clone(),
-                self.revision.clone(),
-            )
-            .map_err(|_| GenerationError::Failure(TitleFailureCause::Preparation))?;
-            let source = match &self.pricing {
-                Some(pricing) => source.with_pricing(Arc::clone(pricing)),
-                None => source,
-            };
-            let prepared = source
-                .capture_auxiliary()
-                .await
-                .map_err(|_| GenerationError::Failure(TitleFailureCause::Preparation))?;
-            let requested = input.max_output_tokens.unwrap_or(2048).min(2048);
-            let quote = source.quote(&prepared).await.map_err(persistence)?;
-            let mut prompt = Vec::new();
-            if let Some(content) = input.system {
-                prompt.push(Message::System {
-                    content,
-                    provider_options: None,
-                });
+        let title = match &first.spec.backend {
+            BackendSpec::Historical {} => return Ok(()),
+            BackendSpec::Executor { .. } => {
+                let Some(title) = maka_session_title::normalize(text) else {
+                    return Ok(());
+                };
+                title
             }
-            prompt.push(Message::user(input.prompt));
-            self.auxiliary
-                .generate(
-                    ModelRequest {
-                        operation: maka_agent_facts::context::ModelOperation::Inference,
-                        language: input.language,
-                        provider: prepared.provider,
-                        prompt: prompt.into(),
-                        tools: Vec::new(),
-                        tool_choice: Default::default(),
-                        provider_options: prepared.options,
-                        max_output_tokens: Some(
-                            prepared
-                                .main_output_limit
-                                .map_or(requested, |limit| limit.min(requested)),
-                        ),
-                    },
-                    cancellation.clone(),
-                    &self.store,
-                    auxiliary::Admission::Source {
-                        source: AuxiliarySource::SessionTitle {
-                            execution: execution.clone(),
-                        },
-                        binding: source.accepted.binding.clone(),
-                        purpose: maka_agent_facts::context::ModelPurpose::Main,
-                        execution: auxiliary::Execution::Work {
-                            custody: custody.clone(),
-                            session: execution.session_id.clone(),
-                        },
-                    },
-                    quote,
-                )
-                .await
-                .map_err(GenerationError::from)
-        };
-        tokio::pin!(operation);
-        let (result, timed_out) = tokio::select! {
-            biased;
-            _ = tokio::time::sleep(Duration::from_secs(30)) => { cancellation.cancel(); (operation.await, true) },
-            result = &mut operation => (result, false),
-        };
-        // Uncertain persistence or physical cleanup outranks the logical deadline.
-        let result = match result {
-            Err(GenerationError::Operation(error)) => return Err(error.into()),
-            Err(GenerationError::Metadata(error)) => return Err(TitleWorkError::Metadata(error)),
-            Err(GenerationError::Cleanup(error)) => return Err(TitleWorkError::Cleanup(error)),
-            _ if self.stop.is_cancelled() || (cancellation.is_cancelled() && !timed_out) => {
-                return Ok(());
-            }
-            _ if timed_out => Err(TitleFailureCause::Model {
-                cause: ModelFailureCause::TimedOut,
-            }),
-            Err(GenerationError::Skipped) => return Ok(()),
-            Err(GenerationError::Failure(cause)) => Err(cause),
-            Ok(generated) if generated.finish_reason == ModelFinishReason::Length => {
-                Err(TitleFailureCause::OutputLimit)
-            }
-            Ok(generated) if generated.finish_reason != ModelFinishReason::Stop => {
-                Err(TitleFailureCause::InvalidOutput)
-            }
-            Ok(generated) => {
-                maka_session_title::normalize(&generated.text).ok_or(TitleFailureCause::EmptyOutput)
-            }
-        };
-        let title = match result {
-            Ok(title) => title,
-            Err(cause) => {
-                tracing::warn!(stage = "title_generation_failed", cause = ?cause,
-                    session_id = %execution.session_id, run_id = %execution.run_id,
-                    "Automatic title generation failed");
-                let writer = self
-                    .store
-                    .data_writer_for_work(custody.as_ref(), &execution.session_id)
+            BackendSpec::Model { descriptor, .. } => {
+                let descriptor = history
+                    .content(first.run, descriptor)
+                    .await
                     .map_err(persistence)?;
-                let state = self.durable.with_data_writer(writer).map_err(persistence)?;
-                let original = maka_agent_state::Change::new(
-                    Fact::SessionTitleFailed { cause },
-                    UnixMillis(now().try_into().map_err(persistence)?),
-                );
-                if let Err(error) = publish_title_failure(state, first.run, original).await {
-                    if !error.writer_settled {
-                        lease.retain_unconfirmed(error.clone());
+                let model =
+                    crate::model::AcceptedModel::from_backend(&first.spec.backend, &descriptor)
+                        .map_err(failed)?;
+                let snapshot = self
+                    .configuration
+                    .runtime_policy()
+                    .await
+                    .map_err(persistence)?;
+                let language = self.resolve_language(&snapshot);
+                let Some(input) = maka_session_title::Title.prepare(text, language) else {
+                    return Ok(());
+                };
+                let _cancel = cancellation.clone().drop_guard();
+                let operation = async {
+                    input
+                        .validate()
+                        .map_err(|_| GenerationError::Failure(TitleFailureCause::Preparation))?;
+                    let source = crate::model::Source::restore(
+                        self.configuration.clone(),
+                        self.credentials.clone(),
+                        model,
+                        execution.session_id.clone(),
+                        self.revision.clone(),
+                    )
+                    .map_err(|_| GenerationError::Failure(TitleFailureCause::Preparation))?;
+                    let source = match &self.pricing {
+                        Some(pricing) => source.with_pricing(Arc::clone(pricing)),
+                        None => source,
+                    };
+                    let prepared = source
+                        .capture_auxiliary()
+                        .await
+                        .map_err(|_| GenerationError::Failure(TitleFailureCause::Preparation))?;
+                    let requested = input.max_output_tokens.unwrap_or(2048).min(2048);
+                    let quote = source.quote(&prepared).await.map_err(persistence)?;
+                    let mut prompt = Vec::new();
+                    if let Some(content) = input.system {
+                        prompt.push(Message::System {
+                            content,
+                            provider_options: None,
+                        });
                     }
-                    return Err(TitleWorkError::Observation(error));
+                    prompt.push(Message::user(input.prompt));
+                    self.auxiliary
+                        .generate(
+                            ModelRequest {
+                                operation: maka_agent_facts::context::ModelOperation::Inference,
+                                language: input.language,
+                                provider: prepared.provider,
+                                prompt: prompt.into(),
+                                tools: Vec::new(),
+                                tool_choice: Default::default(),
+                                provider_options: prepared.options,
+                                max_output_tokens: Some(
+                                    prepared
+                                        .main_output_limit
+                                        .map_or(requested, |limit| limit.min(requested)),
+                                ),
+                            },
+                            cancellation.clone(),
+                            &self.store,
+                            auxiliary::Admission::Source {
+                                source: AuxiliarySource::SessionTitle {
+                                    execution: execution.clone(),
+                                },
+                                binding: source.accepted.binding.clone(),
+                                purpose: maka_agent_facts::context::ModelPurpose::Main,
+                                execution: auxiliary::Execution::Work {
+                                    custody: custody.clone(),
+                                    session: execution.session_id.clone(),
+                                },
+                            },
+                            quote,
+                        )
+                        .await
+                        .map_err(GenerationError::from)
+                };
+                tokio::pin!(operation);
+                let (result, timed_out) = tokio::select! {
+                    biased;
+                    _ = tokio::time::sleep(Duration::from_secs(30)) => { cancellation.cancel(); (operation.await, true) },
+                    result = &mut operation => (result, false),
+                };
+                // Uncertain persistence or physical cleanup outranks the logical deadline.
+                let result = match result {
+                    Err(GenerationError::Operation(error)) => return Err(error.into()),
+                    Err(GenerationError::Metadata(error)) => {
+                        return Err(TitleWorkError::Metadata(error));
+                    }
+                    Err(GenerationError::Cleanup(error)) => {
+                        return Err(TitleWorkError::Cleanup(error));
+                    }
+                    _ if self.stop.is_cancelled()
+                        || (cancellation.is_cancelled() && !timed_out) =>
+                    {
+                        return Ok(());
+                    }
+                    _ if timed_out => Err(TitleFailureCause::Model {
+                        cause: ModelFailureCause::TimedOut,
+                    }),
+                    Err(GenerationError::Skipped) => return Ok(()),
+                    Err(GenerationError::Failure(cause)) => Err(cause),
+                    Ok(generated) if generated.finish_reason == ModelFinishReason::Length => {
+                        Err(TitleFailureCause::OutputLimit)
+                    }
+                    Ok(generated) if generated.finish_reason != ModelFinishReason::Stop => {
+                        Err(TitleFailureCause::InvalidOutput)
+                    }
+                    Ok(generated) => maka_session_title::normalize(&generated.text)
+                        .ok_or(TitleFailureCause::EmptyOutput),
+                };
+                match result {
+                    Ok(title) => title,
+                    Err(cause) => {
+                        tracing::warn!(stage = "title_generation_failed", cause = ?cause,
+                            session_id = %execution.session_id, run_id = %execution.run_id,
+                            "Automatic title generation failed");
+                        let writer = self
+                            .store
+                            .data_writer_for_work(custody.as_ref(), &execution.session_id)
+                            .map_err(persistence)?;
+                        let state = self.durable.with_data_writer(writer).map_err(persistence)?;
+                        let original = maka_agent_state::Change::new(
+                            Fact::SessionTitleFailed { cause },
+                            UnixMillis(now().try_into().map_err(persistence)?),
+                        );
+                        if let Err(error) = publish_title_failure(state, first.run, original).await
+                        {
+                            if !error.writer_settled {
+                                lease.retain_unconfirmed(error.clone());
+                            }
+                            return Err(TitleWorkError::Observation(error));
+                        }
+                        return Ok(());
+                    }
                 }
-                return Ok(());
             }
         };
         // Main execution also moves the public revision. Retry metadata only;

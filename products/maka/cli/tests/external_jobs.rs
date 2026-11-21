@@ -2320,3 +2320,155 @@ async fn antigravity_automation_wakes_the_original_conversation_after_the_turn()
         Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn antigravity_automatic_title_falls_back_to_first_message() {
+    let mut rig = Rig::new().await.expect("isolated Host and ACP fixture");
+    let outcome = AssertUnwindSafe(async {
+        let (mut anchor, bootstrap) = phase("start Host", rig.start()).await?;
+        phase(
+            "enable Antigravity ACP",
+            rig.configure(&mut anchor, &bootstrap, "antigravity"),
+        )
+        .await?;
+        bootstrap.close().await?;
+        rig.clients.pop();
+        let sdk = connect_sdk(&mut rig, &anchor).await?;
+
+        let created = mutate(
+            &sdk,
+            "agent",
+            "create",
+            json!({
+                "title": "New conversation",
+                "automaticTitle": true,
+                "labels": [],
+                "workspace": {"kind": "directory", "path": rig.sandbox.workspace},
+                "backend": {
+                    "kind": "executor",
+                    "selection": {
+                        "executor": "external",
+                        "settings": {"runtime": "antigravity", "model": "default"}
+                    }
+                }
+            }),
+        )
+        .await?;
+        assert_eq!(created["kind"], "created", "{created}");
+        let session = created["session"]["id"]
+            .as_str()
+            .ok_or("session ID missing")?
+            .to_owned();
+        let marker = format!(
+            "MAKA_EXTERNAL_CASE {}",
+            json!({"label": "ACP-steer-title", "session": session})
+        );
+        let message = format!("  Fix ACP   title fallback
+{marker}");
+        let expected: String = message
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(80)
+            .collect();
+        let sent = mutate(
+            &sdk,
+            "agent",
+            "send",
+            json!({"sessionId": session, "message": message, "delivery": "queue"}),
+        )
+        .await?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        let run = phase("first turn admitted", async {
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            loop {
+                tick.tick().await;
+                let work = query(
+                    &sdk,
+                    "agent",
+                    "work",
+                    json!({"sessionId": session, "target": {"kind": "message", "messageId": sent["messageId"]}}),
+                )
+                .await?;
+                match work["kind"].as_str() {
+                    Some("pending") => {}
+                    Some("delivered") => return Ok::<_, String>(work["execution"]["runId"].clone()),
+                    _ => return Err(format!("original admission unavailable: {work}")),
+                }
+            }
+        })
+        .await?;
+        phase(
+            "first turn completes",
+            terminal_state(&sdk, &session, &run, "completed"),
+        )
+        .await?;
+        let observed = phase("automatic fallback title is committed", async {
+            loop {
+                let state = query(&sdk, "agent", "observe", json!({"sessionId": session})).await?;
+                if state["session"]["title"].as_str() == Some(expected.as_str()) {
+                    return Ok::<_, String>(state);
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await?;
+        let revision = observed["session"]["revision"]
+            .as_u64()
+            .ok_or("session revision missing")?;
+        let renamed = mutate(
+            &sdk,
+            "agent",
+            "metadata",
+            json!({
+                "sessionId": session,
+                "expectedRevision": revision,
+                "title": "Manual override",
+                "labels": []
+            }),
+        )
+        .await?;
+        assert_eq!(renamed["kind"], "committed", "{renamed}");
+        assert_eq!(renamed["session"]["title"], "Manual override");
+
+        let (manual_session, manual_run) = launch(
+            &sdk,
+            &rig.sandbox.workspace,
+            "ACP-steer-manual",
+            "unused",
+            false,
+            "antigravity",
+        )
+        .await?;
+        phase(
+            "manual-title turn completes",
+            terminal_state(&sdk, &manual_session, &manual_run, "completed"),
+        )
+        .await?;
+        let manual_state = query(
+            &sdk,
+            "agent",
+            "observe",
+            json!({"sessionId": manual_session}),
+        )
+        .await?;
+        assert_eq!(
+            manual_state["session"]["title"],
+            "External job ACP-steer-manual"
+        );
+
+        sdk.close().await?;
+        rig.clients.pop();
+        phase("quit Host", rig.hosts[0].quit(&mut anchor)).await?;
+        Ok::<_, String>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.cleanup().await;
+    match outcome {
+        Err(panic) => std::panic::resume_unwind(panic),
+        Ok(Err(error)) => panic!("{error}; cleanup={cleanup:?}"),
+        Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
+    }
+}
