@@ -294,11 +294,12 @@ fn source_failure(
         ));
     }
     if let Some(transport) = &value.transport {
+        let surface: maka_agent_facts::composition::CompositionSurface =
+            metrics_metadata::original(c, snapshot, *run, &request.composition.surface)?;
         if request.accounting.purpose != ModelPurpose::Main
             || transport.route_identity.is_empty()
             || transport.adapter.kind != SourceKind::ModelAdapter
-            || !request
-                .composition
+            || !surface
                 .sources
                 .iter()
                 .any(|source| source == &transport.adapter)

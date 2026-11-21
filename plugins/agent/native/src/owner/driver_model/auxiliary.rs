@@ -100,6 +100,9 @@ pub(in crate::owner) async fn prepare_completed(
         &source.spec.backend,
         &history.content(run, descriptor).await?,
     )?;
+    let surface: CompositionSurface =
+        serde_json::from_slice(&history.content(run, &request.composition.surface).await?)
+            .map_err(|_| unsupported("auxiliary-original-composition-surface"))?;
     if frozen.accepted != accepted
         || &frozen.accepted.binding != binding
         || request.accounting.binding != *binding
@@ -108,7 +111,7 @@ pub(in crate::owner) async fn prepare_completed(
         || recovery.version != VERSION
         || recovery.request != request.request
         || recovery.adapter != frozen.adapter
-        || !request.composition.sources.contains(&frozen.adapter)
+        || !surface.sources.contains(&frozen.adapter)
     {
         return Err(unsupported("auxiliary-original-source-evidence"));
     }
@@ -120,7 +123,7 @@ pub(in crate::owner) async fn prepare_completed(
         .provider_options
         .as_ref()
         .ok_or_else(|| unsupported("frozen-provider-options"))?;
-    let definitions = request.composition.tools;
+    let definitions = surface.tools;
     let original = preparation::restore_prompt_from(
         io.clone(),
         resources.clone(),

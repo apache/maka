@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use crate::{artifact::content_digest, tools::ToolDefinition};
+use crate::{artifact::content_digest, durable::ContentRef, tools::ToolDefinition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -46,24 +46,18 @@ pub struct SourceRevision {
     pub revision: String,
 }
 
-/// The immutable capability surface of one logical model step. Conversation
-/// history retains its own canonical prefix evidence in ModelRequested.
+/// Shared static surface of one logical model step, persisted out-of-line by
+/// content digest so identical system prompts, tool catalogs, and source
+/// revisions deduplicate across steps and sessions in `contents`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RequestComposition {
+pub struct CompositionSurface {
     pub system_prompt: Option<String>,
-    pub dynamic_context: Vec<String>,
-    pub tool_catalog_digest: String,
     pub tools: Vec<Arc<ToolDefinition>>,
-    pub provider_options: Option<Value>,
-    pub max_output_tokens: Option<u64>,
     pub sources: Vec<SourceRevision>,
 }
-impl RequestComposition {
-    pub fn freeze(self) -> Result<FrozenComposition, &'static str> {
-        if !crate::archive::valid_projection_digest(&self.tool_catalog_digest) {
-            return Err("invalid tool catalog digest");
-        }
+impl CompositionSurface {
+    pub fn validate(&self) -> Result<(), &'static str> {
         let mut names = BTreeSet::new();
         for tool in &self.tools {
             if tool.name.is_empty() || !names.insert(&tool.name) {
@@ -83,6 +77,32 @@ impl RequestComposition {
                 }
             }
         }
+        Ok(())
+    }
+}
+
+/// The immutable capability surface of one logical model step. Conversation
+/// history retains its own canonical prefix evidence in ModelRequested.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RequestComposition {
+    pub surface: ContentRef,
+    pub dynamic_context: Vec<String>,
+    pub tool_catalog_digest: String,
+    pub provider_options: Option<Value>,
+    pub max_output_tokens: Option<u64>,
+}
+impl RequestComposition {
+    pub fn validate(&self, surface: &CompositionSurface) -> Result<(), &'static str> {
+        self.surface.validate()?;
+        if !crate::archive::valid_projection_digest(&self.tool_catalog_digest) {
+            return Err("invalid tool catalog digest");
+        }
+        surface.validate()
+    }
+
+    pub fn freeze(self, surface: &CompositionSurface) -> Result<FrozenComposition, &'static str> {
+        self.validate(surface)?;
         let bytes =
             serde_json::to_vec(&self).map_err(|_| "invalid request composition encoding")?;
         Ok(FrozenComposition {
@@ -150,17 +170,24 @@ mod tests {
 
     #[test]
     fn committed_evidence_releases_inline_body_and_keeps_original_locator() {
+        let surface = CompositionSurface {
+            system_prompt: Some("frozen system".into()),
+            tools: vec![],
+            sources: vec![],
+        };
+        let surface_bytes = serde_json::to_vec(&surface).unwrap();
         let frozen = Arc::new(
             RequestComposition {
-                system_prompt: Some("frozen system".into()),
+                surface: ContentRef {
+                    digest: content_digest(&surface_bytes),
+                    bytes: surface_bytes.len() as u64,
+                },
                 dynamic_context: vec!["frozen context".into()],
                 tool_catalog_digest: content_digest(b"[]"),
-                tools: vec![],
                 provider_options: Some(serde_json::json!({"temperature": 0.25})),
                 max_output_tokens: Some(4096),
-                sources: vec![],
             }
-            .freeze()
+            .freeze(&surface)
             .unwrap(),
         );
         let digest = frozen.digest().to_owned();

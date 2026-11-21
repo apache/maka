@@ -34,7 +34,6 @@ CREATE INDEX IF NOT EXISTS agent_external_publications_run_revision ON agent_ext
 CREATE INDEX IF NOT EXISTS agent_external_steering_admitted_fact ON agent_external_steering(admitted_fact);
 CREATE INDEX IF NOT EXISTS agent_external_steering_prepared_fact ON agent_external_steering(prepared_fact);
 CREATE INDEX IF NOT EXISTS agent_history_content_refs_first_sequence ON agent_history_content_refs(first_sequence);
-CREATE INDEX IF NOT EXISTS agent_history_content_refs_run ON agent_history_content_refs(run);
 CREATE INDEX IF NOT EXISTS agent_history_queue_requests_session_revision ON agent_history_queue_requests(session, revision);
 CREATE INDEX IF NOT EXISTS agent_history_snapshot_adoptions_fact ON agent_history_snapshot_adoptions(fact);
 CREATE INDEX IF NOT EXISTS agent_interaction_requests_run ON agent_interaction_requests(run);
