@@ -37,21 +37,13 @@ pub(crate) fn start(target: crate::Target) -> Result<(), String> {
     let runtime = Runtime::new().map_err(|error| error.to_string())?;
     let first = runtime.block_on(async {
         let host = HostClient::connect(&target.endpoint, Some(target.epoch)).await?;
-        host::Connection::admit(
-            host,
-            target.endpoint,
-            root.canonical_path(),
-            Handle::current(),
-        )
-        .await
+        host::Connection::admit(host, root.canonical_path(), Handle::current()).await
     })?;
     run(first, runtime)
 }
 
 fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
-    let Connection {
-        bindings, config, ..
-    } = first;
+    let Connection { bindings, config } = first;
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
     let reloading = config

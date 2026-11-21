@@ -20,7 +20,9 @@
 //! Conditional single-item publication through the existing selected workspace.
 //! The coordinator orders cooperating writers; this is not a kernel content CAS
 //! against external processes and does not promise a multi-file transaction.
-use crate::{failed, scoped::Authority, write::WriteCoordinator, write_target::Target};
+#[cfg(unix)]
+use crate::write_target::Target;
+use crate::{failed, scoped::Authority, write::WriteCoordinator};
 use maka_agent_facts::{
     durable::{ContentRef, ExternalPublicationId},
     tools::ToolError,
@@ -99,6 +101,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[cfg(unix)]
 pub(crate) const BUFFER_BYTES: usize = 64 * 1024;
 
 /// The native boundary supplies an already owned immutable fixed-slot resource.
@@ -106,11 +109,13 @@ pub(crate) const BUFFER_BYTES: usize = 64 * 1024;
 pub trait PublicationContent: Read + Seek + Send {}
 impl<T: Read + Seek + Send> PublicationContent for T {}
 
+#[cfg(unix)]
 pub(crate) enum SourceCheck {
     Matched,
     Changed,
     Uncaptured,
 }
+#[cfg(unix)]
 pub(crate) enum Capture {
     Ready(Target),
     Refused(PublicationResult),
@@ -121,7 +126,7 @@ pub(crate) fn run(
     coordinator: &WriteCoordinator,
     change: PublicationChange,
     source: SourceIdentity,
-    mut content: Option<Box<dyn PublicationContent>>,
+    content: Option<Box<dyn PublicationContent>>,
     cancellation: &CancellationToken,
     started: &AtomicBool,
 ) -> Result<PublicationResult, ToolError> {
@@ -153,10 +158,11 @@ pub(crate) fn run(
     #[cfg(not(unix))]
     {
         let _ = (authority, coordinator, source, content, started);
-        return Ok(unsupported(PublicationUnsupported::ModePlatform));
+        Ok(unsupported(PublicationUnsupported::ModePlatform))
     }
     #[cfg(unix)]
     {
+        let mut content = content;
         match (&change.candidate, content.as_mut()) {
             (
                 PublicationEntry::File {
@@ -264,6 +270,7 @@ pub(crate) fn run(
     }
 }
 
+#[cfg(unix)]
 pub(crate) fn hash_reader(
     reader: &mut (impl Read + ?Sized),
     cancellation: &CancellationToken,
@@ -293,6 +300,7 @@ pub(crate) fn hash_reader(
         bytes,
     })
 }
+#[cfg(unix)]
 pub(crate) fn conflict(reason: PublicationConflict) -> PublicationResult {
     PublicationResult::Conflict { reason }
 }
@@ -304,6 +312,7 @@ fn cancelled() -> PublicationResult {
         reason: PublicationNotAttempted::Cancelled,
     }
 }
+#[cfg(unix)]
 fn io_error(error: std::io::Error) -> ToolError {
     ToolError::Io {
         kind: error.kind(),

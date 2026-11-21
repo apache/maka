@@ -23,16 +23,18 @@
 use maka_host_runtime::application::host::Client as HostClient;
 use maka_workbench::bindings::Bindings;
 use nsh_engine::EngineConfig;
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::Path;
+#[cfg(not(windows))]
+use std::{path::PathBuf, time::Duration};
 use tokio::runtime::Handle;
+#[cfg(not(windows))]
 use uuid::Uuid;
 
 /// How long a check waits for the Host to answer.
+#[cfg(not(windows))]
 const STATUS_LIMIT: Duration = Duration::from_secs(2);
 /// How long quitting waits for the Host connection to close.
+#[cfg(not(windows))]
 pub const DETACH_LIMIT: Duration = Duration::from_secs(5);
 
 /// The workbench on one Host: its bindings, the engine configuration made
@@ -40,19 +42,21 @@ pub const DETACH_LIMIT: Duration = Duration::from_secs(5);
 pub struct Connection {
     pub bindings: Bindings,
     pub config: EngineConfig,
+    #[cfg(not(windows))]
     pub endpoint: PathBuf,
+    #[cfg(not(windows))]
     pub epoch: Uuid,
 }
 
 impl Connection {
-    /// Admits the client of the Host at `endpoint` and sets the workbench up
-    /// on it.
+    /// Admits the Host client and sets the workbench up on it.
     pub async fn admit(
         host: HostClient,
-        endpoint: PathBuf,
+        #[cfg(not(windows))] endpoint: PathBuf,
         root: &Path,
         runtime: Handle,
     ) -> Result<Self, String> {
+        #[cfg(not(windows))]
         let epoch = host.epoch();
         let (client, directory) = maka_workbench::host::admit(host, root, "desktop").await?;
         let bindings = Bindings::new(client, runtime.clone());
@@ -64,7 +68,9 @@ impl Connection {
         Ok(Self {
             bindings,
             config,
+            #[cfg(not(windows))]
             endpoint,
+            #[cfg(not(windows))]
             epoch,
         })
     }
@@ -73,6 +79,7 @@ impl Connection {
 /// Whether the Host at `endpoint` with `epoch` runs and is not closing. A
 /// Host that does not answer within [`STATUS_LIMIT`] counts as running: only
 /// one that is gone, replaced or closing has stopped.
+#[cfg(not(windows))]
 pub async fn runs(endpoint: &Path, epoch: Uuid) -> bool {
     match tokio::time::timeout(STATUS_LIMIT, HostClient::status(endpoint, Some(epoch))).await {
         Ok(status) => status.is_ok_and(|status| !status.closing && !status.closed),

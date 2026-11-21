@@ -87,6 +87,7 @@ impl Authority {
         })
     }
 
+    #[cfg(unix)]
     pub(crate) fn publication_route(&self, relative: &Path) -> Result<Option<Route>, ToolError> {
         let root = match &self.scope {
             CapturedScope::Workspace(root) => root,
@@ -107,6 +108,7 @@ impl Authority {
         }))
     }
 
+    #[cfg(unix)]
     pub(crate) fn publication_source(
         &self,
         expected: &crate::publication::SourceIdentity,

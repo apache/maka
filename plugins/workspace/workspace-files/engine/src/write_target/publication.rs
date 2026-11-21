@@ -113,7 +113,6 @@ impl Target {
         match (expected, self.existing.as_mut()) {
             (PublicationEntry::Missing, None) => {}
             (PublicationEntry::File { content, mode }, Some(file)) => {
-                #[cfg(unix)]
                 {
                     use cap_std::fs::PermissionsExt;
                     if file.metadata().map_err(io_error)?.permissions().mode() & 0o7777 != *mode {
@@ -135,7 +134,6 @@ impl Target {
         }
     }
 
-    #[cfg(unix)]
     pub(crate) fn apply_publication_mode(
         self,
         mode: u32,
@@ -156,7 +154,6 @@ impl Target {
         Ok(())
     }
 
-    #[cfg(unix)]
     pub(crate) fn apply_publication(
         mut self,
         reader: &mut dyn PublicationContent,
@@ -260,7 +257,6 @@ fn mutation_failure(started: &AtomicBool, diagnostic: &str) -> ToolError {
     }
 }
 
-#[cfg(unix)]
 fn permission_mode(mode: u32) -> Result<rustix::fs::Mode, ToolError> {
     if mode & !0o777 != 0 {
         return Err(failed("publication mode exceeds captured permission bits"));

@@ -1435,6 +1435,7 @@ while True:
         assert_eq!(res.locations.len(), 1);
         assert_eq!(res.locations[0].path, lib_path);
 
+        #[cfg(unix)]
         let pid: i32 = fs::read_to_string(&pid_file)
             .unwrap()
             .trim()

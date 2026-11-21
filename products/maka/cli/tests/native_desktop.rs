@@ -81,15 +81,16 @@ fn main() -> std::process::ExitCode {
         }
     }
     #[cfg(any(target_os = "macos", windows))]
-    let mut cases: Vec<_> = desktop_new_session::CASES
+    let cases = desktop_new_session::CASES
         .iter()
-        .map(|name| (format!("terminal::desktop_new_session::{name}"), *name))
-        .collect();
+        .map(|name| (format!("terminal::desktop_new_session::{name}"), *name));
     #[cfg(target_os = "macos")]
-    cases.push((
+    let cases = cases.chain(std::iter::once((
         "terminal::desktop_new_session::owned_root::new_conversation_creates_and_selects_a_session_in_the_same_workspace".into(),
         "owned_root",
-    ));
+    )));
+    #[cfg(any(target_os = "macos", windows))]
+    let cases: Vec<_> = cases.collect();
     #[cfg(not(any(target_os = "macos", windows)))]
     let cases: Vec<(String, &str)> = Vec::new();
     let matches = |name: &str, filter: &str| {
