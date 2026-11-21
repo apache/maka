@@ -18,18 +18,27 @@
  */
 
 use super::*;
-use maka_agent_facts::{archive::ArchivedPlaceholder, model::prompt_source::source::json};
-use maka_agent_state::session_history::tool_result_source::ToolResultSource;
+use maka_agent_facts::{
+    archive::{prepare_imported_source_with_budget, prepare_source_projection},
+    model::prompt_source::source::json,
+    read::MAX_PAGE_CHARS,
+};
+use maka_agent_state::{
+    artifacts::SessionScope, session_history::tool_result_source::ToolResultSource,
+};
 use maka_model::prompt::ToolOutput;
 
 impl DriverModel {
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn archived_tool_result(
         &self,
         reader: &HistorySource<'_>,
         view: &RunView,
+        through: u64,
         id: FactId,
         fact: &Fact,
         call: &maka_agent_facts::model::ModelToolCall,
+        vision: bool,
     ) -> Result<Option<ToolOutput>, RunError> {
         let Fact::ToolResultAccepted { tool, result, .. } = fact else {
             return Err(RunError::InvalidInput(
@@ -63,11 +72,16 @@ impl DriverModel {
             .await
             .map_err(failed)?;
         let is_error = fields.is_error(budget.clone()).await.map_err(failed)?;
-        let archived = ArchivedPlaceholder::prepare_source(
+        let display_budget = fields
+            .display_budget_chars(budget.clone())
+            .await
+            .map_err(failed)?;
+        let archived = prepare_source_projection(
             id.to_string(),
             tool.call.clone(),
             call.name.clone(),
             projection,
+            display_budget.unwrap_or(MAX_PAGE_CHARS),
             budget,
             &self.cancellation,
         )
@@ -76,26 +90,39 @@ impl DriverModel {
         let Some(archived) = archived else {
             return Ok(None);
         };
-        let maka_agent_facts::tool_output::DurableToolProjection::Json { value } = archived
-            .to_canonical_projection()
-            .map_err(|reason| RunError::InvalidInput(reason.into()))?
-        else {
-            unreachable!("archive codec returns a canonical JSON placeholder")
-        };
-        Ok(Some(if is_error {
-            ToolOutput::ErrorJson(value)
-        } else {
-            ToolOutput::Json(value)
-        }))
+        drop(work);
+        let output = preparation::project_durable_projection(
+            reader.media_source(
+                maka_agent_state::artifacts::ArtifactScope {
+                    owner: view.spec.owner.clone(),
+                    session: view.spec.session_id.clone(),
+                    run: view.run,
+                    through,
+                }
+                .into(),
+            ),
+            &archived,
+            is_error,
+            view.spec.language,
+            vision,
+            &self.resources,
+            &self.cancellation,
+        )
+        .await?;
+        Ok(Some(output))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn archived_imported_tool_result(
         &self,
         snapshot: &maka_agent_state::session_history::snapshot::Snapshot,
+        scope: &SessionScope,
         path: &[RunId],
         message_ordinal: u64,
         part_ordinal: u64,
         reference: &ContentRef,
+        language: maka_agent_facts::language::Language,
+        vision: bool,
     ) -> Result<Option<(String, String, ToolOutput)>, RunError> {
         use maka_agent_state::session_history::tool_result_source::ToolResultReader;
         let result = async {
@@ -143,6 +170,7 @@ impl DriverModel {
                 .into_json(budget.clone())
                 .await?;
             let is_error = fields.is_error(budget.clone()).await?;
+            let display_budget = fields.display_budget_chars(budget.clone()).await?;
             let call_id = imported_identifier(call_id.source, budget.clone()).await?;
             let name = imported_identifier(name.source, budget.clone()).await?;
             let address = maka_agent_facts::history::HistoryRowAddress::Imported {
@@ -151,11 +179,12 @@ impl DriverModel {
                 message_ordinal,
                 part_ordinal,
             };
-            let Some(archived) = maka_agent_facts::archive::prepare_imported_source(
+            let Some(archived) = prepare_imported_source_with_budget(
                 &address,
                 call_id.clone(),
                 name.clone(),
                 projection,
+                display_budget.unwrap_or(MAX_PAGE_CHARS),
                 budget,
                 &self.cancellation,
             )
@@ -163,19 +192,21 @@ impl DriverModel {
             else {
                 return Ok(None);
             };
-            let maka_agent_facts::tool_output::DurableToolProjection::Json { value } = archived
-            else {
-                unreachable!("imported archive codec returns a JSON placeholder")
-            };
-            Ok(Some((
-                call_id,
-                name,
-                if is_error {
-                    ToolOutput::ErrorJson(value)
-                } else {
-                    ToolOutput::Json(value)
+            drop(work);
+            let output = preparation::project_durable_projection(
+                preparation::MediaSource::Snapshot {
+                    snapshot,
+                    scope: scope.clone().into(),
                 },
-            )))
+                &archived,
+                is_error,
+                language,
+                vision,
+                &self.resources,
+                &self.cancellation,
+            )
+            .await?;
+            Ok(Some((call_id, name, output)))
         }
         .await;
         result.map_err(|error| match error {

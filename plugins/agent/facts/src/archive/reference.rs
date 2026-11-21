@@ -50,6 +50,13 @@ impl ToolResultAddress {
         }
         Ok(format!("{EVENT_PREFIX}{}", encode(id)))
     }
+
+    pub(crate) fn short_event_ref(id: &str) -> Result<String, &'static str> {
+        if !identity_string(id) {
+            return Err("invalid archive event ID");
+        }
+        Ok(format!("{SHORT_PREFIX}{}", encode(id)))
+    }
 }
 
 impl ArchiveIdentity {

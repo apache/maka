@@ -77,6 +77,11 @@ pub struct ToolMetadata {
     pub description: String,
 }
 
+/// Maximum cumulative bytes a Cell may emit into Host memory across its entire lifetime.
+/// Independent of model display budgets and never reset across yields, because Host re-merges
+/// yielded outputs into the completed observation.
+pub const MAX_CELL_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+
 /// A cell's JSON scratch data and emitted output, separate from its interpreter heap.
 /// Host observers own delivery; the VM only appends and requests an observation.
 #[derive(Clone)]
@@ -95,6 +100,8 @@ struct Inner {
 struct State {
     output: Vec<CellOutput>,
     notifications: VecDeque<String>,
+    emitted_bytes: usize,
+    max_output_bytes: usize,
     deduplicate_images: bool,
     yielded: bool,
     failure: Option<ToolError>,
@@ -116,6 +123,8 @@ impl CellContext {
             state: Mutex::new(State {
                 output: Vec::new(),
                 notifications: VecDeque::new(),
+                emitted_bytes: 0,
+                max_output_bytes: MAX_CELL_OUTPUT_BYTES,
                 deduplicate_images: false,
                 yielded: false,
                 failure: None,
@@ -241,8 +250,20 @@ impl CellContext {
         {
             return Ok(());
         }
+        let added = cell_output_bytes(&output);
+        charge_output_bytes(&mut state, added)?;
         state.output.push(output);
         Ok(())
+    }
+
+    /// Move an already-charged notification into the output queue (e.g. external Cell owner)
+    /// without double-charging the Cell's lifetime Host output budget.
+    pub fn emit_precharged(&self, output: CellOutput) {
+        self.0.state.lock().unwrap().output.push(output);
+    }
+
+    pub fn set_max_output_bytes(&self, max_output_bytes: usize) {
+        self.0.state.lock().unwrap().max_output_bytes = max_output_bytes;
     }
 
     pub fn yield_output(&self) {
@@ -281,6 +302,7 @@ impl CellContext {
             ));
         }
         let mut state = self.0.state.lock().unwrap();
+        charge_output_bytes(&mut state, OUTPUT_SLOT_OVERHEAD.saturating_add(text.len()))?;
         state.notifications.push_back(text);
         self.0.notification_ready.notify_one();
         Ok(())
@@ -302,5 +324,100 @@ impl CellContext {
 
     pub fn has_notifications(&self) -> bool {
         !self.0.state.lock().unwrap().notifications.is_empty()
+    }
+}
+
+fn charge_output_bytes(state: &mut State, added: usize) -> Result<(), CellDiagnostic> {
+    let next = state
+        .emitted_bytes
+        .checked_add(added)
+        .filter(|total| *total <= state.max_output_bytes)
+        .ok_or_else(|| {
+            CellDiagnostic::new(
+                crate::CellDiagnosticKind::ExecutionError,
+                format!(
+                    "Cell output exceeded the Host limit of {} bytes; filter or narrow output inside the script",
+                    state.max_output_bytes
+                ),
+            )
+        })?;
+    state.emitted_bytes = next;
+    Ok(())
+}
+
+const OUTPUT_SLOT_OVERHEAD: usize = std::mem::size_of::<CellOutput>();
+
+fn cell_output_bytes(output: &CellOutput) -> usize {
+    let payload = match output {
+        CellOutput::Text { text } => text.len(),
+        CellOutput::Image { image } => image.mime_type.len().saturating_add(256),
+        CellOutput::Media { content, .. } => match content {
+            maka_agent_facts::capability::ContentBlock::Text { text } => text.len(),
+            maka_agent_facts::capability::ContentBlock::Image { data, mime_type }
+            | maka_agent_facts::capability::ContentBlock::Audio { data, mime_type } => {
+                data.len().saturating_add(mime_type.len())
+            }
+            maka_agent_facts::capability::ContentBlock::Resource {
+                uri,
+                mime_type,
+                text,
+                blob,
+            } => uri
+                .len()
+                .saturating_add(mime_type.as_ref().map_or(0, String::len))
+                .saturating_add(text.as_ref().map_or(0, String::len))
+                .saturating_add(blob.as_ref().map_or(0, String::len)),
+            maka_agent_facts::capability::ContentBlock::ResourceLink { uri, .. } => uri.len(),
+            maka_agent_facts::capability::ContentBlock::Unknown { .. } => 256,
+        },
+    };
+    OUTPUT_SLOT_OVERHEAD.saturating_add(payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_output_limit_accumulates_across_yield_drains() {
+        let context = CellContext::new(CellStore::temporary().unwrap(), Vec::new()).unwrap();
+        let slot = OUTPUT_SLOT_OVERHEAD;
+        let limit = 2 * slot + 100;
+        context.set_max_output_bytes(limit);
+
+        context
+            .emit(CellOutput::Text {
+                text: "a".repeat(60),
+            })
+            .unwrap();
+        assert_eq!(context.take_output().len(), 1);
+
+        // Prior output was drained by yield, but Host still merges it at completion.
+        let err = context
+            .emit(CellOutput::Text {
+                text: "b".repeat(50),
+            })
+            .expect_err("cumulative output across yields must fail explicitly");
+        assert!(err.message.contains(&format!("{limit} bytes")), "{err:?}");
+        assert!(context.take_output().is_empty());
+
+        // Remaining 40 bytes still fit via notify(), and transferring that precharged
+        // notification into output (external owner path) must not double-charge.
+        context.notify("n".repeat(40)).unwrap();
+        for text in context.take_notifications() {
+            context.emit_precharged(CellOutput::Text { text });
+        }
+        assert_eq!(context.take_output().len(), 1);
+
+        // Even an empty Text item consumes slot overhead and cannot bypass the cap.
+        let slot_err = context
+            .emit(CellOutput::Text {
+                text: String::new(),
+            })
+            .expect_err("empty text item must still charge slot overhead");
+        assert!(
+            slot_err.message.contains(&format!("{limit} bytes")),
+            "{slot_err:?}"
+        );
     }
 }

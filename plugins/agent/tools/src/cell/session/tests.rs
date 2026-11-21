@@ -36,6 +36,7 @@ use maka_plugin_core::{
         RecoveryContract, RecoveryProtocol, RecoveryRef,
     },
 };
+use serde_json::json;
 
 const SESSION: &str = "cell_observation";
 
@@ -658,4 +659,57 @@ fn assert_cell_failure<T>(result: Result<T, ToolError>, kind: &str, reason: &str
         diagnostic.contains(reason),
         "original cause lost: {diagnostic}"
     );
+}
+
+#[test]
+fn project_observation_preserves_unclipped_incremental_output_and_freezes_budget() {
+    use maka_agent_facts::{
+        cells::{CellId, CellObservation, CellOutput, CellReplyState},
+        durable::ExecutionIdentity,
+        tool_output::DurableToolProjection,
+    };
+    use std::time::SystemTime;
+
+    let cell: CellId = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
+    let long_tail = format!("{}TAIL-DIAGNOSTIC", "x".repeat(50_000));
+    let observed = ObservedCell {
+        state: CellReplyState::Running,
+        observation: CellObservation::Completed {
+            cell_id: cell,
+            content: vec![
+                CellOutput::Text {
+                    text: "already-yielded-once".into(),
+                },
+                CellOutput::Text { text: long_tail },
+            ],
+            result: serde_json::json!({"ok": true, "value": null, "toolCalls": []}),
+        },
+        prior_output: Vec::new(),
+        display_from: 1,
+    };
+    let exec_id = ExecutionIdentity {
+        session_id: "sess".into(),
+        turn_id: "turn".into(),
+        run_id: serde_json::from_str("\"00000000-0000-0000-0000-000000000009\"").unwrap(),
+    };
+
+    let small = CodeCells::project_observation(cell, observed.clone(), 500)
+        .into_durable("call-1", SystemTime::UNIX_EPOCH, &exec_id)
+        .unwrap();
+    assert_eq!(small.display_budget_chars, Some(2_000));
+    let DurableToolProjection::Text { text } = small.projection else {
+        panic!("expected text projection");
+    };
+    assert!(!text.contains("already-yielded-once"));
+    assert!(text.contains("TAIL-DIAGNOSTIC"));
+
+    let zero = CodeCells::project_observation(cell, observed.clone(), 0)
+        .into_durable("call-2", SystemTime::UNIX_EPOCH, &exec_id)
+        .unwrap();
+    assert_eq!(zero.display_budget_chars, Some(0));
+
+    let huge = CodeCells::project_observation(cell, observed, 500_000)
+        .into_durable("call-3", SystemTime::UNIX_EPOCH, &exec_id)
+        .unwrap();
+    assert_eq!(huge.display_budget_chars, Some(80_000));
 }

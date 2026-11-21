@@ -73,10 +73,13 @@ impl DriverModel {
                         && let Some((call_id, name, output)) = self
                             .archived_imported_tool_result(
                                 snapshot,
+                                &scope,
                                 path,
                                 ordinal,
                                 part_ordinal as u64,
                                 reference,
+                                language,
+                                vision,
                             )
                             .await?
                     {
