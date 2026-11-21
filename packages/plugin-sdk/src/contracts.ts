@@ -1853,7 +1853,7 @@ export const contracts: {
                   },
                   approval: {
                     description:
-                      'Explicit renewed model and session authority, only for Resume without a pending iteration.',
+                      'Explicit renewed execution source and session authority, only for Resume without a pending iteration.',
                     anyOf: [
                       {
                         $ref: '#/$defs/AgentGoalApproval',
@@ -1876,22 +1876,13 @@ export const contracts: {
                   target: {
                     $ref: '#/$defs/AgentScheduledTarget',
                   },
-                  model: {
-                    $ref: '#/$defs/ModelSelection',
-                  },
-                  thinkingLevel: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/ThinkingLevel',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
+                  backend: {
+                    description: 'Native model or external Agent that runs later iterations.',
+                    $ref: '#/$defs/AgentBackendPreference',
                   },
                 },
                 additionalProperties: false,
-                required: ['target', 'model'],
+                required: ['target', 'backend'],
               },
               AgentScheduledTarget: {
                 description:
@@ -2005,28 +1996,103 @@ export const contracts: {
                 additionalProperties: false,
                 required: ['id', 'permissionEpoch'],
               },
-              ModelSelection: {
+              AgentBackendPreference: {
                 description:
-                  'Selected model and optional service tier, resolved from the connection at admission.',
-                type: 'object',
-                properties: {
-                  serviceTier: {
-                    type: ['string', 'null'],
+                  "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      connectionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      modelId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'connectionId', 'modelId'],
                   },
-                  connectionId: {
-                    type: 'string',
-                    minLength: 1,
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
                   },
-                  modelId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                },
-                required: ['connectionId', 'modelId'],
+                ],
               },
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               GoalControl: {
                 type: 'string',

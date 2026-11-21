@@ -2469,7 +2469,7 @@ export type AgentGoalChange =
       action: GoalControl;
       budget?: AgentGoalBudget | null;
       /**
-       * Explicit renewed model and session authority, only for Resume without a pending iteration.
+       * Explicit renewed execution source and session authority, only for Resume without a pending iteration.
        */
       approval?: AgentGoalApproval | null;
     };
@@ -7521,8 +7521,10 @@ export interface GoalReport {
 }
 export interface AgentGoalApproval {
   target: AgentScheduledTarget;
-  model: ModelSelection;
-  thinkingLevel?: ThinkingLevel | null;
+  /**
+   * Native model or external Agent that runs later iterations.
+   */
+  backend: AgentBackendPreference;
 }
 /**
  * Exact observed source boundary. This data is checked against the original
