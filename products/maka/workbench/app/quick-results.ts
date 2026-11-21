@@ -52,22 +52,30 @@ export function recordUse(usage: Usage, key: string, at: number): Usage {
 export function ranked<T extends { key: string; match: number }>(
   candidates: readonly T[],
   usage: Usage,
+  limit = MAX_ROWS,
 ): T[] {
   return [...candidates]
     .sort(
       (left, right) =>
         left.match - right.match || weight(usage[right.key]) - weight(usage[left.key]),
     )
-    .slice(0, MAX_ROWS);
+    .slice(0, limit);
 }
 
-export function recommended<T extends { key: string; remembered: boolean }>(
-  candidates: readonly T[],
-  usage: Usage,
-): T[] {
+export function recommended<
+  T extends { key: string; remembered: boolean; recommendedAt?: number | undefined },
+>(candidates: readonly T[], usage: Usage): T[] {
   return candidates
-    .filter((candidate) => candidate.remembered && usage[candidate.key] !== undefined)
-    .sort((left, right) => weight(usage[right.key]) - weight(usage[left.key]))
+    .filter(
+      (candidate) =>
+        candidate.recommendedAt !== undefined ||
+        (candidate.remembered && usage[candidate.key] !== undefined),
+    )
+    .sort((left, right) => {
+      if (left.recommendedAt !== undefined || right.recommendedAt !== undefined)
+        return (right.recommendedAt ?? -Infinity) - (left.recommendedAt ?? -Infinity);
+      return weight(usage[right.key]) - weight(usage[left.key]);
+    })
     .slice(0, MAX_RECOMMENDED);
 }
 

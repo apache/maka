@@ -23,7 +23,7 @@ import { tr } from './locale';
 import { formatCount } from './numberFormat';
 import { cacheHitRate } from './TurnUsage';
 
-export function replyDetails(row: Row): string {
+export function replyMetrics(row: Pick<Row, 'model' | 'replyInfo' | 'timing'>) {
   const info = row.replyInfo;
   const model = row.model;
   const name =
@@ -35,7 +35,13 @@ export function replyDetails(row: Row): string {
     (timing?.finished && timing.finished.at >= timing.startedAt
       ? timing.finished.at - timing.startedAt
       : timing?.executorUsage?.durationMs);
-  const tokens = info?.usage ?? timing?.modelTokens;
+  return { name, elapsed };
+}
+
+export function replyDetails(row: Row): string {
+  const { name, elapsed } = replyMetrics(row);
+  const timing = row.timing;
+  const tokens = row.replyInfo?.usage ?? timing?.modelTokens;
   const cache = timing?.promptCache;
   return [
     name,

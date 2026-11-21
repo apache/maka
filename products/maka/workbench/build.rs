@@ -25,7 +25,13 @@ fn main() {
             .file(source)
             .flag("-fobjc-arc")
             .compile("maka_dictation");
-        for framework in ["AVFoundation", "AppKit", "Security"] {
+        for framework in [
+            "AVFoundation",
+            "AppKit",
+            "AudioToolbox",
+            "CoreAudio",
+            "Security",
+        ] {
             println!("cargo:rustc-link-lib=framework={framework}");
         }
     }

@@ -280,6 +280,7 @@ export const menuSeparatorStyle = () => ({
 export const quietActiveStyle = () => ({ backgroundColor: C.cardRaised });
 
 export function IconButton(props: {
+  compact?: boolean;
   label: string;
   tooltip?: string;
   icon: Parameters<typeof Icon>[0]['name'];
@@ -296,8 +297,10 @@ export function IconButton(props: {
       onPress={props.onPress}
       style={{
         ...controlStyle,
-        width: 32,
-        paddingHorizontal: 8,
+        width: props.compact ? 24 : 32,
+        minHeight: props.compact ? 24 : 32,
+        paddingVertical: props.compact ? 4 : 8,
+        paddingHorizontal: props.compact ? 4 : 8,
         alignItems: 'center',
         flexShrink: 0,
       }}
