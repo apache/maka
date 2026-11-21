@@ -144,7 +144,9 @@ export type Row = {
 };
 
 /** Imported reply text has no native final-output marker. */
-export function isReplyWithActions(row: Row): boolean {
+export function isReplyWithActions(
+  row: Pick<Row, 'role' | 'field' | 'tool' | 'sourceCitation' | 'finalOutput' | 'position'>,
+): boolean {
   return (
     row.role === 'assistant' &&
     row.field === 'body' &&

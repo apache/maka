@@ -20,6 +20,13 @@
 import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const composerMessages = {
+  Microphone: ['Microphone', '麦克风', '麥克風'],
+  'Follow system input': ['Follow system input', '跟随系统输入', '跟隨系統輸入'],
+  'Selected microphone (disconnected)': [
+    'Selected microphone (disconnected)',
+    '所选麦克风（未连接）',
+    '所選麥克風（未連接）',
+  ],
   'Start dictation': ['Start dictation', '开始听写', '開始聽寫'],
   'Dictation uses the model connection from General settings.': [
     'Dictation uses the model connection from General settings.',

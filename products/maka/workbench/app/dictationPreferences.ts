@@ -22,11 +22,13 @@ import { signal, Storage } from 'nsh';
 import type { ConnectionVersionBasis } from '../../../../packages/plugin-sdk/src/index.js';
 import { tr } from './locale';
 
+type Preference = 'enabled' | 'connection' | 'listenOnOpen' | 'microphone';
 type Connection = { name: string; basis: ConnectionVersionBasis };
 const symbol = Symbol.for('maka.dictation.preferences');
 function preferences() {
   const enabled = signal(false);
   const listenOnOpen = signal(true);
+  const microphone = signal('');
   const selected = signal('');
   const connections = signal<Connection[]>([]);
   const legacy = signal(false);
@@ -39,6 +41,7 @@ function preferences() {
     (initialization ??= Promise.all([
       Storage.getItem(prefix() + 'listenOnOpen').then((v) => listenOnOpen.set(v !== 'false')),
       Storage.getItem(prefix() + 'enabled').then((v) => enabled.set(v === 'true')),
+      Storage.getItem(prefix() + 'microphone').then((v) => microphone.set(v ?? '')),
       Storage.getItem(prefix() + 'connection').then((v) => selected.set(v ?? '')),
     ])
       .then(() => {})
@@ -61,11 +64,7 @@ function preferences() {
       : connections().length === 1
         ? connections()[0]
         : undefined;
-  const update = async (
-    field: 'enabled' | 'connection' | 'listenOnOpen',
-    value: string,
-    enable = false,
-  ) => {
+  const update = async (field: Preference, value: string, enable = false) => {
     if (busy()) throw new Error(tr('Dictation settings are being saved.'));
     busy.set(true);
     try {
@@ -73,12 +72,14 @@ function preferences() {
       await Storage.setItem(prefix() + field, value);
       if (field === 'enabled') enabled.set(value === 'true');
       else if (field === 'listenOnOpen') listenOnOpen.set(value === 'true');
+      else if (field === 'microphone') microphone.set(value);
       else selected.set(value);
       if (enable && !enabled()) {
         await Storage.setItem(prefix() + 'enabled', 'true');
         enabled.set(true);
       }
-      if (enabled()) await refresh();
+      if (field === 'microphone') error.set('');
+      else if (enabled()) await refresh();
     } finally {
       busy.set(false);
     }
@@ -86,6 +87,7 @@ function preferences() {
   return {
     enabled,
     listenOnOpen,
+    microphone,
     selected,
     connections,
     legacy,
@@ -95,7 +97,7 @@ function preferences() {
     refresh,
     current,
     useLegacy,
-    save: (field: 'enabled' | 'connection' | 'listenOnOpen', value: string) =>
+    save: (field: Preference, value: string) =>
       update(field, value).catch((e) => error.set(String(e))),
     enableForConnection: (id: string) => update('connection', id, true),
     description: () =>

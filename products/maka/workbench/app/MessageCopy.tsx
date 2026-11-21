@@ -90,6 +90,7 @@ export async function readOriginal(
 
 /** Copy one canonical body, including text outside the loaded history window. */
 export function MessageCopy(props: {
+  compact?: boolean;
   row(): Row;
   ownerKey(): string;
   sessionId: string;
@@ -166,12 +167,13 @@ export function MessageCopy(props: {
         maxWidth: '100%',
       }}
     >
-      <If when={notice()}>
+      <If when={notice() && (!props.compact || failed())}>
         <Text style={{ color: failed() ? C.danger : C.muted, fontSize: 12, lineHeight: 16 }}>
           {notice()}
         </Text>
       </If>
       <IconButton
+        compact={props.compact}
         label={label()}
         tooltip={busy() ? tr('Reading original message…') : undefined}
         icon={notice() && !failed() ? 'check' : 'copy'}

@@ -75,9 +75,9 @@ import {
   View,
   List,
 } from 'nsh';
-import type { ListRef, ReadonlyListSource, ScrollRef, ViewRef } from 'nsh';
+import type { ListRef, ReadonlyListSource, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
-import { keymap, platform, reduceMotion, Scroll } from 'nsh';
+import { keymap, platform, reduceMotion } from 'nsh';
 import { AnimatedValue } from 'nsh';
 import {
   useHost,
@@ -194,6 +194,7 @@ import {
   BotWaiting,
   BotWorking,
 } from '../../../../products/maka/workbench/app/BotReply';
+import { replyMetrics } from '../../../../products/maka/workbench/app/replyDetails';
 import { BotRestart } from '../../../../products/maka/workbench/app/BotRestart';
 import { sameValue } from '../../../shared/value';
 import { DiscoveryPanel } from '../../../../products/maka/workbench/app/DiscoveryPanel';
@@ -203,6 +204,7 @@ import {
   MessageRow,
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
+import { compactTranscriptSize } from '../../../../products/maka/workbench/app/QuickBar';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
 import {
   MessageEdit,
@@ -1123,6 +1125,7 @@ export function Conversation(props: ConversationProps) {
   });
   const display = () => (ordinaryChat() ? ordinaryChatSections().flat() : otherDisplay());
   function chatEntries(section: ProcessProjection, botChat: boolean): DisplayEntry[] {
+    const showWork = !(botChat && props.compact);
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
     // Until the Host has said whether this is the Bot, assume it is: showing the model's
@@ -1241,6 +1244,7 @@ export function Conversation(props: ConversationProps) {
       const outcome = turn && turnOutcome(turn);
       const foldedWork = turn && workFold(turn) === 'closed';
       if (
+        showWork &&
         turn &&
         (entry.kind === 'process' ||
           (row?.role === 'compaction' && turn.foldedWork) ||
@@ -1258,7 +1262,7 @@ export function Conversation(props: ConversationProps) {
         });
       }
       if (entry.kind === 'process') {
-        if (!turn || !turnExpanded(turn)) continue;
+        if (!showWork || !turn || !turnExpanded(turn)) continue;
         result.push({ kind: 'process', key: entry.key, group: entry });
       } else if (row) {
         // Only SendUser publishes for the Bot. The model's own text, including a
@@ -1423,23 +1427,6 @@ export function Conversation(props: ConversationProps) {
     return list.length ? list.at(list.length - 1) : undefined;
   };
   const displayKeys = () => keySections().flat();
-  const latestQuestion = computed(() =>
-    props.compact
-      ? display().findLastIndex(
-          (item) => item.kind === 'row' && currentRow(item.rowId)?.role === 'user',
-        )
-      : -1,
-  );
-  const latestQuestionKey = () => displayKeys()[latestQuestion()] ?? null;
-  // Set by the first follow-up, so the exchanges of this popup stay above the newest one.
-  const compactStart = signal<string | null>(null);
-  const shownKeys = computed(() => {
-    if (!props.compact) return [];
-    const start = compactStart();
-    const anchored = start === null ? -1 : displayKeys().indexOf(start);
-    const first = anchored >= 0 ? anchored : latestQuestion();
-    return first <= 0 ? displayKeys() : displayKeys().slice(first);
-  });
   const navigationItems = computed<TurnNavigationItem[]>(() => {
     const items = new Map<string, TurnNavigationItem>();
     for (const item of landmarks().items) {
@@ -1618,8 +1605,6 @@ export function Conversation(props: ConversationProps) {
     if (innerReader() !== null) followLatestActivity();
     resumeHistoryFollowing();
   };
-  let compactScroll: ScrollRef | undefined;
-  let followCompact = false;
   let alive = true;
   let subscription: Subscription | null = null;
   let transcriptTask: Promise<void> | null = null;
@@ -3880,10 +3865,7 @@ export function Conversation(props: ConversationProps) {
     heldDraft = savedComposerEdit;
     holding = true;
     error.set('');
-    if (props.compact) {
-      if (compactStart() === null) compactStart.set(latestQuestionKey());
-      followCompact = true;
-    }
+    if (props.compact) list?.scrollToEnd({ animated: false });
     void freezeSend(frozen);
     return true;
   };
@@ -4080,10 +4062,7 @@ export function Conversation(props: ConversationProps) {
     },
     changeDraft,
     submit(event) {
-      if (props.compact) {
-        if (compactStart() === null) compactStart.set(latestQuestionKey());
-        followCompact = true;
-      }
+      if (props.compact) list?.scrollToEnd({ animated: false });
       void send(event.text);
     },
     sendRendered,
@@ -4502,8 +4481,16 @@ export function Conversation(props: ConversationProps) {
       cancel={inputAction(cancelNavigation, navigatingTurn())}
     />
   );
+  const transcriptSize = props.compact ? compactTranscriptSize() : undefined;
   const entryRow = (key: () => string) => (
-    <View style={readingColumn}>
+    <View
+      style={readingColumn}
+      onLayout={
+        transcriptSize
+          ? ({ bounds }) => transcriptSize.measure(key(), bounds.size.height)
+          : undefined
+      }
+    >
       <Each of={[key()]} key={(id: string) => id}>
         {(ownedKey) => {
           const initial = displayEntry(ownedKey());
@@ -4716,7 +4703,7 @@ export function Conversation(props: ConversationProps) {
                   platform.idiom === 'terminal'
                     ? () =>
                         list?.scrollToIndex({
-                          index: (props.compact ? shownKeys() : displayKeys()).indexOf(ownedKey()),
+                          index: displayKeys().indexOf(ownedKey()),
                           viewPosition: 0,
                           animated: false,
                         })
@@ -4746,6 +4733,7 @@ export function Conversation(props: ConversationProps) {
                 detail={() => {
                   if (run() === 'waiting' && retrying(quietWaits(execution())))
                     return tr('Waiting to retry');
+                  if (props.compact && !ordinaryChat()) return '';
                   const tool = latestToolActivity(toolActivity(), runId(), runTurn());
                   return tool ? `${tool.name}` : '';
                 }}
@@ -4770,6 +4758,22 @@ export function Conversation(props: ConversationProps) {
             };
             return (
               <BotReply
+                metrics={
+                  props.compact
+                    ? (at) => {
+                        const model = historyRows()
+                          .byTurn.get(initial.turnId)
+                          ?.findLast(
+                            (row) =>
+                              row.model && row.timestamp !== undefined && row.timestamp <= at,
+                          )?.model;
+                        return replyMetrics({
+                          model,
+                          timing: projectedTurn(initial.turnId)?.timing ?? undefined,
+                        });
+                      }
+                    : undefined
+                }
                 quote={(message, text) => {
                   if (!draftReady() || savingFailed() || !text.trim()) return;
                   const next = appendDraftQuote(
@@ -4823,6 +4827,7 @@ export function Conversation(props: ConversationProps) {
           return (
             <MessageRow
               item={row}
+              compactChat={props.compact}
               hasSources={() => {
                 const item = entry();
                 return item.kind === 'row' && Boolean(item.sources?.length);
@@ -4862,6 +4867,7 @@ export function Conversation(props: ConversationProps) {
               }}
               finalActions={(row, ownerKey, menu) => (
                 <FinalActions
+                  compact={props.compact}
                   row={row}
                   ownerKey={ownerKey}
                   sessionId={sessionId}
@@ -4872,6 +4878,7 @@ export function Conversation(props: ConversationProps) {
                     platform.idiom !== 'terminal' && props.edit ? (
                       <MessageEdit
                         regenerate
+                        menuOnly={props.compact}
                         row={() => loadedOpening(historyTurnKey(row()))}
                         sessionId={sessionId}
                         through={() => latestKnown}
@@ -4907,6 +4914,7 @@ export function Conversation(props: ConversationProps) {
                 platform.idiom !== 'terminal' && props.edit
                   ? (row, ownerKey, menu) => (
                       <MessageEdit
+                        menuOnly={props.compact}
                         row={row}
                         ownerKey={ownerKey}
                         sessionId={sessionId}
@@ -4948,39 +4956,41 @@ export function Conversation(props: ConversationProps) {
         style={{
           flexShrink: 1,
           minHeight: 0,
-          borderTopWidth: shownKeys().length ? 1 : 0,
+          borderTopWidth: historyList().length ? 1 : 0,
           borderTopColor: C.line,
         }}
       >
-        <Scroll
-          ref={(node) => (compactScroll = node)}
+        <List
+          ref={list}
+          each={historyList()}
+          alignment="bottom"
+          estimatedItemSize={96}
+          maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 32 }}
+          style={{
+            height: transcriptSize!.height(historyList().length, historyList().at),
+            flexShrink: 1,
+            minHeight: 0,
+          }}
+          contentStyle={{ paddingVertical: historyList().length ? 16 : 0 }}
+          loadMoreAtStartThreshold={HISTORY_LOOKAHEAD_VIEWPORTS}
+          onLoadMoreAtStart={prefetchOlder}
+          onScrollIntent={({ intent, delta }) => {
+            if (intent === 'start' || (intent === 'scroll' && (delta ?? 0) <= 0)) {
+              deferOlderUntilScroll = false;
+              if (nearHistoryStart()) prefetchOlder();
+            }
+          }}
           onScroll={(event) => {
-            followCompact =
-              event.offset.y >= Math.max(0, event.contentSize.height - event.size.height) - 32;
+            historyOffset = event.offset.y;
             changedReadExposure();
           }}
-          style={{ flexShrink: 1, minHeight: 0 }}
-          contentStyle={{ paddingVertical: shownKeys().length ? 16 : 0 }}
+          onViewableItemsChange={(event) => {
+            visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
+            changedReadExposure();
+          }}
         >
-          <View
-            onLayout={() => {
-              if (followCompact) compactScroll?.scrollToEnd({ animated: false });
-            }}
-          >
-            <List
-              ref={list}
-              viewport="parent"
-              each={shownKeys()}
-              estimatedItemSize={96}
-              onViewableItemsChange={(event) => {
-                visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
-                changedReadExposure();
-              }}
-            >
-              {entryRow}
-            </List>
-          </View>
-        </Scroll>
+          {entryRow}
+        </List>
       </View>
     );
   return (

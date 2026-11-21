@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { effect, platform, type JSX } from 'nsh';
+import { effect, platform, signal, type JSX } from 'nsh';
+import { host } from 'maka/host';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
@@ -29,6 +30,7 @@ import {
   SettingsBody,
   SettingsProblem,
   SettingsSection,
+  SettingsSelect,
   SettingsSwitch,
 } from '../../../products/maka/workbench/app/SettingsPage';
 
@@ -54,6 +56,18 @@ function Tool({ input }: UiEmbeddedViewProps<DictationInput, JSX.Element>) {
 
 function Preferences() {
   void preferences.initialize();
+  const microphones = () => host.dictationMicrophones() as { id: string; name: string }[];
+  const devices = signal(microphones());
+  const choices = () => {
+    const selected = preferences.microphone();
+    return [
+      { value: '', title: tr('Follow system input') },
+      ...devices().map(({ id, name }) => ({ value: id, title: name })),
+      ...(selected && !devices().some((device) => device.id === selected)
+        ? [{ value: selected, title: tr('Selected microphone (disconnected)'), disabled: true }]
+        : []),
+    ];
+  };
   return (
     <SettingsBody>
       <SettingsSection note={tr('Dictation uses the model connection from General settings.')}>
@@ -68,6 +82,14 @@ function Preferences() {
           checked={preferences.listenOnOpen()}
           disabled={!preferences.enabled() || preferences.busy()}
           onPress={() => void preferences.save('listenOnOpen', String(!preferences.listenOnOpen()))}
+        />
+        <SettingsSelect
+          label={tr('Microphone')}
+          value={preferences.microphone()}
+          choices={choices()}
+          disabled={preferences.busy()}
+          onOpen={() => devices.set(microphones())}
+          change={(value) => void preferences.save('microphone', value)}
         />
       </SettingsSection>
       <If when={!!preferences.error()}>

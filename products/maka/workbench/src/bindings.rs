@@ -440,6 +440,10 @@ impl ApplicationHost {
         format!("dictation.{}.", self.owner.client.source().state_domain)
     }
 
+    pub fn dictation_microphones(&self) -> Vec<serde_json::Value> {
+        dictation::microphones()
+    }
+
     pub fn legacy_dictation_key(&self) -> bool {
         dictation::legacy_key()
     }
