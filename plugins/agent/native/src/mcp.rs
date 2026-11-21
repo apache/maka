@@ -90,9 +90,18 @@ impl std::fmt::Display for CloseError {
 impl std::error::Error for StartupError {}
 impl std::error::Error for CloseError {}
 
+#[derive(Clone)]
+struct Server {
+    name: String,
+    // A new external protocol session is a new authority generation.
+    // Previously admitted work cannot silently acquire its replacement.
+    generation: String,
+    connection: Connection,
+    live_bindings: Vec<LiveBinding>,
+}
 #[derive(Default)]
 pub(crate) struct Servers {
-    connections: Vec<Connection>,
+    servers: Vec<Server>,
     pub names: BTreeMap<String, Vec<String>>,
     pub registrations: Vec<ToolRegistration>,
     pub bindings: BTreeMap<String, Option<String>>,
@@ -106,6 +115,16 @@ impl Servers {
         Self::open_cancellable(configurations, configuration, CancellationToken::new()).await
     }
     pub async fn open_cancellable(
+        configurations: &[ServerConfiguration],
+        configuration: &maka_config::ConfigurationStore,
+        cancellation: CancellationToken,
+    ) -> Result<Self, StartupError> {
+        Self::reopen(None, configurations, configuration, cancellation).await
+    }
+    /// Opens the configured servers. A server whose connection in `previous` is still
+    /// available keeps that connection and its generation; only the others start.
+    pub(super) async fn reopen(
+        previous: Option<&Self>,
         configurations: &[ServerConfiguration],
         configuration: &maka_config::ConfigurationStore,
         cancellation: CancellationToken,
@@ -129,6 +148,16 @@ impl Servers {
             maka_network::Policy::from_host_settings(&network.proxy, network.password.as_deref())
                 .map_err(|_| StartupError::clean("MCP network settings are invalid"))?;
         for config in configurations {
+            let kept = previous.and_then(|previous| {
+                previous
+                    .servers
+                    .iter()
+                    .find(|server| server.name == config.name && server.connection.available())
+            });
+            if let Some(kept) = kept {
+                servers.push(kept.clone());
+                continue;
+            }
             let connection = match Connection::connect_cancellable(
                 config.clone(),
                 network.clone(),
@@ -140,59 +169,100 @@ impl Servers {
                 Err(error) => {
                     let mut message = format!("MCP server {}: {}", config.name, error.message);
                     let mut original: Vec<_> = error.material.into_iter().collect();
-                    if let Err(cleanup) = servers.close().await {
+                    let started = servers.except(previous);
+                    if let Err(cleanup) = started.close().await {
                         message.push_str(&format!("; {}", cleanup.message));
                         original.extend(cleanup.material.original);
                     }
                     let material = (!original.is_empty()).then(|| CleanupMaterial {
-                        _connections: servers.connections,
+                        _connections: started.connections(),
                         original,
                     });
                     return Err(StartupError { message, material });
                 }
             };
-            // A new external protocol session is a new authority generation.
-            // Previously admitted work cannot silently acquire its replacement.
             let generation = format!("mcp:{}:{}", config.name, uuid::Uuid::new_v4());
-            servers.names.insert(
-                config.name.clone(),
-                connection
-                    .tools()
-                    .iter()
-                    .map(|tool| tool.definition.name.clone())
-                    .collect(),
-            );
-            for tool in connection.tools() {
-                let name = tool.definition.name.clone();
-                let mut definition = tool.definition.clone();
-                let (input_projection, input_schema) = Projection::project(definition.input_schema);
-                definition.input_schema = input_schema;
-                servers
-                    .bindings
-                    .insert(name.clone(), Some(generation.clone()));
-                let live = LiveBinding {
-                    definition,
-                    binding: Binding {
-                        connection: connection.clone(),
-                        name,
-                        remote_name: tool.remote_name.clone(),
-                        server: config.name.clone(),
-                        generation: generation.clone(),
-                        input_projection,
-                    },
-                };
-                servers.registrations.push(live.declaration());
-                servers.live_bindings.push(live);
-            }
-            servers.connections.push(connection);
+            let live_bindings = connection
+                .tools()
+                .iter()
+                .map(|tool| {
+                    let mut definition = tool.definition.clone();
+                    let (input_projection, input_schema) =
+                        Projection::project(definition.input_schema);
+                    definition.input_schema = input_schema;
+                    LiveBinding {
+                        binding: Binding {
+                            connection: connection.clone(),
+                            name: definition.name.clone(),
+                            remote_name: tool.remote_name.clone(),
+                            server: config.name.clone(),
+                            generation: generation.clone(),
+                            input_projection,
+                        },
+                        definition,
+                    }
+                })
+                .collect();
+            servers.push(Server {
+                name: config.name.clone(),
+                generation,
+                connection,
+                live_bindings,
+            });
         }
         Ok(servers)
+    }
+    fn push(&mut self, server: Server) {
+        self.names.insert(
+            server.name.clone(),
+            server
+                .live_bindings
+                .iter()
+                .map(|live| live.name().to_owned())
+                .collect(),
+        );
+        for live in &server.live_bindings {
+            self.bindings
+                .insert(live.name().to_owned(), Some(server.generation.clone()));
+            self.registrations.push(live.declaration());
+            self.live_bindings.push(live.clone());
+        }
+        self.servers.push(server);
+    }
+    /// Only the connections that `kept` does not hold, so that closing them leaves `kept` open.
+    pub(super) fn except(&self, kept: Option<&Self>) -> Self {
+        Self {
+            servers: self
+                .servers
+                .iter()
+                .filter(|server| {
+                    !kept.is_some_and(|kept| {
+                        kept.servers
+                            .iter()
+                            .any(|other| other.generation == server.generation)
+                    })
+                })
+                .cloned()
+                .collect(),
+            ..Self::default()
+        }
+    }
+    pub(super) fn available(&self) -> bool {
+        self.servers
+            .iter()
+            .all(|server| server.connection.available())
+    }
+    fn connections(&self) -> Vec<Connection> {
+        self.servers
+            .iter()
+            .map(|server| server.connection.clone())
+            .collect()
     }
     pub async fn close(&self) -> Result<(), CloseError> {
         let mut message = None;
         let mut original = Vec::new();
-        for connection in &self.connections {
-            if let Err(cause) = connection.close().await {
+        for server in &self.servers {
+            if let Err(cause) = server.connection.close().await {
                 message.get_or_insert(cause.message);
                 original.push(cause.material);
             }
@@ -201,7 +271,7 @@ impl Servers {
             Some(message) => Err(CloseError {
                 message,
                 material: CleanupMaterial {
-                    _connections: self.connections.clone(),
+                    _connections: self.connections(),
                     original,
                 },
             }),
