@@ -347,17 +347,36 @@ impl Host {
         listener: LocalListener,
         cancel: CancellationToken,
     ) -> Result<()> {
-        self.serve(listener, None, cancel).await
+        self.serve_ingress(Some(listener), None, cancel).await
     }
     pub async fn serve(
         self: &Arc<Self>,
-        mut listener: LocalListener,
+        listener: LocalListener,
         websocket: Option<WebSocketListener>,
+        cancel: CancellationToken,
+    ) -> Result<()> {
+        self.serve_ingress(Some(listener), websocket, cancel).await
+    }
+    /// Serve authenticated remote WebSocket channels without binding a local IPC socket.
+    pub async fn serve_remote(
+        self: &Arc<Self>,
+        websocket: WebSocketListener,
+        cancel: CancellationToken,
+    ) -> Result<()> {
+        self.serve_ingress(None, Some(websocket), cancel).await
+    }
+    async fn serve_ingress(
+        self: &Arc<Self>,
+        mut listener: Option<LocalListener>,
+        mut websocket: Option<WebSocketListener>,
         cancel: CancellationToken,
     ) -> Result<()> {
         enum Incoming {
             Local(LocalStream),
-            Remote(tokio::net::TcpStream),
+            Remote {
+                stream: Channel,
+                allowed_origins: Arc<[String]>,
+            },
         }
         let tasks = TaskTracker::new();
         let mut rejected = None;
@@ -366,17 +385,32 @@ impl Host {
                 biased;
                 () = self.stop.cancelled() => break Ok(()),
                 () = cancel.cancelled() => break Ok(()),
-                value = listener.accept() => match value {
+                value = async {
+                    match &mut listener {
+                        Some(listener) => listener.accept().await,
+                        None => std::future::pending().await,
+                    }
+                } => match value {
                     Ok(stream) => Incoming::Local(stream),
                     Err(error) => break Err(error.to_string()),
                 },
                 value = async {
-                    match &websocket {
-                        Some(listener) => listener.listener.accept().await,
+                    match &mut websocket {
+                        Some(listener) => listener.accept().await,
                         None => std::future::pending().await,
                     }
                 } => match value {
-                    Ok((stream, _)) => Incoming::Remote(stream),
+                    Ok(Some((stream, allowed_origins))) => Incoming::Remote {
+                        stream,
+                        allowed_origins,
+                    },
+                    Ok(None) => {
+                        websocket = None;
+                        if listener.is_none() {
+                            break Ok(());
+                        }
+                        continue;
+                    }
                     Err(error) => break Err(error.to_string()),
                 },
             };
@@ -425,9 +459,6 @@ impl Host {
                 }
             };
             let host = self.clone();
-            let origins = websocket
-                .as_ref()
-                .map(|listener| listener.allowed_origins.clone());
             tasks.spawn(async move {
                 let _connection = connection;
                 // A malformed or disconnected peer fails only its own channel.
@@ -435,13 +466,11 @@ impl Host {
                     Incoming::Local(stream) => {
                         let _ = host.connection(stream).await;
                     }
-                    Incoming::Remote(stream) => {
-                        let _ = websocket::connection(
-                            stream,
-                            host,
-                            origins.expect("WebSocket listener"),
-                        )
-                        .await;
+                    Incoming::Remote {
+                        stream,
+                        allowed_origins,
+                    } => {
+                        let _ = websocket::connection(stream, host, allowed_origins).await;
                     }
                 }
             });
