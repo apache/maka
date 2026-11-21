@@ -520,7 +520,11 @@ impl Owner {
                 continue;
             };
             let expired = plan.task.expires_at.is_some_and(|expires| at >= expires);
-            match self.dispatch_scheduled(fire, &plan, expired).await {
+            let exhausted = retry.is_some_and(|retry| retry.delay >= Retry::MAX_DELAY);
+            match self
+                .dispatch_scheduled(fire, &plan, expired, exhausted)
+                .await
+            {
                 Ok(Some(run)) => {
                     // This receipt also handles a restart between releasing the slot and saving the plan.
                     if matches!(fire.effect, ScheduledEffect::Discovery { .. })
@@ -571,6 +575,7 @@ impl Owner {
         fire: &maka_scheduler::plan::Fire<ScheduledEffect, Approval>,
         plan: &Plan,
         expired: bool,
+        retries_exhausted: bool,
     ) -> Result<Option<Run>, String> {
         let active = plan.task.status == Status::Active;
         if matches!(fire.effect, ScheduledEffect::Discovery { .. }) {
@@ -683,28 +688,34 @@ impl Owner {
             }
             MessageResolution::Missing => {}
         }
-        let mut basis = match self
-            .prepare_scheduled_background(approval, &fire.task_id)
-            .await
-        {
+        let prepared = async {
+            let basis = self
+                .prepare_scheduled_background(approval, &fire.task_id)
+                .await?;
+            self.validate_background(&basis).await?;
+            Ok::<_, String>(basis)
+        }
+        .await;
+        let mut basis = match prepared {
             Ok(basis) => basis,
+            // Nothing is queued yet, so a fire that keeps failing can settle without racing delivery.
             Err(error)
-                if matches!(
-                    error.as_str(),
-                    "scheduler_authorization_changed"
-                        | "background_model_route_changed"
-                        | "scheduler_disabled"
-                        | "scheduler_executor_unavailable"
-                        | "agent_executor_unavailable"
-                        | "agent_executor_runtime_required"
-                        | "agent_session_unavailable"
-                ) =>
+                if (retries_exhausted && error != "agent_closed" && !self.stop.is_cancelled())
+                    || matches!(
+                        error.as_str(),
+                        "scheduler_authorization_changed"
+                            | "background_model_route_changed"
+                            | "scheduler_disabled"
+                            | "scheduler_executor_unavailable"
+                            | "agent_executor_unavailable"
+                            | "agent_executor_runtime_required"
+                            | "agent_session_unavailable"
+                    ) =>
             {
                 return Ok(Some(settlement(fire, Outcome::Blocked, &error, None, None)));
             }
             Err(error) => return Err(error),
         };
-        self.validate_background(&basis).await?;
         if new_session
             && self
                 .store
@@ -849,13 +860,15 @@ struct Retry {
 }
 
 impl Retry {
+    const MAX_DELAY: Duration = Duration::from_secs(30);
+
     fn ready(self, now: Instant) -> bool {
         self.at <= now
     }
 
     fn after_failure(previous: Option<Self>, now: Instant) -> Self {
         let delay = previous.map_or(Duration::from_secs(1), |retry| {
-            (retry.delay * 2).min(Duration::from_secs(30))
+            (retry.delay * 2).min(Self::MAX_DELAY)
         });
         Self {
             at: now + delay,
