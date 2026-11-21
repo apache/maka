@@ -855,8 +855,8 @@ impl Owner {
         session: &str,
         configured: &Option<Vec<String>>,
     ) -> Option<Vec<String>> {
-        if self.settings.bot && self.bot.is(session) {
-            return Some(
+        let selected = if self.settings.bot && self.bot.is(session) {
+            Some(
                 COORDINATION_TOOLS
                     .iter()
                     .filter(|name| {
@@ -867,9 +867,16 @@ impl Owner {
                     })
                     .map(|name| (*name).to_owned())
                     .collect(),
-            );
-        }
-        configured.clone()
+            )
+        } else {
+            configured.clone()
+        };
+        intersect_tools(
+            selected,
+            self.store
+                .checkpoint_execution()
+                .and_then(|e| e.grant().permissions.tools.clone()),
+        )
     }
     /// Append the Bot's standing instructions to the behavior frozen for a message
     /// admitted to the Bot Session. Other Sessions are unchanged.

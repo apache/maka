@@ -195,6 +195,11 @@ impl FileRepository {
                     description: "shared checkpoint heads",
                     sql: include_str!("../../../migrations/repository/0002_heads.sql"),
                 },
+                crate::migration::Migration {
+                    version: 3,
+                    description: "checkpoint execution authority",
+                    sql: include_str!("../../../migrations/repository/0003_execution.sql"),
+                },
             ],
         )?;
         let id: Option<String> = tx
@@ -246,7 +251,7 @@ impl FileRepository {
     pub fn storage(&self, agent: Uuid) -> Result<Storage, StoreError> {
         Storage::new(self.objects(), Arc::new(self.clone()), agent)
     }
-    fn run<T: Send + 'static>(
+    pub(crate) fn run<T: Send + 'static>(
         &self,
         action: impl FnOnce(&Connection) -> Result<T, StoreError> + Send + 'static,
     ) -> BoxFuture<'static, Result<T, StoreError>> {

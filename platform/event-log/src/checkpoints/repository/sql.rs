@@ -142,7 +142,26 @@ pub(crate) fn commit(db: &Connection, request: &Commit) -> Result<CommitReceipt,
     if let Some(receipt) = receipt(&tx, request)? {
         return Ok(receipt);
     }
-    let actual = head(&tx, &request.binding.identity)?.map(|h| h.head.revision);
+    let managed: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM checkpoint_executions WHERE session_id=?)",
+        [request.binding.identity.session.to_string()],
+        |r| r.get(0),
+    )?;
+    if managed {
+        return Err(invalid(
+            "checkpoint commit requires its execution generation",
+        ));
+    }
+    let receipt = commit_in(&tx, request)?;
+    tx.commit().map_err(StoreError::CommitUnknown)?;
+    Ok(receipt)
+}
+
+pub(crate) fn commit_in(
+    tx: &Transaction<'_>,
+    request: &Commit,
+) -> Result<CommitReceipt, StoreError> {
+    let actual = head(tx, &request.binding.identity)?.map(|h| h.head.revision);
     let receipt = if actual != request.expected_revision {
         CommitReceipt::Conflict { actual }
     } else {
@@ -156,8 +175,7 @@ pub(crate) fn commit(db: &Connection, request: &Commit) -> Result<CommitReceipt,
         )?;
         CommitReceipt::Published { head }
     };
-    record_receipt(&tx, request, &receipt)?;
-    tx.commit().map_err(StoreError::CommitUnknown)?;
+    record_receipt(tx, request, &receipt)?;
     Ok(receipt)
 }
 
