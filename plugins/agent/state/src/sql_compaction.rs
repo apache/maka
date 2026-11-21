@@ -59,6 +59,7 @@ pub(super) fn validate_proactive_request(
     c: &Connection,
     view: &RunView,
     summary: &RequestSpec,
+    surface: &maka_agent_facts::composition::CompositionSurface,
 ) -> Result<(), StoreError> {
     let main = view
         .current_step
@@ -69,7 +70,7 @@ pub(super) fn validate_proactive_request(
         || summary.compaction_recovery.is_some()
         || summary.summary_repair_of.is_some()
         || !summary.steering.is_empty()
-        || !summary.composition.tools.is_empty()
+        || !surface.tools.is_empty()
         || !matches!(view.spec.origin, RunOrigin::Local)
     {
         return Err(invalid("invalid proactive Summary request"));

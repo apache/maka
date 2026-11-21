@@ -402,20 +402,28 @@ impl Engine {
         ) && transport.fallback
             == maka_agent_facts::model::retry_transport::FallbackAvailability::WarmIdlePrimary
             && transport.adapter.kind == maka_agent_facts::composition::SourceKind::ModelAdapter
-            && request
-                .composition
+        {
+            let surface: maka_agent_facts::composition::CompositionSurface = decode(
+                self,
+                view.run,
+                &request.composition.surface,
+                "request-composition-surface-schema",
+            )
+            .await?;
+            if surface
                 .sources
                 .iter()
                 .any(|source| source == &transport.adapter)
-        {
-            let provenance: FrozenRouteEvidence = decode(
-                self,
-                view.run,
-                &request.provenance,
-                "model-route-evidence-schema",
-            )
-            .await?;
-            level.fallback_available = provenance.route_identity == transport.route_identity;
+            {
+                let provenance: FrozenRouteEvidence = decode(
+                    self,
+                    view.run,
+                    &request.provenance,
+                    "model-route-evidence-schema",
+                )
+                .await?;
+                level.fallback_available = provenance.route_identity == transport.route_identity;
+            }
         }
         level.failure = failure;
         Ok(())

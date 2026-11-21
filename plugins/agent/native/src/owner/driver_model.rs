@@ -27,7 +27,7 @@ use maka_agent_engine::{
     preparation::{self, PromptSettings, RequestSource},
 };
 use maka_agent_facts::{
-    composition::{RequestComposition, SourceRevision},
+    composition::{CompositionSurface, RequestComposition, SourceRevision},
     context::{CompactionOptions, ModelOperation, ModelPurpose},
     durable::*,
     execution::SystemPrompt,
@@ -988,14 +988,18 @@ impl DriverModel {
                 .unwrap_or_default();
             revisions.push(adapter.source().clone());
             revisions.push(model.revision.clone());
-            let composition = RequestComposition {
+            let tool_catalog_digest = maka_agent_engine::digest(&definitions)?;
+            let surface = ContentBlob::json(&CompositionSurface {
                 system_prompt: system.map(|value| value.text),
-                dynamic_context,
-                tool_catalog_digest: maka_agent_engine::digest(&definitions)?,
                 tools: definitions,
+                sources: revisions,
+            })?;
+            let composition = RequestComposition {
+                surface: surface.reference().clone(),
+                dynamic_context,
+                tool_catalog_digest,
                 provider_options: Some(model.options.clone()),
                 max_output_tokens: request.request.max_output_tokens,
-                sources: revisions,
             };
             let spec = RequestSpec {
                 schema_version: SCHEMA_VERSION,
@@ -1042,6 +1046,7 @@ impl DriverModel {
                 contents: {
                     let mut contents = vec![
                         body,
+                        surface,
                         recovery_contract,
                         capture,
                         provenance,
@@ -1358,6 +1363,8 @@ impl DriverModel {
         }
         let provenance: Value = self.decode(view.run, &request.provenance).await?;
         validate_model_input_policy(&provenance, &model)?;
+        let surface: CompositionSurface =
+            self.decode(view.run, &request.composition.surface).await?;
         let recovery: FrozenRecovery = self
             .protocol_data(
                 view.run,
@@ -1373,7 +1380,7 @@ impl DriverModel {
                 != original_recovery_contract(
                     &binding,
                     &model.provider,
-                    &request.composition.tools,
+                    &surface.tools,
                     frozen.operation,
                 )
         {
@@ -1559,7 +1566,8 @@ impl DriverModel {
         if request.protocol != PROTOCOL || request.protocol_version != VERSION {
             return Err(unsupported("frozen-input-protocol-version"));
         }
-        super::driver::validate_tool_digest(request)?;
+        let surface: CompositionSurface = reader.decode(run, &request.composition.surface).await?;
+        super::driver::validate_tool_digest(request, &surface)?;
         let value: Value = reader.decode(run, &request.request).await?;
         let frozen: FrozenInput = serde_json::from_value(value)
             .map_err(|_| unsupported("frozen-input-manifest-schema"))?;
@@ -2643,6 +2651,7 @@ impl DriverModel {
         {
             return Err(unsupported("admitted-recovery-contract"));
         }
+        let surface: CompositionSurface = self.decode(run, &request.composition.surface).await?;
         let provenance: Value = self.decode(run, &request.provenance).await?;
         let context_evidence: maka_agent_facts::context::RequestContextEvidence =
             serde_json::from_value(provenance.clone()).map_err(RunError::Json)?;
@@ -2733,7 +2742,7 @@ impl DriverModel {
                         != original_recovery_contract(
                             &binding,
                             &prepared.provider,
-                            &request.composition.tools,
+                            &surface.tools,
                             frozen.operation,
                         )
                 {
@@ -2767,6 +2776,7 @@ impl DriverModel {
                     cut,
                     run,
                     frozen,
+                    surface,
                     request: request.clone(),
                     access: access.clone(),
                     model_source: source.clone(),
@@ -3251,12 +3261,14 @@ impl DriverModel {
         let Some(contract) = recovery.contract.as_ref() else {
             return Err(unsupported("provider-effects-or-unproved-adapter"));
         };
+        let surface: CompositionSurface =
+            self.decode(view.run, &request.composition.surface).await?;
         if !same_adapter(binding.source(), &frozen.adapter)
             || preparation::route_identity(&model.provider)? != frozen.route_identity
             || original_recovery_contract(
                 &binding,
                 &model.provider,
-                &request.composition.tools,
+                &surface.tools,
                 frozen.operation,
             )
             .as_ref()

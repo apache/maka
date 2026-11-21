@@ -402,8 +402,12 @@ impl DriverModel {
                 if producer == view.run && view.proactive_summary != Some(summary) {
                     request.compaction_recovery = Some(summary_request.compaction_recovery.unwrap_or(summary));
                 }
-                request.adjudications.clear();request.request=body.reference().clone();request.request_contents=frozen.content_refs();request.recovery_contract=recovery.reference().clone();request.provenance=provenance.reference().clone();request.projection=Some(projection.reference().clone());request.effective_source_digest=projection.reference().digest.clone();request.composition.tool_catalog_digest=maka_agent_engine::digest(&definitions)?;request.composition.tools=definitions;request.composition.max_output_tokens=prepared.request.max_output_tokens;
-                let mut contents=vec![body,recovery,projection,provenance];
+                let mut surface: CompositionSurface = reader.decode(view.run, &request.composition.surface).await?;
+                request.composition.tool_catalog_digest = maka_agent_engine::digest(&definitions)?;
+                surface.tools = definitions;
+                let surface_blob = ContentBlob::json(&surface)?;
+                request.adjudications.clear();request.request=body.reference().clone();request.request_contents=frozen.content_refs();request.recovery_contract=recovery.reference().clone();request.provenance=provenance.reference().clone();request.projection=Some(projection.reference().clone());request.effective_source_digest=projection.reference().digest.clone();request.composition.surface=surface_blob.reference().clone();request.composition.max_output_tokens=prepared.request.max_output_tokens;
+                let mut contents=vec![body,recovery,projection,provenance,surface_blob];
                 contents.extend(layout_chunks);
                 contents.extend(texts);
                 Ok(contents)

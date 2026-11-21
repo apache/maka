@@ -706,8 +706,11 @@ fn validate_request(
     let request: RequestSpec = decode(c, reference)?;
     version(request.schema_version)?;
     request.accounting.validate().map_err(invalid)?;
+    let surface: maka_agent_facts::composition::CompositionSurface =
+        decode(c, &request.composition.surface)?;
+    request.composition.validate(&surface).map_err(invalid)?;
     let fallback = if proactive {
-        compaction::validate_proactive_request(c, view, &request)?;
+        compaction::validate_proactive_request(c, view, &request, &surface)?;
         None
     } else {
         validate_request_lineage(c, view, &request)?
@@ -723,7 +726,6 @@ fn validate_request(
     {
         return Err(invalid("invalid frozen source digest"));
     }
-    request.composition.clone().freeze().map_err(invalid)?;
     if request
         .adjudications
         .iter()

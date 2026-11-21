@@ -294,10 +294,11 @@ pub(super) fn source_authority_changed(message: impl Into<String>) -> RunError {
     ))
 }
 
-pub(super) fn validate_tool_digest(request: &RequestSpec) -> Result<(), RunError> {
-    if maka_agent_engine::digest(&request.composition.tools)?
-        != request.composition.tool_catalog_digest
-    {
+pub(super) fn validate_tool_digest(
+    request: &RequestSpec,
+    surface: &maka_agent_facts::composition::CompositionSurface,
+) -> Result<(), RunError> {
+    if maka_agent_engine::digest(&surface.tools)? != request.composition.tool_catalog_digest {
         return Err(RunError::InvalidInput(
             "frozen selected tool definitions differ from their digest".into(),
         ));
@@ -525,16 +526,20 @@ impl NativeDriver {
         view: &RunView,
         request: &RequestSpec,
     ) -> Result<maka_tools::ToolCatalog, RunError> {
-        validate_tool_digest(request)?;
+        let surface: maka_agent_facts::composition::CompositionSurface = self
+            .owner
+            .run_content(view.run, &request.composition.surface)
+            .await?;
+        validate_tool_digest(request, &surface)?;
         let model = self.model()?.step_tool_model(view, request).await?;
         let bound = self.bind_step_tools(view, &model, false).await?;
         let code = matches!(&self.backend, NativeBackend::Model { cells: Some(_), .. });
         let current = self.access.live_configuration().await?;
         let (mcp, mode) = self.access.current_model_tools(&current.workspace)?;
         self.access
-            .validate_model_tools(request, &self.catalog, &bound.catalog, &mcp, mode)
+            .validate_model_tools(request, &surface, &self.catalog, &bound.catalog, &mcp, mode)
             .await?;
-        for original in &request.composition.tools {
+        for original in &surface.tools {
             if code || original.name == maka_tools::availability::SEARCH {
                 // Discovery affects the next request, not the original step's advertised tools.
                 let actual = match original.name.as_str() {
@@ -621,8 +626,13 @@ impl NativeDriver {
             .session_history(view.spec.owner.clone(), view.spec.session_id.clone());
         let cut = history.capture().await?;
         let request = history.request(&cut, view.run, attempt.step).await?;
-        Ok(request
-            .composition
+        let surface: maka_agent_facts::composition::CompositionSurface = serde_json::from_slice(
+            &history
+                .content(view.run, &request.composition.surface)
+                .await?,
+        )
+        .map_err(RunError::Json)?;
+        Ok(surface
             .tools
             .iter()
             .any(|definition| definition.name == tool.call.name))

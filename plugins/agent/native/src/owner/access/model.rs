@@ -93,6 +93,7 @@ impl RunAccess {
             .await?;
         self.validate_model_tools_with_selection(
             request,
+            None,
             Some(&selection),
             &catalog,
             &bound.all(),
@@ -105,27 +106,48 @@ impl RunAccess {
     pub(in crate::owner) async fn validate_model_tools(
         self: &Arc<Self>,
         request: &RequestSpec,
+        surface: &maka_agent_facts::composition::CompositionSurface,
         raw: &maka_tools::ToolCatalog,
         bound: &maka_tools::ToolCatalog,
         mcp: &crate::mcp::Catalog,
         mode: maka_agent_facts::execution::ToolMode,
     ) -> Result<(), RunError> {
-        self.validate_model_tools_with_selection(request, None, raw, bound, mcp, mode)
-            .await
+        self.validate_model_tools_with_selection(
+            request,
+            Some(surface),
+            None,
+            raw,
+            bound,
+            mcp,
+            mode,
+        )
+        .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn validate_model_tools_with_selection(
         self: &Arc<Self>,
         request: &RequestSpec,
+        surface: Option<&maka_agent_facts::composition::CompositionSurface>,
         selection: Option<&crate::tools::SelectionSnapshot>,
         raw: &maka_tools::ToolCatalog,
         bound: &maka_tools::ToolCatalog,
         mcp: &crate::mcp::Catalog,
         mode: maka_agent_facts::execution::ToolMode,
     ) -> Result<(), RunError> {
-        validate_tool_digest(request)?;
         let view = self.fresh().await.map_err(RunError::InvalidInput)?;
         let owner = self.owner().map_err(RunError::InvalidInput)?;
+        let loaded_surface;
+        let surface = match surface {
+            Some(surface) => surface,
+            None => {
+                loaded_surface = owner
+                    .run_content(view.run, &request.composition.surface)
+                    .await?;
+                &loaded_surface
+            }
+        };
+        validate_tool_digest(request, surface)?;
         let current = self.live_configuration().await?;
         let loaded;
         let selection = match selection {
@@ -171,8 +193,7 @@ impl RunAccess {
                 })
                 .collect::<Result<_, _>>()?
         } else {
-            request
-                .composition
+            surface
                 .tools
                 .iter()
                 .filter(|tool| tool.name != maka_tools::availability::SEARCH)

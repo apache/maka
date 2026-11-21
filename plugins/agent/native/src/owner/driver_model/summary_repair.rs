@@ -251,6 +251,9 @@ impl DriverModel {
                     ToolChoiceMode::Auto
                 },
             };
+            let surface: CompositionSurface = reader
+                .decode(view.run, &request.composition.surface)
+                .await?;
             let output = if repair {
                 request.composition.max_output_tokens
             } else {
@@ -259,7 +262,7 @@ impl DriverModel {
             preparation::prepare_wire(
                 &settings,
                 &mut prompt,
-                &request.composition.tools,
+                &surface.tools,
                 output,
                 &self.cancellation,
             )
@@ -272,7 +275,7 @@ impl DriverModel {
             let prepared = preparation::prepare_request(
                 &settings,
                 prompt.clone(),
-                request.composition.tools.clone(),
+                surface.tools.clone(),
                 output_budget,
                 ModelPurpose::Summary,
                 None,
@@ -337,7 +340,7 @@ impl DriverModel {
                 contract: original_recovery_contract(
                     &adapter,
                     &model.provider,
-                    &request.composition.tools,
+                    &surface.tools,
                     frozen.operation,
                 ),
             })?;

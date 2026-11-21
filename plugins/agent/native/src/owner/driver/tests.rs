@@ -1127,18 +1127,21 @@ impl Rig {
             unreachable!()
         };
         let source = ContentBlob::json(&json!({"test":"native-wait-provider-input"}))?;
+        let surface = ContentBlob::json(&maka_agent_facts::composition::CompositionSurface {
+            system_prompt: None,
+            tools: vec![],
+            sources: vec![],
+        })?;
         let step = StepId::new();
         let request = ContentBlob::json(&RequestSpec {
             schema_version: SCHEMA_VERSION,
             step,
             composition: RequestComposition {
-                system_prompt: None,
+                surface: surface.reference().clone(),
                 dynamic_context: vec![],
                 tool_catalog_digest: source.reference().digest.clone(),
-                tools: vec![],
                 provider_options: None,
                 max_output_tokens: None,
-                sources: vec![],
             },
             summary_repair_of: None,
             compaction_recovery: None,
@@ -1175,7 +1178,7 @@ impl Rig {
                     upstream: json!({"test":"native-wait-provider-input"}),
                 },
             ],
-            vec![source, request],
+            vec![source, surface, request],
         )
         .await?;
         Ok(attempt)
