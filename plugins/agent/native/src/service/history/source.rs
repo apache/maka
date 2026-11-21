@@ -374,7 +374,7 @@ async fn project_item(
     {
         media::describe_imported(snapshot, *message_ordinal, &mut row, stop).await?;
     }
-    // Older material titles include a filename resolved from the source attachment.
+    // Material titles can reveal the original attachment filename.
     if cache.reader != Reader::Original
         && let Some(call) = row.chunk.tool.as_mut().and_then(|tool| tool.call.as_mut())
         && call.presentation.as_deref() == Some(crate::tools::title::RECALL_MATERIAL_PRESENTATION)

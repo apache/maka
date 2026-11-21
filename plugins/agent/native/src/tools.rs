@@ -164,32 +164,7 @@ impl ServiceSelection {
     }
 
     pub(crate) fn history_alias(self) -> Option<(String, HistoryReader)> {
-        use maka_plugin_core::contract::ServiceTarget;
-        let selection = self.selection;
-        let method = selection.method.as_str();
-        let agent = matches!(&selection.target, ServiceTarget::Export { name } if name == "agent");
-        // Early frozen selections could label these two Agent methods Other.
-        let kind = if agent && matches!(method, "execution" | "continuationAvailability") {
-            HistoryReader::Session
-        } else if let Some(kind) = self.history_reader {
-            kind
-        } else if matches!(&selection.target, ServiceTarget::Import { name } if name == "files")
-            && method == "read"
-        {
-            HistoryReader::File
-        } else if agent && reads_agent_history(method) {
-            HistoryReader::Session
-        } else if HistoryReader::builtin(&selection.name).is_some()
-            && (matches!(
-                selection.input,
-                ToolInput::Web | ToolInput::Skill | ToolInput::Shell
-            ) || (method != "read" && !reads_agent_history(method)))
-        {
-            HistoryReader::Other
-        } else {
-            return None;
-        };
-        Some((selection.name, kind))
+        self.history_reader.map(|kind| (self.selection.name, kind))
     }
     fn matches(&self, live: &SelectedTool) -> bool {
         let admitted = &self.selection;

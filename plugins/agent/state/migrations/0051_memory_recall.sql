@@ -28,17 +28,15 @@ CREATE VIEW agent_memory_recall_current AS
  JOIN agent_memory_versions v ON v.namespace=m.namespace AND v.scope=m.scope
  AND v.id=m.id AND v.revision=m.assertion
  WHERE m.state='active' AND v.disposition='current';
-INSERT INTO agent_memory_recall_keys(namespace,scope,id) SELECT namespace,scope,id FROM agent_memories;
-INSERT INTO agent_memory_recall_terms(rowid,location,body) SELECT * FROM agent_memory_recall_current;
 
-CREATE TRIGGER agent_memory_recall_key AFTER INSERT ON agent_memories BEGIN
- INSERT INTO agent_memory_recall_keys(namespace,scope,id) VALUES(NEW.namespace,NEW.scope,NEW.id);
-END;
-CREATE TRIGGER agent_memory_recall_version AFTER INSERT ON agent_memory_versions BEGIN
+CREATE TRIGGER agent_memory_recall_version AFTER INSERT ON agent_memory_versions
+WHEN NEW.revision=(SELECT assertion FROM agent_memories
+ WHERE namespace=NEW.namespace AND scope=NEW.scope AND id=NEW.id) BEGIN
+ INSERT INTO agent_memory_recall_keys(namespace,scope,id) VALUES(NEW.namespace,NEW.scope,NEW.id)
+ ON CONFLICT(namespace,scope,id) DO NOTHING;
  INSERT INTO agent_memory_recall_terms(rowid,location,body)
- SELECT r.* FROM agent_memory_recall_current r JOIN agent_memory_recall_keys k ON r.seq=k.seq
- WHERE k.namespace=NEW.namespace AND k.scope=NEW.scope AND k.id=NEW.id
- AND EXISTS (SELECT 1 FROM agent_memories m WHERE m.namespace=k.namespace AND m.scope=k.scope AND m.id=k.id AND m.assertion=NEW.revision);
+ SELECT * FROM agent_memory_recall_current WHERE seq=(SELECT seq FROM agent_memory_recall_keys
+ WHERE namespace=NEW.namespace AND scope=NEW.scope AND id=NEW.id);
 END;
 CREATE TRIGGER agent_memory_recall_change AFTER UPDATE OF state,assertion ON agent_memories
 WHEN OLD.state<>NEW.state OR OLD.assertion<>NEW.assertion BEGIN
@@ -65,6 +63,13 @@ CREATE VIEW agent_memory_hidden_spans AS
  json_extract(e.source,'$.reference.sessionId') AS session,json_extract(e.source,'$.reference.sequence') AS sequence
  FROM agent_memory_restricted_evidence e;
 
+-- History and Recall message rows can be rebuilt from the same immutable facts.
+-- Keep their original sequence boundary when those projections are recreated.
+CREATE TABLE agent_memory_history_boundary(last_existing_fact INTEGER NOT NULL);
+INSERT INTO agent_memory_history_boundary SELECT coalesce(max(sequence),0) FROM agent_facts;
+CREATE VIEW agent_memory_new_history AS
+ SELECT * FROM agent_session_history WHERE sequence>(SELECT last_existing_fact FROM agent_memory_history_boundary);
+
 CREATE TABLE agent_memory_recall_attachments(
  namespace TEXT NOT NULL, session TEXT NOT NULL, artifact TEXT NOT NULL, message INTEGER NOT NULL
  REFERENCES agent_recall_messages(id) ON DELETE CASCADE,
@@ -73,8 +78,8 @@ CREATE TABLE agent_memory_recall_attachments(
 CREATE INDEX agent_memory_recall_attachment_message ON agent_memory_recall_attachments(message);
 CREATE VIEW agent_memory_recall_attachment_source AS
  SELECT d.owner,a.value->>'$.ref.sessionId',a.value->>'$.ref.relativePath',d.id AS message
- FROM agent_recall_messages d,json_each(d.attachments) a WHERE a.value->>'$.ref.kind'='session_file';
-INSERT OR IGNORE INTO agent_memory_recall_attachments SELECT * FROM agent_memory_recall_attachment_source;
+ FROM agent_recall_messages d,json_each(d.attachments) a
+ WHERE d.sequence>(SELECT last_existing_fact FROM agent_memory_history_boundary) AND a.value->>'$.ref.kind'='session_file';
 CREATE TRIGGER agent_memory_attachment_insert AFTER INSERT ON agent_recall_messages WHEN NEW.attachments<>'[]' BEGIN
  INSERT OR IGNORE INTO agent_memory_recall_attachments SELECT * FROM agent_memory_recall_attachment_source WHERE message=NEW.id;
 END;
@@ -88,37 +93,12 @@ CREATE TABLE agent_memory_read_aliases (
  run TEXT NOT NULL REFERENCES agent_run_specs(run) ON DELETE CASCADE,
  name TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(run,name)
 ) WITHOUT ROWID;
--- A legacy Web, Skill or Shell input projection was validated against its service
--- contract at admission. Its method can share a name with an Agent method.
-CREATE VIEW agent_memory_read_alias_source AS
- WITH services AS (
-   SELECT r.run, service.value->>'$.selection.name' AS name,
-          service.value->>'$.selection.target.kind' AS target_kind,
-          service.value->>'$.selection.target.name' AS target_name,
-          service.value->>'$.selection.method' AS method,
-          service.value->>'$.selection.input' AS input,
-          service.value->>'$.history_reader' AS frozen
-   FROM agent_run_specs r JOIN contents spec ON spec.id=r.spec_content_id
-   JOIN contents selection ON selection.content_sha256=json_extract(CAST(spec.payload AS TEXT),'$.toolSelection.digest')
-   CROSS JOIN json_each(CAST(selection.payload AS TEXT),'$.services') service
- ), classified_methods AS (
-   SELECT *, method IN ('memory','memories','execution','continuationAvailability','work','sessionRead','history',
-     'historyLandmarks','historyPrompt','historyRequests','source','search','toolImage','attachmentImage') AS agent_history
-   FROM services
- )
- SELECT run,name,kind FROM (
-   SELECT run,name,CASE
-     WHEN target_kind='export' AND target_name='agent' AND method IN ('execution','continuationAvailability') THEN 'session'
-     WHEN frozen IS NOT NULL THEN frozen
-     WHEN target_kind='import' AND target_name='files' AND method='read' THEN 'file'
-     WHEN target_kind='export' AND target_name='agent' AND agent_history THEN 'session'
-     WHEN name IN ('Read','SessionRead','Recall','RecallMore','RecallMaterial')
-       AND (input IN ('web','skill','shell') OR (method<>'read' AND NOT agent_history)) THEN 'other'
-   END AS kind FROM classified_methods
- ) WHERE kind IS NOT NULL;
-INSERT INTO agent_memory_read_aliases SELECT * FROM agent_memory_read_alias_source;
 CREATE TRIGGER agent_memory_read_alias_insert AFTER INSERT ON agent_run_specs BEGIN
- INSERT INTO agent_memory_read_aliases SELECT * FROM agent_memory_read_alias_source WHERE run=NEW.run;
+ INSERT INTO agent_memory_read_aliases(run,name,kind)
+ SELECT NEW.run,service.value->>'$.selection.name',service.value->>'$.history_reader'
+ FROM contents spec JOIN contents selection ON selection.content_sha256=CAST(spec.payload AS TEXT)->>'$.toolSelection.digest'
+ CROSS JOIN json_each(CAST(selection.payload AS TEXT),'$.services') service
+ WHERE spec.id=NEW.spec_content_id AND service.value->>'$.history_reader' IS NOT NULL;
 END;
 
 CREATE TABLE agent_memory_recall_calls (
@@ -135,7 +115,7 @@ CREATE VIEW agent_memory_recall_call_source AS
        json_extract(CAST(b.payload AS TEXT),'$.fact.output.name'),json_extract(CAST(x.payload AS TEXT),'$.name')) AS name,
     coalesce(json_extract(CAST(b.payload AS TEXT),'$.fact.part.call.input.data.path'),json_extract(CAST(b.payload AS TEXT),'$.fact.output.input.path'),
        json_extract(CAST(x.payload AS TEXT),'$.input.path'),json_extract(CAST(i.payload AS TEXT),'$.path')) AS path
-   FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
+   FROM agent_memory_new_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
    LEFT JOIN contents x ON x.content_sha256=json_extract(CAST(b.payload AS TEXT),'$.fact.event.descriptor.digest')
    LEFT JOIN contents i ON i.content_sha256=json_extract(CAST(b.payload AS TEXT),'$.fact.event.input.digest')
    WHERE h.tool_start=1
@@ -144,8 +124,6 @@ CREATE VIEW agent_memory_recall_call_source AS
     OR (((alias.kind IS NULL AND calls.name='Read') OR alias.kind='file') AND (path GLOB 'maka://*' OR path GLOB 'attachment:*' OR path GLOB 'session:*' OR path GLOB 'archive:*'));
 -- Decode Read continuations once per immutable call. Only historical calls
 -- need to participate in the observation cutoff of future notifications.
-INSERT INTO agent_memory_recall_calls SELECT * FROM agent_memory_recall_call_source
- WHERE read_path IS NULL OR maka_reads_history_resource(read_path);
 CREATE TRIGGER agent_memory_recall_call_insert AFTER INSERT ON agent_session_history WHEN NEW.tool_start=1 BEGIN
  INSERT INTO agent_memory_recall_calls SELECT * FROM agent_memory_recall_call_source
  WHERE sequence=NEW.sequence AND (read_path IS NULL OR maka_reads_history_resource(read_path));
@@ -176,7 +154,6 @@ CREATE VIEW agent_memory_imported_tool_source AS
  CROSS JOIN contents b ON b.content_sha256=part.value->>'$.digest'
  WHERE e.kind='imported'
  ) WHERE (name='Read' AND is_call IS NOT NULL) OR (name IN ('Recall','RecallMore','RecallMaterial','SessionRead') AND is_call=0);
-INSERT INTO agent_memory_imported_tools SELECT * FROM agent_memory_imported_tool_source;
 CREATE TRIGGER agent_memory_imported_tool_insert AFTER INSERT ON agent_history_snapshot_entries WHEN NEW.kind='imported' BEGIN
  INSERT INTO agent_memory_imported_tools SELECT * FROM agent_memory_imported_tool_source WHERE snapshot=NEW.snapshot AND message=NEW.position;
 END;
@@ -229,14 +206,14 @@ CREATE VIEW agent_memory_cell_return_source AS
  SELECT h.sequence,CASE h.kind WHEN 'local_tool_returned'
   THEN json_extract(CAST(ret.payload AS TEXT),'$.body.output.value.cell')
   ELSE json_extract(CAST(ret.payload AS TEXT),'$.output.value.cell') END AS cell,h.sequence AS through_sequence
- FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
+ FROM agent_memory_new_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
  JOIN contents ret ON ret.content_sha256=CASE h.kind WHEN 'local_tool_returned'
   THEN json_extract(CAST(b.payload AS TEXT),'$.fact.result.digest') ELSE json_extract(CAST(b.payload AS TEXT),'$.fact.event.output.digest') END
  WHERE h.result_source=1 AND ((h.kind='local_tool_returned' AND json_extract(CAST(ret.payload AS TEXT),'$.body.output.format')='cell')
  OR (h.kind='external_effect' AND json_extract(CAST(ret.payload AS TEXT),'$.output.format')='cell'));
 CREATE VIEW agent_memory_cell_accept_source AS
  SELECT h.sequence,obs.cell,obs.through_sequence
- FROM agent_session_history h JOIN agent_session_history origin ON origin.owner=h.owner AND origin.session=h.session
+ FROM agent_memory_new_history h JOIN agent_session_history origin ON origin.owner=h.owner AND origin.session=h.session
   AND origin.run=h.run AND origin.tool_use_id=h.tool_use_id AND origin.sequence<h.sequence AND origin.kind='local_tool_returned'
  JOIN agent_memory_cell_observations obs ON obs.sequence=origin.sequence
  JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
@@ -244,11 +221,9 @@ CREATE VIEW agent_memory_cell_accept_source AS
  WHERE h.kind='tool_result_accepted' AND json_extract(CAST(accepted.payload AS TEXT),'$.kind')='local'
  UNION ALL
  SELECT h.sequence,json_extract(CAST(b.payload AS TEXT),'$.fact.outcome.cell'),h.sequence
- FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
+ FROM agent_memory_new_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
  WHERE h.kind='tool_result_accepted' AND json_extract(CAST(b.payload AS TEXT),'$.fact.outcome.kind')='cell_recovered';
 
-INSERT INTO agent_memory_cell_observations SELECT * FROM agent_memory_cell_return_source;
-INSERT INTO agent_memory_cell_observations SELECT * FROM agent_memory_cell_accept_source;
 CREATE TRIGGER agent_memory_cell_return_insert AFTER INSERT ON agent_session_history
  WHEN NEW.result_source=1 AND NEW.kind IN ('local_tool_returned','external_effect') BEGIN
  INSERT INTO agent_memory_cell_observations SELECT * FROM agent_memory_cell_return_source WHERE sequence=NEW.sequence;
@@ -261,11 +236,10 @@ END;
 -- own evidence keeps the exact byte coordinates of the published message.
 CREATE VIEW agent_memory_cell_publication_source AS
  SELECT h.sequence,CAST(b.payload AS TEXT)->>'$.fact.event.cell' AS cell,h.sequence-1 AS through_sequence
- FROM agent_session_history h JOIN agent_facts f USING(sequence) JOIN contents b ON b.id=f.body_content_id
+ FROM agent_memory_new_history h JOIN agent_facts f USING(sequence) JOIN contents b ON b.id=f.body_content_id
  WHERE h.kind='cell' AND CAST(b.payload AS TEXT)->>'$.fact.event.kind' IN
  ('completed','interrupted','notification_queued','final_notification_queued','session_value_published','loaded_tools_published');
 
-INSERT INTO agent_memory_cell_observations SELECT * FROM agent_memory_cell_publication_source;
 CREATE TRIGGER agent_memory_cell_publication_insert AFTER INSERT ON agent_session_history WHEN NEW.kind='cell' BEGIN
  INSERT INTO agent_memory_cell_observations SELECT * FROM agent_memory_cell_publication_source WHERE sequence=NEW.sequence;
 END;
@@ -278,9 +252,8 @@ CREATE TABLE agent_memory_cell_events(
 CREATE INDEX agent_memory_cell_event_range ON agent_memory_cell_events(cell,sequence);
 CREATE VIEW agent_memory_cell_event_source AS
  SELECT h.sequence,json_extract(CAST(b.payload AS TEXT),'$.fact.event.cell') AS cell
- FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
+ FROM agent_memory_new_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
  WHERE h.kind='cell';
-INSERT INTO agent_memory_cell_events SELECT * FROM agent_memory_cell_event_source;
 CREATE TRIGGER agent_memory_cell_event_insert AFTER INSERT ON agent_session_history WHEN NEW.kind='cell' BEGIN
  INSERT INTO agent_memory_cell_events SELECT * FROM agent_memory_cell_event_source WHERE sequence=NEW.sequence;
 END;
@@ -301,7 +274,7 @@ CREATE INDEX agent_memory_shared_fields_message ON agent_memory_shared_fields(me
 CREATE VIEW agent_memory_operation_field_source AS
  SELECT d.id AS message,h.fact_id AS fact,h.run,h.tool_use_id AS tool,
         field.value->>'$.start' AS start,field.value->>'$.end' AS end
- FROM agent_recall_messages d CROSS JOIN agent_session_history h ON h.sequence=d.sequence
+ FROM agent_recall_messages d CROSS JOIN agent_memory_new_history h ON h.sequence=d.sequence
  LEFT JOIN contents cell ON h.kind='cell' AND cell.content_sha256=d.references_json->>'$[0].digest'
  LEFT JOIN contents accepted ON h.kind='tool_result_accepted' AND accepted.content_sha256=d.references_json->>'$[1].digest'
  LEFT JOIN contents returned ON returned.content_sha256=CASE h.kind
@@ -318,7 +291,6 @@ CREATE VIEW agent_memory_operation_field_source AS
      h.kind='tool_result_accepted' AND field.key=1 AND json_extract(CAST(accepted.payload AS TEXT),'$.kind') IN ('host','operation'))
      AND json_extract(CAST(returned.payload AS TEXT),'$.body.projection.kind') IN ('result','receipt','from_output'))
  );
-INSERT INTO agent_memory_shared_fields SELECT * FROM agent_memory_operation_field_source;
 CREATE TRIGGER agent_memory_operation_field_insert AFTER INSERT ON agent_recall_messages
  WHEN NEW.ordinal=0 AND EXISTS(SELECT 1 FROM agent_session_history h WHERE h.sequence=NEW.sequence
    AND h.kind IN ('operation_observed','host_tool_result_recorded','tool_result_accepted','cell')) BEGIN
@@ -355,7 +327,7 @@ CREATE VIEW agent_memory_cell_code_source AS
    END AS tool,h.kind,
    d.fields_json->>'$[#-1].start' AS field_start,d.fields_json->>'$[#-1].end' AS field_end,
    substr(CAST(d.body AS BLOB),1+(d.fields_json->>'$[#-1].start')) AS content
- FROM agent_recall_messages d CROSS JOIN agent_session_history h ON h.sequence=d.sequence
+ FROM agent_recall_messages d CROSS JOIN agent_memory_new_history h ON h.sequence=d.sequence
  CROSS JOIN agent_facts f ON f.sequence=h.sequence CROSS JOIN contents b ON b.id=f.body_content_id
  WHERE d.ordinal=0 AND (
    (h.kind IN ('model_observed','external_effect') AND h.tool_start=1 AND d.fields_json->>'$[#-1].field'='arguments')
@@ -373,7 +345,6 @@ CREATE VIEW agent_memory_cell_code_fields(message,fact,run,tool,start,end) AS
           FROM agent_memory_cell_code_source s WHERE kind<>'cell') args WHERE typeof(code)='text'
  );
 
-INSERT INTO agent_memory_shared_fields SELECT * FROM agent_memory_cell_code_fields;
 CREATE TRIGGER agent_memory_cell_code_insert AFTER INSERT ON agent_recall_messages
  WHEN NEW.ordinal=0 AND (NEW.fields_json->>'$[#-1].field'='arguments' OR
     (NEW.fields_json->>'$[0].field'='receipt' AND NEW.fields_json->>'$[#-1].field'='body')) BEGIN
@@ -387,7 +358,7 @@ CREATE INDEX agent_memory_interruption_attempt ON agent_session_history(run,atte
 -- active attempt's error. Index the copied field when its source is known.
 CREATE VIEW agent_memory_failed_terminations AS
  SELECT d.id AS message,d.body,h.fact_id AS fact,h.run,h.owner,h.session,h.sequence,length(CAST(d.body AS BLOB)) AS end
- FROM agent_recall_messages d CROSS JOIN agent_session_history h ON h.sequence=d.sequence
+ FROM agent_recall_messages d CROSS JOIN agent_memory_new_history h ON h.sequence=d.sequence
  CROSS JOIN agent_facts f ON f.sequence=h.sequence CROSS JOIN contents b ON b.id=f.body_content_id
  WHERE d.ordinal=0 AND h.kind='run_terminated' AND CAST(b.payload AS TEXT)->>'$.fact.terminal'='failed';
 
@@ -412,7 +383,7 @@ CREATE VIEW agent_memory_termination_receipts AS
 
 CREATE VIEW agent_memory_termination_interruptions AS
  SELECT t.message,t.fact,t.run,t.end,src.id AS source_message,i.fact_id AS source_fact
- FROM agent_memory_failed_terminations t CROSS JOIN agent_session_history i
+ FROM agent_memory_failed_terminations t CROSS JOIN agent_memory_new_history i
    ON i.owner=t.owner AND i.session=t.session AND i.run=t.run AND i.kind='model_interrupted' AND i.sequence<t.sequence
    AND i.attempt=(SELECT p.attempt FROM agent_session_history p
        WHERE p.owner=t.owner AND p.session=t.session AND p.run=t.run AND p.kind='model_attempt_prepared'
@@ -427,7 +398,6 @@ CREATE VIEW agent_memory_termination_fields(origin,message,fact,run,tool,start,e
  UNION ALL SELECT message,message,fact,run,'interruption:'||source_fact,0,end FROM agent_memory_termination_interruptions
  UNION ALL SELECT message,source_message,source_fact,run,'interruption:'||source_fact,0,end FROM agent_memory_termination_interruptions;
 
-INSERT INTO agent_memory_shared_fields SELECT message,fact,run,tool,start,end FROM agent_memory_termination_fields;
 CREATE TRIGGER agent_memory_termination_field_insert AFTER INSERT ON agent_recall_messages
  WHEN NEW.ordinal=0 AND NEW.role='"failure"' AND EXISTS(SELECT 1 FROM agent_session_history h
     WHERE h.sequence=NEW.sequence AND h.kind='run_terminated') BEGIN
@@ -444,16 +414,15 @@ CREATE TABLE agent_memory_run_restrictions(
 CREATE INDEX agent_memory_restrictions_source ON agent_memory_run_restrictions(source);
 CREATE VIEW agent_memory_run_restriction_source AS
  SELECT e.sequence AS evidence,h.run,h.sequence AS source,e.namespace,e.scope,e.id,e.assertion
- FROM agent_memory_restricted_evidence e JOIN agent_session_history h
+ FROM agent_memory_restricted_evidence e JOIN agent_memory_new_history h
  ON h.owner=e.namespace AND h.fact_id=CAST(json_extract(e.source,'$.reference.factId') AS TEXT);
-INSERT INTO agent_memory_run_restrictions
- SELECT evidence,run,source FROM agent_memory_run_restriction_source;
 
 CREATE TRIGGER agent_memory_run_restriction_evidence AFTER INSERT ON agent_memory_evidence
  WHEN NEW.source->>'kind'='conversation' BEGIN
  INSERT INTO agent_memory_run_restrictions SELECT evidence,run,source FROM agent_memory_run_restriction_source WHERE evidence=NEW.sequence;
 END;
-CREATE TRIGGER agent_memory_run_restriction_history AFTER INSERT ON agent_session_history BEGIN
+CREATE TRIGGER agent_memory_run_restriction_history AFTER INSERT ON agent_session_history
+ WHEN NEW.sequence>(SELECT last_existing_fact FROM agent_memory_history_boundary) BEGIN
  INSERT INTO agent_memory_run_restrictions SELECT e.sequence,NEW.run,NEW.sequence FROM agent_memory_restricted_evidence e
  WHERE e.namespace=NEW.owner AND CAST(json_extract(e.source,'$.reference.factId') AS TEXT)=NEW.fact_id;
 END;
@@ -500,7 +469,6 @@ CREATE VIEW agent_memory_cell_candidate_source AS
  SELECT er.evidence,e.sequence AS event,e.cell,er.source=e.sequence AS direct
  FROM agent_memory_run_restrictions er JOIN agent_memory_cell_routes link ON link.source=er.source
  JOIN agent_memory_cell_events e ON e.sequence=link.event;
-INSERT OR IGNORE INTO agent_memory_cell_candidates SELECT * FROM agent_memory_cell_candidate_source;
 
 CREATE TRIGGER agent_memory_cell_candidate_evidence AFTER INSERT ON agent_memory_run_restrictions BEGIN
  INSERT OR IGNORE INTO agent_memory_cell_candidates SELECT * FROM agent_memory_cell_candidate_source WHERE evidence=NEW.evidence;

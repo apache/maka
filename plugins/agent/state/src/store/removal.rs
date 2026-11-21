@@ -1131,6 +1131,7 @@ mod tests {
             "agent_history_snapshots",
             "agent_memories",
             "agent_memory_evidence",
+            "agent_memory_history_boundary",
             // Imported bindings follow their snapshot; frozen aliases follow the retained run spec.
             "agent_memory_imported_tools",
             "agent_memory_read_aliases",

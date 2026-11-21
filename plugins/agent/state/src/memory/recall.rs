@@ -284,7 +284,6 @@ pub(crate) fn configure_writer(connection: &Connection) -> Result<(), StoreError
     use rusqlite::functions::FunctionFlags;
     use unicode_normalization::UnicodeNormalization;
 
-    // Migrations and the triggers they install must normalize text identically.
     connection.create_scalar_function(
         "maka_nfc",
         1,
@@ -616,32 +615,36 @@ mod tests {
     }
 
     #[test]
-    fn unicode_fact_search_preserves_old_and_new_assertion_bytes() {
+    fn recall_indexes_assertions_written_after_upgrade() {
         use unicode_normalization::UnicodeNormalization;
         let c = Connection::open_in_memory().unwrap();
         migrate(&c, 50);
-        let body: String = "한글 설정 🧭".nfd().collect();
-        let source = serde_json::to_string(&MemorySource::UserOperation {
-            operation_id: uuid::Uuid::new_v4(),
-            observed_at: 0,
-        })
-        .unwrap();
-        let insert = || {
-            let key = uuid::Uuid::new_v4().to_string();
-            c.execute("INSERT INTO agent_memories VALUES('owner','personal',?,1,1,'user_recall','active',0,0)", [&key]).unwrap();
-            c.execute("INSERT INTO agent_memory_versions(namespace,scope,id,revision,body,source,digest,disposition) VALUES('owner','personal',?,1,?,?, 'digest','current')", params![key,body,source]).unwrap();
-            c.execute("INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key) VALUES('owner','personal',?,1,?,'original')",params![key,source]).unwrap();
+        let scope = Scope {
+            namespace: "owner".into(),
+            location: "personal".into(),
+            binding: None,
         };
-        insert();
+        let write = |edit| {
+            UserChange {
+                source_scope: None,
+                scope: scope.clone(),
+                edit,
+                operation: uuid::Uuid::new_v4(),
+                at: 1,
+            }
+            .apply(&c)
+            .unwrap()
+        };
+        let MemoryResult::Saved { id, revision } = write(MemoryEdit::Create {
+            body: "oldword".into(),
+            metadata: MemoryMetadata::default(),
+        }) else {
+            panic!("expected a saved memory")
+        };
         migrate(&c, i64::MAX);
-        insert();
         let search = |terms: &[&str]| {
             SearchFacts {
-                personal: Scope {
-                    namespace: "owner".into(),
-                    location: "personal".into(),
-                    binding: None,
-                },
+                personal: scope.clone(),
                 project: None,
                 terms: terms.iter().map(|term| (*term).to_owned()).collect(),
                 limit: 16,
@@ -652,16 +655,34 @@ mod tests {
             .execute(&c)
             .unwrap()
         };
+        assert!(search(&["oldword"]).facts.is_empty());
+        let body: String = "한글 설정 🧭".nfd().collect();
+        let MemoryResult::Saved { revision, .. } = write(MemoryEdit::Correct {
+            id: id.clone(),
+            expected_revision: revision,
+            body: body.clone(),
+            metadata: MemoryMetadata::default(),
+        }) else {
+            panic!("expected a corrected memory")
+        };
         for terms in [&["한"][..], &["🧭"], &["!", "🧭", "absent"]] {
             let page = search(terms);
-            assert_eq!(page.facts.len(), 2, "terms {terms:?}");
-            assert!(page.facts.iter().all(|fact| fact.body == body));
+            assert_eq!(page.facts.len(), 1, "terms {terms:?}");
+            assert_eq!(page.facts[0].body, body);
         }
         assert!(search(&["!"]).facts.is_empty());
+        assert!(matches!(
+            write(MemoryEdit::Delete {
+                id,
+                expected_revision: revision
+            }),
+            MemoryResult::Deleted { .. }
+        ));
+        assert!(search(&["🧭"]).facts.is_empty());
     }
 
     #[test]
-    fn read_continuations_are_classified_on_upgrade_and_on_new_writes() {
+    fn read_continuations_are_indexed_only_after_upgrade() {
         use maka_agent_facts::read::ReadInput;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("root.sqlite");
@@ -712,6 +733,13 @@ mod tests {
         drop(db);
         let db = Connection::open(&path).unwrap();
         migrate(&db, i64::MAX);
+        // A history rebuild reprojects an existing fact with its original sequence.
+        db.execute_batch(
+            "CREATE TEMP TABLE old_call AS SELECT * FROM agent_session_history WHERE sequence=3;
+             DELETE FROM agent_session_history WHERE sequence=3;
+             INSERT INTO agent_session_history SELECT * FROM old_call;",
+        )
+        .unwrap();
         record(&db, 5, "notes.txt");
         record(&db, 7, "attachment:photo");
         let rows = |sql: &str| {
@@ -724,11 +752,11 @@ mod tests {
         };
         assert_eq!(
             rows("SELECT tool_use_id FROM agent_memory_recall_calls ORDER BY sequence"),
-            ["3", "7"]
+            ["7"]
         );
         assert_eq!(
             rows("SELECT fact FROM agent_memory_recall_outputs ORDER BY fact"),
-            ["fact-4", "fact-8"]
+            ["fact-8"]
         );
     }
 
@@ -738,7 +766,7 @@ mod tests {
 
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-        migrate(&db, 50);
+        migrate(&db, i64::MAX);
         db.execute_batch(
             "INSERT INTO contents VALUES(1,'spec',x'7b7d');
             INSERT INTO agent_run_specs VALUES('run',1,'owner','chat',1);",
@@ -767,7 +795,6 @@ mod tests {
             VALUES('owner','personal','entry',1,'Meeting time','{}','digest','current');
             INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key) VALUES('owner','personal','entry',1,
             '{"kind":"conversation","reference":{"sessionId":"chat","sequence":1,"factId":"notice-1","itemIndex":0,"start":0,"end":4}}','source');"#).unwrap();
-        migrate(&db, i64::MAX);
         db.execute_batch(r#"INSERT INTO agent_run_specs VALUES('reader-run',1,'owner','chat',1);
             INSERT INTO contents VALUES(1000,'wait-result',CAST('{"body":{"isError":false,"output":{"format":"cell","value":{"cell":"one"}}}}' AS BLOB)),
                                        (1001,'wait-fact',CAST('{"fact":{"result":{"digest":"wait-result"}}}' AS BLOB));
