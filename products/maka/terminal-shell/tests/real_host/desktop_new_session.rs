@@ -3764,6 +3764,38 @@ async fn desktop_mermaid_renders_markdown_and_toggles_its_source() {
     desktop.press("Hide diagram source").await;
     desktop.control("Show diagram source").await;
     assert!(desktop.controls("Copy code block").is_empty());
+    desktop.press("Open diagram full screen").await;
+    desktop.control("Close full screen image").await;
+    desktop.press("Zoom image in").await;
+    desktop.press("Zoom image in").await;
+    desktop
+        .until(
+            "the enlarged diagram never painted in the full-screen viewer",
+            || {
+                let guard = desktop.frame.lock().unwrap();
+                let frame = guard.as_ref()?;
+                let filled = frame
+                    .pixels()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|pixel| pixel[..3] == [0x1d, 0x74, 0x5a])
+                    .count();
+                (filled > 1000).then_some(())
+            },
+        )
+        .await;
+    desktop.artifact(&format!("mermaid-workbench-viewer-{theme}-{layout}"));
+    desktop.press("Zoom image out").await;
+    desktop.press("Close full screen image").await;
+    desktop
+        .until("the diagram viewer did not close", || {
+            desktop
+                .controls("Close full screen image")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
     desktop.close().await;
     fixture.finish().await;
 }
