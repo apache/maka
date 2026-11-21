@@ -115,6 +115,7 @@ pub(crate) async fn read(
             wire::Position::Message { message_id } => RoomPosition::Message { message_id },
             wire::Position::BeforeMessage { message_id } => RoomPosition::Before { message_id },
             wire::Position::AfterMessage { message_id } => RoomPosition::After { message_id },
+            wire::Position::AroundMessage { message_id } => RoomPosition::Around { message_id },
             _ => return Err("agent_cursor_invalid".into()),
         };
         let page = rooms

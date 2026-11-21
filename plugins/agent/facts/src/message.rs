@@ -43,6 +43,10 @@ pub enum MessageOrigin {
         message_id: String,
         author: crate::room::RoomAuthor,
         reply_to: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mentions: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hop_count: Option<u8>,
     },
     Automation {
         automation_id: String,
@@ -100,13 +104,13 @@ impl MessageOrigin {
                 let reply = serde_json::json!({"sessionId": session_id, "replyTo": message_id});
                 let instruction = match language {
                     Language::ZhCn => format!(
-                        "若需查看房间上下文，直接调用 Read({read_room})（无 Read 权限时调用 SessionRead({session_read})）。回复此房间请调用 SessionSend，带上 {reply} 并在 message 中填写内容。\n"
+                        "若需查看更早的房间记录，调用 Read({read_room})（无 Read 权限时调用 SessionRead({session_read})）。向房间回复请调用 SessionSend，带上 {reply} 并在 message 中填写回复内容；若只需轻量确认收到（无需刷屏回复），可调用 SessionManage 的 room_react 添加表情（如 ✅ 或 👀）。仅在本会话中直接回复不会同步到房间。\n"
                     ),
                     Language::ZhTw => format!(
-                        "若需查看房間脈絡，直接呼叫 Read({read_room})（無 Read 權限時呼叫 SessionRead({session_read})）。回覆此房間請呼叫 SessionSend，帶上 {reply} 並在 message 中填寫內容。\n"
+                        "若需查看更早的房間紀錄，呼叫 Read({read_room})（無 Read 權限時呼叫 SessionRead({session_read})）。向房間回覆請呼叫 SessionSend，帶上 {reply} 並在 message 中填寫回覆內容；若只需輕量確認收到（無需洗版回覆），可呼叫 SessionManage 的 room_react 添加表情（如 ✅ 或 👀）。僅在本對話中直接回覆不會同步到房間。\n"
                     ),
                     _ => format!(
-                        "If you need earlier Room context, call Read({read_room}) (or SessionRead({session_read}) when Read is unavailable). Reply in the Room using SessionSend with {reply} and your response in message.\n"
+                        "If you need earlier Room context, call Read({read_room}) (or SessionRead({session_read}) when Read is unavailable). Reply in the Room using SessionSend with {reply} and your response in message; for lightweight acknowledgement without posting a full reply, use SessionManage with room_react (e.g. ✅ or 👀). Answering only in this private session will not post to the Room.\n"
                     ),
                 };
                 header.push_str(&sender);
@@ -189,6 +193,8 @@ impl MessageOrigin {
                 message_id,
                 author,
                 reply_to,
+                mentions,
+                hop_count: _,
             } => {
                 crate::interaction::entity_id(session_id)?;
                 crate::interaction::entity_id(message_id)?;
@@ -198,6 +204,9 @@ impl MessageOrigin {
                 }
                 if let Some(message) = reply_to {
                     crate::interaction::entity_id(message)?;
+                }
+                for mention in mentions {
+                    crate::interaction::entity_id(mention)?;
                 }
                 Ok(())
             }

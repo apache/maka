@@ -272,6 +272,11 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "persist run output-limit continuation count",
         sql: include_str!("../migrations/0050_output_limit_continuations.sql"),
     },
+    maka_event_log::migration::Migration {
+        version: 51,
+        description: "room members, topic, reactions, pins, edits, and full-text search",
+        sql: include_str!("../migrations/0051_room_overhaul.sql"),
+    },
 ];
 
 #[cfg(test)]

@@ -382,6 +382,50 @@ async fn execute(
                     }
                     return attachments::read(&artifacts, scope, id, request, cancellation).await;
                 }
+                ResourceAddress::SessionAttachment {
+                    session_id,
+                    mut attachment_id,
+                } => {
+                    access.authorize_session_read(&session_id, context).await?;
+                    let scope = maka_agent_state::artifacts::SessionScope {
+                        owner: access.run_owner().clone(),
+                        session: session_id.clone(),
+                    };
+                    let artifacts = maka_agent_state::artifacts::ArtifactStore::new(
+                        root.data_writer_for_work(
+                            custody.as_ref(),
+                            &tool_context.execution.session_id,
+                        )
+                        .map_err(failed)?,
+                    );
+                    if !request.is_continuation() {
+                        let record = artifacts
+                            .resolve(scope.clone(), attachment_id)
+                            .await
+                            .map_err(failed)?
+                            .ok_or_else(|| {
+                                failed("Attachment was not found in the target Session")
+                            })?;
+                        if record.source != maka_agent_facts::artifact::ArtifactSource::UserUpload {
+                            return Err(failed("Attachment was not found in the target Session"));
+                        }
+                        attachment_id = record.id;
+                        request
+                            .bind_resource(&ResourceAddress::SessionAttachment {
+                                session_id: session_id.clone(),
+                                attachment_id: attachment_id.clone(),
+                            })
+                            .map_err(failed)?;
+                    }
+                    return attachments::read(
+                        &artifacts,
+                        scope,
+                        attachment_id,
+                        request,
+                        cancellation,
+                    )
+                    .await;
+                }
                 ResourceAddress::ToolResult(id) => {
                     let history = maka_agent_state::session_history::SessionHistory::new(
                         root.data_writer_for_work(

@@ -426,6 +426,18 @@ pub struct PreparedEnqueue {
     pub followup: Option<Followup>,
     pub work_fence: Option<Arc<SessionWorkFence>>,
 }
+impl PreparedEnqueue {
+    /// Execute a Room delivery inside the RoomPost transaction, refreshing target queue/Run
+    /// heads (or falling back to Followup if the target Run just completed) so concurrent
+    /// Room steering never drops deliveries due to a sub-millisecond Run step advancement.
+    pub fn execute_for_room(mut self, c: &Connection) -> Result<Prepared<QueueCommit>, StoreError> {
+        if self.followup.is_none() && matches!(self.command.edit, QueueEdit::Enqueue { .. }) {
+            sql::refresh_room_enqueue(c, &self.session, &mut self.command)?;
+        }
+        self.execute(c)
+    }
+}
+
 impl Statement for PreparedEnqueue {
     type Value = QueueCommit;
     type Output = QueueCommit;
