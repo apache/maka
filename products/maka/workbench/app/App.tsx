@@ -46,6 +46,7 @@ import {
   settingsViewContract,
   type ConversationCompact,
   type SettingsPageInput,
+  type SettingsViewInput,
   type ConversationShell,
   type ConversationSessionHandle,
   type ConversationPreviewHandle,
@@ -80,7 +81,7 @@ type SavedRoot = {
   workspaceMode?: 'conversations' | 'rooms';
   roomSessionId?: string | null;
   sidebarExpanded: boolean;
-  settings: { model?: ModelSelection; page?: string } | null;
+  settings: Pick<SettingsViewInput, 'model' | 'page' | 'initialProjectId'> | null;
   panel: PanelRoute | null;
 };
 
@@ -106,6 +107,7 @@ function App(
   const settingsOpened = signal(saved?.settings !== null && saved?.settings !== undefined);
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
   const settingsPage = signal<string | undefined>(saved?.settings?.page);
+  const settingsProjectId = signal<string | undefined>(saved?.settings?.initialProjectId);
   const session = signal<ConversationSessionHandle | null>(null);
   windowTitle(() =>
     workspaceMode() === 'rooms'
@@ -300,12 +302,13 @@ function App(
     blocked,
     connectionLost: () => runtime.updateError() !== null,
     openSession,
-    openSettings(model, page) {
+    openSettings(model, page, initialProjectId) {
       if (!alive || blocked()) return;
       navigationGeneration++;
       batch(() => {
         settingsModel.set(model);
         settingsPage.set(page);
+        settingsProjectId.set(initialProjectId);
         settingsOpened.set(true);
       });
     },
@@ -439,10 +442,10 @@ function App(
         if (!(await closeLauncher())) return false;
         return id === null || showSession(id);
       },
-      openSettings(model, page) {
+      openSettings(model, page, initialProjectId) {
         void closeLauncher().then((closed) => {
           if (!closed) return;
-          shell.openSettings(model, page);
+          shell.openSettings(model, page, initialProjectId);
           mainWindow.focus();
         });
       },
@@ -480,7 +483,9 @@ function App(
         sessionId: selected(),
         sideSessionIds: besides(),
         sidebarExpanded: sidebarExpanded(),
-        settings: settingsOpened() ? { model: settingsModel(), page: settingsPage() } : null,
+        settings: settingsOpened()
+          ? { model: settingsModel(), page: settingsPage(), initialProjectId: settingsProjectId() }
+          : null,
         panel: plugins.panelRoute(),
       };
     }),
@@ -641,6 +646,9 @@ function App(
           },
           get page() {
             return settingsPage();
+          },
+          get initialProjectId() {
+            return settingsProjectId();
           },
         },
         { loading: false },

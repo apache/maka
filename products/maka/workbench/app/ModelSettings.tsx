@@ -91,7 +91,15 @@ export function ModelSettings(props: {
           sameValue(tool.instance.instance, item.instance.instance),
       );
   const pages = () => {
-    const shown = runtime.settings().filter((item) => !quickTool(item));
+    const shown = runtime
+      .settings()
+      .filter(
+        (item) =>
+          !quickTool(item) &&
+          (item.id !== 'project-actions' ||
+            !sameValue(item.instance.instance, props.context.instance) ||
+            !!props.context.services.projectActions?.length),
+      );
     return [
       ...shown.filter((item) => item.id !== quickToolsSettings),
       ...shown.filter((item) => item.id === quickToolsSettings),
@@ -157,6 +165,7 @@ export function ModelSettings(props: {
   };
   const cancel = (request: BackAction) => () => back(request);
   const input = (contribution: UiContributionRef): SettingsPageInput => ({
+    initialProjectId: props.input.initialProjectId,
     settings: {
       attach(value) {
         const registration = { key: contribution.key, value };

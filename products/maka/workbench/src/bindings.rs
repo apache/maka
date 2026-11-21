@@ -327,6 +327,8 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
     static AGENT_CONTRACT: LazyLock<Contract> = LazyLock::new(maka_agent_api::contract);
     static TERMINAL_CONTRACT: LazyLock<Contract> =
         LazyLock::new(maka_workspace_api::terminal::contract);
+    static PROJECT_ACTIONS_CONTRACT: LazyLock<Contract> =
+        LazyLock::new(maka_workspace_api::actions::contract);
     static SETTINGS_CONTRACT: LazyLock<Contract> =
         LazyLock::new(maka_settings_native::contract::contract);
     static AUTHENTICATION_CONTRACT: LazyLock<Contract> =
@@ -338,6 +340,7 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
     let expected: &Contract = match endpoint {
         "agent" => &AGENT_CONTRACT,
         "terminal" => &TERMINAL_CONTRACT,
+        "projectActions" => &PROJECT_ACTIONS_CONTRACT,
         "settings" => &SETTINGS_CONTRACT,
         "authentication" => &AUTHENTICATION_CONTRACT,
         "setup" => &SETUP_CONTRACT,

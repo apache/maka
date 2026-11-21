@@ -31,6 +31,8 @@ pub mod completions;
 pub(crate) mod creation;
 mod data;
 pub use data::{DataChange, DataWriter};
+pub(crate) mod action_definitions;
+pub use action_definitions::ActionDefinitionChange;
 mod effects;
 mod execution;
 pub use effects::BrowserLeaseChildReceipt;

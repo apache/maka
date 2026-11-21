@@ -43,6 +43,11 @@ pub const ROOT_MIGRATIONS: &[crate::migration::Migration] = &[
         description: "checkpoint repository",
         sql: include_str!("../migrations/0042_checkpoint_repository.sql"),
     },
+    crate::migration::Migration {
+        version: 51,
+        description: "project actions",
+        sql: include_str!("../migrations/0051_project_actions.sql"),
+    },
 ];
 
 pub(crate) fn initialize_connection(

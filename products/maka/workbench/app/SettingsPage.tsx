@@ -368,6 +368,7 @@ export type SettingsChoice = {
 export function SettingsSelect(props: {
   label: string;
   description?: string;
+  detailBelowLabel?: boolean;
   value: string | null;
   choices: SettingsChoice[];
   disabled?: boolean;
@@ -379,6 +380,8 @@ export function SettingsSelect(props: {
   change(value: string): void;
 }) {
   const current = () => props.choices.find((choice) => choice.value === props.value);
+  const description = () =>
+    props.description ?? (props.detailBelowLabel ? current()?.detail : undefined);
   return (
     <View
       style={
@@ -392,8 +395,8 @@ export function SettingsSelect(props: {
       </If>
       <View style={[{ flex: 1, minWidth: 0, gap: textGap }, { pointerEvents: 'none' }]}>
         <Text style={{ ...labelStyle, color: C.text }}>{props.label}</Text>
-        <If when={props.description}>
-          <Text style={{ ...captionTextStyle, color: C.muted }}>{props.description}</Text>
+        <If when={description()}>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>{description()}</Text>
         </If>
       </View>
       <Select
@@ -440,7 +443,7 @@ export function SettingsSelect(props: {
             >
               {current()?.title ?? props.placeholder ?? ''}
             </Text>
-            <If when={current()?.detail}>
+            <If when={!props.detailBelowLabel && current()?.detail}>
               <Text
                 style={[
                   {

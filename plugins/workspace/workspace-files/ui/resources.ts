@@ -124,11 +124,17 @@ export function createResources(
   let nextInstance = 0;
   const session = signal<string | null>(null);
   let pendingPreview: { sessionId: string } | null = null;
+  let pendingActionFocus: symbol | null = null;
   let alive = true;
   let root: ViewRef | undefined;
   const lastTerminal = new Map<string, string>();
   const headers = new Map<string, WorkspaceFocusTarget>();
   let opener: (() => boolean) | undefined;
+
+  const selectResource = (resource: number | ResourceSection, action: symbol | null = null) => {
+    pendingActionFocus = action;
+    active.set(resource);
+  };
 
   const dispose = (tab: ResourceTab) => {
     if (tab.kind !== 'image' && tab.kind !== 'pr') tab.model.dispose();
@@ -189,7 +195,7 @@ export function createResources(
       if (selected) parked.delete(selected);
       resetHistory();
       shown.set(false);
-      active.set('launchpad');
+      selectResource('launchpad');
       focusRequest.set(false);
       instance.set(instance() + 1);
       session.set(selected);
@@ -232,7 +238,7 @@ export function createResources(
       return;
     pendingPreview = null;
     imageViewer.set(null);
-    active.set(target.instance);
+    selectResource(target.instance);
     const chosen = tabs().find((t) => t.instance === target.instance);
     if (chosen?.kind === 'file') {
       recordStep({ kind: 'file', target: chosen.model.target });
@@ -290,7 +296,7 @@ export function createResources(
       tab = build(++nextInstance);
       tabs.set([...tabs(), tab]);
     }
-    active.set(tab.instance);
+    selectResource(tab.instance);
     reveal();
     focusRequest.set(true);
     return tab;
@@ -421,14 +427,14 @@ export function createResources(
     }
   };
 
-  const inventory = (target: { sessionId: string; kind: ResourceSection }) => {
+  const inventory = (target: { sessionId: string; kind: ResourceSection }, action?: symbol) => {
     if (!admits(target.sessionId)) return;
     adopt(target.sessionId);
     imageViewer.set(null);
     const stageSection: StageSectionTab =
       target.kind === 'agent-terminals' ? 'terminals' : target.kind;
     ensureSectionTab(stageSection);
-    active.set(target.kind);
+    selectResource(target.kind, action);
     if (target.kind === 'launchpad' || target.kind === 'files' || target.kind === 'changes') {
       recordStep({ kind: 'section', section: target.kind });
     }
@@ -477,6 +483,7 @@ export function createResources(
 
   const hide = () => {
     pendingPreview = null;
+    pendingActionFocus = null;
     imageViewer.set(null);
     fullscreen.set(false);
     shown.set(false);
@@ -499,7 +506,7 @@ export function createResources(
       const saved = await tab.model.save();
       if (!tabs().includes(tab)) return;
       if (!saved || tab.model.dirty()) {
-        active.set(tab.instance);
+        selectResource(tab.instance);
         return;
       }
     }
@@ -509,13 +516,13 @@ export function createResources(
     if (active() === tab.instance) {
       if (tab.kind === 'terminal') {
         ensureSectionTab('terminals');
-        active.set(tab.model.agentOwned() ? 'agent-terminals' : 'terminals');
+        selectResource(tab.model.agentOwned() ? 'agent-terminals' : 'terminals');
         focusRequest.set(true);
         return;
       }
       const fallback = pickFallbackActive();
       if (fallback !== null) {
-        active.set(fallback);
+        selectResource(fallback);
         focusRequest.set(true);
       } else {
         hide();
@@ -526,21 +533,22 @@ export function createResources(
 
   const closeSection = (target: { sessionId: string; section: StageSectionTab }) => {
     if (!admits(target.sessionId)) return;
-    const nextSecs = openSections().filter((s) => s !== target.section);
-    openSections.set(nextSecs);
-    if (target.section === 'terminals') {
-      const termTabs = tabs().filter((t) => t.kind === 'terminal');
-      for (const t of termTabs) dispose(t);
-      tabs.set(tabs().filter((t) => t.kind !== 'terminal'));
-    }
     const cur = active();
     const wasActive =
       cur === target.section ||
       (target.section === 'terminals' && (cur === 'agent-terminals' || activeTerminal() !== null));
+    const nextSecs = openSections().filter((s) => s !== target.section);
+    openSections.set(nextSecs);
+    if (target.section === 'terminals') {
+      pendingActionFocus = null;
+      const termTabs = tabs().filter((t) => t.kind === 'terminal');
+      for (const t of termTabs) dispose(t);
+      tabs.set(tabs().filter((t) => t.kind !== 'terminal'));
+    }
     if (wasActive) {
       const fallback = pickFallbackActive();
       if (fallback !== null) {
-        active.set(fallback);
+        selectResource(fallback);
         focusRequest.set(true);
       } else {
         hide();
@@ -573,7 +581,7 @@ export function createResources(
     adopt(target.sessionId);
     if (openSections().length === 0 && tabs().filter((t) => t.kind !== 'terminal').length === 0) {
       ensureSectionTab('launchpad');
-      active.set('launchpad');
+      selectResource('launchpad');
     }
     opener = headerOpener(target.sessionId);
     reveal();
@@ -887,7 +895,7 @@ export function createResources(
         title: entry.result.cmd || tr('Terminal'),
         model,
       }));
-      if (!agent) {
+      if (!agent && terminalRunning(entry)) {
         focusRequest.set(false);
         model.focusRequested.set(true);
       }
@@ -917,7 +925,7 @@ export function createResources(
     const shells = section === 'terminals' ? personalTerminals() : [];
     untracked(() => {
       for (const shell of closedShells) closeTab(shell);
-      if (section !== 'terminals' || activeTerminal()) return;
+      if (section !== 'terminals' || activeTerminal() || pendingActionFocus !== null) return;
       const id = session();
       if (!id) return;
       const previous = lastTerminal.get(id);
@@ -1023,6 +1031,16 @@ export function createResources(
           kind: t.kind,
           select: () => select({ sessionId: sid, instance: t.instance }),
         }));
+    },
+    async startTerminal(target: { sessionId: string; command: string }) {
+      if (!admits(target.sessionId)) return;
+      const request = Symbol();
+      inventory({ sessionId: target.sessionId, kind: 'terminals' }, request);
+      opener = headerOpener(target.sessionId);
+      const entry = await terminals.runCommand(target.command);
+      if (pendingActionFocus !== request) return;
+      pendingActionFocus = null;
+      if (entry) showTerminal(entry);
     },
     openFiles,
     openChanges,

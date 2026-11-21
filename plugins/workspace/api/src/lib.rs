@@ -18,6 +18,7 @@
  */
 
 //! Workspace plugin contracts, shared by native providers and authoring tools.
+pub mod actions;
 pub mod computer;
 pub mod decisions_api;
 pub mod files;
