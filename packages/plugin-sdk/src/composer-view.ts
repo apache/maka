@@ -337,9 +337,6 @@ export interface ComposerViewInput<Element = unknown> {
   readonly workspacePicker?: Element;
   /** Optional product-owned usage limits indicator rendered in the composer toolbar. */
   readonly usageLimits?: Element;
-  /** Opens workspace files in an established conversation, at the same slot as workspacePicker. */
-  openFiles?(): void;
-  filesOpener?(node: { focus(): void }): void;
   settings(): void;
   /** The Host has no model connection: a desktop start pane asks for one first. */
   needsConnection?(): boolean;

@@ -633,7 +633,7 @@ export function Header(props: {
       >
         {props.title}
       </Text>
-      <If when={!desktop && props.files}>
+      <If when={props.files && (!desktop || Boolean(props.workspace))}>
         <Button
           accessibilityLabel={tr('Browse workspace files')}
           tooltip={textTooltip(() => props.workspace || tr('Browse workspace files'))}
@@ -641,22 +641,24 @@ export function Header(props: {
           onPress={props.files}
           style={{
             ...toolbarControlStyle,
+            ...(desktop ? { minHeight: 28, height: 28, paddingVertical: 0 } : {}),
             flexDirection: 'row',
             alignItems: 'center',
-            gap: 8,
-            maxWidth: 240,
+            gap: desktop ? 4 : 8,
+            maxWidth: desktop ? 180 : 240,
             minWidth: 0,
-            flexShrink: 1,
+            flexShrink: desktop ? 2 : 1,
           }}
-          hoverStyle={{ backgroundColor: C.surface }}
-          focusStyle={{ backgroundColor: C.raised }}
+          hoverStyle={desktop ? quietHoverStyle() : { backgroundColor: C.surface }}
+          activeStyle={desktop ? quietActiveStyle() : undefined}
+          focusStyle={desktop ? quietFocusStyle() : { backgroundColor: C.raised }}
         >
-          <Icon name="folder" color={C.secondary} size={16} />
+          <Icon name="folder" color={desktop ? C.muted : C.secondary} size={desktop ? 14 : 16} />
           <Text
             style={[
               {
                 ...captionTextStyle,
-                color: C.secondary,
+                color: desktop ? C.muted : C.secondary,
                 minWidth: 0,
                 flexShrink: 1,
               },
