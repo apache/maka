@@ -180,18 +180,22 @@ pub struct ModelRequestContextTrace {
 
 impl HistoryDataSource {
     /// Usage of the main model attempts in a single live-history Run.
-    pub async fn main_prompt_cache(
+    pub async fn main_model_usage(
         &self,
         run: RunId,
-    ) -> Result<Option<PromptCacheUsage>, StoreError> {
+    ) -> Result<(Option<ModelUsage>, Option<PromptCacheUsage>), StoreError> {
         match self {
             Self::Live { history, cut } => {
                 history
                     .data
-                    .query(ReadPromptCache(history.namespace.clone(), cut.clone(), run))
+                    .query(ReadMainModelUsage(
+                        history.namespace.clone(),
+                        cut.clone(),
+                        run,
+                    ))
                     .await
             }
-            Self::Snapshot(_) => Ok(None),
+            Self::Snapshot(_) => Ok((None, None)),
         }
     }
 
@@ -210,15 +214,15 @@ impl HistoryDataSource {
     }
 }
 
-struct ReadPromptCache(HistoryNamespace, HistoryCut, RunId);
-impl Query for ReadPromptCache {
-    type Output = Option<PromptCacheUsage>;
+struct ReadMainModelUsage(HistoryNamespace, HistoryCut, RunId);
+impl Query for ReadMainModelUsage {
+    type Output = (Option<ModelUsage>, Option<PromptCacheUsage>);
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         let Self(history, cut, run) = self;
         sql::validate_cut(c, &history.owner, &history.session, &cut)?;
         let mut statement = c.prepare_cached(
             "SELECT r.input,r.cache_read,
-                json_extract(CAST(b.payload AS TEXT),'$.fact.protocol.cacheReadReported')
+                json_extract(CAST(b.payload AS TEXT),'$.fact.protocol.cacheReadReported'), r.output
              FROM agent_session_history h INDEXED BY agent_session_history_run
              JOIN agent_usage_calls u ON u.request='model:'||h.run||':'||h.attempt
                   AND u.admission_sequence=h.sequence
@@ -237,28 +241,34 @@ impl Query for ReadPromptCache {
             sql::bind_u64(cut.through_sequence)?,
             serde_json::to_string(&ModelPurpose::Main)?,
         ])?;
-        let (mut input, mut read) = (0u64, 0u64);
+        let (mut input, mut output, mut read) = (Some(0u64), Some(0u64), Some(0u64));
+        let mut seen = false;
         while let Some(row) = rows.next()? {
-            let Some(attempt_input) = counter(row.get(0)?)? else {
-                return Ok(None);
-            };
-            let Some(attempt_read) = counter(row.get(1)?)? else {
-                return Ok(None);
-            };
-            if attempt_read > attempt_input
-                || (attempt_read == 0 && row.get::<_, Option<bool>>(2)? != Some(true))
-            {
-                return Ok(None);
+            seen = true;
+            let attempt_input = counter(row.get(0)?)?;
+            let attempt_read = counter(row.get(1)?)?;
+            let attempt_output = counter(row.get(3)?)?;
+            let sum =
+                |total: Option<u64>, next| total.zip(next).and_then(|(a, b)| a.checked_add(b));
+            input = sum(input, attempt_input);
+            output = sum(output, attempt_output);
+            read = sum(
+                read,
+                attempt_read.filter(|value| Some(*value) <= attempt_input),
+            );
+            if attempt_read == Some(0) && row.get::<_, Option<bool>>(2)? != Some(true) {
+                read = None;
             }
-            let Some(totals) = input
-                .checked_add(attempt_input)
-                .zip(read.checked_add(attempt_read))
-            else {
-                return Ok(None);
-            };
-            (input, read) = totals;
         }
-        Ok(PromptCacheUsage::new(input, read))
+        let cache = input
+            .zip(read)
+            .and_then(|(i, r)| PromptCacheUsage::new(i, r));
+        let tokens = (seen && (input.is_some() || output.is_some())).then_some(ModelUsage {
+            input_tokens: input,
+            output_tokens: output,
+            ..Default::default()
+        });
+        Ok((tokens, cache))
     }
 }
 

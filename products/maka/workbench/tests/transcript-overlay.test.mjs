@@ -23,6 +23,7 @@ import {
   orderProcessRows,
   projectProcessGroups,
   sameProcessRows,
+  showTurnSummary,
   turnOutcome,
   turnWorkFold,
 } from '../app/processGroups.ts';
@@ -31,6 +32,7 @@ import {
   historyFollowTail,
   historyRowThrough,
   historyTurnKey,
+  isReplyWithActions,
   mergeHistoryPage,
   stableRowId,
 } from '../app/history.ts';
@@ -311,6 +313,77 @@ test('work stays open during streamed text and folds when the answer is confirme
   assert.equal(chat(completed), 'closed');
   assert.equal(turnWorkFold(completed, true), 'closed');
   assert.deepEqual(completed.answerOutputIds, [], 'the earlier text now belongs to the work');
+});
+
+test('a direct final reply has no work header, including after history reloads', () => {
+  const request = row('request', 'Hi', 1, { role: 'user' });
+  const final = row('reply', 'Hello!', 3, { finalOutput: true });
+  const completed = { startedAt: 1000, finished: { at: 12000, outcome: 'completed' } };
+  const project = (rows, activeTurnId = null) =>
+    projectProcessGroups({ rows, toolActivity: [], activeTurnId }).turns.get('run');
+  const thought = row('thought', 'Checking', 2, { role: 'thinking', field: 'thinking' });
+  const tool = row('call', '', 2, { role: 'tool_call', tool: { toolUseId: 'read' } });
+  for (const terminal of [false, true]) {
+    assert.equal(showTurnSummary(project([request, final], 'run'), terminal), false);
+    assert.equal(
+      showTurnSummary(project([{ ...request, timing: completed }, final]), terminal),
+      false,
+    );
+    assert.equal(showTurnSummary(project([request, thought, final]), terminal), true);
+    assert.equal(showTurnSummary(project([request, tool, final]), terminal), true);
+    for (const outcome of ['failed', 'aborted']) {
+      const timing = { ...completed, finished: { ...completed.finished, outcome } };
+      assert.equal(showTurnSummary(project([{ ...request, timing }]), terminal), true);
+    }
+  }
+  assert.equal(showTurnSummary(project([request], 'run'), false), true);
+});
+
+test('imported replies stay visible and only tool activity folds', () => {
+  const imported = (ordinal, text, changes = {}) =>
+    row(String(ordinal), text, ordinal, {
+      position: {
+        kind: 'imported',
+        path: [],
+        snapshot: 'history',
+        messageOrdinal: ordinal,
+        partOrdinal: 0,
+      },
+      importedTurn: 0,
+      ...changes,
+    });
+  const request = imported(0, '测试代号是什么？', { role: 'user' });
+  const reply = imported(4, '海星');
+  const call = imported(2, '');
+  call.tool = { toolUseId: 'lookup', call: { origin: 'imported', position: call.position } };
+  const result = imported(3, '', {
+    role: 'tool_result',
+    tool: { toolUseId: 'lookup', result: { isError: false } },
+  });
+  const thought = imported(1, '回顾之前的问题', { field: 'thinking' });
+  assert.equal(isReplyWithActions(reply), true);
+  for (const other of [request, call, result, thought, { ...reply, sourceCitation: true }])
+    assert.equal(isReplyWithActions(other), false);
+  for (const rows of [
+    [request, reply],
+    [request, thought, reply],
+    [request, thought, call, result, reply],
+  ]) {
+    const { entries, turns } = projectProcessGroups({ rows, activeTurnId: null, toolActivity: [] });
+    const turn = turns.get(historyTurnKey(reply));
+    const hasTools = rows.includes(call);
+    for (const terminal of [false, true]) {
+      assert.equal(showTurnSummary(turn, terminal), hasTools);
+      assert.equal(turnWorkFold(turn, terminal), hasTools ? 'closed' : 'unavailable');
+    }
+    assert.deepEqual(
+      entries.filter((entry) => entry.kind === 'process').flatMap((group) => group.toolIds),
+      hasTools ? ['lookup'] : [],
+    );
+    const answer = entries.find((entry) => entry.rowId === stableRowId(reply));
+    assert.equal(answer.kind, 'message');
+    assert.equal(answer.processTurnKey, undefined);
+  }
 });
 
 test('recovered snapshot failures mark only their source-aware turn as having work', () => {

@@ -2617,7 +2617,7 @@ export interface ServiceMethods {
          */
         history?: Runtime.QuickTurn[];
       };
-      output: null;
+      output: Runtime.QuickReplyInfo;
     };
     attachmentImage: {
       mode: 'query';

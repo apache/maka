@@ -2026,6 +2026,14 @@ async fn desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu() 
         .wait("the reply did not finish", reply.finish())
         .await;
     let copy = desktop.control("Copy message").await;
+    desktop
+        .until("a direct reply kept an empty work header", || {
+            desktop
+                .controls("Turn work details")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
     let composer = desktop.control("Focus message composer").await.center();
     // Inside the reply, above its row of actions.
     let body = point(copy.center().x + px(64.), copy.top() - px(16.));
@@ -2672,6 +2680,12 @@ async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
         }),
     )
     .await;
+    let more = desktop.control("Actions for Side conversation").await;
+    let title = desktop.control("Open conversation Side conversation").await;
+    assert!(
+        more.size.width <= px(32.) && title.size.width > more.size.width,
+        "the More menu should occupy only the trailing icon slot: {title:?}, {more:?}"
+    );
     let original = desktop.platform.text_input_target();
     desktop.press("Actions for Side conversation").await;
     desktop.press("Open to the side").await;

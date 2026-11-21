@@ -58,6 +58,7 @@ pub struct ExactRecord {
 }
 
 pub struct ExactMessage {
+    pub reply_info: Option<maka_agent_facts::model::QuickReplyInfo>,
     pub source_message_id: Option<String>,
     pub source_turn_id: Option<String>,
     pub turn_ordinal: ImportedTurnOrdinal,

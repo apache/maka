@@ -62,4 +62,6 @@ pub struct QuickQuestion {
 pub struct QuickTurn {
     pub question: String,
     pub answer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_info: Option<maka_agent_facts::model::QuickReplyInfo>,
 }

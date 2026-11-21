@@ -729,10 +729,10 @@ impl Handler for Agent {
                 loop {
                     tokio::select! {
                         result = &mut generation => {
-                            result?;
+                            let info = result?;
                             let answer = updates.borrow().clone();
                             context.emit(encode(answer)?).await?;
-                            return encode(());
+                            return encode(info);
                         }
                         Ok(()) = updates.changed() => {
                             let answer = updates.borrow_and_update().clone();

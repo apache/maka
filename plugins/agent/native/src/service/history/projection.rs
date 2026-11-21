@@ -106,6 +106,7 @@ fn base(
             has_references: false,
             quotes: Vec::new(),
             final_output: false,
+            reply_info: None,
             final_answer: false,
             model: None,
             origin: None,

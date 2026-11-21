@@ -305,15 +305,16 @@ async fn timing(
             })
         })
         .transpose()?;
-    let prompt_cache =
+    let (model_tokens, prompt_cache) =
         if finished.is_some() && matches!(&source.spec.backend, BackendSpec::Model { .. }) {
-            data.main_prompt_cache(source.run)
+            data.main_model_usage(source.run)
                 .await
                 .map_err(|error| error.to_string())?
         } else {
-            None
+            (None, None)
         };
     Ok(wire::TurnTiming {
+        model_tokens,
         prompt_cache,
         started_at: millis(source.admission.at)?,
         finished,

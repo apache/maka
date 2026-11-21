@@ -101,6 +101,11 @@ impl Capture {
             hash.update(&raw_record);
             bytes += raw_record.len() as u64;
             let message = |role, part| ExactMessage {
+                reply_info: if role == HistoricalRole::Assistant {
+                    turn.reply_info.clone()
+                } else {
+                    None
+                },
                 source_message_id: None,
                 source_turn_id: None,
                 turn_ordinal: ImportedTurnOrdinal(index as u64),
@@ -254,6 +259,7 @@ impl ExactSink for Capture {
                 let media = std::mem::take(&mut self.current_media);
                 let body = self
                     .json(ImportedMessage {
+                        reply_info: message.reply_info,
                         turn_ordinal: message.turn_ordinal,
                         original_ordinal,
                         media,

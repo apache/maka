@@ -270,6 +270,7 @@ pub(crate) fn messages(
     parts
         .into_iter()
         .map(|(role, part)| ExactMessage {
+            reply_info: None,
             source_message_id: id.map(str::to_owned),
             source_turn_id: turn.map(str::to_owned),
             turn_ordinal,

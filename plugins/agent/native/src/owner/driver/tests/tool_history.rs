@@ -1158,6 +1158,8 @@ async fn history_exposes_only_reported_prompt_cache_usage() -> TestResult<()> {
                 .find(|chunk| chunk["finalOutput"] == true)
                 .expect("completed reply");
             assert_eq!(reply["text"], "Cached turn.");
+            assert_eq!(reply["timing"]["modelTokens"]["input_tokens"], 100);
+            assert_eq!(reply["timing"]["modelTokens"]["output_tokens"], 5);
             let observed = query(&rig, "observe", json!({"sessionId":session})).await?;
             assert!(
                 observed["metrics"]["outputTokensPerSecond"]

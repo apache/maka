@@ -245,6 +245,7 @@ export function TurnSummary(props: {
         label={tr('Turn work details')}
         open={props.expanded()}
         foldable={props.canFold()}
+        reserveChevron={false}
         terminalInset={controlStyle.paddingHorizontal}
         onPress={inputAction(choose, {
           turnKey: props.turn().turnKey,

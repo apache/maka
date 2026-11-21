@@ -209,8 +209,26 @@ async fn quick_questions_stream_with_explicit_history_outside_the_bot_transcript
             }
             let Reply::Mutation { reply, cleanup } = reply else { return Err("missing receipt".into()); };
             cleanup?;
-            assert!(matches!(reply.receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { .. } }, .. }), "{reply:?}");
+            let Receipt::Recorded { outcome: OperationOutcome::Returned { result: OperationResult::Success { value } }, .. } = reply.receipt else { return Err("quick question did not return its usage".into()); };
+            assert!(value["modelId"].is_string(), "{value}");
+            assert!(value["durationMs"].is_u64(), "{value}");
+            assert_eq!(value["usage"]["input_tokens"], 100, "{value}");
+            assert_eq!(value["usage"]["output_tokens"], 10, "{value}");
             assert_eq!(answer, "The image shows a red square.");
+            if id == "restored" {
+                let copied = call(client, "agent", "import", json!({
+                    "kind":"quick_question", "thread":uuid::Uuid::new_v4(),
+                    "title":"Quick reply usage", "path":base.join("workspace"), "backend":backend,
+                    "turns":[{"question":"Old question","answer":"Old reply"},{"question":"Describe the square.","answer":answer,"replyInfo":value}]
+                })).await?;
+                let page = call(client, "agent", "history", json!({
+                    "sessionId":copied["session"]["id"], "position":{"kind":"tail"}, "view":"conversation", "includeThinking":true
+                })).await?;
+                let rows = page["chunks"].as_array().ok_or("missing imported history")?;
+                let copied_answer = rows.iter().find(|row| row["text"] == answer).ok_or("missing quick reply")?;
+                assert_eq!(copied_answer["replyInfo"], value);
+                assert!(rows.iter().filter(|row| row["text"] != answer).all(|row| row["replyInfo"].is_null()));
+            }
             let request = upstream.recv().await.ok_or("missing model request")?;
             assert!(request["tools"].as_array().is_none_or(Vec::is_empty));
             let messages = request["messages"].as_array().unwrap();

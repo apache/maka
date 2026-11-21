@@ -85,6 +85,7 @@ export type MessageEntry = {
 export type ProcessEntry = ProcessGroup | MessageEntry;
 export type TurnPresentation = {
   turnKey: string;
+  imported?: boolean;
   timing: Row['timing'] | null;
   foldedWork?: Row['foldedWork'];
   active: boolean;
@@ -110,6 +111,7 @@ export function turnWorkFold(
   turn: TurnPresentation,
   terminal: boolean,
 ): 'unavailable' | 'open' | 'closed' {
+  if (turn.imported) return turn.worked ? 'closed' : 'unavailable';
   const outcome = turnOutcome(turn);
   if (turn.foldedWork) return 'closed';
   if (!turn.worked || turn.interleavedInput || (outcome !== null && outcome !== 'completed'))
@@ -117,6 +119,13 @@ export function turnWorkFold(
   if (turn.finalAnswerStarted) return 'closed';
   if (outcome === 'completed' && (!turn.active || turn.finalOutputIds.length > 0)) return 'closed';
   return terminal ? 'unavailable' : 'open';
+}
+
+/** A completed answer needs a work header only when it has work to describe. */
+export function showTurnSummary(turn: TurnPresentation, terminal: boolean): boolean {
+  const outcome = turnOutcome(turn);
+  if (turn.imported || outcome === 'completed') return turn.worked;
+  return !terminal || outcome !== null || turnWorkFold(turn, terminal) === 'closed';
 }
 
 export function displayOrder(row: ProcessRow): HistoryOrder | undefined {
@@ -307,6 +316,10 @@ export function projectProcessGroups(input: {
     const rowTurn = historyTurnKey(row);
     if (rowTurn === undefined) continue;
     const presentation = turn(rowTurn);
+    if (row.position?.kind === 'imported') {
+      presentation.imported = true;
+      if (row.tool) presentation.worked = true;
+    }
     if (row.foldedWork) {
       presentation.foldedWork = row.foldedWork;
       presentation.worked = true;
@@ -388,7 +401,10 @@ export function projectProcessGroups(input: {
         ...new Set(shown.flatMap((member) => (member.toolUseId ? [member.toolUseId] : []))),
       ],
       closed:
-        closed || Boolean(presentation.timing?.finished) || presentation.finalOutputIds.length > 0,
+        closed ||
+        presentation.imported === true ||
+        Boolean(presentation.timing?.finished) ||
+        presentation.finalOutputIds.length > 0,
     });
     current = undefined;
   };
@@ -437,6 +453,18 @@ export function projectProcessGroups(input: {
     if (input.gapsBefore?.has(position.rowId)) flush(true);
     const rowTurn = historyTurnKey(row);
     if (current && current.turnKey !== rowTurn) flush(true);
+    // Imports preserve message roles and parts, but have no native run outcome.
+    // Keep their transcript text visible even when the tool steps are closed.
+    if (rowTurn && row.position?.kind === 'imported') {
+      if (emptyThinking(row)) continue;
+      if (row.tool || (row.field === 'thinking' && turn(rowTurn).worked)) {
+        append(rowTurn, { kind: 'row', rowId: position.rowId, toolUseId: row.tool?.toolUseId });
+      } else {
+        flush(true);
+        entries.push({ kind: 'message', key: position.rowId, rowId: position.rowId });
+      }
+      continue;
+    }
     if (row.work && rowTurn) {
       flush(true);
       current = {

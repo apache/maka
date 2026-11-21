@@ -7831,6 +7831,15 @@ export interface AgentImportPreviewItem {
 export interface QuickTurn {
   question: string;
   answer: string;
+  replyInfo?: QuickReplyInfo | null;
+}
+/**
+ * Provider-reported counters and measured generation time, copied with a quick reply.
+ */
+export interface QuickReplyInfo {
+  modelId: string;
+  durationMs: number;
+  usage: ModelUsage;
 }
 export interface AgentProjectCursor {
   revision: string;
@@ -8747,6 +8756,7 @@ export interface AgentHistoryChunk {
    * Includes body text and source citations; never a Thinking field.
    */
   finalOutput?: boolean;
+  replyInfo?: QuickReplyInfo | null;
   /**
    * The provider identified this text as final before the Turn completed.
    */
@@ -8806,6 +8816,7 @@ export interface AgentHistoryAttachment {
  * historical boundary alone does not establish that execution is still live.
  */
 export interface HistoryTurnTiming {
+  modelTokens?: ModelUsage | null;
   startedAt: number;
   finished: HistoryTurnFinished | null;
   executorUsage?: ExecutorTurnUsage | null;
