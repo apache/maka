@@ -45,10 +45,21 @@ if (antigravity && !process.env.FAKE_ACP_WORKER) {
   for await (const line of createInterface({ input: process.stdin })) {
     const frame = JSON.parse(line);
     if (frame.method === 'initialize') {
+      const systemPromptAppend = !existsSync(
+        join(process.env.HOME, 'disable-acp-system-prompt-append'),
+      );
       send({
         jsonrpc: '2.0',
         id: frame.id,
-        result: { protocolVersion: 1, agentCapabilities: { mcpCapabilities: { http: true } } },
+        result: {
+          protocolVersion: 1,
+          agentCapabilities: {
+            mcpCapabilities: { http: true },
+            ...(systemPromptAppend
+              ? { _meta: { antigravity: { systemPrompt: { append: true } } } }
+              : {}),
+          },
+        },
       });
       continue;
     }
@@ -329,11 +340,20 @@ async function terminal(status) {
   socket.end(() => process.exit(0));
 }
 async function acp(id, method, params) {
-  if (method === 'initialize')
+  if (method === 'initialize') {
+    const systemPromptAppend = !existsSync(
+      join(process.env.HOME, 'disable-acp-system-prompt-append'),
+    );
     return reply(id, {
       protocolVersion: 1,
-      agentCapabilities: { mcpCapabilities: { http: true } },
+      agentCapabilities: {
+        mcpCapabilities: { http: true },
+        ...(systemPromptAppend
+          ? { _meta: { antigravity: { systemPrompt: { append: true } } } }
+          : {}),
+      },
     });
+  }
   if (method === 'session/new' || method === 'session/resume') {
     thread = params.sessionId ?? randomUUID();
     const server = params.mcpServers[0];

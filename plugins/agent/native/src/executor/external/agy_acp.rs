@@ -138,7 +138,7 @@ struct Protocol<'a> {
 impl Protocol<'_> {
     async fn converse(mut self, io: &mut Pipe) -> Result<Outcome, Error> {
         let setup = self.prepare(io).await;
-        let (session, mut blocks, model) = match setup {
+        let (session, mut blocks, model, system_prompt_append) = match setup {
             Ok(setup) => setup,
             Err(
                 error @ (Error::Cancelled
@@ -150,9 +150,12 @@ impl Protocol<'_> {
             Err(error) => return runtime::preparation_failure(error),
         };
 
-        let instructions = self
-            .journal
-            .instruction_update(self.request["instructions"].as_str());
+        let instructions = (!system_prompt_append)
+            .then(|| {
+                self.journal
+                    .instruction_update(self.request["instructions"].as_str())
+            })
+            .flatten();
         if let Some(update) = &instructions {
             blocks.insert(
                 0,
@@ -201,22 +204,24 @@ impl Protocol<'_> {
     async fn prepare(
         &mut self,
         io: &mut Pipe,
-    ) -> Result<(String, Vec<Value>, Option<String>), Error> {
-        io.request("initialize", initialize_params()).await?;
-        let mut params = json!({
-            "cwd":self.cwd,
-            "mcpServers":[{
-                "type":"http", "name":HOST_SERVER, "url":self.bridge.url,
-                "headers":[{"name":"Authorization", "value":format!("Bearer {}",self.bridge.bearer())}]
-            }],
-            "_meta":{"antigravity":{"eagerMcpServers":[HOST_SERVER]}}
-        });
-        let method = if let Some(session) = self.journal.native_session() {
-            params["sessionId"] = session.into();
-            "session/resume"
-        } else {
-            "session/new"
-        };
+    ) -> Result<(String, Vec<Value>, Option<String>, bool), Error> {
+        let initialized = io.request("initialize", initialize_params()).await?;
+        let system_prompt_append = supports_system_prompt_append(&initialized);
+        let system_prompt = system_prompt_append
+            .then(|| {
+                system_prompt_text(
+                    self.request["instructions"].as_str(),
+                    self.journal.has_delivered_instructions(),
+                )
+            })
+            .flatten();
+        let (method, params) = open_params(
+            self.cwd,
+            &self.bridge.url,
+            self.bridge.bearer(),
+            self.journal.native_session(),
+            system_prompt.as_deref(),
+        );
         let opened = io.request(method, params).await?;
         let session = match self.journal.native_session() {
             Some(previous) => opened["sessionId"].as_str().unwrap_or(previous),
@@ -233,8 +238,50 @@ impl Protocol<'_> {
         let message = string(self.request, "/message")?;
         let blocks = prompt_blocks(message, &self.request["images"]).await?;
         self.bridge.admit()?;
-        Ok((session, blocks, model))
+        Ok((session, blocks, model, system_prompt_append))
     }
+}
+
+fn supports_system_prompt_append(initialized: &Value) -> bool {
+    initialized.pointer("/agentCapabilities/_meta/antigravity/systemPrompt/append")
+        == Some(&Value::Bool(true))
+}
+
+fn system_prompt_text(instructions: Option<&str>, had_user_block: bool) -> Option<String> {
+    let instructions = instructions.filter(|text| !text.trim().is_empty());
+    if had_user_block {
+        Some(journal::instruction_text(instructions))
+    } else {
+        instructions.map(str::to_owned)
+    }
+}
+
+fn open_params(
+    cwd: &str,
+    bridge_url: &str,
+    bearer: impl std::fmt::Display,
+    session: Option<&str>,
+    system_prompt: Option<&str>,
+) -> (&'static str, Value) {
+    let mut antigravity = json!({"eagerMcpServers":[HOST_SERVER]});
+    if let Some(instructions) = system_prompt.filter(|text| !text.trim().is_empty()) {
+        antigravity["systemPrompt"] = json!({"append": instructions});
+    }
+    let mut params = json!({
+        "cwd":cwd,
+        "mcpServers":[{
+            "type":"http", "name":HOST_SERVER, "url":bridge_url,
+            "headers":[{"name":"Authorization", "value":format!("Bearer {bearer}")}]
+        }],
+        "_meta":{"antigravity":antigravity}
+    });
+    let method = if let Some(session) = session {
+        params["sessionId"] = session.into();
+        "session/resume"
+    } else {
+        "session/new"
+    };
+    (method, params)
 }
 
 pub(super) fn initialize_params() -> Value {
@@ -779,5 +826,56 @@ mod tests {
             Output::MessageEnd { .. },
             Output::TurnUsage { usage: TurnUsage { tokens: ModelUsage { cache_read_tokens: Some(50), .. }, .. } },
         ] if initial.used == 0 && current.used == 1200 && current.model.as_deref() == Some("test") && thought == "checking" && input["toolSummary"] == "Check status" && error == "failed" && first == "Result: " && second == "failed."));
+    }
+
+    #[test]
+    fn open_params_attaches_system_prompt_append_only_when_advertised_and_non_empty() {
+        assert!(supports_system_prompt_append(&json!({
+            "agentCapabilities": { "_meta": { "antigravity": { "systemPrompt": { "append": true } } } }
+        })));
+        assert!(!supports_system_prompt_append(&json!({
+            "agentCapabilities": { "mcpCapabilities": { "http": true } }
+        })));
+
+        let (method, params) = open_params(
+            "/ws",
+            "http://127.0.0.1:1/mcp",
+            "tok",
+            None,
+            Some("Be concise"),
+        );
+        assert_eq!(method, "session/new");
+        assert_eq!(
+            params.pointer("/_meta/antigravity/systemPrompt/append"),
+            Some(&json!("Be concise"))
+        );
+
+        let (method, params) = open_params(
+            "/ws",
+            "http://127.0.0.1:1/mcp",
+            "tok",
+            Some("s1"),
+            Some("Updated"),
+        );
+        assert_eq!(method, "session/resume");
+        assert_eq!(params["sessionId"], "s1");
+        assert_eq!(
+            params.pointer("/_meta/antigravity/systemPrompt/append"),
+            Some(&json!("Updated"))
+        );
+
+        let (_, blank) = open_params("/ws", "http://127.0.0.1:1/mcp", "tok", None, Some("   "));
+        assert_eq!(blank.pointer("/_meta/antigravity/systemPrompt"), None);
+
+        assert_eq!(
+            system_prompt_text(Some("Fresh"), false).as_deref(),
+            Some("Fresh")
+        );
+        assert_eq!(system_prompt_text(Some("   "), false), None);
+        let superseded = system_prompt_text(Some("Revised"), true).unwrap();
+        assert!(superseded.contains("replace all earlier Maka instruction blocks"));
+        assert!(superseded.contains("Revised"));
+        let cleared = system_prompt_text(None, true).unwrap();
+        assert!(cleared.contains("previous Maka instruction blocks are now cleared"));
     }
 }

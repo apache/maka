@@ -1388,22 +1388,34 @@ async fn antigravity_can_continue_after_host_restarts_during_a_prompt() {
         assert_eq!(resumed["thread"], original["thread"]);
         phase("follow-up completes", terminal_state(&recovery, &session, &next, "completed")).await?;
         let resumed_transcript = phase("seal resumed process", rig.transcript(resumed["pid"].as_u64().unwrap())).await?;
-        for (wire, label, revised) in [
-            (&transcript, "ACP-original", false),
-            (&resumed_transcript, "ACP-followup", true),
+        for (wire, method, label, revised) in [
+            (&transcript, "session/new", "ACP-original", false),
+            (&resumed_transcript, "session/resume", "ACP-followup", true),
         ] {
-            let [instructions, user] = wire.task_prompt()["params"]["prompt"]
+            let open = wire
+                .input
+                .iter()
+                .find(|row| row["method"] == method)
+                .unwrap();
+            let instructions = open
+                .pointer("/params/_meta/antigravity/systemPrompt/append")
+                .and_then(Value::as_str)
+                .unwrap();
+            assert!(!instructions.trim().is_empty());
+            assert_eq!(
+                instructions.contains("ACP resumed instruction revision"),
+                revised
+            );
+            let [user] = wire.task_prompt()["params"]["prompt"]
                 .as_array()
                 .unwrap()
                 .as_slice()
             else {
-                panic!("expected instructions and task in one ACP prompt");
+                panic!("expected only the user task block when systemPrompt.append is supported");
             };
-            let text = instructions["text"].as_str().unwrap();
-            assert!(text.starts_with("<maka_system_instructions>"));
-            assert_eq!(text.contains("ACP resumed instruction revision"), revised);
             let task = user["text"].as_str().unwrap();
             assert!(task.contains(label));
+            assert!(!task.contains("<maka_system_instructions>"));
             if revised {
                 assert!(!task.contains("ACP-original"));
             }
@@ -2297,6 +2309,314 @@ async fn antigravity_automation_wakes_the_original_conversation_after_the_turn()
         sdk.close().await?;
         rig.clients.pop();
         phase("quit Host", rig.hosts[0].quit(&mut anchor)).await?;
+        Ok::<_, String>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.cleanup().await;
+    match outcome {
+        Err(panic) => std::panic::resume_unwind(panic),
+        Ok(Err(error)) => panic!("{error}; cleanup={cleanup:?}"),
+        Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn antigravity_automatic_title_falls_back_to_first_message() {
+    let mut rig = Rig::new().await.expect("isolated Host and ACP fixture");
+    let outcome = AssertUnwindSafe(async {
+        let (mut anchor, bootstrap) = phase("start Host", rig.start()).await?;
+        phase(
+            "enable Antigravity ACP",
+            rig.configure(&mut anchor, &bootstrap, "antigravity"),
+        )
+        .await?;
+        bootstrap.close().await?;
+        rig.clients.pop();
+        let sdk = connect_sdk(&mut rig, &anchor).await?;
+
+        let created = mutate(
+            &sdk,
+            "agent",
+            "create",
+            json!({
+                "title": "New conversation",
+                "automaticTitle": true,
+                "labels": [],
+                "workspace": {"kind": "directory", "path": rig.sandbox.workspace},
+                "backend": {
+                    "kind": "executor",
+                    "selection": {
+                        "executor": "external",
+                        "settings": {"runtime": "antigravity", "model": "default"}
+                    }
+                }
+            }),
+        )
+        .await?;
+        assert_eq!(created["kind"], "created", "{created}");
+        let session = created["session"]["id"]
+            .as_str()
+            .ok_or("session ID missing")?
+            .to_owned();
+        let marker = format!(
+            "MAKA_EXTERNAL_CASE {}",
+            json!({"label": "ACP-steer-title", "session": session})
+        );
+        let message = format!("  Fix ACP   title fallback
+{marker}");
+        let expected: String = message
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(80)
+            .collect();
+        let sent = mutate(
+            &sdk,
+            "agent",
+            "send",
+            json!({"sessionId": session, "message": message, "delivery": "queue"}),
+        )
+        .await?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        let run = phase("first turn admitted", async {
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            loop {
+                tick.tick().await;
+                let work = query(
+                    &sdk,
+                    "agent",
+                    "work",
+                    json!({"sessionId": session, "target": {"kind": "message", "messageId": sent["messageId"]}}),
+                )
+                .await?;
+                match work["kind"].as_str() {
+                    Some("pending") => {}
+                    Some("delivered") => return Ok::<_, String>(work["execution"]["runId"].clone()),
+                    _ => return Err(format!("original admission unavailable: {work}")),
+                }
+            }
+        })
+        .await?;
+        phase(
+            "first turn completes",
+            terminal_state(&sdk, &session, &run, "completed"),
+        )
+        .await?;
+        let observed = phase("automatic fallback title is committed", async {
+            loop {
+                let state = query(&sdk, "agent", "observe", json!({"sessionId": session})).await?;
+                if state["session"]["title"].as_str() == Some(expected.as_str()) {
+                    return Ok::<_, String>(state);
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await?;
+        let revision = observed["session"]["revision"]
+            .as_u64()
+            .ok_or("session revision missing")?;
+        let renamed = mutate(
+            &sdk,
+            "agent",
+            "metadata",
+            json!({
+                "sessionId": session,
+                "expectedRevision": revision,
+                "title": "Manual override",
+                "labels": []
+            }),
+        )
+        .await?;
+        assert_eq!(renamed["kind"], "committed", "{renamed}");
+        assert_eq!(renamed["session"]["title"], "Manual override");
+
+        let (manual_session, manual_run) = phase(
+            "launch manual-title turn",
+            launch(
+                &sdk,
+                &rig.sandbox.workspace,
+                "ACP-steer-manual",
+                "unused",
+                false,
+                "antigravity",
+            ),
+        )
+        .await?;
+        phase(
+            "manual-title turn completes",
+            terminal_state(&sdk, &manual_session, &manual_run, "completed"),
+        )
+        .await?;
+        let manual_state = query(
+            &sdk,
+            "agent",
+            "observe",
+            json!({"sessionId": manual_session}),
+        )
+        .await?;
+        assert_eq!(
+            manual_state["session"]["title"],
+            "External job ACP-steer-manual"
+        );
+
+        sdk.close().await?;
+        rig.clients.pop();
+        phase("quit Host", rig.hosts[0].quit(&mut anchor)).await?;
+        Ok::<_, String>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.cleanup().await;
+    match outcome {
+        Err(panic) => std::panic::resume_unwind(panic),
+        Ok(Err(error)) => panic!("{error}; cleanup={cleanup:?}"),
+        Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn antigravity_falls_back_to_user_block_and_supersedes_after_upgrade() {
+    let mut rig = Rig::new().await.expect("isolated Host and ACP fixture");
+    let outcome = AssertUnwindSafe(async {
+        let disable_flag = rig.sandbox.home.join("disable-acp-system-prompt-append");
+        tokio::fs::write(&disable_flag, "1")
+            .await
+            .map_err(|e| e.to_string())?;
+        let (mut anchor, bootstrap) = phase("start Host with legacy agy", rig.start()).await?;
+        phase(
+            "enable Antigravity ACP",
+            rig.configure(&mut anchor, &bootstrap, "antigravity"),
+        )
+        .await?;
+        bootstrap.close().await?;
+        rig.clients.pop();
+        let sdk = connect_sdk(&mut rig, &anchor).await?;
+
+        let (session, first_run) = phase(
+            "launch legacy ACP turn",
+            launch(
+                &sdk,
+                &rig.sandbox.workspace,
+                "ACP-steer-legacy",
+                "unused",
+                false,
+                "antigravity",
+            ),
+        )
+        .await?;
+        let first_ready = phase(
+            "legacy ACP turn admitted",
+            rig.controller.event("ACP-steer-legacy", "ready"),
+        )
+        .await?;
+        phase(
+            "legacy ACP turn completes",
+            terminal_state(&sdk, &session, &first_run, "completed"),
+        )
+        .await?;
+        let legacy_wire = phase(
+            "seal legacy ACP transcript",
+            rig.transcript(first_ready["pid"].as_u64().unwrap()),
+        )
+        .await?;
+        let legacy_open = legacy_wire
+            .input
+            .iter()
+            .find(|row| row["method"] == "session/new")
+            .unwrap();
+        assert_eq!(
+            legacy_open.pointer("/params/_meta/antigravity/systemPrompt"),
+            None
+        );
+        let [instructions_block, user_block] = legacy_wire.task_prompt()["params"]["prompt"]
+            .as_array()
+            .unwrap()
+            .as_slice()
+        else {
+            panic!("expected legacy [instructions, user] prompt blocks");
+        };
+        assert!(
+            instructions_block["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("<maka_system_instructions>")
+        );
+        assert!(
+            user_block["text"]
+                .as_str()
+                .unwrap()
+                .contains("ACP-steer-legacy")
+        );
+
+        sdk.close().await?;
+        rig.clients.pop();
+        phase("quit legacy Host", rig.hosts[0].quit(&mut anchor)).await?;
+
+        tokio::fs::remove_file(&disable_flag)
+            .await
+            .map_err(|e| e.to_string())?;
+        tokio::fs::create_dir_all(rig.sandbox.home.join(".maka"))
+            .await
+            .map_err(|e| e.to_string())?;
+        tokio::fs::write(
+            rig.sandbox.home.join(".maka/AGENTS.md"),
+            "Upgraded instruction set",
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let (mut upgraded, next_sdk) = phase("reopen Host with upgraded agy", rig.start()).await?;
+        let second_run = phase(
+            "send upgraded ACP turn",
+            send_native(&next_sdk, &session, "ACP-steer-upgraded", "unused", false),
+        )
+        .await?;
+        let upgraded_ready = phase(
+            "upgraded ACP turn admitted",
+            rig.controller.event("ACP-steer-upgraded", "ready"),
+        )
+        .await?;
+        assert_eq!(upgraded_ready["thread"], first_ready["thread"]);
+        phase(
+            "upgraded ACP turn completes",
+            terminal_state(&next_sdk, &session, &second_run, "completed"),
+        )
+        .await?;
+        let upgraded_wire = phase(
+            "seal upgraded ACP transcript",
+            rig.transcript(upgraded_ready["pid"].as_u64().unwrap()),
+        )
+        .await?;
+        let resume_open = upgraded_wire
+            .input
+            .iter()
+            .find(|row| row["method"] == "session/resume")
+            .unwrap();
+        let append = resume_open
+            .pointer("/params/_meta/antigravity/systemPrompt/append")
+            .and_then(Value::as_str)
+            .unwrap();
+        assert!(append.contains("replace all earlier Maka instruction blocks"));
+        assert!(append.contains("Upgraded instruction set"));
+        let [upgraded_user] = upgraded_wire.task_prompt()["params"]["prompt"]
+            .as_array()
+            .unwrap()
+            .as_slice()
+        else {
+            panic!("expected only user prompt block after upgrading to systemPrompt.append");
+        };
+        assert!(
+            upgraded_user["text"]
+                .as_str()
+                .unwrap()
+                .contains("ACP-steer-upgraded")
+        );
+
+        next_sdk.close().await?;
+        rig.clients.pop();
+        phase("quit upgraded Host", rig.hosts[1].quit(&mut upgraded)).await?;
         Ok::<_, String>(())
     })
     .catch_unwind()
