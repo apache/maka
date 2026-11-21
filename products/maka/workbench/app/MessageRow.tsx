@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { messageDateTime, tr } from './locale';
+import { messageDateTime, messageTime, tr } from './locale';
 import { CompactionDivider, NoteDivider } from './CompactionDivider';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX, Signal } from 'nsh';
@@ -38,12 +38,14 @@ import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js
 import type { InlineCitation } from './answerCitations';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
-import { replyDetails } from './replyDetails';
+import { compactCopyInset, CompactReplyFooter, LocalMessageCopy } from './CompactReplyFooter';
+import { replyDetails, replyMetrics } from './replyDetails';
 import { SkillMessage, userMessagePresentation } from './SkillMessage';
 import {
   C,
   bodyTextStyle,
   captionTextStyle,
+  textTooltip,
   controlDisabledStyle,
   controlStyle,
   secondaryTextStyle,
@@ -160,7 +162,8 @@ type MessageRowToggle = {
 
 export function MessageRow({
   item,
-  showMessageDate,
+  localQuickReply,
+  compactChat,
   citations,
   hasSources,
   openSources,
@@ -186,7 +189,8 @@ export function MessageRow({
   failureActions,
 }: {
   item: () => Row;
-  showMessageDate?: boolean;
+  compactChat?: boolean;
+  localQuickReply?: boolean;
   citations?(): readonly InlineCitation[] | undefined;
   hasSources?(): boolean;
   openSources?(): void;
@@ -476,8 +480,7 @@ export function MessageRow({
           if (typeof value !== 'number') return '';
           const date = new Date(value);
           if (Number.isNaN(date.getTime())) return '';
-          if (showMessageDate) return messageDateTime(value);
-          return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+          return messageTime(value);
         };
         // On the desktop a message's actions show while the pointer is on it or
         // the keyboard focus is in them; its context menu has the same commands.
@@ -488,11 +491,17 @@ export function MessageRow({
         const message = (
           <View
             class={menu && 'group'}
-            // On the desktop a user's message ends in its action row (shown on
-            // hover), and that row is the space below it.
+            // Launcher questions share a line with their hover actions and leave
+            // 12 pt before the reply. The full transcript has actions underneath.
             style={{
-              paddingTop: user() ? 16 : 0,
-              paddingBottom: user() && platform.idiom === 'terminal' ? 16 : 0,
+              paddingTop: user() && !compactChat ? 16 : 0,
+              paddingBottom: user()
+                ? compactChat
+                  ? 12
+                  : platform.idiom === 'terminal'
+                    ? 16
+                    : 0
+                : 0,
               gap: 0,
               width: '100%',
             }}
@@ -503,7 +512,7 @@ export function MessageRow({
                 <If
                   when={compact()}
                   else={
-                    <View style={{ gap: 8 }}>
+                    <View style={{ gap: compactChat ? 0 : 8 }}>
                       <If
                         when={sourceMode()}
                         else={
@@ -535,73 +544,81 @@ export function MessageRow({
                           <SourceText row={row} sourceId={sourceId()} />
                         </Text>
                       </If>
-                      <If when={actionRow()}>
-                        <View
-                          class={revealed}
-                          style={{
-                            flexDirection: 'row',
-                            flexWrap: 'wrap',
-                            width: '100%',
-                            minWidth: 0,
-                            justifyContent: 'flex-start',
-                            alignItems: 'center',
-                            gap: 8,
-                            // The first glyph starts where the message does.
-                            marginLeft: platform.idiom === 'terminal' || !iconActions() ? 0 : -8,
-                          }}
-                        >
-                          <If when={replyActions()}>
-                            <If
-                              when={finalActions}
-                              else={
-                                <MessageCopy
-                                  row={row}
-                                  ownerKey={() => rowKey(row())}
-                                  sessionId={sessionId}
-                                  through={through}
-                                  menu={menu}
-                                />
-                              }
+                      <If
+                        when={localQuickReply && row().role === 'assistant'}
+                        else={
+                          <If when={actionRow()}>
+                            <View
+                              class={revealed}
+                              style={{
+                                flexDirection: 'row',
+                                flexWrap: 'wrap',
+                                width: '100%',
+                                minWidth: 0,
+                                justifyContent: 'flex-start',
+                                alignItems: 'center',
+                                gap: 8,
+                                // The first glyph starts where the message does.
+                                marginLeft:
+                                  platform.idiom === 'terminal'
+                                    ? 0
+                                    : compactChat && replyActions()
+                                      ? compactCopyInset
+                                      : iconActions()
+                                        ? -8
+                                        : 0,
+                              }}
                             >
-                              {finalActions?.(row, () => rowKey(row()), menu)}
-                            </If>
+                              <If when={replyActions()}>
+                                <If
+                                  when={finalActions}
+                                  else={
+                                    <MessageCopy
+                                      row={row}
+                                      ownerKey={() => rowKey(row())}
+                                      sessionId={sessionId}
+                                      through={through}
+                                      menu={menu}
+                                    />
+                                  }
+                                >
+                                  {finalActions?.(row, () => rowKey(row()), menu)}
+                                </If>
+                              </If>
+                              <If when={hasSources?.() && !(compactChat && replyActions())}>
+                                <IconButton
+                                  label={tr('Sources')}
+                                  icon="globe"
+                                  onPress={() => openSources?.()}
+                                />
+                              </If>
+                              <If when={iconActions() && !(compactChat && replyActions())}>
+                                <IconButton
+                                  label={
+                                    sourceMode()
+                                      ? tr('Show formatted message')
+                                      : tr('Show message source')
+                                  }
+                                  icon={sourceMode() ? 'file' : 'markdown'}
+                                  selected={sourceMode()}
+                                  onPress={toggleSource()}
+                                />
+                              </If>
+                              <If when={quickDetails()}>
+                                <Text style={{ color: C.muted, ...captionTextStyle }}>
+                                  {replyDetails(row())}
+                                </Text>
+                              </If>
+                            </View>
                           </If>
-                          <If when={hasSources?.()}>
-                            <IconButton
-                              label={tr('Sources')}
-                              icon="globe"
-                              onPress={() => openSources?.()}
-                            />
-                          </If>
-                          <If when={iconActions()}>
-                            <IconButton
-                              label={
-                                sourceMode()
-                                  ? tr('Show formatted message')
-                                  : tr('Show message source')
-                              }
-                              icon={sourceMode() ? 'file' : 'markdown'}
-                              selected={sourceMode()}
-                              onPress={toggleSource()}
-                            />
-                          </If>
-                          <If when={quickDetails()}>
-                            <Text style={{ color: C.muted, ...captionTextStyle }}>
-                              {replyDetails(row())}
-                            </Text>
-                          </If>
-                          <If
-                            when={
-                              showMessageDate &&
-                              row().role === 'assistant' &&
-                              row().field === 'body' &&
-                              timestamp()
-                            }
-                          >
-                            <Text style={{ color: C.muted, ...captionTextStyle }}>
-                              {timestamp()}
-                            </Text>
-                          </If>
+                        }
+                      >
+                        <View class={revealed} style={{ marginLeft: compactCopyInset }}>
+                          <CompactReplyFooter
+                            copy={<LocalMessageCopy text={() => row().text} />}
+                            at={row().timestamp}
+                            metrics={() => replyMetrics(row())}
+                          />
                         </View>
                       </If>
                     </View>
@@ -720,7 +737,13 @@ export function MessageRow({
               <If
                 when={!!messageEditor && (viewState?.edit?.() ?? null) !== null}
                 else={
-                  <>
+                  <View
+                    style={
+                      compactChat
+                        ? { flexDirection: 'row-reverse', alignItems: 'center', gap: 8 }
+                        : undefined
+                    }
+                  >
                     <View
                       class={
                         highlighted && !reduceMotion()
@@ -728,12 +751,12 @@ export function MessageRow({
                           : undefined
                       }
                       style={{
-                        alignSelf: 'flex-end',
+                        alignSelf: compactChat ? 'center' : 'flex-end',
                         maxWidth: '78%',
                         width: userPresentation().kind === 'markdown' ? '78%' : undefined,
                         paddingHorizontal: 16,
-                        paddingVertical: 16,
-                        borderRadius: 20,
+                        paddingVertical: compactChat ? 10 : 16,
+                        borderRadius: compactChat ? 17 : 20,
                         backgroundColor: highlighted?.() ? C.cardRaised : C.card,
                         gap: 8,
                       }}
@@ -761,35 +784,63 @@ export function MessageRow({
                     </View>
                     <View
                       class={revealed}
-                      style={{
-                        alignSelf: 'flex-end',
-                        width: '78%',
-                        minWidth: 0,
-                        flexDirection: 'row',
-                        flexWrap: 'wrap',
-                        alignItems: 'center',
-                        justifyContent: 'flex-end',
-                        gap: 8,
-                        paddingTop: 4,
-                        // The last glyph ends where the bubble does.
-                        marginRight: platform.idiom === 'terminal' ? 0 : -8,
-                      }}
+                      style={
+                        compactChat
+                          ? {
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 5,
+                              flexShrink: 0,
+                            }
+                          : {
+                              alignSelf: 'flex-end',
+                              width: '78%',
+                              minWidth: 0,
+                              flexDirection: 'row',
+                              flexWrap: 'wrap',
+                              alignItems: 'center',
+                              justifyContent: 'flex-end',
+                              gap: 8,
+                              paddingTop: 4,
+                              // The last glyph ends where the bubble does.
+                              marginRight: platform.idiom === 'terminal' ? 0 : -8,
+                            }
+                      }
                     >
                       <If when={timestamp()}>
-                        <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>
+                        <Text
+                          tooltip={
+                            compactChat
+                              ? textTooltip(() =>
+                                  row().timestamp != null
+                                    ? messageDateTime(row().timestamp!)
+                                    : undefined,
+                                )
+                              : undefined
+                          }
+                          style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}
+                        >
                           {timestamp()}
                         </Text>
                       </If>
-                      <MessageCopy
-                        row={row}
-                        ownerKey={() => rowKey(row())}
-                        sessionId={sessionId}
-                        through={through}
-                        menu={menu}
-                      />
+                      <If
+                        when={localQuickReply}
+                        else={
+                          <MessageCopy
+                            compact={compactChat}
+                            row={row}
+                            ownerKey={() => rowKey(row())}
+                            sessionId={sessionId}
+                            through={through}
+                            menu={menu}
+                          />
+                        }
+                      >
+                        <LocalMessageCopy user text={() => row().text} />
+                      </If>
                       {editMessage?.(row, () => rowKey(row()), menu)}
                     </View>
-                  </>
+                  </View>
                 }
               >
                 {messageEditor?.(row, () => rowKey(row()))}
@@ -825,6 +876,9 @@ export function MessageRow({
                 />
               )}
             </Each>
+            <If when={compactChat && hasSources?.() && replyActions()}>
+              <Item label={tr('Sources')} select={() => openSources?.()} />
+            </If>
             <If when={!user()}>
               <Item
                 label={sourceMode() ? tr('Show formatted message') : tr('Show message source')}

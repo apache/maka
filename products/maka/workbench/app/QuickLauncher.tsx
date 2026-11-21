@@ -186,7 +186,12 @@ type Row = {
   run(): void;
 };
 
-type Section = { key: string; title: string | null; rows: readonly Row[]; start: number };
+type Section = {
+  key: string;
+  title: string | null;
+  rows: readonly Row[];
+  start: number;
+};
 
 function LauncherRow(props: {
   row: Row;
@@ -198,7 +203,14 @@ function LauncherRow(props: {
 }) {
   return (
     <QuickRow
-      label={[props.row.action, props.row.title, props.row.pluginName].filter(Boolean).join(' ')}
+      label={[
+        props.row.action,
+        props.row.title,
+        props.row.pluginName,
+        props.row.unread ? props.row.detail : undefined,
+      ]
+        .filter(Boolean)
+        .join(' ')}
       title={props.row.title}
       pluginName={props.row.pluginName}
       detail={props.select ? undefined : props.row.detail}
@@ -336,6 +348,10 @@ function QuickSettings(props: { quick: QuickTools; tool: UiContributionRef; back
 
 type VoiceRequest = 'automatic' | 'manual' | null;
 
+function isQuickHistory(entry: ToolEntry | null) {
+  return entry !== null && conversationTool(entry.tool) && entry.entry.id === 'history';
+}
+
 function Launcher(props: {
   quick: QuickTools;
   usage: UsageStore;
@@ -401,6 +417,8 @@ function Launcher(props: {
             action: item.action,
             tool: quick.configurable(tool) ? tool : undefined,
             match: item.match,
+            recommendedAt: item.recommendedAt,
+            unread: item.recommendedAt !== undefined,
             remembered: item.remembered === true,
             run() {
               if (item.remembered) props.usage.record(key);
@@ -464,19 +482,37 @@ function Launcher(props: {
         matchOf([row.entry.title, ...row.entry.keywords], text);
       return match === null ? [] : [{ ...row, match }];
     });
-    return ranked([...candidates(), ...found], props.usage.current());
+    const matches = [...candidates(), ...found];
+    return ranked(
+      matches,
+      props.usage.current(),
+      isQuickHistory(props.scope()) ? matches.length : undefined,
+    );
   };
   const recommendations = (): Row[] => {
     const usage = props.usage.current();
     return recommended(candidates(), usage).map((row) => ({
       ...row,
-      detail: isFrequent(usage[row.key]!) ? tr('Frequently used') : undefined,
+      detail:
+        row.recommendedAt !== undefined
+          ? row.detail
+          : isFrequent(usage[row.key]!)
+            ? tr('Frequently used')
+            : undefined,
     }));
   };
   const sections = computed(() => {
-    const groups: { key: string; title: string | null; rows: readonly Row[] }[] = home()
+    const groups: {
+      key: string;
+      title: string | null;
+      rows: readonly Row[];
+    }[] = home()
       ? [
-          { key: 'recommended', title: tr('Recommended'), rows: recommendations() },
+          {
+            key: 'recommended',
+            title: tr('Recommended'),
+            rows: recommendations(),
+          },
           { key: 'tools', title: tr('Tools'), rows: entries() },
         ]
       : [{ key: 'results', title: null, rows: results() }];
@@ -1124,7 +1160,12 @@ export function QuickLauncher(
   const question = createQuickQuestion(questionBot);
   const reading = signal(false);
   const promoting = signal(false);
-  type HistoryItem = { id: string; title: string; updatedAt: number; local?: QuickThread };
+  type HistoryItem = {
+    id: string;
+    title: string;
+    updatedAt: number;
+    local?: QuickThread;
+  };
   const library = signal<HistoryItem[]>([]);
   const libraryStatus = signal('');
   let loadingLibrary = 0;
@@ -1157,7 +1198,11 @@ export function QuickLauncher(
         const receipt = (await host.mutation('agent', 'import', {
           kind: 'quick_question',
           thread: item.id,
-          turns: item.turns,
+          turns: item.turns.map(({ question, answer, replyInfo }) => ({
+            question,
+            answer,
+            replyInfo,
+          })),
           title: [...item.turns[0]!.question].slice(0, 80).join('').replace(/\s+/g, ' ').trim(),
           path: bot.session.workspace.path,
           backend: bot.session.backend ?? bot.rememberedBackend,
@@ -1177,11 +1222,10 @@ export function QuickLauncher(
   const openHistory = async () => {
     const request = ++loadingLibrary;
     try {
-      asking.set(true);
       library.set([]);
       libraryStatus.set(tr('Loading…'));
       const [sessions, local] = await Promise.all([formalQuestions(), question.list()]);
-      if (request !== loadingLibrary || !props.opened() || !asking()) return;
+      if (request !== loadingLibrary || !props.opened() || !inQuickHistory()) return;
       const published = new Set(sessions.flatMap((item) => item.labels));
       const matches: HistoryItem[] = [
         ...sessions,
@@ -1237,7 +1281,6 @@ export function QuickLauncher(
       creating = false;
     }
   };
-  const asking = signal(false);
   const inputs = signal<string[]>([]);
   const historyKey = 'maka.quick-launcher.search-history';
   let saves = Storage.getItem(historyKey)
@@ -1270,10 +1313,18 @@ export function QuickLauncher(
   const tools = computed(() => quick.tools().filter(quick.toolEnabled));
   const tool = signal<ToolScope | null>(null);
   const scope = () => tool()?.entry ?? null;
+  const inQuickHistory = () => isQuickHistory(scope());
+  effect(() => {
+    if (props.opened() && inQuickHistory() && !reading()) void openHistory();
+    else ++loadingLibrary;
+  });
   const editor = signal<QuickTextEditor | null>(null);
   const enter = (entry: ToolEntry, text: string) =>
     batch(() => {
-      const previous = tool()?.previous ?? { query: query(), selection: selection() };
+      const previous = tool()?.previous ?? {
+        query: query(),
+        selection: selection(),
+      };
       tool.set({ entry, previous });
       query.set(text);
       selection.set(0);
@@ -1371,6 +1422,7 @@ export function QuickLauncher(
         ? {
             conversations: {
               visible: props.opened,
+              home: () => scope() === null && !query().trim(),
               askQuestion: (text) => void askQuestion(text),
               sessionQuery: () =>
                 props.opened() && scope()?.tool.key === tool.key && scope()?.entry.id === 'sessions'
@@ -1378,10 +1430,37 @@ export function QuickLauncher(
                   : null,
               openBot: () => void askBot(''),
               openSession: (id) => void openOrdinarySession(id),
-              openHistory: () => {
-                if (!props.opened()) show(null);
-                void openHistory();
+              historyItems: () => {
+                if (!inQuickHistory() || scope()?.tool.key !== tool.key) return [];
+                const text = query().trim();
+                return library().flatMap((item) => {
+                  const match = text ? matchOf([item.title], text) : 0;
+                  if (match === null) return [];
+                  return [
+                    {
+                      id: 'history/' + item.id,
+                      title: item.title,
+                      icon: 'note' as const,
+                      source: tr('Quick Q&A'),
+                      action: tr('Open'),
+                      match,
+                      run: () => {
+                        if (!item.local) {
+                          void openOrdinarySession(item.id);
+                          return;
+                        }
+                        if (question.running() && question.thread()?.id !== item.id) return;
+                        if (!question.running()) {
+                          question.thread.set(item.local);
+                          question.error.set('');
+                        }
+                        reading.set(true);
+                      },
+                    },
+                  ];
+                });
               },
+              historyStatus: () => (inQuickHistory() ? libraryStatus() : ''),
             } satisfies ConversationLauncher,
           }
         : {}),
@@ -1406,7 +1485,6 @@ export function QuickLauncher(
       selection.set(0);
       tool.set(null);
       editor.set(null);
-      asking.set(false);
       reading.set(false);
       failure.set(null);
       page.set(null);
@@ -1483,7 +1561,6 @@ export function QuickLauncher(
         // settings Escape goes back, and a picker the page opens must not close it.
         closeOnEscape={
           !reading() &&
-          !asking() &&
           !props.conversing() &&
           page() === null &&
           scope() === null &&
@@ -1504,7 +1581,6 @@ export function QuickLauncher(
           panelBlurred.set(true);
           editor.set(null);
           reading.set(false);
-          asking.set(false);
           page.set(null);
           tool.set(null);
           props.closed();
@@ -1519,69 +1595,22 @@ export function QuickLauncher(
                 <If
                   when={editor() !== null}
                   else={
-                    <If
-                      when={asking()}
-                      else={
-                        <Launcher
-                          history={inputs}
-                          remember={remember}
-                          askBot={(text) => void askBot(text)}
-                          quick={quick}
-                          usage={usage}
-                          focused={() => props.opened() && !panelBlurred()}
-                          listenOnOpen={listenOnOpen}
-                          query={query}
-                          failure={failure}
-                          page={page}
-                          scope={scope}
-                          selection={selection}
-                          enter={enter}
-                          leave={leave}
-                        />
-                      }
-                    >
-                      <View style={[frameStyle(), { height: 360 }]}>
-                        <View style={{ ...quickBarStyle, alignItems: 'center', gap: 12 }}>
-                          <SettingsButton label={tr('Back')} onPress={() => asking.set(false)} />
-                          <Text style={{ color: C.text }}>{tr('Quick Q&A')}</Text>
-                        </View>
-                        <Scroll style={{ flex: 1 }}>
-                          <If when={!!libraryStatus()}>
-                            <Text style={{ padding: 12, color: C.secondary }}>
-                              {libraryStatus()}
-                            </Text>
-                          </If>
-                          <Each of={library()} key={(item) => item.id}>
-                            {(item) => (
-                              <QuickRow
-                                label={item().title}
-                                title={item().title}
-                                icon="maka"
-                                selected={false}
-                                unread={false}
-                                onPress={() => {
-                                  const local = item().local;
-                                  if (local) {
-                                    if (question.running() && question.thread()?.id !== local.id)
-                                      return;
-                                    if (!question.running()) {
-                                      question.thread.set(local);
-                                      question.error.set('');
-                                    }
-                                    reading.set(true);
-                                    return;
-                                  }
-                                  const id = item().id;
-                                  void props
-                                    .showQuestion(id)
-                                    .catch((reason) => libraryStatus.set(String(reason)));
-                                }}
-                              />
-                            )}
-                          </Each>
-                        </Scroll>
-                      </View>
-                    </If>
+                    <Launcher
+                      history={inputs}
+                      remember={remember}
+                      askBot={(text) => void askBot(text)}
+                      quick={quick}
+                      usage={usage}
+                      focused={() => props.opened() && !panelBlurred()}
+                      listenOnOpen={listenOnOpen}
+                      query={query}
+                      failure={failure}
+                      page={page}
+                      scope={scope}
+                      selection={selection}
+                      enter={enter}
+                      leave={leave}
+                    />
                   }
                 >
                   <QuickEditor editor={editor()!} back={() => editor.set(null)} />
@@ -1593,15 +1622,22 @@ export function QuickLauncher(
           }
         >
           <HostProvider value={quickHost}>
-            <QuickQuestionPanel
-              question={question}
-              promoting={promoting}
-              promote={() => void promote()}
-              back={() => {
-                reading.set(false);
-                void openHistory();
-              }}
-            />
+            <View style={[frameStyle(), { maxHeight: MAX_HEIGHT }]}>
+              <QuickQuestionPanel
+                question={question}
+                promoting={promoting}
+                promote={() => void promote()}
+                back={() => {
+                  reading.set(false);
+                  if (!inQuickHistory()) {
+                    const history = quick
+                      .entries()
+                      .find((item) => conversationTool(item.tool) && item.entry.id === 'history');
+                    if (history) enter(history, '');
+                  }
+                }}
+              />
+            </View>
           </HostProvider>
         </If>
       </Window>

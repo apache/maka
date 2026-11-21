@@ -194,6 +194,7 @@ import {
   BotWaiting,
   BotWorking,
 } from '../../../../products/maka/workbench/app/BotReply';
+import { replyMetrics } from '../../../../products/maka/workbench/app/replyDetails';
 import { BotRestart } from '../../../../products/maka/workbench/app/BotRestart';
 import { sameValue } from '../../../shared/value';
 import { DiscoveryPanel } from '../../../../products/maka/workbench/app/DiscoveryPanel';
@@ -203,6 +204,7 @@ import {
   MessageRow,
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
+import { compactTranscriptSize } from '../../../../products/maka/workbench/app/QuickBar';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
 import {
   MessageEdit,
@@ -1123,6 +1125,7 @@ export function Conversation(props: ConversationProps) {
   });
   const display = () => (ordinaryChat() ? ordinaryChatSections().flat() : otherDisplay());
   function chatEntries(section: ProcessProjection, botChat: boolean): DisplayEntry[] {
+    const showWork = !(botChat && props.compact);
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
     // Until the Host has said whether this is the Bot, assume it is: showing the model's
@@ -1241,6 +1244,7 @@ export function Conversation(props: ConversationProps) {
       const outcome = turn && turnOutcome(turn);
       const foldedWork = turn && workFold(turn) === 'closed';
       if (
+        showWork &&
         turn &&
         (entry.kind === 'process' ||
           (row?.role === 'compaction' && turn.foldedWork) ||
@@ -1258,7 +1262,7 @@ export function Conversation(props: ConversationProps) {
         });
       }
       if (entry.kind === 'process') {
-        if (!turn || !turnExpanded(turn)) continue;
+        if (!showWork || !turn || !turnExpanded(turn)) continue;
         result.push({ kind: 'process', key: entry.key, group: entry });
       } else if (row) {
         // Only SendUser publishes for the Bot. The model's own text, including a
@@ -4477,8 +4481,16 @@ export function Conversation(props: ConversationProps) {
       cancel={inputAction(cancelNavigation, navigatingTurn())}
     />
   );
+  const transcriptSize = props.compact ? compactTranscriptSize() : undefined;
   const entryRow = (key: () => string) => (
-    <View style={readingColumn}>
+    <View
+      style={readingColumn}
+      onLayout={
+        transcriptSize
+          ? ({ bounds }) => transcriptSize.measure(key(), bounds.size.height)
+          : undefined
+      }
+    >
       <Each of={[key()]} key={(id: string) => id}>
         {(ownedKey) => {
           const initial = displayEntry(ownedKey());
@@ -4721,6 +4733,7 @@ export function Conversation(props: ConversationProps) {
                 detail={() => {
                   if (run() === 'waiting' && retrying(quietWaits(execution())))
                     return tr('Waiting to retry');
+                  if (props.compact && !ordinaryChat()) return '';
                   const tool = latestToolActivity(toolActivity(), runId(), runTurn());
                   return tool ? `${tool.name}` : '';
                 }}
@@ -4745,7 +4758,22 @@ export function Conversation(props: ConversationProps) {
             };
             return (
               <BotReply
-                showTimestamp={props.compact}
+                metrics={
+                  props.compact
+                    ? (at) => {
+                        const model = historyRows()
+                          .byTurn.get(initial.turnId)
+                          ?.findLast(
+                            (row) =>
+                              row.model && row.timestamp !== undefined && row.timestamp <= at,
+                          )?.model;
+                        return replyMetrics({
+                          model,
+                          timing: projectedTurn(initial.turnId)?.timing ?? undefined,
+                        });
+                      }
+                    : undefined
+                }
                 quote={(message, text) => {
                   if (!draftReady() || savingFailed() || !text.trim()) return;
                   const next = appendDraftQuote(
@@ -4799,7 +4827,7 @@ export function Conversation(props: ConversationProps) {
           return (
             <MessageRow
               item={row}
-              showMessageDate={props.compact}
+              compactChat={props.compact}
               hasSources={() => {
                 const item = entry();
                 return item.kind === 'row' && Boolean(item.sources?.length);
@@ -4839,6 +4867,7 @@ export function Conversation(props: ConversationProps) {
               }}
               finalActions={(row, ownerKey, menu) => (
                 <FinalActions
+                  compact={props.compact}
                   row={row}
                   ownerKey={ownerKey}
                   sessionId={sessionId}
@@ -4849,6 +4878,7 @@ export function Conversation(props: ConversationProps) {
                     platform.idiom !== 'terminal' && props.edit ? (
                       <MessageEdit
                         regenerate
+                        menuOnly={props.compact}
                         row={() => loadedOpening(historyTurnKey(row()))}
                         sessionId={sessionId}
                         through={() => latestKnown}
@@ -4884,6 +4914,7 @@ export function Conversation(props: ConversationProps) {
                 platform.idiom !== 'terminal' && props.edit
                   ? (row, ownerKey, menu) => (
                       <MessageEdit
+                        menuOnly={props.compact}
                         row={row}
                         ownerKey={ownerKey}
                         sessionId={sessionId}
@@ -4935,7 +4966,11 @@ export function Conversation(props: ConversationProps) {
           alignment="bottom"
           estimatedItemSize={96}
           maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 32 }}
-          style={{ height: historyList().length ? 400 : 0, flexShrink: 1, minHeight: 0 }}
+          style={{
+            height: transcriptSize!.height(historyList().length, historyList().at),
+            flexShrink: 1,
+            minHeight: 0,
+          }}
           contentStyle={{ paddingVertical: historyList().length ? 16 : 0 }}
           loadMoreAtStartThreshold={HISTORY_LOOKAHEAD_VIEWPORTS}
           onLoadMoreAtStart={prefetchOlder}

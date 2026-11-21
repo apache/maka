@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { Canvas, Image, Path2D, Text, View, type JSX } from 'nsh';
-import { Button } from 'nsh/base';
+import { Canvas, Image, Path2D, signal, type InputRef, Text, View, type JSX } from 'nsh';
+import { Button, Input } from 'nsh/base';
 import type { QuickIcon } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { Icon } from './Icon';
 import { C, bodyTextStyle, controlFocusStyle, controlHoverStyle } from './ui';
@@ -252,5 +252,72 @@ export function MakaMark(props: { size?: number }) {
         context.stroke(mark);
       }}
     />
+  );
+}
+
+/** Size short launcher chats to their rows. Long histories keep their virtual scrolling window. */
+export function compactTranscriptSize() {
+  const measured = signal<ReadonlyMap<string, number>>(new Map());
+  return {
+    height(count: number, keyAt: (index: number) => string) {
+      if (!count) return 0;
+      if (count > 16) return 400;
+      let height = 32; // The list has 16 pt of padding at each end.
+      for (let index = 0; index < count; index++) {
+        height += measured().get(keyAt(index)) ?? 96;
+      }
+      return Math.min(height, 400);
+    },
+    measure(key: string, height: number) {
+      const current = measured();
+      if (current.get(key) === height) return;
+      const next = new Map(current);
+      next.delete(key);
+      next.set(key, height);
+      if (next.size > 32) next.delete(next.keys().next().value!);
+      measured.set(next);
+    },
+  };
+}
+
+/** Shared input and trailing actions for a conversation inside the launcher. */
+export function CompactInputBar(props: {
+  attach?(node: InputRef): void;
+  label: string;
+  placeholder: string;
+  value: string;
+  readonly?: boolean;
+  change(value: string): void;
+  submit(): void;
+  extra?: JSX.Element;
+  actions: JSX.Element;
+}) {
+  const height = signal<number>(quickInputStyle().lineHeight);
+  return (
+    <View style={quickBarStyle}>
+      <View style={{ height: QUICK_BAR_SLOT, justifyContent: 'center' }}>
+        <MakaMark />
+      </View>
+      <View style={{ flex: 1, minWidth: 0, gap: 8, paddingVertical: 8 }}>
+        <Input
+          ref={props.attach}
+          autoFocus
+          multiline
+          submitBehavior="submit"
+          accessibilityLabel={props.label}
+          placeholder={props.placeholder}
+          value={props.value}
+          readonly={props.readonly ?? false}
+          onChange={({ value }) => props.change(value)}
+          onSubmit={props.submit}
+          onContentSizeChange={({ size }) => height.set(Math.min(size.height, 96))}
+          style={{ ...quickInputStyle(), height: height() }}
+        />
+        {props.extra}
+      </View>
+      <View style={{ height: QUICK_BAR_SLOT, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+        {props.actions}
+      </View>
+    </View>
   );
 }

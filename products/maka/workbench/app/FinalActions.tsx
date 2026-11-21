@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { replyDetails } from './replyDetails';
+import { CompactReplyFooter } from './CompactReplyFooter';
+import { replyDetails, replyMetrics } from './replyDetails';
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
@@ -67,6 +68,7 @@ export function FinalActions(props: {
   /** Another action on this turn, after the fork. */
   extra?: JSX.Element;
   menu?: MessageMenu;
+  compact?: boolean;
 }) {
   const host = useHost();
   const pending = signal(false);
@@ -125,6 +127,30 @@ export function FinalActions(props: {
     busy: pending,
     action: () => (target() === null ? null : inputAction(fork, target())),
   });
+  const copy = () => (
+    <MessageCopy
+      compact={props.compact}
+      row={props.row}
+      ownerKey={props.ownerKey}
+      sessionId={props.sessionId}
+      through={props.through}
+      menu={props.menu}
+    />
+  );
+  if (props.compact)
+    return (
+      <View style={{ maxWidth: '100%' }}>
+        <CompactReplyFooter
+          copy={copy()}
+          at={props.row().timestamp}
+          metrics={() => replyMetrics(props.row())}
+        />
+        {props.extra}
+        <If when={notice()}>
+          <Text style={{ color: C.warning }}>{notice()}</Text>
+        </If>
+      </View>
+    );
   const reportedUsage = () => props.row().timing?.executorUsage ?? undefined;
   const showUsage = (original: Target | null) => {
     if (
@@ -149,13 +175,7 @@ export function FinalActions(props: {
           gap: 8,
         }}
       >
-        <MessageCopy
-          row={props.row}
-          ownerKey={props.ownerKey}
-          sessionId={props.sessionId}
-          through={props.through}
-          menu={props.menu}
-        />
+        {copy()}
         <IconButton
           label={tr('Fork from this turn')}
           tooltip={pending() ? tr('Creating fork…') : undefined}

@@ -23,7 +23,9 @@ import { MarkdownImageView } from './MarkdownImage';
 import { MermaidView } from './MermaidView';
 import { SpecView, markdownExtensions } from './SpecView';
 import type { BotTranscriptMessage } from './botTranscript';
-import { messageDateTime, tr } from './locale';
+import { tr } from './locale';
+import { compactCopyInset, CompactReplyFooter, LocalMessageCopy } from './CompactReplyFooter';
+import type { replyMetrics } from './replyDetails';
 import { Icon } from './Icon';
 import { splitSpecMarkdown } from './spec/session.ts';
 import { C, bodyTextStyle, captionTextStyle } from './ui';
@@ -32,7 +34,7 @@ import { C, bodyTextStyle, captionTextStyle } from './ui';
 export function BotReply(props: {
   messages: () => BotTranscriptMessage[];
   sessionId?: string;
-  showTimestamp?: boolean;
+  metrics?(at: number): ReturnType<typeof replyMetrics>;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   userScroll(): void;
   quote?(message: BotTranscriptMessage, text: string): void;
@@ -47,144 +49,154 @@ export function BotReply(props: {
       : tr('View the record of the worker');
   };
   return (
-    <View style={{ width: '100%', paddingVertical: 8, gap: 16 }}>
+    <View
+      style={{ width: '100%', paddingVertical: props.metrics ? 0 : 8, gap: props.metrics ? 0 : 16 }}
+    >
       <Each of={props.messages()} key={(message) => String(message.sequence)}>
         {(message) => {
           const segments = computed(() => splitSpecMarkdown(message().text));
           return (
             <View
-              class={props.showTimestamp ? 'group' : undefined}
-              style={{ width: '100%', gap: 16 }}
+              class={props.metrics ? 'group' : undefined}
+              style={{ width: '100%', gap: props.metrics ? 0 : 16 }}
             >
-              <If when={!!message().discovery}>
-                <Text style={{ ...captionTextStyle, color: C.muted }}>
-                  {tr('Proactive discovery')}
-                </Text>
-              </If>
-              <Each of={segments()} key={(seg) => seg.key}>
-                {(seg) => {
-                  const selected = signal('');
-                  const menuText = signal('');
-                  let menuOpen = false;
-                  return (
-                    <If
-                      when={seg().kind === 'spec'}
-                      else={
-                        <ContextMenu
-                          onOpenChange={({ open }) => {
-                            menuOpen = open;
-                            if (open) menuText.set(selected());
-                          }}
-                          trigger={
-                            <TextView
-                              markdown={(() => {
-                                const s = seg();
-                                return s.kind === 'markdown' ? s.text : '';
-                              })()}
-                              extensions={markdownExtensions}
-                              renderCustom={(node) =>
-                                node.name === 'spec' ? (
-                                  <SpecView
-                                    source={() => node.text ?? ''}
-                                    sessionId={props.sessionId}
-                                    openLink={props.openLink}
-                                  />
-                                ) : (
-                                  <MermaidView source={() => node.text ?? ''} />
-                                )
-                              }
-                              sourceId={(() => {
-                                const s = seg();
-                                return s.kind === 'markdown' && s.start === 0
-                                  ? `bot/${message().sequence}`
-                                  : undefined;
-                              })()}
-                              selectable
-                              onSelectionChange={({ text }) => {
-                                if (!menuOpen) selected.set(text);
-                              }}
-                              contentStyle={{ rowGap: 16 }}
-                              options={{ preserveLineBreaks: true }}
-                              labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
-                              onScrollIntent={props.userScroll}
-                              onLinkPress={(event) => {
-                                const target = event.target;
-                                if (!target || target.isLive()) {
-                                  void props.openLink(event.url, () =>
-                                    target ? target.focus() : false,
-                                  );
-                                }
-                              }}
-                              renderImage={
-                                props.sessionId
-                                  ? (context) => (
-                                      <MarkdownImageView
-                                        image={() => context.image}
-                                        sessionId={props.sessionId!}
-                                        linked={context.linked}
-                                        flow={context.flow}
-                                        lineHeight={context.lineHeight}
-                                      />
-                                    )
-                                  : undefined
-                              }
-                              styles={{
-                                root: { ...bodyTextStyle, color: C.text },
-                                paragraph: bodyTextStyle,
-                                code: { color: C.accentHover, backgroundColor: C.card },
-                              }}
-                            />
-                          }
-                        >
-                          <MenuItem
-                            onSelect={() => void Clipboard.writeText(menuText() || message().text)}
-                          >
-                            <Text>{tr('Copy message')}</Text>
-                          </MenuItem>
-                          <If when={!!props.quote && !!menuText().trim()}>
-                            <MenuItem onSelect={() => props.quote?.(message(), menuText())}>
-                              <Text>{tr('Quote selection')}</Text>
-                            </MenuItem>
-                          </If>
-                        </ContextMenu>
-                      }
-                    >
-                      <SpecView
-                        source={() => {
-                          const current = seg();
-                          return current.kind === 'spec' ? current.source : '';
-                        }}
-                        sessionId={props.sessionId}
-                        openLink={props.openLink}
-                      />
-                    </If>
-                  );
-                }}
-              </Each>
-              <If when={!!message().discovery && !!props.openInvestigation}>
-                <Button
-                  accessibilityLabel={tr('Open investigation')}
-                  onPress={() => props.openInvestigation?.(message().discovery!.workerSessionId)}
-                  style={{
-                    flexDirection: 'row',
-                    gap: 6,
-                    alignSelf: 'flex-start',
-                    alignItems: 'center',
-                  }}
-                >
-                  <Icon name="split" color={C.accent} />
-                  <Text style={{ ...captionTextStyle, color: C.accent }}>
-                    {tr('Open investigation')}
+              <View style={{ gap: 16 }}>
+                <If when={!!message().discovery}>
+                  <Text style={{ ...captionTextStyle, color: C.muted }}>
+                    {tr('Proactive discovery')}
                   </Text>
-                </Button>
-              </If>
-              <If when={props.showTimestamp}>
-                <Text
+                </If>
+                <Each of={segments()} key={(seg) => seg.key}>
+                  {(seg) => {
+                    const selected = signal('');
+                    const menuText = signal('');
+                    let menuOpen = false;
+                    return (
+                      <If
+                        when={seg().kind === 'spec'}
+                        else={
+                          <ContextMenu
+                            onOpenChange={({ open }) => {
+                              menuOpen = open;
+                              if (open) menuText.set(selected());
+                            }}
+                            trigger={
+                              <TextView
+                                markdown={(() => {
+                                  const s = seg();
+                                  return s.kind === 'markdown' ? s.text : '';
+                                })()}
+                                extensions={markdownExtensions}
+                                renderCustom={(node) =>
+                                  node.name === 'spec' ? (
+                                    <SpecView
+                                      source={() => node.text ?? ''}
+                                      sessionId={props.sessionId}
+                                      openLink={props.openLink}
+                                    />
+                                  ) : (
+                                    <MermaidView source={() => node.text ?? ''} />
+                                  )
+                                }
+                                sourceId={(() => {
+                                  const s = seg();
+                                  return s.kind === 'markdown' && s.start === 0
+                                    ? `bot/${message().sequence}`
+                                    : undefined;
+                                })()}
+                                selectable
+                                onSelectionChange={({ text }) => {
+                                  if (!menuOpen) selected.set(text);
+                                }}
+                                contentStyle={{ rowGap: 16 }}
+                                options={{ preserveLineBreaks: true }}
+                                labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
+                                onScrollIntent={props.userScroll}
+                                onLinkPress={(event) => {
+                                  const target = event.target;
+                                  if (!target || target.isLive()) {
+                                    void props.openLink(event.url, () =>
+                                      target ? target.focus() : false,
+                                    );
+                                  }
+                                }}
+                                renderImage={
+                                  props.sessionId
+                                    ? (context) => (
+                                        <MarkdownImageView
+                                          image={() => context.image}
+                                          sessionId={props.sessionId!}
+                                          linked={context.linked}
+                                          flow={context.flow}
+                                          lineHeight={context.lineHeight}
+                                        />
+                                      )
+                                    : undefined
+                                }
+                                styles={{
+                                  root: { ...bodyTextStyle, color: C.text },
+                                  paragraph: bodyTextStyle,
+                                  code: { color: C.accentHover, backgroundColor: C.card },
+                                }}
+                              />
+                            }
+                          >
+                            <MenuItem
+                              onSelect={() =>
+                                void Clipboard.writeText(menuText() || message().text)
+                              }
+                            >
+                              <Text>{tr('Copy message')}</Text>
+                            </MenuItem>
+                            <If when={!!props.quote && !!menuText().trim()}>
+                              <MenuItem onSelect={() => props.quote?.(message(), menuText())}>
+                                <Text>{tr('Quote selection')}</Text>
+                              </MenuItem>
+                            </If>
+                          </ContextMenu>
+                        }
+                      >
+                        <SpecView
+                          source={() => {
+                            const current = seg();
+                            return current.kind === 'spec' ? current.source : '';
+                          }}
+                          sessionId={props.sessionId}
+                          openLink={props.openLink}
+                        />
+                      </If>
+                    );
+                  }}
+                </Each>
+                <If when={!!message().discovery && !!props.openInvestigation}>
+                  <Button
+                    accessibilityLabel={tr('Open investigation')}
+                    onPress={() => props.openInvestigation?.(message().discovery!.workerSessionId)}
+                    style={{
+                      flexDirection: 'row',
+                      gap: 6,
+                      alignSelf: 'flex-start',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Icon name="split" color={C.accent} />
+                    <Text style={{ ...captionTextStyle, color: C.accent }}>
+                      {tr('Open investigation')}
+                    </Text>
+                  </Button>
+                </If>
+              </View>
+              <If when={props.metrics}>
+                <View
                   class="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-                  style={{ ...captionTextStyle, color: C.muted }}
+                  style={{ marginLeft: compactCopyInset }}
                 >
-                  {messageDateTime(message().at)}
-                </Text>
+                  <CompactReplyFooter
+                    at={message().at}
+                    metrics={() => props.metrics!(message().at)}
+                    copy={<LocalMessageCopy text={() => message().text} />}
+                  />
+                </View>
               </If>
             </View>
           );

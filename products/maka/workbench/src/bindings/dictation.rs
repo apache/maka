@@ -33,6 +33,10 @@ type Capture = Result<Option<String>, String>;
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn maka_has_dictation_key() -> bool;
+    fn maka_input_devices(
+        context: *mut c_void,
+        append: extern "C" fn(*mut c_void, *const c_char, *const c_char),
+    );
     fn maka_record_stop(
         path: *const c_char,
         context: *mut c_void,
@@ -45,6 +49,7 @@ unsafe extern "C" {
     );
     fn maka_record_message(
         path: *const c_char,
+        uid: *const c_char,
         chinese: bool,
         model_connection: bool,
         quick_launcher: bool,
@@ -72,6 +77,29 @@ extern "C" fn sampled(context: *mut c_void, value: f64) {
     // Native calls once for each queued sample or stop, including after cancellation.
     let sender = unsafe { Box::from_raw(context.cast::<oneshot::Sender<f64>>()) };
     let _ = sender.send(value);
+}
+
+pub(super) fn microphones() -> Vec<serde_json::Value> {
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" fn append(context: *mut c_void, uid: *const c_char, name: *const c_char) {
+            // The synchronous enumeration lends these two strings for the callback.
+            unsafe {
+                let devices = &mut *context.cast::<Vec<serde_json::Value>>();
+                devices.push(serde_json::json!({
+                    "id": CStr::from_ptr(uid).to_string_lossy(),
+                    "name": CStr::from_ptr(name).to_string_lossy(),
+                }));
+            }
+        }
+        let mut devices = Vec::new();
+        unsafe {
+            maka_input_devices((&raw mut devices).cast(), append);
+        }
+        devices
+    }
+    #[cfg(not(target_os = "macos"))]
+    Vec::new()
 }
 
 pub(super) fn legacy_key() -> bool {
@@ -145,11 +173,18 @@ impl MessageDictation {
         #[cfg(target_os = "macos")]
         {
             // NSH installs the storage context for async engine tasks.
-            let key = this
-                .with(|r| format!("dictation.{}.enabled", r.owner.client.source().state_domain));
-            if nsh_core::storage::Storage::get_item(&key).as_deref() != Some("true") {
+            let prefix =
+                this.with(|r| format!("dictation.{}.", r.owner.client.source().state_domain));
+            if nsh_core::storage::Storage::get_item(&format!("{prefix}enabled")).as_deref()
+                != Some("true")
+            {
                 return Err("Dictation is off".into());
             }
+            let device = CString::new(
+                nsh_core::storage::Storage::get_item(&format!("{prefix}microphone"))
+                    .unwrap_or_default(),
+            )
+            .map_err(|_| "Invalid microphone identifier")?;
             let model_connection = connection.is_some();
             if let Some(connection) = connection {
                 let (owner, source) = this.with(|r| (r.owner.clone(), r.source.clone()));
@@ -170,6 +205,7 @@ impl MessageDictation {
                 unsafe {
                     maka_record_message(
                         recording.path.as_ptr(),
+                        device.as_ptr(),
                         chinese,
                         model_connection,
                         quick_launcher.unwrap_or(false),
@@ -223,7 +259,7 @@ impl MessageDictation {
     pub async fn finish(this: Instance<Self>) -> Result<String, String> {
         #[cfg(target_os = "macos")]
         {
-            // Wait until AVAudioRecorder has finalized the WAV before reading it.
+            // Wait until the input queue has stopped and the WAV is finalized.
             let (tx, rx) = oneshot::channel::<f64>();
             this.with(|r| unsafe {
                 maka_record_stop(
@@ -232,7 +268,9 @@ impl MessageDictation {
                     Some(sampled),
                 )
             });
-            rx.await.map_err(|e| e.to_string())?;
+            if rx.await.map_err(|e| e.to_string())? < 0.0 {
+                return Err("No microphone audio was recorded.".into());
+            }
         }
         let (owner, directory, key, model, cancelled) = this.with(|r| {
             (

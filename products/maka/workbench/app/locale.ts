@@ -85,6 +85,11 @@ export function tr(key: MessageKey, values?: Readonly<Record<string, string | nu
       );
 }
 
+export function messageTime(at: number): string {
+  const date = new Date(at);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
 /** A recorded chat message's local date and time in the compact transcript. */
 export function messageDateTime(at: number): string {
   return new Date(at).toLocaleString(currentLocale(), { dateStyle: 'medium', timeStyle: 'short' });
