@@ -1137,19 +1137,29 @@ async fn desktop_composer_previews_markdown_and_sends_its_source() {
     desktop.expect_text(source).await;
 
     desktop.press("Send message").await;
-    let request = desktop.request(&mut fixture).await;
+    let mut request = desktop.request(&mut fixture).await;
     let message = request.body["messages"].as_array().unwrap().last().unwrap();
     assert_eq!(message["role"], "user");
     assert_eq!(message["content"].as_str(), Some(source));
+    request.delta("Release notes received.").await;
     desktop
         .wait("the response did not finish", request.finish())
         .await;
+    desktop
+        .until("the response did not finish in the workbench", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
     let copy = desktop.control("Copy user message").await;
     desktop.artifact("composer-markdown-sent");
-    desktop.hover_at(copy.center());
-    desktop
+    // The actions are revealed by hovering over the message body above them.
+    desktop.hover_at(point(copy.center().x, copy.top() - px(12.)));
+    let copy = desktop
         .until("the copy action did not appear", || {
-            desktop.draws_in(copy).then_some(())
+            let &[copy] = desktop.controls("Copy user message").as_slice() else {
+                return None;
+            };
+            desktop.draws_in(copy).then_some(copy)
         })
         .await;
     desktop.press_at(copy.center());
@@ -3867,11 +3877,12 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.press("Pause Goal").await;
     // A paused Goal can still be cancelling its iteration.
     desktop.control("Complete Goal").await;
+    // The cancelled HTTP request may never have had a response stream to close.
+    drop(first);
     desktop.press("Resume Goal").await;
     desktop.control("Pause Goal").await;
     let running = desktop.request(&mut fixture).await;
-    desktop.press("Change budget").await;
-    desktop.control("Cancel editing").await;
+    desktop.press_until("Change budget", "Cancel editing").await;
     assert!(
         running.body["tools"]
             .as_array()
@@ -3988,7 +3999,6 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
         })
         .await;
     assert!(desktop.controls("Dismiss Goal").is_empty());
-    first.finish_stream().await;
     desktop.close().await;
     fixture.finish().await;
 }

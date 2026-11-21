@@ -79,6 +79,8 @@ pub fn command(sandbox: &Sandbox) -> Result<Command> {
         .env("CLAUDE_CONFIG_DIR", sandbox.home.join("claude"))
         .env("ZDOTDIR", &sandbox.home)
         .env("LC_ALL", "en_US.UTF-8")
+        // Keep public model metadata out of the loopback fixture catalog.
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
         .env("NO_PROXY", "127.0.0.1,localhost")
         .env("no_proxy", "127.0.0.1,localhost");
     if let Some(path) = std::env::var_os("PATH") {
