@@ -192,11 +192,8 @@ impl Args {
 /// `Maka.app` next to `maka`.
 fn desktop_shell_path(launcher: &std::path::Path) -> PathBuf {
     #[cfg(target_os = "macos")]
-    {
-        let sibling = launcher.with_file_name("maka-desktop-shell");
-        if sibling.is_file() {
-            return sibling;
-        }
+    if maka_updater::app_bundle(launcher).is_some() {
+        return launcher.with_file_name("maka-desktop-shell");
     }
     launcher.with_file_name(SHELL)
 }
@@ -213,5 +210,29 @@ async fn runs(root: &std::path::Path, epoch: uuid::Uuid) -> bool {
             }
         }
         _ => false,
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn desktop_launches_the_bundled_shell_in_both_layouts() {
+        let build = tempfile::tempdir().unwrap();
+        let shell = "maka-desktop-shell";
+        std::fs::write(build.path().join(shell), []).unwrap();
+        let bundled = build.path().join("Maka.app/Contents/MacOS");
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::write(bundled.join(shell), []).unwrap();
+
+        assert_eq!(
+            desktop_shell_path(&build.path().join("maka")),
+            bundled.join(shell)
+        );
+        assert_eq!(
+            desktop_shell_path(&bundled.join("maka")),
+            bundled.join(shell)
+        );
     }
 }
