@@ -161,7 +161,7 @@ Host 启用输出音频后，`await cua.computer.start_audio_recording({max_dura
 每次操作都使用当前 Host 权限；JS 对象不保留授权。关闭 Session 沙箱时，电脑、应用、浏览器站点与历史、文件传输和音频不需要额外的 Maka 审批；权限变更和停止当前操作仍然生效。Ask 模式下，Computer Use 批准在 REPL 执行超时计时开始前完成。macOS 原生操作在屏幕锁定时报告 `desktop_locked`；已连接 CDP 提供方和纯 REPL 计算仍可独立使用。
 
 应用、浏览器站点和音频授权等待会暂停剩余执行预算。macOS/Windows 原生等待也会暂停预算；普通异步等待和 Linux 原生操作继续计时。暂停不会重置预算，也不会禁用取消。
-每个 Session 有独立的 Maka 光标。输入操作自动显示光标。`cua.cursor.configure({label?, color?, enabled?, reducedMotion?})` 修改此 Session 的显示。颜色为 `blue`、`mint`、`violet`、`amber`、`rose`、`cyan`；标签最多 48 个字符。`cua.cursor.getState()` 报告设置及原生/浏览器可见性。处于 `idle` 的原生渲染器在首次原生指示时启动；`unavailable` 表示显示主机缺失或失败。重新配置可重试失败的渲染器。空闲光标保留至禁用或清理。光标不共享输入权限，也不移动系统指针。多个光标不能隔离物理键盘、应用焦点或输入法。
+每个 Session 有独立的 Maka 光标。输入操作自动显示光标。`cua.cursor.configure({label?, color?, enabled?, reducedMotion?})` 修改此 Session 的显示。颜色为 `blue`、`mint`、`violet`、`amber`、`rose`、`cyan`；标签最多 48 个字符。`cua.cursor.getState()` 报告设置及原生/浏览器可见性。处于 `idle` 的原生渲染器在首次原生指示时启动；`unavailable` 表示显示主机缺失或失败。重新配置可重试失败的渲染器。光标属于 Session，但 Turn 结束后不留在屏幕上：Turn 内保持显示，Turn 结束时隐藏，下一次输入操作再次显示。光标不共享输入权限，也不移动系统指针。多个光标不能隔离物理键盘、应用焦点或输入法。
 REPL 被取消、超时或耗尽堆内存后，需要 `cua_reset` 并重新绑定目标。已接纳的原生工作会在返回前结算；重置不会撤销已派发的输入。正常 Turn 结束时，当前 Session 会关闭未标记保留的临时标签页，并释放页面观察；已有的用户标签页和明确保留的标签页按上述规则保持打开。重置清除本 Session 的 REPL 和绑定，不授予新权限，也不丢弃该 Session 保留的资源及清理责任。标记或关闭结果未确认时会保留责任，不重放操作。
 
 `agent.browsers` 与 `cua.browsers` 是同一个浏览器集合；`list`、`get(id)`、`getDefault` 和 `getForUrl(url)` 返回元数据或惰性 Browser，不输出观察。`cua.getBrowser` 是输出说明的便捷入口。`browser.tabs.selected()` 返回逻辑会话选中的标签页；它不选择操作系统焦点标签页。直接 CDP 尚无逻辑选中服务，返回 `undefined`。

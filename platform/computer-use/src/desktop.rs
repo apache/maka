@@ -357,6 +357,19 @@ impl SessionOwner {
         {
             failures.push(error.to_string());
         }
+        // The Session keeps its cursor, but nothing acts once the turn has ended, so the
+        // cursor leaves the screen; the next input action draws it again.
+        #[cfg(feature = "native-desktop")]
+        if let Err(error) = self
+            .driver
+            .lock()
+            .await
+            .cursors
+            .remove(&self.cursor().id)
+            .await
+        {
+            failures.push(error.to_string());
+        }
         if failures.is_empty() {
             Ok(())
         } else {
