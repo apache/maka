@@ -274,6 +274,8 @@ fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[derive(Default, Clone, Debug)]
 struct StorageXray {
+    main_db_path: Option<PathBuf>,
+    counts_error: Option<String>,
     total_dir_bytes: u64,
     total_db_bytes: u64,
     total_wal_bytes: u64,
@@ -287,20 +289,29 @@ struct StorageXray {
     top_dbstat: Vec<(String, u64)>,
 }
 
-fn sqlite_query_u64(db: &Path, sql: &str) -> u64 {
-    std::process::Command::new("sqlite3")
+fn sqlite_query_u64_checked(db: &Path, sql: &str) -> std::result::Result<u64, String> {
+    let out = std::process::Command::new("sqlite3")
         .arg("-readonly")
         .arg(db)
         .arg(sql)
         .output()
-        .ok()
-        .and_then(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .trim()
-                .parse::<u64>()
-                .ok()
-        })
-        .unwrap_or(0)
+        .map_err(|e| format!("sqlite3 spawn failed on {}: {e}", db.display()))?;
+    if !out.status.success() {
+        return Err(format!(
+            "sqlite3 exited {} on {}: {}",
+            out.status,
+            db.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    raw.trim()
+        .parse::<u64>()
+        .map_err(|e| format!("sqlite3 non-integer output {raw:?}: {e}"))
+}
+
+fn sqlite_query_u64(db: &Path, sql: &str) -> u64 {
+    sqlite_query_u64_checked(db, sql).unwrap_or(0)
 }
 
 fn sample_storage_xray(root: &Path) -> StorageXray {
@@ -333,6 +344,7 @@ fn sample_storage_xray(root: &Path) -> StorageXray {
     }
 
     if let Some(db) = main_db {
+        xray.main_db_path = Some(db.clone());
         xray.page_count = sqlite_query_u64(&db, "PRAGMA page_count;");
         xray.freelist_count = sqlite_query_u64(&db, "PRAGMA freelist_count;");
         xray.page_size = sqlite_query_u64(&db, "PRAGMA page_size;");
@@ -361,13 +373,15 @@ fn sample_storage_xray(root: &Path) -> StorageXray {
             "agent_tools",
             "agent_cells",
         ];
+        let derived_keys = [
+            "orphan_contents",
+            "receipt_contents",
+            "non_receipt_contents",
+            "request_spec_raw_bytes",
+        ];
         let mut count_queries: Vec<String> = tracked_tables
             .iter()
-            .map(|t| {
-                format!(
-                    "SELECT '{t}', CASE WHEN EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='{t}') THEN (SELECT count(*) FROM {t}) ELSE 0 END"
-                )
-            })
+            .map(|t| format!("SELECT '{t}', (SELECT count(*) FROM {t})"))
             .collect();
         count_queries.push(
             "SELECT 'orphan_contents', (SELECT count(*) FROM contents WHERE id NOT IN (SELECT content_id FROM content_references))".into(),
@@ -382,26 +396,51 @@ fn sample_storage_xray(root: &Path) -> StorageXray {
             "SELECT 'request_spec_raw_bytes', (SELECT COALESCE(SUM(length(c.payload)), 0) FROM contents c WHERE c.id IN (SELECT content_id FROM agent_request_specs))".into(),
         );
         let sql_counts = count_queries.join(" UNION ALL ");
-        if let Ok(out) = std::process::Command::new("sqlite3")
+        match std::process::Command::new("sqlite3")
             .arg("-readonly")
             .arg(&db)
             .arg(format!("{sql_counts};"))
             .output()
         {
-            for line in String::from_utf8_lossy(&out.stdout).lines() {
-                if let Some((t, c)) = line.split_once('|')
-                    && let Ok(cnt) = c.trim().parse::<u64>()
-                {
-                    xray.table_counts.insert(t.to_string(), cnt);
+            Ok(out) if out.status.success() => {
+                for line in String::from_utf8_lossy(&out.stdout).lines() {
+                    if let Some((t, c)) = line.split_once('|')
+                        && let Ok(cnt) = c.trim().parse::<u64>()
+                    {
+                        xray.table_counts.insert(t.to_string(), cnt);
+                    }
                 }
+                let missing: Vec<&str> = tracked_tables
+                    .iter()
+                    .chain(derived_keys.iter())
+                    .copied()
+                    .filter(|k| !xray.table_counts.contains_key(*k))
+                    .collect();
+                if !missing.is_empty() {
+                    xray.counts_error = Some(format!(
+                        "storage xray count query omitted expected keys: {missing:?}"
+                    ));
+                }
+            }
+            Ok(out) => {
+                xray.counts_error = Some(format!(
+                    "storage xray sqlite3 exited {}: {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ));
+            }
+            Err(err) => {
+                xray.counts_error = Some(format!("storage xray sqlite3 spawn failed: {err}"));
             }
         }
 
+        // dbstat is display-only telemetry and remains best-effort.
         if let Ok(out) = std::process::Command::new("sqlite3")
             .arg("-readonly")
             .arg(&db)
             .arg("SELECT name, SUM(pgsize) FROM dbstat GROUP BY name ORDER BY 2 DESC LIMIT 12;")
             .output()
+            && out.status.success()
         {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
                 if let Some((name, bytes)) = line.split_once('|')
@@ -411,6 +450,11 @@ fn sample_storage_xray(root: &Path) -> StorageXray {
                 }
             }
         }
+    } else {
+        xray.counts_error = Some(format!(
+            "runtime-rust.sqlite not found under {}",
+            root.display()
+        ));
     }
 
     xray
@@ -418,6 +462,16 @@ fn sample_storage_xray(root: &Path) -> StorageXray {
 
 fn xray_count(xray: &StorageXray, table: &str) -> u64 {
     xray.table_counts.get(table).copied().unwrap_or(0)
+}
+
+fn require_xray_count(xray: &StorageXray, key: &str) -> std::result::Result<u64, String> {
+    if let Some(err) = &xray.counts_error {
+        return Err(err.clone());
+    }
+    xray.table_counts
+        .get(key)
+        .copied()
+        .ok_or_else(|| format!("storage xray missing required count key {key:?}"))
 }
 
 fn format_top_dbstat(xray: &StorageXray, limit: usize) -> String {
@@ -592,20 +646,21 @@ async fn wait_settled(
         {
             let activity = obs["session"]["activity"].as_str().unwrap_or("");
             let run = &obs["run"];
-            if activity == "idle" {
-                if run.is_null() {
-                    return Ok("idle".into());
-                }
-                let kind = run["state"]
+            let kind = if run.is_null() {
+                "idle"
+            } else {
+                run["state"]
                     .as_str()
                     .or_else(|| run["state"]["kind"].as_str())
-                    .unwrap_or("idle");
-                if matches!(
+                    .unwrap_or("idle")
+            };
+            if (activity == "idle" || (activity == "waiting" && kind == "blocked"))
+                && matches!(
                     kind,
                     "completed" | "failed" | "cancelled" | "blocked" | "idle"
-                ) {
-                    return Ok(kind.to_string());
-                }
+                )
+            {
+                return Ok(kind.to_string());
             }
         }
         tokio::time::sleep(Duration::from_millis(40)).await;
@@ -1195,8 +1250,12 @@ async fn real_host_forever_running_o1_soak() {
 
     let total_reqs = Arc::new(AtomicU64::new(0));
     let compaction_reqs = Arc::new(AtomicUsize::new(0));
+    let crash_sentinel_hits = Arc::new(AtomicUsize::new(0));
+    let crash_sentinel_hold = Arc::new(AtomicBool::new(true));
     let reqs_cb = total_reqs.clone();
     let comp_cb = compaction_reqs.clone();
+    let sentinel_hits_cb = crash_sentinel_hits.clone();
+    let sentinel_hold_cb = crash_sentinel_hold.clone();
     let marker_cb = marker.clone();
 
     let mock = MockAiBuilder::new()
@@ -1224,6 +1283,22 @@ async fn real_host_forever_running_o1_soak() {
                 .find(|m| matches!(m.role, maka_mock_ai::NormalizedRole::User))
                 .map(|m| m.text.as_str())
                 .unwrap_or_default();
+
+            // Phase 4 crash-recovery sentinel: hold in-flight until SIGKILL, then answer cleanly on reopen.
+            if last_user.contains("SOAK_P4_CRASH_SENTINEL") {
+                sentinel_hits_cb.fetch_add(1, Ordering::Release);
+                if sentinel_hold_cb.load(Ordering::Acquire) {
+                    return TurnPlan::new()
+                        .with_delay(Duration::from_secs(30))
+                        .push_text("SOAK_P4_SENTINEL_UNEXPECTED_PREKILL")
+                        .with_usage(Usage::new(200, 40))
+                        .finish(FinishReason::Stop);
+                }
+                return TurnPlan::new()
+                    .push_text("SOAK_P4_SENTINEL_RECOVERED")
+                    .with_usage(Usage::new(200, 40))
+                    .finish(FinishReason::Stop);
+            }
 
             // Context compaction / summary turns: Maka sends summarization requests without tools.
             let is_compaction = req.tools.is_empty()
@@ -1608,18 +1683,27 @@ async fn real_host_forever_running_o1_soak() {
     let db_w14 = (w14.xray.total_db_bytes + w14.xray.runtime_wal_bytes) as f64 / (1024.0 * 1024.0);
     let contents_w4 = xray_count(&w4.xray, "contents").max(1);
     let contents_w14 = xray_count(&w14.xray, "contents");
-    let non_receipt_w4 = xray_count(&w4.xray, "non_receipt_contents").max(1);
-    let non_receipt_w14 = xray_count(&w14.xray, "non_receipt_contents");
+    for (label, sample) in [("W4", &w4.xray), ("W14", &w14.xray)] {
+        if let Some(err) = &sample.counts_error {
+            violations.push(format!("P1 {label} storage xray sampling failed: {err}"));
+        }
+    }
+    let non_receipt_w4 = require_xray_count(&w4.xray, "non_receipt_contents")
+        .unwrap_or(0)
+        .max(1);
+    let non_receipt_w14 = require_xray_count(&w14.xray, "non_receipt_contents").unwrap_or(u64::MAX);
     let receipt_w14 = xray_count(&w14.xray, "receipt_contents");
-    let orphan_w14 = xray_count(&w14.xray, "orphan_contents");
+    let orphan_w14 = require_xray_count(&w14.xray, "orphan_contents").unwrap_or(u64::MAX);
     let ops_w4 = xray_count(&w4.xray, "application_operations").max(1);
     let ops_w14 = xray_count(&w14.xray, "application_operations");
-    let eff_w4 = xray_count(&w4.xray, "host_effects").max(1);
-    let eff_w14 = xray_count(&w14.xray, "host_effects");
-    let facts_w14 = xray_count(&w14.xray, "agent_facts");
-    let cells_w14 = xray_count(&w14.xray, "agent_cells");
-    let cat_sess_w14 = xray_count(&w14.xray, "agent_catalog_sessions");
-    let cat_ctrl_w14 = xray_count(&w14.xray, "agent_catalog_controls");
+    let eff_w4 = require_xray_count(&w4.xray, "host_effects")
+        .unwrap_or(0)
+        .max(1);
+    let eff_w14 = require_xray_count(&w14.xray, "host_effects").unwrap_or(u64::MAX);
+    let facts_w14 = require_xray_count(&w14.xray, "agent_facts").unwrap_or(u64::MAX);
+    let cells_w14 = require_xray_count(&w14.xray, "agent_cells").unwrap_or(u64::MAX);
+    let cat_sess_w14 = require_xray_count(&w14.xray, "agent_catalog_sessions").unwrap_or(u64::MAX);
+    let cat_ctrl_w14 = require_xray_count(&w14.xray, "agent_catalog_controls").unwrap_or(u64::MAX);
 
     eprintln!(
         "[SCEN M][P1 SUMMARY] total_deleted={total_churn_deleted} | W4->W14: rss {:.1}->{:.1}MiB | fds {}->{} | db+rwal {:.2}->{:.2}MiB ({:.2}x) | non_receipt_contents {}->{} ({:.2}x) orphan={} | receipt_contents={} (total_contents {}->{}, ops {}->{}) | effects {}->{} ({:.2}x) | domain_residual(facts={} cells={} cat_sess={} cat_ctrl={}) | cpu/sess {:.1}->{:.1}ms | rem_p95 {}->{}ms",
@@ -1674,15 +1758,15 @@ async fn real_host_forever_running_o1_soak() {
         ("agent_facts", facts_w14),
         (
             "agent_session_history",
-            xray_count(&w14.xray, "agent_session_history"),
+            require_xray_count(&w14.xray, "agent_session_history").unwrap_or(u64::MAX),
         ),
         (
             "agent_history_content_refs",
-            xray_count(&w14.xray, "agent_history_content_refs"),
+            require_xray_count(&w14.xray, "agent_history_content_refs").unwrap_or(u64::MAX),
         ),
         (
             "agent_request_specs",
-            xray_count(&w14.xray, "agent_request_specs"),
+            require_xray_count(&w14.xray, "agent_request_specs").unwrap_or(u64::MAX),
         ),
         ("agent_cells", cells_w14),
         ("agent_catalog_sessions", cat_sess_w14),
@@ -2122,7 +2206,8 @@ async fn real_host_forever_running_o1_soak() {
         obs_ms: u64,
         hist_ms: u64,
         delta_db_kib: i64,
-        compactions_so_far: usize,
+        durable_compactions: u64,
+        mock_summary_reqs: usize,
         rss_mib: f64,
     }
     let mut imm_blocks: Vec<ImmortalBlock> = Vec::with_capacity(6);
@@ -2237,10 +2322,31 @@ async fn real_host_forever_running_o1_soak() {
         let delta_contents =
             xray_count(&cur_xray, "contents") as i64 - xray_count(&prev_xray, "contents") as i64;
         let rss_mib = sample_rss_kib(host_pid).unwrap_or(0) as f64 / 1024.0;
-        let compactions_so_far = compaction_reqs.load(Ordering::Relaxed);
+        let mock_summary_reqs = compaction_reqs.load(Ordering::Relaxed);
+        let escaped_immortal = immortal_sid.replace("'", "''");
+        let durable_compactions = match cur_xray.main_db_path.as_deref() {
+            Some(db) => match sqlite_query_u64_checked(
+                db,
+                &format!(
+                    "SELECT count(*) FROM agent_session_history WHERE session='{escaped_immortal}' AND kind='context_compacted';"
+                ),
+            ) {
+                Ok(n) => n,
+                Err(err) => {
+                    violations.push(format!("P3 durable compaction count query failed: {err}"));
+                    0
+                }
+            },
+            None => {
+                violations.push(
+                    "P3 runtime-rust.sqlite missing when counting durable compactions".into(),
+                );
+                0
+            }
+        };
 
         eprintln!(
-            "[SCEN M][P3 T{:03}] turn(p50={turn_p50}ms p95={turn_p95}ms) cpu/turn={cpu_ms_per_turn:.1}ms obs={obs_ms}ms hist_tail={hist_ms}ms | compactions={compactions_so_far} | +db={delta_db_kib}KiB +facts={delta_facts} +contents={delta_contents} | rss={rss_mib:.1}MiB",
+            "[SCEN M][P3 T{:03}] turn(p50={turn_p50}ms p95={turn_p95}ms) cpu/turn={cpu_ms_per_turn:.1}ms obs={obs_ms}ms hist_tail={hist_ms}ms | durable_compactions={durable_compactions} (mock_summary_reqs={mock_summary_reqs}) | +db={delta_db_kib}KiB +facts={delta_facts} +contents={delta_contents} | rss={rss_mib:.1}MiB",
             (block + 1) * 50
         );
 
@@ -2251,7 +2357,8 @@ async fn real_host_forever_running_o1_soak() {
             obs_ms,
             hist_ms,
             delta_db_kib,
-            compactions_so_far,
+            durable_compactions,
+            mock_summary_reqs,
             rss_mib,
         });
         prev_xray = cur_xray;
@@ -2260,7 +2367,7 @@ async fn real_host_forever_running_o1_soak() {
     let b1 = &imm_blocks[0];
     let b6 = &imm_blocks[5];
     eprintln!(
-        "[SCEN M][P3 SUMMARY] T050->T300: turn_p50 {}->{}ms | turn_p95 {}->{}ms | cpu/turn {:.1}->{:.1}ms | obs {}->{}ms | hist_tail {}->{}ms | compactions={} | +db/50t {}->{}KiB | rss {:.1}->{:.1}MiB",
+        "[SCEN M][P3 SUMMARY] T050->T300: turn_p50 {}->{}ms | turn_p95 {}->{}ms | cpu/turn {:.1}->{:.1}ms | obs {}->{}ms | hist_tail {}->{}ms | durable_compactions={} (mock_summary_reqs={}) | +db/50t {}->{}KiB | rss {:.1}->{:.1}MiB",
         b1.turn_p50,
         b6.turn_p50,
         b1.turn_p95,
@@ -2271,17 +2378,18 @@ async fn real_host_forever_running_o1_soak() {
         b6.obs_ms,
         b1.hist_ms,
         b6.hist_ms,
-        b6.compactions_so_far,
+        b6.durable_compactions,
+        b6.mock_summary_reqs,
         b1.delta_db_kib,
         b6.delta_db_kib,
         b1.rss_mib,
         b6.rss_mib,
     );
 
-    if b6.compactions_so_far < 20 {
+    if b6.durable_compactions < 20 {
         violations.push(format!(
-            "P3 Immortal session expected >= 20 rolling compactions across 300 turns, got {}",
-            b6.compactions_so_far
+            "P3 Immortal session expected >= 20 committed context_compacted facts across 300 turns, got {} (mock_summary_reqs={})",
+            b6.durable_compactions, b6.mock_summary_reqs
         ));
     }
     if b6.turn_p95 > b1.turn_p95 * 2 + 40 {
@@ -2380,17 +2488,44 @@ async fn real_host_forever_running_o1_soak() {
     );
 
     // Crash-reopen mid-flight under the full ~3,400+ session fleet.
+    // Anchor on one deterministic in-flight sentinel run on immortal_sid (held open
+    // by the mock server until SIGKILL) while firing 12 concurrent hot-session sends
+    // for realistic crash load.
+    let pre_crash_run_id = soak_call(
+        &re_client,
+        "agent",
+        "observe",
+        json!({ "sessionId": immortal_sid }),
+        Duration::from_secs(15),
+    )
+    .await
+    .expect("pre-crash immortal observe")
+    .get("latestRunId")
+    .and_then(|v| v.as_str())
+    .map(str::to_owned);
+
+    soak_call(
+        &re_client,
+        "agent",
+        "send",
+        json!({
+            "sessionId": immortal_sid,
+            "message": "SOAK_P4_CRASH_SENTINEL hold in-flight until sigkill",
+            "delivery": "queue"
+        }),
+        Duration::from_secs(20),
+    )
+    .await
+    .expect("P4 crash sentinel send must be accepted");
+
+    let mut accepted_hot_crash_sends = 0usize;
     {
         let mut set = JoinSet::new();
-        for sid in hot_sids
-            .iter()
-            .take(12)
-            .chain(std::iter::once(&immortal_sid))
-        {
+        for sid in hot_sids.iter().take(12) {
             let c = re_client.clone();
             let sid = sid.clone();
             set.spawn(async move {
-                let _ = soak_call(
+                soak_call(
                     &c,
                     "agent",
                     "send",
@@ -2401,12 +2536,54 @@ async fn real_host_forever_running_o1_soak() {
                     }),
                     Duration::from_secs(15),
                 )
-                .await;
+                .await
+                .is_ok()
             });
         }
-        while set.join_next().await.is_some() {}
+        while let Some(joined) = set.join_next().await {
+            if joined.expect("crash-wave send task panicked") {
+                accepted_hot_crash_sends += 1;
+            }
+        }
     }
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert!(
+        accepted_hot_crash_sends > 0,
+        "P4 crash wave accepted 0 concurrent hot-session sends"
+    );
+
+    // Wait until the sentinel run is durably admitted AND its model HTTP request is
+    // genuinely in-flight at the mock server before sending SIGKILL.
+    let sentinel_deadline = Instant::now() + Duration::from_secs(20);
+    let sentinel_run_id = loop {
+        assert!(
+            Instant::now() <= sentinel_deadline,
+            "P4 crash sentinel did not reach active in-flight model state before SIGKILL (mock_hits={})",
+            crash_sentinel_hits.load(Ordering::Acquire)
+        );
+        let mock_inflight = crash_sentinel_hits.load(Ordering::Acquire) >= 1;
+        if mock_inflight
+            && let Ok(obs) = soak_call(
+                &re_client,
+                "agent",
+                "observe",
+                json!({ "sessionId": immortal_sid }),
+                Duration::from_secs(10),
+            )
+            .await
+        {
+            let active = obs["session"]["activity"].as_str() == Some("working");
+            let live_run = obs["run"]["runId"].as_str().map(str::to_owned);
+            if active
+                && let Some(run_id) = live_run
+                && Some(run_id.as_str()) != pre_crash_run_id.as_deref()
+            {
+                break run_id;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    };
+
+    crash_sentinel_hold.store(false, Ordering::Release);
     host.sigkill().await.expect("SIGKILL host under full fleet");
     drop(re_client);
     tokio::time::sleep(Duration::from_millis(120)).await;
@@ -2417,11 +2594,52 @@ async fn real_host_forever_running_o1_soak() {
     let crash_reopen_ms = crash_t0.elapsed().as_millis() as u64;
     let crash_client = Arc::new(crash_client);
 
-    for sid in hot_sids
-        .iter()
-        .take(12)
-        .chain(std::iter::once(&immortal_sid))
-    {
+    // Verify the exact crashed sentinel run recovered to a settled/blocked state
+    // (never returning a stale pre-crash run).
+    let recover_deadline = Instant::now() + Duration::from_secs(60);
+    let sentinel_recovered_state = loop {
+        assert!(
+            Instant::now() <= recover_deadline,
+            "P4 crashed sentinel run {sentinel_run_id} did not settle after SIGKILL reopen"
+        );
+        if let Ok(obs) = soak_call(
+            &crash_client,
+            "agent",
+            "observe",
+            json!({ "sessionId": immortal_sid }),
+            Duration::from_secs(15),
+        )
+        .await
+        {
+            let activity = obs["session"]["activity"].as_str().unwrap_or("");
+            let run = &obs["run"];
+            let observed_run = run["runId"]
+                .as_str()
+                .or_else(|| obs["latestRunId"].as_str());
+            let kind = if run.is_null() {
+                "idle"
+            } else {
+                run["state"]
+                    .as_str()
+                    .or_else(|| run["state"]["kind"].as_str())
+                    .unwrap_or("idle")
+            };
+            let settled = activity == "idle" || (activity == "waiting" && kind == "blocked");
+            if settled && observed_run == Some(sentinel_run_id.as_str()) {
+                assert!(
+                    matches!(
+                        kind,
+                        "completed" | "idle" | "failed" | "cancelled" | "blocked"
+                    ),
+                    "unexpected post-crash sentinel state {kind}"
+                );
+                break kind.to_string();
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+
+    for sid in hot_sids.iter().take(12) {
         let st = wait_settled(&crash_client, sid, Duration::from_secs(60))
             .await
             .unwrap_or_else(|e| panic!("post-SIGKILL settle failed for {sid}: {e}"));
@@ -2433,6 +2651,11 @@ async fn real_host_forever_running_o1_soak() {
             "unexpected post-crash state {st}"
         );
     }
+
+    eprintln!(
+        "[SCEN M][P4 CRASH SENTINEL] run={sentinel_run_id} state={sentinel_recovered_state} pre_kill_mock_hits={} hot_accepted={accepted_hot_crash_sends}/12",
+        crash_sentinel_hits.load(Ordering::Acquire)
+    );
 
     let final_xray = sample_storage_xray(&sandbox.root);
     let mut owned_crash_client = Arc::try_unwrap(crash_client)
