@@ -378,7 +378,24 @@ export class Notebook {
       withheld.forEach((w: any, i: number) =>
         this.recordWithheld(w, `${operationId}:withheld:${i}`),
       );
-      reopened.forEach((r: any, i: number) => this.reopenTopic(r, `${operationId}:reopened:${i}`));
+      // A reopening is only legitimate against a rule interpreted by an earlier
+      // wake: closing (or deferring) a topic and reopening it in the same draft
+      // would override the user's fresh decision without any later wake seeing it.
+      const sameDraftFeedback = new Set(feedbackDecisions.map((f: any) => f.feedbackId));
+      reopened.forEach((r: any, i: number) => {
+        if (this.topics().has(r?.topicId)) {
+          const current = this.state(r.topicId);
+          requireThat(
+            !(
+              current.feedbackId &&
+              ['closed', 'deferred'].includes(current.status) &&
+              sameDraftFeedback.has(current.feedbackId)
+            ),
+            'Reopening cannot override feedback interpreted in the same draft',
+          );
+        }
+        this.reopenTopic(r, `${operationId}:reopened:${i}`);
+      });
       const preparedIds: string[] = [];
       messages.forEach((m: any, i: number) => {
         requireThat(

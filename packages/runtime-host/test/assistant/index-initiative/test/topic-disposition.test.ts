@@ -138,6 +138,74 @@ test('a material change reopens a closed topic, and the notebook says why', (t) 
   assert.match(b.render({ topicIds: ['tea'] }), /因信息出现重大变化，经判断重新开放.*茶博会/);
 });
 
+test('a judgement cannot close a topic and reopen it in the same draft', (t) => {
+  const b = fixture(t);
+  feedback(b, 'f', '不用再推荐茶了');
+  // The close and the reopen arrive in one draft. Judging the reopen against the
+  // rule this very draft just wrote would undo the user's fresh decision before
+  // any later wake could see it.
+  assert.throws(
+    () =>
+      commit(
+        b,
+        'same-round',
+        draft({
+          notes: [note('tea', ['tea'], '茶博会即将开幕。')],
+          feedbackDecisions: [resolution('f', [closeRule('不用再推荐茶了')])],
+          reopened: [{ topicId: 'tea', reason: '茶博会即将开幕' }],
+        }),
+      ),
+    /Reopening cannot override feedback interpreted in the same draft/,
+  );
+  assert.equal(b.state('tea').status, 'open', 'a rejected draft leaves nothing behind');
+});
+
+test('a same-draft close only blocks reopens it governs, not rules from earlier wakes', (t) => {
+  const b = fixture(t);
+  commit(
+    b,
+    'seed-run',
+    draft({ notes: [note('run', ['sport'], '用户在准备半程马拉松。')] }),
+    'exploration',
+  );
+  feedback(b, 'fr', '别再提跑步了');
+  commit(
+    b,
+    'close-run',
+    draft({
+      feedbackDecisions: [
+        resolution('fr', [
+          {
+            quote: '别再提跑步了',
+            status: 'closed',
+            topicIds: ['run'],
+            tags: [],
+            reason: '用户不再关注',
+            resumeAt: null,
+          },
+        ]),
+      ],
+    }),
+  );
+  assert.equal(b.state('run').status, 'closed');
+  // One draft interprets new feedback about tea and reopens run, whose governing
+  // rule (fr) came from an earlier wake: the same-draft restriction must not
+  // blanket-ban reopenings.
+  feedback(b, 'f', '不用再推荐茶了');
+  commit(
+    b,
+    'mixed',
+    draft({
+      notes: [note('run', ['sport'], '用户报名了下周的半程马拉松。')],
+      feedbackDecisions: [resolution('f', [closeRule('不用再推荐茶了')])],
+      reopened: [{ topicId: 'run', reason: '报名下周半马是新的具体承诺' }],
+    }),
+  );
+  assert.equal(b.state('run').status, 'open');
+  assert.equal(b.state('run').reopenedByChange, true);
+  assert.equal(b.state('tea').status, 'closed', 'the same-draft close still stands');
+});
+
 test('the user decides last: a newer user rule beats an earlier reopening', (t) => {
   const b = fixture(t);
   closeTea(b);
