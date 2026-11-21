@@ -34,13 +34,13 @@ enum Step {
 // Shared run-history cleanup executed for every removed Run, including Runs
 // that retain a minimal stub for profile-scoped computer grants/revocations.
 const RUN_HISTORY_RELEASES: &[Step] = &[
-    Step::RunOwnerSession(
+    Step::Run(
         "INSERT OR IGNORE INTO pending_content_releases(content_id)
          SELECT body_content_id FROM agent_facts WHERE run=?1
          UNION SELECT content_id FROM agent_request_specs WHERE run=?1
          UNION SELECT content_id FROM agent_answer_parts WHERE run=?1
          UNION SELECT descriptor_content_id FROM agent_external_steering WHERE run=?1
-         UNION SELECT content_id FROM agent_history_content_refs WHERE owner=?2 AND session=?3 AND run=?1",
+         UNION SELECT content_id FROM agent_history_content_refs WHERE run=?1",
     ),
     Step::RunOwnerSession(
         "DELETE FROM agent_recall_terms WHERE rowid IN(SELECT id FROM agent_recall_messages
@@ -53,9 +53,7 @@ const RUN_HISTORY_RELEASES: &[Step] = &[
     Step::Run(
         "DELETE FROM agent_session_history WHERE sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
     ),
-    Step::RunOwnerSession(
-        "DELETE FROM agent_history_content_refs WHERE owner=?2 AND session=?3 AND run=?1",
-    ),
+    Step::Run("DELETE FROM agent_history_content_refs WHERE run=?1"),
     Step::RunOwnerSession(
         "DELETE FROM agent_catalog_messages WHERE owner=?2 AND session=?3
          AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
@@ -484,11 +482,21 @@ mod tests {
         for table in [
             owned,
             "SELECT count(*) FROM agent_session_history WHERE session=?1",
-            "SELECT count(*) FROM agent_history_content_refs WHERE session=?1",
             "SELECT count(*) FROM agent_recall_messages WHERE session=?1",
             "SELECT count(*) FROM agent_queue_events WHERE session=?1",
         ] {
             assert_eq!(rows(&store, table, "removed").await, vec![0], "{table}");
+        }
+        for run in [first.run(), second.run()] {
+            assert_eq!(
+                rows(
+                    &store,
+                    "SELECT count(*) FROM agent_history_content_refs WHERE run=?1",
+                    &run.to_string(),
+                )
+                .await,
+                vec![0]
+            );
         }
         assert_eq!(
             rows(
@@ -993,6 +1001,7 @@ mod tests {
                     "DELETE FROM agent_computer_facts WHERE run=?1",
                     "DELETE FROM agent_queue_events WHERE session=?1",
                     "DELETE FROM agent_cell_notifications WHERE session=?1",
+                    "DELETE FROM agent_history_content_refs WHERE run=?1",
                     "DELETE FROM agent_cells WHERE run=?1",
                     "DELETE FROM agent_catalog_sessions WHERE owner=?1 AND session=?2",
                     "DELETE FROM agent_catalog_controls WHERE owner=?1 AND session=?2",
