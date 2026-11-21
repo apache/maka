@@ -580,9 +580,12 @@ mod tests {
             .chain(crate::MIGRATIONS)
             .copied()
             .collect();
-        let before_normalization: Vec<_> =
-            catalog.iter().copied().filter(|m| m.version < 59).collect();
-        maka_event_log::migration::run(&c, &before_normalization).unwrap();
+        let previous: Vec<_> = catalog
+            .iter()
+            .copied()
+            .filter(|m| m.version <= 50)
+            .collect();
+        maka_event_log::migration::run(&c, &previous).unwrap();
         let body: String = "한글 설정 🧭".nfd().collect();
         let source = serde_json::to_string(&MemorySource::UserOperation {
             operation_id: uuid::Uuid::new_v4(),
@@ -634,7 +637,11 @@ mod tests {
             .chain(crate::MIGRATIONS)
             .copied()
             .collect();
-        let previous: Vec<_> = catalog.iter().copied().filter(|m| m.version < 64).collect();
+        let previous: Vec<_> = catalog
+            .iter()
+            .copied()
+            .filter(|m| m.version <= 50)
+            .collect();
         maka_event_log::migration::run(&db, &previous).unwrap();
         db.execute_batch("INSERT INTO contents VALUES(1,'spec',x'7b7d'); INSERT INTO agent_run_specs VALUES('run',1,'owner','chat',1);").unwrap();
 
@@ -712,9 +719,12 @@ mod tests {
             .chain(crate::MIGRATIONS)
             .copied()
             .collect();
-        let previous: Vec<_> = catalog.iter().copied().filter(|m| m.version < 62).collect();
+        let previous: Vec<_> = catalog
+            .iter()
+            .copied()
+            .filter(|m| m.version <= 50)
+            .collect();
         maka_event_log::migration::run(&db, &previous).unwrap();
-        register_read_classifier(&db).unwrap();
         db.execute_batch(
             "INSERT INTO contents VALUES(1,'spec',x'7b7d');
             INSERT INTO agent_run_specs VALUES('run',1,'owner','chat',1);",

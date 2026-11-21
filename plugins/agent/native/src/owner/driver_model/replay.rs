@@ -835,7 +835,7 @@ mod tests {
         let previous: Vec<_> = migrations
             .iter()
             .copied()
-            .filter(|m| m.version <= 64)
+            .filter(|m| m.version <= 50)
             .collect();
         maka_event_log::migration::run(&db, &previous).unwrap();
         let blob = |value: &Value| {
@@ -845,12 +845,13 @@ mod tests {
             (id, digest)
         };
         let mut services = Vec::new();
-        for (name, target, kind, input) in [
-            ("SessionRead", "web", "import", "web"),
-            ("RecallMore", "skills", "import", "skill"),
-            ("FindMessages", "agent", "export", "json"),
+        for (name, target, kind, method, input) in [
+            ("SessionRead", "web", "import", "search", "web"),
+            ("RecallMore", "skills", "import", "search", "skill"),
+            ("FindMessages", "agent", "export", "search", "json"),
+            ("Recall", "external", "import", "execution", "json"),
         ] {
-            services.push(json!({"selection":{"name":name,"description":"Search","method":"search",
+            services.push(json!({"selection":{"name":name,"description":name,"method":method,
                 "target":{"kind":kind,"name":target},"input":input,"result":"json","confirmation":"preapproved"}}));
         }
         let (_, selection) = blob(&json!({"services":services}));
@@ -883,15 +884,26 @@ mod tests {
         };
         seed("before", 1);
         maka_event_log::migration::run(&db, &migrations).unwrap();
-        seed("after", 7);
+        seed("after", 9);
         let restricted = db
-            .prepare("SELECT fact FROM agent_memory_recall_outputs ORDER BY fact")
+            .prepare(
+                "SELECT h.run || '/' || h.tool_use_id FROM agent_memory_recall_outputs r
+                 JOIN agent_session_history h ON h.owner=r.owner AND h.fact_id=r.fact ORDER BY 1",
+            )
             .unwrap()
             .query_map([], |r| r.get::<_, String>(0))
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(restricted, ["fact-12", "fact-6"]);
+        assert_eq!(
+            restricted,
+            [
+                "after/FindMessages",
+                "after/Recall",
+                "before/FindMessages",
+                "before/Recall"
+            ]
+        );
         let aliases = services
             .into_iter()
             .map(|value| serde_json::from_value::<ServiceSelection>(value).unwrap())
@@ -904,5 +916,6 @@ mod tests {
         assert!(!sensitive_call("SessionRead", None, &aliases));
         assert!(!sensitive_call("RecallMore", None, &aliases));
         assert!(sensitive_call("FindMessages", None, &aliases));
+        assert!(sensitive_call("Recall", None, &aliases));
     }
 }

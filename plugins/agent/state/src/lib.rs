@@ -321,97 +321,7 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         version: 51,
         description: "current memory recall and restricted evidence",
         sql: include_str!("../migrations/0051_memory_recall.sql"),
-        configure: None,
-    },
-    maka_event_log::migration::Migration {
-        version: 52,
-        description: "resolve read continuation targets in history",
-        sql: include_str!("../migrations/0052_recall_read_paths.sql"),
-        configure: None,
-    },
-    maka_event_log::migration::Migration {
-        version: 53,
-        description: "resolve restricted evidence across tool receipts",
-        sql: include_str!("../migrations/0053_memory_receipt_spans.sql"),
-        configure: None,
-    },
-    maka_event_log::migration::Migration {
-        version: 54,
-        description: "index imported Recall outputs and provider receipts",
-        sql: include_str!("../migrations/0054_memory_history_projections.sql"),
-        configure: None,
-    },
-    maka_event_log::migration::Migration {
-        version: 55,
-        description: "classify historical output by its original operation",
-        sql: include_str!("../migrations/0055_memory_history_origins.sql"),
-        configure: None,
-    },
-    maka_event_log::migration::Migration {
-        version: 56,
-        description: "prioritize frozen session reader bindings",
-        sql: include_str!("../migrations/0056_memory_read_binding_precedence.sql"),
-        configure: None,
-    },
-    maka_event_log::migration::Migration {
-        version: 57,
-        description: "apply child argument restrictions across approval records",
-        sql: include_str!("../migrations/0057_memory_child_argument_spans.sql"),
-        configure: None,
-    },
-    maka_event_log::migration::Migration {
-        version: 58,
-        description: "bind historical results to their observed cell and frontier",
-        sql: include_str!("../migrations/0058_memory_cell_observations.sql"),
-        configure: None,
-    },
-    maka_event_log::migration::Migration {
-        version: 59,
-        description: "normalize current memory tokens for Recall",
-        sql: include_str!("../migrations/0059_memory_recall_unicode.sql"),
-        configure: None,
-    },
-    maka_event_log::migration::Migration {
-        version: 60,
-        description: "share evidence across cell publications, source code and diagnostic copies",
-        sql: include_str!("../migrations/0060_memory_history_derivations.sql"),
-        configure: None,
-    },
-    maka_event_log::migration::Migration {
-        version: 61,
-        description: "look up historical output restrictions by fact",
-        sql: include_str!("../migrations/0061_memory_history_lookup.sql"),
-        configure: None,
-    },
-    maka_event_log::migration::Migration {
-        version: 62,
-        description: "resolve cell observation restrictions from indexed evidence",
-        sql: include_str!("../migrations/0062_memory_cell_evidence.sql"),
-        configure: None,
-    },
-    maka_event_log::migration::Migration {
-        version: 63,
-        description: "index restricted cell dependencies by observed cell and event",
-        sql: include_str!("../migrations/0063_memory_cell_candidates.sql"),
-        configure: None,
-    },
-    maka_event_log::migration::Migration {
-        version: 64,
-        description: "classify historical Read calls when indexing and bound Recall rebuild cleanup",
-        sql: include_str!("../migrations/0064_memory_read_calls.sql"),
         configure: Some(memory::recall::register_read_classifier),
-    },
-    maka_event_log::migration::Migration {
-        version: 65,
-        description: "restore ordinary search results for legacy service aliases",
-        sql: include_str!("../migrations/0065_memory_legacy_search_aliases.sql"),
-        configure: None,
-    },
-    maka_event_log::migration::Migration {
-        version: 66,
-        description: "locate copied interruption diagnostics by original model attempt",
-        sql: include_str!("../migrations/0066_memory_interruption_attempt.sql"),
-        configure: None,
     },
 ];
 
@@ -424,7 +334,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..66) {
+        for through in [0, 41].into_iter().chain(46..=50) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();
