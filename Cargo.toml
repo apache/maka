@@ -38,6 +38,7 @@ members = [
     "plugins/agent/native",
     "plugins/workspace/workspace-files/patch",
     "plugins/agent/assistant",
+    "platform/peer",
     "platform/transport",
     "platform/background-health",
     "products/maka/cli",
@@ -132,6 +133,7 @@ maka-workspace-api = { path = "plugins/workspace/api" }
 maka-agent-authority = { path = "plugins/agent/authority" }
 maka-web-api = { path = "plugins/workspace/workspace-web/api" }
 maka-agent-api = { path = "plugins/agent/api" }
+maka-peer = { path = "platform/peer" }
 maka-transport = { path = "platform/transport" }
 cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0" }
 cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0" }

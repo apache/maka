@@ -9144,6 +9144,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "maka-peer"
+version = "0.2.0"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.23.1",
+ "hex",
+ "maka-event-log",
+ "maka-host-runtime",
+ "maka-packages",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "maka-plugin-core"
 version = "0.2.0"
 dependencies = [
