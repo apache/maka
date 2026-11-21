@@ -192,6 +192,7 @@ describe('Maka ACP child process', () => {
             (first.configOptions ?? []).map((option) => [option.id, option.currentValue]),
             [
               ['permission_mode', 'bypass'],
+              ['model', 'relay-basic'],
               ['collaboration_mode', 'agent'],
               ['orchestration_mode', 'default'],
             ],
@@ -205,6 +206,7 @@ describe('Maka ACP child process', () => {
             (configured.configOptions ?? []).map((option) => [option.id, option.currentValue]),
             [
               ['permission_mode', 'bypass'],
+              ['model', 'relay-basic'],
               ['collaboration_mode', 'plan'],
               ['orchestration_mode', 'default'],
             ],
@@ -273,6 +275,7 @@ describe('Maka ACP child process', () => {
             (created.configOptions ?? []).map(({ id, currentValue }) => [id, currentValue]),
             [
               ['permission_mode', 'bypass'],
+              ['model', 'relay-reasoner'],
               ['thinking_level', 'default'],
               ['collaboration_mode', 'agent'],
               ['orchestration_mode', 'default'],
@@ -310,6 +313,7 @@ describe('Maka ACP child process', () => {
             (configuredOptions ?? []).map(({ id, currentValue }) => [id, currentValue]),
             [
               ['permission_mode', 'ask'],
+              ['model', 'relay-reasoner'],
               ['thinking_level', 'high'],
               ['collaboration_mode', 'plan'],
               ['orchestration_mode', 'swarm'],

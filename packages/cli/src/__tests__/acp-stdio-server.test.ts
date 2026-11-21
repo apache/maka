@@ -964,7 +964,7 @@ describe('Maka ACP stdio server', () => {
     assert.equal(createdResponse.result?.sessionId, created?.id);
     assert.deepEqual(
       createdResponse.result?.configOptions?.map((option) => (option as { id?: unknown }).id),
-      ['permission_mode', 'thinking_level', 'collaboration_mode', 'orchestration_mode'],
+      ['permission_mode', 'model', 'thinking_level', 'collaboration_mode', 'orchestration_mode'],
     );
     const configuredResponse = responses.get(3) as {
       result?: {
