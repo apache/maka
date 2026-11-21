@@ -33,6 +33,7 @@ export const JUST_NOW = resolveUiMessageCatalog(
     'zh-CN': '刚刚',
     'zh-TW': '剛剛',
     en: 'just now',
+    ko: '방금 전',
   }),
 );
 

@@ -194,7 +194,14 @@ test('real bridge failures render localized detail and overview output in all lo
     await slack.start();
     assert.ok(socket);
     socket.emit('disconnected');
-    statuses.push([slack.getStatus(), ['Slack 连接已断开，正在等待重新连接', 'Slack 連線已中斷，正在等待重新連線', 'Slack disconnected; waiting to reconnect']]);
+    const disconnectedCopy = resolveUiMessageCatalog(
+      defineShippedUiMessageCatalog<string>()({
+        'zh-CN': 'Slack 连接已断开，正在等待重新连接',
+        'zh-TW': 'Slack 連線已中斷，正在等待重新連線',
+        en: 'Slack disconnected; waiting to reconnect',
+      }),
+    );
+    statuses.push([slack.getStatus(), UI_LOCALES.map((locale) => disconnectedCopy[locale])]);
     await slack.stop();
     auth.mock.mockImplementation(async () => { throw new Error('Network error bot-secret app-secret'); });
     await assert.rejects(slack.start());
