@@ -261,13 +261,23 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   const publishError = (
     operation: Extract<AppUpdateStatus, { state: 'error' }>['operation'],
     error: unknown,
-  ): AppUpdateStatus => publish({
-    state: 'error',
-    currentVersion: deps.currentVersion,
-    latestVersion: latestVersion(),
-    operation,
-    message: error instanceof Error ? error.message : String(error),
-  });
+  ): AppUpdateStatus => {
+    const message = error instanceof Error ? error.message : String(error);
+    // A later failure replaces an earlier one (#4708): latching the first error
+    // left the panel reporting a stale cause forever. Identical repeats stay
+    // idempotent so one failed check, which can report through both the error
+    // listener and the retry catch, still publishes a single status.
+    if (status.state === 'error' && status.operation === operation && status.message === message) {
+      return status;
+    }
+    return publish({
+      state: 'error',
+      currentVersion: deps.currentVersion,
+      latestVersion: latestVersion(),
+      operation,
+      message,
+    });
+  };
 
   const disarmInstallQuitWatchdog = (): void => {
     deps.nativeUpdater.off('before-quit-for-update', armInstallQuitWatchdog);
@@ -384,7 +394,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
         });
       })
       .catch((error) => {
-        if (activeVerification === verification) publishError('download', error);
+        if (activeVerification === verification) publishError('verify', error);
       })
       .finally(() => {
         if (activeVerification === verification) activeVerification = undefined;
@@ -393,9 +403,11 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   updater.on('error', (error) => {
     const operation = status.state === 'installing'
       ? 'install'
-      : status.state === 'available' || status.state === 'downloading' || status.state === 'verifying'
-        ? 'download'
-        : 'check';
+      : status.state === 'verifying'
+        ? 'verify'
+        : status.state === 'available' || status.state === 'downloading'
+          ? 'download'
+          : 'check';
     if (operation === 'install') rollbackInstallHandoff();
     // A check failure with retry attempts still owed is transient: hold it
     // back and let the scheduled retry produce the final word. Download and
@@ -437,7 +449,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       }
       if (checkAttemptsRemaining <= 0) {
         checkAttemptsRemaining = 0;
-        return status.state === 'error' ? status : publishError('check', error);
+        return publishError('check', error);
       }
       checkAttemptsRemaining -= 1;
       // Back off briefly, then re-check. The 'error' listener holds the
@@ -452,9 +464,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
             resolve(status);
             return;
           }
-          resolve(attempt().catch((retryError) =>
-            status.state === 'error' ? status : publishError('check', retryError),
-          ));
+          resolve(attempt().catch((retryError) => publishError('check', retryError)));
         }, UPDATE_CHECK_RETRY_DELAY_MS);
       });
     }).finally(() => {
