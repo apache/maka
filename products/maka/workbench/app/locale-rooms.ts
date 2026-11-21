@@ -21,8 +21,6 @@ import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const roomMessages = {
   Rooms: ['Rooms', '房间', '房間'],
-  'More navigation': ['Show more', '更多', '更多'],
-  'Less navigation': ['Show less', '收起', '收合'],
   'Workspace mode': ['Workspace mode', '工作模式', '工作模式'],
   'New room': ['New room', '新建房间', '新增房間'],
   'Room name': ['Room name', '房间名称', '房間名稱'],

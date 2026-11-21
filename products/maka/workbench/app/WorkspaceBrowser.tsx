@@ -36,7 +36,7 @@ import {
   platform,
 } from 'nsh';
 import type { JSX, ListRef, Signal, ViewRef } from 'nsh';
-import { Button, ContextMenu, Menu } from 'nsh/base';
+import { Button, ContextMenu, Menu, Popover } from 'nsh/base';
 import logo from './assets/maka.png';
 import { keymap } from 'nsh';
 import {
@@ -48,9 +48,9 @@ import {
   controlFocusStyle,
   controlDisabledStyle,
   floatingStyle,
-  sidebarDisclosureStyle,
 } from './ui';
 import { Icon } from './Icon';
+import { ChoiceIndicator } from './ChoiceIndicator';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
 import { SessionActions } from './SessionActions';
 import { SessionMenuItems, type SessionMenuAction } from './SessionMenu';
@@ -58,6 +58,7 @@ import { Automations } from './Automations';
 import {
   groupWorkspace,
   groupConversations,
+  groupConversationsByTime,
   foldableFamilies,
   projectSessionLimit,
   topLevelCount,
@@ -65,6 +66,7 @@ import {
   unfoldedSessions,
   type ConversationGroup,
 } from './conversationGroups';
+import { sidebarPreferences, type SidebarFeature } from './sidebarPreferences';
 import { workspaceSessions } from './sessionNesting';
 import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
 import {
@@ -77,7 +79,7 @@ import { sessionStatusCaption } from './sessionStatus';
 import { ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
 
 export type WorkspaceBrowserProps = {
-  navigationMore?(): JSX.Element;
+  openRooms?: (() => void) | undefined;
   pinSidebar?: (() => void) | undefined;
   suppressSidebarHover?: (() => void) | undefined;
   docked(): boolean;
@@ -200,6 +202,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const moreBotWorkers = () => Math.max(0, activeBotWorkers().length - botWorkerCap);
   const choosingWorkspace = signal(false);
   const automationsOpen = signal(false);
+  const moreFeaturesOpen = signal(false);
+  const sortByTime = () =>
+    platform.idiom !== 'terminal' && sidebarPreferences.sortMode() === 'time';
   const actions = signal<{
     session: SessionActionTarget;
     origin: string | null;
@@ -257,16 +262,27 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const hasPinned = () => visibleSessions()[0]?.pinned === true;
   const collapsed = props.collapsedGroups ?? signal<ReadonlySet<string>>(new Set());
   const expanded = props.expandedProjects ?? signal<ReadonlySet<string>>(new Set());
-  const groups = computed(() =>
-    groupConversations(visibleSessions(), browser.projects(), browser.filter() === 'all').map(
-      (group): WorkspaceGroup => ({
-        ...group,
-        name: group.pinned
-          ? tr('Pinned')
-          : (group.project?.name ?? (group.path!.split('/').filter(Boolean).at(-1) || group.path!)),
-      }),
-    ),
+  const projectsById = computed(
+    () => new Map(browser.projects().map((project) => [project.reference.id, project])),
   );
+  const groups = computed(() => {
+    const raw = sortByTime()
+      ? groupConversationsByTime<BrowserProject>(visibleSessions())
+      : groupConversations(visibleSessions(), browser.projects(), browser.filter() === 'all');
+    return raw.map((group): WorkspaceGroup => {
+      const name = group.pinned
+        ? tr('Pinned')
+        : group.key === 'time:today'
+          ? tr('Today')
+          : group.key === 'time:yesterday'
+            ? tr('Yesterday')
+            : group.key === 'time:earlier'
+              ? tr('Earlier')
+              : (group.project?.name ??
+                (group.path!.split('/').filter(Boolean).at(-1) || group.path!));
+      return { ...group, name };
+    });
+  });
   const nestedRows = computed(() => new Set(groups().flatMap((group) => [...group.nested])));
   // A nested row's guide line ends at the last of its family.
   const lastNestedRows = computed(() => {
@@ -280,9 +296,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   });
   const groupsById = computed(() => new Map(groups().map((group) => [group.key, group])));
   const foldedFamilies = props.foldedFamilies ?? signal<ReadonlySet<string>>(new Set());
-  // Only the full list folds; the inbox and archive show every match.
+  // Only the full project-grouped list folds created families.
   const families = computed(() =>
-    browser.filter() === 'all'
+    browser.filter() === 'all' && !sortByTime()
       ? new Map(groups().flatMap((group) => [...foldableFamilies(group)]))
       : new Map<string, string[]>(),
   );
@@ -393,7 +409,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     navigationTarget?.focus();
   };
   const escape = () => {
-    if (actions() || automationsOpen()) return;
+    if (actions() || automationsOpen() || moreFeaturesOpen()) return;
     if (choosingWorkspace()) {
       choosingWorkspace.set(false);
       navigationTarget?.focus();
@@ -486,6 +502,66 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const refresh = () => {
     void browser.refresh();
   };
+  const showBotNav = () =>
+    props.openBot !== undefined &&
+    (platform.idiom === 'terminal' || sidebarPreferences.isPinned('bot') || botSelected());
+  const showAutomationsNav = () =>
+    platform.idiom === 'terminal' || sidebarPreferences.isPinned('automations');
+  const showRoomsNav = () =>
+    props.openRooms !== undefined &&
+    (platform.idiom === 'terminal' || sidebarPreferences.isPinned('rooms'));
+  const optionalFeatures = computed<
+    Array<{
+      id: SidebarFeature;
+      icon: 'bot' | 'activity' | 'rooms';
+      label: string;
+      disabled: boolean;
+      open(): void;
+    }>
+  >(() => [
+    ...(props.openBot !== undefined
+      ? [
+          {
+            id: 'bot' as const,
+            icon: 'bot' as const,
+            label: tr('Maka Bot'),
+            disabled: props.switching(),
+            open: () => {
+              moreFeaturesOpen.set(false);
+              props.openBot?.(props.selected());
+            },
+          },
+        ]
+      : []),
+    {
+      id: 'automations' as const,
+      icon: 'activity' as const,
+      label: tr('Automations'),
+      disabled: props.connectionLost(),
+      open: () => {
+        moreFeaturesOpen.set(false);
+        automationsOpen.set(true);
+      },
+    },
+    ...(props.openRooms !== undefined
+      ? [
+          {
+            id: 'rooms' as const,
+            icon: 'rooms' as const,
+            label: tr('Rooms'),
+            disabled: props.switching(),
+            open: () => {
+              moreFeaturesOpen.set(false);
+              props.openRooms?.();
+            },
+          },
+        ]
+      : []),
+  ]);
+  const workspaceLabel = (workspace: { projectId?: string | null; path: string }) => {
+    const project = workspace.projectId ? projectsById().get(workspace.projectId) : undefined;
+    return project?.name ?? (workspace.path.split('/').filter(Boolean).at(-1) || workspace.path);
+  };
   return (
     <View
       ref={(node) => {
@@ -553,7 +629,61 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           <Icon name="plus" color={navIcon()} />
           <Text style={{ color: navText(), fontSize: 14 }}>{tr('New conversation')}</Text>
         </Button>
-        <If when={props.openBot !== undefined}>
+        <If when={platform.idiom === 'terminal'}>
+          <Button
+            accessibilityLabel={tr('Choose workspace scope')}
+            ref={(node) => {
+              navigationTarget = node;
+              focusBrowser();
+            }}
+            onPress={inputAction(toggleScopes, null)}
+            style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+            hoverStyle={{ backgroundColor: C.raised }}
+            focusStyle={{ backgroundColor: C.line }}
+          >
+            <Icon name="folder" color={C.secondary} />
+            <Text style={[{ color: C.secondary, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
+              {scopeLabel()}
+            </Text>
+            <Icon name="down" color={C.secondary} />
+          </Button>
+        </If>
+        <Button
+          accessibilityLabel={tr('Search conversations')}
+          tooltip={textTooltip(() => `${tr('Search conversations')} · ${keymap.label('mod+o')}`)}
+          onPress={inputAction(props.search, props.selected())}
+          style={{
+            ...controlStyle,
+            flexDirection: 'row',
+            alignItems: 'center',
+            paddingHorizontal: 8,
+            gap: 8,
+            height: 32,
+            backgroundColor: platform.idiom === 'terminal' ? C.background : 'transparent',
+            borderRadius: 8,
+          }}
+          hoverStyle={
+            platform.idiom === 'terminal' ? controlHoverStyle() : { backgroundColor: C.raised }
+          }
+          focusStyle={
+            platform.idiom === 'terminal' ? controlFocusStyle() : { backgroundColor: C.line }
+          }
+        >
+          <Icon name="search" color={navIcon()} />
+          <If
+            when={platform.idiom === 'terminal'}
+            else={
+              <Text style={[{ color: navText(), flex: 1, fontSize: 14 }, { numberOfLines: 1 }]}>
+                {tr('Search conversations')}
+              </Text>
+            }
+          >
+            <Text style={[{ color: C.muted, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
+              {tr('Search titles and messages…')}
+            </Text>
+          </If>
+        </Button>
+        <If when={showBotNav()}>
           <Button
             accessibilityLabel={tr('Maka Bot')}
             disabled={props.switching()}
@@ -657,88 +787,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             </View>
           </If>
         </If>
-        <If when={platform.idiom === 'terminal'}>
+        <If when={showAutomationsNav()}>
           <Button
-            accessibilityLabel={tr('Choose workspace scope')}
-            ref={(node) => {
-              navigationTarget = node;
-              focusBrowser();
-            }}
-            onPress={inputAction(toggleScopes, null)}
-            style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-            hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.line }}
-          >
-            <Icon name="folder" color={C.secondary} />
-            <Text style={[{ color: C.secondary, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
-              {scopeLabel()}
-            </Text>
-            <Icon name="down" color={C.secondary} />
-          </Button>
-        </If>
-        <Button
-          accessibilityLabel={tr('Search conversations')}
-          tooltip={textTooltip(() => `${tr('Search conversations')} · ${keymap.label('mod+o')}`)}
-          onPress={inputAction(props.search, props.selected())}
-          style={{
-            ...controlStyle,
-            flexDirection: 'row',
-            alignItems: 'center',
-            paddingHorizontal: 8,
-            gap: 8,
-            height: 32,
-            backgroundColor: platform.idiom === 'terminal' ? C.background : 'transparent',
-            borderRadius: 8,
-          }}
-          hoverStyle={
-            platform.idiom === 'terminal' ? controlHoverStyle() : { backgroundColor: C.raised }
-          }
-          focusStyle={
-            platform.idiom === 'terminal' ? controlFocusStyle() : { backgroundColor: C.line }
-          }
-        >
-          <Icon name="search" color={navIcon()} />
-          <If
-            when={platform.idiom === 'terminal'}
-            else={
-              <Text style={[{ color: navText(), flex: 1, fontSize: 14 }, { numberOfLines: 1 }]}>
-                {tr('Search conversations')}
-              </Text>
-            }
-          >
-            <Text style={[{ color: C.muted, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
-              {tr('Search titles and messages…')}
-            </Text>
-          </If>
-        </Button>
-        <Button
-          accessibilityLabel={tr('Automations')}
-          disabled={props.connectionLost()}
-          onPress={() => automationsOpen.set(true)}
-          style={{
-            ...controlStyle,
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 8,
-            paddingHorizontal: 8,
-            height: navigationRowHeight(),
-            borderRadius: 8,
-          }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-          disabledStyle={controlDisabledStyle}
-        >
-          <Icon name="activity" color={navIcon()} />
-          <Text style={{ color: navText(), flex: 1, fontSize: 14 }}>{tr('Automations')}</Text>
-        </Button>
-        <If when={browser.filter() !== 'archived'}>
-          <Button
-            accessibilityLabel={tr('Waiting for you')}
-            selected={browser.filter() === 'needs_you'}
-            onPress={inputAction(
-              chooseFilter,
-              browser.filter() === 'needs_you' ? 'all' : 'needs_you',
-            )}
+            accessibilityLabel={tr('Automations')}
+            disabled={props.connectionLost()}
+            onPress={() => automationsOpen.set(true)}
             style={{
               ...controlStyle,
               flexDirection: 'row',
@@ -748,23 +801,201 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               height: navigationRowHeight(),
               borderRadius: 8,
             }}
-            selectedStyle={{ backgroundColor: C.raised }}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Icon name="activity" color={navIcon()} />
+            <Text style={{ color: navText(), flex: 1, fontSize: 14 }}>{tr('Automations')}</Text>
+          </Button>
+        </If>
+        <If when={showRoomsNav()}>
+          <Button
+            accessibilityLabel={tr('Rooms')}
+            disabled={props.switching()}
+            onPress={() => props.openRooms?.()}
+            style={{
+              ...controlStyle,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 8,
+              paddingHorizontal: 8,
+              height: navigationRowHeight(),
+              borderRadius: 8,
+            }}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Icon name="rooms" color={navIcon()} />
+            <Text style={{ color: navText(), flex: 1, fontSize: 14 }}>{tr('Rooms')}</Text>
+          </Button>
+        </If>
+        <If when={platform.idiom !== 'terminal' && optionalFeatures().length > 0}>
+          <Popover
+            open={moreFeaturesOpen()}
+            onOpenChange={({ open }) => moreFeaturesOpen.set(open)}
+            closeOnEscape
+            closeOnPressOutside
+            placement="bottom"
+            align="start"
+            offset={4}
+            margin={8}
+            popupStyle={{
+              ...floatingStyle(),
+              width: 232,
+              padding: 4,
+              gap: 2,
+            }}
+            trigger={
+              <Button
+                accessibilityLabel={tr('More features')}
+                selected={moreFeaturesOpen()}
+                style={{
+                  ...controlStyle,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 8,
+                  paddingHorizontal: 8,
+                  height: navigationRowHeight(),
+                  borderRadius: 8,
+                }}
+                selectedStyle={{ backgroundColor: C.raised }}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
+              >
+                <Icon name="mosaic" color={C.muted} />
+                <Text style={{ color: C.muted, flex: 1, fontSize: 14 }}>{tr('More features')}</Text>
+              </Button>
+            }
+          >
+            <Text
+              style={{
+                ...captionTextStyle,
+                color: C.muted,
+                fontWeight: '500',
+                paddingHorizontal: 8,
+                paddingVertical: 6,
+              }}
+            >
+              {tr('Sidebar features')}
+            </Text>
+            <Each of={optionalFeatures()} key={(item) => item.id}>
+              {(item) => (
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    height: 32,
+                    borderRadius: 8,
+                  }}
+                >
+                  <Button
+                    accessibilityLabel={item().label}
+                    disabled={item().disabled}
+                    onPress={() => item().open()}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      height: 32,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 8,
+                      paddingHorizontal: 8,
+                      borderRadius: 8,
+                    }}
+                    hoverStyle={{ backgroundColor: C.floatingRaised }}
+                    focusStyle={{ backgroundColor: C.floatingRaised }}
+                    disabledStyle={controlDisabledStyle}
+                  >
+                    <Icon name={item().icon} color={C.muted} />
+                    <Text style={[{ color: C.text, flex: 1, fontSize: 14 }, { numberOfLines: 1 }]}>
+                      {item().label}
+                    </Text>
+                  </Button>
+                  <Button
+                    accessibilityLabel={tr('Show {name} in sidebar', { name: item().label })}
+                    selected={sidebarPreferences.isPinned(item().id)}
+                    onPress={() => sidebarPreferences.toggleFeature(item().id)}
+                    style={{
+                      height: 32,
+                      paddingHorizontal: 8,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      borderRadius: 8,
+                    }}
+                    hoverStyle={{ backgroundColor: C.floatingRaised }}
+                    focusStyle={{ backgroundColor: C.floatingRaised }}
+                  >
+                    <ChoiceIndicator
+                      kind="switch"
+                      checked={sidebarPreferences.isPinned(item().id)}
+                    />
+                  </Button>
+                </View>
+              )}
+            </Each>
+            <View
+              style={{
+                borderTopWidth: 1,
+                borderTopColor: C.line,
+                marginTop: 4,
+                paddingHorizontal: 8,
+                paddingTop: 6,
+                paddingBottom: 4,
+              }}
+            >
+              <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
+                {tr('Hidden items stay available in search.')}
+              </Text>
+            </View>
+          </Popover>
+        </If>
+      </View>
+      <If when={platform.idiom !== 'terminal' && browser.filter() !== 'archived'}>
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            height: 32,
+            marginTop: 8,
+          }}
+        >
+          <Text
+            style={{
+              ...captionTextStyle,
+              fontWeight: '500',
+              color: C.secondary,
+              flex: 1,
+              paddingLeft: 8,
+            }}
+          >
+            {tr('Conversations')}
+          </Text>
+          <Button
+            accessibilityLabel={sortByTime() ? tr('Group by project') : tr('Sort by time')}
+            tooltip={textTooltip(() =>
+              sortByTime() ? tr('Group by project') : tr('Sort by time'),
+            )}
+            onPress={() => sidebarPreferences.toggleSortMode()}
+            style={{
+              height: 32,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+              paddingHorizontal: 8,
+              borderRadius: 8,
+            }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
           >
-            <Icon name="inbox" color={navIcon()} />
-            <Text style={{ ...selectedNavText(browser.filter() === 'needs_you'), flex: 1 }}>
-              {tr('Waiting for you')}
+            <Text style={{ ...captionTextStyle, color: C.muted }}>
+              {tr(sortByTime() ? 'By time' : 'By project')}
             </Text>
-            <If when={platform.idiom === 'terminal' || browser.needsYouCount() > 0}>
-              <Text style={{ color: platform.idiom === 'terminal' ? C.secondary : C.muted }}>
-                {browser.needsYouCount()}
-              </Text>
-            </If>
+            <Icon name="down" size={14} color={C.muted} />
           </Button>
-        </If>
-      </View>
-      {props.navigationMore?.()}
+        </View>
+      </If>
       <If when={platform.idiom === 'terminal'}>
         <View
           style={{
@@ -848,11 +1079,18 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           <If when={showOlder()}>
             <Button
               onPress={loadMore}
-              style={{ height: rowHeight(), justifyContent: 'center', paddingHorizontal: 8 }}
+              style={{
+                height: compact() ? 28 : 30,
+                justifyContent: 'center',
+                paddingHorizontal: 8,
+                borderRadius: 8,
+              }}
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}
             >
-              <Text style={{ fontSize: 14, color: C.muted }}>{tr('Load older conversations')}</Text>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>
+                {tr('Load older conversations')}
+              </Text>
             </Button>
           </If>
         )}
@@ -924,8 +1162,12 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               if (key().startsWith('show-more:')) {
                 const groupKey = key().slice('show-more:'.length);
                 const open = () => expanded().has(groupKey);
+                const hiddenCount = () => {
+                  const group = groupsById().get(groupKey);
+                  return group ? Math.max(0, topLevelCount(group) - projectSessionLimit(group)) : 0;
+                };
                 return (
-                  <View>
+                  <View style={{ flexDirection: 'row', height: compact() ? 28 : 30 }}>
                     <Button
                       accessibilityLabel={tr(
                         open()
@@ -934,17 +1176,23 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         { name: groupsById().get(groupKey)?.name ?? '' },
                       )}
                       onPress={inputAction(toggleProjectSessions, groupKey)}
-                      style={sidebarDisclosureStyle}
+                      style={{
+                        flex: 1,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 6,
+                        paddingHorizontal: 8,
+                        borderRadius: 8,
+                      }}
                       hoverStyle={controlHoverStyle()}
                       focusStyle={controlFocusStyle()}
                     >
-                      <Text style={{ fontSize: 14, color: C.muted }}>
-                        {tr(
-                          open()
-                            ? 'Show fewer project conversations'
-                            : 'Show more project conversations',
-                        )}
+                      <Text style={{ ...captionTextStyle, color: C.muted }}>
+                        {open()
+                          ? tr('Show fewer project conversations')
+                          : tr('Show {count} more conversations', { count: hiddenCount() })}
                       </Text>
+                      <Icon name={open() ? 'up' : 'down'} size={14} color={C.muted} />
                     </Button>
                   </View>
                 );
@@ -1040,14 +1288,29 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               const initialGroup = groupsById().get(groupKey);
               if (initialGroup) {
                 const group = () => groupsById().get(groupKey) ?? initialGroup;
+                if (initialGroup.key.startsWith('time:')) {
+                  return (
+                    <View
+                      style={{
+                        height: compact() ? 24 : 28,
+                        justifyContent: 'center',
+                        paddingHorizontal: 8,
+                        marginTop: key() === rowIds()[0] ? 0 : 8,
+                      }}
+                    >
+                      <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
+                        {group().name}
+                      </Text>
+                    </View>
+                  );
+                }
                 const open = () => !collapsed().has(group().key);
                 const workspace = () => groupWorkspace(group());
                 return (
                   <View
                     style={{
                       flexDirection: 'row',
-                      height: rowHeight(),
-                      paddingVertical: compact() ? 0 : 2,
+                      height: compact() ? 28 : 30,
                       // Each workspace after the first starts its own block.
                       marginTop: key() === rowIds()[0] ? 0 : 8,
                     }}
@@ -1062,7 +1325,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         minWidth: 0,
                         flexDirection: 'row',
                         alignItems: 'center',
-                        gap: platform.idiom === 'terminal' ? 4 : 8,
+                        gap: 6,
                         paddingHorizontal: 8,
                         borderRadius: 8,
                       }}
@@ -1071,13 +1334,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                     >
                       <Text
                         style={[
-                          { ...captionTextStyle, color: C.muted, flex: 1 },
+                          { ...captionTextStyle, color: C.muted, flexShrink: 1 },
                           { numberOfLines: 1 },
                         ]}
                       >
                         {group().name}
                       </Text>
-                      <Icon name={open() ? 'down' : 'right'} color={C.muted} />
+                      <Icon name={open() ? 'down' : 'right'} size={14} color={C.muted} />
                     </Button>
                     <If when={workspace() !== null && browser.filter() === 'all'}>
                       <Button
@@ -1162,10 +1425,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                     ? sessionStatusCaption.waiting
                     : '',
                   current.branch && !hasForkPrefix(current.title) ? tr('Fork') : '',
-                  current.pinned
-                    ? current.workspace.path.split('/').filter(Boolean).at(-1) ||
-                      current.workspace.path
-                    : '',
+                  current.pinned || sortByTime() ? workspaceLabel(current.workspace) : '',
                 ]
                   .filter(Boolean)
                   .join(' · ');

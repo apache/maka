@@ -23,6 +23,7 @@ import {
   browserOrder,
   foldableFamilies,
   groupConversations,
+  groupConversationsByTime,
   groupWorkspace,
   unfoldedSessions,
 } from '../app/conversationGroups.ts';
@@ -219,5 +220,37 @@ test('an open family does not use up its project limit', () => {
     't3',
     't4',
     't5',
+  ]);
+});
+
+test('chronological view keeps pinned first and buckets remaining conversations by recency', () => {
+  const now = new Date(2026, 10, 21, 14, 0, 0).getTime();
+  const at = (dayOffset, hour) => new Date(2026, 10, 21 + dayOffset, hour, 0, 0).getTime();
+  const groups = groupConversationsByTime(
+    [
+      { ...session('older', '/a'), updatedAt: at(-3, 9) },
+      { ...session('pin', '/b', { pinned: true }), updatedAt: at(-5, 9) },
+      { ...session('yest', '/a'), updatedAt: at(-1, 18) },
+      { ...session('today-old', '/b'), updatedAt: at(0, 8) },
+      { ...session('today-new', '/a'), updatedAt: at(0, 12) },
+    ],
+    now,
+  );
+  assert.deepEqual(
+    groups.map((group) => [group.key, group.sessions]),
+    [
+      ['pinned', ['pin']],
+      ['time:today', ['today-new', 'today-old']],
+      ['time:yesterday', ['yest']],
+      ['time:earlier', ['older']],
+    ],
+  );
+  assert.equal(groupWorkspace(groups[1]), null);
+  assert.deepEqual(browserOrder(groups, new Set(), null, new Set()), [
+    'pin',
+    'today-new',
+    'today-old',
+    'yest',
+    'older',
   ]);
 });

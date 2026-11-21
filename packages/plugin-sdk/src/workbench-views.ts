@@ -163,9 +163,9 @@ export interface ConversationPreviewHandle {
   focused(): boolean;
 }
 
-export interface ConversationNavigationInput<Element = unknown> {
+export interface ConversationNavigationInput {
   readonly shell: ConversationShell;
-  navigationMore(): Element;
+  openRooms?: (() => void) | undefined;
   pinSidebar?: (() => void) | undefined;
   suppressSidebarHover?: (() => void) | undefined;
 }

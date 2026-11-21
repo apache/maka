@@ -25,6 +25,7 @@ import { errorText, renderText } from './text';
 import { tr } from './locale';
 import { initializeAppearance } from './appearance';
 import { initializeComposerToolbar } from './composerToolbar';
+import { initializeSidebarPreferences } from './sidebarPreferences';
 import { C } from './ui';
 import { LoadingState } from './Loading';
 import { nativeDesktop } from './nativeDesktop';
@@ -33,6 +34,7 @@ function Bootstrap() {
   nativeDesktop();
   initializeAppearance();
   initializeComposerToolbar();
+  initializeSidebarPreferences();
   const plugins = createPlugins();
   return (
     <View style={{ flex: 1, minHeight: 0 }}>

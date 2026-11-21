@@ -233,7 +233,7 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
     desktop.press("Focus message composer").await;
     desktop.type_text("PRIVATE_AGENT_DRAFT").await;
     assert!(desktop.controls("Rooms").is_empty());
-    desktop.press("Show more").await;
+    desktop.press("More features").await;
     desktop.press("Rooms").await;
     let create = desktop
         .until("New room missing", || {
@@ -303,11 +303,12 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
     desktop.press("Conversations").await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("PRIVATE_AGENT_DRAFT").await;
+    desktop.press("More features").await;
     desktop.press("Rooms").await;
     desktop = desktop
         .restart(&fixture, nsh_core::platform::Appearance::Dark)
         .await;
-    desktop.press("Show more").await;
+    desktop.press("More features").await;
     desktop.press("Rooms").await;
     desktop.press("Release review").await;
     desktop.control("Cancel reply").await;
@@ -470,10 +471,10 @@ pub(super) async fn desktop_context_menus_follow_the_pointer_and_manage_rooms() 
     )
     .await;
     let room = &created["session"]["id"];
-    desktop.press("Show more").await;
+    desktop.press("More features").await;
     desktop.press("Rooms").await;
     desktop.control("Conversations").await;
-    assert!(desktop.controls("Show more").is_empty());
+    assert!(desktop.controls("More features").is_empty());
     desktop.press("Review room").await;
     desktop.right_click("Review room").await;
     desktop.press("Rename room").await;

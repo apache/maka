@@ -61,7 +61,7 @@ The desktop shell forms an inverted L: the sidebar and top strip share the `chro
 
 Window chrome occupies a single `32 pt` top row: window controls and the sidebar toggle sit above the sidebar (moving into the panel header when the sidebar collapses), while each pane header aligns on the same vertical center—showing title, workspace badge, and a trailing segmented view switcher without repeating the title elsewhere.
 
-Sidebar navigation rows use `secondary` text and `muted` icons so conversation titles (`text`) stand out. Selected rows use `raised` fill and `500` weight. A fixed `16 pt` trailing slot holds the unread dot, active spinner, or hover `More` button so titles never shift horizontally.
+Sidebar navigation keeps core actions (`New conversation`, `Search conversations`) alongside user-pinned optional features (`Maka Bot`, `Automations`, `Rooms`) managed from a `More features` popover, and omits redundant filter entries such as `Waiting for you`. Navigation rows use `secondary` text and `muted` icons so conversation titles (`text`) stand out; selected rows use `raised` fill and `500` weight. A `Conversations` section header switches between project grouping and chronological order using the same `13 pt` caption scale as group headings and full-width `Show N more` rows. A fixed `16 pt` trailing slot holds the unread dot, active spinner, or hover `More` button so titles never shift horizontally.
 
 ## Conversation stream
 

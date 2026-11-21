@@ -42,6 +42,7 @@ import type { WorkspaceViewHandle } from '../../../../packages/plugin-sdk/src/wo
 import { RoomView } from './RoomView';
 import { createHost, HostProvider } from '../../../../products/maka/workbench/app/host';
 import { initializeComposerToolbar } from '../../../../products/maka/workbench/app/composerToolbar';
+import { initializeSidebarPreferences } from '../../../../products/maka/workbench/app/sidebarPreferences';
 import {
   createRoomPeople,
   RoomTimeline,
@@ -55,6 +56,7 @@ import { createText, errorText } from '../../../../products/maka/workbench/app/t
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const host = createHost(context.application);
   initializeComposerToolbar();
+  initializeSidebarPreferences();
   const sides = signal<ReturnType<typeof createConversationUi>[]>([]);
   const rooms = signal<{ id: string; flush(): Promise<void> }[]>([]);
   const window: ConversationWindow = {
@@ -74,7 +76,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const views = createConversationUi(context, host, window);
   const owner = (sessionId: string | null) =>
     [views, ...sides()].find((pane) => pane.sessionId() === sessionId);
-  const Navigation = (props: { input: ConversationNavigationInput<JSX.Element> }) =>
+  const Navigation = (props: { input: ConversationNavigationInput }) =>
     views.navigation(props.input);
   const AgentSide = (props: { input: ConversationSessionInput }) => {
     const side = createConversationUi(context, host, window, { browsing: views.browsing });
@@ -233,9 +235,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
       navigation: {
         kind: 'view',
         contract: conversationNavigationView.id,
-        render({
-          input,
-        }: UiEmbeddedViewProps<ConversationNavigationInput<JSX.Element>, JSX.Element>) {
+        render({ input }: UiEmbeddedViewProps<ConversationNavigationInput, JSX.Element>) {
           return (
             <HostProvider value={host}>
               <Navigation input={input} />
