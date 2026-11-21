@@ -2121,6 +2121,26 @@ export const FilesRecentTurnHandoff: Story = {
   },
 };
 
+// Real path: session → Files → focus an idle session while every read of the
+// latest reply fails, so the loader's retry window runs out (#6387). The panel
+// must then report the failed read instead of claiming the turn has no reply.
+export const FilesRecentTurnReadExhausted: Story = {
+  decorators: [bridge({ artifactRecords: [yamlArtifact],
+    recentPendingReads: Number.POSITIVE_INFINITY })],
+  render: () => <FocusedHostFlow tab="files" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-row')).toBeTruthy());
+    await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
+    await userEvent.click(await canvas.findByRole('button', { name: '聚焦文件' }));
+    await userEvent.click(await canvas.findByRole('button', { name: /本轮已结束|需要查看/ }));
+    // Five 700ms retries precede the exhausted read, so the honest copy only
+    // lands after that window closes.
+    await waitFor(() => expect(canvas.getByText('暂时无法读取最近回复')).toBeVisible(), { timeout: 10_000 });
+    expect(canvas.queryByText('暂无最近回复')).toBeNull();
+  },
+};
+
 // Real path: focused Browser → stop before text_complete → keep the partial reply readable.
 export const BrowserRecentInterrupted: Story = {
   decorators: [bridge({ browserState: LOADED_BROWSER_STATE, recentRunning: true,

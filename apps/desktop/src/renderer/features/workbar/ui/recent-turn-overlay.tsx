@@ -178,6 +178,7 @@ export function RecentTurnOverlay(props: {
         if (disposed) return;
         if (!result.settled) {
           if (++attempts < 6) retryTimer = setTimeout(() => void load(), 700);
+          else if (!disposed) setReadError(true);
           return;
         }
         const answer = result.messages.filter((message) => message.type === 'assistant' && message.turnId === turnId).at(-1);
