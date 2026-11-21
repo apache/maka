@@ -20,15 +20,16 @@
 //! Human-symmetric Agent tool contracts for discovering, reading, creating and operating Sessions.
 use super::{
     BackendPreference, ContinuationRejection, Execution, ModelSelection, QueueAction,
-    QueueMutationResult, Rejection, SendDelivery, Session, SessionActivity, SessionKind,
-    WorkspacePermissions,
+    QueueMutationResult, Rejection, RoomManageResult, SendDelivery, Session, SessionActivity,
+    SessionKind, WorkspacePermissions,
 };
 use maka_agent_facts::{
+    attachment::AttachmentKind,
     durable::RunId,
     execution::ThinkingLevel,
     history::HistoryRowAddress,
     interaction::InteractionRecord,
-    room::{RoomAuthor, RoomDelivery},
+    room::{RoomAuthor, RoomDelivery, RoomDeliveryState, RoomMember, RoomReaction},
 };
 use maka_agent_ports::session::history::HistoryField;
 use schemars::JsonSchema;
@@ -166,6 +167,7 @@ pub enum RoomAnchorMode {
     At,
     Before,
     After,
+    Around,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
@@ -199,6 +201,9 @@ pub struct SessionReadInput {
     pub message_id: Option<String>,
     #[serde(default)]
     pub anchor: Option<RoomAnchorMode>,
+    /// Full-text search within a Room; returns matching posts with snippets.
+    #[serde(default)]
+    pub search_query: Option<String>,
     /// Exact historical row lookup emitted by Recall or Code Mode cell references.
     #[serde(default)]
     pub row: Option<SessionRowLookup>,
@@ -251,6 +256,20 @@ pub struct AgentTranscriptEntry {
     pub text: String,
 }
 
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRoomAttachmentEntry")]
+pub struct RoomAttachmentEntry {
+    pub name: String,
+    pub mime_type: String,
+    #[schemars(range(max = MAX_SAFE_INT))]
+    pub bytes: u64,
+    pub kind: AttachmentKind,
+    /// Pass directly to Read({ path }) to inspect this Room attachment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_path: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentRoomPostEntry")]
@@ -261,13 +280,40 @@ pub struct RoomPostEntry {
     #[schemars(range(max = MAX_SAFE_INT))]
     pub at: u64,
     pub author: RoomAuthor,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_name: Option<String>,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<RoomAttachmentEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mentions: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deliveries: Vec<RoomDelivery>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delivery_states: Vec<RoomDeliveryState>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reactions: Vec<RoomReaction>,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(max = MAX_SAFE_INT))]
+    pub edited_at: Option<u64>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRoomOverview")]
+pub struct RoomOverview {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub topic: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<RoomMember>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_message_ids: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -311,6 +357,8 @@ pub struct SessionReadOutput {
     pub queue_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_output_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room: Option<RoomOverview>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<SessionTranscript>,
 }
@@ -412,9 +460,10 @@ pub struct SessionSendInput {
     #[schemars(length(min = 1))]
     pub session_id: String,
     pub message: String,
-    /// Defaults to steer; use queue only to wait until the current turn finishes.
+    /// Defaults to steer (injects cleanly at the next step boundary without aborting in-flight tools).
+    /// Pass queue to wait until the current turn finishes before delivering.
     #[serde(default)]
-    pub delivery: SendDelivery,
+    pub delivery: Option<SendDelivery>,
     /// For Agent callers sending to a worker Session, defaults to notify_caller. Pass none to silence.
     #[serde(default)]
     pub on_complete: Option<SessionNotifyMode>,
@@ -503,6 +552,31 @@ pub enum SessionManageAction {
         #[schemars(range(min = 1, max = MAX_SAFE_INT))]
         source_high_water: Option<u64>,
     },
+    /// Update a Room's topic / shared goal statement.
+    RoomTopic { topic: String },
+    /// Add or remove Agent conversations in a Room's member roster.
+    RoomMembers {
+        #[serde(default)]
+        add: Vec<String>,
+        #[serde(default)]
+        remove: Vec<String>,
+        #[serde(default)]
+        role: Option<String>,
+    },
+    /// Add, remove, or toggle an emoji reaction on a Room message (e.g. ✅ or 👀).
+    RoomReact {
+        message_id: String,
+        emoji: String,
+        /// Omit to toggle; true to add, false to remove.
+        #[serde(default)]
+        add: Option<bool>,
+    },
+    /// Pin or unpin an important Room message.
+    RoomPin { message_id: String, pinned: bool },
+    /// Edit a Room message you posted.
+    RoomEdit { message_id: String, text: String },
+    /// Retract (soft-delete) a Room message you posted.
+    RoomDelete { message_id: String },
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -528,6 +602,7 @@ pub enum SessionManageOutput {
     QueueEdited { result: QueueMutationResult },
     ContinuationStarted { execution: Box<Execution> },
     ContinuationRejected { reason: ContinuationRejection },
+    RoomUpdated { result: RoomManageResult },
     RevisionConflict { expected: u64, actual: u64 },
     Rejected { reason: Rejection },
 }

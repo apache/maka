@@ -520,6 +520,40 @@ fn followup(
     Ok(())
 }
 
+pub(super) fn refresh_room_enqueue(
+    c: &Connection,
+    session: &str,
+    command: &mut QueueCommand,
+) -> Result<(), StoreError> {
+    let already_recorded: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_queue_events WHERE session=? AND id=?)",
+        params![session, command.id.to_string()],
+        |r| r.get(0),
+    )?;
+    if already_recorded {
+        return Ok(());
+    }
+    command.expected_revision = revision(c, session)?;
+    if let QueueEdit::Enqueue {
+        placement: placement @ Placement::Steering { .. },
+        ..
+    } = &mut command.edit
+        && let Placement::Steering { run, .. } = *placement
+    {
+        let (_, actual_head, stopped, terminal) = run_head(c, run)?;
+        if !stopped && !terminal {
+            *placement = Placement::Steering {
+                run,
+                expected_head: actual_head,
+            };
+        } else if terminal {
+            // The target Run completed during the preparation window; deliver as a fresh turn.
+            *placement = Placement::Followup;
+        }
+    }
+    Ok(())
+}
+
 fn previous(
     c: &Connection,
     session: &str,

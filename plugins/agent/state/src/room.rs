@@ -19,9 +19,12 @@
 
 use crate::store::invalid;
 use maka_agent_facts::{
-    durable::{RunOwner, UnixMillis},
+    durable::{RunOwner, Terminal, UnixMillis},
     input::MessageInput,
-    room::{RoomAuthor, RoomDelivery, RoomMessage, RoomPage, RoomPosition},
+    room::{
+        RoomActor, RoomAuthor, RoomDelivery, RoomDeliveryState, RoomMember, RoomMessage, RoomPage,
+        RoomParticipantActivity, RoomPosition, RoomReaction, RoomSearchMatch, RoomState,
+    },
 };
 use maka_event_log::{
     StoreError,
@@ -30,6 +33,7 @@ use maka_event_log::{
     writeback::{Notification, Prepared, Statement},
 };
 use rusqlite::{Connection, OptionalExtension, params};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[derive(Clone)]
 pub struct RoomStore {
@@ -49,6 +53,16 @@ pub struct Post {
     pub deliveries: Vec<RoomDelivery>,
 }
 
+/// Snapshot of recent Room context used to orient a mentioned Agent without extra round-trips.
+#[derive(Clone, Debug)]
+pub struct RoomContextSnapshot {
+    pub topic: String,
+    pub members: Vec<RoomMember>,
+    pub pinned: Vec<RoomMessage>,
+    pub recent: Vec<RoomMessage>,
+    pub has_earlier: bool,
+}
+
 impl RoomStore {
     pub fn new(data: DataWriter, owner: RunOwner) -> Self {
         Self { data, owner }
@@ -65,6 +79,114 @@ impl RoomStore {
         PostStatement {
             owner: self.owner.clone(),
             post,
+        }
+    }
+
+    pub fn set_topic_statement(&self, session: String, topic: String) -> SetTopicStatement {
+        SetTopicStatement {
+            owner: self.owner.clone(),
+            session,
+            topic,
+        }
+    }
+
+    pub fn add_members_statement(
+        &self,
+        session: String,
+        member_sessions: Vec<String>,
+        at: UnixMillis,
+        role: Option<String>,
+    ) -> AddMembersStatement {
+        AddMembersStatement {
+            owner: self.owner.clone(),
+            session,
+            member_sessions,
+            at,
+            role: role.unwrap_or_else(|| "member".to_owned()),
+        }
+    }
+
+    pub fn remove_member_statement(
+        &self,
+        session: String,
+        member_session: String,
+    ) -> RemoveMemberStatement {
+        RemoveMemberStatement {
+            owner: self.owner.clone(),
+            session,
+            member_session,
+        }
+    }
+
+    pub fn react_statement(
+        &self,
+        session: String,
+        message_id: String,
+        actor: RoomActor,
+        emoji: String,
+        add: Option<bool>,
+        at: UnixMillis,
+    ) -> ReactStatement {
+        ReactStatement {
+            owner: self.owner.clone(),
+            session,
+            message_id,
+            actor,
+            emoji,
+            add,
+            at,
+        }
+    }
+
+    pub fn pin_statement(
+        &self,
+        session: String,
+        message_id: String,
+        actor: RoomActor,
+        pinned: bool,
+        at: UnixMillis,
+    ) -> PinStatement {
+        PinStatement {
+            owner: self.owner.clone(),
+            session,
+            message_id,
+            actor,
+            pinned,
+            at,
+        }
+    }
+
+    pub fn edit_message_statement(
+        &self,
+        session: String,
+        message_id: String,
+        actor: RoomActor,
+        text: String,
+        at: UnixMillis,
+    ) -> EditMessageStatement {
+        EditMessageStatement {
+            owner: self.owner.clone(),
+            session,
+            message_id,
+            actor,
+            text,
+            at,
+        }
+    }
+
+    pub fn delete_message_statement(
+        &self,
+        session: String,
+        message_id: String,
+        actor: RoomActor,
+        at: UnixMillis,
+    ) -> DeleteMessageStatement {
+        DeleteMessageStatement {
+            owner: self.owner.clone(),
+            session,
+            message_id,
+            actor,
+            at,
         }
     }
 
@@ -91,6 +213,55 @@ impl RoomStore {
     pub async fn capture(&self, session: &str) -> Result<u64, StoreError> {
         self.data
             .query(Capture(self.owner.clone(), session.to_owned()))
+            .await
+    }
+
+    /// Monotonic watermark that advances on Room messages, metadata/member/reaction/pin changes,
+    /// and member run activity changes so watchers stay live without polling.
+    pub async fn watch_watermark(&self, session: &str) -> Result<(u64, u64), StoreError> {
+        self.data
+            .query(WatchWatermark(self.owner.clone(), session.to_owned()))
+            .await
+    }
+
+    pub async fn state(&self, session: &str) -> Result<RoomState, StoreError> {
+        self.data
+            .query(StateQuery {
+                owner: self.owner.clone(),
+                session: session.to_owned(),
+            })
+            .await
+    }
+
+    pub async fn context_snapshot(
+        &self,
+        session: &str,
+        recent_limit: u32,
+        extra_session_ids: Vec<String>,
+    ) -> Result<RoomContextSnapshot, StoreError> {
+        self.data
+            .query(ContextSnapshotQuery {
+                owner: self.owner.clone(),
+                session: session.to_owned(),
+                recent_limit,
+                extra_session_ids,
+            })
+            .await
+    }
+
+    pub async fn search(
+        &self,
+        session: &str,
+        query: String,
+        limit: u32,
+    ) -> Result<Vec<RoomSearchMatch>, StoreError> {
+        self.data
+            .query(SearchQuery {
+                owner: self.owner.clone(),
+                session: session.to_owned(),
+                query,
+                limit,
+            })
             .await
     }
 
@@ -172,8 +343,13 @@ impl Statement for PostStatement {
             reply_to,
             mentions,
             deliveries,
+            edited_at: None,
+            deleted_at: None,
+            reactions: Vec::new(),
+            pinned: false,
+            delivery_states: Vec::new(),
         };
-        if let Some(existing) = get(c, &owner, &session, &message.id)? {
+        if let Some(existing) = get_raw(c, &owner, &session, &message.id)? {
             message.sequence = existing.sequence;
             message.at = existing.at;
             if message != existing {
@@ -185,14 +361,7 @@ impl Statement for PostStatement {
                 notification: Notification::NONE,
             });
         }
-        let available: bool = c.query_row(
-            "SELECT EXISTS(SELECT 1 FROM agent_rooms r JOIN session_control s ON s.id=r.session WHERE r.owner=? AND r.session=? AND s.archived=0 AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=s.id AND d.remove_session=1))",
-            params![owner, session],
-            |row| row.get(0),
-        )?;
-        if !available {
-            return Err(StoreError::SessionNotFound);
-        }
+        ensure_room_writable(c, &owner, &session)?;
         if let Some(reply) = &message.reply_to
             && message_sequence(c, &owner, &session, reply)?.is_none()
         {
@@ -215,6 +384,28 @@ impl Statement for PostStatement {
             "INSERT INTO agent_catalog_sessions(owner,session,last_sequence) VALUES(?,?,?) ON CONFLICT(owner,session) DO UPDATE SET last_sequence=excluded.last_sequence",
             params![owner, session, integer(message.sequence)?],
         )?;
+        // Auto-enroll active participants (agent author + accepted mention targets) into the Roster.
+        let mut auto_members: Vec<&str> = Vec::new();
+        if let RoomAuthor::Session { execution } = &message.author {
+            auto_members.push(&execution.session_id);
+        }
+        for delivery in &message.deliveries {
+            if let RoomDelivery::Accepted { session_id, .. } = delivery {
+                auto_members.push(session_id);
+            }
+        }
+        for member in auto_members {
+            if member == session {
+                continue;
+            }
+            c.execute(
+                "INSERT OR IGNORE INTO agent_room_members(owner,session,member_session,added_at,role)
+                 SELECT ?1,?2,?3,?4,'member'
+                 WHERE EXISTS(SELECT 1 FROM session_control s WHERE s.id=?3 AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=s.id AND d.remove_session=1))
+                   AND NOT EXISTS(SELECT 1 FROM agent_rooms r WHERE r.owner=?1 AND r.session=?3)",
+                params![owner, session, member, at.0],
+            )?;
+        }
         Ok(Prepared {
             value: message,
             changed: true,
@@ -229,6 +420,435 @@ impl Statement for PostStatement {
     fn isolated_rejection(error: &StoreError) -> bool {
         isolated_rejection(error)
     }
+}
+
+pub struct SetTopicStatement {
+    owner: RunOwner,
+    session: String,
+    topic: String,
+}
+
+impl Statement for SetTopicStatement {
+    type Value = String;
+    type Output = String;
+
+    fn execute(self, c: &Connection) -> Result<Prepared<String>, StoreError> {
+        let owner = serde_json::to_string(&self.owner)?;
+        ensure_room_writable(c, &owner, &self.session)?;
+        let topic = self.topic.trim().to_owned();
+        if topic.chars().count() > 2000 {
+            return Err(invalid("Room topic exceeds maximum length"));
+        }
+        let changed = c.execute(
+            "UPDATE agent_rooms SET topic=? WHERE owner=? AND session=? AND topic<>?",
+            params![topic, owner, self.session, topic],
+        )? > 0;
+        Ok(Prepared {
+            value: topic,
+            changed,
+            notification: if changed {
+                Notification::METADATA.with_sessions([self.session])
+            } else {
+                Notification::NONE
+            },
+        })
+    }
+
+    fn committed(value: String) -> String {
+        value
+    }
+
+    fn isolated_rejection(error: &StoreError) -> bool {
+        isolated_rejection(error)
+    }
+}
+
+pub struct AddMembersStatement {
+    owner: RunOwner,
+    session: String,
+    member_sessions: Vec<String>,
+    at: UnixMillis,
+    role: String,
+}
+
+impl Statement for AddMembersStatement {
+    type Value = Vec<String>;
+    type Output = Vec<String>;
+
+    fn execute(self, c: &Connection) -> Result<Prepared<Vec<String>>, StoreError> {
+        let owner = serde_json::to_string(&self.owner)?;
+        ensure_room_writable(c, &owner, &self.session)?;
+        let mut added = Vec::new();
+        let mut changed = false;
+        let role = if self.role.trim().is_empty() {
+            "member"
+        } else {
+            self.role.trim()
+        };
+        for member in self.member_sessions {
+            if member == self.session {
+                return Err(invalid("Cannot add a Room to itself as a member"));
+            }
+            if exists(c, &owner, &member)? {
+                return Err(invalid(
+                    "Room members must be Agent conversations, not Rooms",
+                ));
+            }
+            let valid_agent: bool = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM session_control s WHERE s.id=? AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=s.id AND d.remove_session=1))",
+                params![member],
+                |row| row.get(0),
+            )?;
+            if !valid_agent {
+                return Err(StoreError::SessionNotFound);
+            }
+            let n = c.execute(
+                "INSERT OR IGNORE INTO agent_room_members(owner,session,member_session,added_at,role) VALUES(?,?,?,?,?)",
+                params![owner, self.session, member, self.at.0, role],
+            )?;
+            if n > 0 {
+                changed = true;
+                added.push(member);
+            }
+        }
+        Ok(Prepared {
+            value: added,
+            changed,
+            notification: if changed {
+                Notification::METADATA.with_sessions([self.session])
+            } else {
+                Notification::NONE
+            },
+        })
+    }
+
+    fn committed(value: Vec<String>) -> Vec<String> {
+        value
+    }
+
+    fn isolated_rejection(error: &StoreError) -> bool {
+        isolated_rejection(error)
+    }
+}
+
+pub struct RemoveMemberStatement {
+    owner: RunOwner,
+    session: String,
+    member_session: String,
+}
+
+impl Statement for RemoveMemberStatement {
+    type Value = bool;
+    type Output = bool;
+
+    fn execute(self, c: &Connection) -> Result<Prepared<bool>, StoreError> {
+        let owner = serde_json::to_string(&self.owner)?;
+        ensure_room_writable(c, &owner, &self.session)?;
+        let changed = c.execute(
+            "DELETE FROM agent_room_members WHERE owner=? AND session=? AND member_session=?",
+            params![owner, self.session, self.member_session],
+        )? > 0;
+        Ok(Prepared {
+            value: changed,
+            changed,
+            notification: if changed {
+                Notification::METADATA.with_sessions([self.session])
+            } else {
+                Notification::NONE
+            },
+        })
+    }
+
+    fn committed(value: bool) -> bool {
+        value
+    }
+
+    fn isolated_rejection(error: &StoreError) -> bool {
+        isolated_rejection(error)
+    }
+}
+
+pub struct ReactStatement {
+    owner: RunOwner,
+    session: String,
+    message_id: String,
+    actor: RoomActor,
+    emoji: String,
+    add: Option<bool>,
+    at: UnixMillis,
+}
+
+impl Statement for ReactStatement {
+    type Value = bool;
+    type Output = bool;
+
+    fn execute(self, c: &Connection) -> Result<Prepared<bool>, StoreError> {
+        let owner = serde_json::to_string(&self.owner)?;
+        ensure_room_writable(c, &owner, &self.session)?;
+        let emoji = self.emoji.trim();
+        if emoji.is_empty() || emoji.chars().count() > 16 || emoji.chars().any(char::is_control) {
+            return Err(invalid("Room reaction emoji is invalid"));
+        }
+        let Some(existing) = get_raw(c, &owner, &self.session, &self.message_id)? else {
+            return Err(invalid("Room message was not found"));
+        };
+        if existing.deleted_at.is_some() {
+            return Err(invalid("Cannot react to a deleted Room message"));
+        }
+        let actor_key = self.actor.storage_key();
+        let present: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_room_reactions WHERE owner=? AND session=? AND message=? AND actor=? AND emoji=?)",
+            params![owner, self.session, self.message_id, actor_key, emoji],
+            |row| row.get(0),
+        )?;
+        let should_add = self.add.unwrap_or(!present);
+        let (changed, now_present) = if should_add {
+            let n = c.execute(
+                "INSERT OR IGNORE INTO agent_room_reactions(owner,session,message,actor,emoji,at) VALUES(?,?,?,?,?,?)",
+                params![owner, self.session, self.message_id, actor_key, emoji, self.at.0],
+            )?;
+            (n > 0, true)
+        } else {
+            let n = c.execute(
+                "DELETE FROM agent_room_reactions WHERE owner=? AND session=? AND message=? AND actor=? AND emoji=?",
+                params![owner, self.session, self.message_id, actor_key, emoji],
+            )?;
+            (n > 0, false)
+        };
+        Ok(Prepared {
+            value: now_present,
+            changed,
+            notification: if changed {
+                Notification::METADATA.with_sessions([self.session])
+            } else {
+                Notification::NONE
+            },
+        })
+    }
+
+    fn committed(value: bool) -> bool {
+        value
+    }
+
+    fn isolated_rejection(error: &StoreError) -> bool {
+        isolated_rejection(error)
+    }
+}
+
+pub struct PinStatement {
+    owner: RunOwner,
+    session: String,
+    message_id: String,
+    actor: RoomActor,
+    pinned: bool,
+    at: UnixMillis,
+}
+
+impl Statement for PinStatement {
+    type Value = bool;
+    type Output = bool;
+
+    fn execute(self, c: &Connection) -> Result<Prepared<bool>, StoreError> {
+        let owner = serde_json::to_string(&self.owner)?;
+        ensure_room_writable(c, &owner, &self.session)?;
+        let Some(existing) = get_raw(c, &owner, &self.session, &self.message_id)? else {
+            return Err(invalid("Room message was not found"));
+        };
+        if self.pinned && existing.deleted_at.is_some() {
+            return Err(invalid("Cannot pin a deleted Room message"));
+        }
+        let changed = if self.pinned {
+            c.execute(
+                "INSERT OR IGNORE INTO agent_room_pins(owner,session,message,pinned_by,pinned_at) VALUES(?,?,?,?,?)",
+                params![
+                    owner,
+                    self.session,
+                    self.message_id,
+                    self.actor.storage_key(),
+                    self.at.0
+                ],
+            )? > 0
+        } else {
+            c.execute(
+                "DELETE FROM agent_room_pins WHERE owner=? AND session=? AND message=?",
+                params![owner, self.session, self.message_id],
+            )? > 0
+        };
+        Ok(Prepared {
+            value: self.pinned,
+            changed,
+            notification: if changed {
+                Notification::METADATA.with_sessions([self.session])
+            } else {
+                Notification::NONE
+            },
+        })
+    }
+
+    fn committed(value: bool) -> bool {
+        value
+    }
+
+    fn isolated_rejection(error: &StoreError) -> bool {
+        isolated_rejection(error)
+    }
+}
+
+pub struct EditMessageStatement {
+    owner: RunOwner,
+    session: String,
+    message_id: String,
+    actor: RoomActor,
+    text: String,
+    at: UnixMillis,
+}
+
+impl Statement for EditMessageStatement {
+    type Value = RoomMessage;
+    type Output = RoomMessage;
+
+    fn execute(self, c: &Connection) -> Result<Prepared<RoomMessage>, StoreError> {
+        let owner = serde_json::to_string(&self.owner)?;
+        ensure_room_writable(c, &owner, &self.session)?;
+        let Some(mut existing) = get_raw(c, &owner, &self.session, &self.message_id)? else {
+            return Err(invalid("Room message was not found"));
+        };
+        if existing.deleted_at.is_some() {
+            return Err(invalid("Cannot edit a deleted Room message"));
+        }
+        if !can_mutate_message(&existing.author, &self.actor) {
+            return Err(invalid(
+                "Only the author or a human user may edit this Room message",
+            ));
+        }
+        if self.text.trim().is_empty()
+            && existing
+                .content
+                .attachments
+                .as_ref()
+                .is_none_or(Vec::is_empty)
+        {
+            return Err(invalid("Edited Room message cannot be empty"));
+        }
+        let edited_at = unsigned(self.at.0)?;
+        existing.content.text = self.text;
+        existing.content.display_text = None;
+        existing.edited_at = Some(edited_at);
+        c.execute(
+            "UPDATE agent_room_messages SET body_json=?, edited_at=? WHERE owner=? AND session=? AND message=?",
+            params![
+                serde_json::to_string(&existing)?,
+                self.at.0,
+                owner,
+                self.session,
+                self.message_id,
+            ],
+        )?;
+        Ok(Prepared {
+            value: existing,
+            changed: true,
+            notification: Notification::METADATA.with_sessions([self.session]),
+        })
+    }
+
+    fn committed(value: RoomMessage) -> RoomMessage {
+        value
+    }
+
+    fn isolated_rejection(error: &StoreError) -> bool {
+        isolated_rejection(error)
+    }
+}
+
+pub struct DeleteMessageStatement {
+    owner: RunOwner,
+    session: String,
+    message_id: String,
+    actor: RoomActor,
+    at: UnixMillis,
+}
+
+impl Statement for DeleteMessageStatement {
+    type Value = RoomMessage;
+    type Output = RoomMessage;
+
+    fn execute(self, c: &Connection) -> Result<Prepared<RoomMessage>, StoreError> {
+        let owner = serde_json::to_string(&self.owner)?;
+        ensure_room_writable(c, &owner, &self.session)?;
+        let Some(mut existing) = get_raw(c, &owner, &self.session, &self.message_id)? else {
+            return Err(invalid("Room message was not found"));
+        };
+        if !can_mutate_message(&existing.author, &self.actor) {
+            return Err(invalid(
+                "Only the author or a human user may delete this Room message",
+            ));
+        }
+        if existing.deleted_at.is_some() {
+            return Ok(Prepared {
+                value: existing,
+                changed: false,
+                notification: Notification::NONE,
+            });
+        }
+        let deleted_at = unsigned(self.at.0)?;
+        existing.deleted_at = Some(deleted_at);
+        existing.content.text.clear();
+        existing.content.display_text = None;
+        existing.content.attachments = None;
+        c.execute(
+            "UPDATE agent_room_messages SET body_json=?, deleted_at=? WHERE owner=? AND session=? AND message=?",
+            params![
+                serde_json::to_string(&existing)?,
+                self.at.0,
+                owner,
+                self.session,
+                self.message_id,
+            ],
+        )?;
+        c.execute(
+            "DELETE FROM agent_room_pins WHERE owner=? AND session=? AND message=?",
+            params![owner, self.session, self.message_id],
+        )?;
+        c.execute(
+            "DELETE FROM agent_room_reactions WHERE owner=? AND session=? AND message=?",
+            params![owner, self.session, self.message_id],
+        )?;
+        Ok(Prepared {
+            value: existing,
+            changed: true,
+            notification: Notification::METADATA.with_sessions([self.session]),
+        })
+    }
+
+    fn committed(value: RoomMessage) -> RoomMessage {
+        value
+    }
+
+    fn isolated_rejection(error: &StoreError) -> bool {
+        isolated_rejection(error)
+    }
+}
+
+fn can_mutate_message(author: &RoomAuthor, actor: &RoomActor) -> bool {
+    match (author, actor) {
+        (_, RoomActor::Human) => true,
+        (RoomAuthor::Session { execution }, RoomActor::Session { session_id }) => {
+            execution.session_id == *session_id
+        }
+        (RoomAuthor::Human, RoomActor::Session { .. }) => false,
+    }
+}
+
+fn ensure_room_writable(c: &Connection, owner: &str, session: &str) -> Result<(), StoreError> {
+    let available: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_rooms r JOIN session_control s ON s.id=r.session WHERE r.owner=? AND r.session=? AND s.archived=0 AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=s.id AND d.remove_session=1))",
+        params![owner, session],
+        |row| row.get(0),
+    )?;
+    if !available {
+        return Err(StoreError::SessionNotFound);
+    }
+    Ok(())
 }
 
 fn isolated_rejection(error: &StoreError) -> bool {
@@ -268,16 +888,180 @@ impl Query for Capture {
     }
 }
 
+struct WatchWatermark(RunOwner, String);
+
+impl Query for WatchWatermark {
+    type Output = (u64, u64);
+
+    fn execute(self, c: &Connection) -> Result<(u64, u64), StoreError> {
+        let owner = serde_json::to_string(&self.0)?;
+        if !exists(c, &owner, &self.1)? {
+            return Err(StoreError::SessionNotFound);
+        }
+        let through = tail(c, &owner, &self.1)?;
+        let catalog_rev: i64 = c
+            .query_row(
+                "SELECT revision FROM agent_catalog_revision WHERE singleton=1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        Ok((through, unsigned(catalog_rev)?))
+    }
+}
+
 impl Query for Get {
     type Output = Option<RoomMessage>;
 
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        get(
-            c,
-            &serde_json::to_string(&self.owner)?,
-            &self.session,
-            &self.message_id,
-        )
+        let owner = serde_json::to_string(&self.owner)?;
+        let Some(mut msg) = get_raw(c, &owner, &self.session, &self.message_id)? else {
+            return Ok(None);
+        };
+        enrich_messages(c, &owner, &self.session, std::slice::from_mut(&mut msg))?;
+        Ok(Some(msg))
+    }
+}
+
+struct StateQuery {
+    owner: RunOwner,
+    session: String,
+}
+
+impl Query for StateQuery {
+    type Output = RoomState;
+
+    fn execute(self, c: &Connection) -> Result<RoomState, StoreError> {
+        let owner = serde_json::to_string(&self.owner)?;
+        if !exists(c, &owner, &self.session)? {
+            return Err(StoreError::SessionNotFound);
+        }
+        let topic: String = c.query_row(
+            "SELECT topic FROM agent_rooms WHERE owner=? AND session=?",
+            params![owner, self.session],
+            |row| row.get(0),
+        )?;
+        let members = load_members(c, &owner, &self.session)?;
+        let mut pinned = load_pinned_messages(c, &owner, &self.session)?;
+        enrich_messages(c, &owner, &self.session, &mut pinned)?;
+        Ok(RoomState {
+            session_id: self.session,
+            topic,
+            members,
+            pinned,
+        })
+    }
+}
+
+struct ContextSnapshotQuery {
+    owner: RunOwner,
+    session: String,
+    recent_limit: u32,
+    extra_session_ids: Vec<String>,
+}
+
+impl Query for ContextSnapshotQuery {
+    type Output = RoomContextSnapshot;
+
+    fn execute(self, c: &Connection) -> Result<RoomContextSnapshot, StoreError> {
+        let owner = serde_json::to_string(&self.owner)?;
+        if !exists(c, &owner, &self.session)? {
+            return Err(StoreError::SessionNotFound);
+        }
+        let topic: String = c.query_row(
+            "SELECT topic FROM agent_rooms WHERE owner=? AND session=?",
+            params![owner, self.session],
+            |row| row.get(0),
+        )?;
+        let mut recent: Vec<RoomMessage> = c
+            .prepare_cached(
+                "SELECT body_json, edited_at, deleted_at FROM agent_room_messages WHERE owner=? AND session=? ORDER BY sequence DESC LIMIT ?",
+            )?
+            .query_map(params![owner, self.session, self.recent_limit], decode_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        recent.reverse();
+        let has_earlier = recent.first().is_some_and(|m| m.sequence > 1);
+        let mut pinned = load_pinned_messages(c, &owner, &self.session)?;
+
+        let mut member_ids = BTreeSet::new();
+        for id in &self.extra_session_ids {
+            member_ids.insert(id.clone());
+        }
+        for msg in recent.iter().chain(pinned.iter()) {
+            collect_message_sessions(msg, &mut member_ids);
+        }
+        let roster = load_members(c, &owner, &self.session)?;
+        let mut known_ids: HashSet<String> = roster.iter().map(|m| m.session_id.clone()).collect();
+        let mut members = roster;
+        let extra: Vec<String> = member_ids
+            .into_iter()
+            .filter(|id| known_ids.insert(id.clone()))
+            .collect();
+        if !extra.is_empty() {
+            members.extend(resolve_participants(c, &owner, &extra, &HashMap::new())?);
+        }
+        enrich_messages(c, &owner, &self.session, &mut pinned)?;
+        Ok(RoomContextSnapshot {
+            topic,
+            members,
+            pinned,
+            recent,
+            has_earlier,
+        })
+    }
+}
+
+struct SearchQuery {
+    owner: RunOwner,
+    session: String,
+    query: String,
+    limit: u32,
+}
+
+impl Query for SearchQuery {
+    type Output = Vec<RoomSearchMatch>;
+
+    fn execute(self, c: &Connection) -> Result<Vec<RoomSearchMatch>, StoreError> {
+        let owner = serde_json::to_string(&self.owner)?;
+        if !exists(c, &owner, &self.session)? {
+            return Err(StoreError::SessionNotFound);
+        }
+        let needle = self.query.trim();
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = self.limit.clamp(1, 100);
+        let mut messages: Vec<RoomMessage> = if needle.chars().count() >= 3 {
+            let escaped = format!(r#""{}""#, needle.replace('"', r#""""#));
+            c.prepare_cached(
+                "SELECT m.body_json, m.edited_at, m.deleted_at
+                 FROM agent_room_search s
+                 JOIN agent_room_messages m ON m.owner=s.owner AND m.session=s.session AND m.message=s.message
+                 WHERE s.owner=?1 AND s.session=?2 AND m.deleted_at IS NULL AND agent_room_search MATCH ?3
+                 ORDER BY m.sequence DESC LIMIT ?4",
+            )?
+            .query_map(params![owner, self.session, escaped, limit], decode_row)?
+            .collect::<Result<Vec<_>, _>>()?
+        } else {
+            c.prepare_cached(
+                "SELECT body_json, edited_at, deleted_at
+                 FROM agent_room_messages
+                 WHERE owner=?1 AND session=?2 AND deleted_at IS NULL
+                   AND instr(lower(COALESCE(json_extract(body_json, '$.content.text'), '')), lower(?3)) > 0
+                 ORDER BY sequence DESC LIMIT ?4",
+            )?
+            .query_map(params![owner, self.session, needle, limit], decode_row)?
+            .collect::<Result<Vec<_>, _>>()?
+        };
+        enrich_messages(c, &owner, &self.session, &mut messages)?;
+        Ok(messages
+            .into_iter()
+            .map(|message| {
+                let snippet = build_snippet(&message.content.text, needle);
+                RoomSearchMatch { message, snippet }
+            })
+            .collect())
     }
 }
 
@@ -305,48 +1089,98 @@ impl Query for Page {
         if through > latest {
             return Err(invalid("Room history cut exceeds its message tail"));
         }
-        let mut from = 1;
-        let mut until = through;
-        let reverse = matches!(
-            self.position,
-            RoomPosition::Tail | RoomPosition::Before { .. }
-        );
-        match self.position {
-            RoomPosition::Start | RoomPosition::Tail => {}
-            RoomPosition::Before { message_id } => {
-                until = anchor(c, &owner, &self.session, &message_id, through)? - 1;
+        let mut items = match self.position {
+            RoomPosition::Around { message_id } => {
+                let target = anchor(c, &owner, &self.session, &message_id, through)?;
+                let half = u64::from(self.limit / 2);
+                let before_limit = self.limit / 2;
+                let mut before_items: Vec<RoomMessage> = if target > 1 && before_limit > 0 {
+                    c.prepare_cached(
+                        "SELECT body_json, edited_at, deleted_at FROM agent_room_messages WHERE owner=? AND session=? AND sequence>=1 AND sequence<? ORDER BY sequence DESC LIMIT ?",
+                    )?
+                    .query_map(
+                        params![owner, self.session, integer(target)?, before_limit],
+                        decode_row,
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?
+                } else {
+                    Vec::new()
+                };
+                before_items.reverse();
+                let remaining = self.limit.saturating_sub(before_items.len() as u32).max(1);
+                let after_items: Vec<RoomMessage> = c
+                    .prepare_cached(
+                        "SELECT body_json, edited_at, deleted_at FROM agent_room_messages WHERE owner=? AND session=? AND sequence>=? AND sequence<=? ORDER BY sequence ASC LIMIT ?",
+                    )?
+                    .query_map(
+                        params![
+                            owner,
+                            self.session,
+                            integer(target)?,
+                            integer(through)?,
+                            remaining
+                        ],
+                        decode_row,
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                let _ = half;
+                before_items.extend(after_items);
+                before_items
             }
-            RoomPosition::After { message_id } => {
-                from = anchor(c, &owner, &self.session, &message_id, through)? + 1;
+            position => {
+                let mut from = 1;
+                let mut until = through;
+                let reverse = matches!(position, RoomPosition::Tail | RoomPosition::Before { .. });
+                match position {
+                    RoomPosition::Start | RoomPosition::Tail => {}
+                    RoomPosition::Before { message_id } => {
+                        until = anchor(c, &owner, &self.session, &message_id, through)? - 1;
+                    }
+                    RoomPosition::After { message_id } => {
+                        from = anchor(c, &owner, &self.session, &message_id, through)? + 1;
+                    }
+                    RoomPosition::Message { message_id } => {
+                        from = anchor(c, &owner, &self.session, &message_id, through)?;
+                    }
+                    RoomPosition::Around { .. } => unreachable!(),
+                }
+                let direction = if reverse { "DESC" } else { "ASC" };
+                let sql = format!(
+                    "SELECT body_json, edited_at, deleted_at FROM agent_room_messages WHERE owner=? AND session=? AND sequence>=? AND sequence<=? ORDER BY sequence {direction} LIMIT ?"
+                );
+                let mut rows = c
+                    .prepare_cached(&sql)?
+                    .query_map(
+                        params![
+                            owner,
+                            self.session,
+                            integer(from)?,
+                            integer(until)?,
+                            self.limit
+                        ],
+                        decode_row,
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                if reverse {
+                    rows.reverse();
+                }
+                rows
             }
-            RoomPosition::Message { message_id } => {
-                from = anchor(c, &owner, &self.session, &message_id, through)?;
-            }
+        };
+
+        enrich_messages(c, &owner, &self.session, &mut items)?;
+
+        let mut participant_ids = BTreeSet::new();
+        for msg in &items {
+            collect_message_sessions(msg, &mut participant_ids);
         }
-        let direction = if reverse { "DESC" } else { "ASC" };
-        let sql = format!(
-            "SELECT body_json FROM agent_room_messages WHERE owner=? AND session=? AND sequence>=? AND sequence<=? ORDER BY sequence {direction} LIMIT ?"
-        );
-        let records = c
-            .prepare_cached(&sql)?
-            .query_map(
-                params![
-                    owner,
-                    self.session,
-                    integer(from)?,
-                    integer(until)?,
-                    self.limit
-                ],
-                |row| row.get::<_, String>(0),
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut items = records
-            .iter()
-            .map(|json| serde_json::from_str::<RoomMessage>(json))
-            .collect::<Result<Vec<_>, _>>()?;
-        if reverse {
-            items.reverse();
+        let roster_meta = load_roster_meta(c, &owner, &self.session)?;
+        for id in roster_meta.keys() {
+            participant_ids.insert(id.clone());
         }
+        let ids: Vec<String> = participant_ids.into_iter().collect();
+        let participants = resolve_participants(c, &owner, &ids, &roster_meta)?;
+
         let before = items
             .first()
             .filter(|m| m.sequence > 1)
@@ -360,7 +1194,394 @@ impl Query for Page {
             through,
             before,
             after,
+            participants,
         })
+    }
+}
+
+fn collect_message_sessions(msg: &RoomMessage, ids: &mut BTreeSet<String>) {
+    if let RoomAuthor::Session { execution } = &msg.author {
+        ids.insert(execution.session_id.clone());
+    }
+    for m in &msg.mentions {
+        ids.insert(m.clone());
+    }
+    for d in &msg.deliveries {
+        ids.insert(d.session_id().to_owned());
+    }
+    for r in &msg.reactions {
+        for actor in &r.actors {
+            if let RoomActor::Session { session_id } = actor {
+                ids.insert(session_id.clone());
+            }
+        }
+    }
+}
+
+fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RoomMessage> {
+    let json: String = row.get(0)?;
+    let edited_at: Option<i64> = row.get(1)?;
+    let deleted_at: Option<i64> = row.get(2)?;
+    let mut msg: RoomMessage = serde_json::from_str(&json).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    if let Some(ts) = edited_at.and_then(|v| u64::try_from(v).ok()) {
+        msg.edited_at = Some(ts);
+    }
+    if let Some(ts) = deleted_at.and_then(|v| u64::try_from(v).ok()) {
+        msg.deleted_at = Some(ts);
+    }
+    Ok(msg)
+}
+
+fn load_roster_meta(
+    c: &Connection,
+    owner: &str,
+    session: &str,
+) -> Result<HashMap<String, (String, u64)>, StoreError> {
+    let mut map = HashMap::new();
+    let mut stmt = c.prepare_cached(
+        "SELECT member_session, role, added_at FROM agent_room_members WHERE owner=? AND session=? ORDER BY added_at ASC, member_session ASC",
+    )?;
+    let rows = stmt.query_map(params![owner, session], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (id, role, at) = row?;
+        map.insert(id, (role, unsigned(at)?));
+    }
+    Ok(map)
+}
+
+fn load_members(c: &Connection, owner: &str, session: &str) -> Result<Vec<RoomMember>, StoreError> {
+    let mut ordered_ids = Vec::new();
+    let mut roster_meta = HashMap::new();
+    let mut stmt = c.prepare_cached(
+        "SELECT member_session, role, added_at FROM agent_room_members WHERE owner=? AND session=? ORDER BY added_at ASC, member_session ASC",
+    )?;
+    let rows = stmt.query_map(params![owner, session], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (id, role, at) = row?;
+        ordered_ids.push(id.clone());
+        roster_meta.insert(id, (role, unsigned(at)?));
+    }
+    resolve_participants(c, owner, &ordered_ids, &roster_meta)
+}
+
+fn resolve_participants(
+    c: &Connection,
+    owner: &str,
+    ids: &[String],
+    roster_meta: &HashMap<String, (String, u64)>,
+) -> Result<Vec<RoomMember>, StoreError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut result = Vec::with_capacity(ids.len());
+    let mut stmt = c.prepare_cached(
+        "SELECT
+            COALESCE(json_extract(s.configuration, '$.title'), s.id) AS title,
+            json_extract(s.configuration, '$.appliedPreset.name') AS preset_name,
+            COALESCE(json_extract(b.workspace_json, '$.path'), '') AS workspace_path,
+            s.archived,
+            EXISTS(SELECT 1 FROM agent_catalog_runs w WHERE w.owner=?1 AND w.session=s.id AND w.live=1) AS working,
+            EXISTS(SELECT 1 FROM agent_catalog_runs w WHERE w.owner=?1 AND w.session=s.id AND w.live=1 AND w.blocked=1) AS blocked,
+            (SELECT COUNT(*) FROM agent_interaction_pending p
+                JOIN agent_interaction_requests q ON q.request=p.request
+                JOIN agent_run_specs spec ON spec.run=q.run
+                JOIN agent_catalog_runs r ON r.run=q.run
+                WHERE p.session=s.id AND spec.owner=?1 AND r.live=1) AS pending_count
+         FROM session_control s
+         LEFT JOIN workspace_bindings b ON b.id=json_extract(s.configuration, '$.workspace.id')
+         WHERE s.id=?2
+           AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=s.id AND d.remove_session=1)",
+    )?;
+    for id in ids {
+        let meta = roster_meta.get(id);
+        let row = stmt
+            .query_row(params![owner, id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, bool>(3)?,
+                    r.get::<_, bool>(4)?,
+                    r.get::<_, bool>(5)?,
+                    r.get::<_, i64>(6)?,
+                ))
+            })
+            .optional()?;
+        if let Some((title, preset_name, workspace_path, archived, working, blocked, pending)) = row
+        {
+            let pending_interactions = u32::try_from(pending.max(0)).unwrap_or(u32::MAX);
+            let activity = if blocked || pending_interactions > 0 {
+                RoomParticipantActivity::Waiting
+            } else if working {
+                RoomParticipantActivity::Working
+            } else {
+                RoomParticipantActivity::Idle
+            };
+            result.push(RoomMember {
+                session_id: id.clone(),
+                title,
+                preset_name,
+                workspace_path,
+                activity,
+                pending_interactions,
+                archived,
+                unavailable: false,
+                role: meta.map(|(r, _)| r.clone()),
+                added_at: meta.map(|(_, at)| *at),
+            });
+        } else {
+            result.push(RoomMember {
+                session_id: id.clone(),
+                title: short_session_label(id),
+                preset_name: None,
+                workspace_path: String::new(),
+                activity: RoomParticipantActivity::Idle,
+                pending_interactions: 0,
+                archived: false,
+                unavailable: true,
+                role: meta.map(|(r, _)| r.clone()),
+                added_at: meta.map(|(_, at)| *at),
+            });
+        }
+    }
+    Ok(result)
+}
+
+fn short_session_label(id: &str) -> String {
+    if id.len() > 12 {
+        format!("{}…", &id[..12])
+    } else {
+        id.to_owned()
+    }
+}
+
+fn load_pinned_messages(
+    c: &Connection,
+    owner: &str,
+    session: &str,
+) -> Result<Vec<RoomMessage>, StoreError> {
+    let mut stmt = c.prepare_cached(
+        "SELECT m.body_json, m.edited_at, m.deleted_at
+         FROM agent_room_pins p
+         JOIN agent_room_messages m ON m.owner=p.owner AND m.session=p.session AND m.message=p.message
+         WHERE p.owner=? AND p.session=? AND m.deleted_at IS NULL
+         ORDER BY p.pinned_at DESC, m.sequence DESC",
+    )?;
+    let items = stmt
+        .query_map(params![owner, session], decode_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+fn enrich_messages(
+    c: &Connection,
+    owner: &str,
+    session: &str,
+    messages: &mut [RoomMessage],
+) -> Result<(), StoreError> {
+    if messages.is_empty() {
+        return Ok(());
+    }
+    // Load pins for this room.
+    let mut pinned_set = HashSet::new();
+    {
+        let mut stmt =
+            c.prepare_cached("SELECT message FROM agent_room_pins WHERE owner=? AND session=?")?;
+        for row in stmt.query_map(params![owner, session], |r| r.get::<_, String>(0))? {
+            pinned_set.insert(row?);
+        }
+    }
+    // Load reactions for messages in this slice.
+    let mut reaction_stmt = c.prepare_cached(
+        "SELECT actor, emoji FROM agent_room_reactions WHERE owner=? AND session=? AND message=? ORDER BY at ASC, actor ASC",
+    )?;
+    // Statement to find the first Room reply from a target session after a given sequence.
+    let mut reply_stmt = c.prepare_cached(
+        "SELECT message FROM agent_room_messages
+         WHERE owner=?1 AND session=?2 AND sequence>?3 AND deleted_at IS NULL
+           AND (reply_to=?4 OR json_extract(body_json, '$.author.execution.sessionId')=?5)
+           AND json_extract(body_json, '$.author.execution.sessionId')=?5
+         ORDER BY CASE WHEN reply_to=?4 THEN 0 ELSE 1 END, sequence ASC
+         LIMIT 1",
+    )?;
+    let mut queue_stmt = c.prepare_cached(
+        "SELECT q.state, r.live, r.blocked, r.stopped, r.terminal,
+                (SELECT COUNT(*) FROM agent_interaction_pending p
+                 JOIN agent_interaction_requests req ON req.request=p.request
+                 WHERE p.session=q.session AND req.run=r.run) AS pending_count
+         FROM agent_queue_items q
+         LEFT JOIN agent_catalog_runs r ON r.run=COALESCE(q.accepted_run, q.target_run)
+         WHERE q.session=?1 AND q.message=?2",
+    )?;
+
+    for msg in messages.iter_mut() {
+        msg.pinned = pinned_set.contains(&msg.id);
+        // Reactions grouped by emoji preserving insertion order.
+        let mut by_emoji: BTreeMap<String, Vec<RoomActor>> = BTreeMap::new();
+        for row in reaction_stmt.query_map(params![owner, session, msg.id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })? {
+            let (actor_key, emoji) = row?;
+            by_emoji
+                .entry(emoji)
+                .or_default()
+                .push(RoomActor::from_storage_key(&actor_key));
+        }
+        msg.reactions = by_emoji
+            .into_iter()
+            .map(|(emoji, actors)| RoomReaction { emoji, actors })
+            .collect();
+
+        // Derived delivery states from single-source-of-truth queue/run/room tables.
+        let mut states = Vec::with_capacity(msg.deliveries.len());
+        let seq = integer(msg.sequence)?;
+        for delivery in &msg.deliveries {
+            match delivery {
+                RoomDelivery::Rejected { session_id, reason } => {
+                    states.push(RoomDeliveryState::Rejected {
+                        session_id: session_id.clone(),
+                        reason: reason.clone(),
+                    });
+                }
+                RoomDelivery::Accepted {
+                    session_id: target_session,
+                    message_id: delivered_message_id,
+                } => {
+                    if let Some(reply_id) = reply_stmt
+                        .query_row(params![owner, session, seq, msg.id, target_session], |r| {
+                            r.get::<_, String>(0)
+                        })
+                        .optional()?
+                    {
+                        states.push(RoomDeliveryState::Replied {
+                            session_id: target_session.clone(),
+                            message_id: delivered_message_id.clone(),
+                            reply_message_id: reply_id,
+                        });
+                        continue;
+                    }
+                    let qrow = queue_stmt
+                        .query_row(params![target_session, delivered_message_id], |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, Option<bool>>(1)?,
+                                r.get::<_, Option<bool>>(2)?,
+                                r.get::<_, Option<bool>>(3)?,
+                                r.get::<_, Option<String>>(4)?,
+                                r.get::<_, Option<i64>>(5)?,
+                            ))
+                        })
+                        .optional()?;
+                    let state = match qrow {
+                        Some((qstate, live, blocked, stopped, terminal_json, pending_count)) => {
+                            match qstate.as_str() {
+                                "pending" => RoomDeliveryState::Queued {
+                                    session_id: target_session.clone(),
+                                    message_id: delivered_message_id.clone(),
+                                },
+                                "cancelled" => RoomDeliveryState::Stopped {
+                                    session_id: target_session.clone(),
+                                    message_id: delivered_message_id.clone(),
+                                },
+                                _ => {
+                                    let is_live = live.unwrap_or(false);
+                                    let is_blocked = blocked.unwrap_or(false);
+                                    let is_stopped = stopped.unwrap_or(false);
+                                    let pending = u32::try_from(pending_count.unwrap_or(0).max(0))
+                                        .unwrap_or(u32::MAX);
+                                    let terminal = terminal_json
+                                        .as_deref()
+                                        .and_then(|s| serde_json::from_str::<Terminal>(s).ok());
+                                    if is_live && (is_blocked || pending > 0) {
+                                        RoomDeliveryState::Waiting {
+                                            session_id: target_session.clone(),
+                                            message_id: delivered_message_id.clone(),
+                                            pending_count: pending.max(1),
+                                        }
+                                    } else if is_live {
+                                        RoomDeliveryState::Working {
+                                            session_id: target_session.clone(),
+                                            message_id: delivered_message_id.clone(),
+                                        }
+                                    } else if matches!(terminal, Some(Terminal::Failed)) {
+                                        RoomDeliveryState::Failed {
+                                            session_id: target_session.clone(),
+                                            message_id: delivered_message_id.clone(),
+                                            reason: None,
+                                        }
+                                    } else if is_stopped
+                                        || matches!(terminal, Some(Terminal::Cancelled))
+                                    {
+                                        RoomDeliveryState::Stopped {
+                                            session_id: target_session.clone(),
+                                            message_id: delivered_message_id.clone(),
+                                        }
+                                    } else if terminal.is_some() {
+                                        RoomDeliveryState::Silent {
+                                            session_id: target_session.clone(),
+                                            message_id: delivered_message_id.clone(),
+                                        }
+                                    } else {
+                                        RoomDeliveryState::Queued {
+                                            session_id: target_session.clone(),
+                                            message_id: delivered_message_id.clone(),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        None => RoomDeliveryState::Queued {
+                            session_id: target_session.clone(),
+                            message_id: delivered_message_id.clone(),
+                        },
+                    };
+                    states.push(state);
+                }
+            }
+        }
+        msg.delivery_states = states;
+    }
+    Ok(())
+}
+
+fn build_snippet(text: &str, needle: &str) -> String {
+    let single_line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = single_line.to_lowercase();
+    let needle_lower = needle.to_lowercase();
+    if let Some(byte_pos) = lower.find(&needle_lower) {
+        let char_pos = lower[..byte_pos].chars().count();
+        let chars: Vec<char> = single_line.chars().collect();
+        let start = char_pos.saturating_sub(36);
+        let end = (char_pos + needle.chars().count() + 64).min(chars.len());
+        let mut out = String::new();
+        if start > 0 {
+            out.push('…');
+        }
+        out.extend(&chars[start..end]);
+        if end < chars.len() {
+            out.push('…');
+        }
+        out
+    } else {
+        let mut out: String = single_line.chars().take(120).collect();
+        if single_line.chars().count() > 120 {
+            out.push('…');
+        }
+        out
     }
 }
 
@@ -372,21 +1593,19 @@ fn exists(c: &Connection, owner: &str, session: &str) -> Result<bool, StoreError
     )?)
 }
 
-fn get(
+fn get_raw(
     c: &Connection,
     owner: &str,
     session: &str,
     message_id: &str,
 ) -> Result<Option<RoomMessage>, StoreError> {
-    let json: Option<String> = c
-        .query_row(
-            "SELECT body_json FROM agent_room_messages WHERE owner=? AND session=? AND message=?",
-            params![owner, session, message_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    json.map(|json| serde_json::from_str(&json).map_err(StoreError::from))
-        .transpose()
+    c.query_row(
+        "SELECT body_json, edited_at, deleted_at FROM agent_room_messages WHERE owner=? AND session=? AND message=?",
+        params![owner, session, message_id],
+        decode_row,
+    )
+    .optional()
+    .map_err(StoreError::from)
 }
 
 fn anchor(
@@ -418,17 +1637,18 @@ fn message_sequence(
 }
 
 fn tail(c: &Connection, owner: &str, session: &str) -> Result<u64, StoreError> {
-    unsigned(c.query_row(
-        "SELECT COALESCE(MAX(sequence),0) FROM agent_room_messages WHERE owner=? AND session=?",
+    let sequence: i64 = c.query_row(
+        "SELECT COALESCE(MAX(sequence), 0) FROM agent_room_messages WHERE owner=? AND session=?",
         params![owner, session],
         |row| row.get(0),
-    )?)
+    )?;
+    unsigned(sequence)
 }
 
 fn integer(value: u64) -> Result<i64, StoreError> {
-    i64::try_from(value).map_err(|_| invalid("Room position exceeds SQLite range"))
+    i64::try_from(value).map_err(|_| invalid("Room sequence exceeds SQLite integer range"))
 }
 
 fn unsigned(value: i64) -> Result<u64, StoreError> {
-    u64::try_from(value).map_err(|_| invalid("negative Room position or timestamp"))
+    u64::try_from(value).map_err(|_| invalid("Room sequence cannot be negative"))
 }

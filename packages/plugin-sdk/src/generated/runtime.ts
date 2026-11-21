@@ -4464,6 +4464,10 @@ export type HistoryPosition =
       messageId: string;
     }
   | {
+      kind: 'around_message';
+      messageId: string;
+    }
+  | {
       kind: 'row';
       position: HistoryRowAddress;
       field: HistoryField;
@@ -4511,8 +4515,10 @@ export type MessageOrigin =
       kind: 'room';
       sessionId: string;
       messageId: string;
-      author: RoomAuthor;
+      author: AgentRoomAuthor;
       replyTo?: string | null;
+      mentions?: string[];
+      hopCount?: number | null;
     }
   | {
       kind: 'automation';
@@ -4532,7 +4538,7 @@ export type MessageOrigin =
       kind: 'discovery_report';
       sessionId: string;
     };
-export type RoomAuthor =
+export type AgentRoomAuthor =
   | {
       kind: 'human';
     }
@@ -4544,6 +4550,7 @@ export type AgentDeliveryPage =
   | {
       kind: 'room';
       through: number;
+      revision?: number;
     }
   | {
       kind: 'events';
@@ -4764,6 +4771,62 @@ export type AgentHistoryPage =
       before: Cursor | null;
       after: Cursor | null;
     };
+export type AgentRoomActor =
+  | {
+      kind: 'human';
+    }
+  | {
+      kind: 'session';
+      sessionId: string;
+    };
+/**
+ * Derived execution outcome for a Room mention delivery.
+ */
+export type AgentRoomDeliveryState =
+  | {
+      kind: 'queued';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'working';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'waiting';
+      sessionId: string;
+      messageId: string;
+      pendingCount: number;
+    }
+  | {
+      kind: 'replied';
+      sessionId: string;
+      messageId: string;
+      replyMessageId: string;
+    }
+  | {
+      kind: 'silent';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'failed';
+      sessionId: string;
+      messageId: string;
+      reason?: string | null;
+    }
+  | {
+      kind: 'stopped';
+      sessionId: string;
+      messageId: string;
+    }
+  | {
+      kind: 'rejected';
+      sessionId: string;
+      reason: string;
+    };
+export type AgentRoomParticipantActivity = 'idle' | 'working' | 'waiting';
 export type AgentHistorySearchPage = {
   kind: 'ready';
   through: number;
@@ -8049,10 +8112,10 @@ export interface AgentSend {
         QuoteRef,
       ];
   /**
-   * Defaults to steer. Omit or use steer for updates to ongoing work;
-   * use queue only when this message should wait until the current turn ends.
+   * Defaults to steer (injects cleanly at the next step boundary without aborting in-flight tools).
+   * Pass queue to wait until the current turn finishes before delivering.
    */
-  delivery?: AgentSendDelivery;
+  delivery?: AgentSendDelivery | null;
   /**
    * An active send must not start new work after Stop fences its original Run.
    */
@@ -8909,20 +8972,42 @@ export interface AgentRoomHistoryPage {
   through: number;
   before?: string | null;
   after?: string | null;
+  participants?: AgentRoomMember[];
 }
 export interface AgentRoomMessage {
   id: string;
   sequence: number;
   at: number;
-  author: RoomAuthor;
+  author: AgentRoomAuthor;
   content: AgentRoomContent;
   replyTo?: string | null;
   mentions: string[];
   deliveries: RoomDelivery[];
+  editedAt?: number | null;
+  deletedAt?: number | null;
+  reactions?: AgentRoomReaction[];
+  pinned?: boolean;
+  deliveryStates?: AgentRoomDeliveryState[];
 }
 export interface AgentRoomContent {
   text: string;
   attachments: AgentHistoryAttachment[];
+}
+export interface AgentRoomReaction {
+  emoji: string;
+  actors: AgentRoomActor[];
+}
+export interface AgentRoomMember {
+  sessionId: string;
+  title: string;
+  presetName?: string | null;
+  workspacePath: string;
+  activity: AgentRoomParticipantActivity;
+  pendingInteractions?: number;
+  archived?: boolean;
+  unavailable?: boolean;
+  role?: string | null;
+  addedAt?: number | null;
 }
 export interface AgentHistorySearch {
   sessionId: string;

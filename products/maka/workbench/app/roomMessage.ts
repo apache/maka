@@ -26,12 +26,130 @@ export function roomAuthorSession(message: AgentRoomMessage): string | null {
   return message.author.kind === 'session' ? message.author.execution.sessionId : null;
 }
 
+/**
+ * Detect an active @mention token at the caret.
+ * Supports start-of-line, whitespace, punctuation, and CJK text immediately before '@'
+ * (e.g. "帮我看下@codex"), while ignoring mid-word ASCII identifiers such as email addresses ("a@b.com").
+ */
 export function roomMentionAt(text: string, selection: { start: number; end: number }) {
   if (selection.start !== selection.end) return null;
   const before = text.slice(0, selection.start);
-  const match = /(?:^|\s)@([^\s@]*)$/.exec(before);
-  if (!match) return null;
-  return { start: selection.start - match[1]!.length - 1, end: selection.start, query: match[1]! };
+  const at = before.lastIndexOf('@');
+  if (at < 0) return null;
+  const query = before.slice(at + 1);
+  if (/[\s@\]()[\]]/.test(query)) return null;
+  if (at > 0) {
+    const prev = before[at - 1]!;
+    // Reject email / identifier prefixes like "foo@bar" or "user1@host" or inside "[@Title](...)".
+    if (/[A-Za-z0-9._+-]/.test(prev) || prev === '[') return null;
+  }
+  return { start: at, end: selection.start, query };
+}
+
+/** Escape Markdown link brackets inside an inline mention token label. */
+function escapeMentionLabel(label: string): string {
+  return label.replace(/[\\[\]\r\n]/g, (ch) => (ch === '\r' || ch === '\n' ? ' ' : `\\${ch}`));
+}
+
+/** Format an inline clickable mention token understood by both SkillInput and the Host. */
+export function formatInlineMention(sessionId: string, title: string): string {
+  const clean = escapeMentionLabel(title.trim() || sessionId);
+  return `[@${clean}](maka://session/${sessionId}) `;
+}
+
+const INLINE_MENTION_RE = /\[@(?:\\[^\r\n]|[^\]\\\r\n])+\]\(maka:\/\/session\/([A-Za-z0-9_-]+)\)/g;
+
+/** Extract deduplicated Agent session IDs referenced via inline [@Title](maka://session/<id>) tokens. */
+export function extractInlineMentionIds(text: string): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const match of text.matchAll(INLINE_MENTION_RE)) {
+    const id = match[1];
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
+/** Remove all inline mention tokens targeting a given sessionId from draft text. */
+export function stripInlineMention(text: string, sessionId: string): string {
+  const escapedId = sessionId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(
+    `\\[@(?:\\\\[^\\r\\n]|[^\\]\\\\\\r\\n])+\\]\\(maka://session/${escapedId}\\) ?`,
+    'g',
+  );
+  return text.replace(re, '');
+}
+
+const AVATAR_PALETTE = [
+  '#4F7CAC',
+  '#7A68C8',
+  '#3D8B74',
+  '#C47D3B',
+  '#B65A7D',
+  '#4E8899',
+  '#7D8B3D',
+  '#9A63B5',
+] as const;
+
+/** Deterministic accent color for an Agent session avatar in Rooms. */
+export function roomAvatarColor(id: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < id.length; i++) {
+    hash ^= id.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return AVATAR_PALETTE[Math.abs(hash) % AVATAR_PALETTE.length]!;
+}
+
+export function roomAvatarInitial(title: string): string {
+  const trimmed = title.trim();
+  if (!trimmed) return '?';
+  return Array.from(trimmed)[0]!.toUpperCase();
+}
+
+export function roomDayKey(at: number): string {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+export function workspaceTailName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+export type RoomDeliveryReasonKey =
+  | 'Reason model unavailable'
+  | 'Reason self mention'
+  | 'Reason hop limit'
+  | 'Reason reply tool unavailable'
+  | 'Reason session unavailable'
+  | 'Reason not your worker'
+  | 'Reason turn stopped'
+  | 'Reason room has no backend';
+
+export function roomDeliveryReasonKey(reason: string): RoomDeliveryReasonKey | null {
+  switch (reason) {
+    case 'agent_model_unavailable':
+      return 'Reason model unavailable';
+    case 'agent_room_self_mention':
+      return 'Reason self mention';
+    case 'agent_room_hop_limit_reached':
+      return 'Reason hop limit';
+    case 'agent_room_reply_tool_unavailable':
+      return 'Reason reply tool unavailable';
+    case 'agent_session_unavailable':
+      return 'Reason session unavailable';
+    case 'agent_not_your_worker':
+      return 'Reason not your worker';
+    case 'agent_turn_stopped':
+      return 'Reason turn stopped';
+    case 'agent_room_has_no_backend':
+      return 'Reason room has no backend';
+    default:
+      return null;
+  }
 }
 
 export function roomResult<T>(reply: unknown): T {
