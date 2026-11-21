@@ -277,6 +277,8 @@ struct StorageXray {
     total_dir_bytes: u64,
     total_db_bytes: u64,
     total_wal_bytes: u64,
+    runtime_wal_bytes: u64,
+    runtime_shm_bytes: u64,
     non_db_bytes: u64,
     page_count: u64,
     freelist_count: u64,
@@ -287,6 +289,7 @@ struct StorageXray {
 
 fn sqlite_query_u64(db: &Path, sql: &str) -> u64 {
     std::process::Command::new("sqlite3")
+        .arg("-readonly")
         .arg(db)
         .arg(sql)
         .output()
@@ -310,8 +313,15 @@ fn sample_storage_xray(root: &Path) -> StorageXray {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         xray.total_dir_bytes += size;
-        if name.ends_with("-wal") || name.ends_with("-shm") {
+        if name.ends_with("-wal") {
             xray.total_wal_bytes += size;
+            if name.contains("runtime-rust") {
+                xray.runtime_wal_bytes += size;
+            }
+        } else if name.ends_with("-shm") {
+            if name.contains("runtime-rust") {
+                xray.runtime_shm_bytes += size;
+            }
         } else if name.ends_with(".db") || name.ends_with(".sqlite") {
             xray.total_db_bytes += size;
             if name.contains("runtime-rust") || main_db.is_none() {
@@ -338,6 +348,10 @@ fn sample_storage_xray(root: &Path) -> StorageXray {
             "shell_runs",
             "agent_facts",
             "agent_session_history",
+            "agent_history_content_refs",
+            "agent_request_specs",
+            "agent_catalog_sessions",
+            "agent_catalog_controls",
             "agent_recall_messages",
             "agent_usage_calls",
             "agent_room_messages",
@@ -347,16 +361,29 @@ fn sample_storage_xray(root: &Path) -> StorageXray {
             "agent_tools",
             "agent_cells",
         ];
-        let sql_counts = tracked_tables
+        let mut count_queries: Vec<String> = tracked_tables
             .iter()
             .map(|t| {
                 format!(
                     "SELECT '{t}', CASE WHEN EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='{t}') THEN (SELECT count(*) FROM {t}) ELSE 0 END"
                 )
             })
-            .collect::<Vec<_>>()
-            .join(" UNION ALL ");
+            .collect();
+        count_queries.push(
+            "SELECT 'orphan_contents', (SELECT count(*) FROM contents WHERE id NOT IN (SELECT content_id FROM content_references))".into(),
+        );
+        count_queries.push(
+            "SELECT 'receipt_contents', (SELECT count(DISTINCT outcome_content_id) FROM application_operations WHERE outcome_content_id IS NOT NULL)".into(),
+        );
+        count_queries.push(
+            "SELECT 'non_receipt_contents', (SELECT count(*) FROM contents WHERE id NOT IN (SELECT outcome_content_id FROM application_operations WHERE outcome_content_id IS NOT NULL))".into(),
+        );
+        count_queries.push(
+            "SELECT 'request_spec_raw_bytes', (SELECT COALESCE(SUM(length(c.payload)), 0) FROM contents c WHERE c.id IN (SELECT content_id FROM agent_request_specs))".into(),
+        );
+        let sql_counts = count_queries.join(" UNION ALL ");
         if let Ok(out) = std::process::Command::new("sqlite3")
+            .arg("-readonly")
             .arg(&db)
             .arg(format!("{sql_counts};"))
             .output()
@@ -371,6 +398,7 @@ fn sample_storage_xray(root: &Path) -> StorageXray {
         }
 
         if let Ok(out) = std::process::Command::new("sqlite3")
+            .arg("-readonly")
             .arg(&db)
             .arg("SELECT name, SUM(pgsize) FROM dbstat GROUP BY name ORDER BY 2 DESC LIMIT 12;")
             .output()
@@ -1115,7 +1143,7 @@ async fn run_fixed_hot_probe(
     };
 
     eprintln!(
-        "[SCEN M][PROBE {tier_label}] hot_wall={}ms cpu/turn={:.1}ms turn(p50={} p95={}) | list_roots_p95={}ms list_title_p95={}ms sessList_p95={}ms obs_p95={}ms search_p95={}ms usage_p95={}ms usageSum_p95={}ms remove_p95={}ms | idle_cpu={:.2}% rss={:.1}MiB fds={} | db={:.1}MiB wal={:.1}MiB free={}pgs | contents={} ops={} effects={} ctrl={} ret={} rec={} facts={} usage={}",
+        "[SCEN M][PROBE {tier_label}] hot_wall={}ms cpu/turn={:.1}ms turn(p50={} p95={}) | list_roots_p95={}ms list_title_p95={}ms sessList_p95={}ms obs_p95={}ms search_p95={}ms usage_p95={}ms usageSum_p95={}ms remove_p95={}ms | idle_cpu={:.2}% rss={:.1}MiB fds={} | db={:.1}MiB rwal={:.1}MiB rshm={:.2}MiB free={}pgs req_raw={:.2}MiB | contents={} ops={} effects={} ctrl={} ret={} rec={} facts={} usage={}",
         result.hot_wall_ms,
         result.hot_cpu_ms_per_turn,
         result.hot_turn_p50,
@@ -1132,8 +1160,10 @@ async fn run_fixed_hot_probe(
         result.rss_mib,
         result.fds,
         result.xray.total_db_bytes as f64 / (1024.0 * 1024.0),
-        result.xray.total_wal_bytes as f64 / (1024.0 * 1024.0),
+        result.xray.runtime_wal_bytes as f64 / (1024.0 * 1024.0),
+        result.xray.runtime_shm_bytes as f64 / (1024.0 * 1024.0),
         result.xray.freelist_count,
+        xray_count(&result.xray, "request_spec_raw_bytes") as f64 / (1024.0 * 1024.0),
         xray_count(&result.xray, "contents"),
         xray_count(&result.xray, "application_operations"),
         xray_count(&result.xray, "host_effects"),
@@ -1538,19 +1568,21 @@ async fn real_host_forever_running_o1_soak() {
         let remove_p95_ms = rem_hist.percentiles().2;
 
         eprintln!(
-            "[SCEN M][P1 W{wave:02}/14] rss={rss_mib:.1}MiB fds={fds} cpu/sess={cpu_ms_per_sess:.1}ms rem_p95={remove_p95_ms}ms | db={:.2}MiB wal={:.2}MiB dir={:.2}MiB free={}pgs | pending_rel={} contents={} ops={} effects={} ctrl={} ret={} rec={} facts={} usage={}",
+            "[SCEN M][P1 W{wave:02}/14] rss={rss_mib:.1}MiB fds={fds} cpu/sess={cpu_ms_per_sess:.1}ms rem_p95={remove_p95_ms}ms | db={:.2}MiB rwal={:.2}MiB rshm={:.2}MiB dir={:.2}MiB free={}pgs | pending_rel={} contents={} non_rcpt={} orphan={} ops={} effects={} facts={} cells={} cat_sess={} usage={}",
             xray.total_db_bytes as f64 / (1024.0 * 1024.0),
-            xray.total_wal_bytes as f64 / (1024.0 * 1024.0),
+            xray.runtime_wal_bytes as f64 / (1024.0 * 1024.0),
+            xray.runtime_shm_bytes as f64 / (1024.0 * 1024.0),
             xray.total_dir_bytes as f64 / (1024.0 * 1024.0),
             xray.freelist_count,
             xray_count(&xray, "pending_content_releases"),
             xray_count(&xray, "contents"),
+            xray_count(&xray, "non_receipt_contents"),
+            xray_count(&xray, "orphan_contents"),
             xray_count(&xray, "application_operations"),
             xray_count(&xray, "host_effects"),
-            xray_count(&xray, "session_control"),
-            xray_count(&xray, "session_retirements"),
-            xray_count(&xray, "session_removal_receipts"),
             xray_count(&xray, "agent_facts"),
+            xray_count(&xray, "agent_cells"),
+            xray_count(&xray, "agent_catalog_sessions"),
             xray_count(&xray, "agent_usage_calls"),
         );
         if wave == 4 || wave == 9 || wave == 14 {
@@ -1572,18 +1604,25 @@ async fn real_host_forever_running_o1_soak() {
     // Evaluate Phase 1 Zero-Survivor steady-state slopes (W4 vs W14).
     let w4 = &churn_metrics[3];
     let w14 = &churn_metrics[13];
-    let db_w4 = (w4.xray.total_db_bytes + w4.xray.total_wal_bytes) as f64 / (1024.0 * 1024.0);
-    let db_w14 = (w14.xray.total_db_bytes + w14.xray.total_wal_bytes) as f64 / (1024.0 * 1024.0);
+    let db_w4 = (w4.xray.total_db_bytes + w4.xray.runtime_wal_bytes) as f64 / (1024.0 * 1024.0);
+    let db_w14 = (w14.xray.total_db_bytes + w14.xray.runtime_wal_bytes) as f64 / (1024.0 * 1024.0);
     let contents_w4 = xray_count(&w4.xray, "contents").max(1);
     let contents_w14 = xray_count(&w14.xray, "contents");
+    let non_receipt_w4 = xray_count(&w4.xray, "non_receipt_contents").max(1);
+    let non_receipt_w14 = xray_count(&w14.xray, "non_receipt_contents");
+    let receipt_w14 = xray_count(&w14.xray, "receipt_contents");
+    let orphan_w14 = xray_count(&w14.xray, "orphan_contents");
     let ops_w4 = xray_count(&w4.xray, "application_operations").max(1);
     let ops_w14 = xray_count(&w14.xray, "application_operations");
     let eff_w4 = xray_count(&w4.xray, "host_effects").max(1);
     let eff_w14 = xray_count(&w14.xray, "host_effects");
     let facts_w14 = xray_count(&w14.xray, "agent_facts");
+    let cells_w14 = xray_count(&w14.xray, "agent_cells");
+    let cat_sess_w14 = xray_count(&w14.xray, "agent_catalog_sessions");
+    let cat_ctrl_w14 = xray_count(&w14.xray, "agent_catalog_controls");
 
     eprintln!(
-        "[SCEN M][P1 SUMMARY] total_deleted={total_churn_deleted} | W4->W14: rss {:.1}->{:.1}MiB | fds {}->{} | db+wal {:.2}->{:.2}MiB ({:.2}x) | contents {}->{} ({:.2}x) | ops {}->{} ({:.2}x) | effects {}->{} ({:.2}x) | facts_w14={} | cpu/sess {:.1}->{:.1}ms | rem_p95 {}->{}ms",
+        "[SCEN M][P1 SUMMARY] total_deleted={total_churn_deleted} | W4->W14: rss {:.1}->{:.1}MiB | fds {}->{} | db+rwal {:.2}->{:.2}MiB ({:.2}x) | non_receipt_contents {}->{} ({:.2}x) orphan={} | receipt_contents={} (total_contents {}->{}, ops {}->{}) | effects {}->{} ({:.2}x) | domain_residual(facts={} cells={} cat_sess={} cat_ctrl={}) | cpu/sess {:.1}->{:.1}ms | rem_p95 {}->{}ms",
         w4.rss_mib,
         w14.rss_mib,
         w4.fds,
@@ -1591,16 +1630,22 @@ async fn real_host_forever_running_o1_soak() {
         db_w4,
         db_w14,
         db_w14 / db_w4.max(0.01),
+        non_receipt_w4,
+        non_receipt_w14,
+        non_receipt_w14 as f64 / non_receipt_w4 as f64,
+        orphan_w14,
+        receipt_w14,
         contents_w4,
         contents_w14,
-        contents_w14 as f64 / contents_w4 as f64,
         ops_w4,
         ops_w14,
-        ops_w14 as f64 / ops_w4 as f64,
         eff_w4,
         eff_w14,
         eff_w14 as f64 / eff_w4 as f64,
         facts_w14,
+        cells_w14,
+        cat_sess_w14,
+        cat_ctrl_w14,
         w4.cpu_ms_per_sess,
         w14.cpu_ms_per_sess,
         w4.remove_p95_ms,
@@ -1625,16 +1670,35 @@ async fn real_host_forever_running_o1_soak() {
             db_w14 / db_w4.max(0.01)
         ));
     }
-    if contents_w14 as f64 > contents_w4 as f64 * 1.40 + 100.0 {
-        violations.push(format!(
-            "P1 Unreclaimed contents rows on 0-survivor churn: W4={contents_w4} -> W14={contents_w14} ({:.2}x)",
-            contents_w14 as f64 / contents_w4 as f64
-        ));
+    for (table, residual) in [
+        ("agent_facts", facts_w14),
+        (
+            "agent_session_history",
+            xray_count(&w14.xray, "agent_session_history"),
+        ),
+        (
+            "agent_history_content_refs",
+            xray_count(&w14.xray, "agent_history_content_refs"),
+        ),
+        (
+            "agent_request_specs",
+            xray_count(&w14.xray, "agent_request_specs"),
+        ),
+        ("agent_cells", cells_w14),
+        ("agent_catalog_sessions", cat_sess_w14),
+        ("agent_catalog_controls", cat_ctrl_w14),
+        ("orphan_contents", orphan_w14),
+    ] {
+        if residual != 0 {
+            violations.push(format!(
+                "P1 Residual rows in {table} after 100% session deletion: W14={residual}"
+            ));
+        }
     }
-    if ops_w14 as f64 > ops_w4 as f64 * 1.50 + 200.0 {
+    if non_receipt_w14 as f64 > non_receipt_w4 as f64 * 1.40 + 50.0 {
         violations.push(format!(
-            "P1 Unbounded application_operations growth on 0-survivor churn: W4={ops_w4} -> W14={ops_w14} ({:.2}x)",
-            ops_w14 as f64 / ops_w4 as f64
+            "P1 Unreclaimed non-receipt contents rows on 0-survivor churn: W4={non_receipt_w4} -> W14={non_receipt_w14} ({:.2}x)",
+            non_receipt_w14 as f64 / non_receipt_w4 as f64
         ));
     }
     if eff_w14 as f64 > eff_w4 as f64 * 1.50 + 100.0 {
@@ -2387,16 +2451,20 @@ async fn real_host_forever_running_o1_soak() {
         orphans.len()
     );
     eprintln!(
-        "[SCEN M][FINAL DBSTAT] db={:.1}MiB wal={:.1}MiB dir={:.1}MiB free={}pgs | {}",
+        "[SCEN M][FINAL DBSTAT] db={:.1}MiB rwal={:.1}MiB rshm={:.2}MiB dir={:.1}MiB free={}pgs req_raw={:.2}MiB | {}",
         final_xray.total_db_bytes as f64 / (1024.0 * 1024.0),
-        final_xray.total_wal_bytes as f64 / (1024.0 * 1024.0),
+        final_xray.runtime_wal_bytes as f64 / (1024.0 * 1024.0),
+        final_xray.runtime_shm_bytes as f64 / (1024.0 * 1024.0),
         final_xray.total_dir_bytes as f64 / (1024.0 * 1024.0),
         final_xray.freelist_count,
+        xray_count(&final_xray, "request_spec_raw_bytes") as f64 / (1024.0 * 1024.0),
         format_top_dbstat(&final_xray, 12),
     );
     eprintln!(
-        "[SCEN M][FINAL COUNTS] contents={} ops={} effects={} ctrl={} ret={} rec={} shell={} facts={} hist={} recall={} usage={} rooms={} mem={}",
+        "[SCEN M][FINAL COUNTS] contents={} (non_receipt={} orphan={}) ops={} effects={} ctrl={} ret={} rec={} shell={} facts={} hist={} refs={} cells={} cat_sess={} recall={} usage={} rooms={} mem={}",
         xray_count(&final_xray, "contents"),
+        xray_count(&final_xray, "non_receipt_contents"),
+        xray_count(&final_xray, "orphan_contents"),
         xray_count(&final_xray, "application_operations"),
         xray_count(&final_xray, "host_effects"),
         xray_count(&final_xray, "session_control"),
@@ -2405,6 +2473,9 @@ async fn real_host_forever_running_o1_soak() {
         xray_count(&final_xray, "shell_runs"),
         xray_count(&final_xray, "agent_facts"),
         xray_count(&final_xray, "agent_session_history"),
+        xray_count(&final_xray, "agent_history_content_refs"),
+        xray_count(&final_xray, "agent_cells"),
+        xray_count(&final_xray, "agent_catalog_sessions"),
         xray_count(&final_xray, "agent_recall_messages"),
         xray_count(&final_xray, "agent_usage_calls"),
         xray_count(&final_xray, "agent_room_messages"),
