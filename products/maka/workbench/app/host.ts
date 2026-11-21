@@ -220,6 +220,9 @@ export function createHost(application: UiHost) {
     get systemPermissionWindow() {
       return nativeHost.systemPermissionWindow;
     },
+    get localFolderPicker() {
+      return nativeHost.localFolderPicker;
+    },
     openSystemPermissionSetup: (sessionId: string, requestId: string) =>
       nativeHost.openSystemPermissionSetup(sessionId, requestId),
     systemPermissionStatus: (sessionId: string, requestId: string) =>

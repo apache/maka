@@ -93,7 +93,11 @@ async fn serve(root: PathBuf) -> Result<(), HostError> {
     let mut channels = JoinSet::new();
     loop {
         tokio::select! {
+            biased;
             result = &mut handoff, if starting => {
+                if closed.is_some() {
+                    return Err("WSL residency handoff completed without a Host anchor".into());
+                }
                 lifetime = Some(result??);
                 starting = false;
             }
@@ -114,10 +118,8 @@ async fn serve(root: PathBuf) -> Result<(), HostError> {
             }
             stream = mux.accept() => {
                 let Some(mut stream) = stream? else { break };
-                if channels.len() >= 128 {
-                    return Err("too many WSL IPC channels".into());
-                }
                 let endpoint = discovery.endpoint.clone();
+                // Stream #2 (accepted before residency handoff completes) is the Host anchor.
                 let closed = closed.take();
                 channels.spawn(async move {
                     let mut local = ipc::connect(&endpoint).await?;

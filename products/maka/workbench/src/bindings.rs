@@ -588,6 +588,12 @@ impl ApplicationHost {
         engine_context::<crate::UiScale>().is_some()
     }
 
+    /// Whether the shell's native folder picker yields paths valid on the Host.
+    #[getter]
+    pub fn local_folder_picker(&self) -> bool {
+        engine_context::<crate::RemoteHostFilesystem>().is_none()
+    }
+
     /// Re-layout and rasterize at the requested density, using the same input geometry.
     pub fn preview_ui_scale(&self, scale: f32) -> Result<(), String> {
         let control = engine_context::<crate::UiScale>()

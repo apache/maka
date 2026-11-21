@@ -615,6 +615,7 @@ impl Surface {
         self.frame_clients.borrow_mut().clear();
         self.ticker.borrow_mut().take();
         self.events_handled.set(0);
+        crate::tray::destroyed(self.hwnd());
         crate::app_window::close_all(self);
         self.invalidate();
     }

@@ -23,9 +23,10 @@
 use maka_host_runtime::application::host::Client as HostClient;
 use maka_workbench::bindings::Bindings;
 use nsh_engine::EngineConfig;
-use std::path::Path;
-#[cfg(not(windows))]
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tokio::runtime::Handle;
 #[cfg(not(windows))]
 use uuid::Uuid;
@@ -34,7 +35,6 @@ use uuid::Uuid;
 #[cfg(not(windows))]
 const STATUS_LIMIT: Duration = Duration::from_secs(2);
 /// How long quitting waits for the Host connection to close.
-#[cfg(not(windows))]
 pub const DETACH_LIMIT: Duration = Duration::from_secs(5);
 
 /// The workbench on one Host: its bindings, the engine configuration made
@@ -59,7 +59,15 @@ impl Connection {
         #[cfg(not(windows))]
         let epoch = host.epoch();
         let (client, directory) = maka_workbench::host::admit(host, root, "desktop").await?;
-        Ok(Self::mount(client, directory, endpoint, epoch, runtime))
+        Ok(Self::mount(
+            client,
+            directory,
+            #[cfg(not(windows))]
+            endpoint,
+            #[cfg(not(windows))]
+            epoch,
+            runtime,
+        ))
     }
 
     #[cfg(windows)]
@@ -69,23 +77,21 @@ impl Connection {
         directory: PathBuf,
         runtime: Handle,
     ) -> Result<Self, String> {
-        let epoch = host.epoch();
         let (client, directory) =
             maka_workbench::host::admit_in(host, root, directory, "desktop").await?;
-        Ok(Self::mount(
-            client,
-            directory,
-            PathBuf::new(),
-            epoch,
-            runtime,
-        ))
+        let mut connection = Self::mount(client, directory, runtime);
+        connection.config.context = connection
+            .config
+            .context
+            .with(maka_workbench::RemoteHostFilesystem);
+        Ok(connection)
     }
 
     fn mount(
         client: maka_app_client::Client,
         directory: PathBuf,
-        endpoint: PathBuf,
-        epoch: Uuid,
+        #[cfg(not(windows))] endpoint: PathBuf,
+        #[cfg(not(windows))] epoch: Uuid,
         runtime: Handle,
     ) -> Self {
         let bindings = Bindings::new(client, runtime.clone());

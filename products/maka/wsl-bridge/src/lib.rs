@@ -17,9 +17,13 @@
  * under the License.
  */
 
-//! Same-user WSL Desktop stdio protocol. The first yamux stream is the
-//! residency handoff and then tracks the anchor lifetime. All subsequent
-//! streams carry unmodified Host IPC.
+//! Same-user WSL Desktop stdio protocol.
+//!
+//! Stream order is fixed by the protocol:
+//! 1. Bootstrap stream: residency handoff (`0` -> `Ready` -> `1` + half-close -> `1`),
+//!    then held open until the Host anchor stream closes.
+//! 2. Host `Connect` anchor stream, opened before completing the residency handoff.
+//! 3. Subsequent streams: unmodified Host IPC channels.
 
 use serde::{Deserialize, Serialize};
 use std::{future::poll_fn, io, task::Poll};

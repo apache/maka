@@ -36,6 +36,13 @@ pub(crate) struct Target {
     directory: PathBuf,
 }
 
+pub(crate) struct Session {
+    pub(crate) connection: Connection,
+    pub(crate) bridge: Bridge,
+    pub(crate) disconnected: oneshot::Receiver<()>,
+    pub(crate) root: String,
+}
+
 impl Target {
     pub(crate) fn from_env(distro: OsString) -> Result<Self, String> {
         let get = |key: &str| {
@@ -56,24 +63,12 @@ impl Target {
     }
 
     pub(crate) fn run(self) -> Result<(), String> {
-        let mut expected = None;
-        loop {
-            let runtime = Runtime::new().map_err(|error| error.to_string())?;
-            let (connection, bridge, disconnected, root) =
-                runtime.block_on(self.connect(expected.as_deref()))?;
-            expected = Some(root);
-            let result = direct2d::run(connection, &runtime, Some(disconnected));
-            runtime.block_on(bridge.close());
-            if !result? {
-                return Ok(());
-            }
-        }
+        let runtime = Runtime::new().map_err(|error| error.to_string())?;
+        let first = runtime.block_on(self.connect(None))?;
+        direct2d::run_wsl(first, self, runtime)
     }
 
-    async fn connect(
-        &self,
-        expected: Option<&str>,
-    ) -> Result<(Connection, Bridge, oneshot::Receiver<()>, String), String> {
+    pub(crate) async fn connect(&self, expected: Option<&str>) -> Result<Session, String> {
         let mut child = Command::new("wsl.exe")
             .arg("--distribution")
             .arg(&self.distro)
@@ -100,7 +95,7 @@ impl Target {
         });
         let mut bridge = Bridge {
             child,
-            driver,
+            driver: Some(driver),
             monitor: None,
         };
         let admit = async {
@@ -158,7 +153,12 @@ impl Target {
                     let _ = lifetime.read_u8().await;
                     let _ = done.send(());
                 }));
-                Ok((connection, bridge, disconnected, root))
+                Ok(Session {
+                    connection,
+                    bridge,
+                    disconnected,
+                    root,
+                })
             }
             result => {
                 bridge.close().await;
@@ -172,21 +172,33 @@ impl Target {
     }
 }
 
-struct Bridge {
+pub(crate) struct Bridge {
     child: Child,
-    driver: JoinHandle<()>,
+    driver: Option<JoinHandle<()>>,
     monitor: Option<JoinHandle<()>>,
 }
 
+impl Drop for Bridge {
+    fn drop(&mut self) {
+        if let Some(monitor) = self.monitor.take() {
+            monitor.abort();
+        }
+        if let Some(driver) = self.driver.take() {
+            driver.abort();
+        }
+    }
+}
+
 impl Bridge {
-    async fn close(mut self) {
+    pub(crate) async fn close(mut self) {
         if let Some(monitor) = self.monitor.take() {
             monitor.abort();
             let _ = monitor.await;
         }
-        self.driver.abort();
-        let _ = self.driver.await;
-        // EOF normally lets the Linux helper settle its IPC channels.
+        if let Some(driver) = self.driver.take() {
+            driver.abort();
+            let _ = driver.await;
+        }
         if tokio::time::timeout(Duration::from_secs(5), self.child.wait())
             .await
             .is_err()
