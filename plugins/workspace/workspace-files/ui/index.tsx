@@ -130,6 +130,7 @@ export function activate(context: UiContext<UiHost, JSX.Element>): UiActivation<
     shown: resources.shown,
     fullscreen: resources.fullscreen,
     setFullscreen: resources.setFullscreen,
+    startTerminal: resources.startTerminal,
     hide: resources.hide,
     close() {
       const sessionId = resources.sessionId();

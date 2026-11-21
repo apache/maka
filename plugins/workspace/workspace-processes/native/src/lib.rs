@@ -37,6 +37,7 @@ use serde_json::Value;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
+mod actions;
 mod control;
 mod execute;
 mod health;
@@ -65,6 +66,14 @@ pub fn provide(registry: &mut NativeRegistry) -> Result<(), String> {
                                 maka_plugin_core::runtime::Published {
                                     contract: maka_workspace_api::terminal::contract(),
                                     value: Arc::new(terminal::Service(owner.clone()))
+                                        as Arc<dyn Handler>,
+                                },
+                            ),
+                            (
+                                maka_workspace_api::actions::EXPORT.into(),
+                                maka_plugin_core::runtime::Published {
+                                    contract: maka_workspace_api::actions::contract(),
+                                    value: Arc::new(actions::Service(owner.clone()))
                                         as Arc<dyn Handler>,
                                 },
                             ),

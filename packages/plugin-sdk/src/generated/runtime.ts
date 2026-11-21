@@ -267,6 +267,7 @@ export type RuntimeProtocol =
   | GitStatus
   | GitDiff
   | AgentGitDiffRead
+  | ActionDefinition
   | TerminalList
   | TerminalTarget
   | TerminalOutputRequest
@@ -8330,6 +8331,13 @@ export interface AgentGitDiffRead {
   area: GitArea;
   path: WorkspacePath;
   worktreePath?: string | null;
+}
+export interface ActionDefinition {
+  id: string;
+  projectId: string;
+  revision: number;
+  name: string;
+  command: string;
 }
 export interface TerminalList {
   sessionId: string;

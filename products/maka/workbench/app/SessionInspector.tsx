@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, effect, Scroll, signal, Text, untracked, View } from 'nsh';
+import { cleanup, effect, type JSX, Scroll, signal, Text, untracked, View } from 'nsh';
 import { Button, Popover } from 'nsh/base';
 import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
 import type {
@@ -73,6 +73,7 @@ export function SessionInspector(props: {
   sessionId: string;
   workspacePath?: string;
   floating: boolean;
+  projectActions?(): JSX.Element;
   activeWorktree?(): string | null;
   selectWorktree?(worktreePath: string | null): void;
   sources?(): readonly WorkspaceSourceItem[];
@@ -346,6 +347,8 @@ export function SessionInspector(props: {
             </View>
             {divider()}
           </If>
+
+          {props.projectActions?.()}
 
           {/* 2. Repository & Changes */}
           <If when={Boolean(effectivePath()) && props.openChanges !== undefined}>

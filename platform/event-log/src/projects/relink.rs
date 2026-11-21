@@ -205,6 +205,11 @@ impl Statement for WriteRelink {
             params![&project.id],
         )?;
         if let Some(conflict) = &conflict {
+            crate::root_store::action_definitions::merge_action_definitions(
+                connection,
+                &project.id,
+                &conflict.id,
+            )?;
             // Move identities before deleting their former owner; the unique
             // namespace prevents alias collisions throughout the transaction.
             connection.execute(
@@ -256,8 +261,8 @@ impl Statement for WriteRelink {
     fn committed(value: Self::Value) -> Self::Output {
         value
     }
-    fn isolated_rejection(_: &StoreError) -> bool {
-        false
+    fn isolated_rejection(error: &StoreError) -> bool {
+        matches!(error, StoreError::StatementRejected { .. })
     }
 }
 
@@ -321,4 +326,119 @@ fn reassign_bindings(
         advance_catalog(connection)?;
     }
     Ok((updated, permission_changed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_plugin_core::actions::{ActionDefinition, ActionId};
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn relink_preserves_actions_and_rolls_back_if_the_combined_project_is_too_large() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("projects.sqlite");
+        let log = EventLog::open(&path).await.unwrap();
+        let registration = |name: &str| ProjectRegistration {
+            identity: name.to_owned(),
+            name: name.to_owned(),
+            path: directory.path().join(name).to_str().unwrap().to_owned(),
+            is_worktree: false,
+        };
+        let source = log
+            .register_project(registration("source"), true, 1)
+            .await
+            .unwrap();
+        let target = log
+            .register_project(registration("target"), true, 2)
+            .await
+            .unwrap();
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let insert = |owner: &str, command: &str| {
+            let def = ActionDefinition {
+                id: ActionId(Uuid::new_v4()),
+                project_id: owner.to_owned(),
+                revision: 3,
+                name: "Build".into(),
+                command: command.into(),
+            };
+            db.execute(
+                "INSERT INTO project_actions VALUES (?, ?, ?, ?)",
+                params![
+                    def.id.to_string(),
+                    owner,
+                    i64::try_from(def.revision).unwrap(),
+                    serde_json::to_string(&def).unwrap()
+                ],
+            )
+            .unwrap();
+            def.id.to_string()
+        };
+        let kept = insert(&source.id, "make");
+        let moved = insert(&target.id, "make");
+        for _ in 0..127 {
+            insert(&target.id, "make");
+        }
+        let relink = || {
+            log.relink_project(
+                &source.id,
+                "owner",
+                registration("target"),
+                3,
+                serde_json::json!({}),
+            )
+        };
+        let error = relink().await.unwrap_err();
+        assert!(error.to_string().contains("Reduce the Actions"), "{error}");
+        assert_eq!(log.list_projects().await.unwrap().len(), 2);
+        let count = |project: &str| {
+            db.query_row(
+                "SELECT count(*) FROM project_actions WHERE project_id=?",
+                [project],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!((count(&source.id), count(&target.id)), (1, 128));
+        db.execute(
+            "DELETE FROM project_actions WHERE project_id=? AND id!=?",
+            params![target.id, moved],
+        )
+        .unwrap();
+        let command = "x".repeat(4096);
+        for _ in 0..6 {
+            insert(&source.id, &command);
+            insert(&target.id, &command);
+        }
+        assert!(
+            relink()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("Reduce the Actions")
+        );
+        assert_eq!((count(&source.id), count(&target.id)), (7, 7));
+        db.execute(
+            "DELETE FROM project_actions WHERE id NOT IN (?,?)",
+            params![kept, moved],
+        )
+        .unwrap();
+        relink().await.unwrap();
+        let mut query = db
+            .prepare("SELECT record_json FROM project_actions WHERE project_id=?")
+            .unwrap();
+        let mut ids = Vec::new();
+        for value in query
+            .query_map([&source.id], |row| row.get::<_, String>(0))
+            .unwrap()
+        {
+            let definition: ActionDefinition = serde_json::from_str(&value.unwrap()).unwrap();
+            assert_eq!(definition.project_id, source.id);
+            assert_eq!(definition.name, "Build");
+            assert_eq!(definition.revision, 3);
+            ids.push(definition.id.to_string());
+        }
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&kept) && ids.contains(&moved));
+    }
 }

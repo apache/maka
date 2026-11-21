@@ -154,6 +154,7 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
     configuration: typeof configurations.workspaceProcesses;
     exports: {
       processes: typeof contracts.workspaceProcesses;
+      projectActions: typeof contracts.projectActions;
       terminal: typeof contracts.terminal;
     };
   };
@@ -414,7 +415,11 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
   workspaceProcesses: {
     implementation: 'maka.workspace.processes',
     configuration: configurations.workspaceProcesses,
-    exports: { processes: contracts.workspaceProcesses, terminal: contracts.terminal },
+    exports: {
+      processes: contracts.workspaceProcesses,
+      projectActions: contracts.projectActions,
+      terminal: contracts.terminal,
+    },
   },
   protocolProcesses: {
     implementation: 'maka.workspace.protocol-processes',

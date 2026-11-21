@@ -172,6 +172,7 @@ const defaultUiAliases = Object.fromEntries(
 ) as UiAliases;
 const settingsUiImports = [
   'agent',
+  'projectActions',
   'settings',
   'authentication',
   'setup',
@@ -567,6 +568,10 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
   }
   if (configuration.processes)
     host.instances.gateway!.bindings!.terminal = [local('workspace-processes', 'terminal')];
+  if (configuration.processes)
+    host.instances.gateway!.bindings!.projectActions = [
+      local('workspace-processes', 'projectActions'),
+    ];
   if (configuration.web) {
     host.instances['workspace-web'] = node('workspace-web', { ...configuration.web });
     host.instances.gateway!.bindings!.web = [local('workspace-web', 'web')];
@@ -617,6 +622,12 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
         'gateway',
         'terminal',
         Object.keys(contracts.terminal.interface.methods),
+        true,
+      ),
+      projectActions: expose(
+        'gateway',
+        'projectActions',
+        Object.keys(contracts.projectActions.interface.methods),
         true,
       ),
     });

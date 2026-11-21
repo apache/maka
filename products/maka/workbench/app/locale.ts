@@ -36,6 +36,7 @@ import { externalAgentMessages } from './locale-external-agents';
 import { toolActivityMessages } from './locale-tool-activity';
 import { sessionToolMessages } from './locale-tool-sessions';
 import { deploymentToolMessages } from './locale-tool-deployment';
+import { projectActionMessages } from './locale-project-actions';
 import { automationMessages } from './locale-automation';
 import { nativeToolMessages } from './locale-tool-native';
 import { discoveryMessages } from './locale-discovery';
@@ -65,6 +66,7 @@ const copy = createCopy({
   ...nativeToolMessages,
   ...automationMessages,
   ...discoveryMessages,
+  ...projectActionMessages,
 });
 export type MessageKey = keyof ReturnType<typeof copy>;
 

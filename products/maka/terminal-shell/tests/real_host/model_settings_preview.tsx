@@ -318,6 +318,7 @@ function Preview() {
   const operations = createSettingsOperations(api);
   const owner = createModelSettings(api, operations, () => true);
   const instance = ['settings'];
+  const route = signal({ instance, id: 'project-actions' });
   const contribution = {
     key: 'connections',
     id: 'connections',
@@ -354,12 +355,26 @@ function Preview() {
     );
     return <ConnectionSettings owner={owner} />;
   }
+  const pages = [
+    contribution,
+    {
+      ...contribution,
+      id: 'project-actions',
+      key: 'project-actions',
+      declaration: { kind: 'settings', title: { fallback: 'Project Actions' } },
+    },
+  ];
   const context = {
+    instance,
+    services: {},
     runtime: {
-      contributions: () => [contribution],
+      contributions: () => pages,
       ready: () => true,
-      settings: () => [contribution],
-      render: (_: unknown, props: { input: SettingsPageInput }) => <Page input={props.input} />,
+      settings: () => pages,
+      render: (page: { id: string }, props: { input: SettingsPageInput }) => {
+        if (page.id !== 'connections') throw new Error('Unavailable settings page rendered');
+        return <Page input={props.input} />;
+      },
     },
   } as unknown as UiContext<UiHost, JSX.Element>;
   return (
@@ -368,7 +383,7 @@ function Preview() {
         context={context}
         input={{ opened: () => true, close() {} }}
         defaultRoute={{ instance, id: 'connections' }}
-        route={signal({ instance, id: 'connections' })}
+        route={route}
         operations={operations}
       />
     </HostProvider>

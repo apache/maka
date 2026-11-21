@@ -134,6 +134,7 @@ pub fn native() -> maka_plugin_core::package::NativeDefinition {
         [
             (EXPORT, contract()),
             (crate::terminal::EXPORT, crate::terminal::contract()),
+            (crate::actions::EXPORT, crate::actions::contract()),
         ],
     )
 }
