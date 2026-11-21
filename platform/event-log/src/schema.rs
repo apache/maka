@@ -44,9 +44,9 @@ pub const ROOT_MIGRATIONS: &[crate::migration::Migration] = &[
         sql: include_str!("../migrations/0042_checkpoint_repository.sql"),
     },
     crate::migration::Migration {
-        version: 49,
+        version: 51,
         description: "project actions",
-        sql: include_str!("../migrations/0049_project_actions.sql"),
+        sql: include_str!("../migrations/0051_project_actions.sql"),
     },
 ];
 
