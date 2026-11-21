@@ -93,19 +93,12 @@ function createSidebarPreferencesOwner() {
   };
 
   return {
-    supported,
     pinnedFeatures: () => pinnedFeatures(),
     isPinned: (feature: SidebarFeature) => pinnedFeatures().includes(feature),
     sortMode: () => sortMode(),
     toggleFeature(feature: SidebarFeature) {
       dirty.add('pinnedFeatures');
       pinnedFeatures.set(toggleSidebarFeature(pinnedFeatures(), feature));
-      persist();
-    },
-    setSortMode(mode: SidebarSortMode) {
-      if (!VALID_SORT_MODES.has(mode) || sortMode() === mode) return;
-      dirty.add('sortMode');
-      sortMode.set(mode);
       persist();
     },
     toggleSortMode() {

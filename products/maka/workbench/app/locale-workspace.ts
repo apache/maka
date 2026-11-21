@@ -120,7 +120,6 @@ export const workspaceMessages = {
   'Close side pane': ['Close side pane', '关闭右侧对话', '關閉右側對話'],
   'Collapse {name}': ['Collapse {name}', '收起 {name}', '收合 {name}'],
   'Expand {name}': ['Expand {name}', '展开 {name}', '展開 {name}'],
-  'Show more project conversations': ['Show more', '展开显示', '展開顯示'],
   'Show {count} more conversations': [
     'Show {count} more',
     '展开其余 {count} 条',
@@ -133,11 +132,6 @@ export const workspaceMessages = {
     'Show {name} in sidebar',
     '在侧边栏显示 {name}',
     '在側邊欄顯示 {name}',
-  ],
-  'Hidden items stay available in search.': [
-    'Hidden items stay available in search.',
-    '未固定项仍可通过搜索快速打开。',
-    '未固定項仍可透過搜尋快速開啟。',
   ],
   'By project': ['By project', '按项目', '按專案'],
   'By time': ['By time', '按时间', '按時間'],

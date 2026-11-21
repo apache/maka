@@ -4408,7 +4408,16 @@ async fn desktop_sidebar_customizes_features_switches_order_and_expands_full_wid
     desktop.control(&format!("Collapse {project_name}")).await;
     desktop.control("Sort by time").await;
 
+    desktop.press("Collapse session browser").await;
+    let expand = desktop.control("Expand session browser").await;
+    let composer = desktop.control("Focus message composer").await;
+    desktop.hover_at(expand.center());
+    desktop.hover_at(composer.center());
+    desktop.hover_at(expand.center());
     desktop.press("More features").await;
+    let rooms_switch = desktop.control("Show Rooms in sidebar").await;
+    desktop.hover_at(rooms_switch.center());
+    tokio::time::sleep(Duration::from_millis(260)).await;
     desktop.press("Show Rooms in sidebar").await;
     desktop.key("escape", false);
     desktop

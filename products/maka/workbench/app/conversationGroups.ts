@@ -187,7 +187,7 @@ export function browserOrder(
   });
 }
 
-/** Pinned conversations, then unpinned conversations bucketed chronologically (today, yesterday, earlier). */
+/** Pinned conversations, then unpinned conversations bucketed by recency while preserving Host page order. */
 export function groupConversationsByTime<Project>(
   sessions: readonly Groupable[],
   now = Date.now(),
@@ -198,14 +198,10 @@ export function groupConversationsByTime<Project>(
     if (session.pinned) pinned.push(session.id);
     else unpinned.push(session);
   }
-  unpinned.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
-  const todayMs = todayStart.getTime();
-  const yesterdayStart = new Date(todayMs);
-  yesterdayStart.setDate(yesterdayStart.getDate() - 1);
-  const yesterdayMs = yesterdayStart.getTime();
+  const ref = new Date(now);
+  const todayMs = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate()).getTime();
+  const yesterdayMs = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - 1).getTime();
 
   const today: string[] = [];
   const yesterday: string[] = [];

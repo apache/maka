@@ -151,6 +151,7 @@ import {
   groupConversations,
   groupConversationsByTime,
 } from '../../../../products/maka/workbench/app/conversationGroups';
+import { workspaceSessions } from '../../../../products/maka/workbench/app/sessionNesting';
 import { sidebarPreferences } from '../../../../products/maka/workbench/app/sidebarPreferences';
 import {
   WorkspaceBrowser,
@@ -1970,8 +1971,16 @@ export function createConversationUi(
     const current = overlay();
     if (switching() || busy() || (current && current.kind !== 'sessions')) return;
     const bot = botSession() ?? null;
-    const visible = browsing.sessions().filter((session) => session.id !== bot);
-    const byTime = platform.idiom !== 'terminal' && sidebarPreferences.sortMode() === 'time';
+    const visible = workspaceSessions(
+      browsing.sessions(),
+      bot,
+      browsing.filter(),
+      platform.idiom !== 'terminal',
+    );
+    const byTime =
+      platform.idiom !== 'terminal' &&
+      browsing.filter() === 'all' &&
+      sidebarPreferences.sortMode() === 'time';
     const rows = browserOrder(
       byTime
         ? groupConversationsByTime(visible)
@@ -2321,14 +2330,16 @@ export function createConversationUi(
     command: invokeOwn,
     browsing,
     sessionHandle,
-    navigation(input: ConversationNavigationInput) {
+    navigation(input: ConversationNavigationInput<JSX.Element>) {
       bind(input.shell);
       return (
         <WorkspaceBrowser
           {...browserProps}
           openRooms={input.openRooms}
+          navigationMore={input.navigationMore}
           pinSidebar={input.pinSidebar}
           suppressSidebarHover={input.suppressSidebarHover}
+          holdSidebarHover={input.holdSidebarHover}
         />
       );
     },

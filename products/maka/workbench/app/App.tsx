@@ -517,6 +517,7 @@ function App(
               shell,
               openRooms: () => void switchWorkspace('rooms'),
               suppressSidebarHover: sidebarHover.suppressUntilExit,
+              holdSidebarHover: temporary ? sidebarHover.hold : undefined,
               pinSidebar: temporary ? shell.showSidebar : undefined,
             })
           }

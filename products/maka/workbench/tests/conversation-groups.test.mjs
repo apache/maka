@@ -223,16 +223,17 @@ test('an open family does not use up its project limit', () => {
   ]);
 });
 
-test('chronological view keeps pinned first and buckets remaining conversations by recency', () => {
+test('chronological view keeps pinned first, preserves Host order, and buckets by local calendar day', () => {
   const now = new Date(2026, 10, 21, 14, 0, 0).getTime();
-  const at = (dayOffset, hour) => new Date(2026, 10, 21 + dayOffset, hour, 0, 0).getTime();
+  const at = (dayOffset, hour, min = 0) =>
+    new Date(2026, 10, 21 + dayOffset, hour, min, 0).getTime();
   const groups = groupConversationsByTime(
     [
-      { ...session('older', '/a'), updatedAt: at(-3, 9) },
       { ...session('pin', '/b', { pinned: true }), updatedAt: at(-5, 9) },
-      { ...session('yest', '/a'), updatedAt: at(-1, 18) },
-      { ...session('today-old', '/b'), updatedAt: at(0, 8) },
-      { ...session('today-new', '/a'), updatedAt: at(0, 12) },
+      { ...session('today-first', '/a'), updatedAt: at(0, 8) },
+      { ...session('today-second', '/b'), updatedAt: at(0, 12) },
+      { ...session('yest-early', '/a'), updatedAt: at(-1, 0, 30) },
+      { ...session('older', '/a'), updatedAt: at(-3, 9) },
     ],
     now,
   );
@@ -240,17 +241,17 @@ test('chronological view keeps pinned first and buckets remaining conversations 
     groups.map((group) => [group.key, group.sessions]),
     [
       ['pinned', ['pin']],
-      ['time:today', ['today-new', 'today-old']],
-      ['time:yesterday', ['yest']],
+      ['time:today', ['today-first', 'today-second']],
+      ['time:yesterday', ['yest-early']],
       ['time:earlier', ['older']],
     ],
   );
   assert.equal(groupWorkspace(groups[1]), null);
   assert.deepEqual(browserOrder(groups, new Set(), null, new Set()), [
     'pin',
-    'today-new',
-    'today-old',
-    'yest',
+    'today-first',
+    'today-second',
+    'yest-early',
     'older',
   ]);
 });
