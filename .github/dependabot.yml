@@ -47,13 +47,3 @@ updates:
     groups:
       actions:
         patterns: ["*"]
-
-  - package-ecosystem: github-actions
-    directory: /
-    target-branch: rust-preview
-    schedule:
-      interval: daily
-    labels: [dependencies]
-    groups:
-      actions:
-        patterns: ["*"]

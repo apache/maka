@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://maka.apache.org/sitemap.xml
