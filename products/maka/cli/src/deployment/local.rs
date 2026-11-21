@@ -61,6 +61,23 @@ pub async fn connect(path: PathBuf) -> Result<Connection, HostError> {
     crate::operation::without_progress(connect_inner(path, None, &launcher)).await
 }
 
+/// Acquires the per-path launch lock that serializes first-time Root
+/// initialization and startup for `root_path`.
+pub(crate) fn acquire_launch_lock(
+    root_path: &std::path::Path,
+    namespaces: &RootNamespaces,
+) -> io::Result<FileLease> {
+    let canonical = root::prepare_directory(root_path)?;
+    let key = hex::encode(Sha256::digest(canonical.as_os_str().as_encoded_bytes()));
+    root::private_directory(&namespaces.ownership)?;
+    // Before initialization there is no Root ID. Serialize launchers
+    // for this path through Ready, including partial marker/database
+    // publication; the Root writer lease remains the sole authority.
+    let launch = FileLease::acquire(&namespaces.ownership.join(format!("tui-launch-{key}.lock")))?;
+    launch.validate()?;
+    Ok(launch)
+}
+
 pub async fn connect_application(
     request: &maka_host_runtime::application::host::startup::Request,
 ) -> Result<Connection, HostError> {
@@ -89,15 +106,7 @@ async fn connect_inner(
             let root_path = path.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let namespaces = RootNamespaces::for_current_account()?;
-                let canonical = root::prepare_directory(&root_path)?;
-                let key = hex::encode(Sha256::digest(canonical.as_os_str().as_encoded_bytes()));
-                root::private_directory(&namespaces.ownership)?;
-                // Before initialization there is no Root ID. Serialize launchers
-                // for this path through Ready, including partial marker/database
-                // publication; the Root writer lease remains the sole authority.
-                let launch = FileLease::acquire(
-                    &namespaces.ownership.join(format!("tui-launch-{key}.lock")),
-                )?;
+                let launch = acquire_launch_lock(&root_path, &namespaces)?;
                 let id = root::initialize(&root_path, &namespaces)?;
                 launch.validate()?;
                 Ok::<_, io::Error>((launch, id))
@@ -607,4 +616,30 @@ fn absent(error: &io::Error) -> bool {
         error.kind(),
         io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::acquire_launch_lock;
+    use maka_event_log::root::RootNamespaces;
+    use std::io;
+
+    #[test]
+    fn launch_lock_serializes_uninitialized_root_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root_path = temp.path().join("first-start-root");
+        let namespaces = RootNamespaces {
+            ownership: temp.path().join("ownership"),
+            control: temp.path().join("control"),
+        };
+
+        let lease = acquire_launch_lock(&root_path, &namespaces).unwrap();
+        let err = match acquire_launch_lock(&root_path, &namespaces) {
+            Ok(_) => panic!("concurrent launch lock acquisition must block"),
+            Err(error) => error,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+        drop(lease);
+        let _reacquired = acquire_launch_lock(&root_path, &namespaces).unwrap();
+    }
 }

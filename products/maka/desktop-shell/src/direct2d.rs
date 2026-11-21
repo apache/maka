@@ -49,13 +49,37 @@ pub(crate) fn start(target: crate::Target) -> Result<(), String> {
         let host = HostClient::connect(&target.endpoint, Some(target.epoch)).await?;
         host::Connection::admit(host, root.canonical_path(), Handle::current()).await
     })?;
-    run(first, runtime)
+    run(
+        first,
+        root.canonical_path().to_path_buf(),
+        target.endpoint,
+        target.epoch,
+        runtime,
+    )
 }
 
-fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
+fn run(
+    first: Connection,
+    root: std::path::PathBuf,
+    endpoint: std::path::PathBuf,
+    epoch: uuid::Uuid,
+    runtime: Runtime,
+) -> Result<(), String> {
     let Connection { bindings, config } = first;
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
+    let (_active_host_tx, active_host_rx) = watch::channel((endpoint, epoch));
+    let (updating_tx, updating_rx) = watch::channel(false);
+    let updater = crate::updater::Controller::new(
+        root,
+        active_host_rx,
+        updating_tx,
+        shell.exit_sender(),
+        shell.events.clone(),
+        runtime.handle().clone(),
+    );
+    let updater_exit = std::sync::Arc::clone(&updater);
+    let shell = shell.with_updater(updater);
     let reloading = config
         .context
         .get::<UiReload>()
@@ -66,7 +90,10 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
     let result = run_app_with_config(shell.attach(config), window_options(), move |is_active| {
         active.send_replace(is_active);
     });
-    runtime.block_on(host::quit(bindings));
+    updater_exit.wait_for_in_flight_swap();
+    if !*updating_rx.borrow() {
+        runtime.block_on(host::quit(bindings));
+    }
     runtime.shutdown_background();
     if result == std::process::ExitCode::SUCCESS {
         Ok(())

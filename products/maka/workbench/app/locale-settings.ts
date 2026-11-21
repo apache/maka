@@ -1321,4 +1321,75 @@ export const settingsMessages = {
     '{shortcut} 恢复为 100%。',
     '{shortcut} 還原為 100%。',
   ],
+  Updates: ['Updates', '软件更新', '軟體更新'],
+  'Nightly (unofficial developer build)': [
+    'Nightly (unofficial developer build)',
+    'Nightly（非官方开发者测试版）',
+    'Nightly（非官方開發者測試版）',
+  ],
+  Release: ['Release', '正式版', '正式版'],
+  Development: ['Development', '开发构建', '開發建置'],
+  'Automatic updates are disabled for local development builds.': [
+    'Automatic updates are disabled for local development builds.',
+    '本地开发构建不启用自动更新。',
+    '本機開發建置不啟用自動更新。',
+  ],
+  'Checking for updates…': ['Checking for updates…', '正在检查更新…', '正在檢查更新…'],
+  'Check for updates': ['Check for updates', '检查更新', '檢查更新'],
+  'Check for updates on this channel.': [
+    'Check for updates on this channel.',
+    '检查该频道是否有可用更新。',
+    '檢查該頻道是否有可用更新。',
+  ],
+  'You are on the latest build for this channel.': [
+    'You are on the latest build for this channel.',
+    '当前已是该频道的最新版本。',
+    '目前已是該頻道的最新版本。',
+  ],
+  'Version {version} is available to download.': [
+    'Version {version} is available to download.',
+    '发现新版本 {version}，可以下载更新。',
+    '發現新版本 {version}，可以下載更新。',
+  ],
+  'Version {version} is available for manual download.': [
+    'Version {version} is available for manual download.',
+    '发现新版本 {version}（当前目录不可写，请手动下载）。',
+    '發現新版本 {version}（目前目錄不可寫，請手動下載）。',
+  ],
+  'Nightly update {version} is available (unofficial developer build).': [
+    'Nightly update {version} is available (unofficial developer build).',
+    '有新的 Nightly 测试版 {version} 可用（非 Apache 官方版本）。',
+    '有新的 Nightly 測試版 {version} 可用（非 Apache 官方版本）。',
+  ],
+  'Maka {version} is available.': [
+    'Maka {version} is available.',
+    'Maka {version} 已发布。',
+    'Maka {version} 已發佈。',
+  ],
+  'Downloading update {version}…': [
+    'Downloading update {version}…',
+    '正在下载更新 {version}…',
+    '正在下載更新 {version}…',
+  ],
+  'Downloading update {version}… {percent}%': [
+    'Downloading update {version}… {percent}%',
+    '正在下载更新 {version}… {percent}%',
+    '正在下載更新 {version}… {percent}%',
+  ],
+  'Update {version} is ready. Maka Host will restart to apply it; active runs resume automatically.':
+    [
+      'Update {version} is ready. Maka Host will restart to apply it; active runs resume automatically.',
+      '更新 {version} 已就绪。应用更新将重启 Maka Host，进行中的任务会在重启后自动恢复。',
+      '更新 {version} 已就緒。套用更新將重新啟動 Maka Host，進行中的任務會在重啟後自動恢復。',
+    ],
+  'Stopping Maka Host and applying update…': [
+    'Stopping Maka Host and applying update…',
+    '正在停止 Maka Host 并应用更新…',
+    '正在停止 Maka Host 並套用更新…',
+  ],
+  'Download update': ['Download update', '下载更新', '下載更新'],
+  'Restart to update': ['Restart to update', '重启并更新', '重啟並更新'],
+  'Open download': ['Open download', '打开下载页', '開啟下載頁'],
+  Later: ['Later', '稍后', '稍後'],
+  'Update check failed.': ['Update check failed.', '检查更新失败。', '檢查更新失敗。'],
 } as const satisfies Catalog;

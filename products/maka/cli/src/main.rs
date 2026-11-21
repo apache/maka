@@ -38,6 +38,7 @@ mod sandbox;
 mod serve;
 mod signals;
 mod startup;
+mod update;
 #[cfg(windows)]
 mod windows;
 #[cfg(target_os = "linux")]

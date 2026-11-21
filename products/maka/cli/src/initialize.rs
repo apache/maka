@@ -132,7 +132,8 @@ impl Init {
                     return Err("invalid initial settings: invalid project directory roots".into());
                 }
             }
-            // Never reconfigure an existing root or race its running Host.
+            // Never reconfigure an existing root or race its running Host or updater.
+            let _launch = crate::deployment::acquire_launch_lock(&self.root.root, &namespaces)?;
             let owner = Arc::new(RootOwner::create(&self.root.root, &namespaces)?);
             let id = owner.root_id().to_owned();
             let store = Arc::new(ConfigurationStore::for_root(owner.clone()).await?);
@@ -311,6 +312,7 @@ impl Init {
             }
             id
         } else {
+            let _launch = crate::deployment::acquire_launch_lock(&self.root.root, &namespaces)?;
             initialize(&self.root.root, &namespaces)?
         };
         println!("{}", serde_json::json!({"rootId":id}));

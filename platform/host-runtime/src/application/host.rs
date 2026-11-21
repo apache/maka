@@ -491,9 +491,12 @@ impl Host {
             Request::Retire {
                 interrupt,
                 allow_idle_connections,
+                refuse_active_sessions,
             } => {
                 authority.local()?;
-                let result = self.retire(interrupt, allow_idle_connections).await;
+                let result = self
+                    .retire(interrupt, allow_idle_connections, refuse_active_sessions)
+                    .await;
                 wire::write(&mut output, &Response::Retired(result)).await
             }
             Request::Quit {

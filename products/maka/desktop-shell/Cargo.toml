@@ -26,6 +26,7 @@ publish.workspace = true
 maka-event-log.workspace = true
 maka-app-client.workspace = true
 maka-host-runtime.workspace = true
+maka-updater.workspace = true
 maka-workbench.workspace = true
 nsh-engine.workspace = true
 serde.workspace = true
