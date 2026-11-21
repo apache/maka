@@ -194,9 +194,10 @@ async fn quick_questions_stream_with_explicit_history_outside_the_bot_transcript
         let backend = json!({"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"});
         call(client, "agent", "selectBackend", json!({"sessionId":session,"backend":backend})).await?;
         let before = call(client, "agent", "observe", json!({"sessionId":session})).await?;
-        for (id, previous) in [("one", None), ("two", Some("one")), ("three", None)] {
+        for (id, previous) in [("one", None), ("two", Some("one")), ("three", None), ("restored", None)] {
+            let history = if id == "restored" { json!([{"question":"Saved question", "answer":"Saved answer"}]) } else { json!([]) };
             let mut question = client.call("agent", "askQuickQuestion".into(), json!({
-                "sessionId":session,"requestId":id,"question":"Describe the square.","continueFrom":previous
+                "sessionId":session,"requestId":id,"question":"Describe the square.","continueFrom":previous, "history":history
             }), Attachments::new()).await?;
             question.start().await?;
             assert!(matches!(question.receive().await?, Reply::Prepared { .. }));
@@ -213,7 +214,10 @@ async fn quick_questions_stream_with_explicit_history_outside_the_bot_transcript
             let request = upstream.recv().await.ok_or("missing model request")?;
             assert!(request["tools"].as_array().is_none_or(Vec::is_empty));
             let messages = request["messages"].as_array().unwrap();
-            assert_eq!(messages.iter().any(|m| m["role"] == "assistant"), previous.is_some());
+            assert_eq!(messages.iter().any(|m| m["role"] == "assistant"), previous.is_some() || id == "restored");
+            if id == "restored" {
+                assert!(messages.iter().any(|m| m["role"] == "assistant" && m["content"].to_string().contains("Saved answer")));
+            }
         }
         let after = call(client, "agent", "observe", json!({"sessionId":session})).await?;
         assert_eq!(before["lastCompletedTurnId"], after["lastCompletedTurnId"]);

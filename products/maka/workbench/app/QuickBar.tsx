@@ -66,6 +66,7 @@ export function QuickSectionTitle(props: { title: string }) {
 export function QuickRow(props: {
   label: string;
   title: string;
+  pluginName?: string | undefined;
   detail?: string | undefined;
   trailing?: string | undefined;
   /** What to type for the row, such as a command's alias, shown before `trailing`. */
@@ -109,8 +110,9 @@ export function QuickRow(props: {
       <Text
         style={{
           ...bodyTextStyle,
-          flexShrink: 0,
-          maxWidth: props.previewRow ? '86%' : '60%',
+          flexShrink: 1,
+          minWidth: 0,
+          maxWidth: props.pluginName ? '50%' : props.previewRow ? '86%' : '60%',
           fontWeight: '500',
           color: props.previewRow && props.selected ? C.accent : C.text,
           numberOfLines: 1,
@@ -119,6 +121,22 @@ export function QuickRow(props: {
       >
         {props.title}
       </Text>
+      <If when={!!props.pluginName}>
+        <Text
+          style={{
+            fontSize: 12,
+            lineHeight: 18,
+            color: C.muted,
+            maxWidth: '24%',
+            flexShrink: 1,
+            minWidth: 0,
+            numberOfLines: 1,
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {props.pluginName}
+        </Text>
+      </If>
       <Text
         style={{
           ...bodyTextStyle,

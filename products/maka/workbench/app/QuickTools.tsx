@@ -32,9 +32,10 @@ import {
   type SettingsPageNavigation,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { Button } from 'nsh/base';
+import { PluginIcon } from './PluginIcon';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { sameValue } from '../../../../plugins/shared/value';
-import { tr } from './locale';
+import { localizedPresentation, tr } from './locale';
 import { contributionTitle } from './plugins/context';
 import {
   CommandSettings,
@@ -59,6 +60,15 @@ export type Attached = { tool: UiContributionRef; handle: QuickToolHandle };
 const ENABLED_KEY = 'maka.quick-launcher.tools-enabled';
 
 const DISABLED_KEY = 'maka.quick-launcher.disabled-plugins';
+export const dictationTool = (tool: UiContributionRef) =>
+  tool.instance.package.id === 'maka.dictation' && tool.id === 'tool';
+export const conversationTool = (tool: UiContributionRef) =>
+  tool.instance.package.id === 'maka.conversations' && tool.id === 'quickConversations';
+export function quickPluginName(tool: UiContributionRef): string {
+  if (conversationTool(tool)) return 'maka';
+  const { presentation, package: owner } = tool.instance;
+  return (presentation && localizedPresentation(presentation).displayName) || owner.id;
+}
 const libraryTool = (tool: UiContributionRef) => tool.instance.package.id === 'maka.quick-library';
 const pluginKey = (tool: UiContributionRef) =>
   JSON.stringify(libraryTool(tool) ? [...tool.instance.path, tool.id] : tool.instance.path);
@@ -74,6 +84,9 @@ export type QuickTools = {
   /** Whether the launcher offers the tools at all; off until the user turns them on. */
   enabled(): boolean;
   setEnabled(enabled: boolean): void;
+  syncQuestions(): boolean;
+  setSyncQuestions(enabled: boolean): void;
+  questionPreferenceReady: Promise<void>;
   /** Why the switch could not be read or saved. */
   failure(): unknown;
   ready(): boolean;
@@ -104,6 +117,14 @@ export function createQuickTools(runtime: UiRuntime<JSX.Element>): QuickTools {
     (reason) => failure.set(reason),
   );
   let saving: Promise<void> = Promise.resolve();
+  const syncKey = 'maka.quick-launcher.sync-questions';
+  const syncQuestions = signal(false);
+  let syncChosen = false;
+  const questionPreferenceReady = Storage.getItem(syncKey)
+    .then((value) => {
+      if (!syncChosen) syncQuestions.set(value === 'true');
+    })
+    .catch((reason) => failure.set(reason));
   const disabled = signal<ReadonlySet<string>>(new Set());
   const ready = signal(false);
   Storage.getItem(DISABLED_KEY)
@@ -160,6 +181,15 @@ export function createQuickTools(runtime: UiRuntime<JSX.Element>): QuickTools {
         .then(() => Storage.setItem(ENABLED_KEY, value))
         .catch((reason) => failure.set(reason));
     },
+    syncQuestions,
+    questionPreferenceReady,
+    setSyncQuestions(next) {
+      syncChosen = true;
+      syncQuestions.set(next);
+      saving = saving
+        .then(() => Storage.setItem(syncKey, String(next)))
+        .catch((reason) => failure.set(reason));
+    },
     failure,
     tools,
     ready,
@@ -197,6 +227,7 @@ export function createQuickTools(runtime: UiRuntime<JSX.Element>): QuickTools {
     page,
     configurable: (tool) => page(tool) !== undefined || ownEntries(tool).length > 0,
     title(tool) {
+      if (conversationTool(tool)) return quickPluginName(tool);
       const own = page(tool);
       if (own) return contributionTitle(own);
       const names = ownEntries(tool).map((item) => item.entry.title);
@@ -220,6 +251,20 @@ export function QuickToolSettings(props: {
   const page = () => quick.page(props.tool);
   return (
     <View style={{ flex: 1, minHeight: 0 }}>
+      <If when={conversationTool(props.tool)}>
+        <View style={{ paddingHorizontal: settingsGutter }}>
+          <SettingsSection>
+            <SettingsSwitch
+              label={tr('Save new quick questions to conversations')}
+              description={tr(
+                'Applies to new quick questions. You can add an earlier one from its actions menu.',
+              )}
+              checked={quick.syncQuestions()}
+              onPress={() => quick.setSyncQuestions(!quick.syncQuestions())}
+            />
+          </SettingsSection>
+        </View>
+      </If>
       <If when={entries().length > 0}>
         <View style={{ paddingHorizontal: settingsGutter, paddingBottom: 24 }}>
           <CommandSettings
@@ -311,6 +356,14 @@ export function QuickToolsSettings(props: {
         action: () => (selected() === null ? null : (tool.inner()?.action?.() ?? null)),
       }),
     );
+  const mark = (item: UiContributionRef) => (
+    <PluginIcon
+      packageId={item.instance.package.id}
+      toolId={item.id}
+      entry={quick.handles().get(item.key)?.entries()[0]}
+      muted={!quick.toolEnabled(item)}
+    />
+  );
   const summary = (item: UiContributionRef) =>
     quick
       .entries()
@@ -376,10 +429,11 @@ export function QuickToolsSettings(props: {
                   <View style={{ flex: 1 }}>
                     <If
                       when={quick.configurable(item())}
-                      else={<SettingsRow label={quick.title(item())} />}
+                      else={<SettingsRow label={quick.title(item())} leading={mark(item())} />}
                     >
                       <SettingsRow
                         label={quick.title(item())}
+                        leading={mark(item())}
                         description={summary(item()) || undefined}
                         opens
                         onPress={() => selected.set(item())}

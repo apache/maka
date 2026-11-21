@@ -2612,6 +2612,10 @@ export interface ServiceMethods {
         question: string;
         requestId: string;
         continueFrom?: string | null;
+        /**
+         * @maxItems 32
+         */
+        history?: Runtime.QuickTurn[];
       };
       output: null;
     };

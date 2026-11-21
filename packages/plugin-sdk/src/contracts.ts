@@ -162,9 +162,32 @@ export const contracts: {
               continueFrom: {
                 type: ['string', 'null'],
               },
+              history: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/QuickTurn',
+                },
+                maxItems: 32,
+                default: [],
+              },
             },
             additionalProperties: false,
             required: ['sessionId', 'question', 'requestId'],
+            $defs: {
+              QuickTurn: {
+                type: 'object',
+                properties: {
+                  question: {
+                    type: 'string',
+                  },
+                  answer: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['question', 'answer'],
+              },
+            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -19057,6 +19080,45 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'quick_question',
+                  },
+                  thread: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  turns: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/QuickTurn',
+                    },
+                    minItems: 1,
+                    maxItems: 32,
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  backend: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentBackendPreference',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'thread', 'turns', 'path', 'title'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'copy',
                   },
                   selection: {
@@ -19128,6 +19190,117 @@ export const contracts: {
                     required: ['kind', 'path', 'database'],
                   },
                 ],
+              },
+              QuickTurn: {
+                type: 'object',
+                properties: {
+                  question: {
+                    type: 'string',
+                  },
+                  answer: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['question', 'answer'],
+              },
+              AgentBackendPreference: {
+                description:
+                  "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      connectionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      modelId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      serviceTier: {
+                        type: ['string', 'null'],
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'connectionId', 'modelId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
+                  },
+                ],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               AgentImportSelection: {
                 type: 'object',
@@ -77407,6 +77580,14 @@ export const contracts: {
                   package: {
                     $ref: '#/$defs/PackageRef',
                   },
+                  presentation: {
+                    $ref: '#/$defs/PackagePresentation',
+                    default: {
+                      displayName: '',
+                      description: '',
+                      localizations: {},
+                    },
+                  },
                   configuration: true,
                   module: {
                     type: 'string',
@@ -77457,6 +77638,41 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['id', 'revision'],
+              },
+              PackagePresentation: {
+                type: 'object',
+                properties: {
+                  displayName: {
+                    type: 'string',
+                  },
+                  description: {
+                    type: 'string',
+                  },
+                  localizations: {
+                    type: 'object',
+                    additionalProperties: {
+                      $ref: '#/$defs/PackageDescription',
+                    },
+                    default: {},
+                  },
+                },
+                additionalProperties: false,
+                required: ['displayName', 'description'],
+              },
+              PackageDescription: {
+                description:
+                  'Author-provided copy for plugin discovery; never an authority declaration.',
+                type: 'object',
+                properties: {
+                  displayName: {
+                    type: 'string',
+                  },
+                  description: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['displayName', 'description'],
               },
               UiContribution: {
                 oneOf: [

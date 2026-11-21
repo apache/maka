@@ -17,53 +17,73 @@
  * under the License.
  */
 
-import { Clipboard, cleanup, keymap, Scroll, signal, Text, View, type ScrollRef } from 'nsh';
-import { Button, Input, TextView } from 'nsh/base';
+import { cleanup, keymap, openUrl, Scroll, signal, Text, View, type ScrollRef } from 'nsh';
+import { Button, Input, Menu, MenuItem } from 'nsh/base';
 import { MakaMark, quickBarStyle, quickInputStyle } from './QuickBar';
 import type { createQuickQuestion } from './quickQuestion';
+import { MessageRow } from './MessageRow';
 import { tr } from './locale';
-import { C, bodyTextStyle } from './ui';
+import { C, floatingStyle, menuRowStyle, menuRowHoverStyle, IconButton } from './ui';
 
 export function QuickQuestionPanel(props: {
   question: ReturnType<typeof createQuickQuestion>;
+  promoting(): boolean;
+  promote(): void;
   back(): void;
 }) {
-  const draft = signal('');
   const { question } = props;
+  const draft = signal('');
+  const menu = signal(false);
+  const busy = () => question.running() || props.promoting();
   const back = () => {
-    if (question.running()) question.stop();
-    else props.back();
+    if (menu()) menu.set(false);
+    else if (question.running()) question.stop();
+    else if (!props.promoting()) props.back();
   };
   cleanup(keymap.bind('escape', back, { when: 'always' }));
+  cleanup(keymap.bind('mod+k', () => menu.set(!menu()), { when: 'always' }));
   const submit = () => {
     const text = draft().trim();
-    if (!text || question.running()) return;
+    if (!text || busy()) return;
     draft.set('');
     followAnswer = true;
-    void question.ask(text, question.turns().length > 0);
+    void question.ask(text, question.thread());
   };
   let scroll: ScrollRef | undefined;
   let followAnswer = true;
-  const error = signal('');
+  const rows = () =>
+    (question.thread()?.turns ?? []).flatMap((turn, i) =>
+      (
+        [
+          ['user', turn.question],
+          ['assistant', turn.answer],
+        ] as const
+      )
+        .filter(([, text]) => text.length > 0)
+        .map(([role, text]) => ({ key: i + '-' + role, role, text, field: 'body' })),
+    );
   return (
     <View style={{ backgroundColor: C.panel, borderRadius: 12, overflow: 'hidden' }}>
-      <View style={{ ...quickBarStyle, alignItems: 'center' }}>
+      <View style={{ ...quickBarStyle, alignItems: 'center', gap: 8 }}>
         <MakaMark />
         <Input
           autoFocus
           accessibilityLabel={tr('Quick question')}
-          placeholder={question.turns().length ? tr('Ask a follow-up') : tr('Ask a question')}
+          placeholder={tr('Ask a follow-up')}
           value={draft()}
           onChange={({ value }) => draft.set(value)}
           onSubmit={submit}
           style={{ ...quickInputStyle(), flex: 1 }}
         />
+        <If when={question.running()}>
+          <IconButton label={tr('Stop')} icon="stop" onPress={question.stop} />
+        </If>
       </View>
       <Scroll
         ref={(node) => {
           scroll = node;
         }}
-        style={{ height: question.turns().length ? 300 : 0 }}
+        style={{ height: 300 }}
         onScroll={({ offset, contentSize, size }) => {
           followAnswer = offset.y >= contentSize.height - size.height - 48;
         }}
@@ -72,43 +92,28 @@ export function QuickQuestionPanel(props: {
           onLayout={() => {
             if (followAnswer) scroll?.scrollToEnd({ animated: false });
           }}
-          style={{ padding: 16, gap: 12 }}
+          style={{ paddingHorizontal: 16, paddingBottom: 12 }}
         >
-          <Each of={question.turns()} key={(_, i) => String(i)}>
-            {(turn) => (
-              <View style={{ gap: 12 }}>
-                <Text
-                  style={{
-                    ...bodyTextStyle,
-                    alignSelf: 'flex-end',
-                    maxWidth: '85%',
-                    padding: 8,
-                    borderRadius: 8,
-                    backgroundColor: C.raised,
-                    color: C.text,
-                  }}
-                >
-                  {turn().question}
-                </Text>
-                <If
-                  when={!!turn().answer}
-                  else={
-                    <Text style={{ color: C.muted }}>
-                      {question.running() ? tr('Generating answer…') : ''}
-                    </Text>
-                  }
-                >
-                  <TextView
-                    markdown={turn().answer}
-                    selectable
-                    options={{ preserveLineBreaks: true }}
-                  />
-                </If>
-              </View>
+          <Each of={rows()} key={(row) => row.key}>
+            {(row) => (
+              <MessageRow
+                item={row}
+                sessionId={question.thread()!.id}
+                through={() => 0}
+                previewImage={() => {}}
+                toolMaxHeight={() => 300}
+                userScroll={() => {}}
+                openLink={async (target) => {
+                  if (/^https?:\/\//i.test(target)) await openUrl(target);
+                }}
+              />
             )}
           </Each>
-          <If when={!!(question.error() || error())}>
-            <Text style={{ color: C.warning }}>{question.error() || error()}</Text>
+          <If when={question.running() && !question.thread()?.turns.at(-1)?.answer}>
+            <Text style={{ color: C.muted }}>{tr('Generating answer…')}</Text>
+          </If>
+          <If when={!!question.error()}>
+            <Text style={{ color: C.warning }}>{question.error()}</Text>
           </If>
         </View>
       </Scroll>
@@ -117,36 +122,41 @@ export function QuickQuestionPanel(props: {
           flexDirection: 'row',
           paddingHorizontal: 12,
           height: 32,
-          gap: 12,
           alignItems: 'center',
           borderTopWidth: 1,
-          borderTopColor: C.line,
+          borderColor: C.line,
         }}
       >
-        <Button onPress={props.back}>
+        <Button onPress={back}>
           <Text style={{ color: C.secondary }}>{tr('Back')}</Text>
         </Button>
         <View style={{ flex: 1 }} />
-        <If
-          when={question.running()}
-          else={
-            <If when={!!question.turns().at(-1)?.answer}>
-              <Button
-                onPress={() => {
-                  void Clipboard.writeText(question.turns().at(-1)!.answer).catch((reason) =>
-                    error.set(String(reason)),
-                  );
-                }}
-              >
-                <Text style={{ color: C.secondary }}>{tr('Copy')}</Text>
-              </Button>
-            </If>
+        <Menu
+          open={menu()}
+          onOpenChange={({ open }) => menu.set(open)}
+          placement="top"
+          align="end"
+          popupStyle={{ ...floatingStyle(), width: 224 }}
+          trigger={
+            <Button accessibilityLabel={tr('Launcher actions')}>
+              <Text style={{ color: C.secondary }}>
+                {tr('Launcher actions')} {keymap.label('mod+k')}
+              </Text>
+            </Button>
           }
         >
-          <Button onPress={question.stop}>
-            <Text style={{ color: C.secondary }}>{tr('Stop generating')}</Text>
-          </Button>
-        </If>
+          <MenuItem
+            disabled={busy()}
+            style={menuRowStyle()}
+            hoverStyle={menuRowHoverStyle()}
+            onSelect={() => {
+              menu.set(false);
+              props.promote();
+            }}
+          >
+            <Text style={{ color: C.text }}>{tr('Continue as a conversation')}</Text>
+          </MenuItem>
+        </Menu>
       </View>
     </View>
   );

@@ -26,9 +26,10 @@ import { LoadingIndicator } from './Loading';
 import { currentLocale, tr } from './locale';
 import { C, composerIconSlot, textTooltip } from './ui';
 import type { ComposerEditor } from './ComposerEditor';
-import { dictateIntoDraft } from './composerDictation';
+import { dictateIntoDraft, speechEndpoint } from './composerDictation';
 
 type Attachment = {
+  quickLauncher?: boolean;
   editor(): ComposerEditor | null;
   draft(): string;
   selection(): { start: number; end: number };
@@ -50,7 +51,11 @@ export function attachDictation(
     const native = host.messageDictation();
     return {
       start: async (chinese) =>
-        native.start(chinese, await dictationPreferences.recordingConnection()),
+        native.start(
+          chinese,
+          await dictationPreferences.recordingConnection(),
+          attachment.quickLauncher,
+        ),
       level: () => native.level(),
       cancel: () => native.cancel(),
       finish: () => native.finish(),
@@ -127,6 +132,7 @@ function controller(id: string, open: () => Recording) {
         seconds.set(0);
         levels.set(Array<number>(28).fill(0));
         phase.set('recording');
+        const endpoint = view?.quickLauncher ? speechEndpoint(began) : null;
         let sampling = false;
         timer = setInterval(async () => {
           if (sampling) return;
@@ -145,7 +151,10 @@ function controller(id: string, open: () => Recording) {
           }
           if (recorder !== native || phase() !== 'recording') return;
           seconds.set(Math.min(120, Math.floor((Date.now() - began) / 1000)));
-          if (level < 0) {
+          const action = endpoint?.(Date.now(), level);
+          if (action === 'finish') void api.finish(false);
+          else if (action === 'cancel') cancel();
+          else if (level < 0) {
             stopTimer();
             phase.set('paused');
           } else levels.set([...levels().slice(1), level]);

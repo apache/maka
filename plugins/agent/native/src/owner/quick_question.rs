@@ -40,7 +40,27 @@ impl QuickHistory {
                 return Err("Start a new quick question to continue".into());
             }
         } else {
+            if input.history.len() >= 32
+                || input
+                    .history
+                    .iter()
+                    .any(|turn| turn.question.len() > 16000 || turn.answer.len() > 131072)
+            {
+                return Err("Quick question history is too long".into());
+            }
             self.messages.clear();
+            for turn in &input.history {
+                self.messages.push(Message::user(&turn.question));
+                if !turn.answer.is_empty() {
+                    self.messages.push(Message::Assistant {
+                        content: vec![maka_model::prompt::AssistantPart::Text {
+                            text: turn.answer.clone(),
+                            provider_options: None,
+                        }],
+                        provider_options: None,
+                    });
+                }
+            }
         }
         self.session.clone_from(&input.session_id);
         self.latest.clone_from(&input.request_id);

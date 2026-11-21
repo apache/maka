@@ -59,6 +59,7 @@ const SOURCES: &[&str] = &[
     "plugins/agent/composer/ui/index.tsx",
     "plugins/settings/settings/ui.tsx",
     "plugins/application/applications/ui.tsx",
+    "plugins/application/dictation/ui.tsx",
     "plugins/application/clipboard-history/ui.tsx",
     "plugins/application/file-search/ui.tsx",
     "plugins/application/quick-library/ui.tsx",

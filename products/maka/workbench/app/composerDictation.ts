@@ -34,3 +34,20 @@ export async function dictateIntoDraft(
   if (!(await editor.replaceRange({ ...range, expectedSelection: range, expectedText, text })))
     return { kind: 'changed', text } as const;
 }
+
+/** The native meter maps -55…0 dB to 0…1. Ignore short clicks before the first phrase. */
+export function speechEndpoint(started: number) {
+  let voiceSince: number | undefined;
+  let lastVoice: number | undefined;
+  return (now: number, level: number): 'finish' | 'cancel' | undefined => {
+    if (level < 0) return lastVoice === undefined ? 'cancel' : 'finish';
+    if (level >= 0.22) {
+      voiceSince ??= now;
+      if (lastVoice !== undefined || now - voiceSince >= 160) lastVoice = now;
+    } else {
+      voiceSince = undefined;
+    }
+    if (lastVoice !== undefined && now - lastVoice >= 1200) return 'finish';
+    if (lastVoice === undefined && now - started >= 12000) return 'cancel';
+  };
+}

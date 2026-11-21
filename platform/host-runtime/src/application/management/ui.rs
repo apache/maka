@@ -25,6 +25,11 @@ impl Manager {
         let request: UiRead = serde_json::from_value(input).map_err(|error| error.to_string())?;
         let loaded = self.source_at(request.source).await?;
         let plan = loaded.plan();
+        let packages: std::collections::BTreeMap<_, _> = loaded
+            .packages()
+            .iter()
+            .map(|package| (package.application_ref(), package))
+            .collect();
         let instances = plan
             .instances()
             .values()
@@ -41,6 +46,10 @@ impl Manager {
                         .map_err(|error| error.to_string())?,
                     path: instance.path.clone(),
                     package: instance.package.clone(),
+                    presentation: packages
+                        .get(&instance.package)
+                        .map(|package| package.manifest().presentation())
+                        .unwrap_or_default(),
                     configuration: instance.configuration.clone(),
                     module: entry.module.clone(),
                     contributions: entry.contributions.clone(),

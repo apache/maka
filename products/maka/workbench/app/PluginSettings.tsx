@@ -27,6 +27,7 @@ import type {
 import { sameValue } from '../../../../plugins/shared/value';
 import { pluginDescription, pluginTitle, settingCaption } from './pluginSettingsState.ts';
 import type { PluginSettingsOwner, PluginAction } from './pluginSettingsState.ts';
+import { PluginIcon } from './PluginIcon';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { LoadingIndicator } from './Loading';
 import { RootUiSettings } from './RootUiSettings';
@@ -159,6 +160,12 @@ function PluginGroup(props: {
           {(row) => (
             <SettingsRow
               label={pluginTitle(row())}
+              leading={
+                <PluginIcon
+                  packageId={row().package.id}
+                  muted={row().disabled || row().parentDisabled}
+                />
+              }
               description={pluginDescription(row()) || row().path.join(' / ')}
               tone={row().disabled ? 'muted' : undefined}
               status={row().parentDisabled ? tr('Parent disabled') : undefined}

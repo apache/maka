@@ -264,13 +264,21 @@ function DictationSettings(props: { addConnection(): void }) {
       <SettingsSection>
         <SettingsSwitch
           label={tr('Enable dictation')}
-          description={tr('Show the microphone in the message composer.')}
+          description={tr('Use the microphone in chats and Quick Tools.')}
           checked={dictation.enabled()}
           disabled={dictation.busy()}
           onPress={() => void dictation.save('enabled', String(!dictation.enabled()))}
         />
       </SettingsSection>
       <If when={dictation.enabled()}>
+        <SettingsSection>
+          <SettingsSwitch
+            label={tr('Listen when Quick Tools opens')}
+            checked={dictation.listenOnOpen()}
+            disabled={dictation.busy()}
+            onPress={() => void dictation.save('listenOnOpen', String(!dictation.listenOnOpen()))}
+          />
+        </SettingsSection>
         <SettingsSection note={tr('Dictation uses the API key from this connection.')}>
           <SettingsRow
             label={tr('Transcription service')}

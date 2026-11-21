@@ -47,6 +47,7 @@ unsafe extern "C" {
         path: *const c_char,
         chinese: bool,
         model_connection: bool,
+        quick_launcher: bool,
         context: *mut c_void,
         done: extern "C" fn(*mut c_void, *const c_char, *const c_char),
     );
@@ -139,6 +140,7 @@ impl MessageDictation {
         this: Instance<Self>,
         chinese: bool,
         connection: Option<serde_json::Value>,
+        quick_launcher: Option<bool>,
     ) -> Result<bool, String> {
         #[cfg(target_os = "macos")]
         {
@@ -170,6 +172,7 @@ impl MessageDictation {
                         recording.path.as_ptr(),
                         chinese,
                         model_connection,
+                        quick_launcher.unwrap_or(false),
                         Box::into_raw(Box::new(tx)).cast(),
                         captured,
                     )
@@ -191,7 +194,7 @@ impl MessageDictation {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = (this, chinese, connection);
+            let _ = (this, chinese, connection, quick_launcher);
             Err("Dictation requires macOS".into())
         }
     }
