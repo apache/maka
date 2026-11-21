@@ -40,7 +40,7 @@ fn tool_return(
         serde_json::from_slice(&exact(c, run, reference)?)?;
     returned.validate().map_err(invalid)?;
     let body = match returned.body {
-        StoredToolResult::Inline(body) => body,
+        StoredToolResult::Inline(body) => *body,
         StoredToolResult::Operation(body) => {
             let reply = crate::operation::read_reply(c, run, &body.operation)?;
             body.resolve(reply).map_err(invalid)?

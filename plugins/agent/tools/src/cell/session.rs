@@ -30,7 +30,7 @@ use maka_agent_facts::{
 };
 use maka_code_runtime::{CellContext, CellOutput, CellResult, CellStore, ToolMetadata};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
@@ -171,14 +171,19 @@ impl CellAdmission {
 pub struct ObservedCell {
     pub state: CellReplyState,
     pub observation: CellObservation,
+    prior_output: Vec<CellOutput>,
     display_from: usize,
 }
 impl ObservedCell {
     pub fn display(&self) -> &[CellOutput] {
         match &self.observation {
             CellObservation::Running { content, .. }
-            | CellObservation::Completed { content, .. } => &content[self.display_from..],
-            CellObservation::Interrupted { .. } => &[],
+            | CellObservation::Completed { content, .. } => {
+                &content[self.display_from.min(content.len())..]
+            }
+            CellObservation::Interrupted { .. } => {
+                &self.prior_output[self.display_from.min(self.prior_output.len())..]
+            }
         }
     }
 }
@@ -601,11 +606,14 @@ impl CodeCells {
                 report: report.clone(),
             },
         };
-        let observation = match canonical.status {
-            CellStatus::Running => CellObservation::Running {
-                cell_id: id,
-                content: new_output,
-            },
+        let (observation, prior_output) = match canonical.status {
+            CellStatus::Running => (
+                CellObservation::Running {
+                    cell_id: id,
+                    content: new_output,
+                },
+                Vec::new(),
+            ),
             CellStatus::Completed { result, .. } => {
                 let bytes = port.content(id, result).await.map_err(cell_failure)?;
                 let completion = tokio::task::spawn_blocking(move || {
@@ -614,7 +622,7 @@ impl CodeCells {
                 .await
                 .map_err(persistence)??;
                 self.0.live.lock().unwrap().remove(&id);
-                completion
+                (completion, Vec::new())
             }
             CellStatus::Interrupted { report } => {
                 use maka_agent_facts::operation::{restore_result, result_reference};
@@ -640,14 +648,21 @@ impl CodeCells {
                         restore_result(reply, stored).map_err(persistence)?;
                     }
                 }
+                let prior_output = report
+                    .prior_output
+                    .as_ref()
+                    .map_or_else(Vec::new, |prior| prior.content.clone());
                 let report = tokio::task::spawn_blocking(move || serde_json::to_value(report))
                     .await
                     .map_err(persistence)?
                     .map_err(persistence)?;
-                CellObservation::Interrupted {
-                    cell_id: id,
-                    report,
-                }
+                (
+                    CellObservation::Interrupted {
+                        cell_id: id,
+                        report,
+                    },
+                    prior_output,
+                )
             }
         };
         let display_from = match &observation {
@@ -655,17 +670,14 @@ impl CodeCells {
                 *self.0.displayed.lock().unwrap().entry(id).or_default() += content.len();
                 0
             }
-            CellObservation::Completed { .. } => {
+            CellObservation::Completed { .. } | CellObservation::Interrupted { .. } => {
                 self.0.displayed.lock().unwrap().remove(&id).unwrap_or(0)
-            }
-            CellObservation::Interrupted { .. } => {
-                self.0.displayed.lock().unwrap().remove(&id);
-                0
             }
         };
         Ok(ObservedCell {
             state: evidence,
             observation,
+            prior_output,
             display_from,
         })
     }
@@ -962,9 +974,7 @@ async fn publish_notifications(
 ) -> Result<(), ToolError> {
     for text in context.take_notifications() {
         if matches!(port.owner(), CellOwner::External { .. }) {
-            context
-                .emit(CellOutput::Text { text })
-                .map_err(|error| persistence(error.message))?;
+            context.emit_precharged(CellOutput::Text { text });
             continue;
         }
         let content = tokio::task::spawn_blocking(move || {
@@ -1069,38 +1079,69 @@ impl CodeCells {
         let ObservedCell {
             state,
             observation,
+            prior_output,
             display_from,
         } = observed;
         let is_error = matches!(state, CellReplyState::Interrupted { .. });
         let raw = serde_json::to_value(&observation).expect("typed Cell observation");
+        #[derive(serde::Serialize)]
+        #[serde(untagged)]
+        enum Summary<'a> {
+            Running {
+                state: &'static str,
+                cell_id: CellId,
+            },
+            Completed {
+                state: &'static str,
+                cell_id: CellId,
+                result: Value,
+            },
+            Interrupted {
+                state: &'static str,
+                cell_id: CellId,
+                diagnostic: &'a Value,
+                heap: &'static str,
+                bindings: &'static str,
+            },
+        }
         let (content, summary) = match observation {
-            CellObservation::Running { cell_id, content } => {
-                (content, json!({"state":"running","cell_id":cell_id}))
-            }
+            CellObservation::Running { cell_id, content } => (
+                content,
+                serde_json::to_string(&Summary::Running {
+                    state: "running",
+                    cell_id,
+                })
+                .expect("typed Cell summary"),
+            ),
             CellObservation::Completed {
                 cell_id,
                 content,
                 result,
             } => (
                 content,
-                json!({"state":"completed","cell_id":cell_id,"result":result}),
+                serde_json::to_string(&Summary::Completed {
+                    state: "completed",
+                    cell_id,
+                    result,
+                })
+                .expect("typed Cell summary"),
             ),
             CellObservation::Interrupted { cell_id, report } => (
-                Vec::new(),
-                json!({
-                    "state":"interrupted","cell_id":cell_id,"diagnostic":report["diagnostic"],
-                    "heap":"expired","bindings":"invalid"
-                }),
+                prior_output,
+                serde_json::to_string(&Summary::Interrupted {
+                    state: "interrupted",
+                    cell_id,
+                    diagnostic: &report["diagnostic"],
+                    heap: "expired",
+                    bindings: "invalid",
+                })
+                .expect("typed Cell summary"),
             ),
         };
-        let mut remaining = max_tokens.saturating_mul(4);
-        let mut parts = vec![ToolContent::Text(clip(
-            &summary.to_string(),
-            &mut remaining,
-        ))];
+        let mut parts = vec![ToolContent::Text(summary)];
         for output in content.into_iter().skip(display_from) {
             parts.push(match output {
-                CellOutput::Text { text } => ToolContent::Text(clip(&text, &mut remaining)),
+                CellOutput::Text { text } => ToolContent::Text(text),
                 CellOutput::Image { image } => ToolContent::Image(image),
                 CellOutput::Media { content, detail } => ToolContent::Media { content, detail },
             });
@@ -1113,34 +1154,9 @@ impl CodeCells {
             })),
             parts,
         )
+        .with_display_budget_chars(maka_agent_facts::archive::effective_cell_display_chars(
+            max_tokens,
+        ))
         .reporting_error(is_error)
     }
-}
-fn clip(text: &str, remaining: &mut usize) -> String {
-    if *remaining == 0 {
-        return String::new();
-    }
-    let bytes = serde_json::to_string(text).unwrap().len();
-    if bytes <= *remaining {
-        *remaining -= bytes;
-        return text.into();
-    }
-    const MARKER: &str = "\n[output truncated; full observation is archived]";
-    let available = remaining.saturating_sub(MARKER.len() + 3);
-    let mut used = 0;
-    let mut end = 0;
-    for (index, ch) in text.char_indices() {
-        let bytes = match ch {
-            '"' | '\\' | '\u{8}' | '\t' | '\n' | '\u{c}' | '\r' => 2,
-            '\u{0}'..='\u{1f}' => 6,
-            _ => ch.len_utf8(),
-        };
-        if bytes > available.saturating_sub(used) {
-            break;
-        }
-        used += bytes;
-        end = index + ch.len_utf8();
-    }
-    *remaining = 0;
-    format!("{}{MARKER}", &text[..end])
 }

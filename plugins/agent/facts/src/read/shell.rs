@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{MAX_PAGE_CHARS, ReadError, ReadPage, ReadRequest};
+use super::{MAX_PAGE_CHARS, PageBudget, ReadError, ReadPage, ReadRequest};
 use maka_plugin_core::shell_result::{ShellMode, ShellOutput, ShellSnapshot, ShellStatus};
 use serde::{Deserialize, Serialize};
 
@@ -72,6 +72,16 @@ fn read_page_with_budget(
     request: &ReadRequest,
     budget: usize,
 ) -> Result<ReadPage, ReadError> {
+    read_page_with_page_budget(snapshot, request, PageBudget::SerializedPage(budget), 0)
+        .map(|(page, _)| page)
+}
+
+fn read_page_with_page_budget(
+    snapshot: &ShellSnapshot,
+    request: &ReadRequest,
+    budget: PageBudget,
+    tail_serialized_budget: usize,
+) -> Result<(ReadPage, Option<String>), ReadError> {
     let metadata = ReadMetadata {
         kind: ReadKind::ShellRun,
         status: snapshot.status,
@@ -85,6 +95,7 @@ fn read_page_with_budget(
     };
     page(
         budget,
+        tail_serialized_budget,
         request,
         metadata,
         snapshot.output.as_ref(),
@@ -95,12 +106,18 @@ fn read_page_with_budget(
 pub(crate) fn read_archived_shell(
     serialized: &str,
     request: &ReadRequest,
-    budget: usize,
-) -> Option<Result<ReadPage, ReadError>> {
+    budget: PageBudget,
+    tail_serialized_budget: usize,
+) -> Option<Result<(ReadPage, Option<String>), ReadError>> {
     if let Ok(snapshot) = serde_json::from_str::<ShellSnapshot>(serialized)
         && snapshot.validate().is_ok()
     {
-        return Some(read_page_with_budget(&snapshot, request, budget));
+        return Some(read_page_with_page_budget(
+            &snapshot,
+            request,
+            budget,
+            tail_serialized_budget,
+        ));
     }
     let snapshot: Foreground = serde_json::from_str(serialized).ok()?;
     if snapshot.kind != ReadKind::Terminal {
@@ -119,6 +136,7 @@ pub(crate) fn read_archived_shell(
     };
     Some(page(
         budget,
+        tail_serialized_budget,
         request,
         metadata,
         Some(&snapshot.output),
@@ -127,12 +145,13 @@ pub(crate) fn read_archived_shell(
 }
 
 fn page(
-    budget: usize,
+    budget: PageBudget,
+    tail_serialized_budget: usize,
     request: &ReadRequest,
     mut metadata: ReadMetadata,
     output: Option<&ShellOutput>,
     failure: Option<&str>,
-) -> Result<ReadPage, ReadError> {
+) -> Result<(ReadPage, Option<String>), ReadError> {
     let mut parts = Vec::new();
     match output {
         Some(ShellOutput::Pipes {
@@ -175,7 +194,14 @@ fn page(
         .encode_utf16()
         .count()
         + 12;
-    let mut page = request.page_with_budget(&text, budget.saturating_sub(overhead))?;
+    let adjusted = match budget {
+        PageBudget::SerializedPage(limit) => {
+            PageBudget::SerializedPage(limit.saturating_sub(overhead))
+        }
+        PageBudget::DisplayBody(limit) => PageBudget::DisplayBody(limit),
+    };
+    let (mut page, tail) =
+        request.page_with_page_budget(&text, adjusted, tail_serialized_budget)?;
     page.metadata = Some(metadata);
-    Ok(page)
+    Ok((page, tail))
 }

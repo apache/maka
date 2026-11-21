@@ -620,7 +620,7 @@ async fn execute(
         match executor
             .read(
                 input.resolve().map_err(failed)?,
-                read_page_budget(),
+                workspace_file_read_page_budget(&tool_context.call.origin),
                 cancellation.clone(),
             )
             .await?
@@ -682,9 +682,23 @@ fn failed(message: impl std::fmt::Display) -> ToolError {
 
 // Reserve the public service envelope so model pruning preserves the file continuation.
 fn read_page_budget() -> usize {
+    page_budget_for(maka_agent_facts::read::MAX_PAGE_CHARS)
+}
+
+fn workspace_file_read_page_budget(origin: &maka_agent_facts::tool_call::ToolOrigin) -> usize {
+    let target = match origin {
+        maka_agent_facts::tool_call::ToolOrigin::CodeCell { .. } => {
+            maka_agent_facts::read::CELL_READ_PAGE_CHARS
+        }
+        _ => maka_agent_facts::read::MAX_PAGE_CHARS,
+    };
+    page_budget_for(target)
+}
+
+fn page_budget_for(target: usize) -> usize {
     let envelope = serde_json::to_string(&FileResult::Completed { value: Value::Null })
         .expect("file result envelope")
         .len()
         - "null".len();
-    maka_agent_facts::read::MAX_PAGE_CHARS - envelope
+    target - envelope
 }

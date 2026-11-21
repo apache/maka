@@ -2502,7 +2502,7 @@ impl DriverModel {
             .map_err(|_| unsupported("tool-return-envelope-version"))?;
         use maka_agent_facts::tool_output::StoredToolResult;
         let body = match returned.body {
-            StoredToolResult::Inline(body) => body,
+            StoredToolResult::Inline(body) => *body,
             StoredToolResult::Operation(body) => {
                 let reply = reader.operation_reply(view.run, &body.operation).await?;
                 body.resolve(reply)

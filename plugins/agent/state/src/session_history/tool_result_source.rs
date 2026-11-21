@@ -81,6 +81,7 @@ pub struct ToolResultFields {
     output: OutputSource,
     projection: Option<JsonValue>,
     is_error: Option<JsonValue>,
+    display_budget_chars: Option<JsonValue>,
     cell_reader: Option<ToolResultReader>,
 }
 
@@ -198,9 +199,23 @@ impl ToolResultFields {
         reader: Option<&ToolResultReader>,
         budget: Arc<dyn SourceBudget>,
     ) -> io::Result<Self> {
-        let [output, operation, projection, is_error, cell_error] = json::fields(
+        let [
+            output,
+            operation,
+            projection,
+            is_error,
+            cell_error,
+            display_budget_chars,
+        ] = json::fields(
             body,
-            &["output", "operation", "projection", "is_error", "isError"],
+            &[
+                "output",
+                "operation",
+                "projection",
+                "is_error",
+                "isError",
+                "display_budget_chars",
+            ],
             budget,
         )
         .await?
@@ -219,6 +234,7 @@ impl ToolResultFields {
             output,
             projection: projection.filter(|value| value.kind != JsonKind::Null),
             is_error: is_error.or(cell_error),
+            display_budget_chars: display_budget_chars.filter(|value| value.kind != JsonKind::Null),
             cell_reader: reader.cloned(),
         })
     }
@@ -236,6 +252,16 @@ impl ToolResultFields {
             .as_ref()
             .ok_or_else(|| invalid("canonical tool result has no error flag"))?;
         json::bool_value(&value.source, budget).await
+    }
+
+    pub async fn display_budget_chars(
+        &self,
+        budget: Arc<dyn SourceBudget>,
+    ) -> io::Result<Option<usize>> {
+        let Some(value) = self.display_budget_chars.as_ref() else {
+            return Ok(None);
+        };
+        json::usize_value(&value.source, budget).await.map(Some)
     }
 
     pub async fn projection(

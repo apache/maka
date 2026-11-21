@@ -152,6 +152,8 @@ pub enum ExternalReturn {
         output: crate::tool_output::ToolOutput,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         artifacts: Vec<crate::artifact::PublishedArtifact>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_budget_chars: Option<usize>,
     },
     Failure {
         settlement: crate::tool_call::ToolSettlement,

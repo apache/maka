@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{ReadError, ReadPage, ReadRequest, shell::read_archived_shell};
+use super::{PageBudget, ReadError, ReadPage, ReadRequest, shell::read_archived_shell};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -41,8 +41,25 @@ impl ReadRequest {
         serialized: &str,
         budget: usize,
     ) -> Result<ReadPage, ReadError> {
+        self.tool_result_page_with_budget(
+            tool_name,
+            serialized,
+            PageBudget::SerializedPage(budget),
+            0,
+        )
+        .map(|(page, _)| page)
+    }
+
+    pub fn tool_result_page_with_budget(
+        &self,
+        tool_name: &str,
+        serialized: &str,
+        budget: PageBudget,
+        tail_serialized_budget: usize,
+    ) -> Result<(ReadPage, Option<String>), ReadError> {
         if matches!(tool_name, "Shell" | "Read")
-            && let Some(page) = read_archived_shell(serialized, self, budget)
+            && let Some(page) =
+                read_archived_shell(serialized, self, budget, tail_serialized_budget)
         {
             return page;
         }
@@ -58,6 +75,10 @@ impl ReadRequest {
                     .flatten()
                     .map(|value| value.content)
             });
-        self.page_with_budget(text.as_deref().unwrap_or(serialized), budget)
+        self.page_with_page_budget(
+            text.as_deref().unwrap_or(serialized),
+            budget,
+            tail_serialized_budget,
+        )
     }
 }

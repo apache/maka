@@ -654,6 +654,29 @@ pub async fn inspect(source: &JsonSource, budget: Arc<dyn SourceBudget>) -> io::
     Ok(value)
 }
 
+pub async fn usize_value(source: &JsonSource, budget: Arc<dyn SourceBudget>) -> io::Result<usize> {
+    let mut reader = Reader::new(source.bytes.clone(), budget).await?;
+    reader.whitespace().await?;
+    let mut digits = String::new();
+    while let Some(byte) = reader.peek().await? {
+        if !byte.is_ascii_digit() {
+            break;
+        }
+        if digits.len() >= 24 {
+            return Err(invalid("JSON integer exceeds usize range"));
+        }
+        digits.push(byte as char);
+        reader.take().await?;
+    }
+    if digits.is_empty() || (digits.len() > 1 && digits.starts_with('0')) {
+        return Err(invalid("JSON value is not an unsigned integer"));
+    }
+    reader.end().await?;
+    digits
+        .parse::<usize>()
+        .map_err(|_| invalid("JSON integer exceeds usize range"))
+}
+
 pub struct ObjectCursor {
     reader: Reader,
     first: bool,

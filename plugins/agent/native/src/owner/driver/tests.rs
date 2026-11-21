@@ -1707,6 +1707,7 @@ mod bounded_risk {
                     },
                     is_error: false,
                     loaded_tools: Default::default(),
+                    display_budget_chars: None,
                 },
             })?;
             let completed =
@@ -1875,6 +1876,7 @@ mod bounded_risk {
                         projection: DurableToolProjection::Text { text: text.into() },
                         is_error: false,
                         loaded_tools: Default::default(),
+                        display_budget_chars: None,
                     },
                 })
             };
@@ -2214,6 +2216,7 @@ mod bounded_risk {
                     },
                     is_error: false,
                     loaded_tools: Default::default(),
+                    display_budget_chars: None,
                 },
             })?;
             let accepted = ContentBlob::json(&AcceptedToolResult::Local {
@@ -2403,6 +2406,7 @@ mod bounded_risk {
                 },
                 is_error: false,
                 loaded_tools: Default::default(),
+                display_budget_chars: None,
             },
         })?;
         let accepted = ContentBlob::json(&AcceptedToolResult::Local {
