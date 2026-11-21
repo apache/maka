@@ -163,6 +163,10 @@ pub enum ClosureReason {
     ProviderDisconnected,
 }
 
+impl ClosureReason {
+    pub const TIMED_OUT_MESSAGE: &'static str = "No one approved this request in time";
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
