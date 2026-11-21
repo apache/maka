@@ -862,23 +862,25 @@ impl RootView {
             websocket: None,
             refuse_connections: None,
             filesystem: None,
-            assets: Some(Arc::new(crate::image::AssetReader(
-                self.ivars().options.asset_base.clone(),
-            ))),
-            chunk_loader: None,
+            assets: Some(self.ivars().options.assets.clone().unwrap_or_else(|| {
+                Arc::new(crate::image::AssetReader(
+                    self.ivars().options.asset_base.clone(),
+                ))
+            })),
+            chunk_loader: self.ivars().options.chunk_loader.clone(),
             environment: self.environment(),
             header_heights: header_heights(mtm),
             limits: self.ivars().options.limits,
             ui_sets: crate::ui_sets(),
             runtime: self.ivars().options.runtime.clone(),
             support_dir: self.ivars().options.support_dir.clone(),
-            data_dir: None,
+            data_dir: self.ivars().options.data_dir.clone(),
             cache: system_cache(self.ivars().options.cache.clone()),
             storage: self.ivars().options.storage.as_ref().map(|dir| {
                 nsh_engine::FileStorage::open(dir) as Arc<dyn nsh_engine::StorageBackend>
             }),
             clock: Default::default(),
-            context: Default::default(),
+            context: self.ivars().options.context.clone(),
             pinned: Default::default(),
             clipboard: None,
             host: self.ivars().options.host.clone(),
@@ -939,12 +941,14 @@ impl RootView {
         // mounter is installed here.
         let root = Retained::into_super(self.retain());
         let asset_base = self.ivars().options.asset_base.clone();
+        let assets = self.ivars().options.assets.clone();
         let mut installed = Mounter::new(
             mtm,
             root,
             engine.control(),
             mounter.clone(),
             asset_base,
+            assets,
             access,
             self.ivars().options.components.clone(),
         );
@@ -995,13 +999,19 @@ fn header_heights(mtm: MainThreadMarker) -> (Points, Points) {
 }
 
 /// Options of a [`Surface`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct SurfaceOptions {
     /// Log per-commit timings.
     pub trace: bool,
-    /// Where `asset:/` image URIs (bundled assets) are loaded from.
+    /// Where `asset:/` image URIs (bundled assets) are loaded from when
+    /// [`SurfaceOptions::assets`] is `None`.
     pub asset_base: Option<AssetBase>,
+    /// Custom reader for `asset:/` URIs (both engine resources and images);
+    /// takes precedence over [`SurfaceOptions::asset_base`].
+    pub assets: Option<Arc<dyn nsh_engine::Assets>>,
+    /// Asynchronous loader for runtime module chunks (`import()`).
+    pub chunk_loader: Option<Arc<dyn nsh_engine::ChunkLoader>>,
     /// The VM limits of the apps it runs.
     pub limits: nsh_engine::Limits,
     /// The runtime for async tasks; `None` uses NSH's shared runtime.
@@ -1015,6 +1025,9 @@ pub struct SurfaceOptions {
     /// ([`nsh_engine::EngineConfig::support_dir`]). Default: `nsh` in the
     /// app's Application Support; `None`: nothing is kept.
     pub support_dir: Option<std::path::PathBuf>,
+    /// The app's own data directory, used as it is without appending an app id
+    /// ([`nsh_engine::EngineConfig::data_dir`]). `None`: `<support_dir>/<app id>`.
+    pub data_dir: Option<std::path::PathBuf>,
     /// The directory the apps' storage (`nsh/storage`) is kept in
     /// (`storage.json` in it), overriding their own in
     /// [`SurfaceOptions::support_dir`]; `None`: theirs.
@@ -1024,6 +1037,9 @@ pub struct SurfaceOptions {
     /// ([`nsh_engine::CacheLocation::System`]), each app in
     /// `<dir>/<app id>`.
     pub cache: nsh_engine::CacheOptions,
+    /// Host values readable by the engine's native UI sets
+    /// (`nsh_core::element::engine_context`).
+    pub context: nsh_engine::EngineContext,
     /// The native components the apps can use (`nsh/native`).
     pub components: crate::component::Components,
     /// The scroll views the embedding app watches by `nativeID`
@@ -1049,17 +1065,45 @@ pub struct SurfaceOptions {
     pub content_culling: bool,
 }
 
+impl std::fmt::Debug for SurfaceOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SurfaceOptions")
+            .field("trace", &self.trace)
+            .field("asset_base", &self.asset_base)
+            .field("assets", &self.assets.as_ref().map(|_| ".."))
+            .field("chunk_loader", &self.chunk_loader.as_ref().map(|_| ".."))
+            .field("limits", &self.limits)
+            .field("runtime", &self.runtime)
+            .field("granted", &self.granted)
+            .field("support_dir", &self.support_dir)
+            .field("data_dir", &self.data_dir)
+            .field("storage", &self.storage)
+            .field("cache", &self.cache)
+            .field("components", &self.components)
+            .field("scroll_watchers", &self.scroll_watchers)
+            .field("host", &self.host)
+            .field("fps", &self.fps)
+            .field("handoff", &self.handoff)
+            .field("content_culling", &self.content_culling)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for SurfaceOptions {
     fn default() -> Self {
         Self {
             trace: false,
             asset_base: None,
+            assets: None,
+            chunk_loader: None,
             limits: nsh_engine::Limits::default(),
             runtime: None,
             granted: None,
             support_dir: support_dir(),
+            data_dir: None,
             storage: None,
             cache: nsh_engine::CacheOptions::default(),
+            context: nsh_engine::EngineContext::default(),
             components: crate::component::Components::default(),
             scroll_watchers: crate::ScrollWatchers::default(),
             host: nsh_engine::HostChannel::default(),
