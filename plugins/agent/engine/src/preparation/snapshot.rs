@@ -49,7 +49,10 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-const CHUNK_BYTES: usize = 128 * 1024;
+// Prompts grow by appending, so consecutive steps share every full chunk and store only the
+// last one anew. On a trial database 32 KiB stored about half of what 128 KiB did; 16 KiB
+// saved little more while doubling the chunk list each step carries.
+const CHUNK_BYTES: usize = 32 * 1024;
 
 pub type FrozenPromptCleanup = Pin<Box<dyn Future<Output = Result<(), RunError>> + Send + 'static>>;
 
