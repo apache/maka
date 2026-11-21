@@ -20,10 +20,13 @@
 use super::*;
 
 /// Logs each process start, answers `echo`, and exits in the middle of `crash`.
+/// With `once`, every later process exits before it answers `initialize`.
 const CRASH_SERVER: &str = r#"
 import { createInterface } from 'node:readline';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync } from 'node:fs';
+const restarted = existsSync(process.argv[2]);
 appendFileSync(process.argv[2], `${process.pid}\n`);
+if (restarted && process.argv[3] === 'once') process.exit(1);
 const send = (message) => process.stdout.write(JSON.stringify(message) + '\n');
 const tool = (name) => ({ name, description: `Fixture ${name}`, inputSchema: { type: 'object' } });
 createInterface({ input: process.stdin }).on('line', (line) => {
@@ -142,6 +145,47 @@ async fn terminal(client: &HostClient, session: &str, message: &Value) -> TestRe
     }
 }
 
+/// Starts the global mcp.json fixture server and runs one turn whose call makes it exit.
+async fn crashed_session(
+    rig: &mut Rig,
+    provider: &mut Provider,
+    base: &Path,
+    args: Value,
+) -> TestResult<(Value, String)> {
+    std::fs::write(base.join("crash-server.mjs"), CRASH_SERVER)?;
+    std::fs::create_dir_all(base.join("home/.maka"))?;
+    std::fs::write(
+        base.join("home/.maka/mcp.json"),
+        json!({"mcpServers":{"fixture":{"command":"node","args":args,"cwd":base}}}).to_string(),
+    )?;
+    let boot = bootstrap_with(base, provider.url.clone(), |config| {
+        config["assistant"] = json!({"home":base.join("home")});
+    })
+    .await?;
+    attach(rig, &boot).await?;
+    let client = rig.client.as_ref().unwrap();
+    let model = model(client, &provider.url, false).await?;
+    let session = full_access_session(rig, base, &model).await?;
+    let message = send(client, &session, "Call the server.").await?;
+    let (_, reply) = last_tool_output(provider, rig, &session).await?;
+    reply
+        .send(tool_response("mcp__fixture__crash", json!({})))
+        .map_err(|_| "crash response lost")?;
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        terminal(client, &session, &message),
+    )
+    .await??;
+    Ok((model, session))
+}
+
+fn started(starts: &Path) -> usize {
+    std::fs::read_to_string(starts)
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
 /// A server from the global mcp.json exits during a call. The retired connection
 /// is replaced by one new server process the next time a turn needs it, so the
 /// next turn and a new Session can use the server again.
@@ -151,47 +195,62 @@ async fn mcp_server_that_exits_mid_call_is_reopened_for_the_next_turn() -> TestR
     let mut provider = Provider::start().await?;
     let base = rig.directory.path().to_path_buf();
     let starts = base.join("mcp-starts.log");
-    let started = || {
-        std::fs::read_to_string(&starts)
-            .unwrap_or_default()
-            .lines()
-            .count()
-    };
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(120), async {
-        let script = base.join("crash-server.mjs");
-        std::fs::write(&script, CRASH_SERVER)?;
-        std::fs::create_dir_all(base.join("home/.maka"))?;
-        std::fs::write(
-            base.join("home/.maka/mcp.json"),
-            json!({"mcpServers":{"fixture":{"command":"node","args":[script, starts],"cwd":base}}})
-                .to_string(),
-        )?;
-        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
-            config["assistant"] = json!({"home":base.join("home")});
-        })
-        .await?;
-        attach(&mut rig, &boot).await?;
-        let client = rig.client.as_ref().unwrap();
-        let model = model(client, &provider.url, false).await?;
-        let session = full_access_session(&rig, &base, &model).await?;
-
-        let message = send(client, &session, "Call the server.").await?;
-        let (_, reply) = last_tool_output(&mut provider, &rig, &session).await?;
-        reply
-            .send(tool_response("mcp__fixture__crash", json!({})))
-            .map_err(|_| "crash response lost")?;
-        let crashed = tokio::time::timeout(
-            Duration::from_secs(20),
-            terminal(client, &session, &message),
-        )
-        .await??;
-        assert_eq!(started(), 1, "{crashed}");
+        let args = json!([base.join("crash-server.mjs"), starts]);
+        let (model, session) = crashed_session(&mut rig, &mut provider, &base, args).await?;
+        assert_eq!(started(&starts), 1);
 
         echo_turn(&rig, &mut provider, &session, "next-turn-marker").await?;
-        assert_eq!(started(), 2);
+        assert_eq!(started(&starts), 2);
         let fresh = full_access_session(&rig, &base, &model).await?;
         echo_turn(&rig, &mut provider, &fresh, "new-session-marker").await?;
-        assert_eq!(started(), 2);
+        assert_eq!(started(&starts), 2);
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
+    Ok(())
+}
+
+/// When the retired server cannot start again, each message is rejected with the
+/// server's startup error, and each message starts the server only once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_server_that_cannot_restart_rejects_each_message_with_its_startup_error()
+-> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let base = rig.directory.path().to_path_buf();
+    let starts = base.join("mcp-starts.log");
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(120), async {
+        let args = json!([base.join("crash-server.mjs"), starts, "once"]);
+        let (_, session) = crashed_session(&mut rig, &mut provider, &base, args).await?;
+        assert_eq!(started(&starts), 1);
+
+        let client = rig.client.as_ref().unwrap();
+        for attempt in 2..=3 {
+            let sent = call(
+                client,
+                "agent",
+                "send",
+                json!({"sessionId":session,"message":"Echo the marker."}),
+            )
+            .await;
+            let error = match sent {
+                Ok(sent) => return Err(format!("send was accepted: {sent}").into()),
+                Err(error) => error.to_string(),
+            };
+            assert!(
+                error.contains("MCP server fixture: MCP initialization failed"),
+                "{error}"
+            );
+            assert_eq!(started(&starts), attempt, "{error}");
+        }
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
     .catch_unwind()

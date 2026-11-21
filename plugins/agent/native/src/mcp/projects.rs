@@ -671,23 +671,21 @@ impl Projects {
                 if !files::merge(&[], &[&proposal.global, &proposal.file]).is_empty() {
                     super::require_compatible_floor(&floor).map_err(str::to_owned)?;
                 }
-                // A cached layer whose connection retired is reopened under the same
-                // revision; it stays in use only if reopening fails.
-                let cached = owner.catalog(Some(&proposal.revision)).ok();
-                if let Some(catalog) = cached.as_ref().filter(|catalog| catalog.layers_available())
+                // A cached layer whose connection retired is reopened under the same revision.
+                if let Ok(catalog) = owner.catalog(Some(&proposal.revision))
+                    && catalog.layers_available()
                 {
-                    owner.publish_cached(&proposal, catalog)?;
+                    owner.publish_cached(&proposal, &catalog)?;
                     owner.prune().await?;
-                    return Ok(catalog.clone());
+                    return Ok(catalog);
                 }
-                let failure = owner
+                if let Some(error) = owner
                     .cleanup_failures
                     .lock()
                     .expect("MCP cleanup state")
                     .first()
-                    .map(|error| error.message().to_owned());
-                if let Some(error) = failure {
-                    return owner.keep_cached(&proposal, cached, error).await;
+                {
+                    return Err(error.message().to_owned());
                 }
                 let empty = files::FileConfiguration::default();
                 let global_revision = maka_agent_facts::artifact::content_digest(
@@ -708,7 +706,7 @@ impl Projects {
                 {
                     catalog
                 } else {
-                    let opened = match owner
+                    let opened = owner
                         .open_layer(
                             &proposal.global,
                             owner.base.clone(),
@@ -716,11 +714,7 @@ impl Projects {
                             global_revision.clone(),
                             &floor,
                         )
-                        .await
-                    {
-                        Ok(opened) => opened,
-                        Err(error) => return owner.keep_cached(&proposal, cached, error).await,
-                    };
+                        .await?;
                     let catalog = opened.catalog.clone();
                     opened_global = Some(opened);
                     catalog
@@ -751,13 +745,12 @@ impl Projects {
                             {
                                 let message = format!("{error}; {}", cleanup.message);
                                 owner.retain_transport_cleanup(cleanup);
-                                return owner.keep_cached(&proposal, cached, message).await;
+                                return Err(message);
                             }
-                            return owner.keep_cached(&proposal, cached, error).await;
+                            return Err(error);
                         }
                     }
                 };
-                drop(cached);
                 {
                     let mut snapshots = owner.snapshots.write().expect("MCP snapshots");
                     if let Some(opened) = opened_global
@@ -791,18 +784,6 @@ impl Projects {
             })
             .await
             .map_err(|_| "agent_mcp_startup_unknown".to_owned())?
-    }
-    /// A reopen that could not start leaves the cached layer published, as before.
-    async fn keep_cached(
-        &self,
-        proposal: &Proposal,
-        cached: Option<Arc<Catalog>>,
-        error: String,
-    ) -> Result<Arc<Catalog>, String> {
-        let catalog = cached.ok_or(error)?;
-        self.publish_cached(proposal, &catalog)?;
-        self.prune().await?;
-        Ok(catalog)
     }
     pub(crate) async fn prune(&self) -> Result<(), String> {
         loop {
