@@ -888,6 +888,7 @@ export const conversationMessages = {
   'Show diagram source': ['Show diagram source', '显示图表源码', '顯示圖表原始碼'],
   'Hide diagram source': ['Hide diagram source', '隐藏图表源码', '隱藏圖表原始碼'],
   'Mermaid diagram': ['Mermaid diagram', 'Mermaid 图表', 'Mermaid 圖表'],
+  'Open diagram full screen': ['Open diagram full screen', '全屏查看图表', '全螢幕檢視圖表'],
   'Rendering diagram…': ['Rendering diagram…', '正在绘制图表…', '正在繪製圖表…'],
   'Diagram unavailable: {reason}': [
     'Diagram unavailable: {reason}',
