@@ -227,6 +227,14 @@ pub enum ImportChange {
         revision: u64,
         id: Uuid,
     },
+    QuickQuestion {
+        thread: Uuid,
+        #[schemars(length(min = 1, max = 32))]
+        turns: Vec<super::QuickTurn>,
+        path: String,
+        title: String,
+        backend: Option<super::BackendPreference>,
+    },
     Copy {
         selection: ImportSelection,
         #[schemars(length(min = 1))]

@@ -5,6 +5,7 @@
   "quick-library": "plugins/application/quick-library",
   "screenshot": "plugins/application/screenshot",
   "symbols": "plugins/application/symbols",
+  "dictation": "plugins/application/dictation",
   "clipboard-history": "plugins/application/clipboard-history",
   "file-search": "plugins/application/file-search",
   "host-logs": "plugins/application/host-logs",

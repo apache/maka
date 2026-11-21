@@ -20,6 +20,17 @@
 import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const composerMessages = {
+  'Start dictation': ['Start dictation', '开始听写', '開始聽寫'],
+  'Dictation uses the model connection from General settings.': [
+    'Dictation uses the model connection from General settings.',
+    '与聊天共用听写服务。可在「常规 → 语音听写」中选择模型连接。',
+    '與聊天共用聽寫服務。可在「一般 → 語音聽寫」中選擇模型連線。',
+  ],
+  'Listen when Quick Tools opens': [
+    'Listen when Quick Tools opens',
+    '打开快捷面板时听写',
+    '打開快捷面板時聽寫',
+  ],
   'Preparing microphone…': ['Preparing microphone…', '正在准备麦克风…', '正在準備麥克風…'],
   Recording: ['Recording', '录音中', '錄音中'],
   'Recording finished': ['Recording finished', '录音已结束', '錄音已結束'],
@@ -40,10 +51,10 @@ export const composerMessages = {
     '請在聽寫設定中選擇 DeepSeek 連線。',
   ],
   'Enable dictation': ['Enable dictation', '启用语音听写', '啟用語音聽寫'],
-  'Show the microphone in the message composer.': [
-    'Show the microphone in the message composer.',
-    '在聊天输入框中显示麦克风。',
-    '在聊天輸入框中顯示麥克風。',
+  'Use the microphone in chats and Quick Tools.': [
+    'Use the microphone in chats and Quick Tools.',
+    '在聊天和快捷面板中使用麦克风。',
+    '在聊天和快捷面板中使用麥克風。',
   ],
   'Dictation uses the API key from this connection.': [
     'Dictation uses the API key from this connection.',

@@ -26,6 +26,7 @@ type Connection = { name: string; basis: ConnectionVersionBasis };
 const symbol = Symbol.for('maka.dictation.preferences');
 function preferences() {
   const enabled = signal(false);
+  const listenOnOpen = signal(true);
   const selected = signal('');
   const connections = signal<Connection[]>([]);
   const legacy = signal(false);
@@ -36,6 +37,7 @@ function preferences() {
   const prefix = () => host.dictationStoragePrefix();
   const initialize = () =>
     (initialization ??= Promise.all([
+      Storage.getItem(prefix() + 'listenOnOpen').then((v) => listenOnOpen.set(v !== 'false')),
       Storage.getItem(prefix() + 'enabled').then((v) => enabled.set(v === 'true')),
       Storage.getItem(prefix() + 'connection').then((v) => selected.set(v ?? '')),
     ])
@@ -59,13 +61,18 @@ function preferences() {
       : connections().length === 1
         ? connections()[0]
         : undefined;
-  const update = async (field: 'enabled' | 'connection', value: string, enable = false) => {
+  const update = async (
+    field: 'enabled' | 'connection' | 'listenOnOpen',
+    value: string,
+    enable = false,
+  ) => {
     if (busy()) throw new Error(tr('Dictation settings are being saved.'));
     busy.set(true);
     try {
       await initialize();
       await Storage.setItem(prefix() + field, value);
       if (field === 'enabled') enabled.set(value === 'true');
+      else if (field === 'listenOnOpen') listenOnOpen.set(value === 'true');
       else selected.set(value);
       if (enable && !enabled()) {
         await Storage.setItem(prefix() + 'enabled', 'true');
@@ -78,6 +85,7 @@ function preferences() {
   };
   return {
     enabled,
+    listenOnOpen,
     selected,
     connections,
     legacy,
@@ -87,7 +95,7 @@ function preferences() {
     refresh,
     current,
     useLegacy,
-    save: (field: 'enabled' | 'connection', value: string) =>
+    save: (field: 'enabled' | 'connection' | 'listenOnOpen', value: string) =>
       update(field, value).catch((e) => error.set(String(e))),
     enableForConnection: (id: string) => update('connection', id, true),
     description: () =>

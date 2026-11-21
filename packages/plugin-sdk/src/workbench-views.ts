@@ -66,6 +66,7 @@ export type QuickIcon =
   | 'clipboard'
   | 'file'
   | 'link'
+  | 'mic'
   | 'note'
   | 'snippet'
   | 'symbol';
@@ -94,7 +95,7 @@ export interface QuickItem {
   readonly id: string;
   readonly title: string;
   readonly detail?: string | undefined;
-  readonly icon: QuickIcon;
+  readonly icon: QuickIcon | 'maka';
   /** Replaces `icon` once it returns a picture. Read only for rows on screen, so it may load. */
   readonly image?: (() => string | undefined) | undefined;
   /** The kind of result, shown beside it. */
@@ -114,7 +115,11 @@ export interface QuickEntry {
    * for the entry are kept under it. */
   readonly id: string;
   readonly title: string;
-  readonly icon: QuickIcon;
+  readonly icon: QuickIcon | 'maka';
+  readonly image?: (() => string | undefined) | undefined;
+  readonly detail?: string | undefined;
+  readonly unread?: boolean | undefined;
+  readonly trailing?: string | undefined;
   /** Searched; the first is shown beside the entry. */
   readonly keywords: readonly string[];
   /** Runs at once; without it, choosing the entry types the first keyword. */
@@ -128,6 +133,8 @@ export interface QuickPreview {
 }
 
 export interface QuickToolHandle {
+  /** A direct question from the launcher's query, when offered by its conversation tool. */
+  askQuestion?(text: string): void;
   emptyMessage?(): string;
   /** Opts the entered tool into a two-column list and detail view. */
   preview?(itemId: string): QuickPreview | undefined;

@@ -496,6 +496,10 @@ function App(
       <If when={ownTitleBar}>
         <QuickLauncher
           quick={props.quick}
+          currentSession={selected}
+          showQuestion={async (id) => {
+            if (await closeLauncher()) await showSession(id);
+          }}
           openBot={openBot}
           vacate={vacate}
           open={openAssistant}
