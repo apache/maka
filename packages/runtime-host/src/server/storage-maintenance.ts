@@ -51,6 +51,12 @@ export class HostStorageMaintenance {
   constructor(input: {
     artifacts: Pick<InteractiveArtifactStoreWriter, 'reclaimUpgradeResidue'>;
     contextOffload?: Pick<InteractiveContextOffloadWriter, 'collectGarbage' | 'reclaimFreePages'>;
+    runtimePageReclamation?: {
+      reclaimFreePages(input: { readonly maxPages: number }): Promise<{
+        readonly reclaimedPages: number;
+        readonly hasMore: boolean;
+      }>;
+    };
     /** The opt-in archived-task retention sweep; true while candidates remain. */
     retention?: { sweep(): Promise<boolean> };
     onError: (name: string, error: unknown) => void;
@@ -104,6 +110,16 @@ export class HostStorageMaintenance {
           const result = await context.reclaimFreePages({ maxPages: MAX_VACUUM_PAGES });
           return result.hasMore;
         },
+      });
+    }
+    const runtime = input.runtimePageReclamation;
+    if (runtime) {
+      this.#lanes.push({
+        name: 'runtime page reclamation',
+        failures: 0,
+        activeDelay: ACTIVE_DELAY_MS,
+        idleDelay: IDLE_DELAY_MS,
+        run: async () => (await runtime.reclaimFreePages({ maxPages: MAX_VACUUM_PAGES })).hasMore,
       });
     }
     const retention = input.retention;
