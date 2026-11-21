@@ -2504,7 +2504,7 @@ async fn real_host_forever_running_o1_soak() {
     .and_then(|v| v.as_str())
     .map(str::to_owned);
 
-    soak_call(
+    let sentinel_send = soak_call(
         &re_client,
         "agent",
         "send",
@@ -2517,6 +2517,11 @@ async fn real_host_forever_running_o1_soak() {
     )
     .await
     .expect("P4 crash sentinel send must be accepted");
+    assert_eq!(
+        sentinel_send.get("kind").and_then(|v| v.as_str()),
+        Some("queued"),
+        "P4 crash sentinel was not queued: {sentinel_send}"
+    );
 
     let mut accepted_hot_crash_sends = 0usize;
     {
@@ -2537,7 +2542,7 @@ async fn real_host_forever_running_o1_soak() {
                     Duration::from_secs(15),
                 )
                 .await
-                .is_ok()
+                .is_ok_and(|res| res.get("kind").and_then(|v| v.as_str()) == Some("queued"))
             });
         }
         while let Some(joined) = set.join_next().await {
@@ -2548,7 +2553,7 @@ async fn real_host_forever_running_o1_soak() {
     }
     assert!(
         accepted_hot_crash_sends > 0,
-        "P4 crash wave accepted 0 concurrent hot-session sends"
+        "P4 crash wave queued 0 concurrent hot-session sends"
     );
 
     // Wait until the sentinel run is durably admitted AND its model HTTP request is
