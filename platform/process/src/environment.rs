@@ -56,7 +56,8 @@ pub(super) fn inherit(
                 && !upper.starts_with("MAKA_RUNTIME_HOST_")
                 && !matches!(
                     upper.as_str(),
-                    "MAKA_CODEX_AUTH_FILE"
+                    "ELECTRON_RUN_AS_NODE"
+                        | "MAKA_CODEX_AUTH_FILE"
                         | "OPENAI_IDENTITY_TOKEN_FILE"
                         | "OPENAI_WORKLOAD_IDENTITY_CONTEXT"
                         | "OPENAI_FEDERATION_RULE_ID"
@@ -72,7 +73,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn inherited_environment_preserves_toolchains_but_not_implicit_credentials() {
+    fn inherited_environment_preserves_toolchains_and_filters_host_controls() {
         let vars = [
             ("PATH", "/usr/bin"),
             ("SDKROOT", "/sdk"),
@@ -82,6 +83,7 @@ mod tests {
             ("OPENROUTER_API_KEY", "key"),
             ("api_ToKeN", "token"),
             ("MAKA_RUNTIME_HOST_LAUNCH_OWNER_LEASE_FD", "7"),
+            ("ELECTRON_RUN_AS_NODE", "1"),
             ("SSH_AUTH_SOCK", "/agent.sock"),
             ("Database_Password", "password"),
             ("OPENAI_WORKLOAD_IDENTITY_CONTEXT", "context"),
