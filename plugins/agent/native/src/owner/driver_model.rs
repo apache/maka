@@ -436,22 +436,15 @@ impl DriverModel {
         Ok((!instruction.is_empty()).then(|| Arc::new(instruction)))
     }
 
+    /// Cuts a summary input to `budget` estimated tokens; a native compaction passes none.
     async fn prepare_summary_input(
         &self,
         prompt: &mut maka_agent_engine::prepared_prompt::PreparedPrompt,
         model: &maka_agent_engine::PreparedModel,
         language: maka_agent_facts::language::Language,
-        native: bool,
-        overflowed: bool,
+        budget: Option<u64>,
     ) -> Result<(), RunError> {
-        if !native {
-            let mut budget =
-                maka_agent_engine::context_input::summary_budget(model.context.as_ref());
-            // The provider rejected this history as too long, so the configured window
-            // did not hold; the size that overflowed is the only bound known to be too large.
-            if overflowed {
-                budget = budget.min(prompt.breakdown().estimated_tokens() / 4 * 3);
-            }
+        if let Some(budget) = budget {
             *prompt = maka_agent_engine::context_input::fit_prepared_summary(
                 prompt,
                 budget,
@@ -861,7 +854,8 @@ impl DriverModel {
                 let covered = CoveredPrefix::capture(&prompt).await?;
                 let instruction = self.summary_instruction(view, native_compaction, summary_options.prompt.as_deref()).await?;
                 prompt.initialize_overlays(Some(rendered), true, instruction).await?;
-                self.prepare_summary_input(&mut prompt, model, view.spec.language, native_compaction, false).await?;
+                let budget = (!native_compaction).then(|| maka_agent_engine::context_input::summary_budget(model.context.as_ref()));
+                self.prepare_summary_input(&mut prompt, model, view.spec.language, budget).await?;
                 Some(covered)
             } else {
                 None
@@ -3423,7 +3417,7 @@ impl DriverModel {
         {
             return Ok(RecoveryEvidence {
                 recovery: AttemptRecovery::Blocked {
-                    diagnostic: "the summary request was also too long for the model".into(),
+                    diagnostic: "the summary request exceeded the model's context limit".into(),
                 },
                 contents: vec![],
             });

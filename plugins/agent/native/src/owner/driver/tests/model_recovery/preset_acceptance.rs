@@ -2243,10 +2243,17 @@ async fn overflow_summary_is_cut_below_the_request_that_overflowed() -> TestResu
         let (main, reply) = provider.next().await?;
         assert!(!summary_request(&main), "{main}");
         reply.send(overflow()).map_err(|_| "provider reply lost")?;
-        let (summary, reply) = provider.next().await?;
+        let (summary, reply) = tokio::select! {
+            request = provider.next() => request?,
+            work = failed(&second) => {
+                return Err(format!("overflow ended without a summary: {:?}", work?).into());
+            }
+        };
         assert!(summary_request(&summary), "{summary}");
         let (asked, overflowed) = (text_messages(&summary).len(), text_messages(&main).len());
         assert!(asked < overflowed, "summary {asked} bytes, overflowed request {overflowed} bytes");
+        assert!(main["tools"].as_array().is_some_and(|tools| !tools.is_empty()), "{main}");
+        assert!(summary.get("tools").is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)), "{summary}");
         reply.send(overflow()).map_err(|_| "provider reply lost")?;
         let work = failed(&second).await?.to_string();
         assert!(!work.contains("invalid event transition"), "{work}");
