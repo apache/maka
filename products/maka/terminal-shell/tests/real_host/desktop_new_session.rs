@@ -4758,12 +4758,11 @@ async fn desktop_workspace_stage_inspector_worktrees_and_fullscreen_review() {
         .wait("the model response did not finish", reply.finish())
         .await;
 
-    // 1. Verify Composer holds [Browse workspace files] on the same toolbar row as [Add to message]
     let ws_btn = desktop.control("Browse workspace files").await;
     let add_btn = desktop.control("Add to message").await;
     assert!(
-        (ws_btn.center().y - add_btn.center().y).abs() <= px(2.0),
-        "Browse workspace files must sit in Composer toolbar beside Add to message: ws={ws_btn:?}, add={add_btn:?}"
+        ws_btn.center().y < add_btn.top(),
+        "Browse workspace files must sit in Conversation header above Composer: ws={ws_btn:?}, add={add_btn:?}"
     );
     let composer_before = desktop.control("Focus message composer").await;
     assert!(
@@ -4797,14 +4796,16 @@ async fn desktop_workspace_stage_inspector_worktrees_and_fullscreen_review() {
     let trajectory_tab = desktop.control("Trajectory").await;
     let stage_toggle = desktop.control("Toggle workspace pane").await;
     assert!(
-        inspector_toggle.right() <= chat_tab.left() + px(1.0)
+        ws_btn.right() <= inspector_toggle.left() + px(1.0)
+            && inspector_toggle.right() <= chat_tab.left() + px(1.0)
             && stage_toggle.left() >= trajectory_tab.right() - px(1.0),
-        "Header controls out of order: inspector={inspector_toggle:?}, chat={chat_tab:?}, trajectory={trajectory_tab:?}, stage={stage_toggle:?}"
+        "Header controls out of order: ws={ws_btn:?}, inspector={inspector_toggle:?}, chat={chat_tab:?}, trajectory={trajectory_tab:?}, stage={stage_toggle:?}"
     );
     assert!(
-        (inspector_toggle.center().y - chat_tab.center().y).abs() <= px(2.0)
+        (ws_btn.center().y - chat_tab.center().y).abs() <= px(2.0)
+            && (inspector_toggle.center().y - chat_tab.center().y).abs() <= px(2.0)
             && (stage_toggle.center().y - chat_tab.center().y).abs() <= px(2.0),
-        "Header controls misaligned vertically: inspector={inspector_toggle:?}, chat={chat_tab:?}, stage={stage_toggle:?}"
+        "Header controls misaligned vertically: ws={ws_btn:?}, inspector={inspector_toggle:?}, chat={chat_tab:?}, stage={stage_toggle:?}"
     );
 
     // 2. Open Session Context Inspector with 12 subagents & 15 worktrees:

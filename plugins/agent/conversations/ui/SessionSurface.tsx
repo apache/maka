@@ -2915,22 +2915,6 @@ export function createConversationUi(
                   id: 'workspace',
                   sessionId: selected(),
                 })}
-                openFiles={
-                  selected() !== null && workspace()
-                    ? inputAction(invokeCommand, {
-                        id: 'files',
-                        sessionId: selected(),
-                      })
-                    : undefined
-                }
-                filesOpener={
-                  selected() !== null
-                    ? (node) => {
-                        const sid = selected();
-                        if (sid) resources.attachOpener(sid, node);
-                      }
-                    : undefined
-                }
                 usageLimits={
                   platform.idiom === 'terminal' ? undefined : (
                     <ComposerUsageLimits
