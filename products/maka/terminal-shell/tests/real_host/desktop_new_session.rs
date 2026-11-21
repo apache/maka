@@ -18,6 +18,8 @@
  */
 
 use super::support::{Fixture, ModelRequest, Options, ReplyGate, mutate};
+#[path = "project_actions.rs"]
+mod project_actions;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maka_app_client::{Client, SubscriptionEvent};
 use maka_workbench::bindings::Bindings;
@@ -100,6 +102,7 @@ impl Desktop {
             bindings.registry(Some(fixture.session.clone())),
             tokio::runtime::Handle::current(),
         );
+        config.data_dir = Some(fixture.directory.path().join("nsh"));
         config.assets = Some(bindings.assets());
         config.chunk_loader = Some(bindings.chunk_loader());
         let preview_ready = preview.as_ref().map(|(_, _, label)| *label);
@@ -3492,6 +3495,11 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
         Some((source, "en", "Close settings")),
     )
     .await;
+    assert!(
+        desktop
+            .controls("Settings section Project Actions")
+            .is_empty()
+    );
     desktop.press("Edit connection ChatGPT Subscription").await;
     desktop.control("Sign in with ChatGPT").await;
     desktop.artifact(&format!("connection-before-login-{theme}-{layout}"));
@@ -4856,11 +4864,105 @@ async fn desktop_workspace_stage_inspector_worktrees_and_fullscreen_review() {
     fixture.finish().await;
 }
 
+async fn desktop_terminal_numeric_viewports() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/terminal_viewport_preview.tsx");
+    let output = fixture.directory.path().join("terminal-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(960),
+            nsh_terminal::DevicePixels(640),
+        ),
+        nsh_core::platform::Appearance::Dark,
+        Some((source, "en", "Copy visible terminal")),
+    )
+    .await;
+    for (action, expected, name) in [
+        (None, "READY: original first line", "initial"),
+        (
+            Some("Short viewport"),
+            "READY: original first line",
+            "short",
+        ),
+        (Some("Write output"), "line-39", "following"),
+        (None, "READY: original first line", "history"),
+        (None, "line-39", "latest"),
+        (Some("Clear output"), "AFTER CLEAR", "cleared"),
+    ] {
+        if let Some(action) = action {
+            desktop.press(action).await;
+        }
+        if matches!(name, "history" | "latest") {
+            let output = desktop.control("Terminal output").await;
+            let mut wheel = nsh_terminal::ScrollWheelEvent::default();
+            wheel.position = output.center();
+            wheel.delta = nsh_terminal::ScrollDelta::Lines(point(
+                0.0,
+                if name == "history" { 100.0 } else { -100.0 },
+            ));
+            desktop
+                .platform
+                .dispatch_input(PlatformInput::ScrollWheel(wheel))
+                .unwrap();
+        }
+        let button = desktop.control("Copy visible terminal").await;
+        let _ = desktop.platform.take_clipboard_write();
+        desktop
+            .retry(
+                "viewport did not show original output",
+                || {
+                    desktop.platform.take_clipboard_write().is_some_and(|text| {
+                        if matches!(name, "following" | "latest") {
+                            text.contains(expected)
+                        } else {
+                            text.lines().next() == Some(expected)
+                        }
+                    })
+                },
+                || desktop.press_at(button.center()),
+            )
+            .await;
+        desktop.artifact(&format!("numeric-viewport-{name}"));
+    }
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 /// Native cases run on the process main thread, required by AppKit.
 pub(crate) const CASES: &[&str] = &[
+    "desktop_terminal_numeric_viewports",
     "desktop_room_reply_wakes_an_agent_without_mixing_drafts",
     "desktop_composer_references_a_room_without_posting",
     "desktop_context_menus_follow_the_pointer_and_manage_rooms",
+    "desktop_action_config_selects_the_source_project",
+    "desktop_remove_recovery_finishes_original_form",
+    "desktop_remove_recovery_preserves_other_form",
+    "desktop_create_recovery_closes_dialog",
+    "desktop_create_recovery_returns_settings_list",
+    "desktop_create_recovery_preserves_closed_dialog",
+    "desktop_create_recovery_preserves_reopened_settings",
+    "desktop_actions_open_session_terminals_by_width",
+    "desktop_action_receipts_follow_the_latest_presentation",
+    "terminal_actions_preserve_keyboard_input_and_original_output",
     "desktop_remembers_folders_without_restoring_unsent_drafts",
     "desktop_new_conversation_preserves_an_owned_worktree",
     "desktop_recovers_an_unavailable_remembered_folder",
@@ -4917,6 +5019,34 @@ pub(crate) fn run(name: &str) {
         "desktop_context_menus_follow_the_pointer_and_manage_rooms" => {
             runtime.block_on(rooms::desktop_context_menus_follow_the_pointer_and_manage_rooms())
         }
+        "desktop_create_recovery_preserves_closed_dialog" => runtime
+            .block_on(project_actions::desktop_create_recovery_closes_original_form(false, true)),
+        "desktop_create_recovery_preserves_reopened_settings" => runtime
+            .block_on(project_actions::desktop_create_recovery_closes_original_form(true, true)),
+        "desktop_remove_recovery_finishes_original_form" => {
+            runtime.block_on(project_actions::desktop_remove_recovery_finishes_original_form(false))
+        }
+        "desktop_remove_recovery_preserves_other_form" => {
+            runtime.block_on(project_actions::desktop_remove_recovery_finishes_original_form(true))
+        }
+        "desktop_create_recovery_closes_dialog" => runtime
+            .block_on(project_actions::desktop_create_recovery_closes_original_form(false, false)),
+        "desktop_create_recovery_returns_settings_list" => runtime
+            .block_on(project_actions::desktop_create_recovery_closes_original_form(true, false)),
+        "desktop_action_config_selects_the_source_project" => {
+            runtime.block_on(project_actions::desktop_action_config_selects_the_source_project())
+        }
+        "desktop_terminal_numeric_viewports" => {
+            runtime.block_on(desktop_terminal_numeric_viewports())
+        }
+        "desktop_actions_open_session_terminals_by_width" => {
+            runtime.block_on(project_actions::desktop_actions_open_session_terminals_by_width())
+        }
+        "desktop_action_receipts_follow_the_latest_presentation" => runtime
+            .block_on(project_actions::desktop_action_receipts_follow_the_latest_presentation()),
+        "terminal_actions_preserve_keyboard_input_and_original_output" => runtime.block_on(
+            project_actions::terminal_actions_preserve_keyboard_input_and_original_output(),
+        ),
         "desktop_remembers_folders_without_restoring_unsent_drafts" => {
             runtime.block_on(desktop_remembers_folders_without_restoring_unsent_drafts())
         }

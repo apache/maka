@@ -75,7 +75,7 @@ import {
   View,
   List,
 } from 'nsh';
-import type { ListRef, ReadonlyListSource, ScrollRef, ViewRef } from 'nsh';
+import type { JSX, ListRef, ReadonlyListSource, ScrollRef, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { keymap, platform, reduceMotion, Scroll } from 'nsh';
 import { AnimatedValue } from 'nsh';
@@ -367,6 +367,7 @@ type ConversationProps = {
     preset: NonNullable<AgentSession['appliedPreset']>,
     backend: AgentSession['backend'] | null | undefined,
   ): void;
+  projectActions?(): JSX.Element;
   connectionLost(): boolean;
   visible(): boolean;
   foreground(): boolean;
@@ -4968,11 +4969,16 @@ export function Conversation(props: ConversationProps) {
         </Scroll>
       </View>
     );
+  const canInspect = () =>
+    platform.idiom !== 'terminal' && (!ownHandle.empty() || props.projectActions !== undefined);
+  const showInspector = () => canInspect() && inspectorOpen();
+  const showBody = () => !ownHandle.empty() || showInspector();
+
   return (
     <View
       ref={(node) => root.set(node)}
       style={{
-        flex: ownHandle.empty() ? 0 : 1,
+        flex: showBody() ? 1 : 0,
         flexBasis: 'auto',
         flexShrink: 0,
         minHeight: 0,
@@ -4999,31 +5005,34 @@ export function Conversation(props: ConversationProps) {
         }
         filesOpener={props.filesOpener}
         inspector={
-          platform.idiom === 'terminal' || ownHandle.empty()
-            ? undefined
-            : {
+          canInspect()
+            ? {
                 open: inspectorOpen(),
                 toggle: () => {
                   selectedSourceKey.set(null);
                   inspectorOpen.set(!inspectorOpen());
                 },
               }
+            : undefined
         }
         stage={platform.idiom === 'terminal' || ownHandle.empty() ? undefined : props.stage?.()}
         actions={
-          bot.identity() === 'bot' && props.restartBot && props.botSession?.() === sessionId ? (
-            <View style={{ flexDirection: 'row', gap: 4, alignItems: 'center' }}>
-              <DiscoveryPanel
-                host={host}
-                sessionId={sessionId}
-                control={props.control}
-                selection={() => selection()}
-                openWorker={openWorker}
-                chooseModel={() => props.chooseModel?.()}
-              />
-              <BotRestart restart={props.restartBot} />
-            </View>
-          ) : undefined
+          <>
+            {platform.idiom === 'terminal' ? props.projectActions?.() : undefined}
+            {bot.identity() === 'bot' && props.restartBot && props.botSession?.() === sessionId ? (
+              <View style={{ flexDirection: 'row', gap: 4, alignItems: 'center' }}>
+                <DiscoveryPanel
+                  host={host}
+                  sessionId={sessionId}
+                  control={props.control}
+                  selection={() => selection()}
+                  openWorker={openWorker}
+                  chooseModel={() => props.chooseModel?.()}
+                />
+                <BotRestart restart={props.restartBot} />
+              </View>
+            ) : undefined}
+          </>
         }
         views={
           platform.idiom === 'terminal' || ownHandle.empty() ? undefined : (
@@ -5106,11 +5115,11 @@ export function Conversation(props: ConversationProps) {
           inspectorSideBySide.set(platform.idiom !== 'terminal' && bounds.size.width >= 860);
         }}
         style={{
-          display: ownHandle.empty() ? 'none' : 'flex',
+          display: showBody() ? 'flex' : 'none',
           flex: 1,
           flexDirection:
             (selectedTrajectory() !== null && trajectorySideBySide()) ||
-            (inspectorOpen() && inspectorSideBySide())
+            (showInspector() && inspectorSideBySide())
               ? 'row'
               : 'column',
           minHeight: 0,
@@ -5401,7 +5410,7 @@ export function Conversation(props: ConversationProps) {
             );
           }}
         </Each>
-        <If when={inspectorOpen() && !ownHandle.empty() && platform.idiom !== 'terminal'}>
+        <If when={showInspector()}>
           <View
             style={
               inspectorSideBySide()
@@ -5426,6 +5435,7 @@ export function Conversation(props: ConversationProps) {
                 sessionId={sessionId}
                 workspacePath={workspace() || undefined}
                 floating={!inspectorSideBySide()}
+                projectActions={props.projectActions}
                 activeWorktree={props.activeWorktree}
                 selectWorktree={props.selectWorktree}
                 sources={props.sources}

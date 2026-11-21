@@ -36,6 +36,9 @@ use maka_plugin_core::terminal::{
     display::{self, Color, Display, Metadata, Row, Run, Style},
 };
 
+#[cfg(test)]
+mod tests;
+
 /// A physical viewport into the original styled grid. Capturing it visits only
 /// the requested rows, irrespective of the amount of retained scrollback.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]

@@ -74,6 +74,7 @@ import { createHost, HostProvider } from '../../../products/maka/workbench/app/h
 
 import { createPendingRecovery } from '../../../products/maka/workbench/app/pendingRecovery';
 
+import { ProjectActionsSettings } from '../../../products/maka/workbench/app/ProjectActions';
 import { SubagentSettings } from '../../../products/maka/workbench/app/SubagentSettings';
 import {
   createPresetSettings,
@@ -452,6 +453,22 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
             },
             () => <ConnectionSettings owner={connections} externalAgents={externalAgents} />,
           ),
+      },
+      'project-actions': {
+        kind: 'settings',
+        render: (props) => {
+          const input = props.input as SettingsPageInput | undefined;
+          return (
+            <HostProvider value={host}>
+              <ProjectActionsSettings
+                context={context}
+                host={host}
+                initialProjectId={input?.initialProjectId}
+                settings={input?.settings}
+              />
+            </HostProvider>
+          );
+        },
       },
       subagents: {
         kind: 'settings',

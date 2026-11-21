@@ -51,6 +51,7 @@ export interface WorkspaceSourceItem {
 }
 
 export interface WorkspaceActions {
+  startTerminal(target: { sessionId: string; command: string }): Promise<void>;
   openFiles(target: { sessionId: string }): void;
   openChanges?(target: { sessionId: string; worktreePath?: string | null }): void;
   toggleStage?(target: { sessionId: string }): void;

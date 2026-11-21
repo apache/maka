@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, effect, signal, Text, View, type JSX } from 'nsh';
+import { cleanup, effect, signal, Storage, Text, View, type JSX } from 'nsh';
 import { Button } from 'nsh/base';
 import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
 import type {
@@ -57,8 +57,35 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   initializeComposerToolbar();
   const sides = signal<ReturnType<typeof createConversationUi>[]>([]);
   const rooms = signal<{ id: string; flush(): Promise<void> }[]>([]);
+  const actionUsage = new Map<string, ReturnType<ConversationWindow['projectActionUsage']>>();
   const window: ConversationWindow = {
     workspace: signal<WorkspaceViewHandle | null>(null),
+    projectActionUsage(projectId) {
+      const existing = actionUsage.get(projectId);
+      if (existing) return existing;
+      const key = `project-action-last-used/${projectId}`;
+      const lastUsed = signal<string | null | undefined>(undefined);
+      const usage = {
+        lastUsed,
+        record(actionId: string) {
+          lastUsed.set(actionId);
+          void Storage.setItem(key, actionId).catch((reason: unknown) => {
+            console.warn('Could not save the last used Project Action', reason);
+          });
+        },
+      };
+      actionUsage.set(projectId, usage);
+      void Storage.getItem(key).then(
+        (stored) => {
+          if (lastUsed() === undefined) lastUsed.set(stored);
+        },
+        (reason: unknown) => {
+          if (lastUsed() === undefined) lastUsed.set(null);
+          console.warn('Could not read the last used Project Action', reason);
+        },
+      );
+      return usage;
+    },
     sessions: () => [
       ...[views, ...sides()].flatMap((pane) => {
         const id = pane.sessionId();
@@ -268,10 +295,9 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     },
     prepareReload: async () => {
       await Promise.all([
-        ...sides().map((pane) => pane.prepareReload()),
+        ...[views, ...sides()].map((pane) => pane.prepareReload()),
         ...rooms().map((room) => room.flush()),
       ]);
-      return views.prepareReload();
     },
   };
 };

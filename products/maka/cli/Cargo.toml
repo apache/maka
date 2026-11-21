@@ -53,6 +53,10 @@ name = "journal_recovery"
 path = "tests/journal_recovery.rs"
 
 [[test]]
+name = "project_actions"
+path = "tests/project_actions.rs"
+
+[[test]]
 name = "codemode_reopen"
 path = "tests/codemode_reopen.rs"
 

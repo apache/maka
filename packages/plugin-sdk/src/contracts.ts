@@ -81,6 +81,12 @@ export const contracts: {
     transport: 'remote';
     interface: Extract<Contract['interface'], { kind: 'service' }>;
   };
+  projectActions: Contract & {
+    name: 'maka.workspace.ProjectActions';
+    version: 1;
+    transport: 'remote';
+    interface: Extract<Contract['interface'], { kind: 'service' }>;
+  };
   settings: Contract & {
     name: 'maka.settings.Settings';
     version: 1;
@@ -65464,6 +65470,330 @@ export const contracts: {
               TerminalOutputUnavailable: {
                 type: 'string',
                 enum: ['not_retained'],
+              },
+            },
+          },
+          resources: {},
+        },
+      },
+    },
+  },
+  projectActions: {
+    name: 'maka.workspace.ProjectActions',
+    version: 1,
+    transport: 'remote',
+    interface: {
+      kind: 'service',
+      methods: {
+        create: {
+          mode: 'mutation',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              projectId: {
+                type: 'string',
+              },
+              name: {
+                type: 'string',
+              },
+              command: {
+                type: 'string',
+              },
+            },
+            required: ['projectId', 'name', 'command'],
+            title: 'Create',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          output: {
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'completed',
+                  },
+                  value: {
+                    $ref: '#/$defs/ActionDefinition',
+                  },
+                },
+                required: ['kind', 'value'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'message'],
+              },
+            ],
+            title: 'TerminalOutcome_ActionDefinition',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              ActionDefinition: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  projectId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  command: {
+                    type: 'string',
+                  },
+                },
+                required: ['id', 'projectId', 'revision', 'name', 'command'],
+              },
+            },
+          },
+          resources: {},
+        },
+        definitions: {
+          mode: 'query',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              projectId: {
+                type: 'string',
+              },
+            },
+            required: ['projectId'],
+            title: 'Project',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          output: {
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'completed',
+                  },
+                  value: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ActionDefinition',
+                    },
+                  },
+                },
+                required: ['kind', 'value'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'message'],
+              },
+            ],
+            title: 'TerminalOutcome_Array_of_ActionDefinition',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              ActionDefinition: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  projectId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  command: {
+                    type: 'string',
+                  },
+                },
+                required: ['id', 'projectId', 'revision', 'name', 'command'],
+              },
+            },
+          },
+          resources: {},
+        },
+        remove: {
+          mode: 'mutation',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              projectId: {
+                type: 'string',
+              },
+              id: {
+                type: 'string',
+                format: 'uuid',
+              },
+              revision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            required: ['projectId', 'id', 'revision'],
+            title: 'Remove',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          output: {
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'completed',
+                  },
+                  value: {
+                    type: 'null',
+                  },
+                },
+                required: ['kind', 'value'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'message'],
+              },
+            ],
+            title: 'TerminalOutcome_null',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          resources: {},
+        },
+        update: {
+          mode: 'mutation',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              projectId: {
+                type: 'string',
+              },
+              id: {
+                type: 'string',
+                format: 'uuid',
+              },
+              revision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              name: {
+                type: 'string',
+              },
+              command: {
+                type: 'string',
+              },
+            },
+            required: ['projectId', 'id', 'revision', 'name', 'command'],
+            title: 'Update',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+          },
+          output: {
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'completed',
+                  },
+                  value: {
+                    $ref: '#/$defs/ActionDefinition',
+                  },
+                },
+                required: ['kind', 'value'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'failed',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'message'],
+              },
+            ],
+            title: 'TerminalOutcome_ActionDefinition',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              ActionDefinition: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  projectId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  command: {
+                    type: 'string',
+                  },
+                },
+                required: ['id', 'projectId', 'revision', 'name', 'command'],
               },
             },
           },

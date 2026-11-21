@@ -316,8 +316,9 @@ impl Processes {
                     continue;
                 }
             }
+            let settled = !record.state.active();
             let value = completed(snapshot(record)?)?;
-            if !watch {
+            if !watch || settled {
                 return Ok(value);
             }
             if previous.as_ref() != Some(&value) {

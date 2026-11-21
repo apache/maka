@@ -5056,6 +5056,76 @@ export interface ServiceMethods {
       output: Runtime.TerminalOutcome_TerminalOutputEvent;
     };
   };
+  projectActions: {
+    create: {
+      mode: 'mutation';
+      input: {
+        projectId: string;
+        name: string;
+        command: string;
+      };
+      output:
+        | {
+            kind: 'completed';
+            value: Runtime.ActionDefinition;
+          }
+        | {
+            kind: 'failed';
+            message: string;
+          };
+    };
+    definitions: {
+      mode: 'query';
+      input: {
+        projectId: string;
+      };
+      output:
+        | {
+            kind: 'completed';
+            value: Runtime.ActionDefinition[];
+          }
+        | {
+            kind: 'failed';
+            message: string;
+          };
+    };
+    remove: {
+      mode: 'mutation';
+      input: {
+        projectId: string;
+        id: string;
+        revision: number;
+      };
+      output:
+        | {
+            kind: 'completed';
+            value: null;
+          }
+        | {
+            kind: 'failed';
+            message: string;
+          };
+    };
+    update: {
+      mode: 'mutation';
+      input: {
+        projectId: string;
+        id: string;
+        revision: number;
+        name: string;
+        command: string;
+      };
+      output:
+        | {
+            kind: 'completed';
+            value: Runtime.ActionDefinition;
+          }
+        | {
+            kind: 'failed';
+            message: string;
+          };
+    };
+  };
   skillLibrary: {
     candidates: {
       mode: 'query';

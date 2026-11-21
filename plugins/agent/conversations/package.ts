@@ -66,6 +66,10 @@ export default {
           contract: contracts.terminal,
           cardinality: { kind: 'optional' },
         },
+        projectActions: {
+          contract: contracts.projectActions,
+          cardinality: { kind: 'optional' },
+        },
         decisions_api: {
           contract: contracts.workspaceDecisionsApi,
           cardinality: { kind: 'optional' },

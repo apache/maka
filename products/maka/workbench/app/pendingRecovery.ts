@@ -24,6 +24,7 @@ export function createPendingRecovery(options: {
   pending(): boolean;
   blocked?(): boolean;
   recover(): Promise<unknown> | void;
+  retryDelayMs?(): number;
 }) {
   let alive = true;
   let running = false;
@@ -48,7 +49,7 @@ export function createPendingRecovery(options: {
         }
       }
       // Match the existing observation reconnect cadence while disconnected.
-      schedule(2000);
+      schedule(options.retryDelayMs?.() ?? 2000);
     }, delay);
   };
   effect(() => {

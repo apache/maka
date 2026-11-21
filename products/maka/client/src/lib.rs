@@ -583,8 +583,15 @@ impl Client {
         input: Value,
         resources: Attachments,
         session_id: Option<String>,
-        correlation: Value,
+        mut correlation: Value,
     ) -> Result<Mutation> {
+        if endpoint == "projectActions"
+            && matches!(method, "create" | "update" | "remove")
+            && correlation["kind"] == "ui"
+            && let Some(project) = input.get("projectId").and_then(Value::as_str)
+        {
+            correlation["projectId"] = Value::String(project.to_owned());
+        }
         let operation = Operation {
             id,
             host: self.0.source.clone(),

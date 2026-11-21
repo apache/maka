@@ -33,7 +33,7 @@ export interface ConversationShell {
   blocked(): boolean;
   connectionLost(): boolean;
   openSession(sessionId: string | null): Promise<boolean>;
-  openSettings(model?: ModelSelection, page?: string): void;
+  openSettings(model?: ModelSelection, page?: string, initialProjectId?: string): void;
   sidebarShown(): boolean;
   sidebarHover?(inside: boolean): void;
   sidebarDocked(): boolean;
@@ -241,6 +241,7 @@ export interface SettingsRoute {
 
 export interface SettingsViewInput {
   readonly page?: string;
+  readonly initialProjectId?: string;
   opened(): boolean;
   close(): void;
   readonly model?: ModelSelection;
@@ -268,6 +269,7 @@ export interface SettingsPageNavigation {
 }
 
 export interface SettingsPageInput {
+  readonly initialProjectId?: string;
   readonly settings?: {
     attach(navigation: SettingsPageNavigation): () => void;
   };
