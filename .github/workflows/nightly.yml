@@ -21,6 +21,10 @@ run-name: Nightly build (${{ github.ref_name }})
 on:
   workflow_dispatch:
     inputs:
+      publish_release:
+        description: "Publish the rolling GitHub nightly pre-release (set false for dry-run / V8 prebuilt warmup)"
+        type: boolean
+        default: true
       publish_npm:
         description: "Also publish @maka-agent/cli and maka-agent under the npm @nightly tag"
         type: boolean
@@ -375,7 +379,6 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "26"
-          registry-url: https://registry.npmjs.org
 
       - name: Download npm platform tarballs
         uses: actions/download-artifact@v8
@@ -391,18 +394,18 @@ jobs:
             --output npm-dist \
             --tag nightly
 
-      - name: Publish packages under the @nightly tag
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish packages under the @nightly tag via npm Trusted Publishing (OIDC)
         run: |
           node scripts/rust/package-nightly.mjs publish-npm \
             --dir npm-dist \
             --version "${{ needs.prepare.outputs.version }}" \
-            --tag nightly
+            --tag nightly \
+            --provenance
 
   release:
     needs: [prepare, build, publish-npm]
     if: >-
+      inputs.publish_release &&
       !cancelled() &&
       needs.prepare.result == 'success' &&
       needs.build.result == 'success' &&
