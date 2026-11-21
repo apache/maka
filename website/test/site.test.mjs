@@ -58,8 +58,76 @@ const hrefs = (html) => new Set([...html.matchAll(/href="([^"]+)"/gu)].map(([, h
 // document, and the site's own pages. Everything else must match.
 const normalize = (href) => href.replace(/\.zh-CN\.md$/u, '.md').replace(/^\/zh-CN\//u, '/en/');
 
+const canonicalUrls = [
+  'https://maka.apache.org/en/',
+  'https://maka.apache.org/zh-CN/',
+  'https://maka.apache.org/en/downloads/',
+  'https://maka.apache.org/zh-CN/downloads/',
+];
+const llmsSources = [
+  'ARCHITECTURE.md',
+  'platform/event-log/README.md',
+  'plugins/README.md',
+  'packages/cli/README.md',
+  'SECURITY.md',
+  'CONTRIBUTING.md',
+];
+
 test('the root redirects to the English homepage without a delay', () => {
   assert.match(page('index.html'), /content="0;url=\/en\/"/u);
+});
+
+test('machine-readable entry points describe the published site', () => {
+  const robots = page('robots.txt');
+  assert.match(robots, /^User-agent: \*\nAllow: \/$/mu);
+  assert.match(robots, /^Sitemap: https:\/\/maka\.apache\.org\/sitemap\.xml$/mu);
+
+  const sitemapUrls = [...page('sitemap.xml').matchAll(/<loc>([^<]+)<\/loc>/gu)].map(
+    ([, url]) => url,
+  );
+  assert.deepEqual(sitemapUrls, canonicalUrls);
+  assert.ok(!sitemapUrls.includes('https://maka.apache.org/'));
+
+  const llms = page('llms.txt');
+  assert.match(llms, /^# Apache Maka \(Incubating\)$/mu);
+  assert.ok(
+    llms.includes(
+      'Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.',
+    ),
+  );
+  for (const url of canonicalUrls) assert.ok(llms.includes(url), url);
+
+  const rawUrls = [
+    ...llms.matchAll(/https:\/\/raw\.githubusercontent\.com\/apache\/maka\/main\/([^\s)]+)/gu),
+  ].map(([, p]) => p);
+  assert.deepEqual(rawUrls, llmsSources);
+  for (const p of rawUrls)
+    assert.doesNotThrow(() => statSync(new URL(`../../${p}`, import.meta.url)));
+});
+
+test('downloads pages list the latest approved Apache source release', () => {
+  for (const locale of locales) {
+    const html = page(`${locale}/downloads/index.html`);
+    assert.ok(
+      html.includes(
+        'https://www.apache.org/dyn/closer.lua/incubator/maka/0.2.2-incubating/apache-maka-0.2.2-incubating-src.tar.gz',
+      ),
+      locale,
+    );
+    assert.ok(
+      html.includes(
+        'https://downloads.apache.org/incubator/maka/0.2.2-incubating/apache-maka-0.2.2-incubating-src.tar.gz.sha512',
+      ),
+      locale,
+    );
+    assert.ok(
+      html.includes(
+        'https://downloads.apache.org/incubator/maka/0.2.2-incubating/apache-maka-0.2.2-incubating-src.tar.gz.asc',
+      ),
+      locale,
+    );
+    assert.ok(html.includes('https://archive.apache.org/dist/incubator/maka/'), locale);
+  }
 });
 
 const meta = (html, key) =>
