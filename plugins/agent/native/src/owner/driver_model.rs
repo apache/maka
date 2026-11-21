@@ -442,11 +442,19 @@ impl DriverModel {
         model: &maka_agent_engine::PreparedModel,
         language: maka_agent_facts::language::Language,
         native: bool,
+        overflowed: bool,
     ) -> Result<(), RunError> {
         if !native {
+            let mut budget =
+                maka_agent_engine::context_input::summary_budget(model.context.as_ref());
+            // The provider rejected this history as too long, so the configured window
+            // did not hold; the size that overflowed is the only bound known to be too large.
+            if overflowed {
+                budget = budget.min(prompt.breakdown().estimated_tokens() / 4 * 3);
+            }
             *prompt = maka_agent_engine::context_input::fit_prepared_summary(
                 prompt,
-                maka_agent_engine::context_input::summary_budget(model.context.as_ref()),
+                budget,
                 language,
                 &self.cancellation,
             )
@@ -853,7 +861,7 @@ impl DriverModel {
                 let covered = CoveredPrefix::capture(&prompt).await?;
                 let instruction = self.summary_instruction(view, native_compaction, summary_options.prompt.as_deref()).await?;
                 prompt.initialize_overlays(Some(rendered), true, instruction).await?;
-                self.prepare_summary_input(&mut prompt, model, view.spec.language, native_compaction).await?;
+                self.prepare_summary_input(&mut prompt, model, view.spec.language, native_compaction, false).await?;
                 Some(covered)
             } else {
                 None
@@ -3408,6 +3416,18 @@ impl DriverModel {
                 contents: vec![proof],
             });
         };
+        // A Summary closes on overflow instead of being interrupted, so it has no overflow
+        // recovery of its own: the engine falls back to its Main or fails the Run.
+        if request.accounting.purpose == ModelPurpose::Summary
+            && matches!(failure, maka_model::ModelError::ContextOverflow { .. })
+        {
+            return Ok(RecoveryEvidence {
+                recovery: AttemptRecovery::Blocked {
+                    diagnostic: "the summary request was also too long for the model".into(),
+                },
+                contents: vec![],
+            });
+        }
         let frozen = self.frozen_input(reader, view.run, &request).await?;
         let parts = self.canonical_parts(view, attempt).await?;
         if !parts.is_empty() && !frozen.item_acceptance {

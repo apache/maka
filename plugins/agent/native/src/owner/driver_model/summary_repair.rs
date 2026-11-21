@@ -227,8 +227,14 @@ impl DriverModel {
                         instruction,
                     )
                     .await?;
-                self.prepare_summary_input(&mut prompt, &model, frozen.language, native_compaction)
-                    .await?;
+                self.prepare_summary_input(
+                    &mut prompt,
+                    &model,
+                    frozen.language,
+                    native_compaction,
+                    true,
+                )
+                .await?;
             }
             let settings = PromptSettings {
                 operation,

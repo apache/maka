@@ -2094,9 +2094,13 @@ async fn context_overflow_after_partial_output_compacts_and_continues() -> TestR
             ModelReply::Stream(format!("data: {chunk}\n\ndata: {error}\n\n"))
         };
         let summary_request = |request: &Value| {
-            request["messages"].as_array().and_then(|messages| messages.last())
-                .and_then(|message| message["content"].as_str())
-                .is_some_and(|text| text.starts_with("Summarize the captured conversation"))
+            // A summary cut to fit opens with excerpts in place of the closing instruction.
+            request["messages"].as_array().is_some_and(|messages| {
+                messages.iter().filter_map(|message| message["content"].as_str()).any(|text| {
+                    text.starts_with("Summarize the captured conversation")
+                        || text.starts_with("Conversation excerpts for summarization")
+                })
+            })
         };
         let note = "[Host] Your previous response was cut off";
 
@@ -2151,6 +2155,127 @@ async fn context_overflow_after_partial_output_compacts_and_continues() -> TestR
             .send(completion(json!({"role":"assistant","content":"Third file read."}), "stop"))
             .map_err(|_| "provider reply lost")?;
         quiescent_message(client, id, &third).await?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+/// A request the provider rejects as too long is summarized from less than what
+/// overflowed, and a summary that still overflows fails the turn with its own reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn overflow_summary_is_cut_below_the_request_that_overflowed() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(90), async {
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap(&base, provider.url.clone(), false).await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        // The declared window is far above what the provider accepts, so nothing
+        // compacts before the request is sent.
+        let model = model_options(
+            client,
+            &provider.url,
+            false,
+            json!({"contextWindow":400000,"compactionThreshold":200000}),
+        )
+        .await?;
+        let session = create(client, &base, &model, None).await?;
+        let id = session["id"].as_str().unwrap();
+        let send = async |message: &str| -> TestResult<Value> {
+            let sent = call(
+                client,
+                "agent",
+                "send",
+                json!({"sessionId":id,"message":message,"delivery":"queue"}),
+            )
+            .await?;
+            Ok(sent["messageId"].clone())
+        };
+        let failed = async |message: &Value| -> TestResult<Value> {
+            loop {
+                let work = call(
+                    client,
+                    "agent",
+                    "work",
+                    json!({"sessionId":id,"target":{"kind":"message","messageId":message}}),
+                )
+                .await?;
+                match work["execution"]["state"]["kind"].as_str() {
+                    Some("failed") => return Ok(work),
+                    Some("completed" | "cancelled") => {
+                        return Err(format!("turn did not fail: {work}").into());
+                    }
+                    _ => tokio::time::sleep(Duration::from_millis(30)).await,
+                }
+            }
+        };
+        let overflow =
+            || ModelReply::Fatal("This model's maximum context length is 8192 tokens.".into());
+        let summary_request = |request: &Value| {
+            // A summary cut to fit opens with excerpts in place of the closing instruction.
+            request["messages"].as_array().is_some_and(|messages| {
+                messages.iter().filter_map(|message| message["content"].as_str()).any(|text| {
+                    text.starts_with("Summarize the captured conversation")
+                        || text.starts_with("Conversation excerpts for summarization")
+                })
+            })
+        };
+
+        let first = send("Produce long history.").await?;
+        let (_, reply) = provider.next().await?;
+        reply
+            .send(completion(json!({"role":"assistant","content":"padding ".repeat(20_000)}), "stop"))
+            .map_err(|_| "provider reply lost")?;
+        quiescent_message(client, id, &first).await?;
+
+        // The summary of an overflowed request is smaller than that request; it
+        // overflows anyway, and the turn fails saying so.
+        let second = send("Read the second file.").await?;
+        let (main, reply) = provider.next().await?;
+        assert!(!summary_request(&main), "{main}");
+        reply.send(overflow()).map_err(|_| "provider reply lost")?;
+        let (summary, reply) = provider.next().await?;
+        assert!(summary_request(&summary), "{summary}");
+        let (asked, overflowed) = (text_messages(&summary).len(), text_messages(&main).len());
+        assert!(asked < overflowed, "summary {asked} bytes, overflowed request {overflowed} bytes");
+        reply.send(overflow()).map_err(|_| "provider reply lost")?;
+        let work = failed(&second).await?.to_string();
+        assert!(!work.contains("invalid event transition"), "{work}");
+
+        // A summary that fits lets the next turn continue from it.
+        let third = send("Read the third file.").await?;
+        let (_, reply) = provider.next().await?;
+        reply.send(overflow()).map_err(|_| "provider reply lost")?;
+        let (summary, reply) = provider.next().await?;
+        assert!(summary_request(&summary), "{summary}");
+        reply
+            .send(completion(json!({"role":"assistant","content":"overflow-summary-marker"}), "stop"))
+            .map_err(|_| "provider reply lost")?;
+        let (resumed, reply) = provider.next().await?;
+        let text = text_messages(&resumed);
+        assert!(text.contains("overflow-summary-marker"), "{text}");
+        reply
+            .send(completion(json!({"role":"assistant","content":"Third file read."}), "stop"))
+            .map_err(|_| "provider reply lost")?;
+        quiescent_message(client, id, &third).await?;
+        let history = call(
+            client,
+            "agent",
+            "history",
+            json!({"sessionId":id,"position":{"kind":"tail"},"includeThinking":false,"view":"conversation"}),
+        )
+        .await?
+        .to_string();
+        assert!(!history.contains("invalid event transition"), "{history}");
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
     .catch_unwind()
