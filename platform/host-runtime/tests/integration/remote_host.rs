@@ -216,6 +216,160 @@ async fn host_opens_independent_supplied_channels() {
         .unwrap();
 }
 
+async fn open_test_host(dir: &std::path::Path) -> (Arc<Host>, Configuration) {
+    private_directory(dir).unwrap();
+    let root = Arc::new(
+        RootOwner::create(
+            &dir.join("root"),
+            &RootNamespaces {
+                ownership: dir.join("ownership"),
+                control: dir.join("control"),
+            },
+        )
+        .unwrap(),
+    );
+    let store = Arc::new(RootStore::open(root, ROOT_MIGRATIONS).await.unwrap());
+    let contract = logs::contract();
+    let logs = package(
+        "test.logs",
+        json!({
+            "implementation":{"kind":"native","implementation":logs::HOST_LOGS},
+            "configuration":{"type":"object"},"imports":{},
+            "exports":{"HostLogs":{"contract":contract,"availability":"required"}}
+        }),
+    );
+    let gateway = package(
+        "test.gateway",
+        json!({
+            "implementation":{"kind":"native","implementation":GATEWAY},
+            "configuration":{"type":"object"},"exports":{},
+            "imports":{"hostLogs":{"contract":contract,"cardinality":{"kind":"one"}}}
+        }),
+    );
+    let consumer = Uuid::new_v4();
+    let deployment = Uuid::new_v4();
+    store
+        .commit_application(
+            deployment,
+            0,
+            serde_json::from_value(json!({"instances":{
+                "logs":{"key":Uuid::new_v4(),"package":{"source":"pinned","package":logs.application_ref()},"usePackage":"host"},
+                "gateway":{"key":consumer,"package":{"source":"pinned","package":gateway.application_ref()},"usePackage":"host",
+                    "bindings":{"hostLogs":[{"kind":"instance","path":["logs"],"export":"HostLogs"}]}}
+            }}))
+            .unwrap(),
+            vec![],
+            vec![logs, gateway],
+        )
+        .await
+        .unwrap();
+    let configuration = Configuration::PublicHost {
+        endpoints: serde_json::from_value(json!({
+            "hostLogs":{"consumer":[consumer],"import":"hostLogs","grant":{"methods":["read"],"recovery":false}}
+        }))
+        .unwrap(),
+        native: Default::default(),
+        product_methods: Default::default(),
+    };
+    let host = Host::open_with_options(
+        store,
+        deployment,
+        Default::default(),
+        None,
+        configuration.clone(),
+        Options {
+            lifecycle_mode: LifecycleMode::Ephemeral,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    (host, configuration)
+}
+
+#[tokio::test]
+async fn host_accepts_remote_channels_over_supplied_streams() {
+    let dir = tempfile::tempdir().unwrap();
+    let (host, _) = open_test_host(dir.path()).await;
+
+    let (dup_tx, dup_rx) = tokio::sync::mpsc::channel(1);
+    drop(dup_tx);
+    assert!(
+        WebSocketListener::from_streams(
+            dup_rx,
+            vec!["https://maka.local".into(), "https://maka.local".into()],
+        )
+        .is_err()
+    );
+
+    let (stream_tx, stream_rx) = tokio::sync::mpsc::channel::<Channel>(16);
+    let websocket = WebSocketListener::from_streams(stream_rx, vec![]).unwrap();
+    assert_eq!(
+        websocket.local_addr().unwrap_err().kind(),
+        io::ErrorKind::AddrNotAvailable
+    );
+    let pairing = host
+        .prepare_access("supplied-stream-client".into())
+        .await
+        .unwrap();
+    let credential_id = pairing.credential_id.clone();
+    let epoch = host.epoch();
+    let stop = CancellationToken::new();
+    let mut server = tokio::spawn({
+        let host = host.clone();
+        let stop = stop.clone();
+        async move { host.serve_remote(websocket, stop).await }
+    });
+
+    let transport: OpenChannel = Arc::new({
+        let stream_tx = stream_tx.clone();
+        move || {
+            let stream_tx = stream_tx.clone();
+            Box::pin(async move {
+                let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+                stream_tx
+                    .send(Box::new(server_io))
+                    .await
+                    .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "listener closed"))?;
+                Ok(Box::new(client_io) as Channel)
+            })
+        }
+    });
+
+    let client_id: Arc<str> = Uuid::new_v4().to_string().into();
+    let bad =
+        Client::connect_websocket(transport.clone(), "invalid".into(), client_id.clone(), None)
+            .await;
+    assert!(matches!(bad, Err(ref error) if error.contains("401")));
+
+    let bearer: Arc<str> = pairing.credential.into();
+    let opener = websocket::channel_opener(transport.clone(), bearer.clone());
+    Client::finalize_access(opener, client_id.clone(), None)
+        .await
+        .unwrap();
+
+    let mut client =
+        Client::connect_websocket(transport.clone(), bearer.clone(), client_id.clone(), None)
+            .await
+            .unwrap();
+    assert_eq!(client.epoch(), epoch);
+    read_logs_on_independent_channels(&client).await;
+    client.close().await.unwrap();
+    drop(client);
+
+    assert!(host.revoke_access(credential_id).await.unwrap());
+    let revoked = Client::connect_websocket(transport, bearer, client_id, None).await;
+    assert!(matches!(revoked, Err(ref error) if error.contains("401")));
+
+    // Closing the sole supplied stream ingress drains and shuts down the Host cleanly.
+    drop(stream_tx);
+    tokio::time::timeout(Duration::from_secs(5), &mut server)
+        .await
+        .expect("Host drains after supplied stream ingress closes")
+        .unwrap()
+        .unwrap();
+}
+
 async fn read_logs_on_independent_channels(client: &Client) {
     let read = || {
         client.call(

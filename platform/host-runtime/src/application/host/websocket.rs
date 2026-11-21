@@ -22,41 +22,93 @@ mod bytes;
 mod upgrade;
 use super::{Channel, Host, OpenChannel, Result, access::Authority};
 use std::{io, net::SocketAddr, sync::Arc, time::Duration};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpListener,
+    sync::mpsc,
+};
+
+enum Ingress {
+    Tcp(TcpListener),
+    Streams(mpsc::Receiver<Channel>),
+}
 
 pub struct WebSocketListener {
-    pub(super) listener: TcpListener,
-    pub(super) allowed_origins: Arc<[String]>,
+    ingress: Ingress,
+    allowed_origins: Arc<[String]>,
 }
 impl WebSocketListener {
     pub async fn bind(address: SocketAddr, allowed_origins: Vec<String>) -> Result<Self> {
         if !address.ip().is_loopback() {
             return Err("Plain WebSocket listener requires a loopback address".into());
         }
-        if allowed_origins
-            .iter()
-            .collect::<std::collections::BTreeSet<_>>()
-            .len()
-            != allowed_origins.len()
-        {
-            return Err("WebSocket Origin allowlist contains duplicates".into());
-        }
+        let allowed_origins = validate_origins(allowed_origins)?;
         Ok(Self {
-            listener: TcpListener::bind(address)
-                .await
-                .map_err(|error| error.to_string())?,
-            allowed_origins: allowed_origins.into(),
+            ingress: Ingress::Tcp(
+                TcpListener::bind(address)
+                    .await
+                    .map_err(|error| error.to_string())?,
+            ),
+            allowed_origins,
         })
     }
+
+    /// Accept remote WebSocket application channels over caller-supplied streams.
+    pub fn from_streams(
+        streams: mpsc::Receiver<Channel>,
+        allowed_origins: Vec<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            ingress: Ingress::Streams(streams),
+            allowed_origins: validate_origins(allowed_origins)?,
+        })
+    }
+
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
-        self.listener.local_addr()
+        match &self.ingress {
+            Ingress::Tcp(listener) => listener.local_addr(),
+            Ingress::Streams(_) => Err(io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                "supplied stream listener has no socket address",
+            )),
+        }
+    }
+
+    pub(super) async fn accept(&mut self) -> io::Result<Option<(Channel, Arc<[String]>)>> {
+        let stream: Channel = match &mut self.ingress {
+            Ingress::Tcp(listener) => {
+                let (stream, _) = listener.accept().await?;
+                Box::new(stream)
+            }
+            Ingress::Streams(streams) => match streams.recv().await {
+                Some(stream) => stream,
+                None => return Ok(None),
+            },
+        };
+        Ok(Some((stream, self.allowed_origins.clone())))
     }
 }
-pub(super) async fn connection(
-    socket: TcpStream,
+
+fn validate_origins(allowed_origins: Vec<String>) -> Result<Arc<[String]>> {
+    if allowed_origins
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        != allowed_origins.len()
+    {
+        return Err("WebSocket Origin allowlist contains duplicates".into());
+    }
+    Ok(allowed_origins.into())
+}
+
+pub(super) async fn connection<S>(
+    socket: S,
     host: Arc<Host>,
     allowed_origins: Arc<[String]>,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let upgraded = tokio::select! {
         biased;
         () = host.stop.cancelled() => return Ok(()),
