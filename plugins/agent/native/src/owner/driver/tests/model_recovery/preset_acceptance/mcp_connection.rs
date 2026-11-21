@@ -94,11 +94,12 @@ async fn last_tool_output(
     Ok((output, reply))
 }
 
-/// One turn that calls `echo` and finishes after reading its result.
+/// One turn that calls `echo` on `server` and finishes after reading its result.
 async fn echo_turn(
     rig: &Rig,
     provider: &mut Provider,
     session: &str,
+    server: &str,
     marker: &str,
 ) -> TestResult<()> {
     let client = rig.client.as_ref().unwrap();
@@ -106,7 +107,7 @@ async fn echo_turn(
     let (_, reply) = last_tool_output(provider, rig, session).await?;
     reply
         .send(tool_response(
-            "mcp__fixture__echo",
+            &format!("mcp__{server}__echo"),
             json!({"marker":marker}),
         ))
         .map_err(|_| "echo response lost")?;
@@ -145,7 +146,8 @@ async fn terminal(client: &HostClient, session: &str, message: &Value) -> TestRe
     }
 }
 
-/// Starts the global mcp.json fixture server and runs one turn whose call makes it exit.
+/// Starts the global mcp.json servers `fixture` and `steady`, then runs one turn whose
+/// call makes `fixture` exit. `steady` logs its starts to `steady-starts.log`.
 async fn crashed_session(
     rig: &mut Rig,
     provider: &mut Provider,
@@ -156,7 +158,12 @@ async fn crashed_session(
     std::fs::create_dir_all(base.join("home/.maka"))?;
     std::fs::write(
         base.join("home/.maka/mcp.json"),
-        json!({"mcpServers":{"fixture":{"command":"node","args":args,"cwd":base}}}).to_string(),
+        json!({"mcpServers":{
+            "fixture":{"command":"node","args":args,"cwd":base},
+            "steady":{"command":"node","cwd":base,
+                "args":[base.join("crash-server.mjs"), base.join("steady-starts.log")]}
+        }})
+        .to_string(),
     )?;
     let boot = bootstrap_with(base, provider.url.clone(), |config| {
         config["assistant"] = json!({"home":base.join("home")});
@@ -188,7 +195,8 @@ fn started(starts: &Path) -> usize {
 
 /// A server from the global mcp.json exits during a call. The retired connection
 /// is replaced by one new server process the next time a turn needs it, so the
-/// next turn and a new Session can use the server again.
+/// next turn and a new Session can use the server again. The other server of the
+/// same file keeps its process.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_server_that_exits_mid_call_is_reopened_for_the_next_turn() -> TestResult<()> {
     let mut rig = Rig::new()?;
@@ -200,11 +208,13 @@ async fn mcp_server_that_exits_mid_call_is_reopened_for_the_next_turn() -> TestR
         let (model, session) = crashed_session(&mut rig, &mut provider, &base, args).await?;
         assert_eq!(started(&starts), 1);
 
-        echo_turn(&rig, &mut provider, &session, "next-turn-marker").await?;
+        echo_turn(&rig, &mut provider, &session, "fixture", "next-turn-marker").await?;
         assert_eq!(started(&starts), 2);
         let fresh = full_access_session(&rig, &base, &model).await?;
-        echo_turn(&rig, &mut provider, &fresh, "new-session-marker").await?;
+        echo_turn(&rig, &mut provider, &fresh, "fixture", "new-session-marker").await?;
         assert_eq!(started(&starts), 2);
+        echo_turn(&rig, &mut provider, &fresh, "steady", "steady-marker").await?;
+        assert_eq!(started(&base.join("steady-starts.log")), 1);
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
     .catch_unwind()

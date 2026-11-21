@@ -180,13 +180,29 @@ struct Snapshot {
     // Exact server keys of this published file layer, including explicit tombstones.
     overrides: BTreeSet<String>,
 }
+impl Snapshot {
+    /// This layer after `next` replaced it under the same revision. It keeps only the
+    /// connections `next` did not take over.
+    fn replaced_by(&self, next: &Self) -> Self {
+        Self {
+            scope: self.scope.clone(),
+            acquired: AtomicU64::new(0),
+            catalog: self.catalog.clone(),
+            servers: self
+                .servers
+                .as_ref()
+                .map(|servers| servers.except(next.servers.as_ref())),
+            overrides: self.overrides.clone(),
+        }
+    }
+}
 #[derive(Default)]
 struct Snapshots {
     revisions: BTreeMap<String, Arc<Snapshot>>,
     current: BTreeMap<String, String>,
     clients: BTreeMap<String, Client>,
     // Layers reopened under the same revision. Admitted Runs may still hold them;
-    // each closes once nothing references its catalog.
+    // the connections a layer did not hand over close once nothing references its catalog.
     replaced: Vec<Arc<Snapshot>>,
 }
 pub(crate) enum Prepared {
@@ -492,6 +508,20 @@ impl Projects {
         };
         client::current(&snapshots, session, base)
     }
+    /// The cached layer of `revision`. Holding its catalog keeps `prune` from closing it.
+    fn cached(&self, revision: &str) -> Option<(Arc<Snapshot>, Arc<Catalog>)> {
+        let snapshots = self.snapshots.read().expect("MCP snapshots");
+        let snapshot = snapshots.revisions.get(revision)?;
+        Some((snapshot.clone(), snapshot.catalog.clone()))
+    }
+    fn publish_reopened(snapshots: &mut Snapshots, revision: String, opened: Snapshot) {
+        let opened = Arc::new(opened);
+        if let Some(replaced) = snapshots.revisions.insert(revision, opened.clone()) {
+            snapshots
+                .replaced
+                .push(Arc::new(replaced.replaced_by(&opened)));
+        }
+    }
     fn publish_cached(&self, proposal: &Proposal, catalog: &Arc<Catalog>) -> Result<(), String> {
         let mut snapshots = self.snapshots.write().expect("MCP snapshots");
         if !snapshots
@@ -592,12 +622,14 @@ impl Projects {
         scope: String,
         revision: String,
         floor: &maka_sandbox::Sandbox,
+        previous: Option<&Servers>,
     ) -> Result<Snapshot, String> {
         let selected = files::merge(&[], &[file]);
         if !selected.is_empty() {
             super::require_compatible_floor(floor).map_err(str::to_owned)?;
         }
-        let servers = match Servers::open_cancellable(
+        let servers = match Servers::reopen(
+            previous,
             &selected,
             &self.configuration,
             self.stop.clone(),
@@ -625,7 +657,7 @@ impl Projects {
         ) {
             Ok(catalog) => catalog,
             Err(error) => {
-                if let Err(cleanup) = servers.close().await {
+                if let Err(cleanup) = servers.except(previous).close().await {
                     let message = format!("{error}; {}", cleanup.message);
                     self.retain_transport_cleanup(cleanup);
                     return Err(message);
@@ -671,7 +703,8 @@ impl Projects {
                 if !files::merge(&[], &[&proposal.global, &proposal.file]).is_empty() {
                     super::require_compatible_floor(&floor).map_err(str::to_owned)?;
                 }
-                // A cached layer whose connection retired is reopened under the same revision.
+                // A cached layer with a retired connection is reopened under the same
+                // revision. Its servers that are still connected keep their connection.
                 if let Ok(catalog) = owner.catalog(Some(&proposal.revision))
                     && catalog.layers_available()
                 {
@@ -698,13 +731,18 @@ impl Projects {
                     Some(gate) => Some(gate.lock().await),
                     None => None,
                 };
+                let previous_global = owner.cached(&global_revision);
+                let previous_global_servers = previous_global
+                    .as_ref()
+                    .and_then(|(snapshot, _)| snapshot.servers.as_ref());
+                let previous_project = owner.cached(&proposal.revision);
                 let mut opened_global = None;
                 let global = if proposal.global.path.is_none() {
                     owner.base.clone()
-                } else if let Ok(catalog) = owner.catalog(Some(&global_revision))
+                } else if let Some((_, catalog)) = &previous_global
                     && catalog.layers_available()
                 {
-                    catalog
+                    catalog.clone()
                 } else {
                     let opened = owner
                         .open_layer(
@@ -713,6 +751,7 @@ impl Projects {
                             String::new(),
                             global_revision.clone(),
                             &floor,
+                            previous_global_servers,
                         )
                         .await?;
                     let catalog = opened.catalog.clone();
@@ -730,6 +769,9 @@ impl Projects {
                             proposal.workspace.clone(),
                             proposal.revision.clone(),
                             &floor,
+                            previous_project
+                                .as_ref()
+                                .and_then(|(snapshot, _)| snapshot.servers.as_ref()),
                         )
                         .await
                     {
@@ -741,7 +783,8 @@ impl Projects {
                         Err(error) => {
                             if let Some(opened) = opened_global
                                 && let Some(servers) = opened.servers
-                                && let Err(cleanup) = servers.close().await
+                                && let Err(cleanup) =
+                                    servers.except(previous_global_servers).close().await
                             {
                                 let message = format!("{error}; {}", cleanup.message);
                                 owner.retain_transport_cleanup(cleanup);
@@ -753,12 +796,8 @@ impl Projects {
                 };
                 {
                     let mut snapshots = owner.snapshots.write().expect("MCP snapshots");
-                    if let Some(opened) = opened_global
-                        && let Some(replaced) = snapshots
-                            .revisions
-                            .insert(global_revision.clone(), Arc::new(opened))
-                    {
-                        snapshots.replaced.push(replaced);
+                    if let Some(opened) = opened_global {
+                        Self::publish_reopened(&mut snapshots, global_revision.clone(), opened);
                     }
                     if proposal.global.path.is_some() {
                         snapshots.current.insert(String::new(), global_revision);
@@ -766,12 +805,7 @@ impl Projects {
                         snapshots.current.remove("");
                     }
                     if let Some(opened) = opened_project {
-                        if let Some(replaced) = snapshots
-                            .revisions
-                            .insert(proposal.revision.clone(), Arc::new(opened))
-                        {
-                            snapshots.replaced.push(replaced);
-                        }
+                        Self::publish_reopened(&mut snapshots, proposal.revision.clone(), opened);
                         snapshots
                             .current
                             .insert(proposal.workspace, proposal.revision);
@@ -779,6 +813,7 @@ impl Projects {
                         snapshots.current.remove(&proposal.workspace);
                     }
                 }
+                drop((previous_global, previous_project));
                 owner.prune().await?;
                 Ok(catalog)
             })
