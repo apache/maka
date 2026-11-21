@@ -33,33 +33,33 @@
 // legible in both light and dark themes; viewBox is the upstream 24×24.
 
 import type { ProviderType } from '@maka/core/llm-connections';
-import { GenericProviderMark } from '../features/connection-settings';
+import { GenericProviderMark } from './generic-provider-mark.js';
 import type { ReactElement } from 'react';
 import { siMinimax } from 'simple-icons';
-import alibabaBrandMark from '../assets/provider-brands/alibabacloud.svg';
-import cerebrasBrandMark from '../assets/provider-brands/cerebras.svg';
-import cohereBrandMark from '../assets/provider-brands/cohere.svg';
-import cloudflareMarkUrl from '../assets/provider-brands/cloudflare.svg';
-import deepinfraBrandMark from '../assets/provider-brands/deepinfra.svg';
-import fireworksMarkUrl from '../assets/provider-brands/fireworks.svg';
-import groqBrandMark from '../assets/provider-brands/groq.svg';
-import huggingfaceBrandMark from '../assets/provider-brands/huggingface.svg';
-import hunyuanBrandMark from '../assets/provider-brands/hunyuan.svg';
-import tencentCloudBrandMark from '../assets/provider-brands/tencentcloud.svg';
-import lmStudioBrandMark from '../assets/provider-brands/lmstudio.svg';
-import localAiBrandMark from '../assets/provider-brands/localai.svg';
-import mistralBrandMark from '../assets/provider-brands/mistral.svg';
-import togetherBrandMark from '../assets/provider-brands/together.svg';
-import nvidiaMarkUrl from '../assets/provider-brands/nvidia.svg';
-import opencodeBrandMark from '../assets/provider-brands/opencode.svg';
-import openrouterBrandMark from '../assets/provider-brands/openrouter.svg';
-import stepfunBrandMark from '../assets/provider-brands/stepfun.svg';
-import vercelBrandMark from '../assets/provider-brands/vercel.svg';
-import volcengineBrandMark from '../assets/provider-brands/volcengine.svg';
-import xaiMarkUrl from '../assets/provider-brands/xai.svg';
-import xiaomiMiMoMarkUrl from '../assets/provider-brands/xiaomimimo.svg';
-import zaiMarkUrl from '../assets/provider-brands/zai.svg';
-import zenmuxBrandMark from '../assets/provider-brands/zenmux.svg';
+const alibabaBrandMark = new URL('../../assets/provider-brands/alibabacloud.svg', import.meta.url).href;
+const cerebrasBrandMark = new URL('../../assets/provider-brands/cerebras.svg', import.meta.url).href;
+const cohereBrandMark = new URL('../../assets/provider-brands/cohere.svg', import.meta.url).href;
+const cloudflareMarkUrl = new URL('../../assets/provider-brands/cloudflare.svg', import.meta.url).href;
+const deepinfraBrandMark = new URL('../../assets/provider-brands/deepinfra.svg', import.meta.url).href;
+const fireworksMarkUrl = new URL('../../assets/provider-brands/fireworks.svg', import.meta.url).href;
+const groqBrandMark = new URL('../../assets/provider-brands/groq.svg', import.meta.url).href;
+const huggingfaceBrandMark = new URL('../../assets/provider-brands/huggingface.svg', import.meta.url).href;
+const hunyuanBrandMark = new URL('../../assets/provider-brands/hunyuan.svg', import.meta.url).href;
+const tencentCloudBrandMark = new URL('../../assets/provider-brands/tencentcloud.svg', import.meta.url).href;
+const lmStudioBrandMark = new URL('../../assets/provider-brands/lmstudio.svg', import.meta.url).href;
+const localAiBrandMark = new URL('../../assets/provider-brands/localai.svg', import.meta.url).href;
+const mistralBrandMark = new URL('../../assets/provider-brands/mistral.svg', import.meta.url).href;
+const togetherBrandMark = new URL('../../assets/provider-brands/together.svg', import.meta.url).href;
+const nvidiaMarkUrl = new URL('../../assets/provider-brands/nvidia.svg', import.meta.url).href;
+const opencodeBrandMark = new URL('../../assets/provider-brands/opencode.svg', import.meta.url).href;
+const openrouterBrandMark = new URL('../../assets/provider-brands/openrouter.svg', import.meta.url).href;
+const stepfunBrandMark = new URL('../../assets/provider-brands/stepfun.svg', import.meta.url).href;
+const vercelBrandMark = new URL('../../assets/provider-brands/vercel.svg', import.meta.url).href;
+const volcengineBrandMark = new URL('../../assets/provider-brands/volcengine.svg', import.meta.url).href;
+const xaiMarkUrl = new URL('../../assets/provider-brands/xai.svg', import.meta.url).href;
+const xiaomiMiMoMarkUrl = new URL('../../assets/provider-brands/xiaomimimo.svg', import.meta.url).href;
+const zaiMarkUrl = new URL('../../assets/provider-brands/zai.svg', import.meta.url).href;
+const zenmuxBrandMark = new URL('../../assets/provider-brands/zenmux.svg', import.meta.url).href;
 
 // ZenMux mark vendored byte-for-byte from Lobe Icons:
 // - repository: https://github.com/lobehub/lobe-icons

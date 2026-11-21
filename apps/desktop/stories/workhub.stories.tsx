@@ -24,6 +24,7 @@ import type { StoredMessage, SessionSummary } from '@maka/core/session';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within, waitFor } from 'storybook/test';
 import { WorkHubRoot, WorkHubServicesProvider, type WorkHubServices, type WorkHubTranscriptSnapshot } from '../src/renderer/features/workhub/index.js';
+import { ProviderBrandMark } from '../src/renderer/features/connection-settings/index.js';
 import { WorkHubConversation, WorkHubHighlightContext } from '../src/renderer/features/workhub/testing.js';
 import { desktopSessionKey } from '../src/shared/runtime-host-identity.js';
 
@@ -176,7 +177,7 @@ function Surface({ failFirst = false, history = false, colors = false, selectTar
     enabled: suggestionsEnabled, setEnabled: setSuggestionsEnabled,
     generate: async () => '继续补充并发回调、重复投递和异常恢复的测试，确认所有边界条件都能正确处理，然后整理测试结果。',
   } : undefined, [suggestions, suggestionsEnabled]);
-  return <LocaleProvider locale="zh-CN"><AstryxLocaleProvider><ToastProvider><ComposerPromptSuggestionProvider service={prediction}><WorkHubServicesProvider services={services}><div style={{ height: progress ? progressHeight : '100dvh', width: progress ? 360 : undefined, maxWidth: '100%' }}><WorkHubRoot /></div></WorkHubServicesProvider></ComposerPromptSuggestionProvider></ToastProvider></AstryxLocaleProvider></LocaleProvider>;
+  return <LocaleProvider locale="zh-CN"><AstryxLocaleProvider><ToastProvider><ComposerPromptSuggestionProvider service={prediction}><WorkHubServicesProvider services={services}><div style={{ height: progress ? progressHeight : '100dvh', width: progress ? 360 : undefined, maxWidth: '100%' }}><WorkHubRoot renderProviderMark={(type) => <ProviderBrandMark type={type} />} /></div></WorkHubServicesProvider></ComposerPromptSuggestionProvider></ToastProvider></AstryxLocaleProvider></LocaleProvider>;
 }
 const meta = { title: 'Product/WorkHub', parameters: { layout: 'fullscreen' }, beforeEach: () => {
   Object.values(writes).forEach((spy) => spy.mockClear());
