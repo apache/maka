@@ -24,8 +24,8 @@
  * adopt or mutate conversation-owned Matters or memory indexes, control initiative
  * configuration, or deliver to the user directly. Read tools (MatterOverview,
  * MemoryIndexRead, DiscoveryContext, ...) and source queries stay available.
- * Whether MemorySourceQuery and MemoryExtract belong here is still an open
- * design question tracked in the RFC.
+ * MemorySourceQuery and MemoryExtract remain available for read-only investigation;
+ * the extractor is an on-demand model tool, separate from wake screening.
  */
 export const DISCOVERY_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
   // Matter creation, adoption and conversation-scoped control.

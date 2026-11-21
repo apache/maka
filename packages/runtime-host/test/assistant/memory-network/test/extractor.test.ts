@@ -222,3 +222,192 @@ test('master disable aborts an in-flight extractor before closing its database',
   assert.deepEqual(await f.remote('assistant.enablement'), { enabled: false });
   await assert.rejects(readdir(join(f.root, 'data', 'extractions')), /ENOENT/);
 });
+
+test('extractor accepts queried fixed-version refs without a history cursor or source scan', async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  let scans = 0,
+    revision = '1';
+  const body = 'noise'.repeat(30000) + '最终状态：已停用';
+  f.sources.register({
+    id: 'logs',
+    description: 'logs',
+    queryHelp: 'text',
+    scope: { account: 'one' },
+    enumerate: async () => {
+      scans++;
+      throw Error('No scan expected');
+    },
+    query: async () => ({ items: [{ id: 'log', revision, kind: 'log', locator: {} }] }),
+    authorize: async (items: any[]) => items.map((x) => x.id),
+    read: async (object: any) => ({
+      status: 'ok',
+      object,
+      content: revision === '1' ? body : 'changed',
+    }),
+  });
+  const found = await f.invoke('MemorySourceQuery', {
+    source: 'logs',
+    query: { text: '已停用' },
+    view: 'content',
+  });
+  const ref = found.items[0].ref;
+  assert.ok(found.items[0].matches[0].text.includes('已停用'));
+  revision = '2';
+  f.setExtractRunner(async (input) => {
+    const p = JSON.parse(input.prompt);
+    assert.equal(p.originals.length, 1);
+    assert.equal(p.originals[0].content, body);
+    assert.equal(p.originals[0].object.revision, '1');
+    assert.equal(input.boundedInput, true);
+    return { text: p.originals[0].citation + ' 已停用', modelId: 'fixture' };
+  });
+  const result = await f.invoke('MemoryExtract', { refs: [ref, ref], requirements: '当前状态' });
+  assert.equal(result.status, 'generated');
+  assert.equal(scans, 0);
+  assert.equal(result.selection.includedMessages, 1);
+  assert.equal(result.selection.nextOffset, null);
+  assert.ok((await readFile(result.path, 'utf8')).includes('已停用'));
+  await assert.rejects(
+    f.invoke('MemoryExtract', { refs: [ref], to: 'made-up', requirements: 'x' }),
+    /exactly one/,
+  );
+  await assert.rejects(
+    f.invoke('MemoryExtract', { refs: [ref], types: ['user'], requirements: 'x' }),
+    /do not mix/,
+  );
+});
+
+test('extractor rejects invented history cursors with actionable recovery and no model call', async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  for (const field of ['to', 'from']) {
+    const to = (await f.invoke('MemoryRange', {})).to;
+    const result = await f.invoke('MemoryExtract', {
+      to,
+      [field]: 'icloud-evidence',
+      requirements: 'Extract',
+    });
+    assert.equal(result.status, 'invalid_cursor');
+    assert.equal(result.field, field);
+    assert.equal(result.modelCalled, false);
+    assert.match(result.message, /MemoryRange.to/);
+    assert.match(result.message, /refs/);
+  }
+  assert.equal(f.llmCalls.length, 0);
+});
+
+test('ref extraction rechecks external permissions and scope after generation', async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  let allowed = true,
+    scope = 1;
+  f.sources.register({
+    id: 'external',
+    description: 'external',
+    queryHelp: '',
+    get scope() {
+      return { version: scope };
+    },
+    enumerate: async () => ({ items: [] }),
+    query: async () => ({ items: [{ id: 'm', revision: '1', kind: 'message', locator: {} }] }),
+    authorize: async (items: any[]) => (allowed ? items.map((x) => x.id) : []),
+    read: async (object: any) => ({ status: 'ok', object, content: 'original' }),
+  });
+  const ref = (await f.invoke('MemorySourceQuery', { source: 'external' })).items[0].ref;
+  for (const change of [
+    () => {
+      allowed = false;
+    },
+    () => {
+      scope++;
+    },
+  ]) {
+    allowed = true;
+    f.setExtractRunner(async () => {
+      change();
+      return { text: 'private result', modelId: 'fixture' };
+    });
+    await assert.rejects(
+      f.invoke('MemoryExtract', { refs: [ref], requirements: 'Extract' }),
+      /permission|scope|visible|access/i,
+    );
+  }
+  await assert.rejects(readdir(join(f.root, 'data', 'extractions')), /ENOENT/);
+});
+
+test('ref extraction supports local originals and fails explicitly on missing refs', async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  const range = await f.invoke('MemoryRange', {});
+  const history = await f.invoke('MemoryHistory', { to: range.to, mode: 'messages' });
+  const result = await f.invoke('MemoryExtract', {
+    refs: [history.items[0].ref],
+    requirements: 'Extract',
+  });
+  assert.equal(result.status, 'generated');
+  assert.ok(JSON.parse(f.llmCalls[0].prompt).originals[0].message);
+  await assert.rejects(
+    f.invoke('MemoryExtract', { refs: ['missing'], requirements: 'Extract' }),
+    /Unknown original ref/,
+  );
+  assert.equal(f.llmCalls.length, 1);
+});
+
+test('extractor uses the selected model capacity, not only a character limit', async () => {
+  let called = false;
+  const result = await extractHistory(
+    {
+      sessionQuery: {},
+      llm: {
+        budget: async () => ({ modelId: 'small', maxInputTokens: 100, maxOutputTokens: 256 }),
+        generate: async () => {
+          called = true;
+          throw Error('must not call');
+        },
+      },
+    },
+    {} as any,
+    '/unused',
+    async () => [],
+    {
+      refs: ['ref'],
+      requirements: 'Extract',
+      maxInputChars: 2000000,
+      maxOutputTokens: 256,
+    },
+    {},
+    undefined,
+    async () => ({
+      items: [{ ref: 'ref', content: 'large original'.repeat(1000) }],
+      total: 1,
+      nextOffset: null,
+    }),
+  );
+  assert.equal(result.status, 'input_too_large');
+  assert.equal(result.budget.maxInputTokens, 100);
+  assert.equal(result.modelCalled, false);
+  assert.equal(called, false);
+  assert.match(result.message, /No input was truncated/);
+});
+
+test('unavailable original never becomes a partial successful extraction', async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  f.sources.register({
+    id: 'unavailable',
+    description: 'unavailable',
+    queryHelp: '',
+    scope: {},
+    enumerate: async () => ({ items: [] }),
+    query: async () => ({ items: [{ id: 'm', revision: '1', kind: 'message', locator: {} }] }),
+    authorize: async (items: any[]) => items.map((x) => x.id),
+    read: async () => ({ status: 'version_unavailable' }),
+  });
+  const ref = (await f.invoke('MemorySourceQuery', { source: 'unavailable' })).items[0].ref;
+  await assert.rejects(
+    f.invoke('MemoryExtract', { refs: [ref], requirements: 'Extract' }),
+    /version_unavailable.*no extraction/,
+  );
+  assert.equal(f.llmCalls.length, 0);
+});

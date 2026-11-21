@@ -17,6 +17,13 @@
  * under the License.
  */
 
+import { resolveModelLimits, modelLimitsConflict } from '@maka/core/model-thinking';
+import { lookupModelMetadata } from '@maka/core/model-metadata';
+import {
+  estimatePluginLlmInputTokens,
+  type PluginLlmBudget,
+} from '@maka/runtime/plugin-llm-service';
+
 import { buildPromptSuggestionPrompt } from './prompt-suggestion.js';
 import { randomUUID } from 'node:crypto';
 import {
@@ -150,28 +157,99 @@ export interface HostSessionEffectModel {
 
 export type HostSessionEffectModelInput = Omit<HostGoalEvaluatorInput, 'readSessionHeader'>;
 
+export function auxiliaryModelBudget(
+  connection: RuntimeExecutionConnection,
+  modelId: string,
+  requestedOutput = 2048,
+): PluginLlmBudget {
+  const model = connection.models?.find((m) => m.id === modelId) ?? { id: modelId };
+  const override = connection.modelOverrides?.[modelId];
+  const limits = resolveModelLimits(connection.providerType, model, override);
+  if (modelLimitsConflict(limits)) throw new Error('Model input limit exceeds its context window');
+  if (!limits.contextWindow && !limits.inputLimit)
+    throw new Error(
+      `Context capacity is unknown for ${modelId}; configure contextWindow or inputLimit`,
+    );
+  if (!Number.isSafeInteger(requestedOutput) || requestedOutput <= 0)
+    throw new Error('Output token budget must be a positive integer');
+  const maxOutputTokens = Math.min(
+    requestedOutput,
+    override?.maxOutputTokens ??
+      model.maxOutputTokens ??
+      lookupModelMetadata(connection.providerType, modelId).maxOutputTokens ??
+      Infinity,
+  );
+  const capacity = Math.min(
+    limits.inputLimit ?? Infinity,
+    limits.contextWindow === undefined ? Infinity : limits.contextWindow - maxOutputTokens,
+  );
+  // Leave 10% for wire wrappers and uncertainty in local token estimation.
+  const maxInputTokens = Math.floor(capacity * 0.9);
+  if (!Number.isSafeInteger(maxInputTokens) || maxInputTokens <= 128)
+    throw new Error('Model context has no usable input capacity after output reserve');
+  return { modelId, ...limits, maxInputTokens, maxOutputTokens, estimate: 'utf8-conservative' };
+}
+
 export interface HostPluginModel {
+  budget(input: {
+    sessionId: string;
+    modelKey?: string;
+    maxOutputTokens?: number;
+  }): Promise<PluginLlmBudget>;
   generate(input: {
     readonly sessionId: string;
+    readonly modelKey?: string;
     readonly prompt: string;
     readonly system?: string;
     readonly maxOutputTokens?: number;
     readonly abortSignal: AbortSignal;
+    readonly boundedInput?: boolean;
   }): Promise<{ readonly text: string; readonly modelId: string; readonly finishReason?: string }>;
 }
 
 /** Canonical credential, transport, retry, pricing and telemetry path for plugin model calls. */
 export function createHostPluginModel(input: HostGoalEvaluatorInput): HostPluginModel {
   const authority = createAuxiliaryModelCallAuthority(input);
+  const headerFor = async (sessionId: string, modelKey?: string) => {
+    const saved = await input.readSessionHeader(sessionId);
+    const target = modelKey ? parseDailyReviewModelKey(modelKey) : undefined;
+    if (modelKey && !target)
+      throw new AuxiliaryModelCallConfigurationError('Invalid auxiliary model key');
+    return target
+      ? {
+          ...saved,
+          llmConnectionId: undefined,
+          llmConnectionSlug: target.connectionSlug,
+          model: target.modelId,
+          thinkingLevel: 'off' as const,
+        }
+      : saved;
+  };
   return Object.freeze({
+    budget: async ({
+      sessionId,
+      modelKey,
+      maxOutputTokens,
+    }: Parameters<HostPluginModel['budget']>[0]) => {
+      const header = await headerFor(sessionId, modelKey);
+      const target = await resolveExecutionTarget(
+        header,
+        authority.runtimePolicy,
+        authority.oauthCredentials,
+        authority.createFetchTransport,
+      );
+      return auxiliaryModelBudget(target.connection, target.model, maxOutputTokens);
+    },
     generate: async ({
       sessionId,
+      modelKey,
       prompt,
       system,
       maxOutputTokens,
       abortSignal,
+      boundedInput,
     }: Parameters<HostPluginModel['generate']>[0]) => {
-      const header = await input.readSessionHeader(sessionId);
+      const header = await headerFor(sessionId, modelKey);
       return runHostAuxiliaryModelCall(authority, {
         transportContextId: sessionId,
         telemetrySessionId: sessionId,
@@ -179,11 +257,20 @@ export function createHostPluginModel(input: HostGoalEvaluatorInput): HostPlugin
         callKind: 'main',
         callId: `plugin_${authority.newId()}`,
         abortSignal,
-        buildRequest: () => ({
-          prompt,
-          ...(system ? { system } : {}),
-          maxOutputTokens: maxOutputTokens ?? 2_048,
-        }),
+        buildRequest: (target) => {
+          const budget = boundedInput
+            ? auxiliaryModelBudget(target.connection, target.model, maxOutputTokens)
+            : undefined;
+          if (budget && estimatePluginLlmInputTokens(system ?? '', prompt) > budget.maxInputTokens)
+            throw new Error(
+              'Auxiliary input exceeds current model context budget; rebuild a smaller batch',
+            );
+          return {
+            prompt,
+            ...(system ? { system } : {}),
+            maxOutputTokens: budget?.maxOutputTokens ?? maxOutputTokens ?? 2048,
+          };
+        },
       });
     },
   });
