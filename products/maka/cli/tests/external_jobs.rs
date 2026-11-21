@@ -2432,13 +2432,16 @@ async fn antigravity_automatic_title_falls_back_to_first_message() {
         assert_eq!(renamed["kind"], "committed", "{renamed}");
         assert_eq!(renamed["session"]["title"], "Manual override");
 
-        let (manual_session, manual_run) = launch(
-            &sdk,
-            &rig.sandbox.workspace,
-            "ACP-steer-manual",
-            "unused",
-            false,
-            "antigravity",
+        let (manual_session, manual_run) = phase(
+            "launch manual-title turn",
+            launch(
+                &sdk,
+                &rig.sandbox.workspace,
+                "ACP-steer-manual",
+                "unused",
+                false,
+                "antigravity",
+            ),
         )
         .await?;
         phase(
@@ -2491,13 +2494,16 @@ async fn antigravity_falls_back_to_user_block_and_supersedes_after_upgrade() {
         rig.clients.pop();
         let sdk = connect_sdk(&mut rig, &anchor).await?;
 
-        let (session, first_run) = launch(
-            &sdk,
-            &rig.sandbox.workspace,
-            "ACP-steer-legacy",
-            "unused",
-            false,
-            "antigravity",
+        let (session, first_run) = phase(
+            "launch legacy ACP turn",
+            launch(
+                &sdk,
+                &rig.sandbox.workspace,
+                "ACP-steer-legacy",
+                "unused",
+                false,
+                "antigravity",
+            ),
         )
         .await?;
         let first_ready = phase(
@@ -2531,14 +2537,18 @@ async fn antigravity_falls_back_to_user_block_and_supersedes_after_upgrade() {
         else {
             panic!("expected legacy [instructions, user] prompt blocks");
         };
-        assert!(instructions_block["text"]
-            .as_str()
-            .unwrap()
-            .starts_with("<maka_system_instructions>"));
-        assert!(user_block["text"]
-            .as_str()
-            .unwrap()
-            .contains("ACP-steer-legacy"));
+        assert!(
+            instructions_block["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("<maka_system_instructions>")
+        );
+        assert!(
+            user_block["text"]
+                .as_str()
+                .unwrap()
+                .contains("ACP-steer-legacy")
+        );
 
         sdk.close().await?;
         rig.clients.pop();
@@ -2558,12 +2568,9 @@ async fn antigravity_falls_back_to_user_block_and_supersedes_after_upgrade() {
         .map_err(|e| e.to_string())?;
 
         let (mut upgraded, next_sdk) = phase("reopen Host with upgraded agy", rig.start()).await?;
-        let second_run = send_native(
-            &next_sdk,
-            &session,
-            "ACP-steer-upgraded",
-            "unused",
-            false,
+        let second_run = phase(
+            "send upgraded ACP turn",
+            send_native(&next_sdk, &session, "ACP-steer-upgraded", "unused", false),
         )
         .await?;
         let upgraded_ready = phase(
@@ -2600,10 +2607,12 @@ async fn antigravity_falls_back_to_user_block_and_supersedes_after_upgrade() {
         else {
             panic!("expected only user prompt block after upgrading to systemPrompt.append");
         };
-        assert!(upgraded_user["text"]
-            .as_str()
-            .unwrap()
-            .contains("ACP-steer-upgraded"));
+        assert!(
+            upgraded_user["text"]
+                .as_str()
+                .unwrap()
+                .contains("ACP-steer-upgraded")
+        );
 
         next_sdk.close().await?;
         rig.clients.pop();
