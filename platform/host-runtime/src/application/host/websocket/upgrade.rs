@@ -31,7 +31,10 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use sha2::{Digest, Sha256};
-use tokio::{net::TcpStream, sync::mpsc};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    sync::mpsc,
+};
 use tokio_tungstenite::{
     WebSocketStream,
     tungstenite::{handshake::server::create_response_with_body, protocol::Role},
@@ -42,11 +45,14 @@ use super::super::{Host, Result};
 type Body = Full<Bytes>;
 type AuthenticatedUpgrade = (OnUpgrade, String);
 
-pub(super) async fn accept(
-    socket: TcpStream,
+pub(super) async fn accept<S>(
+    socket: S,
     host: Arc<Host>,
     allowed_origins: Arc<[String]>,
-) -> Result<Option<(WebSocketStream<TokioIo<Upgraded>>, String)>> {
+) -> Result<Option<(WebSocketStream<TokioIo<Upgraded>>, String)>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let (sender, mut receiver) = mpsc::channel(1);
     let service = service_fn(move |request| {
         let host = host.clone();
