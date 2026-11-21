@@ -619,22 +619,33 @@ fn reading_layout_rtl(value: &str) -> bool {
 /// The OS version (major, minor), as `RtlGetVersion` has it: unlike
 /// `GetVersionEx` it does not depend on the executable's manifest.
 fn os_version() -> (u16, u16) {
+    let (major, minor, _) = os_info();
+    (major, minor)
+}
+
+/// The OS build number (Windows 11's from 22000), read with
+/// [`os_version`].
+pub(crate) fn os_build() -> u32 {
+    os_info().2
+}
+
+fn os_info() -> (u16, u16, u32) {
     thread_local! {
-        static VERSION: (u16, u16) = read_os_version();
+        static VERSION: (u16, u16, u32) = read_os_version();
     }
     VERSION.with(|v| *v)
 }
 
-fn read_os_version() -> (u16, u16) {
+fn read_os_version() -> (u16, u16, u32) {
     type RtlGetVersion = unsafe extern "system" fn(*mut OSVERSIONINFOW) -> i32;
     // SAFETY: ntdll is loaded in every process; `RtlGetVersion` has the
     // signature above and fills the structure whose size is set.
     unsafe {
         let Ok(ntdll) = GetModuleHandleW(w!("ntdll.dll")) else {
-            return (0, 0);
+            return (0, 0, 0);
         };
         let Some(proc) = GetProcAddress(ntdll, s!("RtlGetVersion")) else {
-            return (0, 0);
+            return (0, 0, 0);
         };
         let get: RtlGetVersion = std::mem::transmute(proc);
         let mut info = OSVERSIONINFOW {
@@ -642,11 +653,12 @@ fn read_os_version() -> (u16, u16) {
             ..Default::default()
         };
         if get(&mut info) != 0 {
-            return (0, 0);
+            return (0, 0, 0);
         }
         (
             info.dwMajorVersion.min(u16::MAX as u32) as u16,
             info.dwMinorVersion.min(u16::MAX as u32) as u16,
+            info.dwBuildNumber,
         )
     }
 }

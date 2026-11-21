@@ -26,6 +26,7 @@ mod app {
     #[component]
     pub fn Card() -> impl IntoElement {
         let skip = signal(true);
+        let blur = signal(true);
         let win = window::current_window();
         let close = win.clone();
         // The root draws nothing: only the card shows.
@@ -36,6 +37,7 @@ mod app {
                 .p_4()
                 .rounded(px(16.0))
                 .bg(Color(0x1e1e_2ecc))
+                .windows_backdrop(move || blur.get().then(nsh_core::WindowsBackdrop::default))
                 .window_drag(true)
                 .child(
                     text("Transparent window")
@@ -56,6 +58,7 @@ mod app {
                     view()
                         .flex_row()
                         .gap_2()
+                        .child(action("Toggle blur", move || blur.set(!blur.get_untracked())))
                         .child(action("Toggle taskbar", move || {
                             let next = !skip.get_untracked();
                             skip.set(next);

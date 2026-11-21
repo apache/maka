@@ -1,6 +1,6 @@
 //! The OS the platform reports decides `platform` and which platform-only
-//! props (`ios={{…}}`, `android={{…}}`, `macos={{…}}`, `desktop={{…}}`,
-//! `web={{…}}`) apply; on the web, the idiom decides between mobile and
+//! props (`ios={{…}}`, `android={{…}}`, `macos={{…}}`, `windows={{…}}`,
+//! `desktop={{…}}`, `web={{…}}`) apply; on the web, the idiom decides between mobile and
 //! desktop, and the terminal idiom behaves as a desktop. `platform.desktop`, the
 //! `desktop` idiom, `select`'s `desktop` and `desktop={{…}}` all follow the
 //! one definition of desktop (`Environment::desktop`), whatever idiom the
@@ -870,6 +870,42 @@ mount(
   ),
 );
 "##;
+
+const BACKDROPS_APP: &str = r##"import { mount, View } from "nsh";
+
+mount(() => (
+  <View
+    windows={{ backdrop: { material: "blur" } }}
+    macos={{ backdrop: { blending: "behindWindow" } }}
+  />
+));
+"##;
+
+#[test]
+fn windows_props_apply_on_windows_through_the_mount() {
+    use nsh_core::{MacOsBackdrop, MacOsBackdropBlending, WindowsBackdrop};
+    let backdrops = |os| {
+        first_frame_of(BACKDROPS_APP, "windows-props", os, Idiom::Desktop)
+            .into_iter()
+            .filter_map(|item| match item {
+                MountItem::ViewStyle { style, .. } => {
+                    Some((style.windows_backdrop, style.macos_backdrop))
+                }
+                _ => None,
+            })
+            .filter(|b| *b != (None, None))
+            .collect::<Vec<_>>()
+    };
+    // Each platform takes its own backdrop and ignores the other's.
+    assert_eq!(
+        backdrops(Os::Windows),
+        [(Some(WindowsBackdrop::default()), None)]
+    );
+    let mut mac = MacOsBackdrop::default();
+    mac.blending = MacOsBackdropBlending::BehindWindow;
+    assert_eq!(backdrops(Os::MacOs), [(None, Some(mac))]);
+    assert!(backdrops(Os::Linux).is_empty());
+}
 
 #[test]
 fn macos_props_apply_on_macos_through_the_mount() {

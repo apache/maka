@@ -456,6 +456,13 @@ impl Drop for Host {
 /// Sets up a web view, video or component container.
 pub(crate) fn create(surface: &Rc<Surface>, view: &NshView) {
     let id = view.id();
+    #[cfg(not(feature = "media"))]
+    if matches!(view.kind(), nsh_core::ViewKind::Video) {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            log::warn!("a Video shows nothing: this runtime was built without the feature `media`")
+        });
+    }
     let host = match view.kind() {
         #[cfg(feature = "media")]
         nsh_core::ViewKind::Video => Host::Video(video::VideoItem::new(surface, id)),

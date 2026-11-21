@@ -65,7 +65,7 @@ server client, log forwarding, the error overlay: `dev.rs`). The host turns on `
   surface's window draws its tree with Direct2D into a flip-model swap chain (`render.rs`); NSH content needs
   no child windows. Changing a view (`changed` / `moved`) queues it on its surface and invalidates the window;
   `WM_PAINT` draws once, however many views changed, only where they changed ("Partial frames", below). Only native components that bring a window of their own are child `HWND`s, and they
-  sit above everything NSH draws (the "airspace" limit, below).
+  sit above everything NSH draws (the "airspace" limit, below), or below it while the window shows a backdrop view.
 - **Window composition for web views** (`compose.rs`). A window without web views or composed components has one
   swap chain. The first web view makes a DirectComposition target on the window that layers each web view's visual
   between swap-chain layers of what NSH paints before and after it, so later siblings, dialogs and the dev overlay
@@ -77,6 +77,23 @@ server client, log forwarding, the error overlay: `dev.rs`). The host turns on `
   its composition; the composition stacks it in paint order like a web view's page and hands the component its
   `Placement` (transform, size, clip, corner radii, opacity) with `placed` every frame, which the component applies to
   its visual before the window commits. Unlike a child window, it is covered by what NSH draws after it.
+- **Backdrop views** (`backdrop.rs`). `windows={{ backdrop: { material: "blur" } }}` (`WindowsBackdrop::default()`) puts the system's
+  blur of what is behind a see-through window under one view: a host backdrop brush (`CreateHostBackdropBrush`, with
+  `DWMWA_USE_HOSTBACKDROPBRUSH`), a `Windows.UI.Composition` object that cannot join NSH's DirectComposition tree. A
+  window has two composition targets, one below its child windows and one above them, and NSH's tree takes the lower
+  one. While a window shows backdrop views, the tree moves to the upper one (`Composition::backdrops_placed`) and a
+  `DesktopWindowTarget` in the lower one holds a sprite of the brush per view, under everything NSH draws, clipped to the
+  rectangle around its ancestors' clips (so, as with a web view, it can show past an ancestor's rounded corners), rounded
+  by its largest corner radius and placed each frame from the view's `Placement`, as a composed component's visual is.
+  Views are found by drawing them, so such a window draws every frame whole instead of only what changed, and a view
+  inside something drawn offscreen (a filter, a blend mode, a content shadow, a projective transform, a shader effect, a
+  transition's picture) gets no blur. When the last backdrop view goes, the sprites go and the tree moves back down. It
+  takes a transparent window and Windows 11 (build 22000, `system::os_build`); in an opaque window, on an earlier
+  Windows, or when the blur cannot be made or placed (logged once and not tried again for that window), the prop draws
+  nothing, and the view's own background, border and content draw as always. While the tree is up, child windows (native
+  components that bring an `HWND`) sit between the blur and NSH's content. The first backdrop gives the UI thread a
+  dispatcher queue (`CreateDispatcherQueueController`, unless it had one) and a compositor, kept until the thread ends,
+  so a native component finds that queue there.
 - **Drawing a view** (`render::draw_view`): shadows and background (`decor.rs`), the content clipped to the bounds
   (text, image, canvas), the children (clipped to the rounded bounds when the view clips), the items the view hosts
   (`ViewState::natives`: text editors, alerts, overlays, videos — the `Hosted` trait), the scroll
@@ -447,7 +464,8 @@ measured and are not used: they bring back that latency (48 ms) for the same fra
   the WebView2 Runtime (it comes with Windows 11; Windows 10 gets it with Edge) a web view shows a neutral
   placeholder.
 - **Native components with a window of their own** (`NativeComponent::window`) stay child windows: they cover NSH
-  content drawn over them and are not in offscreen drawings of the window. Hosting an arbitrary `HWND` in a composition is not
+  content drawn over them, except while the window shows a `windows={{ backdrop }}` view, when NSH's content covers
+  them (Architecture), and are not in offscreen drawings of the window. Hosting an arbitrary `HWND` in a composition is not
   possible (only content made for it, such as a swap chain or a WebView2 composition controller, can be a visual).
 - **Video**: which formats play depends on the installed Media Foundation codecs; there is no poster; the control bar
   always shows while `controls` is on. Unlike GTK, `rate` works.
@@ -531,7 +549,7 @@ keeps it (`Surface::base`); the window's own swap chain is then a composition
 swap chain with premultiplied alpha (`DXGI_ALPHA_MODE_PREMULTIPLIED`), the
 bottom visual of the tree, below web views and their layers, and frames clear
 to transparent instead of the window background. Web views reuse that
-composition. Example: `cargo run -p nsh-platform-windows --example transparent`.
+composition, and only such a window shows `windows={{ backdrop }}` (Architecture). Example: `cargo run -p nsh-platform-windows --example transparent`.
 
 ## Local file drops
 

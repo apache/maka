@@ -30,6 +30,7 @@ mod app;
 mod app_window;
 #[cfg_attr(not(feature = "media"), path = "audio_off.rs")]
 mod audio;
+mod backdrop;
 mod canvas;
 mod chrome;
 mod compose;

@@ -746,6 +746,9 @@ pub struct ViewStyle {
     pub glass_tint_color: Option<Color>,
     /// The macOS backdrop from `macos={{ backdrop }}`, projected at mount time.
     pub macos_backdrop: Option<MacOsBackdrop>,
+    /// The Windows backdrop from `windows={{ backdrop }}`, projected at
+    /// mount time.
+    pub windows_backdrop: Option<crate::WindowsBackdrop>,
     /// `outline*`.
     pub outline: Outline,
     /// `visibility: "hidden"`: not drawn and not touchable, still laid out.
@@ -1080,6 +1083,7 @@ impl ViewStyle {
         glass_effect: GlassEffect::None,
         glass_tint_color: None,
         macos_backdrop: None,
+        windows_backdrop: None,
         outline: Outline::NONE,
         hidden: false,
         cursor: Cursor::Auto,

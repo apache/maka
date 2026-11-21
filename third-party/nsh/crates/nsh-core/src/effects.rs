@@ -714,6 +714,27 @@ pub enum MacOsBackdropState {
     Inactive,
 }
 
+/// `windows={{ backdrop }}`: a system backdrop drawn under the view's box
+/// and corners on Windows 11 and later, below everything the window draws;
+/// the view's own background draws over it, and tints it when translucent.
+/// Nothing elsewhere, nor in a window that is not transparent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct WindowsBackdrop {
+    /// The system material to draw behind the view.
+    pub material: WindowsBackdropMaterial,
+}
+
+/// The material of a [`WindowsBackdrop`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, crate::element::PropEnum)]
+#[non_exhaustive]
+pub enum WindowsBackdropMaterial {
+    /// The system's blur of what is behind the window, with no tint of its
+    /// own (a host backdrop brush).
+    #[default]
+    Blur,
+}
+
 /// `glassEffect`: a glass material drawn behind the view's content.
 ///
 /// Apple's "Liquid Glass", new in iOS 26. No CSS property describes it --

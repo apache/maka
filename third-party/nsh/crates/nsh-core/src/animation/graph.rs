@@ -517,6 +517,208 @@ impl Step {
             Step::Loop { current, .. } => current.stop(g, finished),
         }
     }
+
+    /// Whether this step already owns the running leaf on `target` (or already
+    /// has its ended leaf queued in `leaf_ends` to be routed on the next tick).
+    fn has_active_leaf(&self, target: NodeId, g: &Graph) -> bool {
+        match self {
+            Step::Run {
+                node,
+                leaf: Some(id),
+                ..
+            } => {
+                *node == target
+                    && (g.running_id(*node) == Some(*id)
+                        || g.leaf_ends.iter().any(|(f, _)| f.animation == *id))
+            }
+            Step::Run { .. } | Step::Delay { .. } => false,
+            Step::Sequence { steps, index, .. } => steps
+                .get(*index)
+                .is_some_and(|s| s.has_active_leaf(target, g)),
+            Step::Parallel { steps, ends, .. } => steps
+                .iter()
+                .zip(ends)
+                .any(|(s, end)| end.is_none() && s.has_active_leaf(target, g)),
+            Step::Loop { current, .. } => current.has_active_leaf(target, g),
+        }
+    }
+
+    /// Whether any step in this subtree (completed or remaining) references `target`.
+    fn mentions_node(&self, target: NodeId) -> bool {
+        match self {
+            Step::Run { node, .. } => *node == target,
+            Step::Delay { .. } => false,
+            Step::Sequence { steps, .. } | Step::Parallel { steps, .. } => {
+                steps.iter().any(|s| s.mentions_node(target))
+            }
+            Step::Loop {
+                template, current, ..
+            } => current.mentions_node(target) || composite_targets_node(template, target),
+        }
+    }
+
+    /// Whether any remaining step in this subtree still has a `Run` to execute.
+    fn has_remaining_run(&self) -> bool {
+        match self {
+            Step::Run { .. } => true,
+            Step::Delay { .. } => false,
+            Step::Sequence { steps, index, .. } => steps
+                .get(*index..)
+                .is_some_and(|rest| rest.iter().any(Step::has_remaining_run)),
+            Step::Parallel { steps, ends, .. } => steps
+                .iter()
+                .zip(ends)
+                .any(|(s, end)| end.is_none() && s.has_remaining_run()),
+            Step::Loop {
+                template,
+                current,
+                runs,
+                iterations,
+                ..
+            } => {
+                current.has_remaining_run()
+                    || (iterations.is_none_or(|n| runs.saturating_add(1) < n)
+                        && composite_has_run(template))
+            }
+        }
+    }
+
+    /// Whether remaining steps will animate `target`, or are a trailing delay
+    /// hold after earlier steps animated `target`.
+    fn targets_node(&self, target: NodeId) -> bool {
+        match self {
+            Step::Run { node, .. } => *node == target,
+            Step::Delay { .. } => false,
+            Step::Sequence { steps, index, .. } => {
+                let Some(rest) = steps.get(*index..) else {
+                    return false;
+                };
+                if rest.iter().any(|s| s.targets_node(target)) {
+                    return true;
+                }
+                !rest.iter().any(Step::has_remaining_run)
+                    && steps[..*index].iter().any(|s| s.mentions_node(target))
+            }
+            Step::Parallel { steps, ends, .. } => steps
+                .iter()
+                .zip(ends)
+                .any(|(s, end)| end.is_none() && s.targets_node(target)),
+            Step::Loop {
+                template,
+                current,
+                runs,
+                iterations,
+                ..
+            } => {
+                current.targets_node(target)
+                    || (iterations.is_none_or(|n| runs.saturating_add(1) < n)
+                        && composite_targets_node(template, target))
+            }
+        }
+    }
+
+    /// Cancels pending work in this step targeting `target` when no active leaf
+    /// on `target` already tracks it. Returns true if this step is interrupted.
+    fn interrupt_pending(
+        &mut self,
+        target: NodeId,
+        g: &mut Graph,
+        finished: &mut Vec<Finished>,
+    ) -> bool {
+        match self {
+            Step::Run { node, leaf, .. } => *node == target && leaf.is_none(),
+            Step::Delay { .. } => false,
+            Step::Sequence { steps, index, .. } => {
+                let i = *index;
+                let Some(cur) = steps.get_mut(i) else {
+                    return false;
+                };
+                if cur.interrupt_pending(target, g, finished) {
+                    return true;
+                }
+                if cur.has_active_leaf(target, g) {
+                    return false;
+                }
+                let later_targets = steps[i + 1..].iter().any(|s| s.targets_node(target));
+                let trailing_hold = !steps[i..].iter().any(Step::has_remaining_run)
+                    && steps[..i].iter().any(|s| s.mentions_node(target));
+                if later_targets || trailing_hold {
+                    steps[i].stop(g, finished);
+                    return true;
+                }
+                false
+            }
+            Step::Parallel {
+                steps,
+                ends,
+                stop_together,
+                ..
+            } => {
+                let mut interrupted = false;
+                for (step, end) in steps.iter_mut().zip(ends.iter_mut()) {
+                    if end.is_none() && step.interrupt_pending(target, g, finished) {
+                        *end = Some((false, 0.0));
+                        interrupted = true;
+                    }
+                }
+                if !interrupted {
+                    return false;
+                }
+                if *stop_together {
+                    for (step, end) in steps.iter_mut().zip(ends.iter()) {
+                        if end.is_none() {
+                            step.stop(g, finished);
+                        }
+                    }
+                    return true;
+                }
+                ends.iter().all(Option::is_some)
+            }
+            Step::Loop {
+                template,
+                current,
+                runs,
+                iterations,
+                ..
+            } => {
+                if current.interrupt_pending(target, g, finished) {
+                    return true;
+                }
+                if current.has_active_leaf(target, g) {
+                    return false;
+                }
+                if iterations.is_none_or(|n| runs.saturating_add(1) < n)
+                    && composite_targets_node(template, target)
+                {
+                    current.stop(g, finished);
+                    return true;
+                }
+                false
+            }
+        }
+    }
+}
+
+fn composite_targets_node(spec: &Composite, target: NodeId) -> bool {
+    match spec {
+        Composite::Run { node, .. } => *node == target,
+        Composite::Sequence(children) | Composite::Parallel { children, .. } => {
+            children.iter().any(|c| composite_targets_node(c, target))
+        }
+        Composite::Delay(_) => false,
+        Composite::Loop { child, .. } => composite_targets_node(child, target),
+    }
+}
+
+fn composite_has_run(spec: &Composite) -> bool {
+    match spec {
+        Composite::Run { .. } => true,
+        Composite::Sequence(children) | Composite::Parallel { children, .. } => {
+            children.iter().any(composite_has_run)
+        }
+        Composite::Delay(_) => false,
+        Composite::Loop { child, .. } => composite_has_run(child),
+    }
 }
 
 impl Graph {
@@ -536,15 +738,42 @@ impl Graph {
     /// Ends of composite steps go to their programs, not to JS.
     fn route_leaf_ends(&mut self, finished: &mut Vec<Finished>) {
         if finished.iter().any(|f| f.animation >= LEAF_IDS) {
-            // Interrupted: when does not matter (the program stops).
-            self.leaf_ends.extend(
-                finished
-                    .iter()
-                    .filter(|f| f.animation >= LEAF_IDS)
-                    .map(|&f| (f, 0.0)),
-            );
+            if !self.programs.is_empty() {
+                // Interrupted: when does not matter (the program stops).
+                self.leaf_ends.extend(
+                    finished
+                        .iter()
+                        .filter(|f| f.animation >= LEAF_IDS)
+                        .map(|&f| (f, 0.0)),
+                );
+            }
             finished.retain(|f| f.animation < LEAF_IDS);
         }
+    }
+
+    /// Cancels composite programs waiting to animate `node` without an active
+    /// leaf on it (queued before the first tick, waiting in a delay, or in a
+    /// trailing delay hold). Programs that already own `node`'s running leaf
+    /// are left to finish through `leaf_ends` so replacement drivers keep its
+    /// velocity.
+    fn interrupt_pending(&mut self, node: NodeId, finished: &mut Vec<Finished>) {
+        if self.programs.is_empty() {
+            return;
+        }
+        let mut programs = std::mem::take(&mut self.programs);
+        programs.retain_mut(|p| {
+            if p.root.has_active_leaf(node, self) {
+                return true;
+            }
+            if p.root.interrupt_pending(node, self, finished) {
+                finished.push(Finished::new(p.id, false));
+                false
+            } else {
+                true
+            }
+        });
+        programs.append(&mut self.programs);
+        self.programs = programs;
     }
 
     fn apply_op(&mut self, op: AnimationOp, finished: &mut Vec<Finished>) {
@@ -629,6 +858,7 @@ impl Graph {
                 driver,
             } => {
                 super::driver::warn_out_of_range(&driver);
+                self.interrupt_pending(node, finished);
                 self.start(node, animation, driver, None, finished);
             }
             AnimationOp::StartComposite {
@@ -639,6 +869,9 @@ impl Graph {
                 warn_composite_out_of_range(&spec);
                 let mut nodes = Vec::new();
                 spec.nodes(&mut nodes);
+                for &node in &nodes {
+                    self.interrupt_pending(node, finished);
+                }
                 let values = nodes
                     .into_iter()
                     .filter_map(|n| Some((n, self.value(n)?)))
@@ -674,7 +907,10 @@ impl Graph {
                 }
             }
             AnimationOp::ReleaseComposite { key } => self.baselines.retain(|(k, _)| *k != key),
-            AnimationOp::Stop { node } => self.stop(node, finished),
+            AnimationOp::Stop { node } => {
+                self.interrupt_pending(node, finished);
+                self.stop(node, finished);
+            }
             AnimationOp::StopAnimation { animation } => {
                 if let Some(i) = self.programs.iter().position(|p| p.id == animation) {
                     let mut program = self.programs.remove(i);
@@ -683,6 +919,7 @@ impl Graph {
                 }
             }
             AnimationOp::Release { node } => {
+                self.interrupt_pending(node, finished);
                 self.stop(node, finished);
                 self.remove(node);
             }
@@ -848,6 +1085,7 @@ impl Graph {
     /// its animation.
     pub fn set(&mut self, node: NodeId, new: f32, finished: &mut Vec<Finished>) {
         self.changed();
+        self.interrupt_pending(node, finished);
         self.stop(node, finished);
         self.route_leaf_ends(finished);
         if let Some(Node::Value {
@@ -3066,5 +3304,317 @@ mod tests {
             assert!(!g.is_animating());
             f.clear();
         }
+    }
+
+    #[test]
+    fn pending_composite_cancelled_by_stop_set_start_and_overlapping_composite() {
+        let motion_enter = |node| Composite::Parallel {
+            children: vec![
+                Composite::Sequence(vec![
+                    Composite::Run {
+                        node,
+                        driver: timing(0.0, 0.0),
+                    },
+                    Composite::Run {
+                        node,
+                        driver: timing(1.0, 200.0),
+                    },
+                ]),
+                Composite::Sequence(vec![
+                    Composite::Run {
+                        node: node + 1,
+                        driver: timing(6.0, 0.0),
+                    },
+                    Composite::Run {
+                        node: node + 1,
+                        driver: timing(0.0, 200.0),
+                    },
+                ]),
+            ],
+            stop_together: true,
+        };
+
+        // 1. Stop before the first tick cancels the composite immediately.
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1, 2]);
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 2,
+                key: 2,
+                spec: motion_enter(1),
+            },
+            &mut f,
+        );
+        g.apply(AnimationOp::Stop { node: 1 }, &mut f);
+        assert_eq!(f, [Finished::new(2, false)]);
+        assert!(!g.is_animating());
+        f.clear();
+        run(&mut g, &mut f, 0.0, 0.3);
+        assert!(f.is_empty());
+        assert_eq!(g.value(1), Some(0.0));
+        assert_eq!(g.value(2), Some(0.0));
+
+        // 2. Starting a single-value animation before the first tick (with or without Stop)
+        // cancels the pending composite so it cannot overwrite the new animation on tick.
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1, 2]);
+        g.set(1, 1.0, &mut f);
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 2,
+                key: 2,
+                spec: motion_enter(1),
+            },
+            &mut f,
+        );
+        g.apply(
+            AnimationOp::Start {
+                node: 1,
+                animation: 4,
+                driver: timing(0.0, 150.0),
+            },
+            &mut f,
+        );
+        assert_eq!(f, [Finished::new(2, false)]);
+        f.clear();
+        run(&mut g, &mut f, 0.0, 0.3);
+        assert_eq!(f, [Finished::new(4, true)]);
+        assert_eq!(g.value(1), Some(0.0));
+        assert!(!g.is_animating());
+
+        // 3. Set before the first tick cancels the pending composite and keeps the set value.
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1, 2]);
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 2,
+                key: 2,
+                spec: motion_enter(1),
+            },
+            &mut f,
+        );
+        g.apply(
+            AnimationOp::Set {
+                node: 1,
+                value: 0.5,
+            },
+            &mut f,
+        );
+        assert_eq!(f, [Finished::new(2, false)]);
+        assert!(!g.is_animating());
+        f.clear();
+        run(&mut g, &mut f, 0.0, 0.3);
+        assert!(f.is_empty());
+        assert_eq!(g.value(1), Some(0.5));
+
+        // 4. Overlapping StartComposite before the first tick cancels the older composite,
+        // while a disjoint composite on another channel coexists cleanly.
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1, 2, 3]);
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 2,
+                key: 2,
+                spec: motion_enter(1),
+            },
+            &mut f,
+        );
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 4,
+                key: 4,
+                spec: Composite::Run {
+                    node: 3,
+                    driver: timing(90.0, 100.0),
+                },
+            },
+            &mut f,
+        );
+        assert!(f.is_empty(), "disjoint composite should not cancel node 1");
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 6,
+                key: 6,
+                spec: Composite::Run {
+                    node: 1,
+                    driver: timing(0.25, 100.0),
+                },
+            },
+            &mut f,
+        );
+        assert_eq!(f, [Finished::new(2, false)]);
+        f.clear();
+        run(&mut g, &mut f, 0.0, 0.25);
+        assert_eq!(f.len(), 2);
+        assert!(f.contains(&Finished::new(4, true)));
+        assert!(f.contains(&Finished::new(6, true)));
+        assert_eq!(g.value(1), Some(0.25));
+        assert_eq!(g.value(3), Some(90.0));
+        assert!(!g.is_animating());
+    }
+
+    #[test]
+    fn delayed_and_trailing_hold_composites_cancel_when_their_nodes_are_taken_over() {
+        // Delayed entrance (jump to 0, wait 100ms, animate 0 -> 1 over 150ms),
+        // interrupted during the delay by StartComposite on the same node.
+        let delayed = |node| {
+            Composite::Sequence(vec![
+                Composite::Run {
+                    node,
+                    driver: timing(0.0, 0.0),
+                },
+                Composite::Delay(100.0),
+                Composite::Run {
+                    node,
+                    driver: timing(1.0, 150.0),
+                },
+            ])
+        };
+
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1]);
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 2,
+                key: 2,
+                spec: delayed(1),
+            },
+            &mut f,
+        );
+        run(&mut g, &mut f, 0.0, 0.04);
+        assert!(f.is_empty() && g.is_animating());
+
+        // Start an immediate replacement during the 100ms delay: the delayed program must
+        // cancel immediately and never wake up at 100ms to overwrite the replacement.
+        g.apply(
+            AnimationOp::Start {
+                node: 1,
+                animation: 4,
+                driver: timing(0.5, 200.0),
+            },
+            &mut f,
+        );
+        assert_eq!(f, [Finished::new(2, false)]);
+        f.clear();
+        run(&mut g, &mut f, 0.04, 0.35);
+        assert_eq!(f, [Finished::new(4, true)]);
+        assert_eq!(g.value(1), Some(0.5));
+        assert!(!g.is_animating());
+
+        // Trailing hold (keyframes ending before offset 1): stopping the node during the
+        // trailing Delay cancels the sequence immediately.
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1]);
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 6,
+                key: 6,
+                spec: Composite::Sequence(vec![
+                    Composite::Run {
+                        node: 1,
+                        driver: timing(1.0, 100.0),
+                    },
+                    Composite::Delay(100.0),
+                ]),
+            },
+            &mut f,
+        );
+        run(&mut g, &mut f, 0.0, 0.14);
+        assert!(f.is_empty() && g.is_animating());
+        g.apply(AnimationOp::Stop { node: 1 }, &mut f);
+        assert_eq!(f, [Finished::new(6, false)]);
+        assert!(!g.is_animating());
+    }
+
+    #[test]
+    fn parallel_stop_together_false_only_cancels_the_interrupted_pending_branch() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1, 2]);
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 2,
+                key: 2,
+                spec: Composite::Parallel {
+                    children: vec![
+                        Composite::Sequence(vec![
+                            Composite::Delay(100.0),
+                            Composite::Run {
+                                node: 1,
+                                driver: timing(10.0, 100.0),
+                            },
+                        ]),
+                        Composite::Run {
+                            node: 2,
+                            driver: timing(20.0, 150.0),
+                        },
+                    ],
+                    stop_together: false,
+                },
+            },
+            &mut f,
+        );
+        run(&mut g, &mut f, 0.0, 0.04);
+        // Stop node 1 while its branch is delayed; node 2 must still finish.
+        g.apply(AnimationOp::Stop { node: 1 }, &mut f);
+        assert!(f.is_empty() && g.is_animating());
+        run(&mut g, &mut f, 0.04, 0.3);
+        assert_eq!(f, [Finished::new(2, false)]);
+        assert_eq!(g.value(1), Some(0.0));
+        assert_eq!(g.value(2), Some(20.0));
+        assert!(!g.is_animating());
+    }
+
+    #[test]
+    fn replacing_running_composite_with_spring_composite_preserves_velocity() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1]);
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 2,
+                key: 2,
+                spec: Composite::Run {
+                    node: 1,
+                    driver: timing(100.0, 200.0),
+                },
+            },
+            &mut f,
+        );
+        run(&mut g, &mut f, 0.0, 0.1);
+        let at_switch = g.value(1).unwrap();
+        // Node 1 is moving positively (~500 u/s). A spring targeting the current value
+        // overshoots above `at_switch` only if it inherited that positive velocity.
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 4,
+                key: 4,
+                spec: Composite::Run {
+                    node: 1,
+                    driver: Driver::Spring {
+                        to: at_switch,
+                        stiffness: 100.0,
+                        damping: 10.0,
+                        mass: 1.0,
+                        velocity: None,
+                        frame_rate: None,
+                    },
+                },
+            },
+            &mut f,
+        );
+        g.tick(0.116, &mut f);
+        g.tick(0.15, &mut f);
+        assert!(
+            g.value(1).unwrap() > at_switch + 1.0,
+            "spring should inherit running composite velocity (at_switch={at_switch}, got={:?})",
+            g.value(1)
+        );
     }
 }
