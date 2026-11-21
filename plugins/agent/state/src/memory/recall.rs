@@ -37,7 +37,29 @@ pub struct FactPage {
     pub gaps: Vec<String>,
 }
 
-const SEARCH: &str = "
+// Put the address predicate in each UNION arm. SQLite can materialize a shared
+// view over all evidence before applying a caller's correlated address filter.
+macro_rules! restricted_spans_sql {
+    ($select:literal, $predicate:literal $(,)?) => {
+        concat!(
+            $select,
+            " agent_memory_hidden_spans s WHERE ",
+            $predicate,
+            " UNION ALL ",
+            $select,
+            " agent_memory_operation_spans s WHERE ",
+            $predicate,
+            " UNION ALL ",
+            $select,
+            " agent_memory_sibling_spans s WHERE ",
+            $predicate
+        )
+    };
+}
+pub(crate) use restricted_spans_sql;
+
+const SEARCH: &str = concat!(
+    "
 WITH hits AS MATERIALIZED (
  SELECT rowid seq FROM agent_memory_recall_terms
  WHERE agent_memory_recall_terms MATCH ?1 AND rowid>?2 ORDER BY rowid LIMIT 65
@@ -48,12 +70,13 @@ SELECT k.seq,k.scope,k.id,m.revision,m.assertion,v.body,m.modified_at,v.metadata
      AND EXISTS(SELECT 1 FROM session_creations route WHERE route.session_id=s.id AND route.ready=1 AND route.visible=1)
      AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1)
      AND h.fact_id=e.source->>'$.reference.factId'
-     AND NOT EXISTS(SELECT 1 FROM agent_memory_hidden_spans hidden WHERE hidden.namespace=k.namespace AND hidden.fact=h.fact_id
-       AND hidden.ordinal=e.source->>'$.reference.itemIndex' AND hidden.start<e.source->>'$.reference.end' AND hidden.end>e.source->>'$.reference.start')
-     AND NOT EXISTS(SELECT 1 FROM agent_memory_operation_spans hidden WHERE hidden.namespace=k.namespace AND hidden.fact=h.fact_id
-       AND hidden.ordinal=e.source->>'$.reference.itemIndex' AND hidden.start<e.source->>'$.reference.end' AND hidden.end>e.source->>'$.reference.start')
-     AND NOT EXISTS(SELECT 1 FROM agent_memory_sibling_spans hidden WHERE hidden.namespace=k.namespace AND hidden.fact=h.fact_id
-       AND hidden.ordinal=e.source->>'$.reference.itemIndex' AND hidden.start<e.source->>'$.reference.end' AND hidden.end>e.source->>'$.reference.start')
+     AND NOT EXISTS(",
+    restricted_spans_sql!(
+        "SELECT 1 FROM",
+        "s.namespace=k.namespace AND s.fact=h.fact_id
+       AND s.ordinal=e.source->>'$.reference.itemIndex' AND s.start<e.source->>'$.reference.end' AND s.end>e.source->>'$.reference.start'",
+    ),
+    ")
      AND NOT EXISTS(SELECT 1 FROM agent_memory_recall_outputs r WHERE r.owner=k.namespace AND r.fact=h.fact_id)
      THEN json('true') ELSE json('false') END))
   FROM (SELECT source FROM agent_memory_evidence WHERE namespace=k.namespace AND scope=k.scope AND id=k.id AND assertion=m.assertion
@@ -64,7 +87,8 @@ FROM hits f CROSS JOIN agent_memory_recall_keys k ON k.seq=f.seq
  CROSS JOIN agent_memories m USING(namespace,scope,id)
  CROSS JOIN agent_memory_versions v ON v.namespace=m.namespace AND v.scope=m.scope AND v.id=m.id AND v.revision=m.assertion
  WHERE k.namespace=?3 AND k.scope IN (?4,?5) AND m.state='active' AND v.disposition='current'
- ORDER BY f.seq";
+ ORDER BY f.seq"
+);
 
 #[derive(serde::Deserialize)]
 struct SourceRow {
@@ -95,7 +119,6 @@ struct Locator {
 impl Query for SearchFacts {
     type Output = FactPage;
     fn execute(self, c: &Connection) -> Result<FactPage, StoreError> {
-        register_read_classifier(c)?;
         self.personal.validate(c)?;
         let namespace = &self.personal.namespace;
         let location = |s: &Scope| {
@@ -257,6 +280,22 @@ pub fn mask(text: &mut String, offset: u64, spans: &[(u64, u64)]) {
     }
 }
 
+pub(crate) fn configure_writer(connection: &Connection) -> Result<(), StoreError> {
+    use rusqlite::functions::FunctionFlags;
+    use unicode_normalization::UnicodeNormalization;
+
+    // Migrations and the triggers they install must normalize text identically.
+    connection.create_scalar_function(
+        "maka_nfc",
+        1,
+        FunctionFlags::SQLITE_UTF8
+            | FunctionFlags::SQLITE_DETERMINISTIC
+            | FunctionFlags::SQLITE_INNOCUOUS,
+        |ctx| Ok(ctx.get::<String>(0)?.nfc().collect::<String>()),
+    )?;
+    register_read_classifier(connection)
+}
+
 pub(crate) fn register_read_classifier(c: &Connection) -> Result<(), StoreError> {
     use rusqlite::functions::FunctionFlags;
     if c.prepare_cached("SELECT maka_reads_history_resource(NULL)")
@@ -289,40 +328,37 @@ pub struct ReadRestrictions {
 impl Query for ReadRestrictions {
     type Output = RestrictionMap;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        Ok(self
-            .by_index(c)?
+        Ok(address_spans(c, &self.owner, &self.addresses)?
             .into_iter()
             .map(|(index, spans)| (self.addresses[index].clone(), spans))
             .collect())
     }
 }
-impl ReadRestrictions {
-    /// Look up a batch in the same transaction that verifies the candidate documents.
-    pub(crate) fn by_index(
-        &self,
-        c: &Connection,
-    ) -> Result<std::collections::BTreeMap<usize, Vec<(u64, u64)>>, StoreError> {
-        use maka_agent_facts::history::HistoryRowAddress::*;
-        let mut canonical = Vec::new();
-        let mut imported = Vec::new();
-        for (index, address) in self.addresses.iter().enumerate() {
-            match address {
-                Live {
-                    fact, item_index, ..
-                }
-                | Snapshot {
-                    fact, item_index, ..
-                } => canonical.push((index, *fact, *item_index)),
-                Imported {
-                    snapshot,
-                    message_ordinal,
-                    part_ordinal,
-                    ..
-                } => imported.push((index, *snapshot, *message_ordinal, *part_ordinal)),
+pub(crate) fn address_spans<'a>(
+    c: &Connection,
+    owner: &maka_agent_facts::durable::RunOwner,
+    addresses: impl IntoIterator<Item = &'a maka_agent_facts::history::HistoryRowAddress>,
+) -> Result<std::collections::BTreeMap<usize, Vec<(u64, u64)>>, StoreError> {
+    use maka_agent_facts::history::HistoryRowAddress::*;
+    let mut canonical = Vec::new();
+    let mut imported = Vec::new();
+    for (index, address) in addresses.into_iter().enumerate() {
+        match address {
+            Live {
+                fact, item_index, ..
             }
+            | Snapshot {
+                fact, item_index, ..
+            } => canonical.push((index, *fact, *item_index)),
+            Imported {
+                snapshot,
+                message_ordinal,
+                part_ordinal,
+                ..
+            } => imported.push((index, *snapshot, *message_ordinal, *part_ordinal)),
         }
-        indexed_spans(c, &self.owner, &canonical, &imported)
     }
+    indexed_spans(c, owner, &canonical, &imported)
 }
 
 pub(crate) fn indexed_spans(
@@ -337,17 +373,19 @@ pub(crate) fn indexed_spans(
     )],
 ) -> Result<std::collections::BTreeMap<usize, Vec<(u64, u64)>>, StoreError> {
     register_read_classifier(c)?;
-    let mut stmt=c.prepare_cached("WITH keys AS MATERIALIZED (SELECT value->>0 idx,value->>1 fact,value->>2 ordinal FROM json_each(?2))
-        SELECT k.idx,s.start,s.end FROM keys k CROSS JOIN agent_memory_hidden_spans s
-        WHERE s.namespace=?1 AND s.fact=k.fact AND s.ordinal=k.ordinal
-        UNION ALL SELECT k.idx,s.start,s.end FROM keys k CROSS JOIN agent_memory_operation_spans s
-        WHERE s.namespace=?1 AND s.fact=k.fact AND s.ordinal=k.ordinal
-        UNION ALL SELECT k.idx,s.start,s.end FROM keys k CROSS JOIN agent_memory_sibling_spans s
-        WHERE s.namespace=?1 AND s.fact=k.fact AND s.ordinal=k.ordinal
+    let mut stmt = c.prepare_cached(concat!(
+        "WITH keys AS MATERIALIZED (SELECT value->>0 idx,value->>1 fact,value->>2 ordinal FROM json_each(?2))
+        ",
+        restricted_spans_sql!(
+            "SELECT k.idx,s.start,s.end FROM keys k CROSS JOIN",
+            "s.namespace=?1 AND s.fact=k.fact AND s.ordinal=k.ordinal",
+        ),
+        "
         UNION ALL SELECT k.idx,0,9223372036854775807 FROM keys k
         WHERE EXISTS(SELECT 1 FROM agent_memory_recall_outputs r WHERE r.owner=?1 AND r.fact=k.fact)
         UNION ALL SELECT i.value->>0,0,9223372036854775807 FROM json_each(?3) i CROSS JOIN agent_memory_imported_outputs r
-        WHERE r.snapshot=i.value->>1 AND r.message=i.value->>2 AND r.part=i.value->>3 AND (r.read_path IS NULL OR maka_reads_history_resource(r.read_path))")?;
+        WHERE r.snapshot=i.value->>1 AND r.message=i.value->>2 AND r.part=i.value->>3 AND (r.read_path IS NULL OR maka_reads_history_resource(r.read_path))"
+    ))?;
     let mut result = std::collections::BTreeMap::<_, Vec<_>>::new();
     let mut rows = stmt.query(params![
         serde_json::to_string(owner)?,
@@ -380,12 +418,11 @@ impl Query for RestrictedArchives {
     type Output = std::collections::BTreeMap<maka_agent_facts::durable::FactId, ArchiveRestriction>;
 
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        register_read_classifier(c)?;
-        let mut stmt = c.prepare_cached(
+        let mut stmt = c.prepare_cached(concat!(
             "WITH sources(fact,direct) AS MATERIALIZED (
-                SELECT value, EXISTS(SELECT 1 FROM agent_memory_hidden_spans WHERE namespace=?1 AND fact=input.value)
-                OR EXISTS(SELECT 1 FROM agent_memory_operation_spans WHERE namespace=?1 AND fact=input.value)
-                OR EXISTS(SELECT 1 FROM agent_memory_sibling_spans WHERE namespace=?1 AND fact=input.value)
+                SELECT value, EXISTS(",
+            restricted_spans_sql!("SELECT 1 FROM", "s.namespace=?1 AND s.fact=input.value"),
+            ")
                 OR EXISTS(SELECT 1 FROM agent_memory_recall_outputs WHERE owner=?1 AND fact=input.value)
                 FROM json_each(?2) AS input)
              SELECT fact,direct FROM sources WHERE direct OR EXISTS(
@@ -394,10 +431,10 @@ impl Query for RestrictedArchives {
                   AND result.owner=call.owner AND result.session=call.session AND result.run=call.run
                   AND result.tool_use_id=call.tool_use_id
                   AND (result.result_source=1 OR result.kind='operation_observed')
-                  AND (EXISTS(SELECT 1 FROM agent_memory_hidden_spans s WHERE s.namespace=?1 AND s.fact=result.fact_id)
-                    OR EXISTS(SELECT 1 FROM agent_memory_sibling_spans s WHERE s.namespace=?1 AND s.fact=result.fact_id)
-                    OR EXISTS(SELECT 1 FROM agent_memory_operation_spans s WHERE s.namespace=?1 AND s.fact=result.fact_id)))",
-        )?;
+                  AND EXISTS(",
+            restricted_spans_sql!("SELECT 1 FROM", "s.namespace=?1 AND s.fact=result.fact_id"),
+            "))",
+        ))?;
         let mut rows = stmt.query(params![
             serde_json::to_string(&self.owner)?,
             serde_json::to_string(&self.facts)?
@@ -425,6 +462,7 @@ impl Query for MaterialAccess {
     type Output = ();
     fn execute(self, c: &Connection) -> Result<(), StoreError> {
         let restricted: bool = c.query_row(
+            concat!(
             "WITH RECURSIVE origins(session,artifact,needs_registration) AS (
                 SELECT ?2,?3,0 UNION
                 SELECT json_extract(CAST(b.payload AS TEXT),'$.origin.source.scope.session'),
@@ -437,13 +475,14 @@ impl Query for MaterialAccess {
             ) SELECT EXISTS(SELECT 1 FROM origins o CROSS JOIN agent_memory_recall_attachments a
             CROSS JOIN agent_recall_messages d ON d.id=a.message CROSS JOIN agent_session_history h ON h.sequence=d.sequence
             WHERE a.namespace=?1 AND a.session=o.session AND a.artifact=o.artifact
-            AND (EXISTS(SELECT 1 FROM agent_memory_hidden_spans WHERE namespace=a.namespace AND fact=h.fact_id AND ordinal=d.ordinal)
-                 OR EXISTS(SELECT 1 FROM agent_memory_operation_spans WHERE namespace=a.namespace AND fact=h.fact_id AND ordinal=d.ordinal)
-                 OR EXISTS(SELECT 1 FROM agent_memory_sibling_spans WHERE namespace=a.namespace AND fact=h.fact_id AND ordinal=d.ordinal)))
+            AND EXISTS(",
+                restricted_spans_sql!("SELECT 1 FROM", "s.namespace=a.namespace AND s.fact=h.fact_id AND s.ordinal=d.ordinal"),
+                "))
             OR EXISTS(SELECT 1 FROM origins o WHERE
                 EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=o.session AND retired.remove_session=1)
                 OR (o.needs_registration AND NOT EXISTS(SELECT 1 FROM agent_session_artifact_registrations r
-                      WHERE r.owner=?1 AND r.session=o.session AND r.artifact=o.artifact)))",
+                      WHERE r.owner=?1 AND r.session=o.session AND r.artifact=o.artifact)))"
+            ),
             params![serde_json::to_string(&self.scope.owner)?, self.scope.session, self.artifact],
             |row| row.get(0),
         )?;
@@ -462,15 +501,20 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
+    fn migrate(db: &Connection, through: i64) {
+        let migrations: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(crate::MIGRATIONS)
+            .filter(|m| m.version <= through)
+            .copied()
+            .collect();
+        maka_event_log::migration::run(db, &migrations).unwrap();
+    }
+
     #[test]
     fn broad_prefix_pages_current_assertions_over_large_restricted_history() {
         let mut db = Connection::open_in_memory().unwrap();
-        let catalog = maka_event_log::ROOT_MIGRATIONS
-            .iter()
-            .chain(crate::MIGRATIONS)
-            .copied()
-            .collect::<Vec<_>>();
-        maka_event_log::migration::run(&db, &catalog).unwrap();
+        migrate(&db, i64::MAX);
         let scope = Scope {
             namespace: "owner".into(),
             location: "personal".into(),
@@ -575,17 +619,7 @@ mod tests {
     fn unicode_fact_search_preserves_old_and_new_assertion_bytes() {
         use unicode_normalization::UnicodeNormalization;
         let c = Connection::open_in_memory().unwrap();
-        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
-            .iter()
-            .chain(crate::MIGRATIONS)
-            .copied()
-            .collect();
-        let previous: Vec<_> = catalog
-            .iter()
-            .copied()
-            .filter(|m| m.version <= 50)
-            .collect();
-        maka_event_log::migration::run(&c, &previous).unwrap();
+        migrate(&c, 50);
         let body: String = "한글 설정 🧭".nfd().collect();
         let source = serde_json::to_string(&MemorySource::UserOperation {
             operation_id: uuid::Uuid::new_v4(),
@@ -599,7 +633,7 @@ mod tests {
             c.execute("INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key) VALUES('owner','personal',?,1,?,'original')",params![key,source]).unwrap();
         };
         insert();
-        maka_event_log::migration::run(&c, &catalog).unwrap();
+        migrate(&c, i64::MAX);
         insert();
         let search = |terms: &[&str]| {
             SearchFacts {
@@ -632,17 +666,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("root.sqlite");
         let db = Connection::open(&path).unwrap();
-        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
-            .iter()
-            .chain(crate::MIGRATIONS)
-            .copied()
-            .collect();
-        let previous: Vec<_> = catalog
-            .iter()
-            .copied()
-            .filter(|m| m.version <= 50)
-            .collect();
-        maka_event_log::migration::run(&db, &previous).unwrap();
+        migrate(&db, 50);
         db.execute_batch("INSERT INTO contents VALUES(1,'spec',x'7b7d'); INSERT INTO agent_run_specs VALUES('run',1,'owner','chat',1);").unwrap();
 
         let record = |db: &Connection, n: i64, target: &str| {
@@ -684,10 +708,10 @@ mod tests {
         };
         record(&db, 1, "notes.txt");
         record(&db, 3, "session:sample");
-        maka_event_log::migration::run(&db, &catalog).unwrap();
+        migrate(&db, i64::MAX);
         drop(db);
         let db = Connection::open(&path).unwrap();
-        maka_event_log::migration::run(&db, &catalog).unwrap();
+        migrate(&db, i64::MAX);
         record(&db, 5, "notes.txt");
         record(&db, 7, "attachment:photo");
         let rows = |sql: &str| {
@@ -714,17 +738,7 @@ mod tests {
 
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
-            .iter()
-            .chain(crate::MIGRATIONS)
-            .copied()
-            .collect();
-        let previous: Vec<_> = catalog
-            .iter()
-            .copied()
-            .filter(|m| m.version <= 50)
-            .collect();
-        maka_event_log::migration::run(&db, &previous).unwrap();
+        migrate(&db, 50);
         db.execute_batch(
             "INSERT INTO contents VALUES(1,'spec',x'7b7d');
             INSERT INTO agent_run_specs VALUES('run',1,'owner','chat',1);",
@@ -753,7 +767,7 @@ mod tests {
             VALUES('owner','personal','entry',1,'Meeting time','{}','digest','current');
             INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key) VALUES('owner','personal','entry',1,
             '{"kind":"conversation","reference":{"sessionId":"chat","sequence":1,"factId":"notice-1","itemIndex":0,"start":0,"end":4}}','source');"#).unwrap();
-        maka_event_log::migration::run(&db, &catalog).unwrap();
+        migrate(&db, i64::MAX);
         db.execute_batch(r#"INSERT INTO agent_run_specs VALUES('reader-run',1,'owner','chat',1);
             INSERT INTO contents VALUES(1000,'wait-result',CAST('{"body":{"isError":false,"output":{"format":"cell","value":{"cell":"one"}}}}' AS BLOB)),
                                        (1001,'wait-fact',CAST('{"fact":{"result":{"digest":"wait-result"}}}' AS BLOB));

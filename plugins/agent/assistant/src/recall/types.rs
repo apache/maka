@@ -167,21 +167,28 @@ pub struct ResultSet {
 }
 impl ResultSet {
     pub fn render(&self) -> String {
-        let mut text = format!("Search complete: {}\n", self.searched_every_session);
+        self.to_string()
+    }
+}
+
+impl std::fmt::Display for ResultSet {
+    fn fmt(&self, text: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(text, "Search complete: {}", self.searched_every_session)?;
         for fact in &self.facts {
-            text.push_str(&format!(
-                "Memory fact: {}\n",
+            writeln!(
+                text,
+                "Memory fact: {}",
                 serde_json::to_string(fact).expect("serializable memory fact")
-            ));
+            )?;
         }
         if let Some(after) = self.next_facts_after {
-            text.push_str(&format!("Continue facts with facts_after={after}\n"));
+            writeln!(text, "Continue facts with facts_after={after}")?;
         }
         for gap in &self.gaps {
-            text.push_str(&format!("{gap}\n"));
+            writeln!(text, "{gap}")?;
         }
         if self.passages.len() > 1 {
-            text.push_str(&format!("\nRanked anchors ({}):\n", self.passages.len()));
+            writeln!(text, "\nRanked anchors ({}):", self.passages.len())?;
             for (index, passage) in self.passages.iter().enumerate() {
                 let anchor_role = passage
                     .messages
@@ -189,26 +196,17 @@ impl ResultSet {
                     .find(|message| message.is_anchor)
                     .map(|message| format!("{:?}", message.role))
                     .unwrap_or_else(|| "Message".into());
-                if passage.matched_terms.is_empty() {
-                    text.push_str(&format!(
-                        "{}. session_id={} anchor_message_id={} role={} ({})\n",
-                        index + 1,
-                        passage.session_id,
-                        passage.anchor_message_id,
-                        anchor_role,
-                        passage.session_title,
-                    ));
-                } else {
-                    text.push_str(&format!(
-                        "{}. session_id={} anchor_message_id={} role={} matched={:?} ({})\n",
-                        index + 1,
-                        passage.session_id,
-                        passage.anchor_message_id,
-                        anchor_role,
-                        passage.matched_terms,
-                        passage.session_title,
-                    ));
+                write!(
+                    text,
+                    "{}. session_id={} anchor_message_id={} role={anchor_role}",
+                    index + 1,
+                    passage.session_id,
+                    passage.anchor_message_id,
+                )?;
+                if !passage.matched_terms.is_empty() {
+                    write!(text, " matched={:?}", passage.matched_terms)?;
                 }
+                writeln!(text, " ({})", passage.session_title)?;
             }
         }
         for passage in &self.passages {
@@ -220,41 +218,44 @@ impl ResultSet {
                     "field": "body",
                 }
             });
-            text.push_str(&format!(
-                "\nSession: {} ({})\nAnchor: {}\nOriginal: SessionRead({})\nMore before: {}; more after: {}\n",
+            writeln!(
+                text,
+                "\nSession: {} ({})\nAnchor: {}\nOriginal: SessionRead({})\nMore before: {}; more after: {}",
                 passage.session_title,
                 passage.session_id,
                 passage.anchor_message_id,
                 serde_json::to_string(&pointer).expect("SessionRead pointer is serializable"),
                 passage.has_more_before,
                 passage.has_more_after
-            ));
+            )?;
             for message in &passage.messages {
-                text.push_str(&format!(
-                    "\n{:?} {}{}:\n{}\n",
+                writeln!(
+                    text,
+                    "\n{:?} {}{}:\n{}",
                     message.role,
                     message.message_id,
                     if message.is_anchor { " [anchor]" } else { "" },
                     message.text
-                ));
+                )?;
                 for attachment in &message.attachments {
                     if let maka_agent_facts::attachment::StorageRef::SessionFile {
                         session_id,
                         relative_path,
                     } = &attachment.storage_ref
                     {
-                        text.push_str(&format!(
-                            "Attachment: {} ({}, {} bytes); session_id: {}; artifact_id: {}\n",
+                        writeln!(
+                            text,
+                            "Attachment: {} ({}, {} bytes); session_id: {}; artifact_id: {}",
                             attachment.name,
                             attachment.mime_type,
                             attachment.bytes,
                             session_id,
                             relative_path
-                        ));
+                        )?;
                     }
                 }
             }
         }
-        text
+        Ok(())
     }
 }

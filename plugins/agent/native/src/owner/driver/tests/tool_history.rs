@@ -30,6 +30,18 @@ use maka_agent_facts::{
 use maka_agent_ports::session::history as wire;
 use maka_agent_state::session_history::snapshot::CaptureRequest;
 
+fn model_reader(
+    driver: &NativeDriver,
+) -> Result<maka_host_runtime::application::NativeRequest, String> {
+    driver.owner.services.request_with_work(
+        maka_capabilities::call::Identity::Agent {
+            execution: driver.access.execution().clone(),
+            operation_id: None,
+        },
+        CancellationToken::new(),
+        driver.access.custody().clone(),
+    )
+}
 async fn query(rig: &Rig, method: &str, input: Value) -> TestResult<Value> {
     let mut call = rig
         .client
@@ -165,17 +177,10 @@ async fn citation_history_keeps_readable_bytes_after_memory_deletion() -> TestRe
     )
     .await?;
     let driver = rig.driver.as_ref().unwrap();
-    let reader = driver.owner.services.request_with_work(
-        maka_capabilities::call::Identity::Agent {
-            execution: driver.access.execution().clone(),
-            operation_id: None,
-        },
-        CancellationToken::new(),
-        driver.access.custody().clone(),
-    )?;
+    let reader = model_reader(driver)?;
     let input = json!({"sessionId": session, "through": page["through"], "view":"conversation",
         "position":{"kind":"row","position":position,"field":"body"}});
-    let model_page = crate::service::history_read_for_tool(
+    let model_page = crate::service::history::read(
         &driver.owner,
         reader.scope(),
         serde_json::from_value(input)?,
@@ -261,14 +266,7 @@ async fn model_reads_independent_bytes_of_a_rejected_tool_result() -> TestResult
     };
     let start = diagnostic.find(quote).unwrap();
     suppress_history_quotes(&rig, &session, &[(sequence, start, quote)]).await?;
-    let reader = driver.owner.services.request_with_work(
-        maka_capabilities::call::Identity::Agent {
-            execution: driver.access.execution().clone(),
-            operation_id: None,
-        },
-        CancellationToken::new(),
-        driver.access.custody().clone(),
-    )?;
+    let reader = model_reader(driver)?;
     let expected = diagnostic.replace(quote, &"*".repeat(quote.len()));
     let result = crate::service::history::source(&driver.owner, reader.scope(), serde_json::from_value(json!({
         "sessionId":session,"through":cut.through_sequence,"source":{"kind":"row","position":position},
@@ -316,14 +314,7 @@ async fn assert_partial_result_pages(
         item_index: 0,
     };
     let start = body.find(quote).unwrap();
-    let reader = driver.owner.services.request_with_work(
-        maka_capabilities::call::Identity::Agent {
-            execution: driver.access.execution().clone(),
-            operation_id: None,
-        },
-        CancellationToken::new(),
-        driver.access.custody().clone(),
-    )?;
+    let reader = model_reader(driver)?;
     let read = async |input| -> TestResult<Value> {
         let page = driver
             .owner
@@ -533,14 +524,7 @@ async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()>
         fact,
         item_index: 0,
     };
-    let reader = driver.owner.services.request_with_work(
-        maka_capabilities::call::Identity::Agent {
-            execution: driver.access.execution().clone(),
-            operation_id: None,
-        },
-        CancellationToken::new(),
-        driver.access.custody().clone(),
-    )?;
+    let reader = model_reader(driver)?;
     let (before, _) = driver
         .owner
         .render_session_markdown(&session, Some(cut.through_sequence), reader.scope())
@@ -752,14 +736,7 @@ async fn goal_history_masks_the_same_objective_bytes_in_body_and_origin() -> Tes
     let position = &row["position"];
     let sequence = position["sequence"].as_u64().unwrap();
     let body = row["text"].as_str().unwrap();
-    let reader = driver.owner.services.request_with_work(
-        maka_capabilities::call::Identity::Agent {
-            execution: driver.access.execution().clone(),
-            operation_id: None,
-        },
-        CancellationToken::new(),
-        driver.access.custody().clone(),
-    )?;
+    let reader = model_reader(driver)?;
     for (quote, expected) in [
         ("previous checkpoint", objective.clone()),
         (hidden, objective.replace(hidden, &"*".repeat(hidden.len()))),
@@ -774,7 +751,7 @@ async fn goal_history_masks_the_same_objective_bytes_in_body_and_origin() -> Tes
             "sessionId": session, "through": original["through"], "view": "conversation",
             "position": {"kind": "row", "position": position, "field": "body"}
         });
-        let page = crate::service::history_read_for_tool(
+        let page = crate::service::history::read(
             &driver.owner,
             reader.scope(),
             serde_json::from_value(page_input)?,
@@ -1525,14 +1502,7 @@ async fn failed_execution_preserves_readable_cleanup_diagnostic_text() {
             .fact_sequence(&cut, run, committed.facts[1].id)
             .await?
             .ok_or("missing terminal diagnostic")?;
-        let reader = driver.owner.services.request_with_work(
-            maka_capabilities::call::Identity::Agent {
-                execution: driver.access.execution().clone(),
-                operation_id: None,
-            },
-            CancellationToken::new(),
-            driver.access.custody().clone(),
-        )?;
+        let reader = model_reader(driver)?;
         for restricted in [false, true] {
             if restricted {
                 suppress_history_quotes(&rig, &session, &[(at, 0, "Printer")]).await?;
@@ -2819,15 +2789,8 @@ async fn material_history_preserves_the_original_filename_for_the_user() -> Test
     let page = live(&rig, &session, wire::Position::Tail).await?;
     assert!(page.to_string().contains(filename));
     let driver = rig.driver.as_ref().unwrap();
-    let reader = driver.owner.services.request_with_work(
-        maka_capabilities::call::Identity::Agent {
-            execution: driver.access.execution().clone(),
-            operation_id: None,
-        },
-        CancellationToken::new(),
-        driver.access.custody().clone(),
-    )?;
-    let model = crate::service::history_read_for_tool(
+    let reader = model_reader(driver)?;
+    let model = crate::service::history::read(
         &driver.owner,
         reader.scope(),
         serde_json::from_value(
@@ -3856,10 +3819,7 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
         assert!(transcript.contains(input), "{transcript}");
         assert!(transcript.contains("Written `tmp_test_file.txt` successfully."), "{transcript}");
         assert!(!transcript.contains(quote));
-        let reader = driver.owner.services.request_with_work(
-            maka_capabilities::call::Identity::Agent { execution: driver.access.execution().clone(), operation_id: None },
-            CancellationToken::new(), driver.access.custody().clone()
-        )?;
+        let reader = model_reader(driver)?;
         let target = maka_plugin_core::contract::ServiceTarget::Export { name: "agent".into() };
         let navigator = driver.owner.services.select_method(&target, "historyLandmarks")?.request_with_work(
             maka_capabilities::call::Identity::Agent { execution: driver.access.execution().clone(), operation_id: None },
@@ -3873,7 +3833,6 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
         let model = crate::service::history::read(
             &driver.owner, reader.scope(),
             serde_json::from_value(json!({"sessionId":session,"position":{"kind":"tail"},"view":"conversation"}))?,
-            true
         ).await?;
         let source = crate::service::history::source(&driver.owner, reader.scope(),
             serde_json::from_value(json!({"sessionId":session,"through":page["through"],"source":{"kind":"row","position":position},"field":"body","path":[],"position":{"kind":"start"}}))?).await?;

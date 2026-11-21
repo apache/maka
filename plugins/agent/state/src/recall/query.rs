@@ -21,13 +21,17 @@ use rusqlite::{OptionalExtension, params};
 use std::cmp::Ordering;
 const ORIGINAL: &str = "LEFT JOIN agent_session_history h ON h.sequence=d.sequence
  AND h.owner=d.owner AND h.session=d.session AND h.run=d.run";
-const COLUMNS: &str = "d.message,d.sequence,d.ordinal,d.run,d.turn,d.at,d.role,d.body,d.attachments,d.references_json,d.fields_json,d.origin_json,
- (SELECT json_group_array(json_array(start,end)) FROM (
-  SELECT start,end FROM agent_memory_hidden_spans WHERE namespace=d.owner AND fact=h.fact_id AND ordinal=d.ordinal
-  UNION ALL SELECT start,end FROM agent_memory_operation_spans WHERE namespace=d.owner AND fact=h.fact_id AND ordinal=d.ordinal
-  UNION ALL SELECT start,end FROM agent_memory_sibling_spans WHERE namespace=d.owner AND fact=h.fact_id AND ordinal=d.ordinal)),
+const COLUMNS: &str = concat!(
+    "d.message,d.sequence,d.ordinal,d.run,d.turn,d.at,d.role,d.body,d.attachments,d.references_json,d.fields_json,d.origin_json,
+ (SELECT json_group_array(json_array(start,end)) FROM (",
+    crate::memory::recall::restricted_spans_sql!(
+        "SELECT s.start,s.end FROM",
+        "s.namespace=d.owner AND s.fact=h.fact_id AND s.ordinal=d.ordinal",
+    ),
+    ")),
  EXISTS(SELECT 1 FROM agent_memory_recall_outputs r WHERE r.owner=d.owner AND r.fact=h.fact_id),
- h.fact_id";
+ h.fact_id"
+);
 pub(super) fn read_message(row: &rusqlite::Row<'_>) -> Result<Message, StoreError> {
     let get = |i| -> Result<String, StoreError> { Ok(row.get(i)?) };
     let mut body: String = row.get(7)?;
@@ -111,7 +115,6 @@ fn record(c: &Connection, store: &RecallStore, session: &str) -> Result<Record, 
         .ok_or(StoreError::SessionNotFound)
 }
 pub(super) fn context(c: &Connection, input: ReadContext) -> Result<Context, StoreError> {
-    crate::memory::recall::register_read_classifier(c)?;
     let ReadContext(store, session, anchor, before, after, cut, exclude, stop) = input;
     check(&stop)?;
     store.session(&session)?;
@@ -251,7 +254,6 @@ fn density(
     Ok((matched, score))
 }
 pub(super) fn search(c: &Connection, input: Search) -> Result<Batch, StoreError> {
-    crate::memory::recall::register_read_classifier(c)?;
     let Search(store, query, before, after, stop) = input;
     check(&stop)?;
     if let Some(session) = &query.session_id {

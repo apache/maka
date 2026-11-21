@@ -321,7 +321,7 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         version: 51,
         description: "current memory recall and restricted evidence",
         sql: include_str!("../migrations/0051_memory_recall.sql"),
-        configure: Some(memory::recall::register_read_classifier),
+        configure: Some(memory::recall::configure_writer),
     },
 ];
 

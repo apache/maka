@@ -52,18 +52,6 @@ pub fn checksum(sql: &str) -> Vec<u8> {
 /// Returns an error for dirty, unknown, or changed applied migrations, or when
 /// SQLite cannot execute or record a migration.
 pub fn run(connection: &Connection, migrations: &[Migration]) -> Result<(), StoreError> {
-    use rusqlite::functions::FunctionFlags;
-    use unicode_normalization::UnicodeNormalization;
-
-    // Migrations and the triggers they install must normalize text identically.
-    connection.create_scalar_function(
-        "maka_nfc",
-        1,
-        FunctionFlags::SQLITE_UTF8
-            | FunctionFlags::SQLITE_DETERMINISTIC
-            | FunctionFlags::SQLITE_INNOCUOUS,
-        |ctx| Ok(ctx.get::<String>(0)?.nfc().collect::<String>()),
-    )?;
     for configure in migrations.iter().filter_map(|m| m.configure) {
         configure(connection)?;
     }

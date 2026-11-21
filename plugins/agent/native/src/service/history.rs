@@ -96,9 +96,8 @@ pub(crate) async fn read(
     owner: &Owner,
     scope: &Scope,
     input: ui::History,
-    mask_evidence: bool,
 ) -> Result<ui::HistoryPage, String> {
-    read_with_result_visibility(owner, scope, input, mask_evidence)
+    read_with_result_visibility(owner, scope, input)
         .await
         .map(|(page, _)| page)
 }
@@ -107,7 +106,6 @@ pub(crate) async fn read_with_result_visibility(
     owner: &Owner,
     scope: &Scope,
     mut input: ui::History,
-    mask_evidence: bool,
 ) -> Result<(ui::HistoryPage, RestrictedToolResultRows), String> {
     wire::Read {
         session_id: input.session_id.clone(),
@@ -148,8 +146,7 @@ pub(crate) async fn read_with_result_visibility(
         input.view = wire::HistoryView::Conversation;
     }
     let cut = cut(&history, input.through).await?;
-    let (page, restricted_result_rows) =
-        window(owner, scope, &history, &cut, &input, mask_evidence).await?;
+    let (page, restricted_result_rows) = window(owner, scope, &history, &cut, &input).await?;
     authorize(owner, scope, &input.session_id).await?;
     Ok((page.into(), restricted_result_rows))
 }
@@ -330,15 +327,7 @@ pub(crate) async fn read_page(
         include_thinking: input.include_thinking,
         view: wire::HistoryView::Text,
     };
-    let (page, _) = window(
-        owner,
-        scope,
-        &history,
-        &cut,
-        &input,
-        scope.identity.agent().is_some(),
-    )
-    .await?;
+    let (page, _) = window(owner, scope, &history, &cut, &input).await?;
     authorize(owner, scope, &input.session_id).await?;
     Ok(page)
 }
@@ -402,8 +391,8 @@ async fn window(
     history: &SessionHistory,
     cut: &HistoryCut,
     input: &ui::History,
-    mask_evidence: bool,
 ) -> Result<(wire::Page, RestrictedToolResultRows), String> {
+    let mask_evidence = scope.identity.agent().is_some();
     let tree = maka_agent_state::session_history::source_tree::SourceTree::live(history, cut)
         .await
         .map_err(|error| error.to_string())?;

@@ -664,7 +664,7 @@ impl Owner {
                 (None, p)
             };
 
-            let page = service::history_read_for_tool(
+            let page = service::history::read(
                 self,
                 scope,
                 History {
@@ -797,7 +797,6 @@ impl Owner {
                         include_thinking,
                         view: hist_view,
                     },
-                    scope.identity.agent().is_some(),
                 )
                 .await
                 .map_err(humanize_agent_error)?;
@@ -888,7 +887,7 @@ impl Owner {
                 let mut pos = wire::Position::Tail;
                 let mut older_message_id = None;
                 for _ in 0..4 {
-                    let page = service::history_read_for_tool(
+                    let page = service::history::read(
                         self,
                         scope,
                         History {
@@ -987,7 +986,6 @@ impl Owner {
                                 include_thinking: false,
                                 view: wire::HistoryView::Conversation,
                             },
-                            scope.identity.agent().is_some(),
                         )
                         .await
                         .map_err(humanize_agent_error)?;

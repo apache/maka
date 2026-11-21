@@ -86,6 +86,18 @@ pub(crate) enum HistoryReader {
     Session,
 }
 
+impl HistoryReader {
+    pub(crate) fn builtin(name: &str) -> Option<Self> {
+        if name == "Read" {
+            Some(Self::File)
+        } else if maka_agent_facts::memory::is_recall_output(name) {
+            Some(Self::Session)
+        } else {
+            None
+        }
+    }
+}
+
 /// Frozen declarations and binding evidence. These bytes are never live tool authority.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -151,41 +163,33 @@ impl ServiceSelection {
         &self.selection.name
     }
 
-    pub(crate) fn history_reader(&self) -> Option<HistoryReader> {
+    pub(crate) fn history_alias(self) -> Option<(String, HistoryReader)> {
         use maka_plugin_core::contract::ServiceTarget;
-        // Older frozen selections could label these methods Other when given
-        // a built-in tool name. The original service target identifies them.
-        if matches!(&self.selection.target, ServiceTarget::Export { name } if name == "agent")
-            && matches!(
-                self.selection.method.as_str(),
-                "execution" | "continuationAvailability"
-            )
+        let selection = self.selection;
+        let method = selection.method.as_str();
+        let agent = matches!(&selection.target, ServiceTarget::Export { name } if name == "agent");
+        // Early frozen selections could label these two Agent methods Other.
+        let kind = if agent && matches!(method, "execution" | "continuationAvailability") {
+            HistoryReader::Session
+        } else if let Some(kind) = self.history_reader {
+            kind
+        } else if matches!(&selection.target, ServiceTarget::Import { name } if name == "files")
+            && method == "read"
         {
-            return Some(HistoryReader::Session);
-        }
-        self.history_reader.or_else(|| {
-            match (&self.selection.target, self.selection.method.as_str()) {
-                (ServiceTarget::Import { name }, "read") if name == "files" => {
-                    Some(HistoryReader::File)
-                }
-                (ServiceTarget::Export { name }, method)
-                    if name == "agent" && reads_agent_history(method) =>
-                {
-                    Some(HistoryReader::Session)
-                }
-                (_, method)
-                    if (self.selection.name == "Read"
-                        || maka_agent_facts::memory::is_recall_output(&self.selection.name))
-                        && (matches!(
-                            self.selection.input,
-                            ToolInput::Web | ToolInput::Skill | ToolInput::Shell
-                        ) || (method != "read" && !reads_agent_history(method))) =>
-                {
-                    Some(HistoryReader::Other)
-                }
-                _ => None,
-            }
-        })
+            HistoryReader::File
+        } else if agent && reads_agent_history(method) {
+            HistoryReader::Session
+        } else if HistoryReader::builtin(&selection.name).is_some()
+            && (matches!(
+                selection.input,
+                ToolInput::Web | ToolInput::Skill | ToolInput::Shell
+            ) || (method != "read" && !reads_agent_history(method)))
+        {
+            HistoryReader::Other
+        } else {
+            return None;
+        };
+        Some((selection.name, kind))
     }
     fn matches(&self, live: &SelectedTool) -> bool {
         let admitted = &self.selection;
@@ -636,7 +640,7 @@ pub(crate) fn catalog(
                     Some(HistoryReader::File)
                 } else if contract == &agent_contract && reads_agent_history(&selection.method) {
                     Some(HistoryReader::Session)
-                } else if selection.name == "Read" || maka_agent_facts::memory::is_recall_output(&selection.name) {
+                } else if HistoryReader::builtin(&selection.name).is_some() {
                     Some(HistoryReader::Other)
                 } else {
                     None

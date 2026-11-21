@@ -205,22 +205,14 @@ pub(crate) fn find_index(
         )?
         .collect::<Result<Vec<_>, _>>()?;
     let restrictions = if let Some(owner) = reader {
-        use maka_agent_facts::history::HistoryRowAddress;
-        let addresses = headers
+        let keys = headers
             .iter()
-            .map(|(sequence, ordinal, _, fact)| {
-                Ok(HistoryRowAddress::Live {
-                    sequence: unsigned(*sequence)?,
-                    item_index: unsigned(*ordinal)?,
-                    fact: serde_json::from_value(serde_json::Value::String(fact.clone()))?,
-                })
+            .enumerate()
+            .map(|(i, (_, ordinal, _, fact))| {
+                Ok((i, crate::sql::identity(fact.clone())?, unsigned(*ordinal)?))
             })
-            .collect::<Result<_, StoreError>>()?;
-        crate::memory::recall::ReadRestrictions {
-            owner: owner.clone(),
-            addresses,
-        }
-        .by_index(c)?
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        crate::memory::recall::indexed_spans(c, owner, &keys, &[])?
     } else {
         BTreeMap::new()
     };

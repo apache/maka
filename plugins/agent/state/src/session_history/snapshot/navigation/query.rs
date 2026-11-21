@@ -171,38 +171,21 @@ impl Query for FindQuery {
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
         let restrictions = if input.mask_evidence {
-            use maka_agent_facts::history::HistoryRowAddress;
-            let owner = snapshot.owner();
-            let addresses = rows
-                .iter()
-                .map(|(_, row, _)| match row {
+            let mut canonical = Vec::new();
+            let mut imported = Vec::new();
+            for (index, (_, row, _)) in rows.iter().enumerate() {
+                match row {
                     SnapshotPosition::Canonical {
-                        sequence,
-                        fact,
-                        item_index,
-                        ..
-                    } => HistoryRowAddress::Live {
-                        sequence: *sequence,
-                        fact: *fact,
-                        item_index: *item_index,
-                    },
+                        fact, item_index, ..
+                    } => canonical.push((index, *fact, *item_index)),
                     SnapshotPosition::Imported {
                         message_ordinal,
                         part_ordinal,
                         ..
-                    } => HistoryRowAddress::Imported {
-                        path: Vec::new(),
-                        snapshot: snapshot.id,
-                        message_ordinal: *message_ordinal,
-                        part_ordinal: *part_ordinal,
-                    },
-                })
-                .collect();
-            crate::memory::recall::ReadRestrictions {
-                owner: owner.clone(),
-                addresses,
+                    } => imported.push((index, snapshot.id, *message_ordinal, *part_ordinal)),
+                }
             }
-            .by_index(c)?
+            crate::memory::recall::indexed_spans(c, snapshot.owner(), &canonical, &imported)?
         } else {
             Default::default()
         };

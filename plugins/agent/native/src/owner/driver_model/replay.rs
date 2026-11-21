@@ -21,6 +21,7 @@ use super::{
     DriverModel, FrozenCellKnowledge, HistorySource, ReplayedTail, extend_observation,
     flush_assistant, merge_skill, recovered::RecordedInputs,
 };
+use crate::tools::HistoryReader;
 use futures_util::future::BoxFuture;
 use maka_agent_engine::{RunError, preparation};
 use maka_agent_facts::{
@@ -36,7 +37,7 @@ use maka_agent_state::{fold::RunView, memory::recall::ArchiveRestriction};
 use maka_model::prompt::{AssistantPart, ToolOutput};
 use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, Receipt};
 use serde_json::json;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 struct AssistantBatch {
@@ -115,7 +116,7 @@ pub(super) enum FailureNote {
 }
 
 pub(super) struct TailReplay<'a, 'source> {
-    aliases: std::collections::BTreeMap<String, crate::tools::HistoryReader>,
+    aliases: BTreeMap<String, HistoryReader>,
     driver: &'a DriverModel,
     target: super::ReplayTarget<'a>,
     failure_note: FailureNote,
@@ -148,7 +149,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
         messages: &'a mut preparation::PromptBuilder,
         recorded: RecordedInputs,
         failure_note: FailureNote,
-        aliases: std::collections::BTreeMap<String, crate::tools::HistoryReader>,
+        aliases: BTreeMap<String, HistoryReader>,
     ) -> Self {
         Self {
             aliases,
@@ -562,23 +563,22 @@ impl<'a, 'source> TailReplay<'a, 'source> {
 
 const FRESH_READ: &str = "Archived output requires a fresh authorized read";
 
-fn sensitive_call(
-    name: &str,
-    input: Option<&serde_json::Value>,
-    aliases: &std::collections::BTreeMap<String, crate::tools::HistoryReader>,
-) -> bool {
-    let is_file = match aliases.get(name) {
-        Some(crate::tools::HistoryReader::Session) => return true,
-        Some(crate::tools::HistoryReader::Other) => return false,
-        Some(crate::tools::HistoryReader::File) => true,
-        None if maka_agent_facts::memory::is_recall_output(name) => return true,
-        None => name == "Read",
-    };
-    is_file
-        && input
-            .and_then(|v| v.get("path"))
-            .and_then(|p| p.as_str())
-            .is_some_and(maka_agent_facts::read::reads_history_resource)
+fn reader_kind(name: &str, aliases: &BTreeMap<String, HistoryReader>) -> HistoryReader {
+    aliases
+        .get(name)
+        .copied()
+        .or_else(|| HistoryReader::builtin(name))
+        .unwrap_or(HistoryReader::Other)
+}
+
+fn sensitive_call(kind: HistoryReader, input: Option<&serde_json::Value>) -> bool {
+    match kind {
+        HistoryReader::Session => true,
+        HistoryReader::Other => false,
+        HistoryReader::File => input
+            .and_then(|v| v.get("path")?.as_str())
+            .is_some_and(maka_agent_facts::read::reads_history_resource),
+    }
 }
 
 pub(super) async fn sensitive_child(
@@ -586,26 +586,28 @@ pub(super) async fn sensitive_child(
     run: maka_agent_facts::durable::RunId,
     name: &str,
     input: &maka_agent_facts::durable::ContentRef,
-    aliases: &std::collections::BTreeMap<String, crate::tools::HistoryReader>,
+    aliases: &BTreeMap<String, HistoryReader>,
 ) -> Result<bool, RunError> {
-    let input = if aliases.get(name) == Some(&crate::tools::HistoryReader::File)
-        || (name == "Read" && !aliases.contains_key(name))
-    {
+    let kind = reader_kind(name, aliases);
+    let input = if kind == HistoryReader::File {
         Some(reader.decode(run, input).await?)
     } else {
         None
     };
-    Ok(sensitive_call(name, input.as_ref(), aliases))
+    Ok(sensitive_call(kind, input.as_ref()))
 }
 
 fn sensitive_tool(
     view: &RunView,
     tool: &maka_agent_state::fold::Tool,
-    aliases: &std::collections::BTreeMap<String, crate::tools::HistoryReader>,
+    aliases: &BTreeMap<String, HistoryReader>,
     restricted: &super::recovered::RestrictedCells,
     through: u64,
 ) -> bool {
-    if sensitive_call(&tool.call.name, tool.call.input.as_json(), aliases) {
+    if sensitive_call(
+        reader_kind(&tool.call.name, aliases),
+        tool.call.input.as_json(),
+    ) {
         return true;
     }
     if tool.local_returned.is_some() {
@@ -819,7 +821,7 @@ mod failed_turn_note_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::sensitive_call;
+    use super::{reader_kind, sensitive_call};
     use crate::tools::ServiceSelection;
     use rusqlite::{Connection, params};
     use serde_json::{Value, json};
@@ -845,22 +847,36 @@ mod tests {
             (id, digest)
         };
         let mut services = Vec::new();
-        for (name, target, kind, method, input) in [
-            ("SessionRead", "web", "import", "search", "web"),
-            ("RecallMore", "skills", "import", "search", "skill"),
-            ("FindMessages", "agent", "export", "search", "json"),
-            ("Recall", "external", "import", "execution", "json"),
+        for (name, target, kind, method, input, frozen) in [
+            ("SessionRead", "web", "import", "search", "web", None),
+            ("RecallMore", "skills", "import", "search", "skill", None),
+            ("FindMessages", "agent", "export", "search", "json", None),
+            ("Recall", "external", "import", "execution", "json", None),
+            (
+                "OldExecution",
+                "agent",
+                "export",
+                "execution",
+                "json",
+                Some("other"),
+            ),
+            ("ReadNotes", "files", "import", "read", "json", None),
         ] {
-            services.push(json!({"selection":{"name":name,"description":name,"method":method,
-                "target":{"kind":kind,"name":target},"input":input,"result":"json","confirmation":"preapproved"}}));
+            let mut service = json!({"selection":{"name":name,"description":name,"method":method,
+                "target":{"kind":kind,"name":target},"input":input,"result":"json","confirmation":"preapproved"}});
+            if let Some(frozen) = frozen {
+                service["history_reader"] = json!(frozen);
+            }
+            services.push(service);
         }
+        let input = json!({"query":"notes", "path":"maka://session/test"});
         let (_, selection) = blob(&json!({"services":services}));
         let (spec, _) = blob(&json!({"toolSelection":{"digest":selection}}));
         let seed = |run: &str, start: i64| {
             db.execute("INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES(?,1,'owner','chat',?)", params![run,spec]).unwrap();
             for (i, service) in services.iter().enumerate() {
                 let name = service["selection"]["name"].as_str().unwrap();
-                let call = json!({"fact":{"part":{"call":{"name":name,"input":{"data":{"query":"notes"}}}}}});
+                let call = json!({"fact":{"part":{"call":{"name":name,"input":{"data":input}}}}});
                 for (seq, kind, payload, is_call) in [
                     (start + 2 * i as i64, "model_observed", call, true),
                     (
@@ -884,38 +900,40 @@ mod tests {
         };
         seed("before", 1);
         maka_event_log::migration::run(&db, &migrations).unwrap();
-        seed("after", 9);
+        seed("after", 1 + 2 * services.len() as i64);
         let restricted = db
             .prepare(
-                "SELECT h.run || '/' || h.tool_use_id FROM agent_memory_recall_outputs r
-                 JOIN agent_session_history h ON h.owner=r.owner AND h.fact_id=r.fact ORDER BY 1",
+                "SELECT h.run,h.tool_use_id FROM agent_memory_recall_outputs r
+                 JOIN agent_session_history h ON h.owner=r.owner AND h.fact_id=r.fact ORDER BY 1,2",
             )
             .unwrap()
-            .query_map([], |r| r.get::<_, String>(0))
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(
-            restricted,
-            [
-                "after/FindMessages",
-                "after/Recall",
-                "before/FindMessages",
-                "before/Recall"
-            ]
-        );
         let aliases = services
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|value| serde_json::from_value::<ServiceSelection>(value).unwrap())
-            .filter_map(|selection| {
-                selection
-                    .history_reader()
-                    .map(|kind| (selection.name().to_owned(), kind))
-            })
+            .filter_map(ServiceSelection::history_alias)
             .collect();
-        assert!(!sensitive_call("SessionRead", None, &aliases));
-        assert!(!sensitive_call("RecallMore", None, &aliases));
-        assert!(sensitive_call("FindMessages", None, &aliases));
-        assert!(sensitive_call("Recall", None, &aliases));
+        let mut replay: Vec<_> = services
+            .iter()
+            .map(|service| service["selection"]["name"].as_str().unwrap())
+            .filter(|name| sensitive_call(reader_kind(name, &aliases), Some(&input)))
+            .collect();
+        replay.sort_unstable();
+        assert_eq!(
+            replay,
+            ["FindMessages", "OldExecution", "ReadNotes", "Recall"]
+        );
+        for run in ["before", "after"] {
+            let stored: Vec<_> = restricted
+                .iter()
+                .filter(|(r, _)| r == run)
+                .map(|(_, name)| name.as_str())
+                .collect();
+            assert_eq!(stored, replay, "{run}");
+        }
     }
 }

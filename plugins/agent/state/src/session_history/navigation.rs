@@ -78,11 +78,8 @@ impl Query for ModelLandmarks {
     type Output = Vec<SourceLandmark>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         let Self(owner, mut landmarks) = self;
-        let mut restricted = crate::memory::recall::ReadRestrictions {
-            owner: owner.clone(),
-            addresses: landmarks.iter().map(|l| l.position.clone()).collect(),
-        }
-        .by_index(c)?;
+        let mut restricted =
+            crate::memory::recall::address_spans(c, &owner, landmarks.iter().map(|l| &l.position))?;
         if restricted.is_empty() {
             return Ok(landmarks);
         }

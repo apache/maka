@@ -328,15 +328,7 @@ impl Handler for Agent {
             }),
             // history
             "history" => json_rpc(&mut args, |owner, input, context| async move {
-                encode(
-                    history::read(
-                        &owner,
-                        context.scope(),
-                        decode(input)?,
-                        context.scope().identity.agent().is_some(),
-                    )
-                    .await?,
-                )
+                encode(history::read(&owner, context.scope(), decode(input)?).await?)
             }),
             "observe" => json_rpc(&mut args, |owner, input, context| async move {
                 encode(history::observation(&owner, context.scope(), decode(input)?).await?)
@@ -1274,11 +1266,4 @@ pub(crate) async fn history_observation_for_tool(
     input: SessionRead,
 ) -> Result<Observation, String> {
     history::observation(owner, scope, input).await
-}
-pub(crate) async fn history_read_for_tool(
-    owner: &Owner,
-    scope: &maka_capabilities::call::Scope,
-    input: History,
-) -> Result<HistoryPage, String> {
-    history::read(owner, scope, input, scope.identity.agent().is_some()).await
 }

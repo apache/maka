@@ -545,8 +545,7 @@ impl ToolPreparer for Recall {
                                 tokio::task::spawn_blocking(move || {
                                     let found =
                                         preview::tool_passages(found, &stop).map_err(failed)?;
-                                    let text =
-                                        model_page(found.render(), output_offset.unwrap_or(0))?;
+                                    let text = model_page(&found, output_offset.unwrap_or(0))?;
                                     Ok(ToolSuccess::projected(
                                         ToolOutput::Json(
                                             serde_json::to_value(found).map_err(failed)?,
@@ -576,33 +575,62 @@ impl ToolPreparer for Recall {
         })
     }
 }
-fn model_page(mut text: String, offset: usize) -> Result<String, ToolError> {
-    use maka_agent_facts::read::MAX_PAGE_CHARS;
-    const CONTINUE: &str = "\nContinue with the same tool arguments and output_offset=";
-    let remaining = text
-        .get(offset..)
-        .ok_or_else(|| failed("Recall results changed. Restart without output_offset."))?;
-    // Archive encoding quotes the text as a JSON string. Reserve the continuation
-    // and its largest decimal offset before choosing a complete Unicode boundary.
-    let mut budget = MAX_PAGE_CHARS - 2 - CONTINUE.len() - 20;
-    for (byte, ch) in remaining.char_indices() {
-        let width = match ch {
-            '"' | '\\' => 2,
-            c if c.is_ascii_control() => 6,
-            c => c.len_utf16(),
-        };
-        if width > budget {
-            let next = offset + byte;
-            text.truncate(next);
-            text.drain(..offset);
-            text.push_str(CONTINUE);
-            text.push_str(&next.to_string());
-            return Ok(text);
+const CONTINUE: &str = "\nContinue with the same tool arguments and output_offset=";
+
+struct TextPage {
+    skip: usize,
+    budget: usize,
+    body: String,
+    more: bool,
+}
+
+impl std::fmt::Write for TextPage {
+    fn write_str(&mut self, chunk: &str) -> std::fmt::Result {
+        if self.skip >= chunk.len() {
+            self.skip -= chunk.len();
+            return Ok(());
         }
-        budget -= width;
+        let chunk = chunk.get(self.skip..).ok_or(std::fmt::Error)?;
+        self.skip = 0;
+        for (byte, ch) in chunk.char_indices() {
+            let width = match ch {
+                '"' | '\\' => 2,
+                c if c.is_ascii_control() => 6,
+                c => c.len_utf16(),
+            };
+            if width > self.budget {
+                self.body.push_str(&chunk[..byte]);
+                self.more = true;
+                return Err(std::fmt::Error);
+            }
+            self.budget -= width;
+        }
+        self.body.push_str(chunk);
+        Ok(())
     }
-    text.drain(..offset);
-    Ok(text)
+}
+
+fn model_page(result: &impl std::fmt::Display, offset: usize) -> Result<String, ToolError> {
+    use maka_agent_facts::read::MAX_PAGE_CHARS;
+    use std::fmt::Write;
+
+    // Reserve the JSON quotes and continuation marker before filling the page.
+    let mut page = TextPage {
+        skip: offset,
+        budget: MAX_PAGE_CHARS - 2 - CONTINUE.len() - 20,
+        body: String::new(),
+        more: false,
+    };
+    let rendered = write!(page, "{result}");
+    if page.more {
+        let next = offset + page.body.len();
+        write!(page.body, "{CONTINUE}{next}").expect("writing to String");
+    } else if rendered.is_err() || page.skip != 0 {
+        return Err(failed(
+            "Recall results changed. Restart without output_offset.",
+        ));
+    }
+    Ok(page.body)
 }
 
 fn failed(error: impl std::fmt::Display) -> ToolError {
@@ -682,12 +710,31 @@ mod pagination_tests {
     use maka_agent_facts::archive::ArchivedPlaceholder;
 
     #[test]
+    fn text_page_stops_formatting_after_the_window() {
+        struct LongResult;
+        impl std::fmt::Display for LongResult {
+            fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                out.write_str("标题")?;
+                out.write_str(&"x".repeat(maka_agent_facts::read::MAX_PAGE_CHARS))?;
+                panic!("rendered past the requested page")
+            }
+        }
+        assert!(
+            model_page(&LongResult, "标题".len())
+                .unwrap()
+                .starts_with("xxx")
+        );
+        assert!(model_page(&LongResult, 1).is_err());
+        assert!(model_page(&"short", 6).is_err());
+    }
+
+    #[test]
     fn fresh_recall_pages_fit_the_archive_budget_and_preserve_all_text() {
         let original = "数据库🌲\\\"\n".repeat(2200);
         let mut offset = 0;
         let mut joined = String::new();
         loop {
-            let text = model_page(original.clone(), offset).unwrap();
+            let text = model_page(&original, offset).unwrap();
             let pruned = ArchivedPlaceholder::prepare(
                 "event".into(),
                 "call".into(),

@@ -268,14 +268,13 @@ struct MaskTerminalDiagnostic(HistoryNamespace, RunId, String);
 impl Query for MaskTerminalDiagnostic {
     type Output = String;
     fn execute(self, c: &Connection) -> Result<String, StoreError> {
-        use maka_agent_facts::history::HistoryRowAddress;
         use rusqlite::{OptionalExtension, params};
         let Self(namespace, run, mut diagnostic) = self;
         // A recovery reason and the terminal row share byte offsets only when the
         // engine persisted that diagnostic verbatim for this Run.
         let terminal = c
             .query_row(
-                "SELECT h.sequence,h.fact_id FROM agent_session_history h
+                "SELECT h.fact_id FROM agent_session_history h
              JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
              WHERE h.run=?1 AND h.kind='run_terminated' AND h.owner=?2 AND h.session=?3
                AND CAST(b.payload AS TEXT)->>'$.fact.diagnostic'=?4",
@@ -285,20 +284,16 @@ impl Query for MaskTerminalDiagnostic {
                     namespace.session,
                     diagnostic
                 ],
-                |row| Ok((sql::read_u64(row, 0)?, row.get::<_, String>(1)?)),
+                |row| row.get::<_, String>(0),
             )
             .optional()?;
-        if let Some((sequence, fact)) = terminal {
-            let address = HistoryRowAddress::Live {
-                sequence,
-                fact: serde_json::from_value(serde_json::Value::String(fact))?,
-                item_index: 0,
-            };
-            let spans = crate::memory::recall::ReadRestrictions {
-                owner: namespace.owner,
-                addresses: vec![address],
-            }
-            .by_index(c)?;
+        if let Some(fact) = terminal {
+            let spans = crate::memory::recall::indexed_spans(
+                c,
+                &namespace.owner,
+                &[(0, sql::identity(fact)?, 0)],
+                &[],
+            )?;
             if let Some(spans) = spans.get(&0) {
                 crate::memory::recall::mask(&mut diagnostic, 0, spans);
             }

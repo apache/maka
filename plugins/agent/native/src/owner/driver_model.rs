@@ -2305,12 +2305,8 @@ impl DriverModel {
                 let frozen: Readers = reader.decode(view.run, &view.spec.tool_selection).await?;
                 frozen
                     .services
-                    .iter()
-                    .filter_map(|service| {
-                        service
-                            .history_reader()
-                            .map(|kind| (service.name().to_owned(), kind))
-                    })
+                    .into_iter()
+                    .filter_map(crate::tools::ServiceSelection::history_alias)
                     .collect()
             } else {
                 Default::default()
