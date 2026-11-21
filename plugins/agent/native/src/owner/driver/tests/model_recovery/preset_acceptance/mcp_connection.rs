@@ -273,3 +273,94 @@ async fn mcp_server_that_cannot_restart_rejects_each_message_with_its_startup_er
     };
     Ok(())
 }
+
+/// Logs each start. First start exposes zero tools, notifies `tools/list_changed`,
+/// and closes its transport; subsequent starts expose `echo`.
+const DYNAMIC_SERVER: &str = r#"
+import { createInterface } from 'node:readline';
+import { appendFileSync, existsSync } from 'node:fs';
+const restarted = existsSync(process.argv[2]);
+appendFileSync(process.argv[2], `${process.pid}\n`);
+const send = (message) => process.stdout.write(JSON.stringify(message) + '\n');
+const tool = (name) => ({ name, description: `Fixture ${name}`, inputSchema: { type: 'object' } });
+createInterface({ input: process.stdin }).on('line', (line) => {
+  const message = JSON.parse(line);
+  const reply = (result) => send({ jsonrpc: '2.0', id: message.id, result });
+  if (message.method === 'initialize')
+    reply({
+      protocolVersion: message.params.protocolVersion,
+      capabilities: { tools: { listChanged: true } },
+      serverInfo: { name: 'dynamic', version: '1' },
+    });
+  else if (message.method === 'tools/list') {
+    if (!restarted) {
+      send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
+      reply({ tools: [] });
+      process.stdout.end();
+    } else {
+      reply({ tools: [tool('echo')] });
+    }
+  } else if (message.method === 'tools/call') {
+    reply({ content: [{ type: 'text', text: JSON.stringify(message.params.arguments) }], isError: false });
+  }
+});
+"#;
+
+/// A server that starts with zero tools still reopens once its connection retires,
+/// exposing tools added on restart without reopening sibling servers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_zero_tool_server_reopens_after_retiring() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let base = rig.directory.path().to_path_buf();
+    let starts = base.join("dynamic-starts.log");
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(120), async {
+        std::fs::write(base.join("dynamic-server.mjs"), DYNAMIC_SERVER)?;
+        std::fs::write(base.join("crash-server.mjs"), CRASH_SERVER)?;
+        std::fs::create_dir_all(base.join("home/.maka"))?;
+        std::fs::write(
+            base.join("home/.maka/mcp.json"),
+            json!({"mcpServers":{
+                "dynamic":{"command":"node","cwd":base,"args":[base.join("dynamic-server.mjs"), &starts]},
+                "steady":{"command":"node","cwd":base,
+                    "args":[base.join("crash-server.mjs"), base.join("steady-starts.log")]}
+            }})
+            .to_string(),
+        )?;
+        let boot = bootstrap_with(&base, provider.url.clone(), |config| {
+            config["assistant"] = json!({"home":base.join("home")});
+        })
+        .await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let model = model(client, &provider.url, false).await?;
+        let session = full_access_session(&rig, &base, &model).await?;
+
+        let first = send(client, &session, "Start with empty tool list.").await?;
+        let (_, reply) = last_tool_output(&mut provider, &rig, &session).await?;
+        reply
+            .send(completion(
+                json!({"role":"assistant","content":"Done."}),
+                "stop",
+            ))
+            .map_err(|_| "first response lost")?;
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            completed_message(client, &session, &first),
+        )
+        .await??;
+        echo_turn(&rig, &mut provider, &session, "dynamic", "zero-tool-reopened").await?;
+        assert_eq!(started(&starts), 2);
+        assert_eq!(started(&base.join("steady-starts.log")), 1);
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    match outcome {
+        Ok(result) => result??,
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
+    Ok(())
+}

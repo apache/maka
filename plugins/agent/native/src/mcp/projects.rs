@@ -117,13 +117,6 @@ impl Catalog {
             live_bindings,
         }))
     }
-    /// Every connection of this file layer and the file layers below it is usable.
-    /// Installation servers below them change only by reactivation.
-    fn layers_available(&self) -> bool {
-        self.revision.is_none()
-            || (self.live_bindings.iter().all(super::LiveBinding::available)
-                && self._parent.as_deref().is_none_or(Self::layers_available))
-    }
     pub(crate) fn unavailable_selected_binding<'a>(
         &self,
         names: impl IntoIterator<Item = &'a str>,
@@ -508,6 +501,31 @@ impl Projects {
         };
         client::current(&snapshots, session, base)
     }
+    /// Every server connection in this file layer and its parent file layers is usable,
+    /// and none of those layers has been superseded under its revision.
+    /// Installation servers below them change only by reactivation.
+    fn layers_available(&self, catalog: &Arc<Catalog>) -> bool {
+        let snapshots = self.snapshots.read().expect("MCP snapshots");
+        let mut layer = catalog;
+        while !Arc::ptr_eq(layer, &self.base) {
+            let Some(snapshot) = layer
+                .revision
+                .as_ref()
+                .and_then(|revision| snapshots.revisions.get(revision))
+                .filter(|snapshot| Arc::ptr_eq(&snapshot.catalog, layer))
+            else {
+                return false;
+            };
+            if !snapshot.servers.as_ref().is_none_or(Servers::available) {
+                return false;
+            }
+            let Some(parent) = layer._parent.as_ref() else {
+                return false;
+            };
+            layer = parent;
+        }
+        true
+    }
     /// The cached layer of `revision`. Holding its catalog keeps `prune` from closing it.
     fn cached(&self, revision: &str) -> Option<(Arc<Snapshot>, Arc<Catalog>)> {
         let snapshots = self.snapshots.read().expect("MCP snapshots");
@@ -581,7 +599,7 @@ impl Projects {
             return Ok(Prepared::Ready(catalog));
         }
         if let Ok(catalog) = self.catalog(Some(&proposal.revision))
-            && catalog.layers_available()
+            && self.layers_available(&catalog)
         {
             self.publish_cached(&proposal, &catalog)?;
             self.prune().await?;
@@ -706,7 +724,7 @@ impl Projects {
                 // A cached layer with a retired connection is reopened under the same
                 // revision. Its servers that are still connected keep their connection.
                 if let Ok(catalog) = owner.catalog(Some(&proposal.revision))
-                    && catalog.layers_available()
+                    && owner.layers_available(&catalog)
                 {
                     owner.publish_cached(&proposal, &catalog)?;
                     owner.prune().await?;
@@ -740,7 +758,7 @@ impl Projects {
                 let global = if proposal.global.path.is_none() {
                     owner.base.clone()
                 } else if let Some((_, catalog)) = &previous_global
-                    && catalog.layers_available()
+                    && owner.layers_available(catalog)
                 {
                     catalog.clone()
                 } else {

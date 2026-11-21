@@ -247,6 +247,11 @@ impl Servers {
             ..Self::default()
         }
     }
+    pub(super) fn available(&self) -> bool {
+        self.servers
+            .iter()
+            .all(|server| server.connection.available())
+    }
     fn connections(&self) -> Vec<Connection> {
         self.servers
             .iter()
