@@ -297,6 +297,14 @@ public class NshView extends FrameLayout {
     }
 
     /**
+     * The activity's system bars are this app's (an app on its own): their default icons follow the app's
+     * appearance, not only the system's. An embedding host keeps its bars unless the app asks for the status bar.
+     */
+    void ownSystemBars() {
+        mounter.ownsSystemBars = true;
+    }
+
+    /**
      * The directory the storage ({@code nsh/storage}) of the apps this view
      * loads from now on is kept in ({@code storage.json} in it). {@code null}
      * (the default): each app's own, {@code nsh/<app id>} in the Context's

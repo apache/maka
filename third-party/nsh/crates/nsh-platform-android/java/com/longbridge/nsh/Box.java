@@ -807,6 +807,11 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
         screen.recycle();
     }
 
+    /** Whether this view's pan would start for a drag by ({@code dx}, {@code dy}) px (a scroll view inside asks). */
+    boolean takesPan(float dx, float dy) {
+        return pannable() && panStarts(dx, dy, 0);
+    }
+
     /** Whether a movement of (dx, dy) starts this view's pan. */
     private boolean panStarts(float dx, float dy, float slop) {
         if (Math.hypot(dx, dy) <= slop) return false;

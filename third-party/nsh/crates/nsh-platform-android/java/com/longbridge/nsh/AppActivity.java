@@ -23,6 +23,7 @@ public final class AppActivity extends Activity {
         view = new NshView(this);
         // An app on its own, not a module embedded in another app: no limits.
         view.useStandaloneLimits();
+        view.ownSystemBars();
         setContentView(view);
         view.handleNotificationIntent(getIntent());
         // A recreated activity's intent was handed in already.
@@ -47,6 +48,7 @@ public final class AppActivity extends Activity {
     public void onConfigurationChanged(android.content.res.Configuration config) {
         super.onConfigurationChanged(config);
         DevActivity.systemBars(this);
+        if (view != null) view.mounter().applySystemBars();
     }
 
     /** A notification pressed, or a URL opened, while this activity is in its task. */
