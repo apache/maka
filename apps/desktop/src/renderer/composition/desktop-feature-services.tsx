@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import '../platform/desktop/astryx-hover-markers';
 import type { ReactNode } from 'react';
 import { WorkHubServicesProvider } from '../features/workhub';
 import { createDesktopWorkHubServices } from '../platform/desktop/create-workhub-services';
