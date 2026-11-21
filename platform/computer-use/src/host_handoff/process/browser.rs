@@ -146,7 +146,7 @@ fn product(executable: &Path) -> Result<String, ToolError> {
     }
     let translations = query(&block, "\\VarFileInfo\\Translation")
         .ok_or_else(|| failed("browser executable lacks version translations"))?;
-    for pair in translations.chunks_exact(4) {
+    for pair in translations.as_chunks::<4>().0 {
         let language = u16::from_le_bytes([pair[0], pair[1]]);
         let codepage = u16::from_le_bytes([pair[2], pair[3]]);
         if let Some(bytes) = query(
@@ -154,8 +154,11 @@ fn product(executable: &Path) -> Result<String, ToolError> {
             &format!("\\StringFileInfo\\{language:04x}{codepage:04x}\\ProductName"),
         ) {
             let words: Vec<u16> = bytes
-                .chunks_exact(2)
-                .map(|word| u16::from_le_bytes([word[0], word[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .copied()
+                .map(u16::from_le_bytes)
                 .take_while(|word| *word != 0)
                 .collect();
             return String::from_utf16(&words).map_err(failed);

@@ -18,7 +18,9 @@
  */
 
 use super::*;
+#[cfg(not(target_os = "windows"))]
 use maka_agent_facts::language::Language;
+#[cfg(not(target_os = "windows"))]
 use serde_json::{Value, json};
 
 async fn verify(

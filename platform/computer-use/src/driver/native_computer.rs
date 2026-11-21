@@ -41,6 +41,7 @@ pub(super) struct ActiveInput {
 impl Driver {
     /// These are actual registered Cua tools. This narrow entry adds no model
     /// named-tool escape hatch to the ordinary App facade.
+    #[cfg(not(target_os = "windows"))]
     pub(crate) async fn invoke_raw_native(
         driver: &Arc<Mutex<Self>>,
         tool: RawTool,
@@ -49,12 +50,10 @@ impl Driver {
         cancellation: &CancellationToken,
         language: Language,
         window_pixels: bool,
-        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
-        let result = Self::invoke_with_coordinates(
+        Self::invoke_with_coordinates(
             driver,
-            tool.name(),
-            input,
+            (tool.name(), input),
             epoch,
             cancellation,
             language,
@@ -63,27 +62,14 @@ impl Driver {
             } else {
                 NativeCoordinates::Captured
             },
-            #[cfg(target_os = "windows")]
-            None,
-            #[cfg(target_os = "windows")]
-            invocation,
         )
-        .await?;
-        #[cfg(target_os = "windows")]
-        {
-            Ok(result.value)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            Ok(result)
-        }
+        .await
     }
 
     #[cfg(target_os = "windows")]
     pub(crate) async fn invoke_raw_windows(
         driver: &Arc<Mutex<Self>>,
-        tool: RawTool,
-        input: Value,
+        call: (RawTool, Value),
         epoch: NativeEpochId,
         cancellation: &CancellationToken,
         language: Language,
@@ -92,8 +78,7 @@ impl Driver {
     ) -> Result<super::NativeWindowsCall<CallResult>, ToolError> {
         Self::invoke_with_coordinates(
             driver,
-            tool.name(),
-            input,
+            (call.0.name(), call.1),
             epoch,
             cancellation,
             language,
@@ -102,7 +87,6 @@ impl Driver {
             } else {
                 NativeCoordinates::Captured
             },
-            None,
             invocation,
         )
         .await

@@ -166,13 +166,13 @@ impl Session {
         .await
     }
 
+    #[cfg(not(target_os = "windows"))]
     async fn invoke_native_window_pixels(
         &self,
         name: &str,
         input: Value,
         cancellation: &CancellationToken,
         language: Language,
-        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
         Driver::invoke_native_window_pixels(
             &self.native,
@@ -181,8 +181,6 @@ impl Session {
             self.epoch,
             cancellation,
             language,
-            #[cfg(target_os = "windows")]
-            invocation,
         )
         .await
     }
@@ -823,8 +821,7 @@ impl Session {
                 let mut state = match self
                     .observe(
                         &handle,
-                        ObservationKind::Ax,
-                        false,
+                        (ObservationKind::Ax, false),
                         session,
                         cancellation,
                         language,
@@ -860,8 +857,7 @@ impl Session {
                 let result = self
                     .observe(
                         &handle,
-                        kind,
-                        !options.disable_diffing,
+                        (kind, !options.disable_diffing),
                         session,
                         cancellation,
                         language,
@@ -1257,8 +1253,7 @@ impl Session {
     async fn observe(
         &mut self,
         handle: &str,
-        kind: ObservationKind,
-        diff: bool,
+        (kind, diff): (ObservationKind, bool),
         session: &str,
         cancellation: &CancellationToken,
         language: Language,
@@ -2463,7 +2458,7 @@ impl Session {
                             .ok_or_else(|| failed("native element bounds unavailable"))?,
                     )
                     .map_err(failed)?;
-                    return Ok([frame.x + frame.w / 2.0, frame.y + frame.h / 2.0]);
+                    Ok([frame.x + frame.w / 2.0, frame.y + frame.h / 2.0])
                 }
                 #[cfg(not(target_os = "windows"))]
                 {
