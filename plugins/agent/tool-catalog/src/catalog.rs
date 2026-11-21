@@ -346,11 +346,7 @@ fn schema_mismatch(validator: &Validator, schema: &Value, input: &Value) -> Stri
     let mut reasons = Vec::new();
     let mut more = 0;
     for error in validator.iter_errors(input) {
-        if reasons.len() == SHOWN_ERRORS {
-            more += 1;
-            continue;
-        }
-        reasons.push(reason(&error, schema));
+        collect_reason(&error, schema, &mut reasons, &mut more);
     }
     let mut message = String::from("arguments do not match the declared schema");
     if !reasons.is_empty() {
@@ -363,10 +359,14 @@ fn schema_mismatch(validator: &Validator, schema: &Value, input: &Value) -> Stri
     message
 }
 
-/// One schema error: where it is and what is wrong there. A failed union says which
-/// alternative the input meant, since "not valid under any of the schemas" leaves
-/// the model guessing.
-fn reason(error: &ValidationError<'_>, schema: &Value) -> String {
+/// Collects schema errors up to `SHOWN_ERRORS`. A failed union unwraps `X | null`
+/// or names/narrows a tagged-union alternative so the model does not have to guess.
+fn collect_reason(
+    error: &ValidationError<'_>,
+    schema: &Value,
+    reasons: &mut Vec<String>,
+    more: &mut usize,
+) {
     let mut what = None;
     if let ValidationErrorKind::AnyOf { context } | ValidationErrorKind::OneOfNotValid { context } =
         error.kind()
@@ -383,16 +383,26 @@ fn reason(error: &ValidationError<'_>, schema: &Value) -> String {
                 _ => None,
             }
         {
-            return reasons(&context[other], schema);
+            for inner in &context[other] {
+                collect_reason(inner, schema, reasons, more);
+            }
+            return;
         }
         if let Some((tag, values)) = tag(branches) {
             let chosen = error.instance().get(tag).and_then(Value::as_str);
             if let Some(index) = chosen.and_then(|chosen| values.iter().position(|v| *v == chosen))
             {
-                return reasons(&context[index], schema);
+                for inner in &context[index] {
+                    collect_reason(inner, schema, reasons, more);
+                }
+                return;
             }
             what = Some(alternatives(branches, tag, &values));
         }
+    }
+    if reasons.len() == SHOWN_ERRORS {
+        *more += 1;
+        return;
     }
     let what = what.unwrap_or_else(|| error.masked().to_string());
     let path = error.instance_path().as_str();
@@ -412,20 +422,24 @@ fn reason(error: &ValidationError<'_>, schema: &Value) -> String {
     if wrong_kind && encodes_json(error.instance()) {
         reason.push_str(" (it is a JSON-encoded string; pass the object or array itself)");
     }
-    reason
-}
-
-fn reasons(errors: &[ValidationError<'_>], schema: &Value) -> String {
-    let reasons: Vec<_> = errors.iter().map(|error| reason(error, schema)).collect();
-    reasons.join("; ")
+    reasons.push(reason);
 }
 
 fn is_null(branch: &Value) -> bool {
     branch.get("type").is_some_and(|kind| kind == "null")
 }
 
-/// The property every alternative requires with its own constant, as a serde-tagged
-/// enum declares it, and that constant per alternative.
+fn literal_tag(schema: &Value) -> Option<&str> {
+    schema.get("const").and_then(Value::as_str).or_else(|| {
+        let [only] = schema.get("enum")?.as_array()?.as_slice() else {
+            return None;
+        };
+        only.as_str()
+    })
+}
+
+/// The property every alternative requires with its own constant (or single-value enum),
+/// as a serde-tagged enum or external MCP schema declares it.
 fn tag(branches: &[Value]) -> Option<(&str, Vec<&str>)> {
     let first = branches.first()?.get("properties")?.as_object()?;
     first.keys().find_map(|name| {
@@ -436,7 +450,7 @@ fn tag(branches: &[Value]) -> Option<(&str, Vec<&str>)> {
                 if !required.iter().any(|field| field == name.as_str()) {
                     return None;
                 }
-                branch.get("properties")?.get(name)?.get("const")?.as_str()
+                literal_tag(branch.get("properties")?.get(name)?)
             })
             .collect::<Option<Vec<_>>>()?;
         let distinct = values.iter().collect::<std::collections::BTreeSet<_>>();

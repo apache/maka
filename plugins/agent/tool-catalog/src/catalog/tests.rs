@@ -278,6 +278,25 @@ fn a_tagged_union_rejection_names_the_tag_and_the_fields_it_selects() {
         message.ends_with(&alternatives.replace("/workspace", "/target")),
         "{message}"
     );
+    // Single-element enum tags (common in external MCP / draft-07 schemas) work too.
+    let mcp_catalog = checked(json!({
+        "type": "object",
+        "properties": {
+            "action": {"oneOf": [
+                {"type": "object", "properties": {"type": {"enum": ["click"]}, "x": {"type": "number"}}, "required": ["type", "x"]},
+                {"type": "object", "properties": {"type": {"enum": ["key"]}, "key": {"type": "string"}}, "required": ["type", "key"]},
+            ]},
+            "actions": {"anyOf": [{"type": "array", "items": {"type": "integer"}}, {"type": "null"}]},
+        },
+    }));
+    let message = rejection(&mcp_catalog, json!({"action": {"type": "unknown"}}));
+    assert!(
+        message.ends_with(r#"/action: expected an object with "type" set to one of these values, each with its fields: "click" (x), "key" (key)"#),
+        "{message}"
+    );
+    // Unwrapped optional / union errors still respect the shown-error cap.
+    let message = rejection(&mcp_catalog, json!({"actions": ["a", "b", "c", "d", "e"]}));
+    assert!(message.ends_with("; and 2 more"), "{message}");
 }
 
 #[test]
