@@ -30,6 +30,9 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
+import { createServer, type ServerResponse } from 'node:http';
+import { fork } from 'node:child_process';
+import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -63,9 +66,233 @@ import {
   openInteractiveUsageStoresForWrite,
 } from '../usage-stores.js';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
+import { appendAuthorityEvent, wideModelCallAttempt } from './fixtures/model-call-attempt.js';
 import { removeControlDirectory } from './fixtures/control-directory-hygiene.js';
 
 describe('InteractiveUsageStores', () => {
+  test('closes a file-backed writer while its OTLP collector never returns headers', async (t) => {
+    t.mock.method(console, 'error', () => {});
+    const keys = [
+      'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT',
+      'OTEL_EXPORTER_OTLP_TRACES_TIMEOUT',
+      'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
+    ] as const;
+    const previous = keys.map((key) => process.env[key]);
+    t.after(() => {
+      keys.forEach((key, index) => {
+        if (previous[index] === undefined) delete process.env[key];
+        else process.env[key] = previous[index];
+      });
+    });
+    let received = false;
+    const server = createServer((_request, _response) => {
+      received = true;
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = `http://127.0.0.1:${address.port}/traces`;
+    process.env.OTEL_EXPORTER_OTLP_TRACES_TIMEOUT = '60000';
+    process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS = '';
+    try {
+      await withInteractiveRoot(async ({ capability }) => {
+        const owner = await tryAcquireInteractiveRootOwner(capability);
+        assert(owner);
+        const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await stores.telemetry.recordToolInvocation(toolRecord());
+          const closed = await Promise.race([
+            stores.close().then(() => true),
+            new Promise<boolean>((resolve) => {
+              deadline = setTimeout(() => resolve(false), 2_500);
+            }),
+          ]);
+          assert.equal(
+            received,
+            true,
+            'the real collector must receive the persisted usage export',
+          );
+          assert.equal(
+            closed,
+            true,
+            'OTLP must release shutdown before the Host termination budget',
+          );
+        } finally {
+          clearTimeout(deadline);
+          server.closeAllConnections();
+          await stores.close();
+          await owner.close();
+        }
+      });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  test('two-batch OTLP shutdown cancels the second request and lets the writer process exit', async () => {
+    let firstResponse: ServerResponse | undefined;
+    let closing = false;
+    let requests = 0;
+    let secondCancelled = false;
+    const releaseFirst = () => {
+      if (closing) firstResponse?.end();
+    };
+    const server = createServer((request, response) => {
+      requests++;
+      request.resume();
+      if (requests === 1) {
+        firstResponse = response;
+        releaseFirst();
+      } else {
+        response.on('close', () => {
+          secondCancelled = true;
+        });
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    try {
+      await withInteractiveRoot(async ({ root }) => {
+        const child = fork(new URL('./fixtures/otlp-close-process.js', import.meta.url), [root], {
+          silent: true,
+          env: {
+            ...process.env,
+            OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `http://127.0.0.1:${address.port}/traces`,
+            OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: '',
+            OTEL_EXPORTER_OTLP_TIMEOUT: '',
+            OTEL_EXPORTER_OTLP_TRACES_HEADERS: '',
+            OTEL_EXPORTER_OTLP_HEADERS: '',
+          },
+        });
+        let stderr = '';
+        child.stderr!.setEncoding('utf8').on('data', (chunk: string) => {
+          stderr += chunk;
+        });
+        child.on('message', (message: unknown) => {
+          if (message === 'closing') {
+            closing = true;
+            releaseFirst();
+          }
+        });
+        const exit = once(child, 'exit');
+        let deadline: NodeJS.Timeout | undefined;
+        try {
+          const result = await Promise.race([
+            exit,
+            new Promise<null>((resolve) => {
+              deadline = setTimeout(() => resolve(null), 5_000);
+            }),
+          ]);
+          assert.ok(
+            result,
+            `writer must exit naturally within shutdown grace, not the 10s request timeout: ${stderr}`,
+          );
+          assert.equal(result[0], 0, stderr);
+          assert.equal(requests, 2);
+          assert.equal(secondCancelled, true, 'close must cancel the stalled second batch');
+        } finally {
+          clearTimeout(deadline);
+          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+          await exit;
+        }
+      });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  test('exports canonical committed attempts once without inventing usage or leaking request evidence', async (t) => {
+    const payloads: string[] = [];
+    const server = createServer((request, response) => {
+      let body = '';
+      request.setEncoding('utf8');
+      request.on('data', (chunk: string) => {
+        body += chunk;
+      });
+      request.on('end', () => {
+        payloads.push(body);
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const previous = process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
+    process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = `http://127.0.0.1:${address.port}/traces`;
+    t.after(async () => {
+      if (previous === undefined) delete process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
+      else process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = previous;
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      let stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      try {
+        const attempt = wideModelCallAttempt({ providerRequestId: 'private-request-sentinel' });
+        appendAuthorityEvent(root, 0, attempt);
+        appendAuthorityEvent(
+          root,
+          1,
+          wideModelCallAttempt({
+            attemptId: 'unpriced',
+            status: 'failed',
+            usageBasis: 'missing',
+            inputTokens: undefined,
+            outputTokens: undefined,
+            costBasis: 'unpriced',
+            costUsd: undefined,
+            errorClass: 'private-error-sentinel',
+          }),
+        );
+        await stores.modelCalls.catchUpModelCallProjection();
+        await stores.modelCalls.catchUpModelCallProjection();
+        await stores.flush();
+        const summary = await stores.modelCalls.modelCallSummary({ range: 'all' }, Date.now());
+        assert.equal(summary.projection.totalRequests, 2);
+        const spans = payloads.flatMap(
+          (payload) => JSON.parse(payload).resourceSpans[0].scopeSpans[0].spans,
+        );
+        assert.equal(spans.length, 2, 'normal conversations must reach the collector');
+        const attrs = spans.map((span) =>
+          Object.fromEntries(
+            span.attributes.map((a: { key: string; value: unknown }) => [a.key, a.value]),
+          ),
+        );
+        assert.deepEqual(attrs[0]['maka.usage.input_tokens'], { doubleValue: 100 });
+        assert.deepEqual(attrs[0]['maka.usage.cost_usd'], { doubleValue: 0.004 });
+        assert.deepEqual(attrs[1]['maka.usage.basis'], { stringValue: 'missing' });
+        assert.deepEqual(attrs[1]['maka.cost.basis'], { stringValue: 'unpriced' });
+        assert.equal(attrs[1]['maka.usage.input_tokens'], undefined);
+        assert.equal(attrs[1]['maka.usage.cost_usd'], undefined);
+        assert.deepEqual(attrs[1]['maka.error.class'], { stringValue: 'Other' });
+        assert.equal(spans[1].status.code, 2);
+        assert.doesNotMatch(
+          payloads.join(''),
+          /private-|promptComposition|requestObservation|providerRequestId|session-1|run-1/,
+        );
+        await stores.close();
+        stores = await openInteractiveUsageStoresForWrite(owner.lease);
+        appendAuthorityEvent(root, 2, attempt);
+        await stores.modelCalls.catchUpModelCallProjection();
+        await stores.flush();
+        assert.equal(
+          payloads.length,
+          1,
+          'reopen and repeated authority events must not duplicate exports',
+        );
+      } finally {
+        await stores.close();
+        await owner.close();
+      }
+    });
+  });
+
   test('classifies facade failures without exposing concrete errors to callers', () => {
     assert.deepEqual(
       classifyInteractiveUsageStoresFailure(new PricingRevisionConflictError(3, 4)),
