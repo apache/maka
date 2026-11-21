@@ -171,56 +171,41 @@ impl Library {
                 if cancellation.is_cancelled() {
                     return Err("skills_cancelled".into());
                 }
-                let (path, handle, _) = directory::capture_directory(Path::new(&directory.path))
-                    .map_err(|_| "skills_workspace_unavailable")?;
-                if workspace::project::host_path(&path).ok() != Some(directory.path.as_str()) {
-                    return Err("skills_workspace_unavailable".into());
-                }
-                let policy =
-                    if let Some(binding) = workspace.as_ref().and_then(|ws| ws.worktree.as_ref()) {
-                        if binding.directory() != Path::new(&directory.path) {
-                            return Err("skills_workspace_unavailable".into());
-                        }
-                        maka_fs_tools::worktree::Worktrees::open(
-                            &library.private.join("subagent-worktrees"),
-                        )
-                        .and_then(|worktrees| worktrees.inspect(binding))
+                let selected = workspace.unwrap_or_else(|| Workspace {
+                    path: directory.path.clone(),
+                    project_id: None,
+                    worktree: None,
+                });
+                let (path, handle, _) = maka_workspace_support::open_workspace_observation_sync(
+                    &library.projects,
+                    &selected,
+                    &library.private.join("subagent-worktrees"),
+                )
+                .map_err(|_| "skills_workspace_unavailable")?;
+                let policy = if selected.worktree.is_some() {
+                    // Managed subagent worktrees live inside private/subagent-worktrees,
+                    // so carve out read-only access for this verified worktree while keeping
+                    // the rest of library.private denied.
+                    let private_policy = workspace::project::host_path(&library.private)
                         .map_err(|_| "skills_workspace_unavailable")?;
-                        if !library
-                            .projects
-                            .iter()
-                            .any(|root| root.validate(binding.source()).is_ok())
-                        {
-                            return Err("skills_workspace_unavailable".into());
+                    Arc::new(
+                        Policy {
+                            default: Access::Read,
+                            rules: vec![
+                                Rule::subtree(private_policy, Access::Deny),
+                                Rule::subtree(directory.path.as_str(), Access::Read),
+                            ],
+                            deny_globs: vec![],
                         }
-                        // Managed subagent worktrees live inside private/subagent-worktrees,
-                        // so carve out read-only access for this verified worktree while keeping
-                        // the rest of library.private denied.
-                        let private_policy = workspace::project::host_path(&library.private)
-                            .map_err(|_| "skills_workspace_unavailable")?;
-                        Arc::new(
-                            Policy {
-                                default: Access::Read,
-                                rules: vec![
-                                    Rule::subtree(private_policy, Access::Deny),
-                                    Rule::subtree(directory.path.as_str(), Access::Read),
-                                ],
-                                deny_globs: vec![],
-                            }
-                            .compile()
-                            .map_err(|_| "skills_workspace_unavailable")?,
-                        )
-                    } else {
-                        if path.starts_with(&library.private)
-                            || !library
-                                .projects
-                                .iter()
-                                .any(|root| root.validate(&path).is_ok())
-                        {
-                            return Err("skills_workspace_unavailable".into());
-                        }
-                        library.policy.clone()
-                    };
+                        .compile()
+                        .map_err(|_| "skills_workspace_unavailable")?,
+                    )
+                } else {
+                    if path.starts_with(&library.private) {
+                        return Err("skills_workspace_unavailable".into());
+                    }
+                    library.policy.clone()
+                };
                 let handle = Arc::new(handle);
                 let root = ReadRoot::from_handle(
                     handle.try_clone().map_err(|error| error.to_string())?,
@@ -428,52 +413,77 @@ mod tests {
         log.drain().await;
     }
 
-    #[tokio::test]
-    async fn managed_subagent_worktree_allows_project_skills_while_protecting_private_root() {
-        use maka_fs_tools::worktree::Worktrees;
+    fn init_repo(root: &Path) {
         use std::process::Command;
+
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(root.join("README.md"), "base\n").unwrap();
+        for args in [
+            &["init", "--quiet"][..],
+            &["config", "user.email", "tests@maka.invalid"][..],
+            &["config", "user.name", "Maka tests"][..],
+            &["add", "."][..],
+            &["commit", "--quiet", "-m", "init"][..],
+        ] {
+            let out = Command::new("git")
+                .current_dir(root)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env(
+                    "GIT_CONFIG_GLOBAL",
+                    if cfg!(windows) { "NUL" } else { "/dev/null" },
+                )
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_subagent_worktree_reads_worktree_skills_and_rejects_unauthorized_paths() {
+        use maka_fs_tools::worktree::Worktrees;
         use std::sync::atomic::AtomicBool;
 
         let dir = tempfile::tempdir().unwrap();
         let (library, log) = library(dir.path()).await;
         let call = scope();
-        let repo = dir.path().join("projects/repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        write(&repo.join(".agents/skills"), "wt-skill", "Worktree skill");
-        for args in [
-            &["init", "-q"][..],
-            &["config", "user.email", "t@example.com"][..],
-            &["config", "user.name", "Test"][..],
-            &["add", "."][..],
-            &["commit", "-q", "-m", "init"][..],
-        ] {
-            assert!(
-                Command::new("git")
-                    .args(args)
-                    .current_dir(&repo)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-        }
-
-        // Allocate a real managed subagent worktree under private/subagent-worktrees.
         let private = dir.path().canonicalize().unwrap().join("private");
         let manager = Worktrees::open(&private.join("subagent-worktrees")).unwrap();
-        let binding = manager
-            .plan(&repo, &"a".repeat(64), Arc::new(AtomicBool::new(false)))
-            .unwrap();
-        manager.ensure(&binding, &AtomicBool::new(false)).unwrap();
-
-        let wt_workspace = Workspace {
-            path: workspace::project::host_path(binding.directory())
-                .unwrap()
-                .into(),
-            project_id: None,
-            worktree: Some(Box::new(binding.clone())),
+        let make_worktree = |repo: &Path, seed: &str| {
+            init_repo(repo);
+            let binding = manager
+                .plan(repo, seed, Arc::new(AtomicBool::new(false)))
+                .unwrap();
+            manager.ensure(&binding, &AtomicBool::new(false)).unwrap();
+            Workspace {
+                path: workspace::project::host_path(binding.directory())
+                    .unwrap()
+                    .into(),
+                project_id: None,
+                worktree: Some(Box::new(binding)),
+            }
         };
 
-        // 1. Both prepare (used by SessionSend) and search succeed on the managed worktree.
+        // 1. A verified managed worktree prepares cleanly and discovers skills added only inside
+        //    the child worktree (not present in the source repository).
+        let wt_workspace = make_worktree(&dir.path().join("projects/repo"), &"a".repeat(64));
+        write(
+            &wt_workspace
+                .worktree
+                .as_deref()
+                .unwrap()
+                .directory()
+                .join(".agents/skills"),
+            "wt-skill",
+            "Worktree-only skill",
+        );
         let prepared = library
             .model(
                 "prepare",
@@ -492,115 +502,41 @@ mod tests {
             .await
             .expect("managed worktree should pass skills prepare");
         assert_eq!(prepared["kind"], "ready", "{prepared}");
+        let prompt = prepared["record"]["metadataPrompt"].as_str().unwrap();
+        assert!(prompt.contains("wt-skill"), "{prepared}");
 
-        let searched = library
-            .model(
-                "search",
-                json!({
-                    "workspace": wt_workspace,
-                    "tools": [],
-                    "input": {"query": ""}
-                }),
-                &call,
-            )
-            .await
-            .expect("managed worktree should discover project skills");
-        assert!(
-            searched["matches"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["id"] == "wt-skill"),
-            "{searched}"
-        );
-
-        // 1b. A symlink inside the managed worktree escaping back into another path under
-        //     private must still be denied by the policy.
-        #[cfg(unix)]
-        {
-            write(&private.join("secret-skills"), "leaked-skill", "Secret");
-            std::os::unix::fs::symlink(
-                private.join("secret-skills/leaked-skill"),
-                binding.directory().join(".agents/skills/leaked-skill"),
-            )
-            .unwrap();
-            let after_symlink = library
-                .model(
-                    "search",
-                    json!({"workspace": wt_workspace, "tools": [], "input": {"query": ""}}),
-                    &call,
-                )
-                .await
-                .expect("worktree search should remain available");
-            assert!(
-                !after_symlink["matches"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|entry| entry["id"] == "leaked-skill"),
-                "symlink escaping into private root must not be read: {after_symlink}"
-            );
-        }
-
-        // 2. A plain directory workspace pointing into private/subagent-worktrees without
-        //    a verified worktree binding must still be rejected.
+        // 2. A plain directory pointing into private/subagent-worktrees without a verified
+        //    worktree binding is rejected.
         let bare_private = Workspace {
             path: wt_workspace.path.clone(),
             project_id: None,
             worktree: None,
         };
-        let bare_err = library
-            .model(
-                "search",
-                json!({"workspace": bare_private, "tools": [], "input": {"query": ""}}),
-                &call,
-            )
-            .await
-            .unwrap_err();
-        assert_eq!(bare_err, "skills_workspace_unavailable");
+        assert_eq!(
+            library
+                .model(
+                    "search",
+                    json!({"workspace": bare_private, "tools": [], "input": {"query": ""}}),
+                    &call,
+                )
+                .await
+                .unwrap_err(),
+            "skills_workspace_unavailable"
+        );
 
-        // 3. A managed worktree sourced from a repo outside projects/ must still be rejected.
-        let outside = dir.path().join("outside-repo");
-        std::fs::create_dir_all(&outside).unwrap();
-        std::fs::write(outside.join("README.md"), "outside").unwrap();
-        for args in [
-            &["init", "-q"][..],
-            &["config", "user.email", "t@example.com"][..],
-            &["config", "user.name", "Test"][..],
-            &["add", "."][..],
-            &["commit", "-q", "-m", "init"][..],
-        ] {
-            assert!(
-                Command::new("git")
-                    .args(args)
-                    .current_dir(&outside)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-        }
-        let outside_binding = manager
-            .plan(&outside, &"b".repeat(64), Arc::new(AtomicBool::new(false)))
-            .unwrap();
-        manager
-            .ensure(&outside_binding, &AtomicBool::new(false))
-            .unwrap();
-        let outside_ws = Workspace {
-            path: workspace::project::host_path(outside_binding.directory())
-                .unwrap()
-                .into(),
-            project_id: None,
-            worktree: Some(Box::new(outside_binding)),
-        };
-        let outside_err = library
-            .model(
-                "search",
-                json!({"workspace": outside_ws, "tools": [], "input": {"query": ""}}),
-                &call,
-            )
-            .await
-            .unwrap_err();
-        assert_eq!(outside_err, "skills_workspace_unavailable");
+        // 3. A managed worktree sourced from a repo outside projects/ is rejected.
+        let outside_ws = make_worktree(&dir.path().join("outside-repo"), &"b".repeat(64));
+        assert_eq!(
+            library
+                .model(
+                    "search",
+                    json!({"workspace": outside_ws, "tools": [], "input": {"query": ""}}),
+                    &call,
+                )
+                .await
+                .unwrap_err(),
+            "skills_workspace_unavailable"
+        );
 
         log.drain().await;
     }

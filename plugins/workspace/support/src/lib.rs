@@ -487,6 +487,29 @@ pub async fn open_workspace(
         .map(|(_, directory, _)| directory)
 }
 
+pub fn open_workspace_observation_sync(
+    roots: &[Root],
+    selected: &Workspace,
+    managed: &Path,
+) -> Result<(PathBuf, cap_std::fs::Dir, directory::Observation), String> {
+    let (path, directory, identity) = capture_selected(selected)?;
+    let authorized = if let Some(binding) = &selected.worktree {
+        maka_fs_tools::worktree::Worktrees::open(managed)
+            .and_then(|worktrees| worktrees.inspect(binding))
+            .map_err(|_| "agent_workspace_unavailable")?;
+        binding.source()
+    } else {
+        if path.starts_with(managed) {
+            return Err("agent_workspace_unavailable".into());
+        }
+        path.as_path()
+    };
+    if !roots.iter().any(|root| root.validate(authorized).is_ok()) {
+        return Err("agent_workspace_unavailable".into());
+    }
+    Ok((path, directory, identity))
+}
+
 pub async fn open_workspace_observation(
     roots: &[Root],
     selected: &Workspace,
@@ -496,22 +519,7 @@ pub async fn open_workspace_observation(
     let selected = selected.clone();
     let managed = managed.to_owned();
     tokio::task::spawn_blocking(move || {
-        let (path, directory, identity) = capture_selected(&selected)?;
-        let authorized = if let Some(binding) = &selected.worktree {
-            maka_fs_tools::worktree::Worktrees::open(&managed)
-                .and_then(|worktrees| worktrees.inspect(binding))
-                .map_err(|_| "agent_workspace_unavailable")?;
-            binding.source()
-        } else {
-            if path.starts_with(&managed) {
-                return Err("agent_workspace_unavailable".into());
-            }
-            path.as_path()
-        };
-        if !roots.iter().any(|root| root.validate(authorized).is_ok()) {
-            return Err("agent_workspace_unavailable".into());
-        }
-        Ok((path, directory, identity))
+        open_workspace_observation_sync(&roots, &selected, &managed)
     })
     .await
     .map_err(|_| "agent_workspace_unavailable")?
