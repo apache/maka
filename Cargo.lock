@@ -8504,6 +8504,7 @@ dependencies = [
  "maka-tools",
  "maka-transport",
  "maka-ui-build",
+ "maka-updater",
  "maka-workbench",
  "maka-wsl-bridge",
  "nsh-core",
@@ -8701,6 +8702,7 @@ dependencies = [
  "maka-app-client",
  "maka-event-log",
  "maka-host-runtime",
+ "maka-updater",
  "maka-workbench",
  "maka-wsl-bridge",
  "nsh-engine",
@@ -9640,6 +9642,28 @@ dependencies = [
  "sys-locale",
  "tempfile",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "maka-updater"
+version = "0.2.0"
+dependencies = [
+ "flate2",
+ "futures-util",
+ "libc",
+ "maka-event-log",
+ "maka-host-runtime",
+ "nsh-updater",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

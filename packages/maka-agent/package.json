@@ -1,0 +1,25 @@
+{
+  "name": "maka-agent",
+  "version": "0.2.0",
+  "description": "Alias package for @maka-agent/cli (unofficial developer preview; not an ASF release)",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "bin": {
+    "maka": "bin/maka.mjs"
+  },
+  "files": [
+    "bin",
+    "DISCLAIMER",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/apache/maka.git"
+  }
+}

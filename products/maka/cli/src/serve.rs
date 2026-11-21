@@ -50,7 +50,12 @@ pub(super) async fn run(
             }
         }
     } else if expected_root.is_none() {
-        RootOwner::create(path, &namespaces)?
+        let _launch = crate::deployment::acquire_launch_lock(path, &namespaces)?;
+        if path.join(ROOT_MARKER).exists() {
+            RootOwner::open(path, &namespaces)?
+        } else {
+            RootOwner::create(path, &namespaces)?
+        }
     } else {
         return Err("service State Root must already be installed".into());
     };

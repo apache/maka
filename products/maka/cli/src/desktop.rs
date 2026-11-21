@@ -137,7 +137,7 @@ impl Args {
             return Ok(0);
         }
         let launcher = std::env::current_exe()?.canonicalize()?;
-        let executable = launcher.with_file_name(SHELL);
+        let executable = desktop_shell_path(&launcher);
         let root = std::path::absolute(root)?;
         let epoch = registered.host_epoch.to_string();
         let variables: [(&str, &std::ffi::OsStr); 4] = [
@@ -184,6 +184,21 @@ impl Args {
             Ok(status.code().unwrap_or(1))
         }
     }
+}
+
+/// Resolves `maka-desktop-shell` beside `launcher`.
+/// On macOS, a self-contained `Maka.app` places `maka` right beside
+/// `maka-desktop-shell` inside `Contents/MacOS/`; dev/npm layouts place
+/// `Maka.app` next to `maka`.
+fn desktop_shell_path(launcher: &std::path::Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let sibling = launcher.with_file_name("maka-desktop-shell");
+        if sibling.is_file() {
+            return sibling;
+        }
+    }
+    launcher.with_file_name(SHELL)
 }
 
 /// Whether the Host with `epoch` still serves `root` and is not closing. A
