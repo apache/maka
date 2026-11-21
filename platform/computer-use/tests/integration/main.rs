@@ -18,7 +18,3 @@
  */
 
 mod repl_user_tab_context;
-
-#[cfg(all(feature = "native-desktop", target_os = "linux"))]
-#[path = "support/linux_wheel.rs"]
-mod linux_wheel;
