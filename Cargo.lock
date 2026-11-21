@@ -8493,6 +8493,7 @@ dependencies = [
  "maka-js-runtime",
  "maka-mock-ai",
  "maka-packages",
+ "maka-peer",
  "maka-plugin-core",
  "maka-process",
  "maka-product-native",
@@ -9149,7 +9150,7 @@ dependencies = [
 
 [[package]]
 name = "maka-peer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
@@ -9169,7 +9170,7 @@ dependencies = [
 
 [[package]]
 name = "maka-peer-mesh"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "maka-event-log",
  "maka-host-runtime",

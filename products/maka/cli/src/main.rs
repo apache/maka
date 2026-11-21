@@ -33,6 +33,7 @@ mod host_client;
 mod initialize;
 mod logging;
 mod operation;
+mod peer;
 mod run;
 mod sandbox;
 mod serve;

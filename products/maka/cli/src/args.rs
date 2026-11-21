@@ -51,6 +51,9 @@ enum Command {
     /// Manage the native runtime host.
     #[command(subcommand)]
     Host(HostCommand),
+    /// Inspect peer node identity, generate pairing tickets, and compute SAS verification codes.
+    #[command(subcommand)]
+    Peer(crate::peer::Command),
     /// Execute a journaled Code Mode cell read from stdin.
     Code(code::Args),
     /// Serve Agent Client Protocol v1 and v2 over stdin/stdout.
@@ -237,6 +240,7 @@ impl Cli {
             }
             Command::Run(args) => command_exit(args.run()),
             Command::Application(args) => command_exit(args.run()),
+            Command::Peer(args) => command_exit(args.run()),
             Command::Sandbox(args) => Box::pin(args.run(self.timeout_ms)),
             Command::Host(HostCommand::Fetch(args)) => command_exit(args.run()),
             Command::Host(HostCommand::Access(args)) => command_exit(args.run()),
