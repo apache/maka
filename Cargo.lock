@@ -8493,6 +8493,7 @@ dependencies = [
  "maka-js-runtime",
  "maka-mock-ai",
  "maka-packages",
+ "maka-peer",
  "maka-plugin-core",
  "maka-process",
  "maka-product-native",
