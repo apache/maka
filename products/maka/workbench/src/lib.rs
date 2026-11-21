@@ -27,6 +27,7 @@ mod composer_input;
 pub mod host;
 mod live_image;
 pub mod reload;
+pub mod remote_hosts;
 
 use nsh_engine::{Bundle, Capabilities, EngineConfig, Limits, Policy};
 use tokio::sync::watch;
