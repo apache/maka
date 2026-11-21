@@ -167,7 +167,7 @@ fn custom_search_injects_credentials_in_configured_location_only() {
             prefix: "".into(),
         });
         let endpoint = SearchEndpoint::resolve(&Backend::Custom {
-            endpoint: config.clone(),
+            endpoint: Box::new(config.clone()),
         })
         .unwrap();
         let request = endpoint.request(Some("secret/word"), &search).unwrap();
@@ -191,7 +191,9 @@ fn custom_search_injects_credentials_in_configured_location_only() {
         }
     }
     config.auth = None;
-    let backend = Backend::Custom { endpoint: config };
+    let backend = Backend::Custom {
+        endpoint: Box::new(config),
+    };
     let endpoint = SearchEndpoint::resolve(&backend).unwrap();
     assert!(endpoint.credential_key(&backend).is_none());
     assert!(endpoint.request(None, &search).is_ok());

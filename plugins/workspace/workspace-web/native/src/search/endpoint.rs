@@ -131,7 +131,7 @@ pub(crate) struct SearchEndpoint {
 impl SearchEndpoint {
     pub fn resolve(backend: &Backend) -> Result<Self, &'static str> {
         let config = match backend {
-            Backend::Custom { endpoint } => endpoint.clone(),
+            Backend::Custom { endpoint } => endpoint.as_ref().clone(),
             preset => presets()
                 .iter()
                 .find(|item| Some(item.id) == preset.preset_id())

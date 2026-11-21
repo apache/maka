@@ -38,10 +38,6 @@ use tokio::sync::Notify;
 type Plan = TaskPlan<ScheduledEffect, Approval>;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Scheduler approval transfers its original record inline without an allocation per observation"
-)]
 pub(in crate::owner) enum Approval {
     Execution {
         approval: BackgroundGrant,

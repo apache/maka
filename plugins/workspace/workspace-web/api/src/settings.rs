@@ -42,7 +42,7 @@ pub enum Backend {
     Exa,
     Serper,
     Custom {
-        endpoint: Endpoint,
+        endpoint: Box<Endpoint>,
     },
 }
 

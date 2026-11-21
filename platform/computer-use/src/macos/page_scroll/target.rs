@@ -90,7 +90,7 @@ impl EventTarget {
 pub(crate) enum Resolution {
     NeedsProcess(i32),
     NeedsGlobalWindow,
-    Ready(EventTarget),
+    Ready(Box<EventTarget>),
 }
 
 #[derive(Clone, Copy)]
@@ -337,15 +337,20 @@ impl TargetResolver {
         }
     }
 
-    fn ready(&mut self, target: ProcessWindow, bounds: WindowBounds, flipped: bool) -> EventTarget {
-        EventTarget {
+    fn ready(
+        &mut self,
+        target: ProcessWindow,
+        bounds: WindowBounds,
+        flipped: bool,
+    ) -> Box<EventTarget> {
+        Box::new(EventTarget {
             pid: target.pid,
             window_id: target.window_id,
             bounds,
             flipped,
             _retained_element: self.element.take(),
             _retained_accessibility_window: self.selected_window.clone(),
-        }
+        })
     }
 }
 

@@ -84,7 +84,6 @@ impl Usage {
             reasoning: Some(reasoning),
             text: Some(i128::from(output.saturating_sub(reasoning))),
             raw: Some(raw),
-            ..Default::default()
         }
     }
 }

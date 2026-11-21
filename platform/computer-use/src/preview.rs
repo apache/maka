@@ -54,6 +54,7 @@ pub enum PreviewSubject {
     },
 }
 impl PreviewSubject {
+    #[cfg(feature = "native-desktop")]
     pub(crate) fn native_execution(&self) -> Option<&crate::ExecutionCorrelation> {
         match self {
             Self::Native { execution, .. } | Self::NativeWindow { execution, .. } => {
@@ -118,6 +119,7 @@ pub enum PreviewKind {
     Tab,
 }
 
+#[cfg(any(feature = "native-desktop", test))]
 pub(crate) fn presentation_failure(
     error: ToolError,
     details: serde_json::Value,
@@ -181,6 +183,7 @@ pub struct PreviewFrame {
 }
 
 pub(crate) enum CapturedImage {
+    #[cfg(feature = "native-desktop")]
     Encoded(Vec<u8>),
     Frame(PreviewFrame),
 }
@@ -246,12 +249,7 @@ impl Default for PreviewRegistry {
 }
 impl PreviewRegistry {
     pub(crate) fn open_epoch(&self, epoch: NativeEpochId) {
-        self.state
-            .lock()
-            .unwrap()
-            .epochs
-            .entry(epoch)
-            .or_insert_with(CancellationToken::new);
+        self.state.lock().unwrap().epochs.entry(epoch).or_default();
     }
     pub fn snapshot(&self) -> PreviewSnapshot {
         let state = self.state.lock().unwrap();
@@ -271,6 +269,7 @@ impl PreviewRegistry {
         state.revision += 1;
         self.changed.send_replace(state.revision);
     }
+    #[cfg(any(feature = "native-desktop", test))]
     pub(crate) fn register(
         &self,
         epoch: NativeEpochId,
@@ -386,6 +385,7 @@ impl PreviewRegistry {
         }
         self.publish(&mut state);
     }
+    #[cfg(feature = "native-desktop")]
     pub(crate) fn remove(&self, epoch: NativeEpochId, key: &str) {
         let mut state = self.state.lock().unwrap();
         if let Some(index) = state
@@ -429,6 +429,7 @@ impl PreviewRegistry {
             .cloned()
             .ok_or_else(|| failed("preview epoch retired"))
     }
+    #[cfg(feature = "native-desktop")]
     pub(crate) fn snapshot_epoch(&self, epoch: NativeEpochId) -> PreviewSnapshot {
         let state = self.state.lock().unwrap();
         let targets: Vec<_> = state
@@ -607,6 +608,7 @@ impl PreviewRegistry {
                 () = work_cancel.cancelled() => { work_stop.cancel(); future.await }
             }?;
             match image {
+                #[cfg(feature = "native-desktop")]
                 CapturedImage::Encoded(bytes) => {
                     tokio::task::spawn_blocking(move || normalize(bytes))
                         .await
@@ -689,11 +691,6 @@ fn normalize(bytes: Vec<u8>) -> Result<(Vec<u8>, u32, u32), ToolError> {
         return Err(failed("preview frame exceeds byte limit"));
     }
     Ok((bytes, width, height))
-}
-
-#[cfg(not(feature = "native-desktop"))]
-fn normalize(_bytes: Vec<u8>) -> Result<(Vec<u8>, u32, u32), ToolError> {
-    Err(failed("native preview is unavailable on this Host"))
 }
 
 #[cfg(test)]

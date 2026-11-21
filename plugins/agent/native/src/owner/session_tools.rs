@@ -348,7 +348,7 @@ impl Owner {
             let page = service::catalog_page_for_tool(
                 self,
                 &List {
-                    kind: input.kind.clone(),
+                    kind: input.kind,
                     filter: if only_archived {
                         SessionFilter::Archived
                     } else {

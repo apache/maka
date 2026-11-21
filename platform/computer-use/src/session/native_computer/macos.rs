@@ -53,7 +53,7 @@ impl Session {
         input["app"] = approved.display.app_path.clone().into();
         if matches!(operation, NativeComputerMethod::GetAppState) {
             let key = self
-                .raw_mac_application(&approved, invocation.session(), cancellation, language)
+                .raw_mac_application(&approved, cancellation, language)
                 .await?;
             return self
                 .raw_mac_state(&key, &approved, &input, invocation, cancellation, language)
@@ -120,7 +120,7 @@ impl Session {
                     )
                 };
             let key = self
-                .raw_mac_application(&approved, invocation.session(), cancellation, language)
+                .raw_mac_application(&approved, cancellation, language)
                 .await?;
             let handle = self
                 .raw_mac_window(
@@ -190,7 +190,7 @@ impl Session {
             let always_simulate =
                 crate::macos::page_scroll::element_click::configured_simulation()?;
             let key = self
-                .raw_mac_application(&approved, invocation.session(), cancellation, language)
+                .raw_mac_application(&approved, cancellation, language)
                 .await?;
             let record = self
                 .raw_computer
@@ -299,7 +299,7 @@ impl Session {
                 let text = text("text")?;
                 // The native app-wide paste body remains a separate parity seam.
                 let key = self
-                    .raw_mac_application(&approved, invocation.session(), cancellation, language)
+                    .raw_mac_application(&approved, cancellation, language)
                     .await?;
                 let handle = self
                     .raw_mac_window(
@@ -322,7 +322,7 @@ impl Session {
             _ => return Err(failed("native method is not installed for macOS")),
         };
         let key = self
-            .raw_mac_application(&approved, invocation.session(), cancellation, language)
+            .raw_mac_application(&approved, cancellation, language)
             .await?;
         if matches!(&action, Action::PressKey { .. } | Action::TypeText { .. }) {
             let input = match action {
@@ -555,7 +555,6 @@ impl Session {
     async fn raw_mac_application(
         &mut self,
         approved: &crate::ComputerAppTarget,
-        session: &str,
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<MacApplicationKey, ToolError> {

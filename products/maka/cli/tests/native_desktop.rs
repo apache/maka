@@ -42,6 +42,10 @@ mod desktop_new_session;
 mod support;
 
 #[cfg(target_os = "macos")]
+#[path = "support/host.rs"]
+pub mod host;
+
+#[cfg(target_os = "macos")]
 #[path = "desktop_new_session.rs"]
 mod owned_root;
 

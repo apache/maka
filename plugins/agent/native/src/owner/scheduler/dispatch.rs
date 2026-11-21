@@ -174,10 +174,10 @@ impl Owner {
                 });
             }
         };
-        if matches!(plan.task.effect, ScheduledEffect::Discovery { .. }) {
-            if !self.settings.bot || !self.bot.is(&target.session_id) {
-                return Err("discovery_requires_bot".into());
-            }
+        if matches!(plan.task.effect, ScheduledEffect::Discovery { .. })
+            && (!self.settings.bot || !self.bot.is(&target.session_id))
+        {
+            return Err("discovery_requires_bot".into());
         }
         let basis = self
             .approve_background(
@@ -817,7 +817,6 @@ impl Owner {
             &basis,
             &identity,
             Default::default(),
-            maka_agent_state::queue::Placement::Followup,
             steer,
         )
         .await?;

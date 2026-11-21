@@ -623,7 +623,7 @@ mod tests {
             risk: None,
             warning: None,
         };
-        let basis = profile_spec.permission_basis.clone();
+        let basis = profile_spec.permission_basis;
         let tool_key = ToolKey {
             attempt: ModelAttemptId::new(),
             call: "call-1".into(),
@@ -685,7 +685,7 @@ mod tests {
                 target: target.clone(),
                 display: display.clone(),
             },
-            basis: basis.clone(),
+            basis,
             allow_always: true,
             target: obligation,
             operation: recovery_ref,

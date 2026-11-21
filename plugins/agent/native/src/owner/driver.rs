@@ -773,9 +773,8 @@ impl NativeDriver {
         if let Some(cells) = self.run_cells() {
             cells.coordinator.cancel();
         }
-        match &self.backend {
-            NativeBackend::Executor(executor) => executor.retire_root_observation().await?,
-            _ => {}
+        if let NativeBackend::Executor(executor) = &self.backend {
+            executor.retire_root_observation().await?
         }
         self.workers.close();
         if !self.workers.is_empty() {

@@ -20,7 +20,7 @@
 #![cfg(unix)]
 
 #[path = "support/host.rs"]
-mod host;
+pub mod host;
 
 use futures_util::{FutureExt, StreamExt};
 use host::{Host, Result, Sandbox};

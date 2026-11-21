@@ -335,7 +335,6 @@ impl LspPool {
                         "position": { "line": position.line, "character": position.column },
                     }),
                     budget,
-                    MAX_LSP_REFERENCES,
                 )
                 .await
             {
@@ -396,7 +395,6 @@ impl LspPool {
                         "context": { "includeDeclaration": include_declaration },
                     }),
                     QUERY_TIMEOUT,
-                    MAX_LSP_REFERENCES,
                 )
                 .await
             {
@@ -460,7 +458,6 @@ impl LspPool {
         method: &'static str,
         params: Value,
         budget: Duration,
-        max_items: usize,
     ) -> LspOutcome<(Vec<CodeLocation>, bool)> {
         let rel = index::path_string(path);
         let Some((family, lang_id)) = LanguageFamily::from_path(&rel) else {
@@ -521,7 +518,7 @@ impl LspPool {
                 let Some(file_text) = file_text else {
                     continue;
                 };
-                if out.len() >= max_items {
+                if out.len() >= MAX_LSP_REFERENCES {
                     truncated = true;
                     break;
                 }

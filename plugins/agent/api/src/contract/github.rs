@@ -252,7 +252,7 @@ pub struct GitHubPullDetail {
 #[schemars(rename = "AgentGitHubPullDetailResult")]
 pub enum GitHubPullDetailResult {
     Ready {
-        detail: GitHubPullDetail,
+        detail: Box<GitHubPullDetail>,
     },
     Unauthorized {
         repo: GitHubRepoRef,

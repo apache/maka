@@ -337,7 +337,9 @@ impl Owner {
                     .iter()
                     .any(|alias| same_model(alias, &input.backend))
         }) {
-            Some(choice) => Ok(ModelResult::Ready { choice }),
+            Some(choice) => Ok(ModelResult::Ready {
+                choice: Box::new(choice),
+            }),
             None => Ok(ModelResult::Unavailable {
                 message: "Selected execution source or model is unavailable".into(),
             }),

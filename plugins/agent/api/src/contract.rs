@@ -646,7 +646,7 @@ pub struct ModelRead {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "AgentModelResult")]
 pub enum ModelResult {
-    Ready { choice: ModelChoice },
+    Ready { choice: Box<ModelChoice> },
     Unavailable { message: String },
 }
 #[derive(Deserialize, JsonSchema)]

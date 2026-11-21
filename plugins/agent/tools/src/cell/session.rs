@@ -146,7 +146,7 @@ pub struct CellAdmission {
 }
 impl CellAdmission {
     pub fn new(source: String, owner: CellOwner, at: UnixMillis) -> Self {
-        let id = owner.cell_id().unwrap_or_else(CellId::new);
+        let id = owner.cell_id().unwrap_or_default();
         let source = CellContent::new(source.into_bytes());
         let started = CellChange {
             id: id.started_fact_id(),

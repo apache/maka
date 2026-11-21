@@ -322,10 +322,10 @@ mod pasteboard_history {
                 .representations()
                 .iter()
                 .max_by_key(|rep| rep.pixelsWide())
+            && rep.pixelsWide() > 0
+            && rep.pixelsHigh() > 0
         {
-            if rep.pixelsWide() > 0 && rep.pixelsHigh() > 0 {
-                entry.dimensions = Some(format!("{} × {}", rep.pixelsWide(), rep.pixelsHigh()));
-            }
+            entry.dimensions = Some(format!("{} × {}", rep.pixelsWide(), rep.pixelsHigh()));
         }
     }
 
@@ -529,101 +529,6 @@ pub async fn restore_clipboard_entry(entry: ClipboardEntry) -> Result<(), String
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn file_results_skip_app_data_and_a_cut_off_path() {
-        let home = Path::new("/Users/me");
-        let output = b"/Users/me/Documents/a.txt\0/Users/me/Library/Caches/a.txt\0/Users/me/.cache/a.txt\0/Users/me/b.txt\0/Users/me/cut";
-        assert_eq!(
-            document_paths(output, home),
-            ["/Users/me/Documents/a.txt", "/Users/me/b.txt"]
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn clipboard_history_round_trips_files_images_and_pdf_on_a_private_board() {
-        use objc2_app_kit::NSPasteboard;
-        use objc2_foundation::{NSData, NSString};
-        objc2::rc::autoreleasepool(|_| {
-            let board = NSPasteboard::pasteboardWithUniqueName();
-            let folder = tempfile::tempdir().unwrap();
-            let paths: Vec<_> = ["文 件.pdf", "image.png"]
-                .iter()
-                .map(|name| {
-                    let path = folder.path().join(name);
-                    std::fs::write(&path, []).unwrap();
-                    path.to_str().unwrap().to_owned()
-                })
-                .collect();
-            let files = ClipboardEntry {
-                format: "public.file-url".into(),
-                data: String::new(),
-                paths: paths.clone(),
-                thumbnail: None,
-                preview: None,
-                dimensions: None,
-            };
-            pasteboard_history::write(&board, files).unwrap();
-            assert!(pasteboard_history::read(&board, None).entry.is_none());
-            let copied = pasteboard_history::read(&board, Some(-1.0));
-            assert_eq!(copied.entry.unwrap().paths, paths);
-            assert!(
-                pasteboard_history::read(&board, Some(copied.change))
-                    .entry
-                    .is_none()
-            );
-            let png = include_bytes!("../../../../../assets/logo.png");
-            for (kind, bytes) in [
-                ("public.png", &png[..]),
-                ("com.adobe.pdf", &b"%PDF-1.4"[..]),
-            ] {
-                board.clearContents();
-                let uti = NSString::from_str(kind);
-                board.setData_forType(Some(&NSData::with_bytes(bytes)), &uti);
-                let entry = pasteboard_history::read(&board, Some(-1.0)).entry.unwrap();
-                assert_eq!(entry.format, kind);
-                if kind == "public.png" {
-                    let (width, height) = image::ImageReader::new(std::io::Cursor::new(bytes))
-                        .with_guessed_format()
-                        .unwrap()
-                        .into_dimensions()
-                        .unwrap();
-                    assert_eq!(entry.dimensions, Some(format!("{width} × {height}")));
-                    assert!(entry.thumbnail.is_some());
-                    assert!(entry.preview.is_some());
-                } else {
-                    assert!(entry.dimensions.is_none());
-                }
-                board.clearContents();
-                pasteboard_history::write(&board, entry).unwrap();
-                assert_eq!(board.dataForType(&uti).unwrap().to_vec(), bytes);
-            }
-            board.setString_forType(
-                &NSString::from_str(""),
-                &NSString::from_str("org.nspasteboard.ConcealedType"),
-            );
-            assert!(pasteboard_history::read(&board, Some(-1.0)).entry.is_none());
-            // SAFETY: this test owns the unique board and never uses it again.
-            let _: () = unsafe { objc2::msg_send![&board, releaseGlobally] };
-        });
-    }
-
-    #[test]
-    fn password_manager_copies_are_private() {
-        assert!(is_private_clipboard(&[
-            "public.utf8-plain-text".to_owned(),
-            "org.nspasteboard.ConcealedType".to_owned(),
-        ]));
-        assert!(!is_private_clipboard(
-            &["public.utf8-plain-text".to_owned()]
-        ));
-    }
-}
-
 #[cfg(target_os = "macos")]
 fn bundle_matches(app: &objc2_app_kit::NSRunningApplication, path: &Path) -> bool {
     app.bundleURL()
@@ -721,5 +626,100 @@ pub async fn application_action(path: String, pid: i32, action: String) -> Resul
     {
         let _ = (path, pid, action);
         Err("Application actions require macOS".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_results_skip_app_data_and_a_cut_off_path() {
+        let home = Path::new("/Users/me");
+        let output = b"/Users/me/Documents/a.txt\0/Users/me/Library/Caches/a.txt\0/Users/me/.cache/a.txt\0/Users/me/b.txt\0/Users/me/cut";
+        assert_eq!(
+            document_paths(output, home),
+            ["/Users/me/Documents/a.txt", "/Users/me/b.txt"]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clipboard_history_round_trips_files_images_and_pdf_on_a_private_board() {
+        use objc2_app_kit::NSPasteboard;
+        use objc2_foundation::{NSData, NSString};
+        objc2::rc::autoreleasepool(|_| {
+            let board = NSPasteboard::pasteboardWithUniqueName();
+            let folder = tempfile::tempdir().unwrap();
+            let paths: Vec<_> = ["文 件.pdf", "image.png"]
+                .iter()
+                .map(|name| {
+                    let path = folder.path().join(name);
+                    std::fs::write(&path, []).unwrap();
+                    path.to_str().unwrap().to_owned()
+                })
+                .collect();
+            let files = ClipboardEntry {
+                format: "public.file-url".into(),
+                data: String::new(),
+                paths: paths.clone(),
+                thumbnail: None,
+                preview: None,
+                dimensions: None,
+            };
+            pasteboard_history::write(&board, files).unwrap();
+            assert!(pasteboard_history::read(&board, None).entry.is_none());
+            let copied = pasteboard_history::read(&board, Some(-1.0));
+            assert_eq!(copied.entry.unwrap().paths, paths);
+            assert!(
+                pasteboard_history::read(&board, Some(copied.change))
+                    .entry
+                    .is_none()
+            );
+            let png = include_bytes!("../../../../../assets/logo.png");
+            for (kind, bytes) in [
+                ("public.png", &png[..]),
+                ("com.adobe.pdf", &b"%PDF-1.4"[..]),
+            ] {
+                board.clearContents();
+                let uti = NSString::from_str(kind);
+                board.setData_forType(Some(&NSData::with_bytes(bytes)), &uti);
+                let entry = pasteboard_history::read(&board, Some(-1.0)).entry.unwrap();
+                assert_eq!(entry.format, kind);
+                if kind == "public.png" {
+                    let (width, height) = image::ImageReader::new(std::io::Cursor::new(bytes))
+                        .with_guessed_format()
+                        .unwrap()
+                        .into_dimensions()
+                        .unwrap();
+                    assert_eq!(entry.dimensions, Some(format!("{width} × {height}")));
+                    assert!(entry.thumbnail.is_some());
+                    assert!(entry.preview.is_some());
+                } else {
+                    assert!(entry.dimensions.is_none());
+                }
+                board.clearContents();
+                pasteboard_history::write(&board, entry).unwrap();
+                assert_eq!(board.dataForType(&uti).unwrap().to_vec(), bytes);
+            }
+            board.setString_forType(
+                &NSString::from_str(""),
+                &NSString::from_str("org.nspasteboard.ConcealedType"),
+            );
+            assert!(pasteboard_history::read(&board, Some(-1.0)).entry.is_none());
+            // SAFETY: this test owns the unique board and never uses it again.
+            let _: () = unsafe { objc2::msg_send![&board, releaseGlobally] };
+        });
+    }
+
+    #[test]
+    fn password_manager_copies_are_private() {
+        assert!(is_private_clipboard(&[
+            "public.utf8-plain-text".to_owned(),
+            "org.nspasteboard.ConcealedType".to_owned(),
+        ]));
+        assert!(!is_private_clipboard(
+            &["public.utf8-plain-text".to_owned()]
+        ));
     }
 }

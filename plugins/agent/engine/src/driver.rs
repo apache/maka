@@ -224,10 +224,6 @@ struct CompactionCommit {
     candidate: Option<SummaryOrigin>,
 }
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Worker handoffs carry owned results inline rather than allocating a separate payload for every completion"
-)]
 enum Completion {
     PublicationPrepared {
         id: ExternalPublicationId,
@@ -788,10 +784,7 @@ impl Engine {
                                         error.underlying(),
                                         StoreError::RevisionConflict { .. }
                                             | StoreError::SessionRevisionConflict { .. }
-                                    ) =>
-                                {
-                                    ()
-                                }
+                                    ) => {}
                                 Err(error) => return Err(error),
                             }
                             return Ok(true);

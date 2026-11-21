@@ -176,7 +176,7 @@ pub(super) async fn execute(
 enum Custody {
     Preparing,
     Submitted,
-    Active(Turn),
+    Active(Box<Turn>),
     Settled,
 }
 async fn run(
@@ -279,7 +279,7 @@ async fn run(
         Err(error) => return Err(error.into()),
     };
     let turn = string(&started, "/turn/id")?.to_owned();
-    *custody = Custody::Active(Turn {
+    *custody = Custody::Active(Box::new(Turn {
         thread: thread.clone(),
         turn: turn.clone(),
         messages: Default::default(),
@@ -295,7 +295,7 @@ async fn run(
             .filter(|e| e["params"]["threadId"] == thread)
             .and_then(|e| e.pointer("/params/tokenUsage/total").cloned()),
         usage: None,
-    });
+    }));
     journal
         .bind_task(NativeTask::Codex {
             thread: thread.clone(),
