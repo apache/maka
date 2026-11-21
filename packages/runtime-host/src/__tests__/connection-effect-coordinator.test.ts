@@ -617,6 +617,73 @@ test('onboards a custom relay end to end: rejects a missing endpoint, discovers 
   });
 });
 
+test('carries caller request headers into a create probe and refuses them on an existing target', async () => {
+  await withFixture(async ({ stores }) => {
+    const sent: Array<Record<string, string>> = [];
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      now: () => 123,
+      createTransport: () => ({
+        fetch: (async (_url: string, init?: RequestInit) => {
+          sent.push(Object.fromEntries(new Headers(init?.headers)));
+          return new Response(JSON.stringify({ data: [] }), { status: 200 });
+        }) as typeof globalThis.fetch,
+        close: async () => undefined,
+      }),
+      runModelDiscovery: async (_connection, _secret, options) => {
+        const response = await options.fetch('https://relay.example.test/v1/models');
+        assert.equal(response.status, 200);
+        return { ok: true, models: [{ id: 'relay/model' }] };
+      },
+    });
+
+    // A relay whose catalog endpoint needs a tenant header: the probe sends the
+    // caller's own headers, because a create target has no stored set to fall
+    // back on. Without this the relay cannot be verified before it is added.
+    assert.deepEqual(
+      await coordinator.handlers['connection.onboarding.verify'](
+        {
+          target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'openai-chat' },
+          apiKey: 'relay-secret',
+          baseUrl: 'https://relay.example.test/v1',
+          requestHeaders: [{ name: 'X-Relay-Tenant', value: 'team-a' }],
+        },
+        context,
+      ),
+      { ok: true, result: { kind: 'verified', models: [{ id: 'relay/model' }] } },
+    );
+    assert.deepEqual(sent, [{ 'x-relay-tenant': 'team-a' }]);
+
+    // The probe never stands in for a set the connection would not send: an
+    // existing connection probes with what it has stored, so a caller-supplied
+    // set is not something that target can say.
+    const connection = await createConnection(stores, 0, {
+      ...connectionDraft('stored-headers', 'custom'),
+      baseUrl: 'https://relay.example.test/v1',
+      enabledModelIds: ['relay/model'],
+    });
+    await setConnectionCredential(stores, connection, 'relay-secret');
+    assert.deepEqual(
+      await coordinator.handlers['connection.onboarding.verify'](
+        {
+          target: { kind: 'existing', connectionId: connection.connectionId },
+          apiKey: '',
+          baseUrl: null,
+          requestHeaders: [{ name: 'X-Relay-Tenant', value: 'team-a' }],
+        },
+        context,
+      ),
+      {
+        ok: false,
+        error: { code: 'invalid_request', message: 'Connection effect request is invalid' },
+      },
+    );
+    assert.deepEqual(sent, [{ 'x-relay-tenant': 'team-a' }]);
+  });
+});
+
 test('re-onboarding by connection identity edits a Desktop custom-slug relay in place', async () => {
   await withFixture(async ({ stores }) => {
     // Desktop can create a relay under any slug; the wizard resolves that

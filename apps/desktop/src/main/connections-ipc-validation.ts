@@ -22,7 +22,12 @@ import {
   type CreateConnectionInput,
   type UpdateConnectionInput,
 } from '@maka/core/llm-connections';
-import { normalizeOptionalRequestBodyOverlay, normalizeRequestHeaders } from '@maka/core/runtime-policy';
+import {
+  CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
+  CONNECTION_MODEL_ID_MAX_LENGTH,
+  normalizeOptionalRequestBodyOverlay,
+  normalizeRequestHeaders,
+} from '@maka/core/runtime-policy';
 import { PROVIDER_REGISTRY, providerDefaultsOf } from '@maka/core/llm-connections';
 import { normalizeModelOverrides } from '@maka/core/model-thinking';
 
@@ -57,6 +62,38 @@ export function normalizeConnectionApiKeyForIpc(value: unknown, label: string): 
   return value;
 }
 
+/**
+ * The picker's selection now rides along with the create, so it needs the gate
+ * the catalog codec puts on the same list: a bounded array of unique, bounded,
+ * non-empty ids. Without one, `...input` below would forward whatever the
+ * renderer sent straight into the Host's catalog.
+ */
+export function normalizeConnectionEnabledModelIdsForIpc(
+  value: unknown,
+  label: string,
+): string[] {
+  if (!Array.isArray(value) || value.length > CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS) {
+    throw new Error(
+      `${label} must be an array of at most ${CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS} model ids`,
+    );
+  }
+  const modelIds = value.map((modelId): string => {
+    if (typeof modelId !== 'string') throw new Error(`${label} must be model ids`);
+    if (modelId.length === 0) throw new Error(`${label} must not contain an empty model id`);
+    if (modelId.length > CONNECTION_MODEL_ID_MAX_LENGTH) {
+      throw new Error(`${label} must be ${CONNECTION_MODEL_ID_MAX_LENGTH} characters or fewer`);
+    }
+    if (IPC_CONTROL_CHARACTER_PATTERN.test(modelId)) {
+      throw new Error(`${label} contains invalid characters`);
+    }
+    return modelId;
+  });
+  if (new Set(modelIds).size !== modelIds.length) {
+    throw new Error(`${label} must not contain duplicate model ids`);
+  }
+  return modelIds;
+}
+
 export function normalizeCreateConnectionInputForIpc(value: unknown): CreateConnectionInput {
   if (typeof value !== 'object' || value === null) throw new Error('Invalid Connection input');
   const input = value as Partial<CreateConnectionInput>;
@@ -84,6 +121,10 @@ export function normalizeCreateConnectionInputForIpc(value: unknown): CreateConn
     input.requestBodyOverlay === undefined
       ? undefined
       : normalizeOptionalRequestBodyOverlay(input.requestBodyOverlay);
+  const enabledModelIds =
+    input.enabledModelIds === undefined
+      ? undefined
+      : normalizeConnectionEnabledModelIdsForIpc(input.enabledModelIds, 'enabledModelIds');
   const normalized = {
     ...input,
     slug,
@@ -91,6 +132,7 @@ export function normalizeCreateConnectionInputForIpc(value: unknown): CreateConn
     ...(modelOverrides === undefined ? {} : { modelOverrides }),
     ...(requestHeaders === undefined ? {} : { requestHeaders }),
     ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
+    ...(enabledModelIds === undefined ? {} : { enabledModelIds }),
   } as CreateConnectionInput;
   return normalizeConnectionBaseUrlForIpc(normalized);
 }

@@ -531,6 +531,116 @@ test('creates a connection with only the explicitly selected model', async () =>
   assert.deepEqual(createdModels, ['minimax-m3']);
 });
 
+test('creates a connection with the picker selection, default first', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let createdModels: readonly string[] = [];
+  const emptyCatalog: ConnectionCatalogSnapshot = {
+    revision: 0,
+    defaultTarget: null,
+    connections: [],
+  };
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      loadConnectionCatalog: async () =>
+        createdModels.length === 0
+          ? emptyCatalog
+          : {
+              revision: 1,
+              defaultTarget: null,
+              connections: [
+                {
+                  connectionId: 'connection-relay',
+                  revision: 1,
+                  slug: 'my-relay',
+                  name: 'My Relay',
+                  providerType: 'custom',
+                  enabled: true,
+                  enabledModelIds: createdModels,
+                  catalogEntries: [],
+                  models: [],
+                },
+              ],
+            },
+      createConnection: async (
+        _revision: number,
+        draft: { readonly enabledModelIds: readonly string[] },
+      ) => {
+        createdModels = draft.enabledModelIds;
+        return {
+          kind: 'committed',
+          connection: { connectionId: 'connection-relay', revision: 1 },
+        };
+      },
+    } as never,
+    emitConnectionListChanged() {},
+  });
+
+  await handlers.get('connections:create')?.({}, {
+    slug: 'my-relay',
+    name: 'My Relay',
+    providerType: 'custom',
+    defaultModel: 'relay/second',
+    // The picker chose this one first and the default second; the catalog
+    // entries only exist once the probe has answered.
+    enabledModelIds: ['relay/first', 'relay/second'],
+  });
+
+  // The create is the only write that can carry the selection, so the default
+  // being listed second must not silently win the head of the list.
+  assert.deepEqual(createdModels, ['relay/second', 'relay/first']);
+});
+
+test('refuses a connection whose enabled model ids are not model ids', () => {
+  assert.throws(
+    () =>
+      normalizeCreateConnectionInputForIpc({
+        slug: 'my-relay',
+        name: 'My Relay',
+        providerType: 'custom',
+        defaultModel: 'relay/first',
+        enabledModelIds: ['relay/first', 'relay/first'],
+      }),
+    /duplicate model ids/,
+  );
+  assert.throws(
+    () =>
+      normalizeCreateConnectionInputForIpc({
+        slug: 'my-relay',
+        name: 'My Relay',
+        providerType: 'custom',
+        defaultModel: 'relay/first',
+        enabledModelIds: [''],
+      }),
+    /empty model id/,
+  );
+  assert.throws(
+    () =>
+      normalizeCreateConnectionInputForIpc({
+        slug: 'my-relay',
+        name: 'My Relay',
+        providerType: 'custom',
+        defaultModel: 'relay/first',
+        enabledModelIds: ['relay/first', 7],
+      }),
+    /must be model ids/,
+  );
+  assert.deepEqual(
+    normalizeCreateConnectionInputForIpc({
+      slug: 'my-relay',
+      name: 'My Relay',
+      providerType: 'custom',
+      defaultModel: 'relay/first',
+      enabledModelIds: ['relay/second', 'relay/first'],
+    }).enabledModelIds,
+    ['relay/second', 'relay/first'],
+  );
+});
+
 test('projects the Host default target without inventing a second Connection authority', () => {
   const connections = projectHostConnections(catalog());
 
