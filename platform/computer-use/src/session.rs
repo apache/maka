@@ -2785,10 +2785,23 @@ fn window_info(window: &WindowInfo) -> Value {
 
 #[cfg(all(test, target_os = "macos"))]
 #[tokio::test]
-async fn window_inventory_marks_unbundled_owners_as_unbindable() {
+async fn window_inventory_marks_the_cli_test_process_as_unbindable() {
     use cua_driver_contract::WindowBounds;
+    use objc2_app_kit::NSRunningApplication;
 
     let pid = std::process::id();
+    // A live Unix process is not necessarily registered as an AppKit application.
+    let app =
+        NSRunningApplication::runningApplicationWithProcessIdentifier(pid.try_into().unwrap());
+    let expected_error = if let Some(app) = app {
+        assert!(
+            app.bundleIdentifier().is_none(),
+            "the fixture is not an app bundle"
+        );
+        "tool failed: window owner has no resolved application bundle identity"
+    } else {
+        "tool failed: window owner application is no longer running"
+    };
     let rows = window_rows(
         vec![WindowInfo {
             window_id: 42,
@@ -2820,10 +2833,7 @@ async fn window_inventory_marks_unbundled_owners_as_unbindable() {
     assert_eq!(row["id"], 42);
     assert_eq!(row["pid"], pid);
     assert_eq!(row["bindable"], false);
-    assert_eq!(
-        row["bindingError"],
-        "tool failed: window owner has no resolved application bundle identity"
-    );
+    assert_eq!(row["bindingError"], expected_error);
 }
 fn decode<T: DeserializeOwned>(result: CallResult) -> Result<T, ToolError> {
     serde_json::from_value(
