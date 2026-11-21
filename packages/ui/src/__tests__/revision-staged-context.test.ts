@@ -21,6 +21,7 @@ import { strict as assert } from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import type { AttachmentRef, QuoteRef } from '@maka/core/events';
+import type { PendingAttachment } from '../composer-attachments.js';
 import type { StoredMessage } from '@maka/core/session';
 import {
   clearRevisionStagedContext,
@@ -61,13 +62,16 @@ type StagedLog = {
   quotes: QuoteRef[];
   /** Per-owner buckets, so a clear only ever empties the key it names. */
   buckets: Map<string, QuoteRef[]>;
+  /** The live attachment plate and its per-owner buckets (#5109). */
+  attachments: PendingAttachment[];
+  attachmentBuckets: Map<string, PendingAttachment[]>;
 };
 
 function emptyStagedLog(): StagedLog {
   const buckets = new Map<string, QuoteRef[]>();
   const quotes: QuoteRef[] = [];
   buckets.set('session-1', quotes);
-  return { restored: [], cleared: [], quotes, buckets };
+  return { restored: [], cleared: [], quotes, buckets, attachments: [], attachmentBuckets: new Map() };
 }
 
 function fakeStaged(log: StagedLog): RevisionStagedContext {
@@ -79,9 +83,17 @@ function fakeStaged(log: StagedLog): RevisionStagedContext {
     }
     return bucket;
   };
+  const attachmentBucketOf = (ownerKey: string): PendingAttachment[] => {
+    let bucket = log.attachmentBuckets.get(ownerKey);
+    if (!bucket) {
+      bucket = [];
+      log.attachmentBuckets.set(ownerKey, bucket);
+    }
+    return bucket;
+  };
   return {
     quotes: log.quotes,
-    attachments: [],
+    attachments: log.attachments,
     restoreQuotes: (ownerKey, quotes) => {
       if (quotes.length === 0) return;
       log.restored.push({ ownerKey, quotes: [...quotes] });
@@ -91,10 +103,27 @@ function fakeStaged(log: StagedLog): RevisionStagedContext {
       log.cleared.push(ownerKey);
       return bucketOf(ownerKey).splice(0);
     },
+    restoreAttachments: (ownerKey, attachments) => {
+      if (attachments.length === 0) return;
+      attachmentBucketOf(ownerKey).push(...attachments);
+      log.attachments.push(...attachments);
+    },
+    clearAttachments: (ownerKey) => {
+      const removed = attachmentBucketOf(ownerKey).splice(0);
+      for (const item of removed) {
+        const live = log.attachments.indexOf(item);
+        if (live >= 0) log.attachments.splice(live, 1);
+      }
+      return removed;
+    },
   };
 }
 
-function createEnv(input: { messages: StoredMessage[]; staged: StagedLog }) {
+function createEnv(input: {
+  messages: StoredMessage[];
+  staged: StagedLog;
+  stagedAttachments?: readonly AttachmentRef[];
+}) {
   const activeIdRef = { current: 'session-1' };
   const revisionDraftRef: { current: TurnRevisionDraftBase<string> | null } = { current: null };
   const toasts: Array<{ kind: 'info' | 'error'; title: string; description?: string }> = [];
@@ -133,7 +162,10 @@ function createEnv(input: { messages: StoredMessage[]; staged: StagedLog }) {
       error: (title, description) => toasts.push({ kind: 'error', title, description }),
     },
     copy,
-    reviseBeforeTurn: async () => ({ id: 'session-2' }),
+    reviseBeforeTurn: async () => ({
+      id: 'session-2',
+      ...(input.stagedAttachments ? { stagedAttachments: input.stagedAttachments } : {}),
+    }),
     abandonSessionCopy: async () => {},
     localizedShellErrorMessage: (_error, fallback) => fallback,
     reportSessionWorkspaceUnavailable: () => false,
@@ -229,37 +261,35 @@ describe('revision lifecycle (#5109)', () => {
     );
   });
 
-  it('refuses to edit a message that carries attachments (#5274 review)', () => {
-    // Attachment ownership does not follow a revision copy — the copied
-    // transcript stops before the selected turn, so no target-owned refs
-    // exist client-side to restage. The edit refuses rather than silently
-    // dropping the files.
+  it('restages a carrying message as retained attachments instead of refusing (#5109)', () => {
+    // The Host now stages the edited turn's artifacts into the copy and hands
+    // back target-owned refs on the copy response, so the edit restages the
+    // attachment (source-owned until prepare swaps the ref) instead of
+    // refusing the edit outright.
+    const attachment: AttachmentRef = {
+      kind: 'image',
+      name: 'chart.png',
+      mimeType: 'image/png',
+      bytes: 10,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a.png' },
+    };
+    const staged = emptyStagedLog();
     const h = createEnv({
-      messages: [
-        userMessage('turn-1', 'with image', {
-          attachments: [
-            {
-              kind: 'image',
-              name: 'chart.png',
-              mimeType: 'image/png',
-              bytes: 10,
-              ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a.png' },
-            },
-          ],
-        }),
-      ],
-      staged: emptyStagedLog(),
+      messages: [userMessage('turn-1', 'with image', { attachments: [attachment] })],
+      staged,
     });
     const actions = createRevisionActions(h.env);
 
     actions.beginEditUserMessage('turn-1');
 
-    assert.equal(h.revisionDraftRef.current, null, 'no draft is committed');
-    assert.deepEqual(h.toasts.at(-1), {
-      kind: 'info',
-      title: 'unavailable',
-      description: 'source-attachments-unsupported',
-    });
+    assert.ok(h.revisionDraftRef.current, 'the edit commits a draft');
+    assert.deepEqual(staged.attachments.map((item) => item.displayName), ['chart.png']);
+    assert.deepEqual(h.revisionDraftRef.current?.originalAttachments, [attachment]);
+    assert.deepEqual(
+      staged.attachments[0]?.source,
+      { type: 'retained', attachment },
+      'the pending item carries the source-owned ref until prepare',
+    );
   });
 
   it('lets an unchanged replacement through (#5815)', async () => {
@@ -337,6 +367,131 @@ describe('revision lifecycle (#5109)', () => {
     );
   });
 
+  it('cancelling drops the carried attachment but keeps the user addition (#6246 review)', async () => {
+    const sourceRef: AttachmentRef = {
+      kind: 'code',
+      name: 'source.txt',
+      mimeType: 'text/plain',
+      bytes: 14,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a/src' },
+    };
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'with attachment', { attachments: [sourceRef] })],
+      staged,
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    // During the edit the user stages a file of their own beside the carried
+    // one; the cancel undoes the edit, not the user's own staging.
+    const userItem: PendingAttachment = {
+      stagingKey: 'user-added',
+      displayName: 'new.txt',
+      mimeType: 'text/plain',
+      kind: 'code',
+      size: 3,
+      source: {
+        type: 'retained',
+        attachment: {
+          ...sourceRef,
+          name: 'new.txt',
+          ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a/new' },
+        },
+      },
+    };
+    staged.attachments.push(userItem);
+    staged.attachmentBuckets.get('session-1')?.push(userItem);
+    await actions.cancelRevisionDraft();
+
+    assert.deepEqual(
+      staged.attachments.map((item) => item.displayName),
+      ['new.txt'],
+      'the edit-owned source attachment is dropped; the user addition survives',
+    );
+  });
+
+  it('cancelling a prepared edit still drops the carried attachment after its ref was rewritten (#6246 review)', async () => {
+    const sourceRef: AttachmentRef = {
+      kind: 'code',
+      name: 'source.txt',
+      mimeType: 'text/plain',
+      bytes: 14,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a/src' },
+    };
+    const targetRef: AttachmentRef = {
+      ...sourceRef,
+      ref: { kind: 'session_file', sessionId: 'session-2', relativePath: 'a/tgt' },
+    };
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'with attachment', { attachments: [sourceRef] })],
+      staged,
+      stagedAttachments: [targetRef],
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    assert.equal(await actions.prepareRevisionSend('with attachment'), true);
+    const userItem: PendingAttachment = {
+      stagingKey: 'user-added',
+      displayName: 'new.txt',
+      mimeType: 'text/plain',
+      kind: 'code',
+      size: 3,
+      source: {
+        type: 'retained',
+        attachment: {
+          ...sourceRef,
+          name: 'new.txt',
+          ref: { kind: 'session_file', sessionId: 'session-2', relativePath: 'a/new' },
+        },
+      },
+    };
+    staged.attachments.push(userItem);
+    staged.attachmentBuckets.get('session-2')?.push(userItem);
+    await actions.cancelRevisionDraft();
+
+    assert.deepEqual(
+      staged.attachments.map((item) => item.displayName),
+      ['new.txt'],
+      'the ref rewrite must not hide the edit-owned entry from the cancel',
+    );
+  });
+
+  it('keeps a carried attachment on its source-owned ref when the copy omits the rewrite (#6246 review)', async () => {
+    // Partial copy response: the Host staged nothing because the attachment's
+    // rewrite is missing (its source Artifact could not be copied), so the
+    // committed response omits `stagedAttachments` entirely. The re-key must
+    // keep the plate item on its source-owned ref — dropping it would lose
+    // the attachment silently, and the Host's session-owned guard fails a
+    // source-ref submit loudly instead of sending a dangling reference.
+    const sourceRef: AttachmentRef = {
+      kind: 'code',
+      name: 'source.txt',
+      mimeType: 'text/plain',
+      bytes: 14,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a/src' },
+    };
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'with attachment', { attachments: [sourceRef] })],
+      staged,
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    assert.equal(await actions.prepareRevisionSend('with attachment'), true);
+
+    const carried = staged.attachments.find((item) => item.displayName === 'source.txt');
+    assert.ok(carried, 'the carried attachment must survive prepare');
+    assert.deepEqual(
+      carried?.source,
+      { type: 'retained', attachment: sourceRef },
+      'a rewrite-missing attachment keeps its source-owned ref instead of being dropped or re-keyed',
+    );
+  });
+
   it('keeps a quote added on the branch child when a prepared edit is cancelled', async () => {
     const staged = emptyStagedLog();
     const h = createEnv({
@@ -402,7 +557,10 @@ describe('revision staged-context helpers', () => {
   it('stages the source quotes under the owner key and records them', () => {
     const restored: Array<{ ownerKey: string; quotes: readonly QuoteRef[] }> = [];
     const snapshot = stageRevisionSourceContext(
-      { restoreQuotes: (ownerKey, quotes) => restored.push({ ownerKey, quotes }) },
+      {
+        restoreQuotes: (ownerKey, quotes) => restored.push({ ownerKey, quotes }),
+        restoreAttachments: () => {},
+      },
       'session-1',
       { quotes: [quotedQuote] },
     );
@@ -427,6 +585,8 @@ describe('revision staged-context helpers', () => {
           cleared.push(ownerKey);
           return ownerKey === 'session-1' ? [restoredByEdit] : [addedByUser];
         },
+        restoreAttachments: () => {},
+        clearAttachments: () => [],
       },
       ['session-1', 'session-2', 'session-1'],
       [restoredByEdit],
@@ -450,6 +610,8 @@ describe('revision staged-context helpers', () => {
       {
         restoreQuotes: (ownerKey, quotes) => restored.push({ ownerKey, quotes }),
         clearQuotes: (ownerKey) => (ownerKey === 'session-1' ? [identical, identical, identical] : []),
+        restoreAttachments: () => {},
+        clearAttachments: () => [],
       },
       ['session-1'],
       [identical],
@@ -458,6 +620,57 @@ describe('revision staged-context helpers', () => {
       restored,
       [{ ownerKey: 'session-1', quotes: [identical, identical] }],
       'only the edit-owned entry is dropped; both user copies survive',
+    );
+  });
+
+  it('restages a source attachment and swaps its ref for the copy target on prepare (#5109)', async () => {
+    const sourceRef: AttachmentRef = {
+      kind: 'code',
+      name: 'source.txt',
+      mimeType: 'text/plain',
+      bytes: 14,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a/src' },
+    };
+    const targetRef: AttachmentRef = {
+      ...sourceRef,
+      ref: { kind: 'session_file', sessionId: 'session-2', relativePath: 'a/tgt' },
+    };
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [
+        {
+          type: 'user',
+          turnId: 'turn-1',
+          text: 'with attachment',
+          attachments: [sourceRef],
+        } as unknown as StoredMessage,
+      ],
+      staged,
+      stagedAttachments: [targetRef],
+    });
+    const actions = createRevisionActions(h.env);
+    actions.beginEditUserMessage('turn-1');
+    assert.equal(
+      staged.attachments.length,
+      1,
+      'the edit restages the source attachment as a retained pending item',
+    );
+    assert.equal(h.toasts.some((toast) => toast.title === 'unavailable'), false);
+    const ready = await actions.prepareRevisionSend('with attachment');
+    assert.equal(ready, true);
+    const live = staged.attachments[0];
+    assert.equal(live?.source.type, 'retained');
+    if (live?.source.type === 'retained') {
+      assert.deepEqual(
+        live.source.attachment.ref,
+        targetRef.ref,
+        'the plate now carries the target-owned ref',
+      );
+    }
+    assert.deepEqual(
+      staged.attachmentBuckets.get('session-2')?.length ?? 0,
+      1,
+      'the plate re-keyed onto the branch child',
     );
   });
 });
