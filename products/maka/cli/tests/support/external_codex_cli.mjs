@@ -110,7 +110,10 @@ const send = (value) =>
       error ? reject(error) : resolve(),
     ),
   );
-const reply = (id, result) => send({ jsonrpc: '2.0', id, result });
+const reply = (id, result) => {
+  if (antigravity && id === turn) turn = null;
+  return send({ jsonrpc: '2.0', id, result });
+};
 const event = (method, params) => send({ jsonrpc: '2.0', method, params });
 const diagnosticText = (value, limit = 256) => {
   if (typeof value !== 'string') return undefined;
@@ -131,6 +134,8 @@ const fail = async (error) => {
       ? 'Invalid protocol JSON'
       : diagnosticText(String(error?.message ?? 'Provider failure'), 4096);
   await record('failure', { message }).catch(() => {});
+  if (antigravity && turn !== null && !finished)
+    await send({ jsonrpc: '2.0', id: turn, error: { code: -32000, message } }).catch(() => {});
   process.exit(1);
 };
 socket.on('error', () => process.exit(1));
@@ -232,10 +237,18 @@ async function codeResult(code) {
 async function readArchivedResult() {
   const tail = 'end of archived output';
   const result = await callTool('exec', {
-    code: `text('x'.repeat(30000) + ${JSON.stringify(tail)});`,
+    code: `text('x'.repeat(12000) + ${JSON.stringify(tail)});`,
     yield_time_ms: 10000,
+    max_output_tokens: 1000,
   });
-  const archived = JSON.parse(result.content[0].text);
+  let archived;
+  try {
+    archived = JSON.parse(result.content[0].text);
+  } catch {
+    throw Error(
+      `Expected archived tool result JSON, got: ${diagnosticText(result.content[0]?.text, 256)}`,
+    );
+  }
   if (archived.kind !== 'maka.archived_tool_result' || !archived.page.next)
     throw Error('Expected a continuation for the large tool result');
   const suffix = await codeResult(`
