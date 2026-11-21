@@ -48,7 +48,13 @@ if (antigravity && !process.env.FAKE_ACP_WORKER) {
       send({
         jsonrpc: '2.0',
         id: frame.id,
-        result: { protocolVersion: 1, agentCapabilities: { mcpCapabilities: { http: true } } },
+        result: {
+          protocolVersion: 1,
+          agentCapabilities: {
+            mcpCapabilities: { http: true },
+            _meta: { antigravity: { systemPrompt: { append: true } } },
+          },
+        },
       });
       continue;
     }
@@ -332,7 +338,10 @@ async function acp(id, method, params) {
   if (method === 'initialize')
     return reply(id, {
       protocolVersion: 1,
-      agentCapabilities: { mcpCapabilities: { http: true } },
+      agentCapabilities: {
+        mcpCapabilities: { http: true },
+        _meta: { antigravity: { systemPrompt: { append: true } } },
+      },
     });
   if (method === 'session/new' || method === 'session/resume') {
     thread = params.sessionId ?? randomUUID();

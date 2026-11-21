@@ -1388,22 +1388,34 @@ async fn antigravity_can_continue_after_host_restarts_during_a_prompt() {
         assert_eq!(resumed["thread"], original["thread"]);
         phase("follow-up completes", terminal_state(&recovery, &session, &next, "completed")).await?;
         let resumed_transcript = phase("seal resumed process", rig.transcript(resumed["pid"].as_u64().unwrap())).await?;
-        for (wire, label, revised) in [
-            (&transcript, "ACP-original", false),
-            (&resumed_transcript, "ACP-followup", true),
+        for (wire, method, label, revised) in [
+            (&transcript, "session/new", "ACP-original", false),
+            (&resumed_transcript, "session/resume", "ACP-followup", true),
         ] {
-            let [instructions, user] = wire.task_prompt()["params"]["prompt"]
+            let open = wire
+                .input
+                .iter()
+                .find(|row| row["method"] == method)
+                .unwrap();
+            let instructions = open
+                .pointer("/params/_meta/antigravity/systemPrompt/append")
+                .and_then(Value::as_str)
+                .unwrap();
+            assert!(!instructions.trim().is_empty());
+            assert_eq!(
+                instructions.contains("ACP resumed instruction revision"),
+                revised
+            );
+            let [user] = wire.task_prompt()["params"]["prompt"]
                 .as_array()
                 .unwrap()
                 .as_slice()
             else {
-                panic!("expected instructions and task in one ACP prompt");
+                panic!("expected only the user task block when systemPrompt.append is supported");
             };
-            let text = instructions["text"].as_str().unwrap();
-            assert!(text.starts_with("<maka_system_instructions>"));
-            assert_eq!(text.contains("ACP resumed instruction revision"), revised);
             let task = user["text"].as_str().unwrap();
             assert!(task.contains(label));
+            assert!(!task.contains("<maka_system_instructions>"));
             if revised {
                 assert!(!task.contains("ACP-original"));
             }
