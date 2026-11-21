@@ -159,6 +159,7 @@ const services = Object.fromEntries(
     'settingsSetup',
     'deploymentManager',
     'terminal',
+    'projectActions',
     'skillLibrary',
     'workspaceComputer',
     'workspaceWeb',

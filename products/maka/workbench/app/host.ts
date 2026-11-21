@@ -49,6 +49,7 @@ type Services = {
   management: ServiceMethods['deploymentManager'];
   web: ServiceMethods['workspaceWeb'];
   terminal: ServiceMethods['terminal'];
+  projectActions: ServiceMethods['projectActions'];
 };
 type Endpoint = keyof Services;
 export type Method<E extends Endpoint, Mode extends string> = {
@@ -215,6 +216,27 @@ export function createHost(application: UiHost) {
         endLine: source.endLine ?? undefined,
         column: source.column ?? undefined,
       };
+    },
+    async projectActionMutation<M extends Method<'projectActions', 'mutation'>>(
+      method: M,
+      input: Input<'projectActions', M>,
+      started?: (operationId: string) => void,
+    ): Promise<Output<'projectActions', M>> {
+      const original = await application.beginMutation('projectActions', method, input);
+      started?.(original.operationId);
+      for (;;) {
+        const event = await original.next();
+        if (event?.kind === 'progress') continue;
+        if (
+          event?.kind !== 'finished' ||
+          event.reply.receipt.kind !== 'recorded' ||
+          event.reply.receipt.outcome.kind !== 'returned'
+        )
+          throw new UiError('The original Action operation is unresolved. Reconnect to check it.');
+        const result = event.reply.receipt.outcome.result;
+        if (result.kind === 'failure') throw new Error(result.diagnostic);
+        return result.value as Output<'projectActions', M>;
+      }
     },
     query,
     get systemPermissionWindow() {

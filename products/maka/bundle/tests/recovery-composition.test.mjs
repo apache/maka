@@ -78,6 +78,31 @@ const source = composition({
 });
 const { instances } = source.host;
 
+test('terminal gateway and UI consumers share the recoverable launch methods', () => {
+  const terminal = built['workspace-processes'].manifest.application.host.exports.terminal;
+  const targets = [{ kind: 'instance', path: ['workspace-processes'], export: 'terminal' }];
+  assert.deepEqual(instances.gateway.bindings.terminal, targets);
+  assert.deepEqual(
+    built.gateway.manifest.application.host.imports.terminal.contract,
+    terminal.contract,
+  );
+  for (const [instance, origin] of [
+    ['conversations-ui', 'conversations'],
+    ['workspace-files-ui', 'workspace-files'],
+  ]) {
+    assert.deepEqual(instances[instance].bindings.terminal, targets);
+    assert.deepEqual(
+      built[origin].manifest.application.ui.imports.terminal.contract,
+      terminal.contract,
+    );
+  }
+  for (const method of ['start', 'control', 'release']) {
+    assert.equal(terminal.contract.interface.methods[method].mode, 'mutation');
+    assert.ok(source.endpoints.terminal.grant.methods.includes(method));
+  }
+  assert.equal(source.endpoints.terminal.grant.recovery, true);
+});
+
 test('built installation binds continuation, Goal and Scheduler to the original Agent export', () => {
   assert.deepEqual(new Set(names), new Set(packageNames));
   const target = [{ kind: 'instance', path: ['agent'], export: 'agent' }];

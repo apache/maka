@@ -22,7 +22,7 @@ import { ActionPending, errorText, isObservationCancelled, renderText, UiError }
 import { cleanup, effect, signal, untracked, type Signal } from 'nsh';
 import { TerminalGrid } from 'maka/host';
 import { terminalMutation, pendingTerminals, recoverTerminal, abandonTerminal } from './host';
-import type { Host, ScopedHost } from './host';
+import type { Host, ScopedHost, Input, Method, Output } from './host';
 import { tr } from './locale';
 import type {
   ClientOperation,
@@ -30,12 +30,12 @@ import type {
   RawAction,
   ResourceUpdate,
   TerminalSize,
+  TerminalLeaseUpdate,
 } from '../../../../packages/plugin-sdk/src/index.js';
 
 type Stream<T> = { next(): Promise<T | null>; close(): Promise<void> };
 type Watch<T> = { closed: boolean; stream: Stream<T> | null };
 type TerminalRow = { value: Signal<ResourceUpdate> };
-type TerminalTarget = { sessionId: string; ref: string };
 export function terminalStatus(status: ResourceUpdate['result']['status']): string {
   switch (status) {
     case 'starting':
@@ -60,7 +60,7 @@ export function completed<T>(
   if (outcome.kind === 'failed') throw new Error(outcome.message);
   return outcome.value;
 }
-export const terminalRunning = (entry: ResourceUpdate) =>
+export const terminalRunning = (entry: TerminalEntry) =>
   entry.result.status === 'starting' || entry.result.status === 'running';
 const stop = (watch: Watch<unknown> | null) => {
   if (!watch) return;
@@ -91,26 +91,34 @@ export function createTerminals(
   let alive = true;
   let watch: Watch<unknown> | null = null;
   let listGeneration = 0;
+  let pendingRead = 0;
   const owns = (session: string) =>
     alive && options.sessionId() === session && scope?.sessionId === session;
   const refreshPending = async (session: string, owner: ScopedHost) => {
-    const originals = await pendingTerminals(owner);
-    if (owns(session) && scope === owner) {
-      pending.set(originals);
-      known.set(true);
+    const read = ++pendingRead;
+    const current = () => owns(session) && scope === owner && read === pendingRead;
+    try {
+      const originals = await pendingTerminals(owner);
+      if (current()) {
+        pending.set(originals);
+        known.set(true);
+      }
+    } catch (reason) {
+      if (current()) {
+        known.set(false);
+        throw reason;
+      }
     }
   };
-  const mutate = async <M extends 'start' | 'stop' | 'control' | 'release'>(
+  const admitsControl = (owner: ScopedHost) =>
+    owns(owner.sessionId) && scope === owner && known() && !pending().length;
+  const mutate = async <M extends Method<'terminal', 'mutation'>>(
     owner: ScopedHost,
     method: M,
     input: Parameters<typeof terminalMutation<M>>[2],
   ): ReturnType<typeof terminalMutation<M>> => {
     // Releases are cleanup of their immutable original, including after selection changes.
-    if (
-      method !== 'release' &&
-      (!owns(owner.sessionId) || scope !== owner || !known() || pending().length)
-    )
-      throw new ActionPending();
+    if (method !== 'release' && !admitsControl(owner)) throw new ActionPending();
     try {
       return await terminalMutation(owner, method, input);
     } catch (reason) {
@@ -224,11 +232,12 @@ export function createTerminals(
     })();
   };
   const open = (entry: ResourceUpdate) => {
-    if (!scope || !owns(entry.sessionId)) return;
+    const scopeOwner = scope;
+    if (!scopeOwner || !owns(entry.sessionId)) return;
     let model = models.get(entry.result.ref);
     if (!model) {
-      model = createTerminal(host, entry, scope, {
-        admitted: () => owns(entry.sessionId) && known() && !pending().length,
+      model = createTerminal(host, entry, scopeOwner, {
+        admitted: () => admitsControl(scopeOwner),
         mutate,
         removed: () => models.delete(entry.result.ref),
       });
@@ -236,27 +245,28 @@ export function createTerminals(
     }
     options.open(entry, model);
   };
+  const adopt = (selected: string | null) => {
+    if (selected === (scope?.sessionId ?? null)) return;
+    stop(watch);
+    watch = null;
+    for (const model of [...models.values()]) model.dispose();
+    models.clear();
+    scope = selected ? host.session(selected) : null;
+    entries.set([]);
+    error.set('');
+    starting.set(false);
+    recovering.set(false);
+    pending.set([]);
+    known.set(false);
+    const owner = scope;
+    if (selected && owner)
+      void refreshPending(selected, owner).catch((reason) => {
+        if (owns(selected) && scope === owner) error.set(reason);
+      });
+  };
   effect(() => {
     const selected = options.sessionId();
-    untracked(() => {
-      if (selected === (scope?.sessionId ?? null)) return;
-      stop(watch);
-      watch = null;
-      for (const model of [...models.values()]) model.dispose();
-      models.clear();
-      scope = selected ? host.session(selected) : null;
-      entries.set([]);
-      error.set('');
-      starting.set(false);
-      recovering.set(false);
-      pending.set([]);
-      known.set(false);
-      const owner = scope;
-      if (selected && owner)
-        void refreshPending(selected, owner).catch((reason) => {
-          if (owns(selected) && scope === owner) error.set(reason);
-        });
-    });
+    untracked(() => adopt(selected));
   });
   effect(() => {
     const selected = options.sessionId();
@@ -279,39 +289,85 @@ export function createTerminals(
     });
     if (options.active()) follow(selected);
   };
-  const start = async () => {
+  const submit = async (owner: ScopedHost, entry: ResourceUpdate, source: string) => {
+    const target = { sessionId: entry.sessionId, ref: entry.result.ref };
+    const input = await host.subscribe('terminal', 'acquire', target);
+    try {
+      const first = await input.next();
+      const lease = first && completed(first);
+      if (!lease?.held || lease.nextSequence == null)
+        throw new UiError('Could not control the terminal.');
+      const controller = { target, controllerId: lease.controllerId };
+      completed(
+        await terminalMutation(owner, 'control', {
+          controller,
+          sequence: lease.nextSequence,
+          actions: [
+            { type: 'paste', text: ' ' + source },
+            { type: 'key', key: 'enter' },
+          ],
+        }),
+      );
+      completed(await terminalMutation(owner, 'release', controller));
+    } finally {
+      await input.close();
+    }
+  };
+  const start = async (source?: string) => {
+    adopt(options.sessionId());
     const owner = scope;
-    if (!owner || !owns(owner.sessionId) || starting() || !known() || pending().length) return;
+    if (!owner || !owns(owner.sessionId)) return;
     const selected = owner.sessionId;
-    starting.set(true);
+    if (source === undefined) {
+      if (starting()) return;
+      starting.set(true);
+    }
     error.set('');
     try {
-      const entry = completed(
-        await mutate(owner, 'start', { sessionId: selected, size: DEFAULT_SIZE }),
+      if (source === undefined) {
+        await refreshPending(selected, owner);
+        if (!owns(selected) || scope !== owner) return;
+      }
+      const input = { sessionId: selected, size: DEFAULT_SIZE };
+      const launched = completed(
+        await (source === undefined
+          ? mutate(owner, 'start', input)
+          : terminalMutation(owner, 'start', input)),
       );
+      if (source !== undefined) await submit(owner, launched, source);
       if (!owns(selected) || scope !== owner) return;
+      const current = entries()
+        .find((row) => row.value().result.ref === launched.result.ref)
+        ?.value();
+      const entry =
+        current && current.result.revision > launched.result.revision ? current : launched;
       accept([
         ...entries()
           .map((row) => row.value())
           .filter((item) => item.result.ref !== entry.result.ref),
         entry,
       ]);
-      open(entry);
+      if (source === undefined) open(entry);
+      return entry;
     } catch (reason) {
-      if (owns(selected) && scope === owner) error.set(reason);
+      if (owns(selected) && scope === owner) {
+        error.set(reason);
+        if (source !== undefined) {
+          try {
+            await refreshPending(selected, owner);
+          } catch {
+            // Keep the original launch or input failure visible.
+          }
+        }
+      }
     } finally {
-      if (owns(selected) && scope === owner) starting.set(false);
+      if (source === undefined && owns(selected) && scope === owner) starting.set(false);
     }
   };
   const recover = async (target: { sessionId: string; id: string; abandon: boolean }) => {
     const owner = scope;
-    if (
-      !owner ||
-      !owns(target.sessionId) ||
-      recovering() ||
-      !pending().some((item) => item.id === target.id)
-    )
-      return;
+    const original = pending().find((item) => item.id === target.id);
+    if (!owner || !owns(target.sessionId) || recovering() || !original) return;
     recovering.set(true);
     error.set('');
     try {
@@ -362,13 +418,45 @@ export function createTerminals(
     pending,
     recovering,
     known,
-    start,
+    async start() {
+      await start();
+    },
+    runCommand: (source: string) => start(source),
     refresh,
     recover,
     open,
   };
 }
 
+type TerminalEntry = Pick<ResourceUpdate, 'result' | 'ownership' | 'visibility' | 'initiator'>;
+type TerminalSubscription<M extends 'readDisplay' | 'watch' | 'watchOutput' | 'acquire'> = Promise<
+  Stream<Output<'terminal', M>>
+>;
+export type TerminalTransport = {
+  readDisplay(): TerminalSubscription<'readDisplay'>;
+  watch(): Promise<
+    Stream<{ kind: 'completed'; value: TerminalEntry } | { kind: 'failed'; message: string }>
+  >;
+  watchOutput(after: number): TerminalSubscription<'watchOutput'>;
+  acquire(): Promise<
+    Stream<
+      | {
+          kind: 'completed';
+          value: Pick<TerminalLeaseUpdate, 'controllerId' | 'nextSequence' | 'held'> & {
+            resource: TerminalEntry;
+          };
+        }
+      | { kind: 'failed'; message: string }
+    >
+  >;
+  control(
+    input: Omit<Input<'terminal', 'control'>, 'controller'> & {
+      controllerId: string;
+    },
+  ): Promise<Output<'terminal', 'control'>>;
+  release(controllerId: string): Promise<unknown>;
+  stop(): Promise<TerminalEntry>;
+};
 function createTerminal(
   host: Host,
   initial: ResourceUpdate,
@@ -379,6 +467,31 @@ function createTerminal(
     removed(): void;
   },
 ) {
+  const target = { sessionId: initial.sessionId, ref: initial.result.ref };
+  return createTerminalPresentation(
+    initial,
+    {
+      readDisplay: () => host.subscribe('terminal', 'readDisplay', target),
+      watch: () => host.subscribe('terminal', 'watch', target),
+      watchOutput: (after) => host.subscribe('terminal', 'watchOutput', { target, after }),
+      acquire: () => host.subscribe('terminal', 'acquire', target),
+      control: ({ controllerId, ...input }) =>
+        hooks.mutate(scope, 'control', {
+          ...input,
+          controller: { target, controllerId },
+        }),
+      release: async (controllerId) =>
+        completed(await hooks.mutate(scope, 'release', { target, controllerId })),
+      stop: async () => completed(await hooks.mutate(scope, 'stop', target)).resource,
+    },
+    hooks,
+  );
+}
+export function createTerminalPresentation(
+  initial: TerminalEntry,
+  transport: TerminalTransport,
+  hooks: { admitted(): boolean; removed(): void },
+) {
   const entry = signal(initial);
   const version = signal(0);
   const focusRequested = signal(false);
@@ -387,7 +500,6 @@ function createTerminal(
   const control = signal<'none' | 'acquiring' | 'held' | 'refused'>('none');
   const stopping = signal(false);
   const grid = new TerminalGrid(DEFAULT_SIZE);
-  const target = { sessionId: initial.sessionId, ref: initial.result.ref };
   let alive = true;
   let active = false;
   let after = 0;
@@ -421,8 +533,7 @@ function createTerminal(
     // Closing acquire itself revokes its native controller, including if release fails.
     void (async () => {
       try {
-        if (previous.held && previous.id)
-          completed(await hooks.mutate(scope, 'release', { target, controllerId: previous.id }));
+        if (previous.held && previous.id) await transport.release(previous.id);
       } catch (reason) {
         if (alive) error.set(reason);
       } finally {
@@ -443,7 +554,7 @@ function createTerminal(
     grid.discardDisplay();
     void (async () => {
       try {
-        const opened = await host.subscribe('terminal', 'readDisplay', target);
+        const opened = await transport.readDisplay();
         if (!alive || !active || retained !== run) {
           await opened.close();
           return;
@@ -481,21 +592,28 @@ function createTerminal(
     observing = run;
     void (async () => {
       try {
-        const opened = await host.subscribe('terminal', 'watch', target);
+        const opened = await transport.watch();
         if (!alive || !active || observing !== run) {
           await opened.close();
           return;
         }
         run.stream = opened;
+        let last: TerminalEntry | null = null;
         for (;;) {
           const value = await opened.next();
           if (!alive || !active || run.closed || observing !== run) return;
-          if (!value) throw new UiError('The Host closed the terminal resource observation.');
-          entry.set(completed(value));
+          if (!value) {
+            if (last && !terminalRunning(last)) return;
+            throw new UiError('The Host closed the terminal resource observation.');
+          }
+          last = completed(value);
+          entry.set(last);
           if (state() === 'unavailable' && !terminalRunning(entry())) snapshot();
         }
       } catch (reason) {
         if (!run.closed && alive && active) {
+          stop(reading);
+          reading = null;
           console.warn('Could not read terminal output:', reason);
           fail(new UiError('Could not read terminal output. Try reconnecting.'));
         }
@@ -508,6 +626,7 @@ function createTerminal(
   const follow = () => {
     if (!alive || !active || reading) return;
     if (entry().result.mode === 'pipes') {
+      if (!observing) observe();
       state.set('live');
       return;
     }
@@ -523,7 +642,7 @@ function createTerminal(
     error.set('');
     void (async () => {
       try {
-        const opened = await host.subscribe('terminal', 'watchOutput', { target, after });
+        const opened = await transport.watchOutput(after);
         if (!alive || !active || reading !== run) {
           await opened.close();
           return;
@@ -583,8 +702,8 @@ function createTerminal(
           bytes += length;
         }
         const receipt = completed(
-          await hooks.mutate(scope, 'control', {
-            controller: { target, controllerId: owner.id },
+          await transport.control({
+            controllerId: owner.id,
             sequence: owner.next,
             actions,
             ...(resize ? { size: resize } : {}),
@@ -618,7 +737,7 @@ function createTerminal(
     control.set('acquiring');
     error.set('');
     try {
-      const opened = await host.subscribe('terminal', 'acquire', target);
+      const opened = await transport.acquire();
       if (lease !== owner || owner.closed || !controllable()) {
         await opened.close();
         return;
@@ -629,6 +748,10 @@ function createTerminal(
         if (lease !== owner || owner.closed) return;
         if (!outcome) throw new UiError('Terminal input control was released by the Host.');
         const held = completed(outcome);
+        if (!held.held && !terminalRunning(held.resource)) {
+          entry.set(held.resource);
+          return;
+        }
         if (!held.held || held.nextSequence == null)
           throw new UiError('Another controller owns this terminal.');
         owner.id = held.controllerId;
@@ -648,6 +771,7 @@ function createTerminal(
       stop(owner);
       if (lease === owner) {
         lease = null;
+        queue = [];
         control.set('none');
       }
     }
@@ -686,7 +810,6 @@ function createTerminal(
     release();
   };
   const model = {
-    target,
     entry,
     version,
     grid,
@@ -701,8 +824,8 @@ function createTerminal(
     controllable,
     position: { x: 0, y: 0 },
     atBottom: true,
-    update(value: ResourceUpdate) {
-      if (alive && value.sessionId === target.sessionId && value.result.ref === target.ref) {
+    update(value: TerminalEntry) {
+      if (alive && value.result.ref === initial.result.ref) {
         entry.set(value);
         if (state() === 'unavailable' && !terminalRunning(value)) snapshot();
       }
@@ -710,7 +833,6 @@ function createTerminal(
     activate() {
       if (!alive || active) return;
       active = true;
-      if (entry().result.mode === 'pipes') observe();
       follow();
     },
     suspend,
@@ -734,7 +856,6 @@ function createTerminal(
           grid.reset(DEFAULT_SIZE);
           after = 0;
           state.set('idle');
-          if (entry().result.mode === 'pipes' && !observing) observe();
           follow();
         } else model.takeControl();
       }
@@ -751,7 +872,7 @@ function createTerminal(
         return;
       stopping.set(true);
       try {
-        entry.set(completed(await hooks.mutate(scope, 'stop', target)).resource);
+        entry.set(await transport.stop());
         release();
       } catch (reason) {
         if (alive) {

@@ -38,6 +38,10 @@ export default {
         authentication: one(sdk.contracts.settingsAuthentication),
         setup: one(sdk.contracts.settingsSetup),
         agent: one(sdk.contracts.agent),
+        projectActions: {
+          contract: sdk.contracts.projectActions,
+          cardinality: { kind: 'optional' },
+        },
         skills: { contract: sdk.contracts.skillLibrary, cardinality: { kind: 'optional' } },
         web: { contract: sdk.contracts.workspaceWeb, cardinality: { kind: 'optional' } },
         management: one(sdk.contracts.deploymentManager),
@@ -45,6 +49,13 @@ export default {
       },
       contributions: {
         Settings: { kind: 'view', contract: 'maka.settings' },
+        'project-actions': {
+          kind: 'settings',
+          title: {
+            fallback: 'Project Actions',
+            translations: { 'zh-CN': '项目 Actions', 'zh-TW': '專案 Actions' },
+          },
+        },
         general: {
           kind: 'settings',
           title: { fallback: 'General', translations: { 'zh-CN': '常规', 'zh-TW': '一般' } },

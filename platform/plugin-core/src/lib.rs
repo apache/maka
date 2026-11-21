@@ -19,6 +19,7 @@
 
 //! Shared plugin declarations and composition planning. No business or platform policy.
 
+pub mod actions;
 pub mod authorization;
 pub mod composition;
 pub mod computer;

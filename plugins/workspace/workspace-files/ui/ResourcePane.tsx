@@ -108,6 +108,20 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
     }
   });
 
+  const revealSelectedTab = (selected: () => boolean) => {
+    let tab: ViewRef | undefined;
+    const reveal = () => {
+      if (selected()) tab?.reveal({ horizontal: 'nearest', animated: false });
+    };
+    effect(reveal);
+    return {
+      ref(node: ViewRef) {
+        tab = node;
+      },
+      onLayout: reveal,
+    };
+  };
+
   const sectionMeta = (
     section: StageSectionTab,
   ): { icon: Parameters<typeof Icon>[0]['name']; label: string; a11y: string } => {
@@ -251,7 +265,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
         </If>
 
         <Scroll horizontal focusable={false} style={{ flex: 1, minWidth: 0 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}>
             {/* Section Stage Tabs */}
             <Each of={resources.openSections()} key={(sec) => sec}>
               {(sec, idx) => {
@@ -259,9 +273,11 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                 const meta = () => sectionMeta(sec());
                 return (
                   <View
+                    {...revealSelectedTab(selected)}
                     style={{
                       height: 28,
                       flexDirection: 'row',
+                      flexShrink: 0,
                       alignItems: 'center',
                       borderRadius: 8,
                       backgroundColor: selected() ? C.cardRaised : C.card,
@@ -347,9 +363,11 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                 const shortTitle = () => tabDisplayTitle(tab());
                 return (
                   <View
+                    {...revealSelectedTab(selected)}
                     style={{
                       height: 28,
                       flexDirection: 'row',
+                      flexShrink: 0,
                       alignItems: 'center',
                       borderRadius: 8,
                       backgroundColor: selected() ? C.cardRaised : C.card,
@@ -649,7 +667,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
           <PersonalTerminals
             model={resources.terminals}
             entries={resources.personalTerminals()}
-            selected={terminal()?.target.ref}
+            selected={terminal()?.entry().result.ref}
             cwd={resources.directory()}
             open={resources.showTerminal}
           />

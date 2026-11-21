@@ -46,8 +46,8 @@ import type {
   TerminalModifiers,
   TerminalSize,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import type { TerminalModel } from './terminalState';
-import { terminalStatus } from './terminalState';
+import { terminalStatus, type TerminalModel } from './terminalState';
+import { createTerminalViewport } from './terminalViewport';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import {
@@ -137,7 +137,7 @@ export function Terminal(props: { model: TerminalModel }) {
   const model = props.model;
   const dimensions = signal({ width: 0, height: LINE * 24 });
   const cellWidth = signal(8);
-  const offset = signal(0);
+  const offset = signal<number | null>(model.atBottom ? null : 0);
   const inputValue = signal('');
   const confirmation = signal(false);
   const copyStatus = createText();
@@ -150,14 +150,17 @@ export function Terminal(props: { model: TerminalModel }) {
   let reset: ReturnType<typeof setTimeout> | null = null;
   let unbind = () => {};
   const rows = () => Math.max(1, Math.min(1024, Math.floor(dimensions().height / LINE)));
+  const readViewport = createTerminalViewport(
+    (offset, rows) => model.grid.display(offset, rows) as unknown as Frame,
+  );
   const frame = computed(() => {
     model.version();
-    return model.grid.display(offset(), rows()) as unknown as Frame;
+    return readViewport(offset(), rows());
   });
   const pointerInput = () =>
     model.controllable() &&
     model.control() === 'held' &&
-    offset() === 0 &&
+    (offset() === null || offset() === 0) &&
     frame().metadata.input.mouseTrackingMode !== 'none';
   const key = (name: string, modifiers: TerminalModifiers = []) =>
     model.input([{ type: 'key', key: name, modifiers }]);
@@ -187,7 +190,7 @@ export function Terminal(props: { model: TerminalModel }) {
     }
   };
   const focusShell = () => {
-    if (!model.focusRequested() || !input) return;
+    if (!model.focusRequested() || !model.running() || !input) return;
     model.focusRequested.set(false);
     input.focus();
   };
@@ -267,7 +270,9 @@ export function Terminal(props: { model: TerminalModel }) {
       fallback?.focus();
     };
     bindings['shift+pageup'] = () => {
+      const current = frame();
       model.atBottom = false;
+      offset.set(current.offset);
       scroll?.scrollTo({ y: Math.max(0, model.position.y - rows() * LINE) });
     };
     bindings['shift+pagedown'] = () => scroll?.scrollTo({ y: model.position.y + rows() * LINE });
@@ -338,8 +343,9 @@ export function Terminal(props: { model: TerminalModel }) {
     model.version();
     dimensions();
     if (model.atBottom) {
-      offset.set(0);
-      scroll?.scrollToEnd({ animated: false });
+      offset.set(null);
+      const current = frame();
+      scroll?.scrollTo({ y: Math.max(0, current.scrollbackRows + current.firstLine) * LINE });
     }
   });
   cleanup(() => {
@@ -384,6 +390,7 @@ export function Terminal(props: { model: TerminalModel }) {
         <If when={model.control() === 'held'}>
           <Button
             onPress={inputAction(model.release, null)}
+            accessibilityLabel={tr('Release input')}
             tooltip={textTooltip(() => tr('Release terminal input · Ctrl+Shift+Space'))}
             style={controlStyle}
             hoverStyle={controlHoverStyle()}
@@ -494,8 +501,8 @@ export function Terminal(props: { model: TerminalModel }) {
                     0,
                     current.totalRows - rows() - Math.floor(event.offset.y / LINE),
                   );
-                  model.atBottom = distance <= 1;
-                  offset.set(model.atBottom ? 0 : distance);
+                  model.atBottom = Math.abs(distance - current.followOffset) <= 1;
+                  offset.set(model.atBottom ? null : distance);
                 }}
                 style={{
                   width: Math.max(dimensions().width, frame().metadata.size.cols * cellWidth()),
@@ -589,6 +596,7 @@ export function Terminal(props: { model: TerminalModel }) {
           <If
             when={
               !model.agentOwned() &&
+              model.running() &&
               model.entry().result.mode === 'pty' &&
               model.local() &&
               model.state() === 'live'
@@ -615,11 +623,11 @@ export function Terminal(props: { model: TerminalModel }) {
               accessibilityLabel={tr('Terminal keyboard input')}
               style={{
                 position: 'absolute',
-                width: cellWidth(),
+                width: textTerminal ? 1 : cellWidth(),
                 height: LINE,
                 left: 0,
                 bottom: 0,
-                opacity: 0.01,
+                opacity: textTerminal ? 1 : 0.01,
               }}
             />
           </If>

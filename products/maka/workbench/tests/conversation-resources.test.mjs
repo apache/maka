@@ -46,18 +46,44 @@ const native = {
     export const createCurrentDiff = (_host, target) => ({target, anchorValue: target.anchor, anchor() { return this.anchorValue; }, setAnchor(next) { this.anchorValue = next; }, threads: () => [], setThreads() {}, state: () => ({ kind: 'loading' }), position: { x: 0, y: 0 }, refresh: async () => {}, dispose() { this.disposed = true; }});
   `,
   terminalState: `
+    import { signal } from "nsh";
     export const completed = reply => reply.value;
     export const terminalRunning = entry => entry.result.status === 'running';
-    export const createTerminals = (_host, options) => ({
-      entries: () => [],
+    export const createTerminals = (_host, options) => {
+      const rows = signal([]);
+      return {
+      entries: rows,
       sessionId: options.sessionId,
-    });
+      open(entry) {
+        const {model} = globalThis.terminalLaunches.find(launch => launch.entry === entry);
+        options.open(entry, model);
+      },
+      async runCommand(command) {
+        const id = globalThis.terminalLaunches.length + 1;
+        const entry = {
+          sessionId: options.sessionId(),
+          initiator: 'user',
+          visibility: 'user',
+          result: { ref: 'shell:' + id, cmd: command, mode: 'pty', status: 'running' },
+        };
+        const model = {
+          activate() {}, suspend() {}, dispose() { this.disposed = true; },
+          agentOwned: () => false, entry: () => entry, focusRequested: signal(false),
+        };
+        globalThis.terminalLaunches.push({entry, model});
+        rows.set([...rows(), { value: signal(entry) }]);
+        await globalThis.actionReceipt?.(command);
+        return entry;
+      },
+      };
+    };
   `,
 };
 const hooks = registerHooks({
   resolve(specifier, context, next) {
     let key = specifier;
     if (
+      specifier === 'nsh' ||
       context.parentURL?.startsWith(resourceRoot.href) ||
       context.parentURL?.startsWith(appRoot.href)
     ) {
@@ -79,6 +105,8 @@ hooks.deregister();
 
 function setup(t, openLink = async () => null) {
   globalThis.resourceScope = [];
+  globalThis.terminalLaunches = [];
+  globalThis.actionReceipt = undefined;
   const sessions = signal(['A', 'B']);
   const errors = [];
   const resources = createResources(
@@ -562,4 +590,68 @@ test('workspace stage launchpad, PR tabs, fullscreen, worktree selection, and sc
       .scrollOffset,
     0,
   );
+});
+
+test('Action launches focus independent personal terminals and closing the section restores the file tab', async (t) => {
+  const { resources } = setup(t);
+  resources.openFile(file('A'));
+  const original = resources.activeTab();
+  for (let i = 0; i < 2; i++)
+    await resources.startTerminal({ sessionId: 'A', command: 'npm run dev' });
+  assert.equal(resources.tabs().length, 3);
+  assert.equal(resources.tabs()[0], original);
+  const tab = resources.activeTab();
+  assert.equal(tab.kind, 'terminal');
+  assert.equal(tab.sessionId, 'A');
+  assert.equal(tab.model.focusRequested(), true);
+  assert.equal(resources.shown(), true);
+  assert.deepEqual(
+    globalThis.terminalLaunches.map(({ entry }) => entry.sessionId),
+    ['A', 'A'],
+  );
+  resources.hide();
+  assert.equal(tab.model.disposed, undefined);
+  resources.openFiles({ sessionId: 'A' });
+  assert.equal(tab.model.disposed, undefined);
+  resources.select({ sessionId: 'A', instance: tab.instance });
+  resources.closeSection({ sessionId: 'A', section: 'terminals' });
+  assert.equal(resources.activeTab(), original);
+  assert.deepEqual(resources.tabs(), [original]);
+  assert.ok(globalThis.terminalLaunches.every(({ model }) => model.disposed));
+  resources.openFiles({ sessionId: 'B' });
+  assert.equal(original.model.disposed, true);
+  await resources.startTerminal({ sessionId: 'absent', command: 'must not run' });
+  assert.equal(globalThis.terminalLaunches.length, 2);
+});
+
+test('out-of-order Action receipts honor the latest selection and a subsequent pane close', async (t) => {
+  const { resources } = setup(t);
+  const receipts = new Map(
+    ['first', 'second', 'closed', 'file'].map((command) => [command, Promise.withResolvers()]),
+  );
+  globalThis.actionReceipt = (command) => receipts.get(command).promise;
+  const first = resources.startTerminal({ sessionId: 'A', command: 'first' });
+  const second = resources.startTerminal({ sessionId: 'A', command: 'second' });
+  assert.equal(resources.activeTerminal(), null);
+  assert.equal(resources.personalTerminals().length, 2);
+  receipts.get('second').resolve();
+  await second;
+  assert.equal(resources.activeTerminal().entry().result.cmd, 'second');
+  receipts.get('first').resolve();
+  await first;
+  assert.equal(resources.activeTerminal().entry().result.cmd, 'second');
+
+  const closed = resources.startTerminal({ sessionId: 'A', command: 'closed' });
+  resources.hide();
+  receipts.get('closed').resolve();
+  await closed;
+  assert.equal(resources.shown(), false);
+  assert.equal(resources.personalTerminals().length, 3);
+
+  const fileSwitch = resources.startTerminal({ sessionId: 'A', command: 'file' });
+  resources.openFile(file('A'));
+  receipts.get('file').resolve();
+  await fileSwitch;
+  assert.equal(resources.activeTab().kind, 'file');
+  assert.equal(resources.personalTerminals().length, 4);
 });

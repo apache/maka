@@ -97,6 +97,8 @@ import {
   type MessageKey,
 } from '../../../../products/maka/workbench/app/locale';
 import { loadDraft, searchSessions, type Host } from '../../../../products/maka/workbench/app/host';
+import { createProjectActions } from '../../../../products/maka/workbench/app/projectActionsState';
+import { ProjectActions } from '../../../../products/maka/workbench/app/ProjectActions';
 import { settingsValue } from '../../../../products/maka/workbench/app/settingsOperations';
 import {
   bodyTextStyle,
@@ -182,7 +184,7 @@ type OverlayTarget = {
   // `within`: the search starts in the open conversation only.
   | { kind: 'search'; within?: boolean }
   | { kind: 'models'; focusOnClose?: 'composer' }
-  | { kind: 'settings'; model?: ModelSelection; page?: string }
+  | { kind: 'settings'; model?: ModelSelection; page?: string; initialProjectId?: string }
   | {
       kind: 'goal';
       objective?: string;
@@ -251,6 +253,10 @@ type Submission =
   | { kind: 'finishing'; attempt: SubmissionAttempt };
 export type ConversationWindow = {
   workspace: Signal<WorkspaceViewHandle | null>;
+  projectActionUsage(projectId: string): {
+    lastUsed(): string | null | undefined;
+    record(actionId: string): void;
+  };
   sessions(): readonly string[];
   command(id: string): void;
   prompt?(sessionId: string, input: { text: string; mode: 'insert' | 'send' }): boolean;
@@ -823,7 +829,7 @@ export function createConversationUi(
         : request;
     if (target.kind === 'settings') {
       overlay.set(null);
-      shell()?.openSettings(target.model, target.page);
+      shell()?.openSettings(target.model, target.page, target.initialProjectId);
       return;
     }
     status.set('');
@@ -1932,6 +1938,46 @@ export function createConversationUi(
     (shell()?.sidebarShown() ?? false) &&
     (shell()?.sidebarDocked() ?? false) &&
     overlay()?.kind !== 'sessions';
+  const projectActions = createProjectActions(
+    context,
+    host,
+    () => {
+      const current = handle();
+      if (!context.services.projectActions?.length || !current || current.sessionId !== selected())
+        return null;
+      const path = current.workspace();
+      return path ? { kind: 'workspace', path } : null;
+    },
+    async (definition) => {
+      const sessionId = selected();
+      if (sessionId === null || overlay() || reloading()) return;
+      const workspace = requireWorkspace();
+      window.projectActionUsage(definition.projectId).record(definition.id);
+      await workspace.startTerminal({ sessionId, command: definition.command });
+    },
+  );
+  const lastUsedActionId = () => {
+    const directory = projectActions.directory();
+    return directory ? window.projectActionUsage(directory.projectId).lastUsed() : undefined;
+  };
+  const configureActions = () => {
+    const directory = projectActions.directory();
+    if (!directory) return;
+    open({
+      kind: 'settings',
+      sessionId: selected(),
+      page: 'project-actions',
+      initialProjectId: directory.projectId,
+    });
+  };
+  const renderProjectActions = () => (
+    <ProjectActions
+      model={projectActions}
+      lastUsedActionId={lastUsedActionId}
+      ready={() => workspace() !== null && !reloading()}
+      configure={configureActions}
+    />
+  );
   const browserHeader = (sessionId: string | null, foreground = false): BrowserHeader => ({
     navigationDocked: navigationDocked(),
     previewDocked: shell()?.previewDocked() ?? false,
@@ -2746,6 +2792,9 @@ export function createConversationUi(
                     sessionId: id(),
                   })}
                   browser={() => browserHeader(id())}
+                  projectActions={
+                    projectActions.directory() !== null ? renderProjectActions : undefined
+                  }
                   files={
                     workspace()
                       ? inputAction(invokeCommand, {
@@ -3180,7 +3229,6 @@ export function createConversationUi(
           'Draft could not be saved or restored. Its existing contents are preserved.',
         );
       if (!alive || handle() !== owner) throw new UiError('Conversation navigation was cancelled.');
-      return null;
     },
   };
 }

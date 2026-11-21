@@ -64,21 +64,28 @@ export function PersonalTerminals(props: {
           <Scroll horizontal focusable={false} style={{ flex: 1, minWidth: 0 }}>
             <View style={{ flexDirection: 'row', gap: 4 }}>
               <Each of={props.entries} key={(row) => row.value().result.ref}>
-                {(row, index) => (
-                  <Button
-                    selected={props.selected === row().value().result.ref}
-                    onPress={inputAction(props.open, row().value())}
-                    style={{ ...controlStyle, flexDirection: 'row', gap: 6, alignItems: 'center' }}
-                    selectedStyle={{ backgroundColor: C.cardRaised }}
-                    hoverStyle={controlHoverStyle()}
-                    focusStyle={controlFocusStyle()}
-                  >
-                    <Icon name="terminal" size={14} color={C.muted} />
-                    <Text style={{ ...captionTextStyle, color: C.text }}>
-                      {tr('Shell {number}', { number: String(index() + 1) })}
-                    </Text>
-                  </Button>
-                )}
+                {(row, index) => {
+                  const label = () => tr('Shell {number}', { number: String(index() + 1) });
+                  return (
+                    <Button
+                      selected={props.selected === row().value().result.ref}
+                      onPress={inputAction(props.open, row().value())}
+                      accessibilityLabel={label()}
+                      style={{
+                        ...controlStyle,
+                        flexDirection: 'row',
+                        gap: 6,
+                        alignItems: 'center',
+                      }}
+                      selectedStyle={{ backgroundColor: C.cardRaised }}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
+                    >
+                      <Icon name="terminal" size={14} color={C.muted} />
+                      <Text style={{ ...captionTextStyle, color: C.text }}>{label()}</Text>
+                    </Button>
+                  );
+                }}
               </Each>
             </View>
           </Scroll>
