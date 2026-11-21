@@ -360,15 +360,11 @@ impl SessionOwner {
         // The Session keeps its cursor, but nothing acts once the turn has ended, so the
         // cursor leaves the screen; the next input action draws it again.
         #[cfg(feature = "native-desktop")]
-        if let Err(error) = self
-            .driver
-            .lock()
-            .await
-            .cursors
-            .remove(&self.cursor().id)
-            .await
         {
-            failures.push(error.to_string());
+            let pending = self.driver.lock().await.cursors.remove(&self.cursor().id);
+            if let Err(error) = pending.await {
+                failures.push(error.to_string());
+            }
         }
         if failures.is_empty() {
             Ok(())
@@ -448,7 +444,8 @@ impl SessionOwner {
                         {
                             failures.push(error.to_string());
                         }
-                        if let Err(error) = driver.lock().await.cursors.remove(&cursor.id).await {
+                        let pending = driver.lock().await.cursors.remove(&cursor.id);
+                        if let Err(error) = pending.await {
                             failures.push(error.to_string());
                         }
                     }
@@ -1143,4 +1140,80 @@ fn native_unavailable() -> ToolError {
 
 fn failed(error: impl std::fmt::Display) -> ToolError {
     ToolError::Failed(error.to_string())
+}
+
+#[cfg(all(test, feature = "native-desktop"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn finish_turn_removes_cursor_without_holding_driver_lock_and_preserves_spec() {
+        let (cursors, mut receiver) = crate::cursor::Host::test_with_channel();
+        let mut driver = Driver::default();
+        driver.cursors = cursors;
+        let driver = Arc::new(Mutex::new(driver));
+        let owner = SessionOwner::new(driver.clone());
+        let configured = owner
+            .configure_cursor(crate::cursor::Options {
+                label: Some("Maka".into()),
+                color: Some(crate::cursor::Color::Rose),
+                enabled: Some(true),
+                reduced_motion: Some(true),
+            })
+            .unwrap();
+        let execution = crate::ExecutionCorrelation::new("run-1").unwrap();
+
+        let (result, ()) = tokio::join!(
+            owner.finish_turn("session-1", "turn-1", &execution, Language::En),
+            async {
+                let remove = receiver.recv_remove().await.expect("remove request");
+                assert_eq!(remove.id, configured.id);
+                assert!(
+                    driver.try_lock().is_ok(),
+                    "Driver lock must be released while awaiting cursor removal"
+                );
+                remove.reply(Ok(()));
+            }
+        );
+
+        result.unwrap();
+        let retained = owner.cursor();
+        assert_eq!(retained.id, configured.id);
+        assert_eq!(retained.label, "Maka");
+        assert_eq!(retained.color.name(), "rose");
+        assert!(retained.enabled);
+        assert!(retained.reduced_motion);
+    }
+
+    #[tokio::test]
+    async fn finish_turn_surfaces_cursor_removal_failure() {
+        let (cursors, mut receiver) = crate::cursor::Host::test_with_channel();
+        let mut driver = Driver::default();
+        driver.cursors = cursors;
+        let driver = Arc::new(Mutex::new(driver));
+        let owner = SessionOwner::new(driver);
+        let expected_id = owner.cursor().id;
+        let execution = crate::ExecutionCorrelation::new("run-2").unwrap();
+
+        let (result, ()) = tokio::join!(
+            owner.finish_turn("session-1", "turn-2", &execution, Language::En),
+            async {
+                let remove = receiver.recv_remove().await.expect("remove request");
+                assert_eq!(remove.id, expected_id);
+                remove.reply(Err(ToolError::CleanupUnconfirmed(
+                    "cursor helper did not confirm removal".into(),
+                )));
+            }
+        );
+
+        match result {
+            Err(ToolError::CleanupUnconfirmed(message)) => {
+                assert!(
+                    message.contains("cursor helper did not confirm removal"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected CleanupUnconfirmed, got {other:?}"),
+        }
+    }
 }
